@@ -1,0 +1,12 @@
+[build]
+command = "npm run build"
+publish = "dist"
+
+[build.environment]
+NODE_VERSION = "22"
+VITE_API_URL = "https://folder-manager--zexmoon2020.replit.app"
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200

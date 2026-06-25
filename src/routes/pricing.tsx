@@ -1,11 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
 import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
 import {
   CheckCircle2,
   XCircle,
   Globe2,
-  Crown,
   Users,
   Zap,
   Code2,
@@ -15,7 +15,8 @@ import {
   Calendar,
   Sun,
   ShieldCheck,
-  Target,
+  Lock,
+  Database,
 } from "lucide-react";
 import { PlanCard } from "./index";
 
@@ -25,14 +26,12 @@ export const Route = createFileRoute("/pricing")({
       { title: "Pricing — Mast" },
       {
         name: "description",
-        content:
-          "Simple daily and monthly lead usage limits. Full access to prospect research, CRM, pipeline, and AI intelligence on every plan.",
+        content: "Simple daily lead limits. Every plan includes prospect research, CRM, pipeline, and AI assistance — no separate tools required.",
       },
       { property: "og:title", content: "Mast Pricing" },
       {
         property: "og:description",
-        content:
-          "Daily prospect limits from 10 to 833 per day. Research, enrich, manage pipeline, and execute outreach from one platform.",
+        content: "Research, enrich, manage pipeline, and close deals. One platform. Simple pricing.",
       },
     ],
   }),
@@ -61,7 +60,7 @@ const tiers: Tier[] = [
   {
     name: "Free",
     price: "$0",
-    desc: "Try the platform",
+    desc: "Explore the platform",
     cta: "Start Free",
     popular: false,
     dailyLeads: "10 / day",
@@ -117,8 +116,7 @@ const tiers: Tier[] = [
       "Instant intelligence pool",
       "Higher AI assistance",
       "Full CRM + pipeline",
-      "API access",
-      "3 team seats",
+      "API access · 3 team seats",
     ],
   },
   {
@@ -160,36 +158,56 @@ const rows: ComparisonRowDef[] = [
 const faqs = [
   {
     q: "How do daily limits work?",
-    a: "Your daily lead usage resets every 24 hours at midnight UTC. This keeps your pipeline active throughout the month rather than exhausting your monthly allowance in one session.",
+    a: "Your daily allowance resets at midnight UTC. This keeps your pipeline active throughout the month instead of burning through a monthly cap in one session.",
   },
   {
     q: "What happens when I reach the daily limit?",
-    a: "Prospect discovery pauses for the day. You'll see a countdown to the next reset. Your monthly allowance is preserved, and it's available again the following day.",
+    a: "Prospect discovery pauses until the next reset. Your monthly allowance is preserved and available again the following day.",
   },
   {
     q: "Do unused leads roll over?",
-    a: "Daily allowances reset each day — unused daily capacity doesn't carry over. Monthly caps reset at the start of each billing cycle.",
+    a: "Daily allowances don't carry over — each day starts fresh. Monthly caps reset at the start of your billing cycle.",
   },
   {
     q: "Can I change plans at any time?",
-    a: "Yes — upgrade, downgrade, or cancel at any time. Changes take effect at the next billing cycle.",
+    a: "Yes. Upgrade, downgrade, or cancel whenever you want. Changes take effect at the next billing cycle.",
   },
   {
     q: "What's the difference between live research and the instant pool?",
-    a: "Live research fetches fresh business information in real time. The instant intelligence pool on Pro and Premium gives immediate access to our pre-enriched, regularly refreshed company database — faster results, higher confidence.",
+    a: "Live research fetches fresh business information in real time. The instant intelligence pool (Pro and Premium) gives immediate access to our pre-enriched company database — faster results, higher confidence.",
   },
   {
     q: "What does AI assistance include?",
-    a: "AI assistance helps with outreach drafts, niche-aware messaging, and channel-specific copy — from basic templates on Starter to fully adaptive multi-step sequences on Premium.",
+    a: "AI helps with outreach drafts, company context, and follow-up suggestions — from basic templates on Starter to fully adaptive multi-step sequences on Premium.",
   },
   {
     q: "Who owns my CRM data?",
-    a: "You do. Your contacts, notes, pipeline stages, and activity history are yours. You can export everything at any time.",
+    a: "You do. Your contacts, notes, pipeline stages, and activity history are yours. Export everything at any time.",
   },
 ];
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
+// ─── FAQ accordion ─────────────────────────────────────────────────────────────
+function FaqItem({ q, a }: { q: string; a: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className={`bg-card border rounded-xl overflow-hidden transition-all duration-200 cursor-pointer ${open ? "border-brand/30" : "border-border/60 hover:border-border/90"}`}
+      onClick={() => setOpen(o => !o)}
+    >
+      <div className="px-6 py-4 flex items-center justify-between gap-4">
+        <p className="font-semibold text-foreground text-sm">{q}</p>
+        <span className={`text-brand transition-transform duration-200 shrink-0 ${open ? "rotate-45" : ""}`}>+</span>
+      </div>
+      {open && (
+        <div className="px-6 pb-4">
+          <p className="text-sm text-muted-foreground leading-relaxed">{a}</p>
+        </div>
+      )}
+    </div>
+  );
+}
 
+// ─── Page ─────────────────────────────────────────────────────────────────────
 function PricingPage() {
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -200,21 +218,18 @@ function PricingPage() {
         <div className="pointer-events-none absolute inset-0 bg-grid opacity-[0.15] [mask-image:radial-gradient(ellipse_at_top,black_20%,transparent_65%)]" />
         <div
           className="pointer-events-none absolute top-[-150px] left-1/2 -translate-x-1/2 size-[600px] rounded-full opacity-25 animate-pulse-glow"
-          style={{
-            background:
-              "radial-gradient(closest-side, var(--brand), transparent)",
-          }}
+          style={{ background: "radial-gradient(closest-side, var(--brand), transparent)" }}
         />
         <div className="relative max-w-3xl mx-auto">
           <span className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[10px] font-bold uppercase tracking-wider mb-6">
-            <Target className="size-3" /> Daily usage limits · No contracts
+            Simple pricing · No contracts
           </span>
           <h1 className="animate-fade-up delay-100 text-[clamp(2.2rem,6vw,3.5rem)] font-bold tracking-tight mb-5">
-            Active pipeline, every single day.
+            Pay for outcomes,<br />not seat counts.
           </h1>
           <p className="animate-fade-up delay-200 text-muted-foreground text-[1rem] leading-relaxed max-w-xl mx-auto">
-            Every plan includes a daily lead allowance so your prospect research stays
-            consistent all month — not just in week one.
+            Every plan includes the full platform — prospect research, CRM, pipeline,
+            and AI assistance. Upgrade when you need more volume.
           </p>
         </div>
       </section>
@@ -224,11 +239,7 @@ function PricingPage() {
         <div className="max-w-7xl mx-auto">
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
             {tiers.map((t, i) => (
-              <div
-                key={t.name}
-                className="animate-fade-up"
-                style={{ animationDelay: `${i * 80}ms` }}
-              >
+              <div key={t.name} className="animate-fade-up" style={{ animationDelay: `${i * 80}ms` }}>
                 <PlanCard
                   name={t.name}
                   price={t.price}
@@ -240,43 +251,33 @@ function PricingPage() {
               </div>
             ))}
           </div>
-
           <p className="text-center text-xs text-muted-foreground mt-6 animate-fade-up delay-400">
-            All plans include a 7-day money-back guarantee · No contracts ·
-            Cancel anytime
+            7-day money-back guarantee · No contracts · Cancel anytime
           </p>
         </div>
       </section>
 
-      {/* Feature comparison table */}
+      {/* Comparison table */}
       <section className="px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
-            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">
-              Compare
-            </span>
-            <h2 className="mt-3 text-2xl font-bold">Full feature breakdown</h2>
+            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Compare</span>
+            <h2 className="mt-3 text-2xl font-bold">Everything, side by side</h2>
           </div>
 
           <div className="overflow-x-auto rounded-2xl border border-border/60 animate-fade-up delay-100">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border/50 bg-card/50">
-                  <th className="text-left p-4 font-semibold text-muted-foreground text-xs uppercase tracking-wider w-[200px]">
-                    Feature
-                  </th>
+                  <th className="text-left p-4 font-semibold text-muted-foreground text-xs uppercase tracking-wider w-[200px]">Feature</th>
                   {tiers.map((t) => (
                     <th key={t.name} className="p-4 text-center">
-                      <div
-                        className={`text-xs font-bold uppercase tracking-wider ${t.popular ? "text-brand" : "text-muted-foreground"}`}
-                      >
+                      <div className={`text-xs font-bold uppercase tracking-wider ${t.popular ? "text-brand" : "text-muted-foreground"}`}>
                         {t.name}
                       </div>
                       <div className="text-lg font-bold text-foreground mt-0.5">
                         {t.price}
-                        <span className="text-xs text-muted-foreground font-normal">
-                          /mo
-                        </span>
+                        <span className="text-xs text-muted-foreground font-normal">/mo</span>
                       </div>
                     </th>
                   ))}
@@ -290,9 +291,7 @@ function PricingPage() {
                   >
                     <td className="p-4 text-muted-foreground font-medium text-xs">
                       <div className="flex items-center gap-1.5">
-                        {RowIcon && (
-                          <RowIcon className="size-3 text-muted-foreground/60" />
-                        )}
+                        {RowIcon && <RowIcon className="size-3 text-muted-foreground/60" />}
                         {label}
                       </div>
                     </td>
@@ -313,9 +312,7 @@ function PricingPage() {
                             <span className="inline-flex justify-center">
                               <CheckCircle2 className="size-4 text-brand" />
                             </span>
-                          ) : (
-                            val
-                          )}
+                          ) : val}
                         </td>
                       );
                     })}
@@ -331,15 +328,10 @@ function PricingPage() {
       <section className="px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
-            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">
-              Usage
-            </span>
-            <h2 className="mt-3 text-2xl font-bold">
-              Daily limits, always-on pipeline
-            </h2>
+            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Usage</span>
+            <h2 className="mt-3 text-2xl font-bold">Pipeline active every day — not just week one.</h2>
             <p className="mt-3 text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
-              Instead of exhausting a monthly quota in one session, MAST
-              spreads your lead budget across every working day.
+              Daily limits spread your research budget evenly so your pipeline never runs dry mid-month.
             </p>
           </div>
 
@@ -348,26 +340,26 @@ function PricingPage() {
               {
                 icon: Sun,
                 label: "Daily allowance",
-                sub: "Resets every 24 h",
-                desc: "Your fresh allocation each day, always ready when you open the platform.",
+                sub: "Resets at midnight UTC",
+                desc: "Fresh capacity every morning. Open MAST and it's ready to go.",
               },
               {
                 icon: Calendar,
                 label: "Monthly cap",
                 sub: "Billing cycle protection",
-                desc: "A ceiling that prevents overages — visible when you're approaching the limit.",
+                desc: "A ceiling that prevents surprise overages — only shows when you're close.",
               },
               {
                 icon: Bot,
                 label: "AI assistance",
                 sub: "Scales with plan",
-                desc: "From basic templates on Starter to adaptive multi-step sequences on Premium.",
+                desc: "Basic templates on Starter. Adaptive multi-step sequences on Premium.",
               },
               {
                 icon: Zap,
                 label: "Instant pool",
                 sub: "Pro & Premium",
-                desc: "Pre-enriched company intelligence — ready before you click search.",
+                desc: "Pre-enriched intelligence available before you even click search.",
               },
             ].map(({ icon: Icon, label, sub, desc }, i) => (
               <div
@@ -376,56 +368,52 @@ function PricingPage() {
                 style={{ animationDelay: `${i * 80}ms` }}
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-brand/0 group-hover:from-brand/[0.04] to-transparent transition-all duration-500 rounded-2xl pointer-events-none" />
-                <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center mb-4 group-hover:bg-brand/20 group-hover:scale-110 transition-all">
+                <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center mb-4 group-hover:bg-brand/20 group-hover:scale-110 transition-all duration-200">
                   <Icon className="size-4 text-brand" />
                 </div>
                 <p className="text-sm font-semibold text-foreground">{label}</p>
-                <p className="text-[10px] font-bold text-brand uppercase tracking-wider mt-0.5">
-                  {sub}
-                </p>
-                <p className="text-xs text-muted-foreground mt-2">{desc}</p>
+                <p className="text-[10px] font-bold text-brand uppercase tracking-wider mt-0.5">{sub}</p>
+                <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{desc}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* Trust section — replaces fabricated social proof */}
+      {/* Trust */}
       <section className="px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
-            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">
-              Trust & Compliance
-            </span>
-            <h2 className="mt-3 text-2xl font-bold">Built responsibly</h2>
-            <p className="mt-3 text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
-              MAST is built for responsible business development — not bulk spam.
+            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Trust</span>
+            <h2 className="mt-3 text-2xl font-bold">Built for professional sales teams.</h2>
+            <p className="mt-3 text-muted-foreground max-w-lg mx-auto text-sm leading-relaxed">
+              Responsible by design. Your data is yours. Your pipeline is private.
             </p>
           </div>
           <div className="grid sm:grid-cols-3 gap-4">
             {[
               {
-                icon: ShieldCheck,
-                title: "Your data, your CRM",
-                desc: "Everything in your CRM belongs to you. Export anytime, cancel anytime.",
+                icon: Database,
+                title: "Your CRM, your data",
+                desc: "Every contact, note, and pipeline stage belongs to you. Export at any time, no lock-in.",
               },
               {
                 icon: Globe2,
-                title: "Public business information",
-                desc: "Prospect data is sourced from publicly available business directories and websites.",
+                title: "Public business data",
+                desc: "Prospect information is sourced from publicly available business directories and websites.",
               },
               {
-                icon: Crown,
-                title: "Responsible use",
-                desc: "MAST is designed for professional sales teams — not bulk marketing or spam operations.",
+                icon: Lock,
+                title: "Professional use only",
+                desc: "MAST is built for sales teams — not bulk marketing or unsolicited outreach at scale.",
               },
             ].map(({ icon: Icon, title, desc }, i) => (
               <div
                 key={title}
-                className="text-center bg-card border border-border/60 rounded-2xl p-7 card-hover animate-fade-up"
+                className="group text-center bg-card border border-border/60 rounded-2xl p-7 card-hover animate-fade-up transition-all duration-200"
                 style={{ animationDelay: `${i * 100}ms` }}
               >
-                <div className="size-12 rounded-xl bg-brand/10 border border-brand/20 grid place-items-center mx-auto mb-4">
+                <div className="size-12 rounded-xl bg-brand/10 border border-brand/20 grid place-items-center mx-auto mb-4 group-hover:bg-brand/20 group-hover:scale-110 transition-all duration-200">
                   <Icon className="size-5 text-brand" />
                 </div>
                 <p className="text-base font-bold text-foreground">{title}</p>
@@ -436,19 +424,15 @@ function PricingPage() {
         </div>
       </section>
 
-      {/* AI assistance explainer */}
+      {/* AI tiers */}
       <section className="px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
-            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">
-              AI Assistance
-            </span>
-            <h2 className="mt-3 text-2xl font-bold">
-              Smarter outreach at every tier
-            </h2>
+            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">AI Assistance</span>
+            <h2 className="mt-3 text-2xl font-bold">AI that works quietly in the background.</h2>
             <p className="mt-3 text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
-              MAST's AI assistant helps draft outreach using company context,
-              channel awareness, and tone matching. Capability scales with your plan.
+              Not a chatbot. Not a widget. AI embedded in your workflow — surfacing insights,
+              drafting outreach, and keeping your pipeline healthy.
             </p>
           </div>
 
@@ -458,7 +442,7 @@ function PricingPage() {
                 plan: "Free",
                 level: "No AI",
                 color: "text-muted-foreground",
-                desc: "Manual outreach only. You write every message from scratch.",
+                desc: "Manual workflow. You research, write, and track everything yourself.",
               },
               {
                 plan: "Starter",
@@ -470,76 +454,50 @@ function PricingPage() {
                 plan: "Pro",
                 level: "Higher AI",
                 color: "text-brand",
-                desc: "Channel-specific drafts, tone selector, and multi-step sequences.",
+                desc: "Channel-specific drafts, tone selection, and multi-step sequences.",
               },
               {
                 plan: "Premium",
                 level: "Highest AI",
                 color: "text-brand font-bold",
-                desc: "Fully adaptive personalization across all channels and follow-up cadences.",
+                desc: "Fully adaptive personalization across every channel and follow-up cadence.",
               },
             ].map(({ plan, level, color, desc }, i) => (
               <div
                 key={plan}
-                className="bg-card border border-border/60 rounded-2xl p-5 animate-fade-up"
+                className="group bg-card border border-border/60 rounded-2xl p-5 animate-fade-up hover:border-brand/25 transition-all duration-200"
                 style={{ animationDelay: `${i * 80}ms` }}
               >
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
-                    {plan}
-                  </span>
+                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">{plan}</span>
                   <Bot className={`size-4 ${color}`} />
                 </div>
                 <p className={`text-sm font-semibold ${color}`}>{level}</p>
-                <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
-                  {desc}
-                </p>
+                <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{desc}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* Lead usage explainer (was "channel credit explainer") */}
+      {/* Lead usage depth */}
       <section className="px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
-            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">
-              Lead Usage
-            </span>
-            <h2 className="mt-3 text-2xl font-bold">How data depth affects usage</h2>
+            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Lead Usage</span>
+            <h2 className="mt-3 text-2xl font-bold">More data depth, more usage.</h2>
             <p className="mt-3 text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
-              Every prospect starts at base usage. Requesting richer contact intelligence
-              uses more of your daily allowance — but also gives you more to work with.
+              Request richer information per prospect and it counts more toward your daily allowance —
+              but you get more to work with at every step.
             </p>
           </div>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-up delay-100">
             {[
-              {
-                icon: Zap,
-                label: "Business Email",
-                cost: "Base usage",
-                desc: "Verified business email address",
-              },
-              {
-                icon: Globe2,
-                label: "Phone",
-                cost: "Low additional",
-                desc: "Business phone line",
-              },
-              {
-                icon: MessageSquare,
-                label: "Social Profile",
-                cost: "Medium additional",
-                desc: "Public social presence and engagement",
-              },
-              {
-                icon: Code2,
-                label: "Website Intelligence",
-                cost: "Higher additional",
-                desc: "Website, tech stack, contact info",
-              },
+              { icon: Zap, label: "Business email", cost: "Base", desc: "Verified business email address" },
+              { icon: Globe2, label: "Phone", cost: "Low +", desc: "Business phone line" },
+              { icon: MessageSquare, label: "Social profile", cost: "Medium +", desc: "Public social presence" },
+              { icon: Code2, label: "Website intel", cost: "Higher +", desc: "Website, tech stack, contacts" },
             ].map(({ icon: Icon, label, cost, desc }, i) => (
               <div
                 key={label}
@@ -547,7 +505,7 @@ function PricingPage() {
                 style={{ animationDelay: `${i * 80}ms` }}
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-brand/0 group-hover:from-brand/[0.04] to-transparent transition-all duration-500 rounded-2xl pointer-events-none" />
-                <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center mb-4 group-hover:bg-brand/20 group-hover:scale-110 transition-all">
+                <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center mb-4 group-hover:bg-brand/20 group-hover:scale-110 transition-all duration-200">
                   <Icon className="size-4 text-brand" />
                 </div>
                 <p className="text-sm font-semibold text-foreground">{label}</p>
@@ -559,27 +517,16 @@ function PricingPage() {
         </div>
       </section>
 
-      {/* FAQ */}
+      {/* FAQ — now accordion */}
       <section className="px-6 pb-24 border-t border-border/50">
         <div className="max-w-3xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
-            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">
-              FAQ
-            </span>
-            <h2 className="mt-3 text-2xl font-bold">Common questions</h2>
+            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">FAQ</span>
+            <h2 className="mt-3 text-2xl font-bold">Questions, answered.</h2>
           </div>
-          <div className="space-y-3 animate-fade-up delay-100">
-            {faqs.map(({ q, a }, i) => (
-              <div
-                key={q}
-                className="bg-card border border-border/60 rounded-xl p-6 hover:border-brand/25 transition-colors card-hover animate-fade-up"
-                style={{ animationDelay: `${i * 60}ms` }}
-              >
-                <p className="font-semibold text-foreground text-sm">{q}</p>
-                <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-                  {a}
-                </p>
-              </div>
+          <div className="space-y-2 animate-fade-up delay-100">
+            {faqs.map(({ q, a }) => (
+              <FaqItem key={q} q={q} a={a} />
             ))}
           </div>
         </div>
@@ -591,32 +538,33 @@ function PricingPage() {
           <div className="absolute inset-0 bg-card" />
           <div
             className="absolute inset-0 opacity-35"
-            style={{
-              background:
-                "radial-gradient(ellipse at center, color-mix(in oklab, var(--brand) 20%, transparent), transparent 70%)",
-            }}
+            style={{ background: "radial-gradient(ellipse at center, color-mix(in oklab, var(--brand) 20%, transparent), transparent 70%)" }}
           />
           <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/50 to-transparent" />
           <div className="relative">
+            <p className="text-[11px] font-bold text-brand uppercase tracking-[0.2em] mb-5">Get started today</p>
             <h2 className="text-2xl md:text-3xl font-bold tracking-tight">
-              Start building your pipeline today
+              Your pipeline starts here.
             </h2>
-            <p className="mt-4 text-muted-foreground max-w-md mx-auto text-sm">
-              Free plan includes 10 prospects per day. No credit card required.
+            <p className="mt-4 text-muted-foreground max-w-md mx-auto text-sm leading-relaxed">
+              Free plan. 10 prospects per day. No credit card. See the whole platform from day one.
             </p>
             <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
               <Link
                 to="/signup"
-                className="group bg-brand text-brand-foreground px-7 py-3.5 rounded-xl font-semibold shadow-brand hover:bg-brand-dark transition-all btn-press inline-flex items-center gap-2"
+                className="group bg-brand text-brand-foreground px-7 py-3.5 rounded-xl font-semibold shadow-brand hover:bg-brand-dark transition-all duration-200 btn-press inline-flex items-center gap-2 overflow-hidden relative"
               >
-                Start Free
-                <ArrowRight className="size-4 group-hover:translate-x-0.5 transition-transform" />
+                <span className="relative z-10 flex items-center gap-2">
+                  Start for free
+                  <ArrowRight className="size-4 group-hover:translate-x-0.5 transition-transform" />
+                </span>
+                <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
               </Link>
               <Link
                 to="/dashboard"
-                className="bg-background border border-border/80 px-7 py-3.5 rounded-xl font-semibold hover:border-brand/40 hover:bg-brand/5 transition-all btn-press"
+                className="bg-background border border-border/80 px-7 py-3.5 rounded-xl font-semibold hover:border-brand/40 hover:bg-brand/5 transition-all duration-200 btn-press"
               >
-                View Dashboard
+                View dashboard
               </Link>
             </div>
           </div>

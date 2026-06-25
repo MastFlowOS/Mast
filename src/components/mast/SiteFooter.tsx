@@ -2,6 +2,20 @@ import { Link } from "@tanstack/react-router";
 import { BrandMark } from "./BrandMark";
 import { Mail, Twitter, Github } from "lucide-react";
 
+// ─── Social link constants ────────────────────────────────────────────────────
+// Set these to real URLs or leave as empty string ("") to hide the icon.
+const SOCIAL_LINKS = {
+  twitter: "", // e.g. "https://twitter.com/mastapp"
+  github: "",  // e.g. "https://github.com/mastapp"
+  email: "",   // e.g. "mailto:hello@mast.so"
+} as const;
+
+const socialButtons = [
+  { key: "twitter" as const, icon: Twitter, label: "Twitter / X" },
+  { key: "github" as const, icon: Github, label: "GitHub" },
+  { key: "email" as const, icon: Mail, label: "Email" },
+].filter(({ key }) => Boolean(SOCIAL_LINKS[key])); // hide icons with no URL
+
 export function SiteFooter() {
   return (
     <footer className="border-t border-border/50 pt-16 pb-10 px-6 mt-8 relative overflow-hidden">
@@ -22,35 +36,52 @@ export function SiteFooter() {
             <p className="text-sm text-muted-foreground max-w-xs leading-relaxed">
               The premium operating system for client acquisition. Built for modern agencies, freelancers, and growth operators.
             </p>
-            {/* Socials */}
-            <div className="flex items-center gap-2 mt-6">
-              {[
-                { icon: Twitter, label: "Twitter" },
-                { icon: Github, label: "GitHub" },
-                { icon: Mail, label: "Email" },
-              ].map(({ icon: Icon, label }) => (
-                <button
-                  key={label}
-                  aria-label={label}
-                  className="size-8 rounded-lg border border-border/60 grid place-items-center text-muted-foreground hover:text-foreground hover:border-brand/30 hover:bg-brand/5 transition-all"
-                >
-                  <Icon className="size-3.5" />
-                </button>
-              ))}
-            </div>
+
+            {/* Socials — only rendered if URLs are configured */}
+            {socialButtons.length > 0 && (
+              <div className="flex items-center gap-2 mt-6">
+                {socialButtons.map(({ key, icon: Icon, label }) => (
+                  <a
+                    key={key}
+                    href={SOCIAL_LINKS[key]}
+                    aria-label={label}
+                    target={key === "email" ? undefined : "_blank"}
+                    rel={key === "email" ? undefined : "noopener noreferrer"}
+                    className="size-8 rounded-lg border border-border/60 grid place-items-center text-muted-foreground hover:text-foreground hover:border-brand/30 hover:bg-brand/5 transition-all"
+                  >
+                    <Icon className="size-3.5" />
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
 
           <FooterCol
             title="Product"
-            links={[["Features", "/"], ["Pricing", "/pricing"], ["Get Leads", "/dashboard/leads"], ["CRM", "/dashboard/crm"]]}
+            links={[
+              ["Features", "/"],
+              ["Pricing", "/pricing"],
+              ["Get Leads", "/dashboard/leads"],
+              ["CRM", "/dashboard/crm"],
+            ]}
           />
           <FooterCol
             title="Account"
-            links={[["Login", "/login"], ["Sign up", "/signup"], ["Dashboard", "/dashboard"], ["Billing", "/dashboard/billing"]]}
+            links={[
+              ["Login", "/login"],
+              ["Sign up", "/signup"],
+              ["Dashboard", "/dashboard"],
+              ["Billing", "/dashboard/billing"],
+            ]}
           />
           <FooterCol
             title="Legal"
-            links={[["Terms", "/"], ["Privacy", "/"], ["Security", "/"], ["Status", "/"]]}
+            links={[
+              ["Terms", "/terms"],
+              ["Privacy", "/privacy"],
+              ["Refund Policy", "/refunds"],
+              ["Security", "/security"],
+            ]}
           />
         </div>
 

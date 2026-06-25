@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Logo } from "@/components/mast/Logo";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ArrowLeft, CheckCircle2, Lock, Eye, EyeOff } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 type ResetPasswordSearch = {
   token?: string;
@@ -23,9 +24,6 @@ export const Route = createFileRoute("/reset-password")({
 });
 
 function ResetPasswordPage() {
-  const { token: routeToken } = Route.useSearch();
-  const token = routeToken || new URLSearchParams(window.location.search).get("token") || "";
-
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -33,12 +31,41 @@ function ResetPasswordPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+  
+  const [checking, setChecking] = useState(true);
+  const [hasSession, setHasSession] = useState(false);
+
+  useEffect(() => {
+    if (!supabase) {
+      setChecking(false);
+      return;
+    }
+    // Check if we already have a session (established by recovery link)
+    const checkSession = async () => {
+      const { data: { session } } = await supabase!.auth.getSession();
+      setHasSession(!!session);
+      setChecking(false);
+    };
+    void checkSession();
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session) {
+        setHasSession(true);
+      }
+      setChecking(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const token = hasSession ? "active" : "";
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    if (!token) {
-      setError("No password reset token provided. Please request a new link.");
+    if (!hasSession) {
+      setError("No active password recovery session. Please request a new link.");
       return;
     }
 
@@ -56,24 +83,13 @@ function ResetPasswordPage() {
     setError("");
 
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_API_URL}/api/auth/reset-password`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            token,
-            password,
-          }),
-        }
-      );
+      if (!supabase) throw new Error("Supabase is not configured.");
+      const { error: updateErr } = await supabase.auth.updateUser({
+        password: password,
+      });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to reset password");
+      if (updateErr) {
+        throw updateErr;
       }
 
       setSuccess(true);

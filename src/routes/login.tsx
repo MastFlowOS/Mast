@@ -3,7 +3,10 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Logo } from "@/components/mast/Logo";
 import { ApiError } from "@/lib/api";
-import { useGoogleLogin, useLogin, useMe, useSignup } from "@/hooks/use-mast-api";
+import { useLogin, useMe, useSignup } from "@/hooks/use-mast-api";
+import { Eye, EyeOff } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { useQueryClient } from "@tanstack/react-query";
 
 export const Route = createFileRoute("/login")({
   head: () => ({
@@ -22,22 +25,34 @@ function LoginPage() {
 export function AuthShell({ mode }: { mode: "login" | "signup" }) {
   const isSignup = mode === "signup";
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { data: auth, isLoading: authLoading } = useMe();
   const loginMutation = useLogin();
   const signupMutation = useSignup();
-  const googleLogin = useGoogleLogin();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [isGooglePending, setIsGooglePending] = useState(false);
   const [error, setError] = useState("");
+  const [showVerifyEmail, setShowVerifyEmail] = useState(false);
   const isPending = loginMutation.isPending || signupMutation.isPending;
+
+  const [verifiedBanner, setVerifiedBanner] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const authError = params.get("error");
-    if (!authError) return;
-    setError(decodeURIComponent(authError));
-    window.history.replaceState({}, "", window.location.pathname);
+    if (authError) {
+      setError(decodeURIComponent(authError));
+    }
+    if (params.get("verified") === "1") {
+      setVerifiedBanner(true);
+    }
+    if (authError || params.get("verified")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
   }, []);
 
   useEffect(() => {
@@ -60,28 +75,101 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
 
     try {
       if (isSignup) {
-        await signupMutation.mutateAsync({ fullName, email, password });
-        toast.success("Account created");
+        const result = await signupMutation.mutateAsync({ fullName, email, password, phoneNumber });
+        if (result.needsEmailVerification) {
+          // Expected path when email confirmation is enabled in Supabase.
+          // Account was created and verification email was sent — show the
+          // verify-email screen, which polls for verification using the
+          // same email/password (still held in this component's state).
+          setShowVerifyEmail(true);
+          return;
+        }
+        // Email confirmation disabled — session is live, go straight to dashboard.
+        toast.success("Account created successfully");
+        await navigate({ to: "/dashboard" });
       } else {
         await loginMutation.mutateAsync({ email, password });
         toast.success("Welcome back");
+        await navigate({ to: "/dashboard" });
       }
-      await navigate({ to: "/dashboard" });
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Could not complete authentication.";
+      const message = err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Could not complete authentication.";
       setError(message);
     }
   };
 
   const startGoogle = async () => {
     setError("");
+    if (!supabase) {
+      setError("Authentication is not configured. Contact support.");
+      return;
+    }
+    setIsGooglePending(true);
     try {
-      await googleLogin.mutateAsync();
+      // 1. Attempt Popup OAuth
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          skipBrowserRedirect: true,
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
+
+      if (error) throw error;
+      if (!data?.url) throw new Error("No authorization URL returned");
+
+      // Set up popup features
+      const width = 500;
+      const height = 600;
+      const left = window.screen.width / 2 - width / 2;
+      const top = window.screen.height / 2 - height / 2;
+      const windowFeatures = `scrollbars=yes,resizable=yes,width=${width},height=${height},top=${top},left=${left}`;
+
+      const popup = window.open(data.url, "GoogleOAuthPopup", windowFeatures);
+
+      // 2. Fallback to redirect if popup is blocked
+      if (!popup || popup.closed || typeof popup.closed === "undefined") {
+        toast.info("Popup blocked. Redirecting instead...");
+        const { error: redirectErr } = await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: {
+            redirectTo: `${window.location.origin}/dashboard`,
+          },
+        });
+        if (redirectErr) throw redirectErr;
+        return;
+      }
+
+      // Listen for the postMessage response from callback window
+      const handleMessage = async (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
+        if (event.data?.type === "AUTH_SUCCESS") {
+          window.removeEventListener("message", handleMessage);
+          setIsGooglePending(false);
+          toast.success("Welcome back");
+          await queryClient.invalidateQueries({ queryKey: ["mast"] });
+          void navigate({ to: "/dashboard", replace: true });
+        }
+      };
+
+      window.addEventListener("message", handleMessage);
+
+      // Monitor popup closed state to reset pending spinner
+      const timer = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(timer);
+          window.removeEventListener("message", handleMessage);
+          setIsGooglePending(false);
+        }
+      }, 1000);
+
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Google login is not configured yet.";
-      setError(message);
+      console.error("Google OAuth error:", err);
+      setError(err instanceof Error ? err.message : "Google login failed.");
+      setIsGooglePending(false);
     }
   };
+
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
@@ -90,6 +178,21 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
         <Logo />
         <div className="flex-1 flex items-center">
           <div className="w-full max-w-sm mx-auto">
+            {showVerifyEmail ? (
+              <VerifyEmailWaiting
+                email={email}
+                password={password}
+                onResend={() => setShowVerifyEmail(false)}
+                onVerified={async () => {
+                  // The polling sign-in inside VerifyEmailWaiting already
+                  // succeeded, so a real Supabase session exists at this
+                  // point — just refresh the cached user and head in.
+                  await queryClient.invalidateQueries({ queryKey: ["mast"] });
+                  void navigate({ to: "/dashboard", replace: true });
+                }}
+              />
+            ) : (
+            <>
             <h1 className="text-3xl font-bold tracking-tight">
               {isSignup ? "Create your account" : "Welcome back"}
             </h1>
@@ -97,6 +200,14 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
               {isSignup ? "Start your free trial. 100 free credits on us." : "Login to your Mast dashboard."}
             </p>
 
+            {verifiedBanner && (
+              <div className="mt-6 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400 flex items-center gap-2">
+                <svg className="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+                Email verified! Log in to continue.
+              </div>
+            )}
             {error && (
               <div className="mt-6 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {error}
@@ -106,11 +217,11 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
             <button
               type="button"
               onClick={startGoogle}
-              disabled={googleLogin.isPending || authLoading}
+              disabled={isGooglePending || authLoading}
               className="mt-8 w-full bg-card border border-border hover:border-muted-foreground/40 py-3 rounded-xl font-medium flex items-center justify-center gap-3 transition-colors disabled:opacity-60"
             >
               <GoogleIcon />
-              {googleLogin.isPending ? "Connecting..." : "Continue with Google"}
+              {isGooglePending ? "Connecting..." : "Continue with Google"}
             </button>
 
             <div className="my-6 flex items-center gap-3">
@@ -121,14 +232,24 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
 
             <form className="space-y-4" onSubmit={submit}>
               {isSignup && (
-                <Input
-                  label="Full name"
-                  type="text"
-                  placeholder="Jane Doe"
-                  value={fullName}
-                  onChange={(event) => setFullName(event.target.value)}
-                  autoComplete="name"
-                />
+                <>
+                  <Input
+                    label="Full name"
+                    type="text"
+                    placeholder="Jane Doe"
+                    value={fullName}
+                    onChange={(event) => setFullName(event.target.value)}
+                    autoComplete="name"
+                  />
+                  <Input
+                    label="Phone Number (Optional)"
+                    type="tel"
+                    placeholder="+1 (555) 000-0000"
+                    value={phoneNumber}
+                    onChange={(event) => setPhoneNumber(event.target.value)}
+                    autoComplete="tel"
+                  />
+                </>
               )}
               <Input
                 label="Email"
@@ -150,14 +271,24 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
                     </Link>
                   )}
                 </div>
-                <input
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete={isSignup ? "new-password" : "current-password"}
-                  className="w-full bg-card border border-border focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none px-3.5 py-2.5 rounded-lg text-sm text-foreground placeholder:text-muted-foreground/60 transition-all"
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    autoComplete={isSignup ? "new-password" : "current-password"}
+                    className="w-full bg-card border border-border focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none pl-3.5 pr-10 py-2.5 rounded-lg text-sm text-foreground placeholder:text-muted-foreground/60 transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors focus:outline-none"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </button>
+                </div>
               </div>
               <button
                 type="submit"
@@ -185,6 +316,8 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
                 </>
               )}
             </p>
+            </>
+            )}
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
@@ -217,6 +350,163 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Verify-email waiting screen ─────────────────────────────────────────────
+// Shown on the laptop/desktop after signup when email confirmation is required.
+//
+// Why we poll signInWithPassword instead of using Realtime broadcast:
+// Supabase's client API has no public "has this email been confirmed yet?"
+// check — reading another session's confirmation state isn't something RLS
+// allows, and the admin/service-role key that *can* see it must never reach
+// the browser. The one thing this screen CAN safely ask Supabase, repeatedly,
+// is "let me sign in" — and Supabase Auth already distinguishes the two
+// outcomes for an unconfirmed account:
+//   • not yet confirmed → signInWithPassword fails with code "email_not_confirmed"
+//   • confirmed         → signInWithPassword succeeds and returns a real session
+// So we poll signInWithPassword with the same credentials the user just typed
+// into the signup form. The call that detects verification IS the sign-in —
+// there's no separate channel, no broadcast, nothing for the phone to talk to.
+// Supabase Auth itself is the single source of truth, end to end.
+function VerifyEmailWaiting({
+  email,
+  password,
+  onResend,
+  onVerified,
+}: {
+  email: string;
+  password: string;
+  onResend: () => void;
+  onVerified: () => void;
+}) {
+  const [status, setStatus] = useState<"waiting" | "verified" | "timedout">("waiting");
+
+  useEffect(() => {
+    if (!supabase || !email || !password) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const POLL_INTERVAL_MS = 4_000;
+    const GIVE_UP_AFTER_MS = 15 * 60 * 1000; // 15 minutes
+    const startedAt = Date.now();
+
+    const attempt = async () => {
+      if (cancelled) return;
+
+      // Skip the network call while the tab is backgrounded. The timer below
+      // keeps running regardless, so polling resumes the moment it's visible
+      // again — no missed window, no extra requests while the tab is idle.
+      if (document.visibilityState === "visible") {
+        const { data, error } = await supabase!.auth.signInWithPassword({ email, password });
+        if (cancelled) return;
+
+        if (data?.session) {
+          // Verified — Supabase just signed this device in for real.
+          setStatus("verified");
+          setTimeout(() => {
+            if (!cancelled) onVerified();
+          }, 1200);
+          return;
+        }
+
+        // "email_not_confirmed" is the expected response until the link is
+        // clicked. Anything else (a network blip, etc.) is logged but treated
+        // the same way — keep waiting rather than ending the flow on a fluke.
+        if (error && error.code !== "email_not_confirmed") {
+          console.warn("[Mast:verify-poll] sign-in attempt did not succeed yet:", error.message);
+        }
+      }
+
+      if (Date.now() - startedAt >= GIVE_UP_AFTER_MS) {
+        setStatus("timedout");
+        return;
+      }
+
+      timer = setTimeout(() => void attempt(), POLL_INTERVAL_MS);
+    };
+
+    void attempt();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [email, password, onVerified]);
+
+  if (status === "verified") {
+    return (
+      <div className="text-center">
+        <div className="mx-auto size-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 grid place-items-center">
+          <svg className="size-6 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+          </svg>
+        </div>
+        <h1 className="mt-6 text-2xl font-bold tracking-tight">Email verified!</h1>
+        <p className="mt-3 text-sm text-muted-foreground">Taking you to your dashboard…</p>
+      </div>
+    );
+  }
+
+  if (status === "timedout") {
+    return (
+      <div className="text-center">
+        <div className="mx-auto size-12 rounded-2xl bg-card border border-border grid place-items-center">
+          <svg className="size-6 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" />
+          </svg>
+        </div>
+        <h1 className="mt-6 text-2xl font-bold tracking-tight">Still waiting</h1>
+        <p className="mt-3 text-sm text-muted-foreground leading-relaxed">
+          We haven't detected verification yet. Once you've clicked the link in your
+          email, just log in below.
+        </p>
+        <Link
+          to="/login"
+          className="mt-5 inline-block bg-brand hover:bg-brand-dark text-brand-foreground px-5 py-2.5 rounded-xl font-bold text-sm transition-colors"
+        >
+          Go to login
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-center">
+      <div className="mx-auto size-12 rounded-2xl bg-brand/10 border border-brand/20 grid place-items-center">
+        <svg className="size-6 text-brand" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
+        </svg>
+      </div>
+      <h1 className="mt-6 text-2xl font-bold tracking-tight">Check your inbox</h1>
+      <p className="mt-3 text-sm text-muted-foreground leading-relaxed">
+        We sent a verification link to{" "}
+        <span className="font-medium text-foreground">{email}</span>.{" "}
+        Open it on any device to activate your account.
+      </p>
+
+      {/* Waiting indicator — this device polls in the background until verified */}
+      <div className="mt-5 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+        <span className="relative flex size-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand opacity-75" />
+          <span className="relative inline-flex rounded-full size-2 bg-brand/60" />
+        </span>
+        Waiting for verification…
+      </div>
+
+      <p className="mt-5 text-xs text-muted-foreground">
+        Didn't get it? Check your spam folder or{" "}
+        <button
+          type="button"
+          className="text-brand hover:text-brand-dark font-medium underline underline-offset-2"
+          onClick={onResend}
+        >
+          try again
+        </button>
+        .
+      </p>
     </div>
   );
 }

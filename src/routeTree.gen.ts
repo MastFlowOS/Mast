@@ -9,8 +9,14 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as RefundsRouteImport } from './routes/refunds'
+import { Route as TermsRouteImport } from './routes/terms'
+import { Route as StatusRouteImport } from './routes/status'
 import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as SignupRouteImport } from './routes/signup'
+import { Route as SecurityRouteImport } from './routes/security'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
+import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
@@ -19,10 +25,31 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
 import { Route as DashboardSubscriptionRouteImport } from './routes/dashboard.subscription'
 import { Route as DashboardSettingsRouteImport } from './routes/dashboard.settings'
+import { Route as DashboardPipelineRouteImport } from './routes/dashboard.pipeline'
 import { Route as DashboardLeadsRouteImport } from './routes/dashboard.leads'
+import { Route as DashboardImportRouteImport } from './routes/dashboard.import'
+import { Route as DashboardFollowUpsRouteImport } from './routes/dashboard.follow-ups'
 import { Route as DashboardCrmRouteImport } from './routes/dashboard.crm'
 import { Route as DashboardBillingRouteImport } from './routes/dashboard.billing'
+import { Route as DashboardAnalyticsRouteImport } from './routes/dashboard.analytics'
+import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
+import { Route as DashboardLeadsLeadIdRouteImport } from './routes/dashboard.leads.$leadId'
 
+const RefundsRoute = RefundsRouteImport.update({
+  id: '/refunds',
+  path: '/refunds',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StatusRoute = StatusRouteImport.update({
+  id: '/status',
+  path: '/status',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
   id: '/sitemap.xml',
   path: '/sitemap.xml',
@@ -31,6 +58,21 @@ const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
   path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SecurityRoute = SecurityRouteImport.update({
+  id: '/security',
+  path: '/security',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PricingRoute = PricingRouteImport.update({
@@ -73,9 +115,24 @@ const DashboardSettingsRoute = DashboardSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => DashboardRoute,
 } as any)
+const DashboardPipelineRoute = DashboardPipelineRouteImport.update({
+  id: '/pipeline',
+  path: '/pipeline',
+  getParentRoute: () => DashboardRoute,
+} as any)
 const DashboardLeadsRoute = DashboardLeadsRouteImport.update({
   id: '/leads',
   path: '/leads',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardImportRoute = DashboardImportRouteImport.update({
+  id: '/import',
+  path: '/import',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardFollowUpsRoute = DashboardFollowUpsRouteImport.update({
+  id: '/follow-ups',
+  path: '/follow-ups',
   getParentRoute: () => DashboardRoute,
 } as any)
 const DashboardCrmRoute = DashboardCrmRouteImport.update({
@@ -88,6 +145,21 @@ const DashboardBillingRoute = DashboardBillingRouteImport.update({
   path: '/billing',
   getParentRoute: () => DashboardRoute,
 } as any)
+const DashboardAnalyticsRoute = DashboardAnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const AuthCallbackRoute = AuthCallbackRouteImport.update({
+  id: '/auth/callback',
+  path: '/auth/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DashboardLeadsLeadIdRoute = DashboardLeadsLeadIdRouteImport.update({
+  id: '/$leadId',
+  path: '/$leadId',
+  getParentRoute: () => DashboardLeadsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -95,28 +167,52 @@ export interface FileRoutesByFullPath {
   '/forgot-password': typeof ForgotPasswordRoute
   '/login': typeof LoginRoute
   '/pricing': typeof PricingRoute
+  '/privacy': typeof PrivacyRoute
+  '/refunds': typeof RefundsRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/security': typeof SecurityRoute
   '/signup': typeof SignupRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/status': typeof StatusRoute
+  '/terms': typeof TermsRoute
+  '/auth/callback': typeof AuthCallbackRoute
+  '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/billing': typeof DashboardBillingRoute
   '/dashboard/crm': typeof DashboardCrmRoute
-  '/dashboard/leads': typeof DashboardLeadsRoute
+  '/dashboard/follow-ups': typeof DashboardFollowUpsRoute
+  '/dashboard/import': typeof DashboardImportRoute
+  '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
+  '/dashboard/pipeline': typeof DashboardPipelineRoute
   '/dashboard/settings': typeof DashboardSettingsRoute
   '/dashboard/subscription': typeof DashboardSubscriptionRoute
   '/dashboard/': typeof DashboardIndexRoute
+  '/dashboard/leads/$leadId': typeof DashboardLeadsLeadIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/login': typeof LoginRoute
   '/pricing': typeof PricingRoute
+  '/privacy': typeof PrivacyRoute
+  '/refunds': typeof RefundsRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/security': typeof SecurityRoute
   '/signup': typeof SignupRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/status': typeof StatusRoute
+  '/terms': typeof TermsRoute
+  '/auth/callback': typeof AuthCallbackRoute
+  '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/billing': typeof DashboardBillingRoute
   '/dashboard/crm': typeof DashboardCrmRoute
-  '/dashboard/leads': typeof DashboardLeadsRoute
+  '/dashboard/follow-ups': typeof DashboardFollowUpsRoute
+  '/dashboard/import': typeof DashboardImportRoute
+  '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
+  '/dashboard/pipeline': typeof DashboardPipelineRoute
   '/dashboard/settings': typeof DashboardSettingsRoute
   '/dashboard/subscription': typeof DashboardSubscriptionRoute
   '/dashboard': typeof DashboardIndexRoute
+  '/dashboard/leads/$leadId': typeof DashboardLeadsLeadIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -125,14 +221,26 @@ export interface FileRoutesById {
   '/forgot-password': typeof ForgotPasswordRoute
   '/login': typeof LoginRoute
   '/pricing': typeof PricingRoute
+  '/privacy': typeof PrivacyRoute
+  '/refunds': typeof RefundsRoute
+  '/reset-password': typeof ResetPasswordRoute
+  '/security': typeof SecurityRoute
   '/signup': typeof SignupRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
+  '/status': typeof StatusRoute
+  '/terms': typeof TermsRoute
+  '/auth/callback': typeof AuthCallbackRoute
+  '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/billing': typeof DashboardBillingRoute
   '/dashboard/crm': typeof DashboardCrmRoute
-  '/dashboard/leads': typeof DashboardLeadsRoute
+  '/dashboard/follow-ups': typeof DashboardFollowUpsRoute
+  '/dashboard/import': typeof DashboardImportRoute
+  '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
+  '/dashboard/pipeline': typeof DashboardPipelineRoute
   '/dashboard/settings': typeof DashboardSettingsRoute
   '/dashboard/subscription': typeof DashboardSubscriptionRoute
   '/dashboard/': typeof DashboardIndexRoute
+  '/dashboard/leads/$leadId': typeof DashboardLeadsLeadIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -142,28 +250,52 @@ export interface FileRouteTypes {
     | '/forgot-password'
     | '/login'
     | '/pricing'
+    | '/privacy'
+    | '/refunds'
+    | '/reset-password'
+    | '/security'
     | '/signup'
     | '/sitemap.xml'
+    | '/status'
+    | '/terms'
+    | '/auth/callback'
+    | '/dashboard/analytics'
     | '/dashboard/billing'
     | '/dashboard/crm'
+    | '/dashboard/follow-ups'
+    | '/dashboard/import'
     | '/dashboard/leads'
+    | '/dashboard/pipeline'
     | '/dashboard/settings'
     | '/dashboard/subscription'
     | '/dashboard/'
+    | '/dashboard/leads/$leadId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/forgot-password'
     | '/login'
     | '/pricing'
+    | '/privacy'
+    | '/refunds'
+    | '/reset-password'
+    | '/security'
     | '/signup'
     | '/sitemap.xml'
+    | '/status'
+    | '/terms'
+    | '/auth/callback'
+    | '/dashboard/analytics'
     | '/dashboard/billing'
     | '/dashboard/crm'
+    | '/dashboard/follow-ups'
+    | '/dashboard/import'
     | '/dashboard/leads'
+    | '/dashboard/pipeline'
     | '/dashboard/settings'
     | '/dashboard/subscription'
     | '/dashboard'
+    | '/dashboard/leads/$leadId'
   id:
     | '__root__'
     | '/'
@@ -171,14 +303,26 @@ export interface FileRouteTypes {
     | '/forgot-password'
     | '/login'
     | '/pricing'
+    | '/privacy'
+    | '/refunds'
+    | '/reset-password'
+    | '/security'
     | '/signup'
     | '/sitemap.xml'
+    | '/status'
+    | '/terms'
+    | '/auth/callback'
+    | '/dashboard/analytics'
     | '/dashboard/billing'
     | '/dashboard/crm'
+    | '/dashboard/follow-ups'
+    | '/dashboard/import'
     | '/dashboard/leads'
+    | '/dashboard/pipeline'
     | '/dashboard/settings'
     | '/dashboard/subscription'
     | '/dashboard/'
+    | '/dashboard/leads/$leadId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -187,12 +331,33 @@ export interface RootRouteChildren {
   ForgotPasswordRoute: typeof ForgotPasswordRoute
   LoginRoute: typeof LoginRoute
   PricingRoute: typeof PricingRoute
+  PrivacyRoute: typeof PrivacyRoute
+  RefundsRoute: typeof RefundsRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
+  SecurityRoute: typeof SecurityRoute
   SignupRoute: typeof SignupRoute
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
+  StatusRoute: typeof StatusRoute
+  TermsRoute: typeof TermsRoute
+  AuthCallbackRoute: typeof AuthCallbackRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/status': {
+      id: '/status'
+      path: '/status'
+      fullPath: '/status'
+      preLoaderRoute: typeof StatusRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sitemap.xml': {
       id: '/sitemap.xml'
       path: '/sitemap.xml'
@@ -205,6 +370,34 @@ declare module '@tanstack/react-router' {
       path: '/signup'
       fullPath: '/signup'
       preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/security': {
+      id: '/security'
+      path: '/security'
+      fullPath: '/security'
+      preLoaderRoute: typeof SecurityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/refunds': {
+      id: '/refunds'
+      path: '/refunds'
+      fullPath: '/refunds'
+      preLoaderRoute: typeof RefundsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pricing': {
@@ -263,11 +456,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardSettingsRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/dashboard/pipeline': {
+      id: '/dashboard/pipeline'
+      path: '/pipeline'
+      fullPath: '/dashboard/pipeline'
+      preLoaderRoute: typeof DashboardPipelineRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/dashboard/leads': {
       id: '/dashboard/leads'
       path: '/leads'
       fullPath: '/dashboard/leads'
       preLoaderRoute: typeof DashboardLeadsRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/import': {
+      id: '/dashboard/import'
+      path: '/import'
+      fullPath: '/dashboard/import'
+      preLoaderRoute: typeof DashboardImportRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/dashboard/follow-ups': {
+      id: '/dashboard/follow-ups'
+      path: '/follow-ups'
+      fullPath: '/dashboard/follow-ups'
+      preLoaderRoute: typeof DashboardFollowUpsRouteImport
       parentRoute: typeof DashboardRoute
     }
     '/dashboard/crm': {
@@ -284,22 +498,63 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardBillingRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/dashboard/analytics': {
+      id: '/dashboard/analytics'
+      path: '/analytics'
+      fullPath: '/dashboard/analytics'
+      preLoaderRoute: typeof DashboardAnalyticsRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/auth/callback': {
+      id: '/auth/callback'
+      path: '/auth/callback'
+      fullPath: '/auth/callback'
+      preLoaderRoute: typeof AuthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dashboard/leads/$leadId': {
+      id: '/dashboard/leads/$leadId'
+      path: '/$leadId'
+      fullPath: '/dashboard/leads/$leadId'
+      preLoaderRoute: typeof DashboardLeadsLeadIdRouteImport
+      parentRoute: typeof DashboardLeadsRoute
+    }
   }
 }
 
+interface DashboardLeadsRouteChildren {
+  DashboardLeadsLeadIdRoute: typeof DashboardLeadsLeadIdRoute
+}
+
+const DashboardLeadsRouteChildren: DashboardLeadsRouteChildren = {
+  DashboardLeadsLeadIdRoute: DashboardLeadsLeadIdRoute,
+}
+
+const DashboardLeadsRouteWithChildren = DashboardLeadsRoute._addFileChildren(
+  DashboardLeadsRouteChildren,
+)
+
 interface DashboardRouteChildren {
+  DashboardAnalyticsRoute: typeof DashboardAnalyticsRoute
   DashboardBillingRoute: typeof DashboardBillingRoute
   DashboardCrmRoute: typeof DashboardCrmRoute
-  DashboardLeadsRoute: typeof DashboardLeadsRoute
+  DashboardFollowUpsRoute: typeof DashboardFollowUpsRoute
+  DashboardImportRoute: typeof DashboardImportRoute
+  DashboardLeadsRoute: typeof DashboardLeadsRouteWithChildren
+  DashboardPipelineRoute: typeof DashboardPipelineRoute
   DashboardSettingsRoute: typeof DashboardSettingsRoute
   DashboardSubscriptionRoute: typeof DashboardSubscriptionRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
 }
 
 const DashboardRouteChildren: DashboardRouteChildren = {
+  DashboardAnalyticsRoute: DashboardAnalyticsRoute,
   DashboardBillingRoute: DashboardBillingRoute,
   DashboardCrmRoute: DashboardCrmRoute,
-  DashboardLeadsRoute: DashboardLeadsRoute,
+  DashboardFollowUpsRoute: DashboardFollowUpsRoute,
+  DashboardImportRoute: DashboardImportRoute,
+  DashboardLeadsRoute: DashboardLeadsRouteWithChildren,
+  DashboardPipelineRoute: DashboardPipelineRoute,
   DashboardSettingsRoute: DashboardSettingsRoute,
   DashboardSubscriptionRoute: DashboardSubscriptionRoute,
   DashboardIndexRoute: DashboardIndexRoute,
@@ -315,8 +570,15 @@ const rootRouteChildren: RootRouteChildren = {
   ForgotPasswordRoute: ForgotPasswordRoute,
   LoginRoute: LoginRoute,
   PricingRoute: PricingRoute,
+  PrivacyRoute: PrivacyRoute,
+  RefundsRoute: RefundsRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
+  SecurityRoute: SecurityRoute,
   SignupRoute: SignupRoute,
   SitemapDotxmlRoute: SitemapDotxmlRoute,
+  StatusRoute: StatusRoute,
+  TermsRoute: TermsRoute,
+  AuthCallbackRoute: AuthCallbackRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

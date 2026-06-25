@@ -4,104 +4,159 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ---------------------------------------------------------------
+   MAST DESIGN SYSTEM - Token Layer
+   All visual decisions flow from here.
+   Last updated: Design System v1.0
+--------------------------------------------------------------- */
+
 @theme inline {
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --radius-3xl: calc(var(--radius) + 12px);
+  /* -- Radius scale ------------------------------------------- */
+  --radius-sm:  calc(var(--radius) - 4px);   /* 10px  - inputs, badges */
+  --radius-md:  calc(var(--radius) - 2px);   /* 12px  - buttons, chips */
+  --radius-lg:  var(--radius);               /* 14px  - cards, panels */
+  --radius-xl:  calc(var(--radius) + 4px);   /* 18px  - modals, drawers */
+  --radius-2xl: calc(var(--radius) + 8px);   /* 22px  - feature cards */
+  --radius-3xl: calc(var(--radius) + 12px);  /* 26px  - hero elements */
 
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
+  /* -- Semantic colour aliases -------------------------------- */
+  --color-background:          var(--background);
+  --color-foreground:          var(--foreground);
+  --color-card:                var(--card);
+  --color-card-foreground:     var(--card-foreground);
+  --color-popover:             var(--popover);
+  --color-popover-foreground:  var(--popover-foreground);
+  --color-primary:             var(--primary);
+  --color-primary-foreground:  var(--primary-foreground);
+  --color-secondary:           var(--secondary);
+  --color-secondary-foreground:var(--secondary-foreground);
+  --color-muted:               var(--muted);
+  --color-muted-foreground:    var(--muted-foreground);
+  --color-accent:              var(--accent);
+  --color-accent-foreground:   var(--accent-foreground);
+  --color-destructive:         var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --color-brand: var(--brand);
-  --color-brand-dark: var(--brand-dark);
-  --color-brand-foreground: var(--brand-foreground);
-  --color-success: var(--success);
-  --color-success-foreground: var(--success-foreground);
-  --color-warning: var(--warning);
+  --color-border:              var(--border);
+  --color-input:               var(--input);
+  --color-ring:                var(--ring);
+  --color-brand:               var(--brand);
+  --color-brand-dark:          var(--brand-dark);
+  --color-brand-foreground:    var(--brand-foreground);
+  --color-success:             var(--success);
+  --color-success-foreground:  var(--success-foreground);
+  --color-warning:             var(--warning);
 
+  /* -- Typography --------------------------------------------- */
   --font-sans: "Inter", system-ui, sans-serif;
 
-  --shadow-brand: 0 10px 40px -10px color-mix(in oklab, var(--brand) 50%, transparent);
-  --shadow-brand-lg: 0 20px 60px -15px color-mix(in oklab, var(--brand) 60%, transparent);
-  --shadow-elevated: 0 30px 80px -20px rgb(0 0 0 / 0.7);
+  /* -- Elevation / shadow ------------------------------------- */
+  --shadow-brand:    0 10px 40px -10px  color-mix(in oklab, var(--brand) 50%, transparent);
+  --shadow-brand-lg: 0 20px 60px -15px  color-mix(in oklab, var(--brand) 60%, transparent);
+  --shadow-elevated: 0 30px 80px -20px  rgb(0 0 0 / 0.7);
+  --shadow-card:     0 4px  24px -6px   rgb(0 0 0 / 0.4);
+  --shadow-card-hover: 0 24px 64px -16px rgb(0 0 0 / 0.65),
+                       0 0 0 1px color-mix(in oklab, var(--brand) 32%, transparent);
+
+  /* -- Motion - MAST's core feel lives here ------------------- */
+  /*
+    Timing philosophy:
+      exits faster than entrances (things leave quickly, arrive gracefully)
+      spring easing for spatial movement (indicators, drawers, cards)
+      ease-out for entrances (decisive arrival)
+      ease-in for exits (committed departure)
+      linear only for continuous loops (shimmer, rotate)
+  */
+  --duration-instant: 80ms;    /* micro: checkbox toggle, focus ring */
+  --duration-fast:    150ms;   /* quick: hover states, tooltips */
+  --duration-normal:  250ms;   /* default: most transitions */
+  --duration-slow:    400ms;   /* deliberate: panel open, modal */
+  --duration-enter:   550ms;   /* page/section entrance */
+  --duration-exit:    200ms;   /* exit - always faster than enter */
+
+  --ease-spring:  cubic-bezier(0.16, 1, 0.3, 1);   /* snappy spring - no overshoot */
+  --ease-out:     cubic-bezier(0, 0, 0.2, 1);       /* decelerating arrival */
+  --ease-in:      cubic-bezier(0.4, 0, 1, 1);       /* accelerating departure */
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);     /* standard */
+  --ease-linear:  linear;
 }
 
+/* ---------------------------------------------------------------
+   Color Tokens
+--------------------------------------------------------------- */
 :root {
   --radius: 0.875rem;
 
-  --background: oklch(0.11 0.022 265);
-  --foreground: oklch(0.96 0.005 250);
-  --card: oklch(0.16 0.025 265);
-  --card-foreground: oklch(0.96 0.005 250);
-  --popover: oklch(0.16 0.025 265);
-  --popover-foreground: oklch(0.96 0.005 250);
+  /* Backgrounds - layered depth hierarchy */
+  --background: oklch(0.11 0.022 265);          /* L0: page base */
+  --sidebar:    oklch(0.13 0.024 265);          /* L0.5: sidebar (slightly elevated) */
+  --card:       oklch(0.16 0.025 265);          /* L1: cards, panels */
+  --popover:    oklch(0.16 0.025 265);          /* L1: popovers */
+  --secondary:  oklch(0.21 0.025 265);          /* L2: secondary surfaces */
+  --muted:      oklch(0.21 0.025 265);          /* L2: muted areas */
+  --accent:     oklch(0.23 0.038 265);          /* L3: accent surfaces */
+  --input:      oklch(0.21 0.025 265);          /* L2: form inputs */
 
-  --primary: oklch(0.96 0.005 250);
-  --primary-foreground: oklch(0.11 0.022 265);
-
-  --secondary: oklch(0.21 0.025 265);
-  --secondary-foreground: oklch(0.96 0.005 250);
-
-  --muted: oklch(0.21 0.025 265);
-  --muted-foreground: oklch(0.65 0.02 260);
-
-  --accent: oklch(0.23 0.038 265);
-  --accent-foreground: oklch(0.96 0.005 250);
-
-  --destructive: oklch(0.62 0.22 25);
-  --destructive-foreground: oklch(0.98 0 0);
-
+  /* Borders */
   --border: oklch(0.24 0.028 265);
-  --input: oklch(0.21 0.025 265);
-  --ring: oklch(0.62 0.18 280);
+  --sidebar-border: oklch(0.22 0.026 265);
 
-  --brand: oklch(0.62 0.21 282);
-  --brand-dark: oklch(0.54 0.22 280);
+  /* Text */
+  --foreground:         oklch(0.96 0.005 250);  /* primary text */
+  --card-foreground:    oklch(0.96 0.005 250);
+  --popover-foreground: oklch(0.96 0.005 250);
+  --primary:            oklch(0.96 0.005 250);
+  --primary-foreground: oklch(0.11 0.022 265);
+  --secondary-foreground: oklch(0.96 0.005 250);
+  --muted-foreground:   oklch(0.65 0.02 260);   /* secondary/hint text */
+  --accent-foreground:  oklch(0.96 0.005 250);
+
+  /* Brand - MAST purple */
+  --brand:          oklch(0.62 0.21 282);
+  --brand-dark:     oklch(0.54 0.22 280);
   --brand-foreground: oklch(0.99 0 0);
 
-  --success: oklch(0.72 0.17 155);
-  --success-foreground: oklch(0.15 0.04 160);
-  --warning: oklch(0.78 0.17 75);
+  /* Semantic states */
+  --destructive:          oklch(0.62 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --success:              oklch(0.72 0.17 155);
+  --success-foreground:   oklch(0.15 0.04 160);
+  --warning:              oklch(0.78 0.17 75);
 
-  --sidebar: oklch(0.13 0.024 265);
-  --sidebar-foreground: oklch(0.96 0.005 250);
-  --sidebar-primary: oklch(0.62 0.21 282);
-  --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.21 0.025 265);
-  --sidebar-accent-foreground: oklch(0.96 0.005 250);
-  --sidebar-border: oklch(0.22 0.026 265);
-  --sidebar-ring: oklch(0.62 0.18 280);
+  /* Focus / ring */
+  --ring: oklch(0.62 0.18 280);
+
+  /* Sidebar semantic tokens */
+  --sidebar-foreground:          oklch(0.96 0.005 250);
+  --sidebar-primary:             oklch(0.62 0.21 282);
+  --sidebar-primary-foreground:  oklch(0.99 0 0);
+  --sidebar-accent:              oklch(0.21 0.025 265);
+  --sidebar-accent-foreground:   oklch(0.96 0.005 250);
+  --sidebar-ring:                oklch(0.62 0.18 280);
 }
 
+/* ---------------------------------------------------------------
+   Base Layer
+--------------------------------------------------------------- */
 @layer base {
-  * { border-color: var(--color-border); }
+  * {
+    border-color: var(--color-border);
+    /* Prevent layout shift from scrollbar appearing */
+    scrollbar-gutter: stable;
+  }
 
   html, body {
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
     scroll-behavior: smooth;
+  }
+
+  /* Consistent focus ring - applied via .mast-focusable */
+  :focus-visible {
+    outline: none;
   }
 
   ::selection {
@@ -109,20 +164,31 @@
     color: var(--color-foreground);
   }
 
-  ::-webkit-scrollbar { width: 5px; height: 5px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb {
+  /* Refined scrollbar */
+  ::-webkit-scrollbar         { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track   { background: transparent; }
+  ::-webkit-scrollbar-thumb   {
     background: var(--color-border);
     border-radius: 99px;
+    transition: background var(--duration-fast) var(--ease-default);
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: color-mix(in oklab, var(--brand) 50%, var(--color-border));
+    background: color-mix(in oklab, var(--brand) 55%, var(--color-border));
   }
 }
 
-/* ── Keyframes ──────────────────────────────────────────────── */
+/* ---------------------------------------------------------------
+   Keyframes
+   Naming convention: verb-direction (fade-up, slide-right)
+--------------------------------------------------------------- */
+
+/* -- Entrance animations --------------------------------------- */
 @keyframes fade-up {
-  from { opacity: 0; transform: translateY(20px); }
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-down {
+  from { opacity: 0; transform: translateY(-12px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes fade-in {
@@ -130,35 +196,52 @@
   to   { opacity: 1; }
 }
 @keyframes scale-in {
-  from { opacity: 0; transform: scale(0.95); }
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes scale-in-fast {
+  from { opacity: 0; transform: scale(0.97); }
   to   { opacity: 1; transform: scale(1); }
 }
 @keyframes slide-right {
-  from { opacity: 0; transform: translateX(-10px); }
+  from { opacity: 0; transform: translateX(-12px); }
   to   { opacity: 1; transform: translateX(0); }
 }
+@keyframes slide-left {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* -- Page-level entrance --------------------------------------- */
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(1px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* -- Ambient / continuous -------------------------------------- */
 @keyframes shimmer-sweep {
   0%   { background-position: -200% center; }
-  100% { background-position: 200% center; }
+  100% { background-position:  200% center; }
 }
 @keyframes pulse-glow {
-  0%, 100% { opacity: 0.5; }
+  0%, 100% { opacity: 0.45; }
   50%       { opacity: 1; }
 }
 @keyframes float {
-  0%, 100% { transform: translateY(0); }
+  0%, 100% { transform: translateY(0px); }
   50%       { transform: translateY(-6px); }
 }
-@keyframes bar-grow {
-  from { transform: scaleY(0); }
-  to   { transform: scaleY(1); }
-}
-@keyframes progress-fill {
-  from { width: 0%; }
-}
 @keyframes ping-slow {
-  0%   { transform: scale(1); opacity: 0.5; }
-  100% { transform: scale(2); opacity: 0; }
+  0%   { transform: scale(1);   opacity: 0.5; }
+  100% { transform: scale(2.2); opacity: 0; }
 }
 @keyframes border-rotate {
   from { transform: rotate(0deg); }
@@ -166,14 +249,63 @@
 }
 @keyframes dot-blink {
   0%, 100% { opacity: 1; }
-  50%       { opacity: 0.3; }
+  50%       { opacity: 0.25; }
+}
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
-/* ── Utilities ──────────────────────────────────────────────── */
+/* -- Data / chart animations ----------------------------------- */
+@keyframes bar-grow {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+@keyframes progress-fill {
+  from { width: 0%; }
+}
+@keyframes counter-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* -- Interaction feedback -------------------------------------- */
+@keyframes check-draw {
+  from { stroke-dashoffset: 24; opacity: 0; }
+  to   { stroke-dashoffset: 0;  opacity: 1; }
+}
+@keyframes success-burst {
+  0%   { transform: scale(0.7);  opacity: 0; }
+  60%  { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1);    opacity: 1; }
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%       { transform: translateX(-4px); }
+  40%       { transform: translateX(4px); }
+  60%       { transform: translateX(-3px); }
+  80%       { transform: translateX(3px); }
+}
+
+/* -- Loading states -------------------------------------------- */
+@keyframes skeleton-wave {
+  0%   { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+
+/* ---------------------------------------------------------------
+   Utility Layer
+--------------------------------------------------------------- */
 @layer utilities {
 
+  /* -- Text effects -------------------------------------------- */
   .text-brand-gradient {
-    background: linear-gradient(125deg, var(--brand) 0%, oklch(0.76 0.15 215) 60%, oklch(0.82 0.12 190) 100%);
+    background: linear-gradient(
+      125deg,
+      var(--brand) 0%,
+      oklch(0.76 0.15 215) 60%,
+      oklch(0.82 0.12 190) 100%
+    );
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -194,23 +326,29 @@
     animation: shimmer-sweep 3s linear infinite;
   }
 
+  /* -- Background patterns ------------------------------------ */
   .bg-grid {
     background-image:
-      linear-gradient(to right, color-mix(in oklab, var(--border) 55%, transparent) 1px, transparent 1px),
+      linear-gradient(to right,  color-mix(in oklab, var(--border) 55%, transparent) 1px, transparent 1px),
       linear-gradient(to bottom, color-mix(in oklab, var(--border) 55%, transparent) 1px, transparent 1px);
     background-size: 60px 60px;
   }
 
   .bg-grid-sm {
     background-image:
-      linear-gradient(to right, color-mix(in oklab, var(--border) 35%, transparent) 1px, transparent 1px),
+      linear-gradient(to right,  color-mix(in oklab, var(--border) 35%, transparent) 1px, transparent 1px),
       linear-gradient(to bottom, color-mix(in oklab, var(--border) 35%, transparent) 1px, transparent 1px);
     background-size: 28px 28px;
   }
 
+  .bg-noise {
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  }
+
+  /* -- Glow effects ------------------------------------------- */
   .glow-brand {
     box-shadow:
-      0 0 0 1px color-mix(in oklab, var(--brand) 35%, transparent),
+      0 0  0  1px color-mix(in oklab, var(--brand) 35%, transparent),
       0 20px 60px -20px color-mix(in oklab, var(--brand) 55%, transparent);
   }
 
@@ -218,57 +356,129 @@
     box-shadow: 0 0 20px -5px color-mix(in oklab, var(--brand) 40%, transparent);
   }
 
-  /* Entrance animations */
-  .animate-fade-up    { animation: fade-up 0.6s cubic-bezier(0.16,1,0.3,1) both; }
-  .animate-fade-in    { animation: fade-in 0.5s ease both; }
-  .animate-scale-in   { animation: scale-in 0.5s cubic-bezier(0.16,1,0.3,1) both; }
-  .animate-slide-right { animation: slide-right 0.4s cubic-bezier(0.16,1,0.3,1) both; }
-  .animate-float      { animation: float 4s ease-in-out infinite; }
-  .animate-bar-grow   { transform-origin: bottom; animation: bar-grow 0.9s cubic-bezier(0.16,1,0.3,1) both; }
-  .animate-progress   { animation: progress-fill 1.4s cubic-bezier(0.16,1,0.3,1) both; }
-  .animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
-  .animate-dot-blink  { animation: dot-blink 1.4s ease-in-out infinite; }
+  .glow-success {
+    box-shadow: 0 0 20px -5px color-mix(in oklab, var(--success) 45%, transparent);
+  }
 
-  /* Stagger delays */
-  .delay-50  { animation-delay: 50ms; }
-  .delay-75  { animation-delay: 75ms; }
-  .delay-100 { animation-delay: 100ms; }
-  .delay-150 { animation-delay: 150ms; }
-  .delay-200 { animation-delay: 200ms; }
-  .delay-250 { animation-delay: 250ms; }
-  .delay-300 { animation-delay: 300ms; }
-  .delay-350 { animation-delay: 350ms; }
-  .delay-400 { animation-delay: 400ms; }
-  .delay-500 { animation-delay: 500ms; }
-  .delay-600 { animation-delay: 600ms; }
-  .delay-700 { animation-delay: 700ms; }
-  .delay-800 { animation-delay: 800ms; }
+  /* -- Skeleton (loading) ------------------------------------- */
+  /*
+    Use .mast-skeleton on any element to make it a loading placeholder.
+    Combines animate-pulse with a directional wave for premium feel.
+  */
+  .mast-skeleton {
+    position: relative;
+    overflow: hidden;
+    background: color-mix(in oklab, var(--border) 80%, transparent);
+    border-radius: var(--radius-md);
+    isolation: isolate;
+  }
+  .mast-skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      color-mix(in oklab, var(--color-foreground) 4%, transparent) 40%,
+      color-mix(in oklab, var(--color-foreground) 8%, transparent) 50%,
+      color-mix(in oklab, var(--color-foreground) 4%, transparent) 60%,
+      transparent 100%
+    );
+    background-size: 200px 100%;
+    animation: skeleton-wave 1.6s var(--ease-linear) infinite;
+  }
 
-  /* Card hover lift */
+  /* -- Animation entrance utilities -------------------------- */
+  .animate-fade-up     { animation: fade-up    var(--duration-enter)  var(--ease-spring) both; }
+  .animate-fade-down   { animation: fade-down  var(--duration-enter)  var(--ease-spring) both; }
+  .animate-fade-in     { animation: fade-in    var(--duration-normal) var(--ease-out)    both; }
+  .animate-scale-in    { animation: scale-in   var(--duration-slow)   var(--ease-spring) both; }
+  .animate-scale-in-fast { animation: scale-in-fast var(--duration-normal) var(--ease-spring) both; }
+  .animate-slide-right { animation: slide-right var(--duration-normal) var(--ease-spring) both; }
+  .animate-slide-left  { animation: slide-left  var(--duration-normal) var(--ease-spring) both; }
+  .animate-page-enter  { animation: page-enter  var(--duration-enter)  var(--ease-spring) both; }
+  .animate-counter     { animation: counter-up  var(--duration-slow)   var(--ease-spring) both; }
+  .animate-success     { animation: success-burst 0.45s var(--ease-spring) both; }
+  .animate-shake       { animation: shake 0.4s var(--ease-default); }
+
+  /* Continuous */
+  .animate-float       { animation: float 4s ease-in-out infinite; }
+  .animate-pulse-glow  { animation: pulse-glow 2.2s ease-in-out infinite; }
+  .animate-dot-blink   { animation: dot-blink 1.4s ease-in-out infinite; }
+  .animate-spin-slow   { animation: spin-slow 3s linear infinite; }
+  .animate-bar-grow    { transform-origin: bottom; animation: bar-grow 0.9s var(--ease-spring) both; }
+  .animate-progress    { animation: progress-fill 1.4s var(--ease-spring) both; }
+
+  /* -- Stagger delay system ----------------------------------- */
+  /* Usage: add .delay-N to stagger list item entrances */
+  .delay-50   { animation-delay:  50ms; }
+  .delay-75   { animation-delay:  75ms; }
+  .delay-100  { animation-delay: 100ms; }
+  .delay-150  { animation-delay: 150ms; }
+  .delay-200  { animation-delay: 200ms; }
+  .delay-250  { animation-delay: 250ms; }
+  .delay-300  { animation-delay: 300ms; }
+  .delay-350  { animation-delay: 350ms; }
+  .delay-400  { animation-delay: 400ms; }
+  .delay-500  { animation-delay: 500ms; }
+  .delay-600  { animation-delay: 600ms; }
+  .delay-700  { animation-delay: 700ms; }
+  .delay-800  { animation-delay: 800ms; }
+
+  /* -- Card hover system -------------------------------------- */
+  /*
+    Two variants:
+    .card-hover    - lifts the card (for clickable/interactive cards)
+    .card-glow     - adds brand glow without lifting (for stat cards)
+  */
   .card-hover {
     transition:
-      transform 0.28s cubic-bezier(0.16,1,0.3,1),
-      box-shadow 0.28s cubic-bezier(0.16,1,0.3,1),
-      border-color 0.22s ease;
+      transform   var(--duration-normal) var(--ease-spring),
+      box-shadow  var(--duration-normal) var(--ease-spring),
+      border-color var(--duration-fast)  var(--ease-default);
   }
   .card-hover:hover {
-    transform: translateY(-4px);
-    box-shadow:
-      0 24px 64px -16px rgb(0 0 0 / 0.65),
-      0 0 0 1px color-mix(in oklab, var(--brand) 32%, transparent);
+    transform:    translateY(-3px);
+    box-shadow:   var(--shadow-card-hover);
     border-color: color-mix(in oklab, var(--brand) 38%, transparent);
   }
 
-  /* Button press feedback */
+  .card-glow {
+    transition:
+      box-shadow   var(--duration-normal) var(--ease-spring),
+      border-color var(--duration-fast)   var(--ease-default);
+  }
+  .card-glow:hover {
+    box-shadow:   0 0 0 1px color-mix(in oklab, var(--brand) 28%, transparent),
+                  0 8px 32px -8px color-mix(in oklab, var(--brand) 30%, transparent);
+    border-color: color-mix(in oklab, var(--brand) 30%, transparent);
+  }
+
+  /* -- Button interaction system ------------------------------ */
+  /*
+    Applied globally via base button component, not individually.
+  */
   .btn-press {
-    transition: transform 0.1s ease, filter 0.1s ease;
+    transition:
+      transform var(--duration-instant) var(--ease-default),
+      filter    var(--duration-instant) var(--ease-default);
   }
   .btn-press:active {
     transform: scale(0.96);
-    filter: brightness(0.9);
+    filter: brightness(0.88);
   }
 
-  /* Ping indicator */
+  /* -- Focus ring --------------------------------------------- */
+  .mast-focus {
+    transition: box-shadow var(--duration-instant) var(--ease-default);
+  }
+  .mast-focus:focus-visible {
+    box-shadow:
+      0 0 0 2px var(--color-background),
+      0 0 0 4px color-mix(in oklab, var(--brand) 60%, transparent);
+  }
+
+  /* -- Ping indicator (live/realtime status dot) -------------- */
   .ping-dot {
     position: relative;
   }
@@ -278,10 +488,10 @@
     inset: 0;
     border-radius: 50%;
     background: currentColor;
-    animation: ping-slow 1.8s cubic-bezier(0,0,0.2,1) infinite;
+    animation: ping-slow 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
   }
 
-  /* Gradient border via pseudo */
+  /* -- Gradient border ---------------------------------------- */
   .gradient-border {
     position: relative;
   }
@@ -303,11 +513,28 @@
     pointer-events: none;
   }
 
-  /* Nav active indicator bar */
-  .nav-active-bar {
-    position: relative;
+  /* -- Sidebar nav indicator ---------------------------------- */
+  /*
+    The animated pill is rendered as a single absolutely-positioned
+    element in NavSidebar.tsx. Its top/height are driven by JS
+    measurement; the CSS handles the smooth transition.
+  */
+  .nav-indicator-pill {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-radius: var(--radius-md);
+    background: color-mix(in oklab, var(--brand) 12%, transparent);
+    transition:
+      top    var(--duration-slow)   var(--ease-spring),
+      height var(--duration-normal) var(--ease-spring),
+      opacity var(--duration-fast)  var(--ease-default);
+    pointer-events: none;
+    will-change: top;
   }
-  .nav-active-bar::before {
+
+  /* Left accent bar inside the active indicator */
+  .nav-indicator-pill::after {
     content: "";
     position: absolute;
     left: 0;
@@ -317,6 +544,69 @@
     height: 55%;
     border-radius: 0 3px 3px 0;
     background: var(--color-brand);
-    box-shadow: 0 0 8px color-mix(in oklab, var(--brand) 60%, transparent);
+    box-shadow: 0 0 10px color-mix(in oklab, var(--brand) 70%, transparent);
   }
+
+  /* -- Inline success ("? Saved") ----------------------------- */
+  .inline-success {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--color-success);
+    animation: fade-in var(--duration-normal) var(--ease-out) both,
+               fade-in var(--duration-fast)   var(--ease-in)  2.5s both reverse;
+  }
+
+  /* -- Page section visibility trigger ----------------------- */
+  /*
+    Sections with [data-visible="false"] are invisible and offset.
+    JS IntersectionObserver toggles data-visible="true" to trigger entry.
+  */
+  [data-visible="false"] {
+    opacity: 0;
+    transform: translateY(16px);
+    transition:
+      opacity   var(--duration-enter) var(--ease-spring),
+      transform var(--duration-enter) var(--ease-spring);
+  }
+  [data-visible="true"] {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---------------------------------------------------------------
+   Component: Dropdown / Popover enter animations
+   Targeting Radix data-state attributes
+--------------------------------------------------------------- */
+[data-radix-popper-content-wrapper] {
+  /* Ensure Radix popovers use spring easing */
+}
+
+[data-state="open"][data-side="bottom"] {
+  animation: fade-down var(--duration-normal) var(--ease-spring);
+}
+[data-state="open"][data-side="top"] {
+  animation: fade-up var(--duration-normal) var(--ease-spring);
+}
+[data-state="open"][data-side="left"] {
+  animation: slide-left var(--duration-normal) var(--ease-spring);
+}
+[data-state="open"][data-side="right"] {
+  animation: slide-right var(--duration-normal) var(--ease-spring);
+}
+
+/* Dialog/Sheet overlay */
+[data-state="open"].fixed.inset-0 {
+  animation: fade-in var(--duration-normal) var(--ease-out);
+}
+
+/* ---------------------------------------------------------------
+   Component: Tab panels
+   Consistent cross-fade when switching between tabs.
+--------------------------------------------------------------- */
+[role="tabpanel"] {
+  animation: fade-in var(--duration-fast) var(--ease-out);
 }

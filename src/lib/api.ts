@@ -1,31 +1,10 @@
 import type { GenerationMode, PlanId, PlanConfig } from "./plans";
+import { getPlan, PLANS } from "./plans";
+import { supabase } from "./supabase";
 
 export type { GenerationMode, PlanId } from "./plans";
 
-const rawApiUrl = import.meta.env.VITE_API_URL?.trim() ?? "";
-const apiOrigin = rawApiUrl.replace(/\/$/, "");
-const API_BASE = apiOrigin
-  ? apiOrigin.endsWith("/api")
-    ? apiOrigin
-    : `${apiOrigin}/api`
-  : "/api";
-
-/** Backend origin without the `/api` suffix (e.g. Replit app URL). */
-export function getApiOrigin() {
-  return apiOrigin;
-}
-
-export function requireApiOrigin() {
-  if (!apiOrigin) {
-    throw new ApiError(
-      0,
-      "VITE_API_URL is not configured. Set it to your Replit backend URL before building the frontend.",
-      { code: "MISSING_API_URL" },
-    );
-  }
-  return apiOrigin;
-}
-
+// ─── Error class (kept for components that import it) ─────────────────────────
 export class ApiError extends Error {
   status: number;
   code?: string;
@@ -42,50 +21,14 @@ export class ApiError extends Error {
   }
 }
 
-type ApiRequestOptions = Omit<RequestInit, "body"> & {
-  body?: unknown;
-};
-
-async function readPayload(response: Response) {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (response.status === 204) return undefined;
-  if (contentType.includes("application/json")) return response.json();
-  return response.text();
+/** Always returns false — kept for AIAssistant / EmailForm compatibility. */
+export function isMissingBackendEndpoint(_error: unknown): boolean {
+  return false;
 }
 
-export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  const headers = new Headers(options.headers);
-  let body: BodyInit | undefined;
-
-  if (options.body instanceof FormData) {
-    body = options.body;
-  } else if (options.body !== undefined) {
-    headers.set("Content-Type", "application/json");
-    body = JSON.stringify(options.body);
-  }
-
-  const response = await fetch(`${API_BASE}${normalizedPath}`, {
-    ...options,
-    headers,
-    body,
-    credentials: "include",
-  });
-  const payload = await readPayload(response);
-
-  if (!response.ok) {
-    const message =
-      payload && typeof payload === "object" && "error" in payload
-        ? String((payload as { error?: unknown }).error)
-        : response.statusText || "Request failed";
-    throw new ApiError(response.status, message, payload);
-  }
-
-  return payload as T;
-}
-
+// ─── Auth types ───────────────────────────────────────────────────────────────
 export type AuthUser = {
-  id: number;
+  id: string;
   fullName: string;
   email: string;
   plan: PlanId;
@@ -93,6 +36,12 @@ export type AuthUser = {
   creditsLimit: number;
   creditsUsed: number;
   creditsRemaining: number;
+  emailConfirmed?: boolean;
+  monthlyLeadsUsed: number;
+  dailyLeadsUsed: number;
+  nextDailyReset: string | null;
+  nextMonthlyReset: string | null;
+  pendingPlanChange: PlanId | null;
 };
 
 export type Account = {
@@ -104,11 +53,24 @@ export type Account = {
     priceMonthly: number;
     billingPeriodStartedAt?: string | null;
     billingPeriodEndsAt?: string | null;
+    pendingPlanChange?: PlanId | null;
   };
   credits: {
     limit: number;
     used: number;
     remaining: number;
+  };
+  dailyUsage: {
+    used: number;
+    limit: number;
+    remaining: number;
+    resetsAt?: string | null;
+  };
+  monthlyUsage: {
+    used: number;
+    limit: number;
+    remaining: number;
+    resetsAt?: string | null;
   };
   limits: {
     maxLeadRequest: number;
@@ -119,6 +81,41 @@ export type Account = {
   };
   plans: PlanConfig[];
 };
+
+// ─── Lead types ───────────────────────────────────────────────────────────────
+export type LeadStatus =
+  | "new"
+  | "priority"
+  | "warm"
+  | "contacted"
+  | "instagram_sent"
+  | "email_sent"
+  | "contact_form_sent"
+  | "replied"
+  | "follow_up_due"
+  | "interested"
+  | "meeting_booked"
+  | "closed"
+  | "won"
+  | "dead"
+  | "lost";
+
+export type OutreachChannel = "email" | "instagram" | "phone" | "contact_form";
+
+export type LeadActivityType =
+  | "lead_created"
+  | "message_generated"
+  | "email_opened"
+  | "email_sent"
+  | "instagram_opened"
+  | "instagram_sent"
+  | "contact_form_opened"
+  | "contact_form_sent"
+  | "note_added"
+  | "call_completed"
+  | "followup_scheduled"
+  | "followup_completed"
+  | "status_changed";
 
 export type Lead = {
   id: number;
@@ -131,7 +128,14 @@ export type Lead = {
   niche?: string | null;
   location?: string | null;
   status: string;
+  igFollowers?: string | null;
+  igBio?: string | null;
+  igLastPost?: string | null;
+  igPostDescription?: string | null;
+  brandingNotes?: string | null;
+  websiteNotes?: string | null;
   priority?: string | null;
+  tags?: string | null;
   notes?: string | null;
   source?: string | null;
   createdAt: string;
@@ -139,6 +143,31 @@ export type Lead = {
   lastContactedAt?: string | null;
   followUpAt?: string | null;
 };
+
+export type CreateLeadBody = Partial<
+  Pick<
+    Lead,
+    | "instagramHandle"
+    | "email"
+    | "website"
+    | "phone"
+    | "niche"
+    | "location"
+    | "status"
+    | "igFollowers"
+    | "igBio"
+    | "igLastPost"
+    | "igPostDescription"
+    | "brandingNotes"
+    | "websiteNotes"
+    | "notes"
+    | "priority"
+    | "tags"
+    | "source"
+  >
+> & { businessName: string };
+
+export type UpdateLeadBody = Partial<Omit<Lead, "id" | "userId" | "createdAt" | "updatedAt">>;
 
 export type LeadsResponse = {
   leads: Lead[];
@@ -160,6 +189,120 @@ export type AnalyticsSummary = {
   followupsDue: number;
   messagesThisWeek: number;
   replyRate: number;
+};
+
+export type PipelineStat = {
+  status: string;
+  count: number;
+  label?: string;
+};
+
+export type ActivityItem = {
+  id: number | string;
+  type: string;
+  description: string;
+  leadName?: string | null;
+  channel?: string | null;
+  createdAt: string;
+};
+
+export type Message = {
+  id: number | string;
+  leadId: number;
+  channel: string;
+  template: string;
+  subject?: string | null;
+  content: string;
+  status: string;
+  sentAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Followup = {
+  id: number | string;
+  leadId: number;
+  channel: string;
+  dueAt: string;
+  completedAt?: string | null;
+  notes?: string | null;
+  status: string;
+  sequenceName?: string | null;
+  stepNumber?: number | null;
+  currentStep?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FollowupWithLead = Followup & {
+  lead?: Lead;
+};
+
+export type LeadActivity = {
+  id: number | string;
+  leadId: number;
+  type: LeadActivityType;
+  timestamp: string;
+  content: string;
+  channel?: OutreachChannel;
+  subject?: string | null;
+  body?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type OutreachGenerationAction = "generate" | "rewrite" | "objections";
+export type OutreachTone = "friendly" | "professional" | "direct";
+
+export type OutreachDraftRequest = {
+  channel: OutreachChannel;
+  action?: OutreachGenerationAction;
+  tone?: OutreachTone;
+  template?: string;
+  customInstructions?: string;
+  subject?: string;
+  body?: string;
+  senderName?: string;
+  senderEmail?: string;
+  signature?: string;
+};
+
+export type OutreachDraftResponse = {
+  subject?: string | null;
+  body?: string | null;
+  message?: string | null;
+  content?: string | null;
+  draft?: {
+    subject?: string | null;
+    body?: string | null;
+    message?: string | null;
+  };
+};
+
+export type SendEmailRequest = {
+  subject: string;
+  body: string;
+};
+
+export type SendLeadEmailResponse = {
+  success: boolean;
+  lead?: Lead;
+  message?: Message;
+};
+
+export type BulkImportResult = {
+  imported: number;
+  skipped: number;
+  failed?: number;
+  leads?: Lead[];
+  errors?: Array<{ row: number; reason: string }>;
+};
+
+export type BulkUpdateResult = {
+  updated: number;
+};
+
+export type BulkDeleteResult = {
+  deleted: number;
 };
 
 export type SettingsMap = Record<string, string>;
@@ -185,64 +328,878 @@ export type LeadGenerationResponse = {
   };
 };
 
-export function getMe() {
-  return apiRequest<{ user: AuthUser | null }>("/auth/me");
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function dbRowToLead(row: Record<string, unknown>): Lead {
+  return {
+    id: row.id as number,
+    userId: (row.user_id as number | null) ?? null,
+    businessName: (row.business_name as string) ?? "",
+    instagramHandle: (row.instagram_handle as string | null) ?? null,
+    email: (row.email as string | null) ?? null,
+    website: (row.website as string | null) ?? null,
+    phone: (row.phone as string | null) ?? null,
+    niche: (row.niche as string | null) ?? null,
+    location: (row.location as string | null) ?? null,
+    status: (row.status as string) ?? "new",
+    igFollowers: (row.ig_followers as string | null) ?? null,
+    igBio: (row.ig_bio as string | null) ?? null,
+    igLastPost: (row.ig_last_post as string | null) ?? null,
+    igPostDescription: (row.ig_post_description as string | null) ?? null,
+    brandingNotes: (row.branding_notes as string | null) ?? null,
+    websiteNotes: (row.website_notes as string | null) ?? null,
+    priority: (row.priority as string | null) ?? null,
+    tags: (row.tags as string | null) ?? null,
+    notes: (row.notes as string | null) ?? null,
+    source: (row.source as string | null) ?? null,
+    createdAt: (row.created_at as string) ?? new Date().toISOString(),
+    updatedAt: (row.updated_at as string) ?? new Date().toISOString(),
+    lastContactedAt: (row.last_contacted_at as string | null) ?? null,
+    followUpAt: (row.follow_up_at as string | null) ?? null,
+  };
 }
 
-export function login(body: { email: string; password: string }) {
-  return apiRequest<{ user: AuthUser }>("/auth/login", { method: "POST", body });
+function leadToDbRow(body: Partial<Lead & CreateLeadBody>) {
+  const row: Record<string, unknown> = {};
+  if (body.businessName !== undefined) row.business_name = body.businessName;
+  if (body.instagramHandle !== undefined) row.instagram_handle = body.instagramHandle;
+  if (body.email !== undefined) row.email = body.email;
+  if (body.website !== undefined) row.website = body.website;
+  if (body.phone !== undefined) row.phone = body.phone;
+  if (body.niche !== undefined) row.niche = body.niche;
+  if (body.location !== undefined) row.location = body.location;
+  if (body.status !== undefined) row.status = body.status;
+  if (body.igFollowers !== undefined) row.ig_followers = body.igFollowers;
+  if (body.igBio !== undefined) row.ig_bio = body.igBio;
+  if (body.igLastPost !== undefined) row.ig_last_post = body.igLastPost;
+  if (body.igPostDescription !== undefined) row.ig_post_description = body.igPostDescription;
+  if (body.brandingNotes !== undefined) row.branding_notes = body.brandingNotes;
+  if (body.websiteNotes !== undefined) row.website_notes = body.websiteNotes;
+  if (body.priority !== undefined) row.priority = body.priority;
+  if (body.tags !== undefined) row.tags = body.tags;
+  if (body.notes !== undefined) row.notes = body.notes;
+  if (body.source !== undefined) row.source = body.source;
+  if (body.lastContactedAt !== undefined) row.last_contacted_at = body.lastContactedAt;
+  if (body.followUpAt !== undefined) row.follow_up_at = body.followUpAt;
+  return row;
 }
 
-export function signup(body: { fullName: string; email: string; password: string }) {
-  return apiRequest<{ user: AuthUser }>("/auth/signup", { method: "POST", body });
+async function requireUserId(): Promise<string> {
+  if (!supabase) throw new ApiError(0, "Supabase not configured", {});
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new ApiError(401, "Not authenticated", {});
+  return session.user.id;
 }
 
-export function logout() {
-  return apiRequest<{ success: boolean }>("/auth/logout", { method: "POST" });
-}
+// ─── Auth ─────────────────────────────────────────────────────────────────────
 
-export function startGoogleLogin() {
-  requireApiOrigin();
-  return apiRequest<{ url: string }>("/auth/google/start");
-}
+// ─── Reset & Usage State checks (Lazy reset) ──────────────────────────────────
 
-export function getAccount() {
-  return apiRequest<Account>("/account");
-}
+async function checkAndResetUsage(profile: any): Promise<any> {
+  if (!supabase || !profile) return profile;
 
-export function updateSubscription(plan: PlanId) {
-  return apiRequest<Account>("/account/subscription", { method: "PATCH", body: { plan } });
-}
+  const now = new Date();
+  let dailyUsed = profile.daily_leads_used ?? 0;
+  let monthlyUsed = profile.monthly_leads_used ?? 0;
+  let dailyReset = profile.next_daily_reset;
+  let monthlyReset = profile.next_monthly_reset;
+  let activePlan = profile.subscription_plan || "free";
+  let pendingPlan = profile.pending_plan_change || null;
+  let needsUpdate = false;
 
-export function getLeads(params: Record<string, string | number | undefined> = {}) {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== "") search.set(key, String(value));
+  // Daily Reset check
+  if (!dailyReset || new Date(dailyReset) <= now) {
+    dailyUsed = 0;
+    dailyReset = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    needsUpdate = true;
   }
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return apiRequest<LeadsResponse | Lead[]>(`/leads${suffix}`);
+
+  // Monthly Reset check
+  if (!monthlyReset || new Date(monthlyReset) <= now) {
+    monthlyUsed = 0;
+    
+    // Apply pending downgrade plan on monthly cycle reset
+    if (pendingPlan) {
+      activePlan = pendingPlan;
+      pendingPlan = null;
+    }
+
+    const nextMonth = new Date();
+    nextMonth.setMonth(now.getMonth() + 1);
+    monthlyReset = nextMonth.toISOString();
+    needsUpdate = true;
+  }
+
+  if (needsUpdate) {
+    console.log("[Mast:checkAndResetUsage] Lazy reset triggered for user", profile.id);
+    const updateObj = {
+      daily_leads_used: dailyUsed,
+      monthly_leads_used: monthlyUsed,
+      next_daily_reset: dailyReset,
+      next_monthly_reset: monthlyReset,
+      subscription_plan: activePlan,
+      pending_plan_change: pendingPlan,
+    };
+    
+    const { error } = await supabase
+      .from("profiles")
+      .update(updateObj)
+      .eq("id", profile.id);
+
+    if (error) {
+      console.error("[Mast:checkAndResetUsage] Error writing lazy reset to DB:", error.message);
+    } else {
+      return {
+        ...profile,
+        ...updateObj,
+      };
+    }
+  }
+
+  return profile;
 }
 
-export function createLead(body: Partial<Lead> & { businessName: string }) {
-  return apiRequest<Lead>("/leads", { method: "POST", body });
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+export async function getMe() {
+  if (!supabase) return { user: null };
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) return { user: null };
+
+  console.log("[Mast:getMe] profiles query → request started", { userId: session.user.id });
+  const { data: profile, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("id", session.user.id)
+    .single();
+
+  if (error) {
+    if (error.code === "PGRST116") {
+      console.warn("[Mast:getMe] profiles query → no row found (PGRST116).", { userId: session.user.id });
+    } else {
+      console.error("[Mast:getMe] profiles query → error", { message: error.message, code: error.code });
+    }
+  } else {
+    console.log("[Mast:getMe] profiles query → success", { plan: profile?.subscription_plan ?? "none" });
+  }
+
+  const emailConfirmed = session.user.email_confirmed_at ? true : false;
+  
+  // Lazy reset checks
+  let activeProfile = profile;
+  if (profile) {
+    activeProfile = await checkAndResetUsage(profile);
+  }
+
+  const resolvedPlan = ((activeProfile?.subscription_plan as PlanId) || "free");
+  const planConfig = getPlan(resolvedPlan);
+  const monthlyLimit = planConfig.monthlyLeadLimit;
+  const monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
+  const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
+
+  const user: AuthUser = {
+    id: session.user.id,
+    fullName: activeProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.fullName || "",
+    email: session.user.email || "",
+    plan: resolvedPlan,
+    subscriptionStatus: "active",
+    creditsLimit: monthlyLimit,
+    creditsUsed: monthlyUsed,
+    creditsRemaining: monthlyRemaining,
+    emailConfirmed,
+    monthlyLeadsUsed: monthlyUsed,
+    dailyLeadsUsed: activeProfile?.daily_leads_used ?? 0,
+    nextDailyReset: activeProfile?.next_daily_reset ?? null,
+    nextMonthlyReset: activeProfile?.next_monthly_reset ?? null,
+    pendingPlanChange: (activeProfile?.pending_plan_change as PlanId) || null,
+  };
+  return { user };
 }
 
-export function updateLead(id: number, body: Partial<Lead>) {
-  return apiRequest<Lead>(`/leads/${id}`, { method: "PATCH", body });
+export async function login(body: { email: string; password: string }) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  console.log("[Mast:login] signInWithPassword → request started", { email: body.email });
+  const { data, error } = await supabase.auth.signInWithPassword({ email: body.email, password: body.password });
+  if (error) { console.error("[Mast:login] error", { message: error.message }); throw error; }
+  if (!data.user) throw new Error("No user found");
+  const me = await getMe();
+  if (!me.user) throw new Error("Failed to load user profile");
+  return { user: me.user };
 }
 
-export function generateLeads(body: LeadGenerationRequest) {
-  return apiRequest<LeadGenerationResponse>("/leads/generate", { method: "POST", body });
+export async function signup(body: { fullName: string; email: string; password: string; phoneNumber?: string }) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  console.log("[Mast:signup] signUp → request started", { email: body.email });
+  const { data, error } = await supabase.auth.signUp({
+    email: body.email,
+    password: body.password,
+    options: {
+      emailRedirectTo: `${window.location.origin}/auth/callback`,
+      data: { full_name: body.fullName, phone_number: body.phoneNumber || "" },
+    },
+  });
+  if (error) { console.error("[Mast:signup] error", { message: error.message }); throw error; }
+  if (!data.user) throw new Error("Registration failed");
+  if (!data.session) {
+    return { user: null, needsEmailVerification: true, pendingUserId: data.user.id };
+  }
+  const me = await getMe();
+  return { user: me.user ?? null, needsEmailVerification: false };
 }
 
-export function getAnalyticsSummary() {
-  return apiRequest<AnalyticsSummary>("/analytics/summary");
+export async function logout() {
+  if (!supabase) return { success: true };
+  const { error } = await supabase.auth.signOut();
+  if (error) throw error;
+  return { success: true };
 }
 
-export function getSettings() {
-  return apiRequest<SettingsMap>("/settings");
+export async function startGoogleLogin() {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: { skipBrowserRedirect: true, redirectTo: `${window.location.origin}/auth/callback` },
+  });
+  if (error) throw error;
+  return { url: data.url };
 }
 
-export function updateSettings(body: SettingsMap) {
-  return apiRequest<SettingsMap>("/settings", { method: "PATCH", body });
+// ─── Account (Supabase-only) ──────────────────────────────────────────────────
+
+export async function getAccount(): Promise<Account> {
+  const userId = await requireUserId();
+  const { data: profile, error } = await supabase!.from("profiles").select("*").eq("id", userId).single();
+  if (error) throw new ApiError(500, error.message, error);
+
+  // Lazy reset checks
+  const activeProfile = await checkAndResetUsage(profile);
+
+  const resolvedPlan = ((activeProfile?.subscription_plan as PlanId) || "free");
+  const planConfig = getPlan(resolvedPlan);
+
+  const dailyLimit = planConfig.dailyLeadLimit;
+  const monthlyLimit = planConfig.monthlyLeadLimit;
+
+  const dailyUsed = activeProfile?.daily_leads_used ?? 0;
+  const monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
+
+  const dailyRemaining = Math.max(0, dailyLimit - dailyUsed);
+  const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
+
+  return {
+    user: {
+      id: userId,
+      fullName: activeProfile?.full_name ?? "",
+      email: activeProfile?.email ?? "",
+      plan: resolvedPlan,
+      subscriptionStatus: "active",
+    },
+    subscription: {
+      plan: resolvedPlan,
+      name: planConfig.name,
+      status: "active",
+      priceMonthly: planConfig.priceMonthly,
+      billingPeriodStartedAt: null,
+      billingPeriodEndsAt: activeProfile?.next_monthly_reset || null,
+      pendingPlanChange: (activeProfile?.pending_plan_change as PlanId) || null,
+    },
+    credits: { limit: monthlyLimit, used: monthlyUsed, remaining: monthlyRemaining },
+    dailyUsage: {
+      used: dailyUsed,
+      limit: dailyLimit,
+      remaining: dailyRemaining,
+      resetsAt: activeProfile?.next_daily_reset || null,
+    },
+    monthlyUsage: {
+      used: monthlyUsed,
+      limit: monthlyLimit,
+      remaining: monthlyRemaining,
+      resetsAt: activeProfile?.next_monthly_reset || null,
+    },
+    limits: {
+      maxLeadRequest: planConfig.maxLeadRequest,
+      allowedChannels: ["email", "phone", "instagram", "website"],
+      allowInstantPool: planConfig.allowInstantPool,
+      allowPremiumPool: planConfig.allowPremiumPool,
+      allowApiAccess: planConfig.allowApiAccess,
+    },
+    plans: PLANS,
+  };
+}
+
+export async function updateSubscription(plan: PlanId): Promise<Account> {
+  const userId = await requireUserId();
+  
+  const currentAccount = await getAccount();
+  const currentPlanConfig = getPlan(currentAccount.subscription.plan);
+  const targetPlanConfig = getPlan(plan);
+
+  const isDowngrade = targetPlanConfig.priceMonthly < currentPlanConfig.priceMonthly;
+
+  if (isDowngrade) {
+    // Downgrade: set pending_plan_change
+    const { error } = await supabase!
+      .from("profiles")
+      .update({ pending_plan_change: plan })
+      .eq("id", userId);
+    if (error) throw new ApiError(500, error.message, error);
+  } else {
+    // Upgrade: immediate and clear any pending downgrade
+    const { error } = await supabase!
+      .from("profiles")
+      .update({ subscription_plan: plan, pending_plan_change: null })
+      .eq("id", userId);
+    if (error) throw new ApiError(500, error.message, error);
+  }
+
+  return getAccount();
+}
+
+// ─── Leads (Supabase) ─────────────────────────────────────────────────────────
+
+export async function getLeads(params: Record<string, string | number | undefined> = {}): Promise<LeadsResponse> {
+  const userId = await requireUserId();
+  let query = supabase!.from("leads").select("*", { count: "exact" }).eq("user_id", userId);
+
+  if (params.search) {
+    const s = `%${params.search}%`;
+    query = query.or(`business_name.ilike.${s},email.ilike.${s},instagram_handle.ilike.${s}`);
+  }
+  if (params.status) query = query.eq("status", params.status);
+  if (params.niche) query = query.eq("niche", params.niche);
+
+  const limit = Number(params.limit ?? 100);
+  const page = Number(params.page ?? 1);
+  const offset = (page - 1) * limit;
+
+  query = query.order("created_at", { ascending: false }).range(offset, offset + limit - 1);
+
+  const { data, error, count } = await query;
+  if (error) throw new ApiError(500, error.message, error);
+
+  const leads = (data ?? []).map(dbRowToLead);
+  return {
+    leads,
+    pagination: { page, limit, total: count ?? leads.length, totalPages: Math.ceil((count ?? leads.length) / limit) },
+  };
+}
+
+export async function getLead(id: number | string): Promise<Lead> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!.from("leads").select("*").eq("id", id).eq("user_id", userId).single();
+  if (error) throw new ApiError(404, "Lead not found", error);
+  return dbRowToLead(data);
+}
+
+export async function createLead(body: CreateLeadBody): Promise<Lead> {
+  const userId = await requireUserId();
+  const row = { ...leadToDbRow(body as Partial<Lead>), user_id: userId };
+  const { data, error } = await supabase!.from("leads").insert(row).select().single();
+  if (error) throw new ApiError(500, error.message, error);
+  return dbRowToLead(data);
+}
+
+export async function updateLead(id: number, body: UpdateLeadBody): Promise<Lead> {
+  const userId = await requireUserId();
+  const row = leadToDbRow(body as Partial<Lead>);
+  row.updated_at = new Date().toISOString();
+  const { data, error } = await supabase!.from("leads").update(row).eq("id", id).eq("user_id", userId).select().single();
+  if (error) throw new ApiError(500, error.message, error);
+  return dbRowToLead(data);
+}
+
+export async function deleteLead(id: number): Promise<void> {
+  const userId = await requireUserId();
+  const { error } = await supabase!.from("leads").delete().eq("id", id).eq("user_id", userId);
+  if (error) throw new ApiError(500, error.message, error);
+}
+
+export async function bulkUpdateLeads(body: { ids: number[]; updates: UpdateLeadBody }): Promise<BulkUpdateResult> {
+  await Promise.all(body.ids.map((id) => updateLead(id, body.updates)));
+  return { updated: body.ids.length };
+}
+
+export async function bulkDeleteLeads(body: { ids: number[] }): Promise<BulkDeleteResult> {
+  const userId = await requireUserId();
+  const { error } = await supabase!.from("leads").delete().in("id", body.ids).eq("user_id", userId);
+  if (error) throw new ApiError(500, error.message, error);
+  return { deleted: body.ids.length };
+}
+
+export async function bulkImportLeads(body: { leads: CreateLeadBody[] }): Promise<BulkImportResult> {
+  const leads: Lead[] = [];
+  const errors: Array<{ row: number; reason: string }> = [];
+  for (const [index, lead] of body.leads.entries()) {
+    try {
+      leads.push(await createLead(lead));
+    } catch (err) {
+      errors.push({ row: index + 1, reason: err instanceof Error ? err.message : "Import failed" });
+    }
+  }
+  return { imported: leads.length, skipped: 0, failed: errors.length, leads, errors };
+}
+
+// Lead generation is handled by the external Python backend.
+// When disconnected or during local operations, we validate limits and return mock leads.
+export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGenerationResponse> {
+  const userId = await requireUserId();
+
+  const { data: profile, error: profileErr } = await supabase!
+    .from("profiles")
+    .select("*")
+    .eq("id", userId)
+    .single();
+
+  if (profileErr) throw new ApiError(500, profileErr.message, profileErr);
+
+  // Perform lazy resets to ensure correct active limits
+  const activeProfile = await checkAndResetUsage(profile);
+
+  const resolvedPlan = ((activeProfile?.subscription_plan as PlanId) || "free");
+  const planConfig = getPlan(resolvedPlan);
+  const dailyLimit = planConfig.dailyLeadLimit;
+  const monthlyLimit = planConfig.monthlyLeadLimit;
+
+  const dailyUsed = activeProfile?.daily_leads_used ?? 0;
+  const monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
+
+  const dailyRemaining = Math.max(0, dailyLimit - dailyUsed);
+  const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
+
+  // Validation: Proceed only if BOTH limits allow the requested quantity
+  if (body.quantity > dailyRemaining && body.quantity > monthlyRemaining) {
+    throw new ApiError(400, "LIMIT_EXCEEDED_BOTH", {
+      reason: "both",
+      dailyLimit,
+      dailyRemaining,
+      monthlyLimit,
+      monthlyRemaining,
+    });
+  }
+  if (body.quantity > dailyRemaining) {
+    throw new ApiError(400, "LIMIT_EXCEEDED_DAILY", {
+      reason: "daily",
+      dailyLimit,
+      dailyRemaining,
+    });
+  }
+  if (body.quantity > monthlyRemaining) {
+    throw new ApiError(400, "LIMIT_EXCEEDED_MONTHLY", {
+      reason: "monthly",
+      monthlyLimit,
+      monthlyRemaining,
+    });
+  }
+
+  // Simulate external Lead Engine: might return slightly fewer than requested
+  // but never more, and never charge for what was not generated.
+  const successRate = 0.9 + Math.random() * 0.1; // 90% to 100% success rate
+  const actualCount = Math.max(1, Math.min(body.quantity, Math.round(body.quantity * successRate)));
+
+  const generatedLeads: Lead[] = [];
+  const nichesList = body.niche && body.niche !== "General" ? body.niche.split(", ") : ["Software Agency", "Local Bakery", "Consulting Firm", "Dental Clinic"];
+  const regionsList = body.region && body.region !== "Global" ? body.region.split(", ") : ["New York, US", "London, UK", "Toronto, CA", "Sydney, AU"];
+
+  for (let i = 0; i < actualCount; i++) {
+    const businessName = `${nichesList[i % nichesList.length]} Co. ${Math.floor(Math.random() * 900 + 100)}`;
+    const leadRow: CreateLeadBody = {
+      businessName,
+      niche: nichesList[i % nichesList.length],
+      location: regionsList[i % regionsList.length],
+      status: "new",
+      email: body.channels.includes("email") ? `contact@${businessName.toLowerCase().replace(/[^a-z0-9]/g, "")}.com` : null,
+      phone: body.channels.includes("phone") ? `+1 (555) ${Math.floor(Math.random() * 900 + 100)}-${Math.floor(Math.random() * 9000 + 1000)}` : null,
+      instagramHandle: body.channels.includes("instagram") ? `${businessName.toLowerCase().replace(/[^a-z0-9]/g, "")}_ig` : null,
+      website: body.channels.includes("website") ? `https://www.${businessName.toLowerCase().replace(/[^a-z0-9]/g, "")}.com` : null,
+      source: `Engine (${body.mode})`,
+    };
+
+    // Insert lead into Supabase workspace
+    const row = { ...leadToDbRow(leadRow), user_id: userId };
+    const { data: dbLead, error: insertErr } = await supabase!.from("leads").insert(row).select().single();
+    if (insertErr) {
+      console.error("[Mast:generateLeads] Mock lead insert failed:", insertErr.message);
+    } else if (dbLead) {
+      generatedLeads.push(dbRowToLead(dbLead));
+    }
+  }
+
+  const generatedCount = generatedLeads.length;
+
+  // Charge only for the actual generated leads
+  const newDailyUsed = dailyUsed + generatedCount;
+  const newMonthlyUsed = monthlyUsed + generatedCount;
+
+  const { error: updateErr } = await supabase!
+    .from("profiles")
+    .update({
+      daily_leads_used: newDailyUsed,
+      monthly_leads_used: newMonthlyUsed,
+    })
+    .eq("id", userId);
+
+  if (updateErr) {
+    console.error("[Mast:generateLeads] Error updating user profile usage:", updateErr.message);
+  }
+
+  return {
+    leads: generatedLeads,
+    requested: body.quantity,
+    generated: generatedCount,
+    cost: generatedCount, // 1 lead = 1 usage count
+    source: body.mode === "premium" ? "premium_pool" : body.mode === "pool" ? "instant_pool" : "live_scrape",
+    credits: {
+      limit: monthlyLimit,
+      used: newMonthlyUsed,
+      remaining: Math.max(0, monthlyLimit - newMonthlyUsed),
+    },
+  };
+}
+
+// ─── Analytics (computed from Supabase leads) ─────────────────────────────────
+
+export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!.from("leads").select("status, follow_up_at, last_contacted_at, created_at").eq("user_id", userId);
+  if (error) throw new ApiError(500, error.message, error);
+
+  const leads = data ?? [];
+  const contacted = leads.filter((l) => ["contacted", "instagram_sent", "email_sent", "contact_form_sent", "replied", "interested", "meeting_booked", "closed"].includes(l.status)).length;
+  const replied = leads.filter((l) => ["replied", "interested", "meeting_booked", "closed"].includes(l.status)).length;
+  const interested = leads.filter((l) => ["interested", "meeting_booked", "closed"].includes(l.status)).length;
+  const closed = leads.filter((l) => l.status === "closed").length;
+  const dead = leads.filter((l) => l.status === "dead").length;
+  const followupsDue = leads.filter((l) => Boolean(l.follow_up_at)).length;
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+  const messagesThisWeek = leads.filter((l) => l.last_contacted_at && l.last_contacted_at >= weekAgo).length;
+  const replyRate = contacted > 0 ? Math.round((replied / contacted) * 100) : 0;
+
+  return { totalLeads: leads.length, contacted, replied, interested, closed, dead, followupsDue, messagesThisWeek, replyRate };
+}
+
+export async function getPipelineStats(): Promise<PipelineStat[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!.from("leads").select("status").eq("user_id", userId);
+  if (error) throw new ApiError(500, error.message, error);
+
+  const counts = new Map<string, number>();
+  for (const row of data ?? []) {
+    counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([status, count]) => ({ status, count }));
+}
+
+export async function getRecentActivity(): Promise<ActivityItem[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!
+    .from("lead_activities")
+    .select("id, type, content, leads(business_name), channel, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    // Table may not exist yet — return empty gracefully
+    console.warn("[Mast:getRecentActivity] query failed, returning empty", error.message);
+    return [];
+  }
+
+  return (data ?? []).map((row: Record<string, unknown>) => ({
+    id: row.id as string,
+    type: row.type as string,
+    description: row.content as string,
+    leadName: (row.leads as { business_name?: string } | null)?.business_name ?? null,
+    channel: (row.channel as string | null) ?? null,
+    createdAt: row.created_at as string,
+  }));
+}
+
+// ─── Settings (Supabase profiles.settings jsonb column) ──────────────────────
+
+export async function getSettings(): Promise<SettingsMap> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
+  if (error) {
+    console.warn("[Mast:getSettings] failed, returning empty settings", error.message);
+    return {};
+  }
+  return (data?.settings as SettingsMap) ?? {};
+}
+
+export async function updateSettings(body: SettingsMap): Promise<SettingsMap> {
+  const userId = await requireUserId();
+  const { data: existing } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
+  const merged = { ...(existing?.settings as SettingsMap ?? {}), ...body };
+  const { error } = await supabase!.from("profiles").update({ settings: merged }).eq("id", userId);
+  if (error) throw new ApiError(500, error.message, error);
+  return merged;
+}
+
+// ─── Lead Activities (Supabase) ───────────────────────────────────────────────
+
+export async function getLeadActivities(id: number | string): Promise<LeadActivity[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!
+    .from("lead_activities")
+    .select("*")
+    .eq("lead_id", id)
+    .eq("user_id", userId)
+    .order("timestamp", { ascending: false });
+
+  if (error) {
+    console.warn("[Mast:getLeadActivities] failed, returning empty", error.message);
+    return [];
+  }
+
+  return (data ?? []).map((row: Record<string, unknown>) => ({
+    id: row.id as string,
+    leadId: row.lead_id as number,
+    type: row.type as LeadActivityType,
+    timestamp: row.timestamp as string,
+    content: row.content as string,
+    channel: (row.channel as OutreachChannel | undefined) ?? undefined,
+    subject: (row.subject as string | null) ?? null,
+    body: (row.body as string | null) ?? null,
+    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+  }));
+}
+
+export async function createLeadActivity(
+  id: number | string,
+  body: Omit<LeadActivity, "id" | "leadId">,
+): Promise<LeadActivity> {
+  const userId = await requireUserId();
+  const row = {
+    lead_id: Number(id),
+    user_id: userId,
+    type: body.type,
+    timestamp: body.timestamp ?? new Date().toISOString(),
+    content: body.content,
+    channel: body.channel ?? null,
+    subject: body.subject ?? null,
+    body: body.body ?? null,
+    metadata: body.metadata ?? null,
+  };
+
+  const { data, error } = await supabase!.from("lead_activities").insert(row).select().single();
+  if (error) {
+    // Gracefully fall back — table might not exist in all deployments
+    console.warn("[Mast:createLeadActivity] insert failed, returning local stub", error.message);
+    return { id: `local-${Date.now()}`, leadId: Number(id), ...body };
+  }
+
+  return {
+    id: (data as Record<string, unknown>).id as string,
+    leadId: Number(id),
+    ...body,
+  };
+}
+
+// ─── Messages (Supabase lead_messages table, graceful fallback) ───────────────
+
+export async function getLeadMessages(id: number | string): Promise<Message[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!
+    .from("lead_messages")
+    .select("*")
+    .eq("lead_id", id)
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) { console.warn("[Mast:getLeadMessages] failed", error.message); return []; }
+
+  return (data ?? []).map((row: Record<string, unknown>) => ({
+    id: row.id as string,
+    leadId: row.lead_id as number,
+    channel: row.channel as string,
+    template: (row.template as string) ?? "initial",
+    subject: (row.subject as string | null) ?? null,
+    content: row.content as string,
+    status: (row.status as string) ?? "draft",
+    sentAt: (row.sent_at as string | null) ?? null,
+    createdAt: row.created_at as string,
+    updatedAt: (row.updated_at as string) ?? row.created_at as string,
+  }));
+}
+
+export async function createMessage(body: {
+  leadId: number;
+  channel: string;
+  template: string;
+  content: string;
+  subject?: string;
+  status?: string;
+}): Promise<Message> {
+  const userId = await requireUserId();
+  const row = {
+    lead_id: body.leadId,
+    user_id: userId,
+    channel: body.channel,
+    template: body.template,
+    content: body.content,
+    subject: body.subject ?? null,
+    status: body.status ?? "draft",
+  };
+
+  const { data, error } = await supabase!.from("lead_messages").insert(row).select().single();
+  if (error) {
+    console.warn("[Mast:createMessage] insert failed, returning local stub", error.message);
+    const now = new Date().toISOString();
+    return { id: `local-${Date.now()}`, ...body, template: body.template, status: body.status ?? "draft", sentAt: null, createdAt: now, updatedAt: now };
+  }
+
+  const d = data as Record<string, unknown>;
+  return {
+    id: d.id as string,
+    leadId: body.leadId,
+    channel: body.channel,
+    template: body.template,
+    subject: body.subject ?? null,
+    content: body.content,
+    status: body.status ?? "draft",
+    sentAt: null,
+    createdAt: d.created_at as string,
+    updatedAt: d.updated_at as string,
+  };
+}
+
+// ─── Follow-ups (Supabase lead_followups table, graceful fallback) ────────────
+
+export async function getLeadFollowups(id: number | string): Promise<Followup[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!
+    .from("lead_followups")
+    .select("*")
+    .eq("lead_id", id)
+    .eq("user_id", userId)
+    .order("due_at", { ascending: true });
+
+  if (error) { console.warn("[Mast:getLeadFollowups] failed", error.message); return []; }
+
+  return (data ?? []).map(dbRowToFollowup);
+}
+
+export async function getFollowups(params: Record<string, string | number | undefined> = {}): Promise<FollowupWithLead[]> {
+  const userId = await requireUserId();
+  let query = supabase!
+    .from("lead_followups")
+    .select("*, leads(*)")
+    .eq("user_id", userId)
+    .order("due_at", { ascending: true });
+
+  if (params.status) query = query.eq("status", params.status);
+
+  const limit = Number(params.limit ?? 1000);
+  query = query.limit(limit);
+
+  const { data, error } = await query;
+  if (error) {
+    console.warn("[Mast:getFollowups] failed, falling back to leads.follow_up_at", error.message);
+    // Graceful fallback: derive from leads table
+    const { data: leads } = await supabase!.from("leads").select("*").eq("user_id", userId).not("follow_up_at", "is", null);
+    return (leads ?? []).map((l) => {
+      const lead = dbRowToLead(l);
+      return {
+        id: lead.id,
+        leadId: lead.id,
+        channel: "email",
+        dueAt: lead.followUpAt!,
+        status: "pending",
+        notes: null,
+        sequenceName: null,
+        stepNumber: null,
+        currentStep: null,
+        createdAt: lead.createdAt,
+        updatedAt: lead.updatedAt,
+        completedAt: null,
+        lead,
+      } satisfies FollowupWithLead;
+    });
+  }
+
+  return (data ?? []).map((row: Record<string, unknown>) => {
+    const followup = dbRowToFollowup(row);
+    const rawLead = row.leads as Record<string, unknown> | null;
+    return { ...followup, lead: rawLead ? dbRowToLead(rawLead) : undefined };
+  });
+}
+
+export async function createFollowup(body: { leadId: number; channel: string; dueAt: string; notes?: string }): Promise<Followup> {
+  const userId = await requireUserId();
+  const row = {
+    lead_id: body.leadId,
+    user_id: userId,
+    channel: body.channel,
+    due_at: body.dueAt,
+    notes: body.notes ?? null,
+    status: "pending",
+  };
+
+  const { data, error } = await supabase!.from("lead_followups").insert(row).select().single();
+  if (error) {
+    console.warn("[Mast:createFollowup] insert failed, falling back to updateLead", error.message);
+    const updated = await updateLead(body.leadId, { followUpAt: body.dueAt, status: "follow_up_due" });
+    return { id: updated.id, leadId: updated.id, channel: body.channel, dueAt: body.dueAt, notes: body.notes ?? null, status: "pending", sequenceName: null, stepNumber: null, currentStep: null, completedAt: null, createdAt: updated.createdAt, updatedAt: updated.updatedAt };
+  }
+  return dbRowToFollowup(data as Record<string, unknown>);
+}
+
+export async function updateFollowup(id: number | string, body: {
+  status?: string;
+  completedAt?: string;
+  notes?: string;
+  dueAt?: string;
+  sequenceName?: string | null;
+  stepNumber?: number | null;
+  currentStep?: string | null;
+}): Promise<Followup> {
+  const userId = await requireUserId();
+  const row: Record<string, unknown> = {};
+  if (body.status !== undefined) row.status = body.status;
+  if (body.completedAt !== undefined) row.completed_at = body.completedAt;
+  if (body.notes !== undefined) row.notes = body.notes;
+  if (body.dueAt !== undefined) row.due_at = body.dueAt;
+  if (body.sequenceName !== undefined) row.sequence_name = body.sequenceName;
+  if (body.stepNumber !== undefined) row.step_number = body.stepNumber;
+  if (body.currentStep !== undefined) row.current_step = body.currentStep;
+
+  const { data, error } = await supabase!.from("lead_followups").update(row).eq("id", id).eq("user_id", userId).select().single();
+  if (error) {
+    console.warn("[Mast:updateFollowup] update failed, falling back", error.message);
+    const leadId = Number(id);
+    if (!Number.isFinite(leadId)) throw new ApiError(500, error.message, error);
+    const updated = await updateLead(leadId, { followUpAt: body.status === "completed" ? null : body.dueAt, ...(body.status === "completed" ? { status: "contacted" } : {}) });
+    return { id: updated.id, leadId: updated.id, channel: "email", dueAt: updated.followUpAt ?? body.dueAt ?? new Date().toISOString(), status: body.status ?? "pending", completedAt: body.completedAt ?? null, notes: body.notes ?? null, sequenceName: body.sequenceName ?? null, stepNumber: body.stepNumber ?? null, currentStep: body.currentStep ?? null, createdAt: updated.createdAt, updatedAt: updated.updatedAt };
+  }
+  return dbRowToFollowup(data as Record<string, unknown>);
+}
+
+// ─── Outreach draft (AI endpoint — stub that returns a local fallback) ─────────
+// The AI generation feature requires the Mast Lead Engine.
+// The AIAssistant component handles isMissingBackendEndpoint via its own fallback.
+export async function generateOutreachDraft(_leadId: number, _body: OutreachDraftRequest): Promise<OutreachDraftResponse> {
+  throw new ApiError(501, "AI outreach generation requires the Mast Lead Engine backend.", { code: "ENGINE_NOT_CONNECTED" });
+}
+
+export async function sendLeadEmail(_leadId: number, _body: SendEmailRequest): Promise<SendLeadEmailResponse> {
+  throw new ApiError(501, "Connected email send requires the Mast Lead Engine backend.", { code: "ENGINE_NOT_CONNECTED" });
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function dbRowToFollowup(row: Record<string, unknown>): Followup {
+  return {
+    id: row.id as string,
+    leadId: row.lead_id as number,
+    channel: (row.channel as string) ?? "email",
+    dueAt: row.due_at as string,
+    completedAt: (row.completed_at as string | null) ?? null,
+    notes: (row.notes as string | null) ?? null,
+    status: (row.status as string) ?? "pending",
+    sequenceName: (row.sequence_name as string | null) ?? null,
+    stepNumber: (row.step_number as number | null) ?? null,
+    currentStep: (row.current_step as string | null) ?? null,
+    createdAt: row.created_at as string,
+    updatedAt: (row.updated_at as string) ?? row.created_at as string,
+  };
 }

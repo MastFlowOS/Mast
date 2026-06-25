@@ -3,22 +3,23 @@ import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import {
-  Globe2, Instagram, Sparkles, Users, Zap, ShieldCheck,
-  CheckCircle2, ArrowRight, Quote, Mail, Phone, Link2, BarChart3,
-  TrendingUp, Star,
+  Sparkles, Users, Zap, ShieldCheck,
+  CheckCircle2, ArrowRight, BarChart3,
+  Activity, Target, Layers,
+  Bell, GitBranch,
 } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Mast — Sales-ready lead intelligence for client acquisition" },
-      { name: "description", content: "Mast is the premium OS for client acquisition. Verified emails, cold-calling phone numbers, websites, and Instagram profiles — all in one outreach-ready CRM." },
-      { property: "og:title", content: "Mast — Sales-ready lead intelligence" },
-      { property: "og:description", content: "Multi-channel lead generation: verified emails, phone numbers, websites, and social — built for agencies, freelancers, and growth operators." },
+      { title: "Mast — AI Sales Operating System" },
+      { name: "description", content: "Mast is an AI-powered sales operating system for agencies and freelancers. Prospect research, CRM, pipeline management, and sales intelligence — unified in one platform." },
+      { property: "og:title", content: "Mast — AI Sales Operating System" },
+      { property: "og:description", content: "Discover companies, enrich business profiles, manage your pipeline, and execute outreach from one intelligent platform." },
     ],
   }),
   component: LandingPage,
-});
+}));
 
 function LandingPage() {
   return (
@@ -26,11 +27,9 @@ function LandingPage() {
       <SiteNav />
       <Hero />
       <ProductPreview />
-      <LogoStrip />
       <Problem />
       <Features />
       <PricingPreview />
-      <Testimonials />
       <CTA />
       <SiteFooter />
     </div>
@@ -61,30 +60,31 @@ function Hero() {
         {/* Badge */}
         <div className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[11px] font-bold tracking-wider uppercase mb-8 shadow-[0_0_20px_-8px_var(--color-brand)]">
           <span className="relative size-2 rounded-full bg-success ping-dot" />
-          Multi-channel lead intelligence — Live
+          AI Sales Operating System
         </div>
 
         {/* Headline */}
         <h1 className="animate-fade-up delay-100 text-[clamp(2.6rem,7vw,5rem)] font-bold text-foreground tracking-tight mb-7 leading-[1.04]">
-          Sales-ready leads for{" "}
-          <span className="text-brand-gradient">client acquisition.</span>
+          Your complete sales platform.{" "}
+          <span className="text-brand-gradient">Powered by AI.</span>
         </h1>
 
         {/* Sub */}
         <p className="animate-fade-up delay-200 text-[1.05rem] text-muted-foreground mb-10 max-w-xl mx-auto leading-relaxed">
-          The premium operating system for outreach. Verified emails, cold-calling numbers,
-          websites, and Instagram — enriched, scored, and pushed into a built-in CRM.
+          Discover companies, enrich business profiles, manage your pipeline,
+          and run your entire sales operation from one intelligent workspace.
         </p>
 
         {/* CTAs */}
         <div className="animate-fade-up delay-300 flex flex-col sm:flex-row items-center justify-center gap-3">
           <Link
             to="/signup"
-            className="group relative w-full sm:w-auto bg-foreground text-background px-7 py-3.5 rounded-xl font-semibold hover:bg-foreground/90 transition-all inline-flex items-center justify-center gap-2 btn-press overflow-hidden"
+            className="group relative w-full sm:w-auto bg-brand text-brand-foreground px-7 py-3.5 rounded-xl font-semibold hover:bg-brand-dark transition-all inline-flex items-center justify-center gap-2 btn-press overflow-hidden shadow-brand"
           >
             <span className="relative z-10 flex items-center gap-2">
               Start Free <ArrowRight className="size-4 group-hover:translate-x-0.5 transition-transform" />
             </span>
+            <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/8 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
           </Link>
           <Link
             to="/pricing"
@@ -93,27 +93,26 @@ function Hero() {
             View Pricing
           </Link>
           <Link
-            to="/dashboard/leads"
-            className="group relative w-full sm:w-auto bg-brand text-brand-foreground px-7 py-3.5 rounded-xl font-semibold hover:bg-brand-dark transition-all shadow-brand btn-press inline-flex items-center justify-center gap-2 overflow-hidden"
+            to="/dashboard"
+            className="group relative w-full sm:w-auto bg-foreground text-background px-7 py-3.5 rounded-xl font-semibold hover:bg-foreground/90 transition-all btn-press inline-flex items-center justify-center gap-2 overflow-hidden"
           >
             <span className="relative z-10 flex items-center gap-2">
-              Generate Leads <Zap className="size-4 group-hover:scale-110 transition-transform" />
+              Open Dashboard <Zap className="size-4 group-hover:scale-110 transition-transform" />
             </span>
-            <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/8 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
           </Link>
         </div>
 
         <p className="animate-fade-up delay-400 text-xs text-muted-foreground mt-5">
-          No credit card required · 100 free credits · Cancel anytime
+          No credit card required · Free plan available · Cancel anytime
         </p>
 
-        {/* Channel tags */}
+        {/* Platform capability tags */}
         <div className="animate-fade-up delay-500 mt-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
           {[
-            { icon: Mail, label: "Verified Emails" },
-            { icon: Phone, label: "Phone Numbers" },
-            { icon: Link2, label: "Websites" },
-            { icon: Instagram, label: "Instagram" },
+            { icon: Target, label: "Prospect Research" },
+            { icon: BarChart3, label: "Pipeline Management" },
+            { icon: Users, label: "CRM" },
+            { icon: Sparkles, label: "AI Intelligence" },
           ].map(({ icon: Icon, label }) => (
             <span key={label} className="inline-flex items-center gap-2 group">
               <Icon className="size-3.5 text-brand group-hover:scale-110 transition-transform" />
@@ -127,13 +126,20 @@ function Hero() {
 }
 
 function ProductPreview() {
-  const sampleLeads = [
-    { name: "Vortex Media", channels: ["email", "phone", "web", "ig"], score: 98, status: "Ready" },
-    { name: "Luminal AI", channels: ["email", "web", "ig"], score: 94, status: "Ready" },
-    { name: "Skyline Growth", channels: ["email", "phone", "web"], score: 91, status: "Ready" },
-    { name: "Northwind Studio", channels: ["email", "phone", "ig"], score: 87, status: "Ready" },
-    { name: "Helix Commerce", channels: ["email", "phone", "web", "ig"], score: 85, status: "Ready" },
+  const prospects = [
+    { name: "Vortex Media", stage: "Qualified", score: 98, activity: "Meeting booked" },
+    { name: "Luminal AI", stage: "Proposal", score: 94, activity: "Proposal sent" },
+    { name: "Skyline Growth", stage: "Discovery", score: 91, activity: "Follow-up due" },
+    { name: "Northwind Studio", stage: "Qualified", score: 87, activity: "Intro call done" },
+    { name: "Helix Commerce", stage: "Closing", score: 85, activity: "Contract review" },
   ];
+
+  const stageColor: Record<string, string> = {
+    Qualified: "bg-brand/10 text-brand border-brand/20",
+    Proposal: "bg-warning/10 text-warning border-warning/20",
+    Discovery: "bg-muted/30 text-muted-foreground border-border/40",
+    Closing: "bg-success/10 text-success border-success/20",
+  };
 
   return (
     <section className="px-6 pb-24">
@@ -149,11 +155,11 @@ function ProductPreview() {
                 <span className="font-bold text-[13px] tracking-[0.14em] text-foreground">MAST</span>
               </div>
               <nav className="space-y-0.5">
-                {["Dashboard", "Get Leads", "CRM Management", "Campaigns", "Subscription"].map((l, i) => (
+                {["Dashboard", "Prospects", "CRM", "Pipeline", "Analytics", "Settings"].map((l, i) => (
                   <div
                     key={l}
                     className={`px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${
-                      i === 1
+                      i === 2
                         ? "bg-brand/15 text-brand relative nav-active-bar"
                         : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
                     }`}
@@ -165,14 +171,14 @@ function ProductPreview() {
               <div className="mt-auto">
                 <div className="bg-background/60 p-4 rounded-xl border border-border/60 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Credits</p>
+                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Monthly Usage</p>
                     <span className="text-[10px] font-bold text-brand bg-brand/10 px-1.5 py-0.5 rounded-md border border-brand/20">Pro</span>
                   </div>
                   <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
                     <div className="h-full rounded-full bg-gradient-to-r from-brand to-brand/70 animate-progress" style={{ width: "57%" }} />
                   </div>
                   <p className="text-xs text-foreground">
-                    1,420 <span className="text-muted-foreground">/ 2,500 credits</span>
+                    1,420 <span className="text-muted-foreground">/ 6,000 leads this month</span>
                   </p>
                 </div>
               </div>
@@ -181,79 +187,64 @@ function ProductPreview() {
             {/* Main */}
             <main className="flex-1 flex flex-col min-w-0">
               <div className="px-6 py-4 border-b border-border/60 flex items-center justify-between bg-background/20">
-                <h2 className="text-base font-bold text-foreground">Lead Discovery</h2>
-                <span className="flex items-center gap-1.5 px-3 py-1 bg-success/10 text-success text-[10px] font-bold border border-success/20 rounded-md uppercase tracking-wider">
-                  <span className="size-1.5 rounded-full bg-success animate-dot-blink" />
-                  Live Data
+                <h2 className="text-base font-bold text-foreground">CRM — Active Pipeline</h2>
+                <span className="flex items-center gap-1.5 px-3 py-1 bg-brand/10 text-brand text-[10px] font-bold border border-brand/20 rounded-md uppercase tracking-wider">
+                  <span className="size-1.5 rounded-full bg-brand animate-dot-blink" />
+                  12 Active Deals
                 </span>
               </div>
 
-              <div className="p-5 grid grid-cols-12 gap-5 flex-1 overflow-hidden">
-                {/* Config panel */}
-                <div className="col-span-12 lg:col-span-4 space-y-4">
+              <div className="p-5 flex-1 overflow-hidden flex flex-col gap-4">
+                {/* Pipeline stage summary */}
+                <div className="grid grid-cols-4 gap-3">
                   {[
-                    { label: "Region", value: "United States, UK" },
-                    { label: "Niche", value: "SaaS Founders" },
-                    { label: "Channels", value: "Email · Phone · IG · Web" },
-                    { label: "Quantity", value: "500 leads" },
-                  ].map(({ label, value }) => (
-                    <div key={label}>
-                      <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1.5">{label}</p>
-                      <div className="w-full bg-background/60 border border-border/60 px-3 py-2.5 rounded-lg text-sm text-foreground">
-                        {value}
-                      </div>
+                    { stage: "Discovery", count: 4, color: "text-muted-foreground" },
+                    { stage: "Qualified", count: 3, color: "text-brand" },
+                    { stage: "Proposal", count: 3, color: "text-warning" },
+                    { stage: "Closing", count: 2, color: "text-success" },
+                  ].map(({ stage, count, color }) => (
+                    <div key={stage} className="bg-background/40 border border-border/60 rounded-lg p-3 text-center">
+                      <p className={`text-lg font-bold ${color}`}>{count}</p>
+                      <p className="text-[10px] text-muted-foreground font-medium mt-0.5">{stage}</p>
                     </div>
                   ))}
-                  <button className="w-full bg-brand hover:bg-brand-dark py-2.5 rounded-xl font-bold text-brand-foreground shadow-brand transition-all btn-press text-sm mt-1 flex items-center justify-center gap-2">
-                    <Zap className="size-3.5" />
-                    Generate Leads
-                  </button>
                 </div>
 
-                {/* Lead table */}
-                <div className="col-span-12 lg:col-span-8">
-                  <div className="bg-background/40 border border-border/60 rounded-xl overflow-hidden">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-card/60 border-b border-border/60">
-                        <tr>
-                          {["Company", "Score", "Channels", "Status"].map((h, i) => (
-                            <th key={h} className={`p-3.5 font-semibold text-muted-foreground text-[10px] uppercase tracking-wider ${i === 3 ? "text-right" : ""}`}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sampleLeads.map((row, i) => (
-                          <tr
-                            key={row.name}
-                            className={`hover:bg-white/[0.025] transition-colors ${i < sampleLeads.length - 1 ? "border-b border-border/40" : ""}`}
-                          >
-                            <td className="p-3.5 text-foreground font-medium text-sm">{row.name}</td>
-                            <td className="p-3.5">
-                              <div className="flex items-center gap-2">
-                                <div className="w-12 h-1 bg-border rounded-full overflow-hidden">
-                                  <div className="h-full bg-brand rounded-full" style={{ width: `${row.score}%` }} />
-                                </div>
-                                <span className="text-[11px] text-muted-foreground font-mono">{row.score}</span>
-                              </div>
-                            </td>
-                            <td className="p-3.5">
-                              <div className="flex items-center gap-1.5">
-                                {row.channels.includes("email") && <Mail className="size-3.5 text-brand" />}
-                                {row.channels.includes("phone") && <Phone className="size-3.5 text-brand" />}
-                                {row.channels.includes("web") && <Link2 className="size-3.5 text-brand" />}
-                                {row.channels.includes("ig") && <Instagram className="size-3.5 text-brand" />}
-                              </div>
-                            </td>
-                            <td className="p-3.5 text-right">
-                              <span className="px-2 py-0.5 text-[10px] rounded-md border font-semibold uppercase tracking-wider bg-success/10 text-success border-success/20">
-                                {row.status}
-                              </span>
-                            </td>
-                          </tr>
+                {/* Opportunity table */}
+                <div className="bg-background/40 border border-border/60 rounded-xl overflow-hidden flex-1">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-card/60 border-b border-border/60">
+                      <tr>
+                        {["Company", "Score", "Stage", "Last Activity"].map((h, i) => (
+                          <th key={h} className={`p-3.5 font-semibold text-muted-foreground text-[10px] uppercase tracking-wider ${i === 3 ? "text-right" : ""}`}>{h}</th>
                         ))}
-                      </tbody>
-                    </table>
-                  </div>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prospects.map((row, i) => (
+                        <tr
+                          key={row.name}
+                          className={`hover:bg-white/[0.025] transition-colors ${i < prospects.length - 1 ? "border-b border-border/40" : ""}`}
+                        >
+                          <td className="p-3.5 text-foreground font-medium text-sm">{row.name}</td>
+                          <td className="p-3.5">
+                            <div className="flex items-center gap-2">
+                              <div className="w-12 h-1 bg-border rounded-full overflow-hidden">
+                                <div className="h-full bg-brand rounded-full" style={{ width: `${row.score}%` }} />
+                              </div>
+                              <span className="text-[11px] text-muted-foreground font-mono">{row.score}</span>
+                            </div>
+                          </td>
+                          <td className="p-3.5">
+                            <span className={`px-2 py-0.5 text-[10px] rounded-md border font-semibold uppercase tracking-wider ${stageColor[row.stage] ?? ""}`}>
+                              {row.stage}
+                            </span>
+                          </td>
+                          <td className="p-3.5 text-right text-xs text-muted-foreground">{row.activity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </main>
@@ -264,36 +255,12 @@ function ProductPreview() {
   );
 }
 
-function LogoStrip() {
-  const logos = ["Northwind", "Apex Agency", "Lumen Co", "Vega Labs", "Crestline", "Tidal Group"];
-  return (
-    <section className="border-y border-border/60 bg-card/20 py-10 px-6">
-      <div className="max-w-7xl mx-auto">
-        <p className="text-center text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/70 mb-7">
-          Trusted by 4,200+ agencies &amp; operators
-        </p>
-        <div className="flex flex-wrap justify-center items-center gap-x-12 gap-y-4">
-          {logos.map((l, i) => (
-            <span
-              key={l}
-              className="text-base font-bold tracking-tight text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors duration-300 cursor-default select-none animate-fade-in"
-              style={{ animationDelay: `${i * 80}ms` }}
-            >
-              {l}
-            </span>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function Problem() {
   const bullets = [
-    "Cut sourcing time from days to minutes",
-    "Get verified emails, mobile numbers, websites & social in one record",
-    "Sync directly to the built-in CRM — outreach-ready on day one",
-    "Scale multi-channel outreach without scaling your team",
+    "Research and qualify companies in minutes, not days",
+    "Enrich business profiles with publicly available contact information",
+    "Move opportunities through your pipeline with a built-in CRM",
+    "Run follow-up sequences and stay on top of every deal",
   ];
 
   return (
@@ -302,12 +269,13 @@ function Problem() {
         <div className="animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">The Problem</span>
           <h2 className="mt-4 text-[clamp(1.9rem,4vw,2.8rem)] font-bold tracking-tight leading-tight">
-            Client acquisition is broken by{" "}
-            <span className="text-muted-foreground">noise.</span>
+            Sales teams waste time on{" "}
+            <span className="text-muted-foreground">scattered tools.</span>
           </h2>
           <p className="mt-5 text-muted-foreground leading-relaxed text-[0.95rem]">
-            Cold lists are dead. Manual prospecting eats hours. Generic scrapers return bounced emails,
-            missing numbers, and ghost accounts. Agencies burn budget chasing leads that were never going to convert.
+            Researching prospects across multiple platforms, manually entering contacts into a CRM,
+            and tracking follow-ups in spreadsheets — it fragments your process and slows your team down.
+            MAST brings prospect research, enrichment, pipeline, and outreach into one place.
           </p>
           <ul className="mt-8 space-y-3.5">
             {bullets.map((t, i) => (
@@ -327,32 +295,25 @@ function Problem() {
           <div className="relative bg-card border border-border/60 rounded-3xl p-8 shadow-elevated card-hover gradient-border">
             <div className="grid grid-cols-2 gap-4">
               {[
-                { label: "Email deliverability", value: "99.8%", trend: "+2.1%", up: true },
-                { label: "Phone match rate", value: "86%", trend: "+4.0%", up: true },
-                { label: "Avg. time saved", value: "38h/mo", trend: "", up: false },
-                { label: "Regions covered", value: "180+", trend: "", up: false },
-              ].map(({ label, value, trend, up }) => (
+                { label: "Active opportunities", value: "12", sub: "across pipeline stages" },
+                { label: "Follow-ups due", value: "5", sub: "in the next 48 hours" },
+                { label: "Prospects researched", value: "340", sub: "this month" },
+                { label: "Platform modules", value: "6", sub: "unified in one workspace" },
+              ].map(({ label, value, sub }) => (
                 <div key={label} className="rounded-2xl bg-background/60 border border-border/50 p-4 hover:border-brand/30 transition-colors">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}</p>
                   <p className="mt-2 text-2xl font-bold text-foreground">{value}</p>
-                  {trend && (
-                    <p className="flex items-center gap-1 text-xs text-success font-medium mt-1">
-                      <TrendingUp className="size-3" /> {trend}
-                    </p>
-                  )}
+                  <p className="text-[10px] text-muted-foreground mt-1">{sub}</p>
                 </div>
               ))}
             </div>
             <div className="mt-5 rounded-2xl border border-border/50 p-5 bg-background/40">
-              <div className="flex gap-1 mb-3">
-                {[...Array(5)].map((_, i) => (
-                  <Star key={i} className="size-3.5 fill-warning text-warning" />
-                ))}
-              </div>
+              <p className="text-xs font-bold text-brand uppercase tracking-wider mb-3">AI Sales Assistant</p>
               <p className="text-sm text-foreground leading-relaxed">
-                "We replaced three tools and a VA with Mast. Pipeline doubled in 6 weeks."
+                Researching Luminal AI — SaaS startup, Series A, 45 employees. Strong fit for your ICP.
+                Recommended action: schedule discovery call.
               </p>
-              <p className="mt-3 text-xs text-muted-foreground">— Maya Chen, Founder · Northwind</p>
+              <p className="mt-2 text-[10px] text-muted-foreground">MAST Intelligence · Updated just now</p>
             </div>
           </div>
         </div>
@@ -362,15 +323,15 @@ function Problem() {
 }
 
 const features = [
-  { icon: Mail, title: "Verified Business Emails", desc: "Deliverable, SMTP-validated inboxes for decision-makers — 99.8% accuracy, ready for cold sequences." },
-  { icon: Phone, title: "Cold-Calling Phone Numbers", desc: "Direct mobile and office lines for outbound calling, SMS, and WhatsApp at scale." },
-  { icon: Link2, title: "Website & Contact Extraction", desc: "Pulls company URLs, contact pages, tech stack signals, and structured business data." },
-  { icon: Instagram, title: "Instagram Business Profiles", desc: "Social discovery with follower growth, engagement, and niche-fit scoring baked in." },
-  { icon: Globe2, title: "Multi-Region Targeting", desc: "Hyper-local prospecting across 180 countries. Find the exact niche in the exact city." },
-  { icon: BarChart3, title: "Lead Scoring & Intelligence", desc: "Every lead enriched and ranked by intent signals so your team works the highest-value first." },
-  { icon: Users, title: "Built-in CRM", desc: "Pipeline stages, tags, notes, and team assignments — no Zapier glue required." },
-  { icon: Zap, title: "Multi-Channel Outreach Ready", desc: "Push leads straight into email, dialer, and DM workflows — every channel pre-populated." },
-  { icon: ShieldCheck, title: "Premium Lead Pools", desc: "Pre-verified, high-intent contacts delivered to your dashboard on demand." },
+  { icon: Target, title: "Prospect Research", desc: "Discover and qualify companies using publicly available business information. Search by industry, region, and company size to find the right opportunities." },
+  { icon: Sparkles, title: "AI Business Intelligence", desc: "AI-powered enrichment surfaces company profiles, website intelligence, and business signals so you can prioritize the highest-value opportunities." },
+  { icon: BarChart3, title: "Opportunity Scoring", desc: "Every prospect is scored based on relevance signals so your team always works the most promising accounts first." },
+  { icon: Users, title: "Built-in CRM", desc: "Contacts, companies, notes, tags, and team assignments — all in one place. No integrations required, no data escaping to a spreadsheet." },
+  { icon: GitBranch, title: "Pipeline Management", desc: "Visual pipeline stages from first contact to closed deal. Drag, update, and report on your entire book of business at a glance." },
+  { icon: Bell, title: "Follow-up Automation", desc: "Scheduled reminders, follow-up sequences, and activity tracking ensure no opportunity goes cold from lack of attention." },
+  { icon: Activity, title: "Sales Analytics", desc: "Track outreach activity, pipeline velocity, conversion rates, and team performance without leaving the platform." },
+  { icon: Layers, title: "Multi-channel Outreach", desc: "Coordinate outreach across email, phone, and social channels from within the workspace — all activity logged automatically." },
+  { icon: ShieldCheck, title: "Privacy & Compliance", desc: "Built for responsible business development. All prospect data is sourced from publicly available business information, and your CRM data belongs to you." },
 ];
 
 function Features() {
@@ -379,9 +340,9 @@ function Features() {
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-18 max-w-2xl mx-auto animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Platform</span>
-          <h2 className="mt-4 text-[clamp(1.9rem,4vw,2.8rem)] font-bold tracking-tight">A complete client acquisition stack</h2>
+          <h2 className="mt-4 text-[clamp(1.9rem,4vw,2.8rem)] font-bold tracking-tight">A complete sales operating system</h2>
           <p className="mt-4 text-muted-foreground text-[0.95rem] leading-relaxed">
-            Sourcing, enrichment, scoring, CRM, and multi-channel outreach — one platform, no duct-taped stack.
+            Prospect research, enrichment, CRM, pipeline, and outreach — one platform built for modern sales teams.
           </p>
         </div>
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -411,10 +372,10 @@ function Features() {
 }
 
 const plans = [
-  { name: "Free", price: "$0", desc: "Try it out", features: ["100 credits / mo", "Email + website data", "Multi-region search"], cta: "Start Free", popular: false },
-  { name: "Starter", price: "$49", desc: "Solo operators", features: ["500 credits / mo", "Email · Phone · Web · IG", "Built-in CRM"], cta: "Get Started", popular: false },
-  { name: "Pro", price: "$99", desc: "Scaling agencies", features: ["2,500 credits / mo", "Instant pool access", "Lead scoring + API"], cta: "Upgrade to Pro", popular: true },
-  { name: "Premium", price: "$249", desc: "Growth operators", features: ["25,000 credits / mo", "Premium instant pool", "Dedicated AM + SSO"], cta: "Contact Sales", popular: false },
+  { name: "Free", price: "$0", desc: "Try the platform", features: ["10 prospects / day · 300 / mo", "Business profile research", "Multi-region search"], cta: "Start Free", popular: false },
+  { name: "Starter", price: "$29", desc: "Solo operators", features: ["50 prospects / day · 1,500 / mo", "Full contact intelligence", "Built-in CRM + Limited AI"], cta: "Get Started", popular: false },
+  { name: "Pro", price: "$79", desc: "Growing agencies", features: ["200 prospects / day · 6,000 / mo", "AI enrichment + Higher AI", "Full CRM + Pipeline + API"], cta: "Upgrade to Pro", popular: true },
+  { name: "Premium", price: "$199", desc: "Growth operators", features: ["833 prospects / day · 25,000 / mo", "Premium intelligence + Highest AI", "Full automations + Team seats"], cta: "Contact Sales", popular: false },
 ];
 
 export function PlanCard({ name, price, desc, features, cta, popular }: {
@@ -474,8 +435,8 @@ function PricingPreview() {
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-16 animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Pricing</span>
-          <h2 className="mt-4 text-[clamp(1.9rem,4vw,2.8rem)] font-bold text-foreground">Ready to scale?</h2>
-          <p className="mt-4 text-muted-foreground">Choose the engine that matches your growth ambitions.</p>
+          <h2 className="mt-4 text-[clamp(1.9rem,4vw,2.8rem)] font-bold text-foreground">Simple, transparent plans</h2>
+          <p className="mt-4 text-muted-foreground">Daily lead limits so your pipeline stays active all month — not just week one.</p>
         </div>
         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
           {plans.map((p, i) => (
@@ -498,47 +459,6 @@ function PricingPreview() {
   );
 }
 
-function Testimonials() {
-  const items = [
-    { quote: "Mast gave us verified emails AND mobile numbers in the same export. Our reply rate jumped from 3% to 14%.", author: "Daniel Park", role: "Co-founder, Tidal Group", rating: 5 },
-    { quote: "Email, phone, website, Instagram — every record is outreach-ready. We're closing local studios in 48 hours.", author: "Sara Lopez", role: "Owner, Pulse Agency", rating: 5 },
-    { quote: "We canceled Apollo, a dialer tool, and our VA. Mast replaced all three with better data.", author: "Marcus Lee", role: "Director of Growth, Helix", rating: 5 },
-  ];
-
-  return (
-    <section id="testimonials" className="py-28 px-6 border-t border-border/50">
-      <div className="max-w-7xl mx-auto">
-        <div className="text-center mb-16 animate-fade-up">
-          <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Customers</span>
-          <h2 className="mt-4 text-[clamp(1.9rem,4vw,2.8rem)] font-bold">Loved by operators who ship pipeline</h2>
-        </div>
-        <div className="grid md:grid-cols-3 gap-5">
-          {items.map((t, i) => (
-            <div
-              key={t.author}
-              className="group relative bg-card border border-border/60 rounded-2xl p-7 flex flex-col card-hover animate-fade-up overflow-hidden"
-              style={{ animationDelay: `${i * 100}ms` }}
-            >
-              <div className="absolute inset-0 bg-gradient-to-br from-brand/0 to-brand/0 group-hover:from-brand/[0.03] group-hover:to-transparent transition-all duration-500 rounded-2xl pointer-events-none" />
-              <div className="flex gap-0.5 mb-4">
-                {[...Array(t.rating)].map((_, si) => (
-                  <Star key={si} className="size-3.5 fill-warning text-warning" />
-                ))}
-              </div>
-              <Quote className="size-5 text-brand mb-3 opacity-60" />
-              <p className="text-foreground leading-relaxed flex-1 text-[0.92rem]">{t.quote}</p>
-              <div className="mt-6 pt-5 border-t border-border/50">
-                <p className="text-sm font-semibold text-foreground">{t.author}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">{t.role}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function CTA() {
   return (
     <section className="py-24 px-6">
@@ -554,17 +474,18 @@ function CTA() {
 
         <div className="relative">
           <h2 className="text-[clamp(1.9rem,5vw,3rem)] font-bold tracking-tight leading-tight animate-fade-up">
-            Build your client acquisition<br />pipeline today.
+            Run your entire sales operation<br />from one platform.
           </h2>
           <p className="mt-5 text-muted-foreground max-w-xl mx-auto text-[0.95rem] leading-relaxed animate-fade-up delay-100">
-            100 free credits to generate outreach-ready leads — email, phone, website, and Instagram included. No credit card. Cancel anytime.
+            Start free — no credit card required. Research prospects, manage your pipeline,
+            and close deals from day one.
           </p>
           <div className="mt-9 flex flex-col sm:flex-row gap-3 justify-center animate-fade-up delay-200">
             <Link
               to="/signup"
               className="group relative bg-brand text-brand-foreground px-8 py-3.5 rounded-xl font-semibold shadow-brand hover:bg-brand-dark transition-all btn-press overflow-hidden"
             >
-              <span className="relative z-10">Start Free — it's free</span>
+              <span className="relative z-10">Start Free</span>
               <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
             </Link>
             <Link

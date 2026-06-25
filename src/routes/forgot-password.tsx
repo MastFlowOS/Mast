@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Logo } from "@/components/mast/Logo";
 import { useState } from "react";
 import { ArrowLeft, Mail } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 export const Route = createFileRoute("/forgot-password")({
   head: () => ({
@@ -15,9 +16,9 @@ export const Route = createFileRoute("/forgot-password")({
 
 function ForgotPasswordPage() {
   const [sent, setSent] = useState(false);
-const [email, setEmail] = useState("");
-const [loading, setLoading] = useState(false);
-const [error, setError] = useState("");
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   return (
     <div className="min-h-screen flex flex-col px-6 py-10 lg:px-16 bg-background text-foreground">
@@ -41,42 +42,47 @@ const [error, setError] = useState("");
               <form
                 className="mt-8 space-y-4"
                 onSubmit={async (e) => {
-  e.preventDefault();
+                  e.preventDefault();
 
-  setLoading(true);
-  setError("");
+                  setLoading(true);
+                  setError("");
 
-  try {
-    const response = await fetch(
-      `${import.meta.env.VITE_API_URL}/api/auth/forgot-password`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          email,
-        }),
-      }
-    );
+                  try {
+                    if (!supabase) throw new Error("Supabase is not configured.");
 
-    const data = await response.json();
+                    // ─── Diagnostic logging ──────────────────────────────────
+                    console.log("[Mast:forgot-password] resetPasswordForEmail → request started", {
+                      email,
+                      redirectTo: `${window.location.origin}/reset-password`,
+                    });
 
-    if (!response.ok) {
-      throw new Error(data.error || "Failed to send reset email");
-    }
+                    const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email, {
+                      redirectTo: `${window.location.origin}/reset-password`,
+                    });
 
-    setSent(true);
-  } catch (err) {
-    setError(
-      err instanceof Error
-        ? err.message
-        : "Failed to send reset email"
-    );
-  } finally {
-    setLoading(false);
-  }
-}}
+                    if (resetErr) {
+                      console.error("[Mast:forgot-password] resetPasswordForEmail → error", {
+                        message: resetErr.message,
+                        status: resetErr.status,
+                        code: (resetErr as any).code ?? "n/a",
+                      });
+                      throw resetErr;
+                    }
+
+                    console.log("[Mast:forgot-password] resetPasswordForEmail → success (email dispatched)");
+                    // ─────────────────────────────────────────────────────────
+
+                    setSent(true);
+                  } catch (err) {
+                    setError(
+                      err instanceof Error
+                        ? err.message
+                        : "Failed to send reset email"
+                    );
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
               >
                 <label className="block">
   <span className="block text-xs font-semibold text-muted-foreground mb-1.5">

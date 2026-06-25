@@ -1,29 +1,14 @@
+/**
+ * /sitemap.xml
+ *
+ * Previously used @tanstack/react-start server handlers (SSR-only API).
+ * MAST is now a pure Vite SPA on Netlify — there are no server routes.
+ *
+ * Replaced with a static sitemap.xml in /public/sitemap.xml.
+ * This file is kept to satisfy the routeTree.gen.ts import but does nothing.
+ */
 import { createFileRoute } from "@tanstack/react-router";
-import type {} from "@tanstack/react-start";
-
-const BASE_URL = "";
 
 export const Route = createFileRoute("/sitemap.xml")({
-  server: {
-    handlers: {
-      GET: async () => {
-        const entries = [
-          { path: "/", priority: "1.0", changefreq: "weekly" },
-          { path: "/pricing", priority: "0.9", changefreq: "weekly" },
-          { path: "/login", priority: "0.5", changefreq: "monthly" },
-          { path: "/signup", priority: "0.7", changefreq: "monthly" },
-        ];
-        const urls = entries
-          .map(
-            (e) =>
-              `  <url>\n    <loc>${BASE_URL}${e.path}</loc>\n    <changefreq>${e.changefreq}</changefreq>\n    <priority>${e.priority}</priority>\n  </url>`
-          )
-          .join("\n");
-        const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>`;
-        return new Response(xml, {
-          headers: { "Content-Type": "application/xml", "Cache-Control": "public, max-age=3600" },
-        });
-      },
-    },
-  },
+  component: () => null,
 });

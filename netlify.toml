@@ -3,8 +3,21 @@ command = "npm run build"
 publish = "dist"
 
 [build.environment]
+# Only non-VITE_ build tooling config lives here.
+# NODE_VERSION is not a VITE_ variable and does not affect import.meta.env.
 NODE_VERSION = "22"
-VITE_API_URL = "https://folder-manager--zexmoon2020.replit.app"
+# ─────────────────────────────────────────────────────────────────────────────
+# ALL VITE_ environment variables must be set in the Netlify dashboard:
+#   Site Settings → Environment Variables
+#
+# Required variables (add these in the dashboard, not here):
+#   VITE_SUPABASE_URL      — your Supabase project URL
+#   VITE_SUPABASE_ANON_KEY — your Supabase anon/public key
+#
+# Why: any VITE_ key defined in this file takes precedence over dashboard
+# values and is baked into the git-tracked file, making it impossible to
+# rotate secrets without a code change. Keep this block free of VITE_ keys.
+# ─────────────────────────────────────────────────────────────────────────────
 
 [[redirects]]
 from = "/*"

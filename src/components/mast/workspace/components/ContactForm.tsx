@@ -74,7 +74,7 @@ export function ContactForm({ lead, body, setBody }: ContactFormProps) {
           content: "Contact form message marked sent",
         },
         patch: {
-          status: "contact_form_sent",
+          status: "outreach",
           lastContactedAt: sentAt,
         },
       });

@@ -8,6 +8,7 @@ import {
   Instagram,
   MapPin,
   Sparkles,
+  Zap,
   Send,
   ExternalLink,
   Save,
@@ -20,6 +21,7 @@ import {
   Share2,
 } from "lucide-react";
 import type { Lead } from "@/lib/api";
+import { stripActivityMarkers } from "@/lib/lead-workspace";
 
 interface LeadDetailsDrawerProps {
   lead: Lead | null;
@@ -166,6 +168,54 @@ Mast Acquisition OS`;
               This score aggregates contact validity, domain authority, and social signal strength.
             </p>
           </div>
+
+          {/* Contextual Intelligence */}
+          {(() => {
+            let aiOverview = "";
+            let suggestedAction = "";
+            if (lead.notes) {
+              const rawNotes = stripActivityMarkers(lead.notes);
+              const overviewMatch = rawNotes.match(/AI Overview:\s*([\s\S]*?)(?=\n\nSuggested First Action:|$)/i);
+              const actionMatch = rawNotes.match(/Suggested First Action:\s*([\s\S]*?)$/i);
+              
+              if (overviewMatch) aiOverview = overviewMatch[1].trim();
+              if (actionMatch) suggestedAction = actionMatch[1].trim();
+            }
+
+            if (!aiOverview && !suggestedAction) return null;
+
+            return (
+              <div className="space-y-3">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  Contextual Intelligence
+                </h3>
+                <div className="space-y-3">
+                  {aiOverview && (
+                    <div className="rounded-xl border border-brand/20 bg-brand/5 p-4 space-y-1.5 relative overflow-hidden">
+                      <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-brand">
+                        <Sparkles className="size-3.5 text-brand" />
+                        <span>AI Overview</span>
+                      </div>
+                      <p className="text-xs text-foreground leading-relaxed font-sans">
+                        {aiOverview}
+                      </p>
+                    </div>
+                  )}
+                  {suggestedAction && (
+                    <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4 space-y-1.5 relative overflow-hidden">
+                      <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-500">
+                        <Zap className="size-3.5 text-amber-500" />
+                        <span>Suggested Action</span>
+                      </div>
+                      <p className="text-xs text-foreground leading-relaxed font-sans font-medium">
+                        {suggestedAction}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Contact Details Grid */}
           <div className="space-y-3">

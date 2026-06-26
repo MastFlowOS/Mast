@@ -44,7 +44,7 @@ export function PhoneForm({ lead, body, setBody }: PhoneFormProps) {
     const completedAt = new Date().toISOString();
     const trimmedNotes = callNotes.trim();
     const patch = {
-      status: "contacted",
+      status: "outreach",
       lastContactedAt: completedAt,
       ...(trimmedNotes ? { notes: appendVisibleNote(lead.notes, `Call notes:\n${trimmedNotes}`) } : {}),
     };

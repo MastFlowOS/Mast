@@ -1,10 +1,11 @@
-import { Mail, Phone, Globe, Instagram, MapPin, Tag, ExternalLink, Copy, Check } from "lucide-react";
-import { useState } from "react";
+import { Mail, Phone, Globe, Instagram, MapPin, Tag, ExternalLink, Copy, Check, Sparkles, Zap } from "lucide-react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import type { Lead } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
 import { ChannelAvailabilityCard } from "./components/ChannelAvailabilityCard";
-import { NICHES } from "@/lib/lead-workspace";
+import { NICHES, stripActivityMarkers } from "@/lib/lead-workspace";
+import { staggerDelay } from "@/lib/motion";
 
 function formatSourceLabel(source: string | null | undefined): string {
   if (!source) return "Mast Lead Engine";
@@ -38,26 +39,76 @@ export function LeftSidebar({
 
   const hasContactData = lead.email || lead.phone || lead.website || lead.instagramHandle || lead.location;
 
+  // Extract AI Overview and Suggested Action
+  let aiOverview = "";
+  let suggestedAction = "";
+  if (lead.notes) {
+    const rawNotes = stripActivityMarkers(lead.notes);
+    const overviewMatch = rawNotes.match(/AI Overview:\s*([\s\S]*?)(?=\n\nSuggested First Action:|$)/i);
+    const actionMatch = rawNotes.match(/Suggested First Action:\s*([\s\S]*?)$/i);
+    
+    if (overviewMatch) aiOverview = overviewMatch[1].trim();
+    if (actionMatch) suggestedAction = actionMatch[1].trim();
+  }
+
+  // Animate score bar from 0 to score on mount
+  const [animatedScore, setAnimatedScore] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => setAnimatedScore(score), 120);
+    return () => clearTimeout(t);
+  }, [score]);
+
   return (
-    <aside className="w-[232px] shrink-0 border-r border-border flex flex-col overflow-y-auto bg-card/40">
+    <aside className="w-[232px] shrink-0 border-r border-border flex flex-col overflow-y-auto bg-card/40 animate-slide-right">
       <div className="p-5 space-y-7">
 
         {/* Score */}
-        <div className="space-y-2">
+        <div className={`space-y-2 animate-fade-up ${staggerDelay(0)}`}>
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Lead Score</span>
+            <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Opportunity Score</span>
             <span className="text-sm font-bold text-brand font-mono">{score}%</span>
           </div>
           <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
             <div
-              className="h-full bg-gradient-to-r from-brand/70 to-brand rounded-full transition-all duration-700"
-              style={{ width: `${score}%` }}
+              className="h-full bg-gradient-to-r from-brand/70 to-brand rounded-full"
+              style={{ width: `${animatedScore}%`, transition: "width 1.1s cubic-bezier(0.16, 1, 0.3, 1)" }}
             />
           </div>
         </div>
 
+        {/* Contextual Intelligence */}
+        {(aiOverview || suggestedAction) && (
+          <section className={`space-y-3 animate-fade-up ${staggerDelay(1)}`}>
+            <SectionHeading>Contextual Intelligence</SectionHeading>
+            <div className="space-y-2.5">
+              {aiOverview && (
+                <div className="rounded-xl border border-brand/20 bg-brand/5 p-3 space-y-1 relative overflow-hidden">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand">
+                    <Sparkles className="size-3 text-brand" />
+                    <span>AI Overview</span>
+                  </div>
+                  <p className="text-[11px] text-foreground leading-relaxed font-sans">
+                    {aiOverview}
+                  </p>
+                </div>
+              )}
+              {suggestedAction && (
+                <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3 space-y-1 relative overflow-hidden">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-500">
+                    <Zap className="size-3 text-amber-500" />
+                    <span>Suggested Action</span>
+                  </div>
+                  <p className="text-[11px] text-foreground leading-relaxed font-sans font-medium">
+                    {suggestedAction}
+                  </p>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {/* Contact */}
-        <section className="space-y-3">
+        <section className={`space-y-3 animate-fade-up ${staggerDelay(2)}`}>
           <SectionHeading>Contact</SectionHeading>
           {hasContactData ? (
             <div className="space-y-1.5">
@@ -115,7 +166,7 @@ export function LeftSidebar({
         <ChannelAvailabilityCard lead={lead} channel={channel} setChannel={setChannel} />
 
         {/* Status */}
-        <section className="space-y-3">
+        <section className={`space-y-3 animate-fade-up ${staggerDelay(3)}`}>
           <SectionHeading>Status</SectionHeading>
           <div className="space-y-1.5">
             <InfoRow label="Status" value={lead.status} />

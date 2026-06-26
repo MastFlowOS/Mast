@@ -112,7 +112,7 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
         content,
       },
       patch: {
-        status: "email_sent",
+        status: "outreach",
         lastContactedAt: sentAt,
       },
     });

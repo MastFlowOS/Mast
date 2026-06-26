@@ -82,11 +82,13 @@ function Pipeline() {
   // Group real pipeline stats by flow stage
   const stageCounts = useMemo(() => {
     const counts: Record<FlowStage, number> = {
-      new: 0,
-      contacted: 0,
-      interested: 0,
+      discovered: 0,
+      ready: 0,
+      outreach: 0,
+      conversation: 0,
       meeting: 0,
       proposal: 0,
+      negotiation: 0,
       won: 0,
     };
     if (!pipelineStats) return counts;
@@ -99,26 +101,30 @@ function Pipeline() {
 
   // Track counts to animate live updates
   const [glowingNodes, setGlowingNodes] = useState<Record<FlowStage, boolean>>({
-    new: false,
-    contacted: false,
-    interested: false,
-    meeting: false,
-    proposal: false,
-    won: false,
+      discovered: false,
+      ready: false,
+      outreach: false,
+      conversation: false,
+      meeting: false,
+      proposal: false,
+      negotiation: false,
+      won: false,
   });
 
   const prevCounts = useRef<Record<FlowStage, number>>({
-    new: 0,
-    contacted: 0,
-    interested: 0,
-    meeting: 0,
-    proposal: 0,
-    won: 0,
+      discovered: 0,
+      ready: 0,
+      outreach: 0,
+      conversation: 0,
+      meeting: 0,
+      proposal: 0,
+      negotiation: 0,
+      won: 0,
   });
 
   useEffect(() => {
     if (statsLoading || !pipelineStats) return;
-    const stages: FlowStage[] = ["new", "contacted", "interested", "meeting", "proposal", "won"];
+    const stages: FlowStage[] = ["discovered", "ready", "outreach", "conversation", "meeting", "proposal", "negotiation", "won"];
     let triggered = false;
 
     stages.forEach((stage) => {
@@ -157,36 +163,28 @@ function Pipeline() {
 
   // Calculate cumulative conversions for stages
   const stageConversions = useMemo(() => {
-    const stages: FlowStage[] = ["new", "contacted", "interested", "meeting", "proposal", "won"];
+    const stages: FlowStage[] = ["discovered", "ready", "outreach", "conversation", "meeting", "proposal", "negotiation", "won"];
     const rates: Record<FlowStage, number> = {
-      new: 100,
-      contacted: 0,
-      interested: 0,
+      discovered: 100,
+      ready: 0,
+      outreach: 0,
+      conversation: 0,
       meeting: 0,
       proposal: 0,
+      negotiation: 0,
       won: 0,
     };
 
     if (totalLeadsInFunnel === 0) return rates;
 
-    // Contacted or later
-    const contactedOrLater = totalLeadsInFunnel - stageCounts.new;
-    rates.contacted = Math.round((contactedOrLater / totalLeadsInFunnel) * 100);
-
-    // Interested or later
-    const interestedOrLater = contactedOrLater - stageCounts.contacted;
-    rates.interested = Math.round((interestedOrLater / totalLeadsInFunnel) * 100);
-
-    // Meeting or later
-    const meetingOrLater = interestedOrLater - stageCounts.interested;
-    rates.meeting = Math.round((meetingOrLater / totalLeadsInFunnel) * 100);
-
-    // Proposal or later
-    const proposalOrLater = meetingOrLater - stageCounts.meeting;
-    rates.proposal = Math.round((proposalOrLater / totalLeadsInFunnel) * 100);
-
-    // Won
-    rates.won = Math.round((stageCounts.won / totalLeadsInFunnel) * 100);
+    let remaining = totalLeadsInFunnel;
+    rates.ready = Math.round(((remaining -= stageCounts.discovered) / totalLeadsInFunnel) * 100);
+    rates.outreach = Math.round(((remaining -= stageCounts.ready) / totalLeadsInFunnel) * 100);
+    rates.conversation = Math.round(((remaining -= stageCounts.outreach) / totalLeadsInFunnel) * 100);
+    rates.meeting = Math.round(((remaining -= stageCounts.conversation) / totalLeadsInFunnel) * 100);
+    rates.proposal = Math.round(((remaining -= stageCounts.meeting) / totalLeadsInFunnel) * 100);
+    rates.negotiation = Math.round(((remaining -= stageCounts.proposal) / totalLeadsInFunnel) * 100);
+    rates.won = Math.round(((remaining -= stageCounts.negotiation) / totalLeadsInFunnel) * 100);
 
     return rates;
   }, [stageCounts, totalLeadsInFunnel]);
@@ -237,7 +235,7 @@ function Pipeline() {
     const recs = [];
 
     // 1. Uncontacted leads check
-    const newLeads = stageCounts.new;
+    const newLeads = stageCounts.discovered;
     if (newLeads > 0) {
       recs.push({
         id: "uncontacted",
@@ -260,7 +258,7 @@ function Pipeline() {
     const now = Date.now();
     const stalledCount = leads.filter((lead) => {
       const stage = getStageForStatus(lead.status);
-      return stage === "contacted" && (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000);
+      return stage === "outreach" && (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000);
     }).length;
 
     if (stalledCount > 0) {
@@ -274,7 +272,7 @@ function Pipeline() {
     }
 
     // 3. Conversion suggestion
-    const contactedConv = stageConversions.contacted;
+    const contactedConv = stageConversions.outreach;
     if (contactedConv < 40 && totalLeadsInFunnel > 10) {
       recs.push({
         id: "conversion-boost",
@@ -364,11 +362,13 @@ function Pipeline() {
 
     // AI Insight text for stage
     const insights: Record<FlowStage, string> = {
-      new: "Response rates are 22% higher for cafes when contacted before 10 AM. Recommended channel: Instagram DM.",
-      contacted: "Response rates increased 17% after sending follow-up messages. Sticking to a 2-day delay produces optimal conversions.",
-      interested: "Leads that replied positive convert to meetings at a 3x higher rate when offered a calendly link directly.",
+      discovered: "Response rates are 22% higher for cafes when contacted before 10 AM. Recommended channel: Instagram DM.",
+      ready: "Verifying contact details prior to outreach reduces bounce rates by 40%.",
+      outreach: "Response rates increased 17% after sending follow-up messages. Sticking to a 2-day delay produces optimal conversions.",
+      conversation: "Leads that replied positive convert to meetings at a 3x higher rate when offered a calendly link directly.",
       meeting: "Meetings have an 82% conversion to proposal if a pre-meeting summary report is sent 24 hours in advance.",
       proposal: "Deals stall in proposal for 8.4 days on average. Sending a quick video breakdown of the quote cuts this time in half.",
+      negotiation: "Negotiation phases typically resolve 12% faster if legal docs are pre-filled.",
       won: "Your sales cycle is averaging 5.2 days. High concentration of Closed-Won deals are in the coffee shop niche.",
     };
 
@@ -392,12 +392,14 @@ function Pipeline() {
   const handleMoveLeadStage = async (leadId: number, targetStage: FlowStage) => {
     // Map stage back to a primary default status
     const stageToStatus: Record<FlowStage, LeadStatus> = {
-      new: "new",
-      contacted: "contacted",
-      interested: "interested",
-      meeting: "meeting_booked",
-      proposal: "follow_up_due",
-      won: "closed",
+      discovered: "discovered",
+      ready: "ready",
+      outreach: "outreach",
+      conversation: "conversation",
+      meeting: "meeting",
+      proposal: "proposal",
+      negotiation: "negotiation",
+      won: "closed_won",
     };
     
     const targetStatus = stageToStatus[targetStage];

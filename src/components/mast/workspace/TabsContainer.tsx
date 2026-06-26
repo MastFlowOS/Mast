@@ -16,6 +16,13 @@ interface TabsContainerProps {
   setBody: (v: string) => void;
 }
 
+const TABS = [
+  { value: "compose", label: "Compose" },
+  { value: "history", label: "History" },
+  { value: "follow-ups", label: "Follow-ups" },
+  { value: "notes", label: "Notes" },
+] as const;
+
 export function TabsContainer({
   lead,
   channel,
@@ -29,15 +36,16 @@ export function TabsContainer({
     <Tabs defaultValue="compose" className="flex flex-col flex-1 min-h-0">
       <div className="px-8 pt-5 border-b border-border shrink-0">
         <TabsList className="bg-transparent h-auto p-0 gap-1">
-          {(["compose", "history", "follow-ups", "notes"] as const).map((tab) => (
+          {TABS.map(({ value, label }) => (
             <TabsTrigger
-              key={tab}
-              value={tab}
+              key={value}
+              value={value}
               className="relative h-9 rounded-none bg-transparent px-4 pb-3 pt-2 text-sm font-medium text-muted-foreground capitalize
                 data-[state=active]:text-foreground data-[state=active]:shadow-none
-                data-[state=active]:after:absolute data-[state=active]:after:inset-x-0 data-[state=active]:after:bottom-0 data-[state=active]:after:h-0.5 data-[state=active]:after:bg-brand"
+                data-[state=active]:after:absolute data-[state=active]:after:inset-x-0 data-[state=active]:after:bottom-0 data-[state=active]:after:h-0.5 data-[state=active]:after:bg-brand data-[state=active]:after:rounded-full
+                transition-colors duration-150"
             >
-              {tab}
+              {label}
             </TabsTrigger>
           ))}
         </TabsList>

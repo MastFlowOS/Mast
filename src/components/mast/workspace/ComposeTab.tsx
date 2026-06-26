@@ -16,6 +16,13 @@ interface ComposeTabProps {
   setBody: (v: string) => void;
 }
 
+const CHANNEL_LABELS: Record<Channel, { heading: string; hint: string }> = {
+  email:        { heading: "Email Outreach",       hint: "Craft a personal, high-converting email to the decision-maker" },
+  instagram:    { heading: "Instagram DM",          hint: "Send a warm, conversational DM that doesn't feel like a pitch" },
+  phone:        { heading: "Call Script",           hint: "Use this script as your guide — keep it natural and confident" },
+  contact_form: { heading: "Contact Form Message",  hint: "A concise message optimized for web contact forms" },
+};
+
 export function ComposeTab({
   lead,
   channel,
@@ -25,15 +32,15 @@ export function ComposeTab({
   body,
   setBody,
 }: ComposeTabProps) {
+  const label = CHANNEL_LABELS[channel];
+
   return (
     <div className="p-8 space-y-6">
       {/* Channel selector */}
       <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold">Compose Message</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Use the AI Assistant panel on the right to generate a draft
-          </p>
+        <div className="animate-fade-up">
+          <h2 className="text-base font-semibold">{label.heading}</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">{label.hint}</p>
         </div>
         <ChannelSelector value={channel} onChange={setChannel} />
       </div>

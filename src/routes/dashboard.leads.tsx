@@ -265,6 +265,44 @@ function calcCredits(
 
 // ─── Main Component ────────────────────────────────────────────────────────────
 
+// ─── Animated Counter Component ────────────────────────────────────────────────
+function AnimatedCounter({ value }: { value: number }) {
+  const [displayValue, setDisplayValue] = useState(value);
+
+  useEffect(() => {
+    let start = displayValue;
+    const end = value;
+    if (start === end) return;
+
+    const duration = 800; // 0.8 seconds for premium smooth feel
+    const startTime = performance.now();
+    let animationFrameId: number;
+
+    const updateCounter = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      
+      // Easing: easeOutCubic
+      const easeProgress = 1 - Math.pow(1 - progress, 3);
+      const current = Math.round(start + (end - start) * easeProgress);
+      
+      setDisplayValue(current);
+
+      if (progress < 1) {
+        animationFrameId = requestAnimationFrame(updateCounter);
+      }
+    };
+
+    animationFrameId = requestAnimationFrame(updateCounter);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [value, displayValue]);
+
+  return <span>{displayValue.toLocaleString()}</span>;
+}
+
+// ─── Reusable Locked Feature Card ──────────────────────────────────────────────
+import { LockedFeatureCard } from "@/components/mast/LockedFeatureCard";
+
 function GetLeads() {
   const navigate = useNavigate();
 
@@ -287,13 +325,28 @@ function GetLeads() {
   // Channels & generation mode
   const [speed, setSpeed] = useState(speeds[0].id);
   const [channels, setChannels] = useState<ChannelId[]>(["email", "phone"]);
-  const [lastGenerated, setLastGenerated] = useState<Lead[]>([]);
+
+  // Staged loading & completion states
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [currentStageIndex, setCurrentStageIndex] = useState(0);
+  const [showCompletion, setShowCompletion] = useState(false);
+  const [newOpportunities, setNewOpportunities] = useState<Lead[]>([]);
+  const [firstOpportunityId, setFirstOpportunityId] = useState<number | null>(null);
 
   const maxQuantity = account?.limits.maxLeadRequest ?? 100;
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
   const monthlyRemaining = account?.monthlyUsage.remaining ?? 0;
   const currentSpeed = speeds.find((s) => s.id === speed)!;
   const hasPremiumAccess = account?.limits.allowPremiumPool ?? false;
+
+  // Staged Loading Text Definitions
+  const loadingStages = [
+    { title: "Scanning Market Verticals", desc: "Searching business registries and directories..." },
+    { title: "Analyzing Digital Presence", desc: "Evaluating website performance and branding cohesion..." },
+    { title: "Verifying Contact Pathways", desc: "Verifying active emails, phones, and social handles..." },
+    { title: "Seeding Intelligence Workspace", desc: "Constructing company summary and personalized audits..." },
+    { title: "Preparing Action Plans", desc: "Drafting custom outreach angles for your pipeline..." }
+  ];
 
   // Close niche dropdown on outside click
   useEffect(() => {
@@ -357,9 +410,23 @@ function GetLeads() {
     !modeRestricted &&
     !exceedsDailyLimit &&
     !exceedsMonthlyLimit &&
-    !generate.isPending;
+    !isGenerating;
 
   const handleGenerate = async () => {
+    if (!canGenerate) return;
+
+    setIsGenerating(true);
+    setCurrentStageIndex(0);
+    setShowCompletion(false);
+    setNewOpportunities([]);
+
+    // Staged progress interval
+    const stageInterval = setInterval(() => {
+      setCurrentStageIndex((prev) => (prev < loadingStages.length - 1 ? prev + 1 : prev));
+    }, 1200);
+
+    const startTime = Date.now();
+
     try {
       const result = await generate.mutateAsync({
         quantity,
@@ -368,39 +435,267 @@ function GetLeads() {
         mode: speed as "scrape" | "pool" | "premium",
         channels,
       });
-      setLastGenerated(result.leads);
-      toast.success(`Generated ${result.generated.toLocaleString()} leads`, {
-        description: `${result.generated.toLocaleString()} leads consumed from your allowance.`,
-      });
+
+      // Maintain loading experience for at least 6 seconds so user experiences the live analysis
+      const elapsedTime = Date.now() - startTime;
+      const minDelay = 6000;
+      const remainingTime = Math.max(0, minDelay - elapsedTime);
+
+      setTimeout(() => {
+        clearInterval(stageInterval);
+        setIsGenerating(false);
+        setNewOpportunities(result.leads);
+        if (result.leads.length > 0) {
+          setFirstOpportunityId(result.leads[0].id);
+        }
+        setShowCompletion(true);
+        toast.success(`${result.generated} opportunities added to pipeline`);
+      }, remainingTime);
+
     } catch (err) {
+      clearInterval(stageInterval);
+      setIsGenerating(false);
       if (err instanceof ApiError) {
         if (err.message.includes("LIMIT_EXCEEDED_DAILY")) {
-          toast.error("Daily limit reached", { description: `You have ${dailyRemaining} leads remaining today.` });
+          toast.error("Daily capacity reached", { description: `You have ${dailyRemaining} opportunities remaining today.` });
         } else if (err.message.includes("LIMIT_EXCEEDED_MONTHLY")) {
-          toast.error("Monthly limit reached", { description: `You have ${monthlyRemaining} leads remaining this month.` });
-        } else if (err.message.includes("LIMIT_EXCEEDED_BOTH")) {
-          toast.error("Limits reached", { description: "Both your daily and monthly lead allowances are exhausted." });
+          toast.error("Monthly capacity reached", { description: `You have ${monthlyRemaining} opportunities remaining this month.` });
         } else {
           toast.error(err.message);
         }
       } else {
-        toast.error("Lead generation failed.");
+        toast.error("Discovery engine failed. Please try again.");
       }
     }
   };
 
+  const handleBeginOutreach = () => {
+    if (firstOpportunityId) {
+      navigate({
+        to: "/dashboard/leads/$leadId",
+        params: { leadId: String(firstOpportunityId) },
+      });
+    } else {
+      navigate({ to: "/dashboard/crm" });
+    }
+  };
+
+  // ─── 1. Staged Loading State ────────────────────────────────────────────────
+  if (isGenerating) {
+    const percent = Math.round(((currentStageIndex + 1) / loadingStages.length) * 100);
+    return (
+      <div className="flex min-h-[75vh] items-center justify-center p-6">
+        <div className="w-full max-w-lg rounded-2xl border border-border bg-card/40 p-8 shadow-2xl backdrop-blur-md space-y-8 relative overflow-hidden">
+          {/* Top glowing gradient line */}
+          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-brand/20 via-brand to-brand/20 animate-pulse" />
+
+          {/* Glowing Scanner Animation */}
+          <div className="flex justify-center">
+            <div className="relative size-24">
+              <div className="absolute inset-0 rounded-full bg-brand/10 border border-brand/20 animate-ping" />
+              <div className="absolute inset-2 rounded-full bg-brand/20 border border-brand/30 animate-pulse" />
+              <div className="absolute inset-4 rounded-full bg-brand/30 border border-brand/50 flex items-center justify-center">
+                <Sparkles className="size-8 text-brand animate-spin [animation-duration:8s]" />
+              </div>
+            </div>
+          </div>
+
+          {/* Stage Wording */}
+          <div className="text-center space-y-2">
+            <h2 className="text-xl font-bold text-foreground tracking-tight">
+              {loadingStages[currentStageIndex].title}
+            </h2>
+            <p className="text-sm text-muted-foreground animate-pulse">
+              {loadingStages[currentStageIndex].desc}
+            </p>
+          </div>
+
+          {/* Progress Bar */}
+          <div className="space-y-2">
+            <div className="h-2 w-full bg-border rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-brand/60 to-brand transition-all duration-500 rounded-full"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-xs font-mono text-muted-foreground">
+              <span>Analysis Progress</span>
+              <span>{percent}%</span>
+            </div>
+          </div>
+
+          {/* Checklist */}
+          <div className="space-y-3 pt-2">
+            {loadingStages.map((stage, idx) => {
+              const isCompleted = idx < currentStageIndex;
+              const isActive = idx === currentStageIndex;
+              return (
+                <div
+                  key={stage.title}
+                  className={`flex items-center gap-3 text-xs transition-opacity duration-300 ${
+                    isCompleted || isActive ? "opacity-100" : "opacity-30"
+                  }`}
+                >
+                  <div
+                    className={`size-5 rounded-full border flex items-center justify-center shrink-0 ${
+                      isCompleted
+                        ? "bg-brand/10 border-brand text-brand"
+                        : isActive
+                        ? "border-brand/40 text-brand animate-pulse"
+                        : "border-border text-muted-foreground"
+                    }`}
+                  >
+                    {isCompleted ? (
+                      <span className="font-bold">✓</span>
+                    ) : isActive ? (
+                      <div className="size-1.5 rounded-full bg-brand animate-ping" />
+                    ) : (
+                      <span>{idx + 1}</span>
+                    )}
+                  </div>
+                  <span className={`font-medium ${isActive ? "text-foreground font-semibold" : "text-muted-foreground"}`}>
+                    {stage.title}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Mock terminal log output */}
+          <div className="rounded-lg bg-black/40 border border-border/60 p-3.5 font-mono text-[10px] text-muted-foreground space-y-1 overflow-hidden h-24 select-none">
+            <p className="text-brand/60">[SYSTEM] Booting discovery engine...</p>
+            {currentStageIndex >= 1 && <p className="text-blue-400/80">[SCANNER] Parsing geo-coordinates for {regions.join(", ")}...</p>}
+            {currentStageIndex >= 2 && <p className="text-cyan-400/80">[ANALYZER] Found active {niches.length > 0 ? niches[0] : "business"} structures...</p>}
+            {currentStageIndex >= 3 && <p className="text-indigo-400/80">[SMTP] Verifying mail server connection handles...</p>}
+            {currentStageIndex >= 4 && <p className="text-brand/80">[INTELLIGENCE] Seeding workspace dashboards & initial draft copies...</p>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── 2. Premium Completion State ─────────────────────────────────────────────
+  if (showCompletion) {
+    return (
+      <div className="p-8 max-w-4xl mx-auto space-y-8 animate-in fade-in zoom-in-95 duration-500">
+        <div className="bg-card border border-border rounded-2xl p-8 text-center space-y-6 relative overflow-hidden shadow-2xl">
+          <div
+            className="pointer-events-none absolute inset-0 opacity-20"
+            style={{
+              background:
+                "radial-gradient(ellipse at top, color-mix(in oklab, var(--brand) 25%, transparent), transparent 60%)",
+            }}
+          />
+
+          {/* Success Check Icon */}
+          <div className="flex justify-center">
+            <div className="size-16 rounded-full bg-brand/10 border border-brand/20 flex items-center justify-center shadow-brand/10 shadow-lg animate-bounce">
+              <span className="text-2xl text-brand font-bold">✓</span>
+            </div>
+          </div>
+
+          {/* Wording */}
+          <div className="space-y-2 max-w-md mx-auto">
+            <h1 className="text-2xl font-bold text-foreground tracking-tight">
+              {newOpportunities.length} new opportunities prepared
+            </h1>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Outreach channels have been verified and intelligence workspaces initialized. Everything is ready to launch outreach campaigns.
+            </p>
+          </div>
+
+          {/* CTAs */}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+            <button
+              onClick={handleBeginOutreach}
+              className="w-full sm:w-auto px-8 py-3.5 bg-brand hover:bg-brand-dark text-brand-foreground font-bold rounded-xl shadow-brand hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
+            >
+              <Zap className="size-4" /> Begin Outreach
+            </button>
+            <button
+              onClick={() => {
+                setShowCompletion(false);
+                setNewOpportunities([]);
+              }}
+              className="w-full sm:w-auto px-8 py-3.5 bg-background hover:bg-muted text-foreground font-semibold rounded-xl border border-border transition-colors cursor-pointer text-sm"
+            >
+              Continue Discovering
+            </button>
+          </div>
+        </div>
+
+        {/* Prepared Opportunities Preview Grid */}
+        {newOpportunities.length > 0 && (
+          <div className="space-y-4">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+              Prepared Opportunities Preview
+            </h3>
+            <div className="grid sm:grid-cols-3 gap-4">
+              {newOpportunities.slice(0, 3).map((opp, idx) => (
+                <div
+                  key={opp.id}
+                  onClick={() => {
+                    navigate({
+                      to: "/dashboard/leads/$leadId",
+                      params: { leadId: String(opp.id) },
+                    });
+                  }}
+                  className={`bg-card border border-border rounded-xl p-5 hover:border-brand/40 hover:shadow-lg transition-all cursor-pointer space-y-3 relative group card-hover animate-fade-up ${
+                    idx === 0 ? "delay-100" : idx === 1 ? "delay-200" : "delay-300"
+                  }`}
+                >
+                  <div className="space-y-1">
+                    <h4 className="font-bold text-sm text-foreground truncate group-hover:text-brand transition-colors">
+                      {opp.businessName}
+                    </h4>
+                    <p className="text-xs text-muted-foreground truncate">{opp.location}</p>
+                  </div>
+                  <div className="flex gap-1.5 pt-1">
+                    {opp.email && (
+                      <span className="size-6 rounded bg-brand/5 border border-brand/10 flex items-center justify-center text-[10px] text-brand font-bold">
+                        ✉
+                      </span>
+                    )}
+                    {opp.phone && (
+                      <span className="size-6 rounded bg-brand/5 border border-brand/10 flex items-center justify-center text-[10px] text-brand font-bold">
+                        ☎
+                      </span>
+                    )}
+                    {opp.instagramHandle && (
+                      <span className="size-6 rounded bg-brand/5 border border-brand/10 flex items-center justify-center text-[10px] text-brand font-bold">
+                        ig
+                      </span>
+                    )}
+                    {opp.website && (
+                      <span className="size-6 rounded bg-brand/5 border border-brand/10 flex items-center justify-center text-[10px] text-brand font-bold">
+                        🌐
+                      </span>
+                    )}
+                  </div>
+                  <span className="absolute bottom-4 right-4 text-[10px] font-bold text-brand uppercase opacity-0 group-hover:opacity-100 transition-opacity">
+                    Open Workspace →
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ─── 3. Main Discover Form ──────────────────────────────────────────────────
   return (
-    <div className="p-8 max-w-7xl">
-      <div className="mb-8">
+    <div className="p-8 max-w-7xl animate-page-enter">
+      <div className="mb-8 animate-fade-up">
         <span className="text-xs font-bold text-brand uppercase tracking-widest">
-          Lead Generator
+          Opportunity Engine
         </span>
         <h1 className="mt-2 text-3xl font-bold tracking-tight">
-          Generate sales-ready leads in minutes
+          Discover high-intent opportunities in minutes
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Configure your search. Mast returns verified emails, mobile numbers,
-          websites, and Instagram profiles — outreach-ready.
+          Configure your search parameters. Mast connects you to verified businesses, preparing active outreach channels and contextual intelligence automatically.
         </p>
       </div>
 
@@ -409,8 +704,9 @@ function GetLeads() {
           {/* ── Quantity ─────────────────────────────────────────── */}
           <Section
             icon={Target}
-            title="Quantity"
-            subtitle="How many leads to generate?"
+            title="Capacity"
+            subtitle="How many opportunities to discover?"
+            stagger={0}
           >
             <div className="space-y-3">
               <input
@@ -429,7 +725,7 @@ function GetLeads() {
               <div className="flex justify-between text-xs text-muted-foreground">
                 <span>1</span>
                 <span className="text-foreground font-bold text-lg">
-                  {quantity.toLocaleString()} leads
+                  {quantity.toLocaleString()} opportunities
                 </span>
                 <span>100</span>
               </div>
@@ -439,8 +735,9 @@ function GetLeads() {
           {/* ── Region ───────────────────────────────────────────── */}
           <Section
             icon={Globe2}
-            title="Region"
-            subtitle="Select one or more target regions"
+            title="Target Region"
+            subtitle="Select one or more geographic territories"
+            stagger={1}
           >
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               {REGIONS.map((r) => (
@@ -462,8 +759,9 @@ function GetLeads() {
           {/* ── Niche ────────────────────────────────────────────── */}
           <Section
             icon={Sparkles}
-            title="Niche"
-            subtitle="Search and select one or more verticals"
+            title="Business Niche"
+            subtitle="Select one or more verticals to target"
+            stagger={2}
           >
             <div ref={nicheRef} className="relative">
               {/* Selected niche chips */}
@@ -544,7 +842,8 @@ function GetLeads() {
           <Section
             icon={Mail}
             title="Outreach Channels"
-            subtitle="Credit cost increases per channel tier"
+            subtitle="Verified channels loaded into your active workspace"
+            stagger={3}
           >
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               {channelOptions.map((c) => {
@@ -589,8 +888,9 @@ function GetLeads() {
           {/* ── Generation Mode ──────────────────────────────────── */}
           <Section
             icon={Gauge}
-            title="Generation Mode"
-            subtitle="Live scraping vs. instant lead pool access"
+            title="Discovery Speed"
+            subtitle="Live web scraping vs. instant pre-verified access"
+            stagger={4}
           >
             <div className="grid sm:grid-cols-3 gap-3">
               {speeds.map((s) => (
@@ -633,28 +933,28 @@ function GetLeads() {
 
         {/* ── Order Summary / CTA ──────────────────────────────────── */}
         <aside className="space-y-5">
-          <div className="bg-card border border-border rounded-2xl p-6">
-            <h3 className="font-bold mb-4">Order Summary</h3>
+          <div className="bg-card border border-border rounded-2xl p-6 shadow-md">
+            <h3 className="font-bold mb-4">Summary</h3>
             <div className="space-y-3 text-sm">
               <Row
                 label="Quantity"
-                value={`${quantity.toLocaleString()} leads`}
+                value={`${quantity.toLocaleString()} opportunities`}
               />
               <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground shrink-0">Regions</span>
-                <span className="text-foreground font-medium text-right">
+                <span className="text-foreground font-medium text-right truncate max-w-[150px]">
                   {regions.join(", ")}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground shrink-0">Niches</span>
-                <span className="text-foreground font-medium text-right">
+                <span className="text-foreground font-medium text-right truncate max-w-[150px]">
                   {niches.length > 0 ? niches.join(", ") : "Any"}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground shrink-0">Channels</span>
-                <span className="text-foreground font-medium text-right">
+                <span className="text-foreground font-medium text-right truncate max-w-[150px]">
                   {channels.length > 0
                     ? channelOptions
                         .filter((c) => channels.includes(c.id))
@@ -663,99 +963,53 @@ function GetLeads() {
                     : "None"}
                 </span>
               </div>
-              <Row label="Mode" value={currentSpeed.label} />
+              <Row label="Speed" value={currentSpeed.label} />
             </div>
             <div className="my-5 h-px bg-border" />
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">
-                Leads to consume
+                Deduction cost
               </span>
               <span className="inline-flex items-center gap-1.5 font-bold text-foreground">
                 <TrendingUp className="size-4 text-brand" />
-                {quantity.toLocaleString()} leads
+                {quantity.toLocaleString()} credits
               </span>
             </div>
-            <div className="mt-3 flex gap-3 text-[11px]">
+            <div className="mt-3 flex gap-3 text-[11px] justify-between">
               <span className="text-muted-foreground">
-                Daily remaining: <span className="text-foreground font-semibold">{dailyRemaining.toLocaleString()}</span>
+                Daily remaining: <span className="text-foreground font-semibold"><AnimatedCounter value={dailyRemaining} /></span>
               </span>
               <span className="text-muted-foreground">
-                Monthly: <span className="text-foreground font-semibold">{monthlyRemaining.toLocaleString()}</span>
+                Monthly: <span className="text-foreground font-semibold"><AnimatedCounter value={monthlyRemaining} /></span>
               </span>
             </div>
             <button
               onClick={handleGenerate}
               disabled={!canGenerate}
-              className="mt-5 w-full bg-brand hover:bg-brand-dark text-brand-foreground py-3 rounded-xl font-bold shadow-brand inline-flex items-center justify-center gap-2 disabled:opacity-55 disabled:hover:bg-brand"
+              className="mt-5 w-full bg-brand hover:bg-brand-dark text-brand-foreground py-3.5 rounded-xl font-bold shadow-brand inline-flex items-center justify-center gap-2 disabled:opacity-55 disabled:hover:bg-brand cursor-pointer transition-all active:scale-[0.99]"
             >
-              <Zap className="size-4" />{" "}
-              {generate.isPending ? "Generating..." : "Generate Leads"}
+              <Zap className="size-4 text-brand-foreground animate-pulse" />{" "}
+              {isGenerating ? "Analyzing..." : "Discover Opportunities"}
             </button>
             {(channelRestricted || modeRestricted || exceedsDailyLimit || exceedsMonthlyLimit) && (
               <p className="text-[11px] text-destructive text-center mt-2">
                 {exceedsDailyLimit
-                  ? `Daily limit: only ${dailyRemaining} leads left today.`
+                  ? `Daily capacity: only ${dailyRemaining} remaining today.`
                   : exceedsMonthlyLimit
-                  ? `Monthly limit: only ${monthlyRemaining} leads left.`
-                  : "Your current plan does not include this configuration."}
+                  ? `Monthly capacity: only ${monthlyRemaining} remaining.`
+                  : "Your plan does not support this channel configuration."}
               </p>
             )}
           </div>
 
-          {lastGenerated.length > 0 && (
-            <div className="bg-card border border-border rounded-2xl p-6">
-              <h3 className="font-bold mb-3">Latest Batch</h3>
-              <div className="space-y-3">
-                {lastGenerated.slice(0, 5).map((lead) => (
-                  <div
-                    key={lead.id}
-                    onClick={() => {
-                      navigate({
-                        to: "/dashboard/leads/$leadId",
-                        params: { leadId: String(lead.id) },
-                      });
-                    }}
-                    className="rounded-xl border border-border bg-background p-3 hover:border-muted-foreground/40 transition-colors cursor-pointer"
-                  >
-                    <p className="text-sm font-semibold">{lead.businessName}</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {lead.email ||
-                        lead.website ||
-                        lead.instagramHandle ||
-                        lead.location}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Premium Lead Pool Card — hidden if user already has premium */}
+          {/* Premium Lead Pool Card using LockedFeatureCard if user lacks premium access */}
           {!hasPremiumAccess && (
-            <div className="relative rounded-2xl border border-brand/30 bg-card p-6 overflow-hidden">
-              <div
-                className="pointer-events-none absolute inset-0 opacity-50"
-                style={{
-                  background:
-                    "radial-gradient(ellipse at top right, color-mix(in oklab, var(--brand) 30%, transparent), transparent 60%)",
-                }}
-              />
-              <div className="relative">
-                <Lock className="size-5 text-brand mb-3" />
-                <h4 className="font-bold">Unlock Premium Lead Pools</h4>
-                <p className="text-sm text-muted-foreground mt-2">
-                  Skip live scraping. Premium gives you instant pool access to
-                  mobile-verified decision-makers and full Instagram
-                  intelligence.
-                </p>
-                <Link
-                  to="/dashboard/subscription"
-                  className="mt-4 w-full block text-center bg-foreground text-background py-2.5 rounded-lg text-sm font-semibold hover:bg-foreground/90"
-                >
-                  Upgrade to Premium
-                </Link>
-              </div>
-            </div>
+            <LockedFeatureCard
+              featureName="Premium Instant Results"
+              requiredPlan="starter"
+              description="Skip the wait times of live scraping. Instantly access our pre-verified pool of direct decision-makers with mobile numbers and social handles."
+              valueProposition="Connect with verified decision-makers instantly, reducing your lead-to-outreach cycle from 10 minutes to under 10 seconds."
+            />
           )}
         </aside>
       </div>
@@ -770,14 +1024,17 @@ function Section({
   title,
   subtitle,
   children,
+  stagger = 0,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   title: string;
   subtitle: string;
   children: React.ReactNode;
+  stagger?: number;
 }) {
+  const delayClass = ["delay-50", "delay-100", "delay-150", "delay-200", "delay-250"][Math.min(stagger, 4)];
   return (
-    <div>
+    <div className={`animate-fade-up ${delayClass}`}>
       <div className="flex items-center gap-3 mb-4">
         <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center">
           <Icon className="size-4 text-brand" />

@@ -84,37 +84,32 @@ export type Account = {
 
 // ─── Lead types ───────────────────────────────────────────────────────────────
 export type LeadStatus =
-  | "new"
-  | "priority"
-  | "warm"
-  | "contacted"
-  | "instagram_sent"
-  | "email_sent"
-  | "contact_form_sent"
-  | "replied"
-  | "follow_up_due"
-  | "interested"
-  | "meeting_booked"
-  | "closed"
-  | "won"
-  | "dead"
-  | "lost";
+  | "discovered"
+  | "ready"
+  | "outreach"
+  | "conversation"
+  | "meeting"
+  | "proposal"
+  | "negotiation"
+  | "closed_won"
+  | "closed_lost";
 
 export type OutreachChannel = "email" | "instagram" | "phone" | "contact_form";
 
 export type LeadActivityType =
-  | "lead_created"
-  | "message_generated"
-  | "email_opened"
+  | "opportunity_discovered"
+  | "company_analyzed"
+  | "contact_verified"
+  | "workspace_prepared"
+  | "ready_for_outreach"
+  | "workspace_opened"
   | "email_sent"
-  | "instagram_opened"
-  | "instagram_sent"
-  | "contact_form_opened"
-  | "contact_form_sent"
+  | "reply_received"
+  | "meeting_booked"
+  | "proposal_sent"
+  | "deal_closed"
+  | "message_generated"
   | "note_added"
-  | "call_completed"
-  | "followup_scheduled"
-  | "followup_completed"
   | "status_changed";
 
 export type Lead = {
@@ -341,7 +336,7 @@ function dbRowToLead(row: Record<string, unknown>): Lead {
     phone: (row.phone as string | null) ?? null,
     niche: (row.niche as string | null) ?? null,
     location: (row.location as string | null) ?? null,
-    status: (row.status as string) ?? "new",
+    status: (row.status as string) ?? "discovered",
     igFollowers: (row.ig_followers as string | null) ?? null,
     igBio: (row.ig_bio as string | null) ?? null,
     igLastPost: (row.ig_last_post as string | null) ?? null,
@@ -801,17 +796,48 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
   const regionsList = body.region && body.region !== "Global" ? body.region.split(", ") : ["New York, US", "London, UK", "Toronto, CA", "Sydney, AU"];
 
   for (let i = 0; i < actualCount; i++) {
-    const businessName = `${nichesList[i % nichesList.length]} Co. ${Math.floor(Math.random() * 900 + 100)}`;
+    const niche = nichesList[i % nichesList.length];
+    const location = regionsList[i % regionsList.length];
+    const businessName = `${niche} Co. ${Math.floor(Math.random() * 900 + 100)}`;
+    
+    // Customize research notes based on vertical/niche
+    let brandingDesc = "Visual presence is established but lacks coordination across active channels. Color usage could be more cohesive.";
+    let websiteDesc = "Web layout is responsive but lacks clean conversion pathways above the fold. Loading speed has optimization potential.";
+    let actionRecommendation = "Send personalized outreach introducing a high-impact design enhancement for their website.";
+    
+    if (niche.toLowerCase().includes("restaurant") || niche.toLowerCase().includes("bakery") || niche.toLowerCase().includes("coffee") || niche.toLowerCase().includes("cafe")) {
+      brandingDesc = "Instagram aesthetic is strong, but menu branding and photography are inconsistent. Recommended: Standardize grid layout and highlight signature items.";
+      websiteDesc = "Online ordering system is functional but requires 4 clicks to access. Lacks clear menu CTAs on mobile home page. Mobile speed is 3.4s.";
+      actionRecommendation = "Initiate contact via Instagram DM or Email with a mobile wireframe mockup showing a 1-click ordering pathway.";
+    } else if (niche.toLowerCase().includes("agency") || niche.toLowerCase().includes("consulting") || niche.toLowerCase().includes("firm") || niche.toLowerCase().includes("services") || niche.toLowerCase().includes("law") || niche.toLowerCase().includes("accounting")) {
+      brandingDesc = "Brand positioning is formal but feels generic. Lacks video case studies or partner headshots. Recommended: Highlight testimonials and modern typography.";
+      websiteDesc = "Case studies are buried in the navigation. Form fields are too long (8 inputs), causing lead drop-off. Mobile speed is 2.9s.";
+      actionRecommendation = "Send email highlighting a simplified 3-field contact form case study, showing how it increases conversions by 50%.";
+    } else if (niche.toLowerCase().includes("clinic") || niche.toLowerCase().includes("dental") || niche.toLowerCase().includes("health") || niche.toLowerCase().includes("medical") || niche.toLowerCase().includes("veterinary")) {
+      brandingDesc = "Patient trust signals (reviews, safety badges) are not featured prominently. Color scheme is clean but feels cold.";
+      websiteDesc = "Appointment booking is redirected to an external portal that is not mobile-optimized. Load time is 3.1s on mobile.";
+      actionRecommendation = "Initiate outreach with an email offering a patient booking flow audit, focusing on booking page bounce rates.";
+    }
+
+    const brandingNotes = `${brandingDesc} Recommendation: Sync visual style and modern fonts across all platforms to build stronger trust.`;
+    const websiteNotes = `${websiteDesc} Recommendation: Add a primary sticky 'Schedule Appointment' button in the header.`;
+    const notes = `AI Overview: ${businessName} is a growing ${niche} business in ${location}. Their local customer satisfaction is high, but their digital footprint leaks conversions due to friction in booking/ordering and inconsistent cross-channel branding.\n\nSuggested First Action: ${actionRecommendation}`;
+
     const leadRow: CreateLeadBody = {
       businessName,
-      niche: nichesList[i % nichesList.length],
-      location: regionsList[i % regionsList.length],
-      status: "new",
+      niche,
+      location,
+      status: "ready", // Active in momentum pipeline
       email: body.channels.includes("email") ? `contact@${businessName.toLowerCase().replace(/[^a-z0-9]/g, "")}.com` : null,
       phone: body.channels.includes("phone") ? `+1 (555) ${Math.floor(Math.random() * 900 + 100)}-${Math.floor(Math.random() * 9000 + 1000)}` : null,
       instagramHandle: body.channels.includes("instagram") ? `${businessName.toLowerCase().replace(/[^a-z0-9]/g, "")}_ig` : null,
       website: body.channels.includes("website") ? `https://www.${businessName.toLowerCase().replace(/[^a-z0-9]/g, "")}.com` : null,
-      source: `Engine (${body.mode})`,
+      source: `Engine (${body.mode === "premium" ? "premium" : body.mode === "pool" ? "pool" : "scrape"})`,
+      brandingNotes,
+      websiteNotes,
+      notes,
+      igFollowers: body.channels.includes("instagram") ? `${Math.floor(Math.random() * 8000 + 1200)}` : null,
+      igBio: body.channels.includes("instagram") ? `Premium ${niche} services. Contact us today!` : null,
     };
 
     // Insert lead into Supabase workspace
@@ -820,7 +846,53 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
     if (insertErr) {
       console.error("[Mast:generateLeads] Mock lead insert failed:", insertErr.message);
     } else if (dbLead) {
-      generatedLeads.push(dbRowToLead(dbLead));
+      const opportunity = dbRowToLead(dbLead);
+      generatedLeads.push(opportunity);
+
+      // Seed 5 spaced timeline events
+      const nowMs = Date.now();
+      const activities = [
+        {
+          lead_id: dbLead.id,
+          user_id: userId,
+          type: "opportunity_discovered",
+          timestamp: new Date(nowMs - 5 * 60 * 1000).toISOString(),
+          content: "Opportunity discovered via target segment search",
+        },
+        {
+          lead_id: dbLead.id,
+          user_id: userId,
+          type: "company_analyzed",
+          timestamp: new Date(nowMs - 4 * 60 * 1000).toISOString(),
+          content: `Analyzed company structure and digital footprint for ${dbLead.business_name}`,
+        },
+        {
+          lead_id: dbLead.id,
+          user_id: userId,
+          type: "contact_verified",
+          timestamp: new Date(nowMs - 3 * 60 * 1000).toISOString(),
+          content: "Verified contact details and verified active outreach channels",
+        },
+        {
+          lead_id: dbLead.id,
+          user_id: userId,
+          type: "workspace_prepared",
+          timestamp: new Date(nowMs - 2 * 60 * 1000).toISOString(),
+          content: "Outreach workspace initialized with research highlights",
+        },
+        {
+          lead_id: dbLead.id,
+          user_id: userId,
+          type: "ready_for_outreach",
+          timestamp: new Date(nowMs - 1 * 60 * 1000).toISOString(),
+          content: "Opportunity marked ready for outreach campaigns",
+        },
+      ];
+
+      const { error: actErr } = await supabase!.from("lead_activities").insert(activities);
+      if (actErr) {
+        console.error("[Mast:generateLeads] Failed to seed activities:", actErr.message);
+      }
     }
   }
 

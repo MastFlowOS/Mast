@@ -8,6 +8,7 @@ import { useGenerateOutreachDraft, useMe, useRecordLeadActivity, useSettings } f
 import { isMissingBackendEndpoint, type Lead, type OutreachGenerationAction, type OutreachTone } from "@/lib/api";
 import { normalizeDraftResponse, TEMPLATES, type DraftContent } from "@/lib/lead-workspace";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
+import { LockedFeatureCard } from "@/components/mast/LockedFeatureCard";
 
 interface AIAssistantProps {
   lead: Lead;
@@ -350,6 +351,17 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
           )}
         </div>
       </div>
+
+      {(auth?.user?.plan === "free" || auth?.user?.plan === "starter") && (
+        <div className="pt-2">
+          <LockedFeatureCard
+            featureName="Standard AI Personalization"
+            requiredPlan="pro"
+            description="Unlock automated sequences, multi-channel triggers, and deeper context-aware drafts."
+            valueProposition="Increase your response rates by 3x with multi-touch outreach flows."
+          />
+        </div>
+      )}
     </div>
   );
 }

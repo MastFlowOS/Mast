@@ -94,7 +94,7 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
           content: "Instagram DM marked sent",
         },
         patch: {
-          status: "instagram_sent",
+          status: "outreach",
           lastContactedAt: sentAt,
         },
       });

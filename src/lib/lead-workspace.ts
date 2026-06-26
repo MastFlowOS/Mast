@@ -8,86 +8,82 @@ import type {
 } from "./api";
 
 export const LEAD_STATUSES: { value: LeadStatus; label: string }[] = [
-  { value: "new", label: "New" },
-  { value: "priority", label: "Priority" },
-  { value: "warm", label: "Warm" },
-  { value: "contacted", label: "Contacted" },
-  { value: "instagram_sent", label: "IG Sent" },
-  { value: "email_sent", label: "Email Sent" },
-  { value: "contact_form_sent", label: "Form Sent" },
-  { value: "replied", label: "Replied" },
-  { value: "follow_up_due", label: "Follow-up Due" },
-  { value: "interested", label: "Interested" },
-  { value: "meeting_booked", label: "Meeting Booked" },
-  { value: "closed", label: "Closed" },
-  { value: "dead", label: "Dead" },
+  { value: "discovered", label: "Discovered" },
+  { value: "ready", label: "Ready" },
+  { value: "outreach", label: "Outreach" },
+  { value: "conversation", label: "Conversation" },
+  { value: "meeting", label: "Meeting" },
+  { value: "proposal", label: "Proposal" },
+  { value: "negotiation", label: "Negotiation" },
+  { value: "closed_won", label: "Closed Won" },
+  { value: "closed_lost", label: "Closed Lost" },
 ];
 
 export const STATUS_COLORS: Record<LeadStatus, string> = {
-  new: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-  priority: "bg-warning/10 text-warning border-warning/20",
-  warm: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
-  contacted: "bg-warning/10 text-warning border-warning/20",
-  instagram_sent: "bg-indigo-500/10 text-indigo-400 border-indigo-500/20",
-  email_sent: "bg-sky-500/10 text-sky-400 border-sky-500/20",
-  contact_form_sent: "bg-cyan-500/10 text-cyan-400 border-cyan-500/20",
-  replied: "bg-brand/10 text-brand border-brand/20",
-  follow_up_due: "bg-orange-500/10 text-orange-400 border-orange-500/20",
-  interested: "bg-brand/10 text-brand border-brand/20",
-  meeting_booked: "bg-brand/10 text-brand border-brand/20",
-  closed: "bg-success/10 text-success border-success/20",
-  won: "bg-success/10 text-success border-success/20",
-  dead: "bg-destructive/10 text-destructive border-destructive/20",
-  lost: "bg-destructive/10 text-destructive border-destructive/20",
+  discovered: "bg-blue-500/10 text-blue-400 border-blue-500/20",
+  ready: "bg-cyan-500/10 text-cyan-400 border-cyan-500/20",
+  outreach: "bg-indigo-500/10 text-indigo-400 border-indigo-500/20",
+  conversation: "bg-brand/10 text-brand border-brand/20",
+  meeting: "bg-purple-500/10 text-purple-400 border-purple-500/20",
+  proposal: "bg-orange-500/10 text-orange-400 border-orange-500/20",
+  negotiation: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+  closed_won: "bg-success/10 text-success border-success/20",
+  closed_lost: "bg-destructive/10 text-destructive border-destructive/20",
 };
 
 const LEGACY_STATUS_MAP: Record<string, LeadStatus> = {
-  won: "closed",
-  lost: "dead",
-  crm: "new",
+  won: "closed_won",
+  lost: "closed_lost",
+  crm: "discovered",
+  new: "discovered",
+  priority: "ready",
+  warm: "ready",
+  contacted: "outreach",
+  instagram_sent: "outreach",
+  email_sent: "outreach",
+  contact_form_sent: "outreach",
+  replied: "conversation",
+  follow_up_due: "proposal",
+  interested: "conversation",
+  meeting_booked: "meeting",
+  closed: "closed_won",
+  dead: "closed_lost",
 };
 
 export const PIPELINE_COLUMNS: LeadStatus[] = [
-  "new",
-  "priority",
-  "warm",
-  "contacted",
-  "instagram_sent",
-  "email_sent",
-  "contact_form_sent",
-  "replied",
-  "follow_up_due",
-  "interested",
-  "closed",
+  "discovered",
+  "ready",
+  "outreach",
+  "conversation",
+  "meeting",
+  "proposal",
+  "negotiation",
+  "closed_won",
 ];
 
-export type FlowStage = "new" | "contacted" | "interested" | "meeting" | "proposal" | "won";
+export type FlowStage = "discovered" | "ready" | "outreach" | "conversation" | "meeting" | "proposal" | "negotiation" | "won";
 
 export const FLOW_STAGES: { value: FlowStage; label: string; color: string; valueMultiplier: number }[] = [
-  { value: "new", label: "New", color: "from-blue-500/25 to-blue-500/5 text-blue-400 border-blue-500/20", valueMultiplier: 50 },
-  { value: "contacted", label: "Contacted", color: "from-amber-500/25 to-amber-500/5 text-amber-400 border-amber-500/20", valueMultiplier: 150 },
-  { value: "interested", label: "Interested", color: "from-indigo-500/25 to-indigo-500/5 text-indigo-400 border-indigo-500/20", valueMultiplier: 500 },
+  { value: "discovered", label: "Discovered", color: "from-blue-500/25 to-blue-500/5 text-blue-400 border-blue-500/20", valueMultiplier: 50 },
+  { value: "ready", label: "Ready", color: "from-cyan-500/25 to-cyan-500/5 text-cyan-400 border-cyan-500/20", valueMultiplier: 100 },
+  { value: "outreach", label: "Outreach", color: "from-indigo-500/25 to-indigo-500/5 text-indigo-400 border-indigo-500/20", valueMultiplier: 150 },
+  { value: "conversation", label: "Conversation", color: "from-brand/25 to-brand/5 text-brand border-brand/20", valueMultiplier: 500 },
   { value: "meeting", label: "Meeting", color: "from-purple-500/25 to-purple-500/5 text-purple-400 border-purple-500/20", valueMultiplier: 1200 },
-  { value: "proposal", label: "Proposal", color: "from-orange-500/25 to-orange-500/5 text-orange-400 border-orange-500/20", valueMultiplier: 3000 },
+  { value: "proposal", label: "Proposal", color: "from-orange-500/25 to-orange-500/5 text-orange-400 border-orange-500/20", valueMultiplier: 2000 },
+  { value: "negotiation", label: "Negotiation", color: "from-amber-500/25 to-amber-500/5 text-amber-400 border-amber-500/20", valueMultiplier: 3000 },
   { value: "won", label: "Won", color: "from-success/25 to-success/5 text-success border-success/20", valueMultiplier: 8000 },
 ];
 
 export const STATUS_TO_STAGE: Record<LeadStatus, FlowStage> = {
-  new: "new",
-  priority: "interested",
-  warm: "interested",
-  contacted: "contacted",
-  instagram_sent: "contacted",
-  email_sent: "contacted",
-  contact_form_sent: "contacted",
-  replied: "interested",
-  follow_up_due: "proposal",
-  interested: "interested",
-  meeting_booked: "meeting",
-  closed: "won",
-  won: "won",
-  dead: "new",
-  lost: "new",
+  discovered: "discovered",
+  ready: "ready",
+  outreach: "outreach",
+  conversation: "conversation",
+  meeting: "meeting",
+  proposal: "proposal",
+  negotiation: "negotiation",
+  closed_won: "won",
+  closed_lost: "discovered", // mapping lost back to start or a generic stage for flow
 };
 
 export function getStageForStatus(status?: string | null): FlowStage {
@@ -207,12 +203,12 @@ export function normalizeLeadStatus(status?: string | null): LeadStatus {
   const normalized = (status ?? "new").toLowerCase().trim().replace(/\s+/g, "_");
   if (normalized in LEGACY_STATUS_MAP) return LEGACY_STATUS_MAP[normalized];
   if (LEAD_STATUSES.some((item) => item.value === normalized)) return normalized as LeadStatus;
-  return "new";
+  return "discovered";
 }
 
 export function leadStatusLabel(status?: string | null) {
   const normalized = normalizeLeadStatus(status);
-  return LEAD_STATUSES.find((item) => item.value === normalized)?.label ?? "New";
+  return LEAD_STATUSES.find((item) => item.value === normalized)?.label ?? "Discovered";
 }
 
 export function leadStatusColor(status?: string | null) {
@@ -288,11 +284,11 @@ export function buildActivitiesFromLead(lead: Lead, apiActivities: LeadActivity[
 
   if (lead.createdAt) {
     add({
-      id: `lead-created-${lead.id}`,
+      id: `opportunity-discovered-${lead.id}`,
       leadId: lead.id,
-      type: "lead_created",
+      type: "opportunity_discovered",
       timestamp: lead.createdAt,
-      content: `Lead created from ${lead.source === "internal_generator" ? "Mast Lead Engine" : (lead.source ?? "Mast Lead Engine")}`,
+      content: "Opportunity discovered",
     });
   }
 
@@ -302,7 +298,7 @@ export function buildActivitiesFromLead(lead: Lead, apiActivities: LeadActivity[
       leadId: lead.id,
       type: "email_sent",
       timestamp: lead.lastContactedAt,
-      content: "Last contacted",
+      content: "Outreach started",
     });
   }
 
@@ -310,9 +306,9 @@ export function buildActivitiesFromLead(lead: Lead, apiActivities: LeadActivity[
     add({
       id: `follow-up-${lead.id}`,
       leadId: lead.id,
-      type: "followup_scheduled",
+      type: "status_changed",
       timestamp: lead.followUpAt,
-      content: "Follow-up scheduled",
+      content: "Follow-up due",
     });
   }
 

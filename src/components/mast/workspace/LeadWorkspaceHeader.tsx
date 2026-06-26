@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, MoreVertical, Check, Loader2, Archive, Trash2, Copy } from "lucide-react";
+import { ArrowLeft, MoreVertical, Check, Loader2, Archive, Trash2, Copy, AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -7,6 +7,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useCreateLead, useRecordLeadActivity, useUpdateLead } from "@/hooks/use-mast-api";
 import type { Lead, LeadStatus } from "@/lib/api";
 import { LEAD_STATUSES, leadStatusColor, leadStatusLabel, normalizeLeadStatus } from "@/lib/lead-workspace";
+
+type ConfirmAction = "archive" | "delete" | null;
 
 export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
   const navigate = useNavigate();
@@ -17,6 +19,7 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
   const [status, setStatus] = useState<LeadStatus>(normalizeLeadStatus(lead.status));
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPending, setMenuPending] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -75,40 +78,36 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
   };
 
   const handleArchive = async () => {
-    setMenuOpen(false);
-    const ok = window.confirm(`Archive ${lead.businessName}? This will mark them as Dead.`);
-    if (!ok) return;
+    setConfirmAction(null);
     setMenuPending("archive");
     try {
       await recordActivity.mutateAsync({
         lead,
         activity: {
           type: "status_changed",
-          content: "Lead archived",
+          content: "Opportunity closed — no further action",
           metadata: { from: status, to: "dead" },
         },
         patch: { status: "dead" },
       });
       setStatus("dead");
-      toast.success(`${lead.businessName} archived`);
+      toast.success(`${lead.businessName} closed out`);
     } catch {
-      toast.error("Failed to archive lead");
+      toast.error("Action failed — please try again");
     } finally {
       setMenuPending(null);
     }
   };
 
   const handleDelete = async () => {
-    setMenuOpen(false);
-    const ok = window.confirm(`Permanently delete ${lead.businessName}? This cannot be undone.`);
-    if (!ok) return;
+    setConfirmAction(null);
     setMenuPending("delete");
     try {
       await updateLeadMutation.mutateAsync({ id: lead.id, body: { status: "dead" } });
-      toast.success("Lead deleted");
+      toast.success("Opportunity removed");
       navigate({ to: "/dashboard/crm" });
     } catch {
-      toast.error("Failed to delete lead");
+      toast.error("Action failed — please try again");
     } finally {
       setMenuPending(null);
     }
@@ -204,28 +203,73 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
           </Button>
 
           {menuOpen && (
-            <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-border bg-card shadow-lg">
+            <div className="absolute right-0 top-full z-30 mt-1 w-52 rounded-xl border border-border bg-card shadow-xl animate-scale-in-fast">
               <div className="p-1">
                 <MenuAction
                   icon={Archive}
-                  label="Archive Lead"
-                  onClick={handleArchive}
-                  description="Mark as Dead"
+                  label="Close Opportunity"
+                  onClick={() => { setMenuOpen(false); setConfirmAction("archive"); }}
+                  description="Mark as no longer active"
                 />
                 <MenuAction
                   icon={Copy}
-                  label="Duplicate Lead"
+                  label="Duplicate"
                   onClick={handleDuplicate}
-                  description="Create a copy"
+                  description="Create a copy of this opportunity"
                 />
                 <div className="my-1 h-px bg-border" />
                 <MenuAction
                   icon={Trash2}
-                  label="Delete Lead"
-                  onClick={handleDelete}
-                  description="Permanent removal"
+                  label="Remove"
+                  onClick={() => { setMenuOpen(false); setConfirmAction("delete"); }}
+                  description="Permanently remove"
                   danger
                 />
+              </div>
+            </div>
+          )}
+
+          {/* Inline Confirmation Dialog */}
+          {confirmAction && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in">
+              <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl space-y-5 animate-scale-in">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="size-10 rounded-xl bg-destructive/10 border border-destructive/20 grid place-items-center">
+                      <AlertTriangle className="size-5 text-destructive" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-sm">
+                        {confirmAction === "archive" ? "Close this opportunity?" : "Remove this opportunity?"}
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {confirmAction === "archive"
+                          ? "It will be marked inactive. You can reopen it from your pipeline."
+                          : "This is permanent and cannot be undone."}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setConfirmAction(null)}
+                    className="p-1 rounded-lg hover:bg-muted text-muted-foreground transition-colors"
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setConfirmAction(null)}
+                    className="flex-1 py-2.5 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors"
+                  >
+                    Keep it
+                  </button>
+                  <button
+                    onClick={confirmAction === "archive" ? handleArchive : handleDelete}
+                    className="flex-1 py-2.5 rounded-xl bg-destructive text-white text-sm font-semibold hover:bg-destructive/90 transition-colors"
+                  >
+                    {confirmAction === "archive" ? "Close" : "Remove"}
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -237,11 +281,11 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
           className={saved ? "bg-success/15 border border-success/30 text-success hover:bg-success/15" : "bg-brand hover:bg-brand/90 text-brand-foreground shadow-brand"}
         >
           {recordActivity.isPending ? (
-            <><Loader2 className="size-4 mr-1.5 animate-spin" /> Saving…</>
+            <><Loader2 className="size-4 mr-1.5 animate-spin" /> Tracking…</>
           ) : saved ? (
-            <><Check className="size-4 mr-1.5" /> In CRM</>
+            <><Check className="size-4 mr-1.5" /> In Pipeline</>
           ) : (
-            "Save to CRM"
+            "Track Opportunity"
           )}
         </Button>
       </div>

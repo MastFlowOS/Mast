@@ -100,23 +100,23 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
     let features: string[] = [];
     if (targetPlan === "starter") {
       features = [
-        "Built-in CRM to track interactions",
+        "Relationship data layer to track interactions",
         "More daily leads (50/day Cap)",
         "Limited AI personalization",
       ];
     } else if (targetPlan === "pro") {
       features = [
         "Multi-region and global search",
-        "Full CRM pipeline with triggers",
+        "Full pipeline with triggers",
         "Direct API access",
         "Higher limits (200/day Cap)",
         "Instant pool access",
       ];
     } else if (targetPlan === "premium") {
       features = [
-        "Premium Lead Pool Access",
+        "Premium opportunity pool access",
         "Full AI Personalization options",
-        "Advanced CRM automations",
+        "Advanced relationship automations",
         "Team access up to 10 seats",
         "Highest daily limits (833/day Cap)",
       ];
@@ -126,7 +126,7 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
     let features: string[] = [];
     if (targetPlan === "free") {
       features = [
-        "Built-in CRM dashboard",
+        "Built-in relationship data workspace",
         "Daily lead generation caps above 10",
         "AI personalization support",
         "Extended channel contact filters",
@@ -405,7 +405,7 @@ function Subscription() {
       <div>
         <h2 className="text-lg font-bold">Usage by Contact Channel</h2>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Dynamic lead volume breakdown inside your CRM categorized by communication channel.
+          Dynamic opportunity volume breakdown categorized by communication channel.
         </p>
       </div>
 
@@ -444,7 +444,7 @@ function Subscription() {
             <h3 className="font-bold text-sm text-brand mb-2">Starter</h3>
             <ul className="space-y-2 text-xs text-muted-foreground">
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Built-in CRM to track interactions
+                <span className="text-brand font-bold shrink-0">✓</span> Relationship data layer to track interactions
               </li>
               <li className="flex items-start gap-1.5">
                 <span className="text-brand font-bold shrink-0">✓</span> More daily leads (50/day cap)
@@ -462,7 +462,7 @@ function Subscription() {
                 <span className="text-brand font-bold shrink-0">✓</span> Multi-region and global search
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Full CRM pipeline with follow-up triggers
+                <span className="text-brand font-bold shrink-0">✓</span> Full pipeline with follow-up triggers
               </li>
               <li className="flex items-start gap-1.5">
                 <span className="text-brand font-bold shrink-0">✓</span> Direct API access for integrations
@@ -477,13 +477,13 @@ function Subscription() {
             <h3 className="font-bold text-sm text-brand mb-2">Premium</h3>
             <ul className="space-y-2 text-xs text-muted-foreground">
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Access to premium verified lead pools
+                <span className="text-brand font-bold shrink-0">✓</span> Access to premium verified opportunity pools
               </li>
               <li className="flex items-start gap-1.5">
                 <span className="text-brand font-bold shrink-0">✓</span> Full AI personalization with templates
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> CRM automations and workflows
+                <span className="text-brand font-bold shrink-0">✓</span> Relationship automations and workflows
               </li>
               <li className="flex items-start gap-1.5">
                 <span className="text-brand font-bold shrink-0">✓</span> 10 team seats & dedicated account support
@@ -570,12 +570,12 @@ function Subscription() {
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                CRM Access
+                Relationship Data Access
               </td>
               <td className="p-4 text-foreground/80">✗ None (Export only)</td>
-              <td className="p-4 text-foreground/80">✓ Built-in CRM</td>
-              <td className="p-4 text-foreground/80">✓ Full CRM pipeline</td>
-              <td className="p-4 text-foreground/80">✓ Full CRM + Automations</td>
+              <td className="p-4 text-foreground/80">✓ Relationship data layer</td>
+              <td className="p-4 text-foreground/80">✓ Full pipeline workspace</td>
+              <td className="p-4 text-foreground/80">✓ Relationship automations</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">

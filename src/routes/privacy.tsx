@@ -23,7 +23,7 @@ function PrivacyPage() {
         sections={[
           {
             heading: "Information We Collect",
-            body: "We collect information you provide when creating an account (name, email, payment details) and usage data generated when you interact with Mast (lead searches, CRM actions, session data).",
+            body: "We collect information you provide when creating an account (name, email, payment details) and usage data generated when you interact with Mast (opportunity searches, relationship data actions, session data).",
           },
           {
             heading: "How We Use Your Information",

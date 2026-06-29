@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -6,6 +6,7 @@ import {
   Globe2,
   Bell,
   Shield,
+  CreditCard,
   Cpu,
   Power,
   Trash2,
@@ -18,6 +19,7 @@ import {
   User,
   Eye,
   EyeOff,
+  Upload,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { ApiError } from "@/lib/api";
@@ -200,7 +202,7 @@ function SettingsPage() {
       <SectionCard
         icon={Globe2}
         title="Default Regions"
-        desc="Pre-selected regions when opening Get Leads"
+        desc="Pre-selected regions when opening Discover"
       >
         <div>
           <span className="block text-xs font-semibold text-muted-foreground mb-2">
@@ -352,6 +354,37 @@ function SettingsPage() {
         />
       </SectionCard>
 
+      {/* ── Billing ─────────────────────────────────────────────────────── */}
+      <SectionCard
+        icon={CreditCard}
+        title="Billing"
+        desc="Manage subscriptions, invoices, and plan access"
+      >
+        <SettingsLink
+          to="/dashboard/subscription"
+          label="Subscription"
+          desc="Review your plan, limits, and upgrade options"
+        />
+        <SettingsLink
+          to="/dashboard/billing"
+          label="Billing"
+          desc="View billing details and payment history"
+        />
+      </SectionCard>
+
+      {/* ── Data Import / Export ────────────────────────────────────────── */}
+      <SectionCard
+        icon={Upload}
+        title="Data Import / Export"
+        desc="Move opportunity data into and out of Mast"
+      >
+        <SettingsLink
+          to="/dashboard/import"
+          label="Open Data Import / Export"
+          desc="Upload CSVs, map fields, and export relationship data"
+        />
+      </SectionCard>
+
       {/* ── Workspace Status ─────────────────────────────────────────────── */}
       <SectionCard
         icon={Cpu}
@@ -486,7 +519,7 @@ function SettingsPage() {
           <div className="mt-4 rounded-xl border border-destructive/20 bg-destructive/5 p-3 flex items-start gap-2">
             <AlertTriangle className="size-4 text-destructive shrink-0 mt-0.5" />
             <p className="text-xs text-destructive">
-              All your leads, CRM data, campaigns, and settings will be erased.
+              All your opportunities, relationship data, campaigns, and settings will be erased.
             </p>
           </div>
           <div className="mt-4">
@@ -838,6 +871,29 @@ function SecurityRow({
       </div>
       <div className="shrink-0">{action}</div>
     </div>
+  );
+}
+
+function SettingsLink({
+  to,
+  label,
+  desc,
+}: {
+  to: string;
+  label: string;
+  desc: string;
+}) {
+  return (
+    <Link
+      to={to as "/dashboard/settings"}
+      className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3 hover:bg-card transition-colors"
+    >
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold">{label}</span>
+        <span className="block text-xs text-muted-foreground">{desc}</span>
+      </span>
+      <span className="text-xs font-semibold text-brand">Open</span>
+    </Link>
   );
 }
 

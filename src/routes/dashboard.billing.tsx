@@ -70,14 +70,14 @@ const PLAN_BENEFITS: Record<string, string[]> = {
   starter: [
     "50 leads / day",
     "1,500 leads / month",
-    "Built-in CRM",
+    "Relationship data layer",
     "Limited AI",
     "CSV Export",
   ],
   pro: [
     "200 leads / day",
     "6,000 leads / month",
-    "Full CRM",
+    "Full pipeline workspace",
     "API Access",
     "Multi-region Search",
   ],

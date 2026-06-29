@@ -43,13 +43,13 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
         lead,
         activity: {
           type: "status_changed",
-          content: "Lead saved to CRM",
+          content: "Opportunity added to pipeline",
           metadata: { saved: true },
         },
         patch: { status },
       });
       setSaved(true);
-      toast.success(`${lead.businessName} saved to CRM`);
+      toast.success(`${lead.businessName} added to pipeline`);
     } catch {
       toast.error("Failed to update lead");
     }
@@ -105,7 +105,7 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
     try {
       await updateLeadMutation.mutateAsync({ id: lead.id, body: { status: "dead" } });
       toast.success("Opportunity removed");
-      navigate({ to: "/dashboard/crm" });
+      navigate({ to: "/dashboard/pipeline" });
     } catch {
       toast.error("Action failed — please try again");
     } finally {
@@ -149,7 +149,7 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
     <header className="flex min-h-16 flex-col items-stretch justify-between gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur-xl sticky top-0 z-20 sm:flex-row sm:items-center lg:px-6">
       <div className="flex min-w-0 items-center gap-3">
         <button
-          onClick={() => navigate({ to: "/dashboard/crm" })}
+          onClick={() => navigate({ to: "/dashboard/pipeline" })}
           className="p-2 hover:bg-card rounded-lg transition-colors text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="size-5" />

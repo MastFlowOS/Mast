@@ -23,7 +23,7 @@ function RefundsPage() {
         sections={[
           {
             heading: "Subscription Services",
-            body: "Mast is a subscription-based SaaS platform. By subscribing, you gain access to our lead generation tools, CRM features, and credit allocations according to your selected plan. Subscriptions are billed on a recurring basis — monthly or annually — depending on the plan you choose at signup.",
+            body: "Mast is a subscription-based SaaS platform. By subscribing, you gain access to our opportunity discovery tools, relationship data features, and credit allocations according to your selected plan. Subscriptions are billed on a recurring basis — monthly or annually — depending on the plan you choose at signup.",
           },
           {
             heading: "Refund Eligibility",

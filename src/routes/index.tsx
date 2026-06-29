@@ -85,7 +85,7 @@ function Hero() {
         {/* Sub */}
         <p className="animate-fade-up delay-200 text-[1.1rem] text-muted-foreground mb-10 max-w-[520px] mx-auto leading-relaxed">
           MAST replaces your scattered sales stack with one AI workspace —
-          research, CRM, pipeline, and follow-ups, all talking to each other.
+          research, relationship data, pipeline, and follow-ups, all talking to each other.
         </p>
 
         {/* CTAs */}
@@ -116,7 +116,7 @@ function Hero() {
           {[
             { icon: Target, label: "Prospect Research" },
             { icon: BarChart3, label: "Pipeline" },
-            { icon: Users, label: "CRM" },
+            { icon: Users, label: "Relationship Data" },
             { icon: Sparkles, label: "AI Intelligence" },
             { icon: Bell, label: "Follow-ups" },
           ].map(({ icon: Icon, label }) => (
@@ -166,7 +166,7 @@ function ProductPreview() {
     { time: "2m ago", text: "Vortex Media moved to Proposal", color: "text-warning" },
     { time: "14m ago", text: "Luminal AI — discovery call booked", color: "text-brand" },
     { time: "1h ago", text: "Skyline Growth follow-up sent", color: "text-muted-foreground" },
-    { time: "3h ago", text: "Northwind Studio added to CRM", color: "text-muted-foreground" },
+    { time: "3h ago", text: "Northwind Studio added to pipeline", color: "text-muted-foreground" },
   ];
 
   const prospects = [
@@ -199,11 +199,11 @@ function ProductPreview() {
               </div>
               <nav className="space-y-0.5">
                 {[
-                  { label: "Dashboard", active: false },
+                  { label: "Focus", active: false },
                   { label: "Prospects", active: false },
-                  { label: "CRM", active: true },
+                  { label: "Pipeline", active: true },
                   { label: "Pipeline", active: false },
-                  { label: "Analytics", active: false },
+                  { label: "Insights", active: false },
                   { label: "Settings", active: false },
                 ].map(({ label, active }) => (
                   <div
@@ -250,7 +250,7 @@ function ProductPreview() {
             <main className="flex-1 flex flex-col min-w-0">
               {/* Topbar */}
               <div className="px-5 py-3.5 border-b border-border/60 flex items-center justify-between bg-background/20 shrink-0">
-                <h2 className="text-sm font-bold text-foreground">CRM · Active Pipeline</h2>
+                <h2 className="text-sm font-bold text-foreground">Pipeline · Active Opportunities</h2>
                 <div className="flex items-center gap-2">
                   <span className="flex items-center gap-1.5 px-2.5 py-1 bg-success/10 text-success text-[10px] font-bold border border-success/20 rounded-md uppercase tracking-wider">
                     <span className="size-1.5 rounded-full bg-success animate-dot-blink" />
@@ -367,7 +367,7 @@ function Problem() {
   const bullets = [
     "Find the right companies before your competitors do.",
     "Qualify fast with AI-enriched business profiles.",
-    "Track every deal in a CRM that's already connected.",
+    "Track every deal in a pipeline that's already connected.",
     "Never miss a follow-up. Never lose a deal to silence.",
   ];
 
@@ -382,7 +382,7 @@ function Problem() {
           </h2>
           <p className="mt-5 text-muted-foreground leading-relaxed text-[0.95rem]">
             The average sales team juggles five separate tools — a scraper, a spreadsheet,
-            a CRM, a sequencer, and a calendar. Every handoff is a gap where deals fall through.
+            a database, a sequencer, and a calendar. Every handoff is a gap where deals fall through.
             MAST closes those gaps.
           </p>
           <ul className="mt-8 space-y-3.5">
@@ -458,7 +458,7 @@ const features = [
   {
     icon: Users,
     outcome: "Keep everything in one place.",
-    title: "Built-in CRM",
+    title: "Relationship Data",
     desc: "Contacts, companies, notes, tags, and team assignments — all connected. No spreadsheets. No sync failures.",
   },
   {
@@ -476,7 +476,7 @@ const features = [
   {
     icon: BarChart3,
     outcome: "Know exactly what's working.",
-    title: "Sales Analytics",
+    title: "Sales Insights",
     desc: "Pipeline velocity, conversion rates, and team activity — visible without leaving the platform.",
   },
   {
@@ -487,9 +487,9 @@ const features = [
   },
   {
     icon: ShieldCheck,
-    outcome: "Your data. Your CRM.",
+    outcome: "Your data. Your relationship network.",
     title: "Privacy & Ownership",
-    desc: "All prospect data sourced from public business information. Your CRM belongs to you — export any time.",
+    desc: "All prospect data sourced from public business information. Your relationship data belongs to you — export any time.",
   },
 ];
 
@@ -551,7 +551,7 @@ const plans = [
     price: "$29",
     forWho: "Solo operators",
     outcome: "Build a real pipeline, on your own.",
-    features: ["50 prospects / day · 1,500 / mo", "Full contact intelligence", "Built-in CRM", "Limited AI assistance"],
+    features: ["50 prospects / day · 1,500 / mo", "Full contact intelligence", "Relationship data layer", "Limited AI assistance"],
     cta: "Get Started",
     popular: false,
   },
@@ -560,7 +560,7 @@ const plans = [
     price: "$79",
     forWho: "Growing agencies",
     outcome: "Scale your pipeline without scaling headcount.",
-    features: ["200 prospects / day · 6,000 / mo", "AI enrichment + sequences", "Full CRM + pipeline", "API access · 3 team seats"],
+    features: ["200 prospects / day · 6,000 / mo", "AI enrichment + sequences", "Full pipeline workspace", "API access · 3 team seats"],
     cta: "Upgrade to Pro",
     popular: true,
   },

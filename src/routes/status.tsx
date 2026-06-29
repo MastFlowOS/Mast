@@ -15,7 +15,7 @@ export const Route = createFileRoute("/status")({
 
 const services = [
   { name: "API & Lead Generation", status: "operational" as const },
-  { name: "CRM & Dashboard", status: "operational" as const },
+  { name: "Relationship Data & Focus", status: "operational" as const },
   { name: "Authentication", status: "operational" as const },
   { name: "Google Sheets Sync", status: "operational" as const },
   { name: "Email Enrichment", status: "operational" as const },

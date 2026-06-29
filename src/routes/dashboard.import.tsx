@@ -29,7 +29,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { getPlan } from "@/lib/plans";
 
 export const Route = createFileRoute("/dashboard/import")({
-  head: () => ({ meta: [{ title: "Import / Export Center — Mast" }] }),
+  head: () => ({ meta: [{ title: "Data Import / Export — Mast" }] }),
   component: ImportExportPage,
 });
 
@@ -376,7 +376,7 @@ function ExportSection({
   const previewCount = filteredLeads.length;
 
   const handleExport = async () => {
-    if (previewCount === 0) { toast.error("No leads match your filter."); return; }
+    if (previewCount === 0) { toast.error("No opportunities match your filter."); return; }
     setIsExporting(true);
     try {
       const timestamp = new Date().toISOString().split("T")[0];
@@ -396,13 +396,13 @@ function ExportSection({
         downloadFile(csvContent, `mast-export-${scopeLabel}-${timestamp}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       }
 
-      toast.success(`${previewCount.toLocaleString()} leads exported`);
+      toast.success(`${previewCount.toLocaleString()} opportunities exported`);
       onExportComplete({
         id: Date.now().toString(),
         date: new Date().toISOString(),
         recordCount: previewCount,
         format: exportFormat === "xlsx" ? "Excel" : "CSV",
-        filter: exportScope === "all" ? "All Leads"
+        filter: exportScope === "all" ? "All Opportunities"
           : exportScope === "status" ? `Status: ${filterValue}`
           : exportScope === "niche" ? `Niche: ${filterValue || "all"}`
           : exportScope === "region" ? `Region: ${filterValue || "all"}`
@@ -422,7 +422,7 @@ function ExportSection({
   return (
     <div className="rounded-2xl border border-border bg-card overflow-hidden">
       <div className="flex items-center justify-between border-b border-border bg-background/50 px-5 py-4">
-        <SectionHeader icon={Download} title="Export Leads" subtitle="Download your lead data in your preferred format" />
+        <SectionHeader icon={Download} title="Export Opportunities" subtitle="Download your relationship data in your preferred format" />
       </div>
 
       <div className="p-5 space-y-5">
@@ -431,7 +431,7 @@ function ExportSection({
           <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Export Scope</label>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {[
-              { value: "all", label: "All Leads", icon: Users },
+              { value: "all", label: "All Opportunities", icon: Users },
               { value: "status", label: "By Status", icon: Filter },
               { value: "niche", label: "By Niche", icon: Package },
               { value: "region", label: "By Region", icon: Globe },
@@ -571,7 +571,7 @@ function ExportSection({
             {isExporting ? (
               <><span className="size-3.5 border-2 border-brand-foreground/30 border-t-brand-foreground rounded-full animate-spin" /> Exporting…</>
             ) : (
-              <><Download className="size-4" /> Export {previewCount > 0 ? previewCount.toLocaleString() : ""} Leads</>
+              <><Download className="size-4" /> Export {previewCount > 0 ? previewCount.toLocaleString() : ""} Opportunities</>
             )}
           </Button>
         </div>
@@ -650,7 +650,7 @@ function ImportExportPage() {
       const failed = result.failed ?? result.errors?.length ?? 0;
       setImportResult({ imported: result.imported, skipped: result.skipped, failed, errors: result.errors ?? [] });
       setStep("done");
-      toast.success(`${result.imported} leads imported`);
+      toast.success(`${result.imported} opportunities imported`);
       setImportHistory((prev) => [{
         id: Date.now().toString(),
         fileName,
@@ -669,14 +669,14 @@ function ImportExportPage() {
     <div className="mx-auto max-w-4xl space-y-8 p-8">
       {/* Page header */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Import / Export Center</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Data Import / Export</h1>
         <p className="text-sm text-muted-foreground">Move data into and out of Mast — cleanly, quickly, completely.</p>
       </div>
 
       {/* ── IMPORT SECTION ── */}
       <div className="rounded-2xl border border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between border-b border-border bg-background/50 px-5 py-4">
-          <SectionHeader icon={Upload} title="Import Leads" subtitle="Upload a CSV, map columns, then bulk-import into Mast" />
+          <SectionHeader icon={Upload} title="Import Opportunities" subtitle="Upload a CSV, map columns, then bulk-import into Mast" />
         </div>
 
         <div className="p-5 space-y-5">
@@ -713,8 +713,8 @@ function ImportExportPage() {
               {preview && (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   {[
-                    { label: "Leads Found", value: preview.total, tone: undefined },
-                    { label: "New Leads", value: preview.parsed.length, tone: "success" as const },
+                    { label: "Opportunities Found", value: preview.total, tone: undefined },
+                    { label: "New Opportunities", value: preview.parsed.length, tone: "success" as const },
                     { label: "Duplicates", value: preview.duplicates, tone: preview.duplicates > 0 ? "warning" as const : undefined },
                     { label: "Invalid Rows", value: preview.invalid, tone: preview.invalid > 0 ? "warning" as const : undefined },
                   ].map(({ label, value, tone }) => (
@@ -796,7 +796,7 @@ function ImportExportPage() {
                   disabled={bulkImport.isPending || !hasBusinessName || !preview || preview.parsed.length === 0}
                   className="bg-brand text-brand-foreground hover:bg-brand/90"
                 >
-                  {bulkImport.isPending ? "Importing…" : `Import ${preview?.parsed.length ?? 0} Lead${(preview?.parsed.length ?? 0) === 1 ? "" : "s"}`}
+                  {bulkImport.isPending ? "Importing…" : `Import ${preview?.parsed.length ?? 0} Opportunit${(preview?.parsed.length ?? 0) === 1 ? "y" : "ies"}`}
                 </Button>
               </div>
             </div>
@@ -817,7 +817,7 @@ function ImportExportPage() {
                 <div className="mt-6 flex justify-center gap-3">
                   <Button variant="outline" onClick={reset}>Import Another File</Button>
                   <Button onClick={() => navigate({ to: "/dashboard/crm" })} className="gap-2 bg-brand text-brand-foreground hover:bg-brand/90">
-                    <ArrowRight className="size-4" /> View Leads
+                    <ArrowRight className="size-4" /> View Opportunity Network
                   </Button>
                 </div>
               </div>
@@ -868,7 +868,7 @@ function ImportExportPage() {
                 <tr className="border-b border-border bg-background/30">
                   <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">File Name</th>
                   <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Date</th>
-                  <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Leads Imported</th>
+                  <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Opportunities Imported</th>
                   <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Duplicates Skipped</th>
                 </tr>
               </thead>
@@ -897,7 +897,7 @@ function ImportExportPage() {
       {/* ── EXPORT HISTORY ── */}
       <div className="rounded-2xl border border-border bg-card overflow-hidden">
         <div className="border-b border-border bg-background/50 px-5 py-4">
-          <SectionHeader icon={Clock} title="Recent Exports" subtitle="History of lead data exported from Mast" />
+          <SectionHeader icon={Clock} title="Recent Exports" subtitle="History of relationship data exported from Mast" />
         </div>
         {exportHistory.length === 0 ? (
           <EmptyState icon={Download} title="No exports yet" message="Once you export your leads, the history will appear here." />

@@ -13,15 +13,10 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import {
-  LayoutDashboard,
-  Zap,
-  Users,
+  Crosshair,
+  Search,
   Kanban,
   Bell,
-  BarChart2,
-  Upload,
-  CreditCard,
-  Receipt,
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -34,16 +29,11 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Dashboard",    to: "/dashboard",              icon: LayoutDashboard, exact: true },
-  { label: "Get Leads",    to: "/dashboard/leads",        icon: Zap },
-  { label: "CRM",          to: "/dashboard/crm",          icon: Users },
-  { label: "Pipeline",     to: "/dashboard/pipeline",     icon: Kanban },
-  { label: "Follow-ups",   to: "/dashboard/follow-ups",   icon: Bell },
-  { label: "Analytics",    to: "/dashboard/analytics",    icon: BarChart2 },
-  { label: "Import",       to: "/dashboard/import",       icon: Upload },
-  { label: "Subscription", to: "/dashboard/subscription", icon: CreditCard },
-  { label: "Billing",      to: "/dashboard/billing",      icon: Receipt },
-  { label: "Settings",     to: "/dashboard/settings",     icon: Settings },
+  { label: "Focus",    to: "/dashboard",            icon: Crosshair, exact: true },
+  { label: "Discover", to: "/dashboard/leads",      icon: Search },
+  { label: "Pipeline", to: "/dashboard/pipeline",   icon: Kanban },
+  { label: "Mission",  to: "/dashboard/follow-ups", icon: Bell },
+  { label: "Settings", to: "/dashboard/settings",   icon: Settings },
 ];
 
 interface IndicatorStyle {

@@ -596,13 +596,13 @@ function MissionComplete({ completedToday }: { completedToday: number }) {
         <p className="mt-5 text-xs font-bold uppercase tracking-widest text-muted-foreground">Suggested next actions</p>
         <div className="mt-5 flex flex-wrap justify-center gap-2">
           <Link to="/dashboard/leads" className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark">
-            Generate Leads
+            Discover Opportunities
           </Link>
           <Link to="/dashboard/pipeline" className="rounded-lg border border-border px-4 py-2 text-sm font-semibold hover:bg-background">
             Review Pipeline
           </Link>
           <Link to="/dashboard/crm" className="rounded-lg border border-border px-4 py-2 text-sm font-semibold hover:bg-background">
-            Open CRM
+            Open Opportunity Network
           </Link>
         </div>
       </div>

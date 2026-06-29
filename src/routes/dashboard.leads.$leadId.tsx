@@ -166,7 +166,7 @@ function LeadWorkspace() {
             </p>
           </div>
           <button
-            onClick={() => navigate({ to: "/dashboard/crm" })}
+            onClick={() => navigate({ to: "/dashboard/pipeline" })}
             className="inline-flex items-center gap-2 text-sm text-brand font-medium hover:underline"
           >
             <ArrowLeft className="size-4" /> Back to Pipeline

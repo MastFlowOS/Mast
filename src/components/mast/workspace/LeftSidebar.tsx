@@ -8,8 +8,8 @@ import { NICHES, stripActivityMarkers } from "@/lib/lead-workspace";
 import { staggerDelay } from "@/lib/motion";
 
 function formatSourceLabel(source: string | null | undefined): string {
-  if (!source) return "Mast Lead Engine";
-  if (source === "internal_generator") return "Mast Lead Engine";
+  if (!source) return "Mast Opportunity Engine";
+  if (source === "internal_generator") return "Mast Opportunity Engine";
   if (source === "manual") return "Manual Entry";
   if (source === "import") return "CSV Import";
   if (source === "live_search") return "Live Search";

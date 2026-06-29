@@ -64,13 +64,13 @@ function DashboardHome() {
           to="/dashboard/leads"
           className="bg-brand text-brand-foreground px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-brand-dark shadow-brand inline-flex items-center gap-2"
         >
-          Generate Leads <ArrowUpRight className="size-4" />
+          Discover Opportunities <ArrowUpRight className="size-4" />
         </Link>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <KPI
-          label="Monthly Leads"
+          label="Monthly Opportunities"
           value={`${monthlyRemaining.toLocaleString()} / ${monthlyLimit.toLocaleString()}`}
           hint={`${planName} Plan`}
           icon={Target}
@@ -101,12 +101,12 @@ function DashboardHome() {
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-card border border-border rounded-2xl p-6">
           <div className="flex items-center justify-between mb-5">
-            <h2 className="font-bold">Recent Leads</h2>
+            <h2 className="font-bold">Recent Opportunities</h2>
             <Link
-              to="/dashboard/crm"
+              to="/dashboard/pipeline"
               className="text-xs font-semibold text-brand hover:text-brand-dark"
             >
-              View all →
+              View pipeline →
             </Link>
           </div>
           <div className="overflow-hidden rounded-xl border border-border">
@@ -146,7 +146,7 @@ function DashboardHome() {
                       className="p-5 text-sm text-muted-foreground"
                       colSpan={5}
                     >
-                      No leads yet. Generate your first batch to fill the
+                      No opportunities yet. Discover your first batch to fill the
                       pipeline.
                     </td>
                   </tr>
@@ -168,17 +168,17 @@ function DashboardHome() {
           </div>
           <div className="mt-6 space-y-4 text-sm flex-1">
             <UsageBar
-              label="Monthly Leads used"
+              label="Monthly opportunities used"
               cur={monthlyUsed}
               max={Math.max(1, monthlyLimit)}
             />
             <UsageBar
-              label="Daily Leads used"
+              label="Daily opportunities used"
               cur={dailyUsed}
               max={Math.max(1, dailyLimit)}
             />
             <UsageBar
-              label="Leads delivered"
+              label="Opportunities delivered"
               cur={summary.totalLeads}
               max={Math.max(1, monthlyLimit)}
             />
@@ -232,13 +232,13 @@ function OutreachEmptyState() {
       </div>
       <h3 className="font-semibold text-base mb-1">No outreach activity yet</h3>
       <p className="text-sm text-muted-foreground max-w-xs mb-5">
-        Generate leads and start outreach to see performance analytics here.
+        Discover opportunities and start outreach to see performance analytics here.
       </p>
       <Link
         to="/dashboard/leads"
         className="inline-flex items-center gap-2 bg-brand text-brand-foreground px-4 py-2 rounded-lg text-sm font-semibold hover:bg-brand-dark shadow-brand"
       >
-        Generate Leads <ArrowUpRight className="size-4" />
+        Discover Opportunities <ArrowUpRight className="size-4" />
       </Link>
     </div>
   );

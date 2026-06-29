@@ -238,26 +238,26 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Mast — B2B Lead Generation & CRM" },
+      { title: "Mast — AI Sales Operating System" },
       {
         name: "description",
         content:
-          "Mast is a premium B2B SaaS platform for agencies and businesses focused on lead generation, CRM, and client acquisition.",
+          "Mast is a premium AI Sales Operating System for agencies and businesses focused on opportunity discovery, pipeline movement, and client acquisition.",
       },
       { name: "author", content: "Mast" },
-      { property: "og:title", content: "Mast — B2B Lead Generation & CRM" },
+      { property: "og:title", content: "Mast — AI Sales Operating System" },
       {
         property: "og:description",
         content:
-          "Mast is a premium B2B SaaS platform for agencies and businesses focused on lead generation, CRM, and client acquisition.",
+          "Mast is a premium AI Sales Operating System for agencies and businesses focused on opportunity discovery, pipeline movement, and client acquisition.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
-      { name: "twitter:title", content: "Mast — B2B Lead Generation & CRM" },
+      { name: "twitter:title", content: "Mast — AI Sales Operating System" },
       {
         name: "twitter:description",
         content:
-          "Mast is a premium B2B SaaS platform for agencies and businesses focused on lead generation, CRM, and client acquisition.",
+          "Mast is a premium AI Sales Operating System for agencies and businesses focused on opportunity discovery, pipeline movement, and client acquisition.",
       },
       {
         property: "og:image",

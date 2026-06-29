@@ -1,7 +1,7 @@
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
 import { Logo } from "./Logo";
 import { useState, useEffect, useCallback } from "react";
-import { Menu, X, LayoutDashboard } from "lucide-react";
+import { Crosshair, Menu, X } from "lucide-react";
 import { useMe, useLogout } from "@/hooks/use-mast-api";
 
 // Configurable anchor targets — always resolve to the home page sections
@@ -130,8 +130,8 @@ export function SiteNav() {
                 to="/dashboard"
                 className="hidden sm:inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-2 rounded-lg hover:bg-white/[0.04]"
               >
-                <LayoutDashboard className="size-3.5" />
-                Dashboard
+                <Crosshair className="size-3.5" />
+                Focus
               </Link>
               <button
                 onClick={handleLogout}
@@ -201,7 +201,7 @@ export function SiteNav() {
                   className="block px-3 py-2.5 text-sm font-medium text-muted-foreground"
                   onClick={() => setMobileOpen(false)}
                 >
-                  Dashboard
+                  Focus
                 </Link>
                 <button
                   className="block w-full text-left px-3 py-2.5 text-sm font-medium text-muted-foreground"

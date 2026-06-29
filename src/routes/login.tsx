@@ -340,7 +340,7 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
             Sales-ready leads. Every channel. One platform.
           </h2>
           <p className="mt-5 text-muted-foreground leading-relaxed">
-            Verified emails, mobile numbers, websites, and Instagram profiles — enriched, scored, and pushed into a CRM built for outreach.
+            Verified emails, mobile numbers, websites, and Instagram profiles — enriched, scored, and pushed into a pipeline built for outreach.
           </p>
           <div className="mt-10 bg-background border border-border rounded-2xl p-6">
             <p className="text-sm text-foreground leading-relaxed">

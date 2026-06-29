@@ -26,7 +26,7 @@ function TermsPage() {
           },
           {
             heading: "Use of Service",
-            body: "Mast provides lead generation and CRM tools for professional business use. You agree to use the platform only for lawful purposes and in compliance with all applicable regulations, including those governing outreach communications (CAN-SPAM, GDPR, etc.).",
+            body: "Mast provides opportunity discovery and relationship data tools for professional business use. You agree to use the platform only for lawful purposes and in compliance with all applicable regulations, including those governing outreach communications (CAN-SPAM, GDPR, etc.).",
           },
           {
             heading: "Account Responsibility",
@@ -34,7 +34,7 @@ function TermsPage() {
           },
           {
             heading: "Credits & Billing",
-            body: "Credits are consumed upon lead generation and do not roll over between billing cycles. All charges are final unless otherwise stated in our refund policy. You may upgrade or cancel your plan at any time.",
+            body: "Credits are consumed upon opportunity discovery and do not roll over between billing cycles. All charges are final unless otherwise stated in our refund policy. You may upgrade or cancel your plan at any time.",
           },
           {
             heading: "Intellectual Property",

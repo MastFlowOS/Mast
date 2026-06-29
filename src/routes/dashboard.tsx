@@ -9,14 +9,13 @@ import { useEffect, useRef, useState } from "react";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { useAccount, useLogout, useMe } from "@/hooks/use-mast-api";
 import {
-  LayoutDashboard, Zap, Users, Kanban, Bell, BarChart2,
-  Upload, CreditCard, Receipt, Settings, Search, LogOut, X,
+  Crosshair, Search, Kanban, Bell, Settings, LogOut, X,
   CheckCircle2, ArrowUpCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/dashboard")({
-  head: () => ({ meta: [{ title: "Dashboard — Mast" }] }),
+  head: () => ({ meta: [{ title: "Focus — Mast" }] }),
   // No beforeLoad — auth is handled in the component via useEffect + navigate.
   // beforeLoad with supabase.auth.getSession() has no timeout and can hang
   // indefinitely. The AuthGate in __root.tsx already handles this with a 5s timeout.
@@ -24,16 +23,11 @@ export const Route = createFileRoute("/dashboard")({
 });
 
 const NAV = [
-  { label: "Dashboard",    to: "/dashboard",              icon: LayoutDashboard, exact: true },
-  { label: "Get Leads",    to: "/dashboard/leads",        icon: Zap },
-  { label: "CRM",          to: "/dashboard/crm",          icon: Users },
-  { label: "Pipeline",     to: "/dashboard/pipeline",     icon: Kanban },
-  { label: "Follow-ups",   to: "/dashboard/follow-ups",   icon: Bell },
-  { label: "Analytics",    to: "/dashboard/analytics",    icon: BarChart2 },
-  { label: "Import",       to: "/dashboard/import",       icon: Upload },
-  { label: "Subscription", to: "/dashboard/subscription", icon: CreditCard },
-  { label: "Billing",      to: "/dashboard/billing",      icon: Receipt },
-  { label: "Settings",     to: "/dashboard/settings",     icon: Settings },
+  { label: "Focus",    to: "/dashboard",            icon: Crosshair, exact: true },
+  { label: "Discover", to: "/dashboard/leads",      icon: Search },
+  { label: "Pipeline", to: "/dashboard/pipeline",   icon: Kanban },
+  { label: "Mission",  to: "/dashboard/follow-ups", icon: Bell },
+  { label: "Settings", to: "/dashboard/settings",   icon: Settings },
 ] as { label: string; to: string; icon: React.ComponentType<{ className?: string }>; exact?: boolean }[];
 
 const ITEM_H   = 40; // px — nav item height (py-2 + text-sm line-height)
@@ -75,7 +69,7 @@ function DashboardLayout() {
       id: 1, icon: "CheckCircle2",
       iconColor: "text-emerald-400", iconBg: "bg-emerald-400/10 border-emerald-400/20",
       title: "Welcome to MAST",
-      body: "Your workspace is ready. Start generating leads.",
+      body: "Your workspace is ready. Start discovering opportunities.",
       time: "Just now", unread: true,
     }];
     try { localStorage.setItem("mast_notifications", JSON.stringify(initial)); } catch { /* ignore */ }
@@ -251,7 +245,7 @@ function DashboardLayout() {
           <div className="flex items-center gap-3 max-w-md w-full">
             <Search className="size-4 text-muted-foreground shrink-0" />
             <input
-              placeholder="Search leads, campaigns, contacts…"
+              placeholder="Search opportunities, campaigns, contacts…"
               className="bg-transparent outline-none text-sm w-full placeholder:text-muted-foreground"
             />
           </div>

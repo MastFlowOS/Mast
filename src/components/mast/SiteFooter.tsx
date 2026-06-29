@@ -61,8 +61,8 @@ export function SiteFooter() {
             links={[
               ["Features", "/"],
               ["Pricing", "/pricing"],
-              ["Get Leads", "/dashboard/leads"],
-              ["CRM", "/dashboard/crm"],
+              ["Discover", "/dashboard/leads"],
+              ["Pipeline", "/dashboard/pipeline"],
             ]}
           />
           <FooterCol
@@ -70,7 +70,7 @@ export function SiteFooter() {
             links={[
               ["Login", "/login"],
               ["Sign up", "/signup"],
-              ["Dashboard", "/dashboard"],
+              ["Focus", "/dashboard"],
               ["Billing", "/dashboard/billing"],
             ]}
           />

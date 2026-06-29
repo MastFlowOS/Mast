@@ -13,7 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { LEAD_STATUSES, NICHES, formatRelative, leadStatusColor, leadStatusLabel, normalizeLeadStatus } from "@/lib/lead-workspace";
 
 export const Route = createFileRoute("/dashboard/crm")({
-  head: () => ({ meta: [{ title: "CRM — Mast" }] }),
+  head: () => ({ meta: [{ title: "Opportunity Network — Mast" }] }),
   component: CRM,
 });
 
@@ -202,7 +202,7 @@ function StatsBar({ leads }: { leads: Lead[] }) {
   const closedCount = leads.filter((l) => normalizeLeadStatus(l.status) === "closed").length;
 
   const stats = [
-    { label: "Total Leads", value: total, color: "text-foreground" },
+    { label: "Total Opportunities", value: total, color: "text-foreground" },
     { label: "New", value: newCount, color: "text-blue-400" },
     { label: "Contacted", value: contactedCount, color: "text-warning" },
     { label: "Replied", value: repliedCount, color: "text-brand" },
@@ -363,8 +363,8 @@ function CRM() {
       <div className="border-b border-border bg-card px-6 py-4">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">CRM</h1>
-            <p className="text-sm text-muted-foreground">Search, select, import, and bulk-manage your lead database.</p>
+            <h1 className="text-2xl font-bold tracking-tight">Opportunity Network</h1>
+            <p className="text-sm text-muted-foreground">Search, select, import, and bulk-manage your relationship data.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2">
@@ -416,18 +416,18 @@ function CRM() {
               to="/dashboard/import"
               className="rounded-lg border border-border px-4 py-2 text-sm font-semibold hover:bg-background"
             >
-              Import
+              Data Import / Export
             </Link>
 
             <Dialog open={addOpen} onOpenChange={setAddOpen}>
               <DialogTrigger asChild>
                 <button className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark">
-                  <Plus className="size-4" /> Add Lead
+                  <Plus className="size-4" /> Add Opportunity
                 </button>
               </DialogTrigger>
               <DialogContent className="max-w-lg">
                 <DialogHeader>
-                  <DialogTitle>Add Lead</DialogTitle>
+                  <DialogTitle>Add Opportunity</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4">
                   <div className="space-y-1.5">
@@ -471,7 +471,7 @@ function CRM() {
                     disabled={!newLead.businessName.trim() || createLead.isPending}
                     className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark disabled:opacity-60"
                   >
-                    {createLead.isPending ? "Adding..." : "Add Lead"}
+                    {createLead.isPending ? "Adding..." : "Add Opportunity"}
                   </button>
                 </div>
               </DialogContent>
@@ -594,9 +594,9 @@ function CRM() {
 
         {!isLoading && visibleLeads.length === 0 && (
           <div className="py-16 text-center">
-            <p className="text-sm text-muted-foreground">No leads found.</p>
+            <p className="text-sm text-muted-foreground">No opportunities found.</p>
             <Link to="/dashboard/import" className="mt-2 inline-block text-sm font-semibold text-brand hover:text-brand-dark">
-              Import from CSV
+              Import opportunities from CSV
             </Link>
           </div>
         )}
@@ -609,9 +609,9 @@ function CRM() {
             {isLoading ? (
               "Loading..."
             ) : totalLeads === 0 ? (
-              "No leads"
+              "No opportunities"
             ) : (
-              `Showing ${pageStart + 1}–${pageEnd} of ${totalLeads.toLocaleString()} lead${totalLeads === 1 ? "" : "s"}${selected.size > 0 ? ` · ${selected.size} selected` : ""}`
+              `Showing ${pageStart + 1}–${pageEnd} of ${totalLeads.toLocaleString()} opportunit${totalLeads === 1 ? "y" : "ies"}${selected.size > 0 ? ` · ${selected.size} selected` : ""}`
             )}
           </span>
 

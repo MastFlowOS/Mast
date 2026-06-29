@@ -36,7 +36,7 @@ import {
 } from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/dashboard/leads")({
-  head: () => ({ meta: [{ title: "Get Leads — Mast" }] }),
+  head: () => ({ meta: [{ title: "Discover — Mast" }] }),
   component: GetLeadsWrapper,
 });
 
@@ -1002,13 +1002,13 @@ function GetLeads() {
             )}
           </div>
 
-          {/* Premium Lead Pool Card using LockedFeatureCard if user lacks premium access */}
+          {/* Premium opportunity pool card using LockedFeatureCard if user lacks premium access */}
           {!hasPremiumAccess && (
             <LockedFeatureCard
               featureName="Premium Instant Results"
               requiredPlan="starter"
               description="Skip the wait times of live scraping. Instantly access our pre-verified pool of direct decision-makers with mobile numbers and social handles."
-              valueProposition="Connect with verified decision-makers instantly, reducing your lead-to-outreach cycle from 10 minutes to under 10 seconds."
+              valueProposition="Connect with verified decision-makers instantly, reducing your opportunity-to-outreach cycle from 10 minutes to under 10 seconds."
             />
           )}
         </aside>

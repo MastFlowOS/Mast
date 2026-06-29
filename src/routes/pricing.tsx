@@ -26,7 +26,7 @@ export const Route = createFileRoute("/pricing")({
       { title: "Pricing — Mast" },
       {
         name: "description",
-        content: "Simple daily lead limits. Every plan includes prospect research, CRM, pipeline, and AI assistance — no separate tools required.",
+        content: "Simple daily opportunity limits. Every plan includes prospect research, relationship data, pipeline, and AI assistance — no separate tools required.",
       },
       { property: "og:title", content: "Mast Pricing" },
       {
@@ -85,7 +85,7 @@ const tiers: Tier[] = [
     popular: false,
     dailyLeads: "50 / day",
     monthlyLeads: "1,500 / mo",
-    crm: "Built-in CRM",
+    crm: "Relationship data layer",
     aiAccess: "Limited",
     premiumPool: "—",
     automations: "—",
@@ -93,7 +93,7 @@ const tiers: Tier[] = [
     features: [
       "50 prospects / day (1,500 / mo)",
       "Full contact intelligence",
-      "Built-in CRM",
+      "Relationship data layer",
       "Limited AI assistance",
     ],
   },
@@ -105,7 +105,7 @@ const tiers: Tier[] = [
     popular: true,
     dailyLeads: "200 / day",
     monthlyLeads: "6,000 / mo",
-    crm: "Full pipeline CRM",
+    crm: "Full pipeline workspace",
     aiAccess: "Higher",
     premiumPool: "—",
     automations: "Sequences",
@@ -115,7 +115,7 @@ const tiers: Tier[] = [
       "All modules + sequences",
       "Instant intelligence pool",
       "Higher AI assistance",
-      "Full CRM + pipeline",
+      "Full pipeline workspace",
       "API access · 3 team seats",
     ],
   },
@@ -127,7 +127,7 @@ const tiers: Tier[] = [
     popular: false,
     dailyLeads: "833 / day",
     monthlyLeads: "25,000 / mo",
-    crm: "CRM + automations",
+    crm: "Relationship automations",
     aiAccess: "Highest",
     premiumPool: "✓",
     automations: "Full automations",
@@ -136,7 +136,7 @@ const tiers: Tier[] = [
       "833 prospects / day (25,000 / mo)",
       "Premium intelligence pool",
       "Highest AI assistance",
-      "Full CRM + automations",
+      "Relationship automations",
       "Unlimited team seats",
       "Dedicated account manager",
     ],
@@ -148,7 +148,7 @@ type ComparisonRowDef = { label: string; key: keyof Tier; icon?: React.Component
 const rows: ComparisonRowDef[] = [
   { label: "Daily lead usage", key: "dailyLeads", icon: Sun },
   { label: "Monthly lead usage", key: "monthlyLeads", icon: Calendar },
-  { label: "CRM access", key: "crm" },
+  { label: "Relationship data access", key: "crm" },
   { label: "AI assistance", key: "aiAccess", icon: Bot },
   { label: "Premium intelligence pool", key: "premiumPool" },
   { label: "Automations", key: "automations" },
@@ -181,7 +181,7 @@ const faqs = [
     a: "AI helps with outreach drafts, company context, and follow-up suggestions — from basic templates on Starter to fully adaptive multi-step sequences on Premium.",
   },
   {
-    q: "Who owns my CRM data?",
+    q: "Who owns my relationship data?",
     a: "You do. Your contacts, notes, pipeline stages, and activity history are yours. Export everything at any time.",
   },
 ];
@@ -228,7 +228,7 @@ function PricingPage() {
             Pay for outcomes,<br />not seat counts.
           </h1>
           <p className="animate-fade-up delay-200 text-muted-foreground text-[1rem] leading-relaxed max-w-xl mx-auto">
-            Every plan includes the full platform — prospect research, CRM, pipeline,
+            Every plan includes the full platform — prospect research, relationship data, pipeline,
             and AI assistance. Upgrade when you need more volume.
           </p>
         </div>
@@ -394,7 +394,7 @@ function PricingPage() {
             {[
               {
                 icon: Database,
-                title: "Your CRM, your data",
+                title: "Your relationship data",
                 desc: "Every contact, note, and pipeline stage belongs to you. Export at any time, no lock-in.",
               },
               {
@@ -484,7 +484,7 @@ function PricingPage() {
       <section className="px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
-            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Lead Usage</span>
+            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Opportunity Usage</span>
             <h2 className="mt-3 text-2xl font-bold">More data depth, more usage.</h2>
             <p className="mt-3 text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
               Request richer information per prospect and it counts more toward your daily allowance —

@@ -239,7 +239,7 @@ function Pipeline() {
     if (newLeads > 0) {
       recs.push({
         id: "uncontacted",
-        text: `${newLeads.toLocaleString()} new leads have not been contacted.`,
+        text: `${newLeads.toLocaleString()} new opportunities have not been contacted.`,
         type: "warning" as const,
         action: "Create outreach campaign",
         to: "/dashboard/leads"
@@ -247,9 +247,9 @@ function Pipeline() {
     } else {
       recs.push({
         id: "uncontacted-default",
-        text: "All incoming leads have been logged. Keep generating fresh leads.",
+        text: "All incoming opportunities have been logged. Keep discovering fresh opportunities.",
         type: "success" as const,
-        action: "Find Leads",
+        action: "Discover",
         to: "/dashboard/leads"
       });
     }
@@ -421,7 +421,7 @@ function Pipeline() {
               Pipeline Flow <Sparkles className="size-5 text-brand animate-pulse-glow" />
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              AI-driven layout focusing on deal movement, conversion health, and lead velocity.
+              AI-driven layout focusing on deal movement, conversion health, and opportunity velocity.
             </p>
           </div>
 
@@ -676,7 +676,7 @@ function Pipeline() {
                           Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-20 rounded-xl" />)
                         ) : displayLeads.length === 0 ? (
                           <div className="h-full flex items-center justify-center py-10 px-4 text-center">
-                            <p className="text-[11px] text-muted-foreground leading-relaxed">No leads in this stage.</p>
+                            <p className="text-[11px] text-muted-foreground leading-relaxed">No opportunities in this stage.</p>
                           </div>
                         ) : (
                           displayLeads.map((lead) => (
@@ -739,7 +739,7 @@ function Pipeline() {
             <h3 className="text-sm font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
               <Sparkles className="size-4 text-brand" /> AI Sales Coach
             </h3>
-            <p className="text-xs text-muted-foreground mt-1">Recommendations to optimize lead conversion.</p>
+            <p className="text-xs text-muted-foreground mt-1">Recommendations to optimize opportunity conversion.</p>
             
             <div className="mt-4 space-y-3">
               {statsLoading ? (
@@ -882,7 +882,7 @@ function Pipeline() {
                       onClick={() => navigate({ to: "/dashboard/leads" })}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark cursor-pointer"
                     >
-                      <Plus className="size-3.5" /> Add Lead
+                      <Plus className="size-3.5" /> Discover
                     </button>
                     <button 
                       onClick={() => toast.info("Triggered stage outreach sequence")}
@@ -899,7 +899,7 @@ function Pipeline() {
                 <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3">Recent Stage Actions</h4>
                 
                 {selectedStageData.activities.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No recent activity recorded for leads in this stage.</p>
+                  <p className="text-xs text-muted-foreground">No recent activity recorded for opportunities in this stage.</p>
                 ) : (
                   <div className="space-y-3">
                     {selectedStageData.activities.map((act) => (
@@ -922,12 +922,12 @@ function Pipeline() {
               <div className="p-6 flex-1 overflow-y-auto min-h-0 flex flex-col justify-between">
                 <div>
                   <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3">
-                    Recent Leads ({Math.min(10, selectedStageData.leads.length)} of {selectedStageData.count})
+                    Recent Opportunities ({Math.min(10, selectedStageData.leads.length)} of {selectedStageData.count})
                   </h4>
 
                   {selectedStageData.leads.length === 0 ? (
                     <div className="text-center py-10">
-                      <p className="text-xs text-muted-foreground">No leads in this stage.</p>
+                      <p className="text-xs text-muted-foreground">No opportunities in this stage.</p>
                     </div>
                   ) : (
                     <div className="space-y-2">
@@ -978,7 +978,7 @@ function Pipeline() {
                     }}
                     className="w-full rounded-xl bg-brand px-4 py-2.5 text-center text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark cursor-pointer"
                   >
-                    View All Leads in CRM
+                    View Opportunity Network
                   </button>
                 </div>
               </div>

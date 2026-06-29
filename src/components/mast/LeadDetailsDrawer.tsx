@@ -87,7 +87,7 @@ Mast Acquisition OS`;
       if (onSaveToCRM) {
         onSaveToCRM(lead);
       } else {
-        toast.success(`${lead.businessName} saved to CRM successfully!`);
+        toast.success(`${lead.businessName} added to pipeline successfully!`);
       }
     }, 1000);
   };
@@ -155,7 +155,7 @@ Mast Acquisition OS`;
           {/* Quality Score Meter */}
           <div className="bg-card border border-border rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
-              <span>Lead Verification Score</span>
+              <span>Opportunity Verification Score</span>
               <span className="text-brand font-mono text-sm">{leadScore}%</span>
             </div>
             <div className="h-2 w-full bg-border rounded-full overflow-hidden">
@@ -388,11 +388,11 @@ Mast Acquisition OS`;
               </>
             ) : isSaved ? (
               <>
-                <Check className="size-3.5" /> Saved to CRM
+                <Check className="size-3.5" /> In Pipeline
               </>
             ) : (
               <>
-                <Save className="size-3.5" /> Save to CRM
+                <Save className="size-3.5" /> Track Opportunity
               </>
             )}
           </button>

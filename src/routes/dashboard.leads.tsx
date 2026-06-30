@@ -13,7 +13,6 @@ import {
   Target,
   Gauge,
   Sparkles,
-  Lock,
   Mail,
   Phone,
   Link2,
@@ -21,11 +20,17 @@ import {
   X,
   Search,
   CheckSquare,
-  AlertTriangle,
   TrendingUp,
+  DollarSign,
+  Brain,
+  Clock,
+  Shield,
+  Coins,
+  Check,
 } from "lucide-react";
 import { ApiError, type Lead } from "@/lib/api";
-import { useAccount, useGenerateLeads } from "@/hooks/use-mast-api";
+import { useAccount, useAnalytics, useGenerateLeads, useLeads } from "@/hooks/use-mast-api";
+import { buildDiscoverInsights, type DiscoverInsight } from "@/lib/discover-insights";
 import {
   Dialog,
   DialogContent,
@@ -62,6 +67,9 @@ const REGIONS = [
 ] as const;
 
 type Region = (typeof REGIONS)[number];
+
+const CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "AED"] as const;
+type Currency = (typeof CURRENCIES)[number];
 
 /** Full niche catalog — supports prefix search */
 const NICHE_CATALOG = [
@@ -146,32 +154,77 @@ const speeds = [
   {
     id: "scrape",
     label: "Live Scraping",
-    desc: "Fresh records pulled in real time",
+    desc: "Fresh records pulled from the web in real time",
     premium: false,
     multiplier: 1.0,
+    speedPct: 40,
+    qualityPct: 55,
+    costPct: 25,
+    timeLabel: "5–10 min",
+    speedLabel: "Thorough",
+    qualityLabel: "Standard",
+    costLabel: "Lowest",
   },
   {
     id: "pool",
     label: "Instant Pool Access",
-    desc: "Tap into the pre-built lead pool",
+    desc: "Pre-verified businesses from Mast's curated pool",
     premium: false,
     multiplier: 1.5,
+    speedPct: 70,
+    qualityPct: 75,
+    costPct: 55,
+    timeLabel: "Under 1 min",
+    speedLabel: "Fast",
+    qualityLabel: "High",
+    costLabel: "Moderate",
   },
   {
     id: "premium",
     label: "Premium Instant Results",
-    desc: "Decision-maker pool, mobile-verified",
+    desc: "Decision-makers with mobile-verified contacts",
     premium: true,
     multiplier: 2.0,
+    speedPct: 95,
+    qualityPct: 95,
+    costPct: 90,
+    timeLabel: "Instant",
+    speedLabel: "Fastest",
+    qualityLabel: "Premium",
+    costLabel: "Highest",
   },
 ];
 
-// Channel definitions — ordered: Phone > Email > Instagram > Website
+// Channel definitions — ordered: Email > Phone > Instagram > Website
 const channelOptions = [
-  { id: "phone", label: "Phone Number", icon: Phone },
-  { id: "email", label: "Verified Email", icon: Mail },
-  { id: "instagram", label: "Instagram", icon: Instagram },
-  { id: "website", label: "Website", icon: Link2 },
+  {
+    id: "email",
+    label: "Verified Email",
+    icon: Mail,
+    costLabel: "Lowest cost",
+    description: "Highest deliverability for first-touch outreach",
+  },
+  {
+    id: "phone",
+    label: "Phone Number",
+    icon: Phone,
+    costLabel: "Low cost",
+    description: "Direct line for faster conversations",
+  },
+  {
+    id: "instagram",
+    label: "Instagram",
+    icon: Instagram,
+    costLabel: "Med cost",
+    description: "Social handle for visual-first brands",
+  },
+  {
+    id: "website",
+    label: "Website",
+    icon: Link2,
+    costLabel: "High cost",
+    description: "Contact forms and site intelligence",
+  },
 ] as const;
 
 type ChannelId = (typeof channelOptions)[number]["id"];
@@ -307,14 +360,20 @@ function GetLeads() {
   const navigate = useNavigate();
 
   const { data: account } = useAccount();
+  const { data: analytics } = useAnalytics();
+  const { data: leadsPayload } = useLeads({ limit: 1000 });
   const generate = useGenerateLeads();
 
-  // Quantity state — stored as step index (0–20)
-  const [qtyIndex, setQtyIndex] = useState<number>(qtyToSliderIndex(50));
+  const maxQuantity = account?.limits.maxLeadRequest ?? 100;
+  const maxSliderIndex = qtyToSliderIndex(maxQuantity);
+
+  // Quantity state — stored as step index; clamped to plan max when account loads
+  const [qtyIndex, setQtyIndex] = useState<number>(qtyToSliderIndex(10));
   const quantity = sliderIndexToQty(qtyIndex);
 
-  // Multi-select regions
+  // Multi-select regions & optional currencies
   const [regions, setRegions] = useState<Region[]>(["North America"]);
+  const [currencies, setCurrencies] = useState<Currency[]>([]);
 
   // Searchable multi-select niches
   const [niches, setNiches] = useState<string[]>([]);
@@ -333,11 +392,28 @@ function GetLeads() {
   const [newOpportunities, setNewOpportunities] = useState<Lead[]>([]);
   const [firstOpportunityId, setFirstOpportunityId] = useState<number | null>(null);
 
-  const maxQuantity = account?.limits.maxLeadRequest ?? 100;
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
   const monthlyRemaining = account?.monthlyUsage.remaining ?? 0;
   const currentSpeed = speeds.find((s) => s.id === speed)!;
   const hasPremiumAccess = account?.limits.allowPremiumPool ?? false;
+
+  const leads = Array.isArray(leadsPayload)
+    ? leadsPayload
+    : leadsPayload?.leads ?? [];
+
+  const discoverInsights: DiscoverInsight[] =
+    account && analytics
+      ? buildDiscoverInsights({
+          leads,
+          analytics,
+          account,
+        })
+      : [];
+
+  // Clamp slider to plan max as soon as account loads (fixes stuck slider for new free users)
+  useEffect(() => {
+    setQtyIndex((prev) => Math.min(prev, maxSliderIndex));
+  }, [maxSliderIndex]);
 
   // Staged Loading Text Definitions
   const loadingStages = [
@@ -373,6 +449,11 @@ function GetLeads() {
       });
     }
   };
+
+  const toggleCurrency = (c: Currency) =>
+    setCurrencies((prev) =>
+      prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
+    );
 
   const toggleNiche = (n: string) => {
     setNiches((prev) =>
@@ -428,9 +509,16 @@ function GetLeads() {
     const startTime = Date.now();
 
     try {
+      const regionLabel = [
+        regions.join(", "),
+        currencies.length > 0 ? `Currency: ${currencies.join(", ")}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
       const result = await generate.mutateAsync({
         quantity,
-        region: regions.join(", "),
+        region: regionLabel,
         niche: niches.length > 0 ? niches.join(", ") : "General",
         mode: speed as "scrape" | "pool" | "premium",
         channels,
@@ -694,8 +782,8 @@ function GetLeads() {
         <h1 className="mt-2 text-3xl font-bold tracking-tight">
           Discover high-intent opportunities in minutes
         </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Configure your search parameters. Mast connects you to verified businesses, preparing active outreach channels and contextual intelligence automatically.
+        <p className="mt-2 text-sm text-muted-foreground max-w-2xl leading-relaxed">
+          Tell Mast what you're looking for. It finds verified businesses, loads your outreach channels, and prepares contextual intelligence — so every session starts with an edge.
         </p>
       </div>
 
@@ -704,30 +792,37 @@ function GetLeads() {
           {/* ── Quantity ─────────────────────────────────────────── */}
           <Section
             icon={Target}
-            title="Capacity"
-            subtitle="How many opportunities to discover?"
+            title="Opportunity Amount"
+            subtitle="How many businesses should we find for you?"
             stagger={0}
           >
-            <div className="space-y-3">
+            <div className="space-y-4">
+              <div className="flex items-baseline justify-between gap-4">
+                <p className="text-sm text-muted-foreground">
+                  Batch size for this session
+                </p>
+                <p className="text-2xl font-bold tracking-tight text-foreground tabular-nums">
+                  {quantity.toLocaleString()}
+                  <span className="ml-1.5 text-sm font-medium text-muted-foreground">
+                    businesses
+                  </span>
+                </p>
+              </div>
               <input
                 type="range"
                 min={0}
-                max={QUANTITY_STEPS.length - 1}
+                max={maxSliderIndex}
                 step={1}
-                value={qtyIndex}
-                onChange={(e) => {
-                  const idx = Number(e.target.value);
-                  const qty = sliderIndexToQty(idx);
-                  if (qty <= maxQuantity) setQtyIndex(idx);
-                }}
-                className="w-full accent-[color:var(--brand)]"
+                value={Math.min(qtyIndex, maxSliderIndex)}
+                onChange={(e) => setQtyIndex(Number(e.target.value))}
+                className="w-full accent-[color:var(--brand)] cursor-pointer"
               />
               <div className="flex justify-between text-xs text-muted-foreground">
                 <span>1</span>
-                <span className="text-foreground font-bold text-lg">
-                  {quantity.toLocaleString()} opportunities
+                <span className="text-[11px]">
+                  Plan max: {maxQuantity.toLocaleString()}
                 </span>
-                <span>100</span>
+                <span>{maxQuantity.toLocaleString()}</span>
               </div>
             </div>
           </Section>
@@ -736,7 +831,7 @@ function GetLeads() {
           <Section
             icon={Globe2}
             title="Target Region"
-            subtitle="Select one or more geographic territories"
+            subtitle="Geographic territories to search — combine with currency for purchasing-power targeting"
             stagger={1}
           >
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -746,13 +841,43 @@ function GetLeads() {
                   onClick={() => toggleRegion(r)}
                   className={
                     regions.includes(r)
-                      ? "px-3 py-2 rounded-lg border-2 border-brand bg-brand/10 text-foreground text-sm font-medium text-center"
-                      : "px-3 py-2 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 text-sm font-medium text-center transition-colors"
+                      ? "px-3 py-2.5 rounded-lg border-2 border-brand bg-brand/10 text-foreground text-sm font-medium text-center transition-all"
+                      : "px-3 py-2.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 text-sm font-medium text-center transition-colors"
                   }
                 >
                   {r}
                 </button>
               ))}
+            </div>
+
+            <div className="mt-5 pt-5 border-t border-border/60">
+              <div className="flex items-center gap-2 mb-3">
+                <DollarSign className="size-3.5 text-muted-foreground" />
+                <p className="text-xs font-semibold text-foreground">
+                  Business Currency
+                </p>
+                <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+                  Optional
+                </span>
+              </div>
+              <p className="text-[11px] text-muted-foreground mb-3 leading-relaxed">
+                Filter by local purchasing power — works alongside region selection.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {CURRENCIES.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => toggleCurrency(c)}
+                    className={
+                      currencies.includes(c)
+                        ? "px-3 py-1.5 rounded-lg border-2 border-brand bg-brand/10 text-foreground text-xs font-bold tracking-wide transition-all"
+                        : "px-3 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 text-xs font-semibold tracking-wide transition-colors"
+                    }
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
             </div>
           </Section>
 
@@ -842,43 +967,57 @@ function GetLeads() {
           <Section
             icon={Mail}
             title="Outreach Channels"
-            subtitle="Verified channels loaded into your active workspace"
+            subtitle="Select verified contact paths to load into your workspace"
             stagger={3}
           >
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div className="space-y-2">
               {channelOptions.map((c) => {
                 const active = channels.includes(c.id);
-                const creditLabel =
-                  c.id === "email"
-                    ? "Lowest cost"
-                    : c.id === "phone"
-                      ? "Low cost"
-                      : c.id === "instagram"
-                        ? "Med cost"
-                        : "High cost";
                 return (
                   <button
                     key={c.id}
                     onClick={() => toggleChannel(c.id)}
                     className={
                       active
-                        ? "flex flex-col items-start gap-1 px-3 py-2.5 rounded-lg border-2 border-brand bg-brand/10 text-foreground text-sm font-medium"
-                        : "flex flex-col items-start gap-1 px-3 py-2.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 text-sm font-medium transition-colors"
+                        ? "w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border-2 border-brand bg-brand/5 text-left transition-all"
+                        : "w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border border-border hover:border-muted-foreground/30 hover:bg-muted/20 text-left transition-all"
                     }
                   >
-                    <div className="flex items-center gap-2">
-                      <c.icon
-                        className={
-                          active ? "size-4 text-brand" : "size-4"
-                        }
-                      />
-                      {c.label}
-                    </div>
-                    <span
-                      className={`text-[10px] font-semibold uppercase tracking-wide ${active ? "text-brand/70" : "text-muted-foreground/60"}`}
+                    <div
+                      className={
+                        active
+                          ? "size-10 rounded-lg bg-brand/15 border border-brand/25 grid place-items-center shrink-0"
+                          : "size-10 rounded-lg bg-muted/40 border border-border grid place-items-center shrink-0"
+                      }
                     >
-                      {creditLabel}
-                    </span>
+                      <c.icon className={active ? "size-4 text-brand" : "size-4 text-muted-foreground"} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-sm font-semibold ${active ? "text-foreground" : "text-muted-foreground"}`}>
+                          {c.label}
+                        </span>
+                        <span
+                          className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                            active ? "bg-brand/15 text-brand" : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {c.costLabel}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                        {c.description}
+                      </p>
+                    </div>
+                    <div
+                      className={
+                        active
+                          ? "size-5 rounded-full bg-brand grid place-items-center shrink-0"
+                          : "size-5 rounded-full border-2 border-border shrink-0"
+                      }
+                    >
+                      {active && <Check className="size-3 text-brand-foreground" strokeWidth={3} />}
+                    </div>
                   </button>
                 );
               })}
@@ -889,44 +1028,74 @@ function GetLeads() {
           <Section
             icon={Gauge}
             title="Discovery Speed"
-            subtitle="Live web scraping vs. instant pre-verified access"
+            subtitle="Choose how Mast sources and verifies your businesses"
             stagger={4}
           >
-            <div className="grid sm:grid-cols-3 gap-3">
-              {speeds.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => setSpeed(s.id)}
-                  disabled={
-                    (s.id === "pool" && account
-                      ? !account.limits.allowInstantPool
-                      : false) ||
-                    (s.id === "premium" && account
-                      ? !account.limits.allowPremiumPool
-                      : false)
-                  }
-                  className={
-                    speed === s.id
-                      ? "text-left p-4 rounded-xl border-2 border-brand bg-brand/5 relative"
-                      : "text-left p-4 rounded-xl border border-border hover:border-muted-foreground/40 transition-colors disabled:opacity-45"
-                  }
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-sm">{s.label}</span>
-                    {s.premium && (
-                      <span className="text-[9px] font-bold bg-brand/15 text-brand px-2 py-0.5 rounded uppercase tracking-wider border border-brand/20">
-                        Premium
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {s.desc}
-                  </p>
-                  <p className="text-[10px] text-brand font-bold uppercase tracking-wider mt-2">
-                    ×{s.multiplier.toFixed(1)} credits
-                  </p>
-                </button>
-              ))}
+            <div className="space-y-3">
+              {speeds.map((s) => {
+                const isSelected = speed === s.id;
+                const isDisabled =
+                  (s.id === "pool" && account ? !account.limits.allowInstantPool : false) ||
+                  (s.id === "premium" && account ? !account.limits.allowPremiumPool : false);
+
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => setSpeed(s.id)}
+                    disabled={isDisabled}
+                    className={
+                      isSelected
+                        ? "w-full text-left p-5 rounded-xl border-2 border-brand bg-brand/5 relative transition-all"
+                        : "w-full text-left p-5 rounded-xl border border-border hover:border-muted-foreground/30 hover:bg-muted/10 transition-all disabled:opacity-45 disabled:cursor-not-allowed"
+                    }
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-sm text-foreground">{s.label}</span>
+                          {s.premium && (
+                            <span className="text-[9px] font-bold bg-brand/15 text-brand px-2 py-0.5 rounded uppercase tracking-wider border border-brand/20">
+                              Premium
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{s.desc}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-brand uppercase tracking-wider">
+                          <Clock className="size-3" />
+                          {s.timeLabel}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-4">
+                      <SpeedMetric
+                        label="Speed"
+                        value={s.speedLabel}
+                        pct={s.speedPct}
+                        icon={Zap}
+                        active={isSelected}
+                      />
+                      <SpeedMetric
+                        label="Quality"
+                        value={s.qualityLabel}
+                        pct={s.qualityPct}
+                        icon={Shield}
+                        active={isSelected}
+                      />
+                      <SpeedMetric
+                        label="Cost"
+                        value={s.costLabel}
+                        pct={s.costPct}
+                        icon={Coins}
+                        active={isSelected}
+                        invert
+                      />
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </Section>
         </div>
@@ -934,73 +1103,94 @@ function GetLeads() {
         {/* ── Order Summary / CTA ──────────────────────────────────── */}
         <aside className="space-y-5">
           <div className="bg-card border border-border rounded-2xl p-6 shadow-md">
-            <h3 className="font-bold mb-4">Summary</h3>
-            <div className="space-y-3 text-sm">
-              <Row
-                label="Quantity"
-                value={`${quantity.toLocaleString()} opportunities`}
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-bold text-base tracking-tight">Session Summary</h3>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-brand">
+                Ready
+              </span>
+            </div>
+            <div className="space-y-3.5 text-sm">
+              <SummaryRow
+                label="Businesses"
+                value={`${quantity.toLocaleString()} per session`}
               />
-              <div className="flex justify-between gap-2">
-                <span className="text-muted-foreground shrink-0">Regions</span>
-                <span className="text-foreground font-medium text-right truncate max-w-[150px]">
-                  {regions.join(", ")}
-                </span>
-              </div>
-              <div className="flex justify-between gap-2">
-                <span className="text-muted-foreground shrink-0">Niches</span>
-                <span className="text-foreground font-medium text-right truncate max-w-[150px]">
-                  {niches.length > 0 ? niches.join(", ") : "Any"}
-                </span>
-              </div>
-              <div className="flex justify-between gap-2">
-                <span className="text-muted-foreground shrink-0">Channels</span>
-                <span className="text-foreground font-medium text-right truncate max-w-[150px]">
-                  {channels.length > 0
+              <SummaryRow
+                label="Regions"
+                value={regions.join(", ")}
+                truncate
+              />
+              {currencies.length > 0 && (
+                <SummaryRow
+                  label="Currency"
+                  value={currencies.join(", ")}
+                />
+              )}
+              <SummaryRow
+                label="Niches"
+                value={niches.length > 0 ? niches.join(", ") : "Any vertical"}
+                truncate
+              />
+              <SummaryRow
+                label="Channels"
+                value={
+                  channels.length > 0
                     ? channelOptions
                         .filter((c) => channels.includes(c.id))
                         .map((c) => c.label)
                         .join(", ")
-                    : "None"}
-                </span>
-              </div>
-              <Row label="Speed" value={currentSpeed.label} />
+                    : "None selected"
+                }
+                truncate
+              />
+              <SummaryRow label="Speed" value={currentSpeed.label} />
             </div>
             <div className="my-5 h-px bg-border" />
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">
-                Deduction cost
-              </span>
-              <span className="inline-flex items-center gap-1.5 font-bold text-foreground">
-                <TrendingUp className="size-4 text-brand" />
-                {quantity.toLocaleString()} credits
-              </span>
-            </div>
-            <div className="mt-3 flex gap-3 text-[11px] justify-between">
-              <span className="text-muted-foreground">
-                Daily remaining: <span className="text-foreground font-semibold"><AnimatedCounter value={dailyRemaining} /></span>
-              </span>
-              <span className="text-muted-foreground">
-                Monthly: <span className="text-foreground font-semibold"><AnimatedCounter value={monthlyRemaining} /></span>
-              </span>
+            <div className="rounded-xl bg-muted/30 border border-border/60 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground font-medium">
+                  Session cost
+                </span>
+                <span className="inline-flex items-center gap-1.5 font-bold text-foreground tabular-nums">
+                  <TrendingUp className="size-3.5 text-brand" />
+                  {quantity.toLocaleString()} credits
+                </span>
+              </div>
+              <div className="flex justify-between text-[11px]">
+                <span className="text-muted-foreground">
+                  Today:{" "}
+                  <span className="text-foreground font-semibold tabular-nums">
+                    <AnimatedCounter value={dailyRemaining} /> left
+                  </span>
+                </span>
+                <span className="text-muted-foreground">
+                  Month:{" "}
+                  <span className="text-foreground font-semibold tabular-nums">
+                    <AnimatedCounter value={monthlyRemaining} /> left
+                  </span>
+                </span>
+              </div>
             </div>
             <button
               onClick={handleGenerate}
               disabled={!canGenerate}
-              className="mt-5 w-full bg-brand hover:bg-brand-dark text-brand-foreground py-3.5 rounded-xl font-bold shadow-brand inline-flex items-center justify-center gap-2 disabled:opacity-55 disabled:hover:bg-brand cursor-pointer transition-all active:scale-[0.99]"
+              className="mt-5 w-full bg-brand hover:bg-brand-dark text-brand-foreground py-3.5 rounded-xl font-bold shadow-brand inline-flex items-center justify-center gap-2 disabled:opacity-55 disabled:hover:bg-brand cursor-pointer transition-all active:scale-[0.99] group"
             >
-              <Zap className="size-4 text-brand-foreground animate-pulse" />{" "}
-              {isGenerating ? "Analyzing..." : "Discover Opportunities"}
+              <Sparkles className="size-4 text-brand-foreground group-hover:animate-pulse" />
+              {isGenerating ? "Analyzing..." : "Launch Discovery Session"}
             </button>
             {(channelRestricted || modeRestricted || exceedsDailyLimit || exceedsMonthlyLimit) && (
-              <p className="text-[11px] text-destructive text-center mt-2">
+              <p className="text-[11px] text-destructive text-center mt-2.5 leading-relaxed">
                 {exceedsDailyLimit
-                  ? `Daily capacity: only ${dailyRemaining} remaining today.`
+                  ? `Daily limit: only ${dailyRemaining} remaining today.`
                   : exceedsMonthlyLimit
-                  ? `Monthly capacity: only ${monthlyRemaining} remaining.`
+                  ? `Monthly limit: only ${monthlyRemaining} remaining.`
                   : "Your plan does not support this channel configuration."}
               </p>
             )}
           </div>
+
+          {/* AI Overview — intelligent discovery layer */}
+          <DiscoverAiOverview insights={discoverInsights} loading={!account || !analytics} />
 
           {/* Premium opportunity pool card using LockedFeatureCard if user lacks premium access */}
           {!hasPremiumAccess && (
@@ -1054,6 +1244,131 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between">
       <span className="text-muted-foreground">{label}</span>
       <span className="text-foreground font-medium">{value}</span>
+    </div>
+  );
+}
+
+function SummaryRow({
+  label,
+  value,
+  truncate,
+}: {
+  label: string;
+  value: string;
+  truncate?: boolean;
+}) {
+  return (
+    <div className="flex justify-between gap-3 items-start">
+      <span className="text-muted-foreground shrink-0 text-xs font-medium">{label}</span>
+      <span
+        className={`text-foreground font-medium text-xs text-right ${truncate ? "truncate max-w-[160px]" : ""}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function SpeedMetric({
+  label,
+  value,
+  pct,
+  icon: Icon,
+  active,
+  invert,
+}: {
+  label: string;
+  value: string;
+  pct: number;
+  icon: React.ComponentType<{ className?: string }>;
+  active: boolean;
+  invert?: boolean;
+}) {
+  const barColor = invert
+    ? "bg-gradient-to-r from-emerald-500/70 to-amber-500/70"
+    : "bg-gradient-to-r from-brand/50 to-brand";
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1">
+        <Icon className={`size-3 ${active ? "text-brand" : "text-muted-foreground"}`} />
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {label}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-border overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-300 ${barColor}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className={`text-[11px] font-semibold ${active ? "text-foreground" : "text-muted-foreground"}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+const INSIGHT_TONE_STYLES: Record<DiscoverInsight["tone"], string> = {
+  brand: "border-brand/25 bg-brand/5",
+  success: "border-emerald-500/25 bg-emerald-500/5",
+  warning: "border-amber-500/25 bg-amber-500/5",
+  neutral: "border-border bg-muted/20",
+};
+
+function DiscoverAiOverview({
+  insights,
+  loading,
+}: {
+  insights: DiscoverInsight[];
+  loading: boolean;
+}) {
+  return (
+    <div className="bg-card border border-border rounded-2xl p-6 shadow-md relative overflow-hidden">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-[0.07]"
+        style={{
+          background:
+            "radial-gradient(ellipse at top left, color-mix(in oklab, var(--brand) 40%, transparent), transparent 70%)",
+        }}
+      />
+      <div className="relative space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center">
+            <Brain className="size-4 text-brand" />
+          </div>
+          <div>
+            <h3 className="font-bold text-sm tracking-tight">AI Overview</h3>
+            <p className="text-[11px] text-muted-foreground">
+              Personalized strategy from your discovery history
+            </p>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-16 rounded-xl bg-muted/40 animate-pulse" />
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {insights.map((insight) => (
+              <div
+                key={insight.id}
+                className={`rounded-xl border p-3.5 ${INSIGHT_TONE_STYLES[insight.tone]}`}
+              >
+                <p className="text-xs font-semibold text-foreground leading-relaxed">
+                  {insight.title}
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
+                  {insight.reason}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

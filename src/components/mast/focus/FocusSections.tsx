@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -33,23 +34,32 @@ type GreetingProps = {
 
 export function FocusGreeting({ emoji, period, name, subtitle }: GreetingProps) {
   return (
-    <header className="animate-fade-in" style={{ paddingTop: "0.25rem" }}>
+    <header className="animate-fade-in focus-greeting-wrap">
       {/* Eyebrow */}
       <p className="focus-eyebrow">
         <span className="focus-eyebrow-dot" />
         AI Briefing
       </p>
 
-      {/* Display heading */}
+      {/* Display heading — period on its own line, name dominates */}
       <h1 className="focus-greeting-headline">
-        <span className="focus-greeting-emoji" aria-hidden="true">{emoji}</span>
-        {period}, {name}.
+        <span className="focus-greeting-period">
+          <span className="focus-greeting-emoji" aria-hidden="true">{emoji}</span>
+          {period},
+        </span>
+        <span className="focus-greeting-name">{name}</span>
       </h1>
 
       {/* Subtitle */}
       <p className="focus-greeting-subtitle">{subtitle}</p>
 
       <style>{`
+        .focus-greeting-wrap {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+        }
+
         .focus-eyebrow {
           display: inline-flex;
           align-items: center;
@@ -59,7 +69,7 @@ export function FocusGreeting({ emoji, period, name, subtitle }: GreetingProps) 
           letter-spacing: 0.12em;
           text-transform: uppercase;
           color: var(--color-brand);
-          margin-bottom: 1.25rem;
+          margin-bottom: 1.75rem;
         }
 
         .focus-eyebrow-dot {
@@ -73,16 +83,26 @@ export function FocusGreeting({ emoji, period, name, subtitle }: GreetingProps) 
         }
 
         .focus-greeting-headline {
-          font-size: clamp(2rem, 5vw, 2.75rem);
+          font-size: clamp(2.75rem, 9vw, 5.5rem);
           font-weight: 800;
-          letter-spacing: -0.03em;
-          line-height: 1.1;
+          letter-spacing: -0.04em;
+          line-height: 1;
           color: var(--color-foreground);
-          margin: 0 0 0.875rem;
+          margin: 0 0 1.5rem;
           display: flex;
+          flex-direction: column;
+          align-items: center;
+        }
+
+        .focus-greeting-period {
+          font-size: 0.4em;
+          font-weight: 600;
+          letter-spacing: -0.01em;
+          color: var(--color-muted-foreground);
+          display: inline-flex;
           align-items: baseline;
           gap: 0.4em;
-          flex-wrap: wrap;
+          margin-bottom: 0.3em;
         }
 
         .focus-greeting-emoji {
@@ -90,12 +110,28 @@ export function FocusGreeting({ emoji, period, name, subtitle }: GreetingProps) 
           line-height: 1;
         }
 
+        .focus-greeting-name {
+          background: linear-gradient(180deg, var(--color-foreground), color-mix(in oklab, var(--foreground) 75%, var(--brand) 25%));
+          -webkit-background-clip: text;
+          background-clip: text;
+          color: transparent;
+        }
+
         .focus-greeting-subtitle {
-          font-size: 1rem;
+          font-size: 1.125rem;
           line-height: 1.6;
           color: var(--color-muted-foreground);
-          max-width: 520px;
-          margin: 0;
+          max-width: 480px;
+          margin: 0 auto;
+        }
+
+        @media (max-width: 680px) {
+          .focus-greeting-headline {
+            font-size: clamp(2.5rem, 13vw, 3.5rem);
+          }
+          .focus-greeting-subtitle {
+            font-size: 1rem;
+          }
         }
       `}</style>
     </header>
@@ -142,51 +178,63 @@ type RecommendationsProps = {
 };
 
 export function FocusRecommendations({ recommendations }: RecommendationsProps) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
   return (
-    <section>
-      {/* Section label */}
-      <div className="focus-section-header">
-        <h2 className="focus-section-title">Today's Briefing</h2>
-        <span className="focus-section-count">{recommendations.length} item{recommendations.length !== 1 ? "s" : ""}</span>
+    <section className="briefing-panel animate-fade-up delay-100">
+      {/* Header row */}
+      <div className="briefing-panel-header">
+        <div className="focus-section-header" style={{ marginBottom: "0.25rem" }}>
+          <h2 className="focus-section-title">Today's Briefing</h2>
+        </div>
+        <p className="briefing-panel-sub">
+          {recommendations.length} item{recommendations.length !== 1 ? "s" : ""} for you
+        </p>
       </div>
 
-      {/* First recommendation is the hero item */}
+      {/* Compact rows */}
       <div className="rec-list">
         {recommendations.map((item, index) => {
           const Icon = RECOMMENDATION_ICONS[item.id] ?? Sparkles;
           const tone = TONE_CONFIG[item.tone];
-          const isHero = index === 0;
+          const isExpanded = expandedId === item.id;
 
           return (
-            <Link
+            <div
               key={item.id}
-              to={item.to}
               className={cn(
-                "rec-card animate-fade-up",
-                isHero ? "rec-card-hero" : "rec-card-secondary",
-                tone.card,
-                staggerDelay(index, 80),
+                "rec-row animate-fade-up",
+                isExpanded && "rec-row-expanded",
+                staggerDelay(index, 60),
               )}
             >
-              {/* Priority indicator for hero */}
-              {isHero && (
-                <span className="rec-priority-label">Priority</span>
-              )}
+              <button
+                type="button"
+                className="rec-row-main"
+                onClick={() => setExpandedId(isExpanded ? null : item.id)}
+                aria-expanded={isExpanded}
+              >
+                <div className={cn("rec-icon-wrap", tone.icon)}>
+                  <Icon className="rec-icon" />
+                </div>
 
-              <div className={cn("rec-icon-wrap", tone.icon)}>
-                <Icon className="rec-icon" />
-              </div>
-
-              <div className="rec-body">
                 <p className="rec-title">{item.title}</p>
-                <p className="rec-desc">{item.description}</p>
-              </div>
+              </button>
 
-              <div className="rec-action">
-                <span className="rec-action-label">{item.actionLabel}</span>
+              <Link to={item.to} className="rec-row-arrow" aria-label={item.actionLabel}>
                 <ArrowRight className="rec-action-arrow" />
-              </div>
-            </Link>
+              </Link>
+
+              {isExpanded && (
+                <div className="rec-row-detail animate-fade-in">
+                  <p className="rec-desc">{item.description}</p>
+                  <Link to={item.to} className="rec-detail-link">
+                    {item.actionLabel}
+                    <ArrowRight className="rec-detail-link-arrow" />
+                  </Link>
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
@@ -214,65 +262,71 @@ export function FocusRecommendations({ recommendations }: RecommendationsProps) 
           color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
         }
 
+        /* Panel shell — matches Weekly Intelligence's visual weight */
+        .briefing-panel {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          border: 1px solid var(--color-border);
+          border-radius: 18px;
+          background: color-mix(in oklab, var(--card) 95%, var(--brand) 5%);
+          padding: 1.75rem 1.75rem 1.5rem;
+        }
+
+        .briefing-panel-header {
+          margin-bottom: 0.5rem;
+        }
+
+        .briefing-panel-sub {
+          font-size: 0.75rem;
+          color: color-mix(in oklab, var(--muted-foreground) 65%, transparent);
+          margin: 0;
+        }
+
         .rec-list {
           display: flex;
           flex-direction: column;
-          gap: 0.625rem;
+          margin-top: 0.75rem;
         }
 
-        /* Base card */
-        .rec-card {
+        /* Compact row */
+        .rec-row {
           position: relative;
           display: flex;
+          align-items: stretch;
+          gap: 0.5rem;
+          border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+        }
+        .rec-row:first-child {
+          border-top: none;
+        }
+
+        .rec-row-main {
+          flex: 1;
+          min-width: 0;
+          display: flex;
           align-items: center;
-          gap: 1rem;
-          border-radius: 14px;
-          border: 1px solid var(--color-border);
-          background: var(--color-card);
-          text-decoration: none;
-          transition:
-            transform 250ms cubic-bezier(0.16, 1, 0.3, 1),
-            box-shadow 250ms cubic-bezier(0.16, 1, 0.3, 1),
-            border-color 150ms ease;
-        }
-        .rec-card:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 16px 48px -12px rgb(0 0 0 / 0.5),
-                      0 0 0 1px color-mix(in oklab, var(--brand) 25%, transparent);
-          border-color: color-mix(in oklab, var(--brand) 30%, transparent);
+          gap: 0.875rem;
+          padding: 0.875rem 0;
+          background: transparent;
+          border: none;
+          text-align: left;
+          cursor: pointer;
+          font: inherit;
+          color: inherit;
         }
 
-        /* Hero card — larger, slightly elevated */
-        .rec-card-hero {
-          padding: 1.125rem 1.25rem;
-          background: color-mix(in oklab, var(--card) 95%, var(--brand) 5%);
-        }
-
-        /* Secondary cards — compact */
-        .rec-card-secondary {
-          padding: 0.875rem 1.125rem;
-        }
-
-        /* Tone-specific border-left accents */
-        .rec-card-brand  { border-left: 2px solid color-mix(in oklab, var(--brand) 70%, transparent); }
-        .rec-card-warning { border-left: 2px solid color-mix(in oklab, var(--warning) 70%, transparent); }
-        .rec-card-success { border-left: 2px solid color-mix(in oklab, var(--success) 70%, transparent); }
-        .rec-card-danger  { border-left: 2px solid color-mix(in oklab, var(--destructive) 70%, transparent); }
-
-        /* Priority badge */
-        .rec-priority-label {
-          position: absolute;
-          top: -0.5rem;
-          left: 1.125rem;
-          font-size: 0.625rem;
-          font-weight: 800;
-          letter-spacing: 0.1em;
-          text-transform: uppercase;
+        .rec-row-arrow {
+          flex-shrink: 0;
+          display: grid;
+          place-items: center;
+          width: 2.25rem;
           color: var(--color-brand);
-          background: var(--color-background);
-          padding: 0.1rem 0.5rem;
-          border-radius: 99px;
-          border: 1px solid color-mix(in oklab, var(--brand) 30%, transparent);
+          text-decoration: none;
+          transition: transform 150ms ease;
+        }
+        .rec-row-arrow:hover {
+          transform: translateX(2px);
         }
 
         /* Icon */
@@ -280,9 +334,9 @@ export function FocusRecommendations({ recommendations }: RecommendationsProps) 
           display: grid;
           place-items: center;
           flex-shrink: 0;
-          width: 2.5rem;
-          height: 2.5rem;
-          border-radius: 10px;
+          width: 2.125rem;
+          height: 2.125rem;
+          border-radius: 9px;
           border: 1px solid;
         }
         .rec-icon-brand   { background: color-mix(in oklab, var(--brand) 12%, transparent); border-color: color-mix(in oklab, var(--brand) 25%, transparent); color: var(--color-brand); }
@@ -291,52 +345,73 @@ export function FocusRecommendations({ recommendations }: RecommendationsProps) 
         .rec-icon-danger  { background: color-mix(in oklab, var(--destructive) 12%, transparent); border-color: color-mix(in oklab, var(--destructive) 25%, transparent); color: oklch(0.7 0.22 25); }
 
         .rec-icon {
-          width: 1rem;
-          height: 1rem;
+          width: 0.9375rem;
+          height: 0.9375rem;
         }
 
-        /* Body */
-        .rec-body {
+        /* Title — single line, truncates instead of overflowing */
+        .rec-title {
           flex: 1;
           min-width: 0;
-        }
-        .rec-title {
-          font-size: 0.9375rem;
+          font-size: 0.875rem;
           font-weight: 600;
           color: var(--color-foreground);
-          margin: 0 0 0.2rem;
+          margin: 0;
           line-height: 1.3;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
+
+        /* Expanded detail — revealed on row click, never overflows layout */
+        .rec-row-detail {
+          grid-column: 1 / -1;
+        }
+        .rec-row-expanded {
+          flex-wrap: wrap;
+        }
+        .rec-row-expanded .rec-row-main {
+          flex-basis: 100%;
+        }
+        .rec-row-detail {
+          flex-basis: 100%;
+          padding: 0 0 1rem calc(2.125rem + 0.875rem);
+        }
+
         .rec-desc {
           font-size: 0.8125rem;
           color: var(--color-muted-foreground);
-          margin: 0;
-          line-height: 1.45;
+          margin: 0 0 0.625rem;
+          line-height: 1.5;
         }
 
-        /* Action arrow */
-        .rec-action {
-          display: flex;
+        .rec-detail-link {
+          display: inline-flex;
           align-items: center;
           gap: 0.375rem;
-          flex-shrink: 0;
           color: var(--color-brand);
           font-size: 0.8125rem;
           font-weight: 600;
+          text-decoration: none;
         }
-        .rec-action-label {
-          display: none;
+        .rec-detail-link-arrow {
+          width: 0.8125rem;
+          height: 0.8125rem;
+          transition: transform 150ms ease;
         }
-        @media (min-width: 500px) {
-          .rec-action-label { display: inline; }
+        .rec-detail-link:hover .rec-detail-link-arrow {
+          transform: translateX(3px);
         }
+
         .rec-action-arrow {
           width: 0.9rem;
           height: 0.9rem;
-          transition: transform 150ms ease;
         }
-        .rec-card:hover .rec-action-arrow {
-          transform: translateX(3px);
+
+        @media (max-width: 680px) {
+          .briefing-panel {
+            padding: 1.5rem 1.25rem 1.25rem;
+          }
         }
       `}</style>
     </section>
@@ -353,10 +428,7 @@ type WeeklyReviewProps = {
 
 export function FocusWeeklyReview({ metrics, summary, recommendation }: WeeklyReviewProps) {
   return (
-    <section
-      className="animate-fade-up delay-200 weekly-review-block"
-      style={{ marginTop: "3rem" }}
-    >
+    <section className="animate-fade-up delay-50 weekly-review-block">
       {/* Header row */}
       <div className="weekly-header">
         <div>
@@ -406,6 +478,9 @@ export function FocusWeeklyReview({ metrics, summary, recommendation }: WeeklyRe
         }
 
         .weekly-review-block {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
           border: 1px solid var(--color-border);
           border-radius: 18px;
           background: var(--color-card);
@@ -425,10 +500,10 @@ export function FocusWeeklyReview({ metrics, summary, recommendation }: WeeklyRe
           margin: 0;
         }
 
-        /* Metrics: horizontal scroll on mobile, grid on desktop */
+        /* Metrics: 3-up grid keeps cells legible at half-page width */
         .weekly-metrics-grid {
           display: grid;
-          grid-template-columns: repeat(5, 1fr);
+          grid-template-columns: repeat(3, 1fr);
           margin: 1.5rem 1.75rem 0;
           border-radius: 12px;
           border: 1px solid var(--color-border);
@@ -439,15 +514,18 @@ export function FocusWeeklyReview({ metrics, summary, recommendation }: WeeklyRe
         .weekly-metric-cell {
           display: flex;
           flex-direction: column;
-          padding: 1.125rem 1rem;
+          padding: 1rem 0.875rem;
           border-right: 1px solid var(--color-border);
         }
-        .weekly-metric-cell:last-child {
+        .weekly-metric-cell:nth-child(3n) {
           border-right: none;
+        }
+        .weekly-metric-cell:nth-child(n+4) {
+          border-top: 1px solid var(--color-border);
         }
 
         .weekly-metric-value {
-          font-size: 1.625rem;
+          font-size: 1.5rem;
           font-weight: 800;
           letter-spacing: -0.03em;
           color: var(--color-foreground);
@@ -456,20 +534,24 @@ export function FocusWeeklyReview({ metrics, summary, recommendation }: WeeklyRe
         }
 
         .weekly-metric-label {
-          font-size: 0.6875rem;
+          font-size: 0.6562rem;
           font-weight: 600;
           text-transform: uppercase;
-          letter-spacing: 0.07em;
+          letter-spacing: 0.06em;
           color: var(--color-muted-foreground);
           margin-top: 0.5rem;
           line-height: 1.3;
         }
 
-        /* Insight block at bottom */
+        /* Insight block at bottom — pinned to fill remaining height */
         .weekly-insight {
           padding: 1.25rem 1.75rem 1.75rem;
           margin-top: 1.25rem;
           border-top: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
         }
 
         .weekly-insight-summary {
@@ -496,12 +578,8 @@ export function FocusWeeklyReview({ metrics, summary, recommendation }: WeeklyRe
 
         @media (max-width: 680px) {
           .weekly-metrics-grid {
-            grid-template-columns: repeat(3, 1fr);
             margin-inline: 1.25rem;
           }
-          .weekly-metric-cell:nth-child(3) { border-right: none; }
-          .weekly-metric-cell:nth-child(4) { border-top: 1px solid var(--color-border); }
-          .weekly-metric-cell:nth-child(5) { border-top: 1px solid var(--color-border); border-right: none; }
           .weekly-header, .weekly-insight {
             padding-inline: 1.25rem;
           }
@@ -554,9 +632,15 @@ export function FocusGoals({ goals }: GoalsProps) {
         }
 
         .goals-list {
-          display: flex;
-          flex-direction: column;
-          gap: 0.5rem;
+          display: grid;
+          grid-template-columns: repeat(2, 1fr);
+          gap: 0.625rem;
+        }
+
+        @media (max-width: 680px) {
+          .goals-list {
+            grid-template-columns: 1fr;
+          }
         }
       `}</style>
     </section>
@@ -794,9 +878,9 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
           flex-direction: column;
           gap: 0;
           border: 1px solid var(--color-border);
-          border-radius: 18px;
-          background: var(--color-card);
-          padding: 1.375rem;
+          border-radius: 20px;
+          background: color-mix(in oklab, var(--card) 96%, var(--brand) 4%);
+          padding: 2rem 2.25rem 1.75rem;
           overflow: hidden;
         }
 
@@ -805,33 +889,33 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
           align-items: flex-start;
           justify-content: space-between;
           gap: 0.75rem;
-          margin-bottom: 1.25rem;
+          margin-bottom: 1.75rem;
         }
 
         .milestone-tier-name {
-          font-size: 1.0625rem;
-          font-weight: 700;
+          font-size: 1.375rem;
+          font-weight: 800;
           color: var(--color-foreground);
-          margin: 0 0 0.25rem;
-          letter-spacing: -0.01em;
+          margin: 0 0 0.3rem;
+          letter-spacing: -0.02em;
         }
 
         .milestone-next-hint {
-          font-size: 0.75rem;
+          font-size: 0.8125rem;
           color: var(--color-muted-foreground);
           margin: 0;
         }
 
         .milestone-xp-badge {
           flex-shrink: 0;
-          font-size: 1.25rem;
+          font-size: 1.375rem;
           font-weight: 800;
           color: var(--color-brand);
           letter-spacing: -0.02em;
           font-variant-numeric: tabular-nums;
           background: color-mix(in oklab, var(--brand) 10%, transparent);
           border: 1px solid color-mix(in oklab, var(--brand) 22%, transparent);
-          padding: 0.375rem 0.75rem;
+          padding: 0.5rem 0.875rem;
           border-radius: 10px;
           line-height: 1.2;
         }
@@ -844,11 +928,11 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
         }
 
         .milestone-track {
-          height: 3px;
+          height: 4px;
           border-radius: 99px;
           background: var(--color-border);
           overflow: hidden;
-          margin-bottom: 1.125rem;
+          margin-bottom: 1.375rem;
         }
 
         .milestone-fill {
@@ -922,6 +1006,12 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
         .milestone-reward-hint strong {
           color: var(--color-foreground);
           font-weight: 600;
+        }
+
+        @media (max-width: 680px) {
+          .milestones-block {
+            padding: 1.5rem 1.25rem 1.375rem;
+          }
         }
       `}</style>
     </section>

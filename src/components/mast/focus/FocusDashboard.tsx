@@ -57,48 +57,55 @@ export function FocusDashboard() {
       {/* Ambient background glow */}
       <div className="focus-ambient-glow" aria-hidden="true" />
 
-      <div className="focus-content-column">
-        {/* ── Greeting ── */}
+      {/* ════════════════════════════════════════════════════════════════
+          SECTION 1 — HERO
+          Full-bleed, vertically + horizontally centered greeting.
+          ════════════════════════════════════════════════════════════════ */}
+      <section className="focus-hero">
         <FocusGreeting
           emoji={snapshot.greeting.emoji}
           period={snapshot.greeting.period}
           name={firstName}
           subtitle={snapshot.greeting.subtitle}
         />
+      </section>
 
-        {/* ── Separator line ── */}
-        <div className="focus-divider" />
+      {/* ════════════════════════════════════════════════════════════════
+          SECTION 2 — AI BRIEFING
+          Two-column: Weekly Intelligence (reflective) | Today's Briefing (the brain).
+          ════════════════════════════════════════════════════════════════ */}
+      <section className="focus-briefing">
+        <div className="focus-briefing-grid">
+          <FocusWeeklyReview
+            metrics={snapshot.weeklyMetrics}
+            summary={snapshot.weeklySummary}
+            recommendation={snapshot.weeklyRecommendation}
+          />
+          <FocusRecommendations recommendations={snapshot.recommendations} />
+        </div>
+      </section>
 
-        {/* ── Today's Briefing (Recommendations) ── */}
-        <FocusRecommendations recommendations={snapshot.recommendations} />
-
-        {/* ── Weekly Intelligence ── */}
-        <FocusWeeklyReview
-          metrics={snapshot.weeklyMetrics}
-          summary={snapshot.weeklySummary}
-          recommendation={snapshot.weeklyRecommendation}
+      {/* ════════════════════════════════════════════════════════════════
+          SECTION 3 — PROGRESS
+          Milestone journey stretches wide, goals beneath, CTA to close.
+          ════════════════════════════════════════════════════════════════ */}
+      <section className="focus-progress">
+        <FocusMilestones
+          xp={xp}
+          currentName={currentMilestone.name}
+          nextName={nextMilestone?.name ?? null}
+          progressPct={milestonePct}
         />
 
-        {/* ── Goals + Milestones side-by-side on wide, stacked on narrow ── */}
-        <div className="focus-lower-grid">
-          <FocusGoals goals={visibleGoals} />
-          <FocusMilestones
-            xp={xp}
-            currentName={currentMilestone.name}
-            nextName={nextMilestone?.name ?? null}
-            progressPct={milestonePct}
-          />
-        </div>
+        <FocusGoals goals={visibleGoals} />
 
-        {/* ── CTA ── */}
         <FocusDiscoverCta />
-      </div>
+      </section>
 
       <style>{`
         .focus-page-root {
           position: relative;
           min-height: 100%;
-          padding: 3.5rem 2rem 5rem;
           overflow: hidden;
         }
 
@@ -118,41 +125,63 @@ export function FocusDashboard() {
           z-index: 0;
         }
 
-        .focus-content-column {
+        /* ── Hero section: tall, centered both axes ── */
+        .focus-hero {
           position: relative;
           z-index: 1;
-          max-width: 760px;
-          margin: 0 auto;
+          min-height: min(62vh, 560px);
           display: flex;
-          flex-direction: column;
-          gap: 0;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          padding: 4rem 2rem 2rem;
         }
 
-        .focus-divider {
-          height: 1px;
-          background: linear-gradient(
-            90deg,
-            transparent,
-            color-mix(in oklab, var(--border) 80%, transparent) 30%,
-            color-mix(in oklab, var(--border) 80%, transparent) 70%,
-            transparent
-          );
-          margin: 3rem 0;
+        /* ── Briefing section ── */
+        .focus-briefing {
+          position: relative;
+          z-index: 1;
+          max-width: 1080px;
+          margin: 0 auto;
+          padding: 0 2rem 5rem;
         }
 
-        .focus-lower-grid {
+        .focus-briefing-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
           gap: 1.5rem;
-          margin-top: 3rem;
+          align-items: stretch;
+        }
+
+        /* ── Progress section: wide milestone bar, then goals, then CTA ── */
+        .focus-progress {
+          position: relative;
+          z-index: 1;
+          max-width: 1080px;
+          margin: 0 auto;
+          padding: 0 2rem 6rem;
+          display: flex;
+          flex-direction: column;
+          gap: 2.5rem;
+        }
+
+        @media (max-width: 880px) {
+          .focus-briefing-grid {
+            grid-template-columns: 1fr;
+          }
         }
 
         @media (max-width: 680px) {
-          .focus-page-root {
-            padding: 2rem 1.25rem 4rem;
+          .focus-hero {
+            min-height: auto;
+            padding: 3rem 1.25rem 2.5rem;
           }
-          .focus-lower-grid {
-            grid-template-columns: 1fr;
+          .focus-briefing {
+            padding: 0 1.25rem 3.5rem;
+          }
+          .focus-progress {
+            padding: 0 1.25rem 4rem;
+            gap: 2rem;
           }
         }
       `}</style>
@@ -163,66 +192,63 @@ export function FocusDashboard() {
 function FocusLoading() {
   return (
     <div className="focus-page-root">
-      <div className="focus-content-column">
-        {/* Greeting skeleton */}
-        <div style={{ paddingTop: "0.5rem" }}>
-          <div className="mast-skeleton" style={{ height: "2.75rem", width: "55%", borderRadius: "12px", marginBottom: "0.875rem" }} />
-          <div className="mast-skeleton" style={{ height: "1rem", width: "75%", borderRadius: "8px" }} />
+      <section className="focus-hero">
+        <div style={{ width: "100%", maxWidth: "520px" }}>
+          <div className="mast-skeleton" style={{ height: "0.75rem", width: "30%", borderRadius: "8px", margin: "0 auto 1.5rem" }} />
+          <div className="mast-skeleton" style={{ height: "3.5rem", width: "80%", borderRadius: "12px", margin: "0 auto 1rem" }} />
+          <div className="mast-skeleton" style={{ height: "1rem", width: "60%", borderRadius: "8px", margin: "0 auto" }} />
         </div>
+      </section>
 
-        <div className="focus-divider" />
-
-        {/* Recommendations skeleton */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          <div className="mast-skeleton" style={{ height: "1.25rem", width: "35%", borderRadius: "8px", marginBottom: "0.5rem" }} />
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="mast-skeleton" style={{ height: "5.5rem", borderRadius: "16px" }} />
-          ))}
+      <div className="focus-briefing">
+        <div className="focus-briefing-grid">
+          <div className="mast-skeleton" style={{ height: "20rem", borderRadius: "18px" }} />
+          <div className="mast-skeleton" style={{ height: "20rem", borderRadius: "18px" }} />
         </div>
+      </div>
 
-        {/* Weekly skeleton */}
-        <div style={{ marginTop: "3rem" }}>
-          <div className="mast-skeleton" style={{ height: "12rem", borderRadius: "16px" }} />
-        </div>
-
-        {/* Lower grid skeleton */}
-        <div className="focus-lower-grid" style={{ marginTop: "3rem" }}>
-          <div className="mast-skeleton" style={{ height: "14rem", borderRadius: "16px" }} />
-          <div className="mast-skeleton" style={{ height: "14rem", borderRadius: "16px" }} />
-        </div>
+      <div className="focus-progress">
+        <div className="mast-skeleton" style={{ height: "12rem", borderRadius: "18px" }} />
+        <div className="mast-skeleton" style={{ height: "10rem", borderRadius: "16px" }} />
       </div>
 
       <style>{`
         .focus-page-root {
           position: relative;
           min-height: 100%;
-          padding: 3.5rem 2rem 5rem;
         }
-        .focus-content-column {
-          max-width: 760px;
-          margin: 0 auto;
+        .focus-hero {
+          min-height: min(62vh, 560px);
           display: flex;
-          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 4rem 2rem 2rem;
         }
-        .focus-divider {
-          height: 1px;
-          background: linear-gradient(
-            90deg,
-            transparent,
-            color-mix(in oklab, var(--border) 80%, transparent) 30%,
-            color-mix(in oklab, var(--border) 80%, transparent) 70%,
-            transparent
-          );
-          margin: 3rem 0;
+        .focus-briefing {
+          max-width: 1080px;
+          margin: 0 auto;
+          padding: 0 2rem 5rem;
         }
-        .focus-lower-grid {
+        .focus-briefing-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
           gap: 1.5rem;
         }
+        .focus-progress {
+          max-width: 1080px;
+          margin: 0 auto;
+          padding: 0 2rem 6rem;
+          display: flex;
+          flex-direction: column;
+          gap: 2.5rem;
+        }
+        @media (max-width: 880px) {
+          .focus-briefing-grid { grid-template-columns: 1fr; }
+        }
         @media (max-width: 680px) {
-          .focus-page-root { padding: 2rem 1.25rem 4rem; }
-          .focus-lower-grid { grid-template-columns: 1fr; }
+          .focus-hero { min-height: auto; padding: 3rem 1.25rem 2.5rem; }
+          .focus-briefing { padding: 0 1.25rem 3.5rem; }
+          .focus-progress { padding: 0 1.25rem 4rem; gap: 2rem; }
         }
       `}</style>
     </div>

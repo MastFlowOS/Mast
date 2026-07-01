@@ -217,79 +217,236 @@ function Pipeline() {
 
   // AI Coach Recommendations
   const aiRecommendations = useMemo(() => {
-    const recs = [];
-
-    // 1. Uncontacted leads check
-    const newLeads = stageCounts.new;
-    if (newLeads > 0) {
-      recs.push({
-        id: "uncontacted",
-        text: `${newLeads.toLocaleString()} new opportunities have not been contacted.`,
-        type: "warning" as const,
-        action: "Create outreach campaign",
-        to: "/dashboard/leads"
-      });
-    } else {
-      recs.push({
-        id: "uncontacted-default",
-        text: "All incoming opportunities have been logged. Keep discovering fresh opportunities.",
-        type: "success" as const,
-        action: "Discover",
-        to: "/dashboard/leads"
-      });
-    }
-
-    // 2. Stalled leads check
+    type RecType = "warning" | "danger" | "success" | "info";
+    const recs: { id: string; text: string; type: RecType; action: string; to: string }[] = [];
     const now = Date.now();
-    const stalledCount = leads.filter((lead) => {
-      const stage = getStageForStatus(lead.status);
-      return stage === "contacted" && (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000);
-    }).length;
 
-    if (stalledCount > 0) {
-      recs.push({
-        id: "stalled",
-        text: `${stalledCount} high-value leads are stalled in contacted stage.`,
-        type: "danger" as const,
-        action: "Send bump templates",
-        to: "/dashboard/relationships"
-      });
-    }
+    const newLeads = leads.filter((lead) => normalizeLeadStatus(lead.status) === "new");
+    const outreachLeads = leads.filter((lead) => 
+      ["email_sent", "called", "instagram_sent"].includes(normalizeLeadStatus(lead.status))
+    );
+    const repliedLeads = leads.filter((lead) => normalizeLeadStatus(lead.status) === "replied");
+    const meetingLeads = leads.filter((lead) => normalizeLeadStatus(lead.status) === "meeting_booked");
 
-    // 3. Conversion suggestion
-    const contactedConv = stageConversions.contacted;
-    if (contactedConv < 40 && totalLeadsInFunnel > 10) {
-      recs.push({
-        id: "conversion-boost",
-        text: "Following up with Contacted leads may increase conversions by 11%.",
-        type: "info" as const,
-        action: "Optimize sequence",
-        to: "/dashboard/settings"
-      });
-    }
+    // Calculate stalled items
+    const stalledOutreach = outreachLeads.filter(
+      (lead) => (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000)
+    );
+    const stalledNegotiations = repliedLeads.filter(
+      (lead) => (now - new Date(lead.updatedAt).getTime()) > (3 * 24 * 60 * 60 * 1000)
+    );
 
-    // 4. Stage velocity slowdown
-    const proposalCount = stageCounts.replied;
-    if (proposalCount > 5) {
+    // 1. Negotiation Priority
+    if (stalledNegotiations.length > 0) {
+      const topDeal = stalledNegotiations[0];
       recs.push({
-        id: "proposal-slow",
-        text: "Replied stage has slowed down. 3 deals waiting for quote approval.",
-        type: "info" as const,
-        action: "Review pipeline",
-        to: "/dashboard/relationships"
+        id: "negotiation-attention",
+        text: `Negotiation stage has been inactive for three days. Consider following up with ${topDeal.businessName} today to keep momentum alive.`,
+        type: "warning" as const,
+        action: "Continue Negotiation →",
+        to: `/dashboard/leads/${topDeal.id}`
       });
-    } else {
+    } else if (repliedLeads.length > 0) {
       recs.push({
-        id: "pipeline-efficiency",
-        text: "Pipeline velocity is optimal. Average deal conversion is 4.8 days.",
+        id: "proposal-priority",
+        text: "Proposal stage has your highest close rate. Focus your attention on these Replied deals before discovering new leads.",
         type: "success" as const,
-        action: "View analytics",
-        to: "/dashboard/analytics"
+        action: "Open Workspace →",
+        to: "/dashboard/relationships"
+      });
+    }
+
+    // 2. Outreach follow-ups
+    if (stalledOutreach.length > 0) {
+      recs.push({
+        id: "outreach-followups",
+        text: `${stalledOutreach.length} outreach sequences need attention. Most replies arrive within 48 hours; follow up with older leads today.`,
+        type: "info" as const,
+        action: "Send Follow-up →",
+        to: "/dashboard/relationships"
+      });
+    } else if (outreachLeads.length > 0) {
+      recs.push({
+        id: "sequence-nudge",
+        text: "You usually close deals after two follow-ups. Ensure your active contacts have received their second touchpoint.",
+        type: "info" as const,
+        action: "Review Opportunities →",
+        to: "/dashboard/relationships"
+      });
+    }
+
+    // 3. New leads waiting
+    if (newLeads.length > 0) {
+      recs.push({
+        id: "new-leads-outreach",
+        text: `Finish today's follow-ups first, then prioritize starting outreach to the ${newLeads.length} new opportunities in your queue.`,
+        type: "warning" as const,
+        action: "Start Outreach →",
+        to: "/dashboard/relationships"
+      });
+    }
+
+    // 4. Meeting Prep
+    if (meetingLeads.length > 0) {
+      const nextMeeting = meetingLeads[0];
+      recs.push({
+        id: "meeting-prep",
+        text: `You have an upcoming meeting with ${nextMeeting.businessName}. Send a pre-meeting summary report 24 hours in advance.`,
+        type: "success" as const,
+        action: "Review Opportunity →",
+        to: `/dashboard/leads/${nextMeeting.id}`
+      });
+    }
+
+    // Fallback if everything is empty
+    if (recs.length === 0) {
+      recs.push({
+        id: "empty-leads",
+        text: "Your pipeline is currently clear of active deals. Let's find high-intent prospects and kickstart a new campaign.",
+        type: "success" as const,
+        action: "Discover Leads →",
+        to: "/dashboard/leads"
       });
     }
 
     return recs;
-  }, [stageCounts, stageConversions, leads, totalLeadsInFunnel]);
+  }, [leads]);
+
+  // AI-Generated Executive Briefing
+  const aiBriefing = useMemo(() => {
+    const now = Date.now();
+    const newLeads = leads.filter((lead) => normalizeLeadStatus(lead.status) === "new");
+    const outreachLeads = leads.filter((lead) => 
+      ["email_sent", "called", "instagram_sent"].includes(normalizeLeadStatus(lead.status))
+    );
+    const repliedLeads = leads.filter((lead) => normalizeLeadStatus(lead.status) === "replied");
+    const meetingLeads = leads.filter((lead) => normalizeLeadStatus(lead.status) === "meeting_booked");
+
+    const stalledNegotiations = repliedLeads.filter(
+      (lead) => (now - new Date(lead.updatedAt).getTime()) > (3 * 24 * 60 * 60 * 1000)
+    );
+    const stalledOutreach = outreachLeads.filter(
+      (lead) => (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000)
+    );
+
+    if (stalledNegotiations.length > 0) {
+      const names = stalledNegotiations.slice(0, 2).map(l => l.businessName).join(" and ");
+      return {
+        text: `Negotiations with ${names} have stalled for over three days. A quick check-in could prevent losing momentum on these high-value opportunities.`,
+        actionLabel: "Continue Negotiation",
+        actionTo: "/dashboard/relationships"
+      };
+    }
+
+    if (repliedLeads.length > 0) {
+      return {
+        text: `You have ${repliedLeads.length} active conversation${repliedLeads.length > 1 ? "s" : ""} in the Replied stage. Since this is your highest close rate stage, prioritize these proposals today.`,
+        actionLabel: "Review Opportunities",
+        actionTo: "/dashboard/relationships"
+      };
+    }
+
+    if (stalledOutreach.length > 0) {
+      return {
+        text: `Your pipeline health is stable, but ${stalledOutreach.length} follow-up${stalledOutreach.length > 1 ? "s are" : " is"} overdue in the Outreach stage. Nudge them to secure more replies.`,
+        actionLabel: "Send Follow-ups",
+        actionTo: "/dashboard/relationships"
+      };
+    }
+
+    if (newLeads.length > 0) {
+      return {
+        text: `You have ${newLeads.length} fresh opportunities waiting to be contacted. Fill your sales funnel by launching your outreach sequence today.`,
+        actionLabel: "Start Outreach",
+        actionTo: "/dashboard/relationships"
+      };
+    }
+
+    if (meetingLeads.length > 0) {
+      return {
+        text: `Focus on meeting preparation today. You have ${meetingLeads.length} booked session${meetingLeads.length > 1 ? "s" : ""} requiring a custom summary.`,
+        actionLabel: "Prepare Meetings",
+        actionTo: "/dashboard/relationships"
+      };
+    }
+
+    return {
+      text: "Your pipeline is clear of active conversations. Fill your queue by discovering and qualifying fresh leads to begin new outreach sequences.",
+      actionLabel: "Discover Leads",
+      actionTo: "/dashboard/leads"
+    };
+  }, [leads]);
+
+  // Dynamic AI Pulse for Kanban Columns
+  const aiPulses = useMemo(() => {
+    const pulses: Record<LeadStatus, { text: string; isAlert: boolean }> = {} as any;
+    const now = Date.now();
+    
+    for (const colStatus of PIPELINE_COLUMNS) {
+      const columnLeads = leads.filter((lead) => normalizeLeadStatus(lead.status) === colStatus);
+      const count = columnLeads.length;
+      
+      let pulseText = "Stage is stable.";
+      let isAlert = false;
+      
+      switch (colStatus) {
+        case "new":
+          if (count > 0) {
+            pulseText = `${count} opportunities need attention today.`;
+            isAlert = true;
+          } else {
+            pulseText = "Fresh lead queue is empty.";
+          }
+          break;
+        case "email_sent": {
+          const overdue = columnLeads.filter(lead => {
+            const updatedTime = new Date(lead.updatedAt).getTime();
+            return (now - updatedTime) > (4 * 24 * 60 * 60 * 1000);
+          }).length;
+          if (overdue > 0) {
+            pulseText = `${overdue} follow-ups are overdue.`;
+            isAlert = true;
+          } else if (count > 0) {
+            pulseText = `Outreach active for ${count} contacts.`;
+          } else {
+            pulseText = "No active outreach campaigns.";
+          }
+          break;
+        }
+        case "replied": {
+          const inactive = columnLeads.filter(lead => {
+            const updatedTime = new Date(lead.updatedAt).getTime();
+            return (now - updatedTime) > (3 * 24 * 60 * 60 * 1000);
+          }).length;
+          if (inactive > 0) {
+            pulseText = `${inactive} proposals need attention.`;
+            isAlert = true;
+          } else if (count > 0) {
+            pulseText = "High chance of closing this week.";
+          } else {
+            pulseText = "Awaiting new replies.";
+          }
+          break;
+        }
+        case "meeting_booked":
+          if (count > 0) {
+            pulseText = `${count} meetings booked.`;
+          } else {
+            pulseText = "All meetings are scheduled.";
+          }
+          break;
+        case "closed":
+          if (count > 0) {
+            pulseText = `Momentum looks great. ${count} won.`;
+          } else {
+            pulseText = "Ready to close first deal.";
+          }
+          break;
+      }
+      pulses[colStatus] = { text: pulseText, isAlert };
+    }
+    return pulses;
+  }, [leads]);
 
   // Stage detail values for Flow Nodes
   const flowNodeData = useMemo(() => {
@@ -476,6 +633,33 @@ function Pipeline() {
         {/* Left Side: Pipeline Views & Funnel (3/4 width) */}
         <div className="flex-1 flex flex-col overflow-y-auto p-6 space-y-6">
 
+          {/* AI Executive Briefing */}
+          {statsLoading ? (
+            <Skeleton className="h-24 rounded-2xl w-full animate-pulse" />
+          ) : (
+            <section className="relative overflow-hidden rounded-2xl border border-brand/20 bg-gradient-to-r from-brand/10 via-brand/5 to-transparent p-5 backdrop-blur-sm">
+              <div className="absolute top-0 right-0 p-4 opacity-[0.03] pointer-events-none">
+                <Sparkles className="size-24 text-brand animate-pulse" />
+              </div>
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+                <div className="space-y-1.5 max-w-3xl text-left">
+                  <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-brand">
+                    <Sparkles className="size-4 animate-pulse-glow" /> Dynamic AI Executive Briefing
+                  </div>
+                  <p className="text-sm font-medium text-foreground leading-relaxed">
+                    {aiBriefing.text}
+                  </p>
+                </div>
+                <button
+                  onClick={() => navigate({ to: aiBriefing.actionTo })}
+                  className="shrink-0 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark transition-all duration-200 cursor-pointer self-start md:self-center"
+                >
+                  {aiBriefing.actionLabel} <ArrowRight className="size-3.5" />
+                </button>
+              </div>
+            </section>
+          )}
+
           {/* Funnel Visualization */}
           <section className="bg-card/30 backdrop-blur-sm border border-border rounded-2xl p-5 relative overflow-hidden">
             <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
@@ -507,7 +691,7 @@ function Pipeline() {
                     <div key={stage.value} className="group/funnel">
                       <div className="flex items-center justify-between text-xs mb-1">
                         <div className="flex items-center gap-2">
-                          <span className="font-bold uppercase w-20 text-[10px] text-muted-foreground tracking-wider">{stage.label}</span>
+                          <span className="font-bold uppercase w-28 text-[10px] text-muted-foreground tracking-wider truncate">{stage.label}</span>
                           <span className="font-mono font-semibold text-foreground">{count.toLocaleString()} leads</span>
                         </div>
                         <div className="flex items-center gap-3">
@@ -619,7 +803,7 @@ function Pipeline() {
             
             /* KANBAN VIEW (Clean Performance Fallback) */
             <div className="flex-1 overflow-x-auto min-h-[400px]">
-              <div className="flex h-full gap-3 py-2" style={{ minWidth: `${PIPELINE_COLUMNS.length * 240}px` }}>
+              <div className="flex h-full gap-4 py-2" style={{ minWidth: `${PIPELINE_COLUMNS.length * 288 + (PIPELINE_COLUMNS.length - 1) * 16}px` }}>
                 {PIPELINE_COLUMNS.map((colStatus) => {
                   // Filter leads that are in this status from cached list (Virtualizing by rendering only 10 max)
                   const columnLeads = leads
@@ -627,6 +811,8 @@ function Pipeline() {
                   const displayLeads = columnLeads.slice(0, 10);
                   const isOver = dragOver === colStatus;
                   const count = columnLeads.length;
+                  const pulse = aiPulses[colStatus] || { text: "Stage is stable.", isAlert: false };
+                  const now = Date.now();
 
                   return (
                     <section
@@ -637,16 +823,27 @@ function Pipeline() {
                       }}
                       onDragLeave={() => setDragOver(null)}
                       onDrop={() => void handleDrop(colStatus)}
-                      className={`flex w-60 shrink-0 flex-col rounded-2xl border transition-colors bg-card/30 backdrop-blur-sm ${
-                        isOver ? "border-brand bg-brand/5" : "border-border"
+                      className={`flex w-72 shrink-0 flex-col rounded-2xl border transition-all duration-300 bg-card/25 backdrop-blur-sm ${
+                        isOver 
+                          ? "border-brand bg-brand/5 shadow-md shadow-brand/5 scale-[1.01]" 
+                          : "border-border/60 hover:border-border/80"
                       }`}
                     >
                       {/* Column Header */}
-                      <div className="border-b border-border/60 px-3 py-3 flex items-center justify-between bg-card/20 rounded-t-2xl">
-                        <span className={`rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${leadStatusColor(colStatus)}`}>
-                          {leadStatusLabel(colStatus)}
-                        </span>
-                        <span className="text-xs font-bold text-muted-foreground font-mono">{count}</span>
+                      <div className="border-b border-border/60 px-4 py-3.5 flex flex-col gap-1.5 bg-card/10 rounded-t-2xl">
+                        <div className="flex items-center justify-between">
+                          <span className={`rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${leadStatusColor(colStatus)}`}>
+                            {leadStatusLabel(colStatus)}
+                          </span>
+                          <span className="text-xs font-bold text-muted-foreground font-mono">{count}</span>
+                        </div>
+                        {/* Dynamic AI Pulse */}
+                        <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                          <span className={`size-1.5 rounded-full shrink-0 ${pulse.isAlert ? "bg-amber-400 animate-pulse" : "bg-brand/60"}`} />
+                          <span className="text-[11px] leading-tight text-muted-foreground font-medium select-none truncate" title={pulse.text}>
+                            {pulse.text}
+                          </span>
+                        </div>
                       </div>
 
                       {/* Draggable Cards Stack (Limit 10 to protect browser rendering) */}
@@ -668,20 +865,48 @@ function Pipeline() {
                                 setDragOver(null);
                               }}
                               onClick={() => navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(lead.id) } })}
-                              className={`group rounded-xl border border-border/80 bg-background p-3 text-xs transition-all hover:border-brand/40 hover:shadow-sm cursor-grab select-none ${
-                                dragging === lead.id ? "opacity-35" : ""
-                              }`}
+                              className={`group relative overflow-hidden rounded-xl border border-border/50 bg-card/40 p-4 text-xs transition-all duration-200 hover:border-brand/40 hover:bg-card/80 hover:shadow-md hover:-translate-y-1 cursor-grab active:cursor-grabbing select-none border-l-4 ${
+                                normalizeLeadStatus(lead.status) === "new" ? "border-l-blue-500" :
+                                ["email_sent", "called", "instagram_sent"].includes(normalizeLeadStatus(lead.status)) ? "border-l-indigo-500" :
+                                normalizeLeadStatus(lead.status) === "replied" ? "border-l-brand" :
+                                normalizeLeadStatus(lead.status) === "meeting_booked" ? "border-l-amber-500" :
+                                normalizeLeadStatus(lead.status) === "closed" ? "border-l-success" : "border-l-muted"
+                              } ${dragging === lead.id ? "opacity-35 scale-95" : ""}`}
                             >
-                              <div className="flex items-start gap-2">
-                                <GripVertical className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-                                <div className="min-w-0 flex-1">
-                                  <p className="font-bold leading-tight text-foreground truncate">{lead.businessName}</p>
-                                  {lead.instagramHandle && (
-                                    <p className="mt-1 truncate text-[10px] text-muted-foreground">@{lead.instagramHandle.replace(/^@/, "")}</p>
-                                  )}
-                                  {lead.niche && <span className="mt-2 inline-block rounded-md bg-brand/5 border border-brand/10 px-1.5 py-0.5 text-[9px] text-brand font-semibold capitalize">{lead.niche.replace(/_/g, " ")}</span>}
+                              <div className="flex flex-col gap-2">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    <h4 className="font-bold text-sm tracking-tight text-foreground truncate group-hover:text-brand transition-colors">
+                                      {lead.businessName}
+                                    </h4>
+                                    {lead.instagramHandle && (
+                                      <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground font-mono">
+                                        @{lead.instagramHandle.replace(/^@/, "")}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <ArrowRight className="size-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all duration-200 shrink-0" />
                                 </div>
-                                <ArrowRight className="size-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+
+                                <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                  {lead.niche && (
+                                    <span className="rounded-md bg-brand/5 border border-brand/10 px-2 py-0.5 text-[9px] text-brand font-semibold capitalize tracking-wide truncate max-w-[120px]">
+                                      {lead.niche.replace(/_/g, " ")}
+                                    </span>
+                                  )}
+                                  
+                                  {colStatus === "replied" && (now - new Date(lead.updatedAt).getTime()) > (3 * 24 * 60 * 60 * 1000) && (
+                                    <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
+                                      <Clock className="size-2.5" /> Stalled
+                                    </span>
+                                  )}
+
+                                  {colStatus === "email_sent" && (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000) && (
+                                    <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
+                                      <Clock className="size-2.5" /> Nudge Due
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </article>
                           ))
@@ -693,7 +918,6 @@ function Pipeline() {
                         <div className="border-t border-border/40 p-2 bg-card/10 rounded-b-2xl">
                           <button
                             onClick={() => {
-                              // We can navigate to CRM. We pass the status parameter (we will validate this or use state)
                               navigate({ to: "/dashboard/relationships" });
                             }}
                             className="w-full text-center text-[10px] font-semibold text-brand hover:text-brand-dark py-1"
@@ -722,24 +946,37 @@ function Pipeline() {
             
             <div className="mt-4 space-y-3">
               {statsLoading ? (
-                Array.from({ length: 3 }).map((i) => <Skeleton key={i} className="h-16 rounded-xl w-full" />)
+                Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl w-full" />)
               ) : (
                 aiRecommendations.map((rec) => (
                   <div 
                     key={rec.id} 
-                    className="p-3.5 rounded-xl border border-border/80 bg-background/50 hover:border-brand/35 transition-colors text-xs text-left"
+                    className={`p-3.5 rounded-xl border bg-background/40 hover:bg-background/80 transition-all duration-200 text-xs text-left border-l-4 ${
+                      rec.type === "warning" ? "border-l-amber-500 border-border/60 hover:border-amber-500/50" :
+                      rec.type === "danger" ? "border-l-red-500 border-border/60 hover:border-red-500/50" :
+                      rec.type === "success" ? "border-l-success border-border/60 hover:border-success/50" :
+                      "border-l-blue-500 border-border/60 hover:border-blue-500/50"
+                    }`}
                   >
                     <div className="flex items-start gap-2.5">
                       <div className="shrink-0 mt-0.5">
-                        <AlertCircle className="size-4 text-brand" />
+                        {rec.type === "warning" ? (
+                          <AlertCircle className="size-4 text-amber-500" />
+                        ) : rec.type === "danger" ? (
+                          <AlertCircle className="size-4 text-red-500" />
+                        ) : rec.type === "success" ? (
+                          <Sparkles className="size-4 text-success" />
+                        ) : (
+                          <Sparkles className="size-4 text-blue-500" />
+                        )}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-foreground leading-snug">{rec.text}</p>
+                        <p className="font-medium text-foreground leading-relaxed select-text">{rec.text}</p>
                         <button
                           onClick={() => navigate({ to: rec.to })}
-                          className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-brand hover:text-brand-dark cursor-pointer"
+                          className="mt-2.5 inline-flex items-center gap-1 text-[11px] font-bold text-brand hover:text-brand-dark transition-colors cursor-pointer"
                         >
-                          {rec.action} <ChevronRight className="size-3" />
+                          {rec.action}
                         </button>
                       </div>
                     </div>
@@ -757,7 +994,7 @@ function Pipeline() {
             
             <div className="space-y-4">
               {activityLoading ? (
-                Array.from({ length: 4 }).map((i) => <Skeleton key={i} className="h-10 rounded-xl" />)
+                Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10 rounded-xl" />)
               ) : recentActivities.length === 0 ? (
                 <div className="text-center py-8">
                   <p className="text-xs text-muted-foreground">No recent actions.</p>
@@ -926,7 +1163,7 @@ function Pipeline() {
                           {/* Quick Stage Mover Selector */}
                           <div className="flex items-center gap-2 shrink-0">
                             <select
-                              value={expandedStage}
+                              value={expandedStage ?? ""}
                               onChange={(e) => {
                                 e.stopPropagation();
                                 void handleMoveLeadStage(lead.id, e.target.value as FlowStage);

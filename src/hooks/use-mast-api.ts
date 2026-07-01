@@ -226,12 +226,16 @@ export function useBulkImportLeads() {
 export function useSaveSettings() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: SettingsMap) => updateSettings(body),
+    mutationFn: (args: { settings: SettingsMap; fullName?: string }) =>
+      updateSettings(args.settings, args.fullName),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.settings });
+      queryClient.invalidateQueries({ queryKey: queryKeys.me });
+      queryClient.invalidateQueries({ queryKey: queryKeys.account });
     },
   });
 }
+
 
 export function useChangePlan() {
   const queryClient = useQueryClient();

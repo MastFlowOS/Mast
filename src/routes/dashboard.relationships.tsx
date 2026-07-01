@@ -169,7 +169,8 @@ function NicheMultiSelect({
                   onClick={(e) => removeChip(selected[i], e)}
                   className="hover:text-brand-dark"
                 >
-                  <X className="size-2.5" />
+                  <X className="size-2.5 shrink-0" />
+
                 </button>
               </span>
             ))}
@@ -534,7 +535,8 @@ function Relationships() {
           <div className="flex flex-wrap items-center gap-2">
             {/* Search */}
             <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2">
-              <Search className="size-4 text-muted-foreground" />
+              <Search className="size-4 text-muted-foreground shrink-0" />
+
               <input
                 className="w-48 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 placeholder="Search relationships…"
@@ -596,10 +598,11 @@ function Relationships() {
               title="Show starred relationships"
             >
               <Star
-                className="size-4"
+                className="size-4 shrink-0"
                 fill={starredOnly ? "currentColor" : "none"}
                 strokeWidth={1.8}
               />
+
               {starredOnly ? `Starred (${starredCount})` : "Starred"}
             </button>
 
@@ -613,7 +616,8 @@ function Relationships() {
             <Dialog open={addOpen} onOpenChange={setAddOpen}>
               <DialogTrigger asChild>
                 <button className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark">
-                  <Plus className="size-4" /> Add Relationship
+                  <Plus className="size-4 shrink-0" /> Add Relationship
+
                 </button>
               </DialogTrigger>
               <DialogContent className="max-w-lg">
@@ -772,7 +776,8 @@ function Relationships() {
             disabled={bulkDelete.isPending}
             className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg bg-destructive px-3 text-xs font-semibold text-destructive-foreground hover:bg-destructive/90 disabled:opacity-60"
           >
-            <Trash2 className="size-3.5" /> Remove
+            <Trash2 className="size-3.5 shrink-0" /> Remove
+
           </button>
         </div>
       )}
@@ -876,16 +881,17 @@ function Relationships() {
                       <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         {lead.instagramHandle && (
                           <span className="inline-flex items-center gap-1">
-                            <Instagram className="size-3" />@
+                            <Instagram className="size-3 shrink-0" />@
                             {lead.instagramHandle.replace(/^@/, "")}
                           </span>
                         )}
                         {lead.email && (
                           <span className="inline-flex items-center gap-1">
-                            <Mail className="size-3" />
+                            <Mail className="size-3 shrink-0" />
                             {lead.email}
                           </span>
                         )}
+
                       </div>
                     </td>
                     <td className="hidden px-3 py-3 text-muted-foreground md:table-cell">
@@ -905,7 +911,7 @@ function Relationships() {
                       {lead.location ?? "—"}
                     </td>
                     <td className="px-3 py-3">
-                      <ArrowRight className="size-4 text-muted-foreground" />
+                      <ArrowRight className="size-4 text-muted-foreground shrink-0" />
                     </td>
                   </tr>
                 );
@@ -938,7 +944,8 @@ function Relationships() {
                   to="/dashboard/import"
                   className="mt-2 inline-block text-sm font-semibold text-brand hover:text-brand-dark"
                 >
-                  Import from CSV
+                  Import / Export from CSV
+
                 </Link>
               </>
             )}
@@ -979,7 +986,7 @@ function Relationships() {
                   disabled={safePage === 1}
                   className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-background px-2 text-xs font-medium hover:bg-muted disabled:opacity-40"
                 >
-                  <ChevronLeft className="size-3.5" /> Prev
+                  <ChevronLeft className="size-3.5 shrink-0" /> Prev
                 </button>
 
                 {pageButtons.map((btn, idx) =>
@@ -1010,7 +1017,7 @@ function Relationships() {
                   disabled={safePage === totalPages}
                   className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-background px-2 text-xs font-medium hover:bg-muted disabled:opacity-40"
                 >
-                  Next <ChevronRight className="size-3.5" />
+                  Next <ChevronRight className="size-3.5 shrink-0" />
                 </button>
               </>
             )}
@@ -1088,7 +1095,7 @@ function BulkButton({
       disabled={disabled}
       className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-semibold hover:bg-card disabled:opacity-60"
     >
-      <Icon className="size-3.5" /> {children}
+      <Icon className="size-3.5 shrink-0" /> {children}
     </button>
   );
 }

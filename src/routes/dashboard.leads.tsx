@@ -29,8 +29,9 @@ import {
   Check,
 } from "lucide-react";
 import { ApiError, type Lead } from "@/lib/api";
-import { useAccount, useAnalytics, useGenerateLeads, useLeads } from "@/hooks/use-mast-api";
+import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings } from "@/hooks/use-mast-api";
 import { buildDiscoverInsights, type DiscoverInsight } from "@/lib/discover-insights";
+import { addNotification } from "@/lib/notifications";
 import {
   Dialog,
   DialogContent,
@@ -360,6 +361,7 @@ function GetLeads() {
   const navigate = useNavigate();
 
   const { data: account } = useAccount();
+  const { data: settings } = useSettings();
   const { data: analytics } = useAnalytics();
   const { data: leadsPayload } = useLeads({ limit: 1000 });
   const generate = useGenerateLeads();
@@ -374,6 +376,22 @@ function GetLeads() {
   // Multi-select regions & optional currencies
   const [regions, setRegions] = useState<Region[]>(["North America"]);
   const [currencies, setCurrencies] = useState<Currency[]>([]);
+
+  const hasInitializedRef = useRef(false);
+
+  // Set default regions from settings when they load
+  useEffect(() => {
+    if (settings?.defaultRegions && !hasInitializedRef.current) {
+      const stored = settings.defaultRegions
+        .split(",")
+        .map((r) => r.trim())
+        .filter((r) => REGIONS.includes(r as Region)) as Region[];
+      if (stored.length > 0) {
+        setRegions(stored);
+        hasInitializedRef.current = true;
+      }
+    }
+  }, [settings]);
 
   // Searchable multi-select niches
   const [niches, setNiches] = useState<string[]>([]);
@@ -538,6 +556,15 @@ function GetLeads() {
         }
         setShowCompletion(true);
         toast.success(`${result.generated} opportunities added to pipeline`);
+
+        addNotification({
+          icon: "CheckCircle2",
+          iconColor: "text-emerald-400",
+          iconBg: "bg-emerald-400/10 border-emerald-400/20",
+          title: "Leads Generated",
+          body: `Successfully generated ${result.generated} new opportunities for your pipeline.`,
+          category: "notifyNewLead",
+        });
       }, remainingTime);
 
     } catch (err) {
@@ -990,8 +1017,9 @@ function GetLeads() {
                           : "size-10 rounded-lg bg-muted/40 border border-border grid place-items-center shrink-0"
                       }
                     >
-                      <c.icon className={active ? "size-4 text-brand" : "size-4 text-muted-foreground"} />
+                      <c.icon className={active ? "size-4 text-brand shrink-0" : "size-4 text-muted-foreground shrink-0"} />
                     </div>
+
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className={`text-sm font-semibold ${active ? "text-foreground" : "text-muted-foreground"}`}>
@@ -1016,8 +1044,9 @@ function GetLeads() {
                           : "size-5 rounded-full border-2 border-border shrink-0"
                       }
                     >
-                      {active && <Check className="size-3 text-brand-foreground" strokeWidth={3} />}
+                      {active && <Check className="size-3 text-brand-foreground shrink-0" strokeWidth={3} />}
                     </div>
+
                   </button>
                 );
               })}
@@ -1062,8 +1091,8 @@ function GetLeads() {
                         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{s.desc}</p>
                       </div>
                       <div className="text-right shrink-0">
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-brand uppercase tracking-wider">
-                          <Clock className="size-3" />
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-brand uppercase tracking-wider shrink-0">
+                          <Clock className="size-3 shrink-0" />
                           {s.timeLabel}
                         </span>
                       </div>
@@ -1151,8 +1180,9 @@ function GetLeads() {
                   Session cost
                 </span>
                 <span className="inline-flex items-center gap-1.5 font-bold text-foreground tabular-nums">
-                  <TrendingUp className="size-3.5 text-brand" />
+                  <TrendingUp className="size-3.5 text-brand shrink-0" />
                   {quantity.toLocaleString()} credits
+
                 </span>
               </div>
               <div className="flex justify-between text-[11px]">
@@ -1175,8 +1205,9 @@ function GetLeads() {
               disabled={!canGenerate}
               className="mt-5 w-full bg-brand hover:bg-brand-dark text-brand-foreground py-3.5 rounded-xl font-bold shadow-brand inline-flex items-center justify-center gap-2 disabled:opacity-55 disabled:hover:bg-brand cursor-pointer transition-all active:scale-[0.99] group"
             >
-              <Sparkles className="size-4 text-brand-foreground group-hover:animate-pulse" />
+              <Sparkles className="size-4 text-brand-foreground group-hover:animate-pulse shrink-0" />
               {isGenerating ? "Analyzing..." : "Launch Discovery Session"}
+
             </button>
             {(channelRestricted || modeRestricted || exceedsDailyLimit || exceedsMonthlyLimit) && (
               <p className="text-[11px] text-destructive text-center mt-2.5 leading-relaxed">
@@ -1226,9 +1257,10 @@ function Section({
   return (
     <div className={`animate-fade-up ${delayClass}`}>
       <div className="flex items-center gap-3 mb-4">
-        <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center">
-          <Icon className="size-4 text-brand" />
+        <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
+          <Icon className="size-4 text-brand shrink-0" />
         </div>
+
         <div>
           <h3 className="font-semibold text-sm">{title}</h3>
           <p className="text-xs text-muted-foreground">{subtitle}</p>
@@ -1291,7 +1323,8 @@ function SpeedMetric({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-1">
-        <Icon className={`size-3 ${active ? "text-brand" : "text-muted-foreground"}`} />
+        <Icon className={`size-3 shrink-0 ${active ? "text-brand" : "text-muted-foreground"}`} />
+
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           {label}
         </span>
@@ -1341,9 +1374,10 @@ function DiscoverAiOverview({
       />
       <div className="relative space-y-4">
         <div className="flex items-center gap-3">
-          <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center">
-            <Brain className="size-4 text-brand" />
+          <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
+            <Brain className="size-4 text-brand shrink-0" />
           </div>
+
           <div>
             <h3 className="font-bold text-sm tracking-tight">AI Overview</h3>
             <p className="text-[11px] text-muted-foreground">

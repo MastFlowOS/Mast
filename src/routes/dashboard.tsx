@@ -5,12 +5,12 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { useAccount, useLogout, useMe } from "@/hooks/use-mast-api";
 import {
   Crosshair, Search, Kanban, Bell, Settings, LogOut, X,
-  CheckCircle2, ArrowUpCircle, Network,
+  CheckCircle2, ArrowUpCircle, Network, Upload, CreditCard, Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -23,12 +23,15 @@ export const Route = createFileRoute("/dashboard")({
 });
 
 const NAV = [
-  { label: "Focus",         to: "/dashboard",              icon: Crosshair, exact: true },
-  { label: "Discover",      to: "/dashboard/leads",        icon: Search },
-  { label: "Relationships", to: "/dashboard/relationships",          icon: Network },
-  { label: "Pipeline",      to: "/dashboard/pipeline",     icon: Kanban },
-  { label: "Mission",       to: "/dashboard/follow-ups",   icon: Bell },
-  { label: "Settings",      to: "/dashboard/settings",     icon: Settings },
+  { label: "Focus",           to: "/dashboard",              icon: Crosshair, exact: true },
+  { label: "Discover",        to: "/dashboard/leads",        icon: Search },
+  { label: "Relationships",   to: "/dashboard/relationships", icon: Network },
+  { label: "Pipeline",        to: "/dashboard/pipeline",     icon: Kanban },
+  { label: "Mission",         to: "/dashboard/follow-ups",   icon: Bell },
+  { label: "Import / Export", to: "/dashboard/import",        icon: Upload },
+  { label: "Billing",         to: "/dashboard/billing",       icon: CreditCard },
+  { label: "Subscription",    to: "/dashboard/subscription",  icon: Zap },
+  { label: "Settings",        to: "/dashboard/settings",      icon: Settings },
 ] as { label: string; to: string; icon: React.ComponentType<{ className?: string }>; exact?: boolean }[];
 
 const ITEM_H   = 40; // px — nav item height (py-2 + text-sm line-height)
@@ -57,6 +60,7 @@ function DashboardLayout() {
     item.exact ? pathname === item.to : pathname.startsWith(item.to)
   );
   const safeIdx = activeIdx >= 0 ? activeIdx : 0;
+  const dividerOffset = (safeIdx >= 5 ? 21 : 0) + (safeIdx >= 8 ? 21 : 0);
 
   // ── Notification state ────────────────────────────────────────────────────
   const [notifOpen, setNotifOpen] = useState(false);
@@ -83,6 +87,18 @@ function DashboardLayout() {
     };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  // Listen to external/real-time notifications state changes
+  useEffect(() => {
+    const handleUpdate = () => {
+      try {
+        const saved = localStorage.getItem("mast_notifications");
+        if (saved) setNotifications(JSON.parse(saved));
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("mast_notifications_update", handleUpdate);
+    return () => window.removeEventListener("mast_notifications_update", handleUpdate);
   }, []);
 
   const unread = notifications.filter((n) => n.unread).length;
@@ -166,7 +182,7 @@ function DashboardLayout() {
               right: "12px",
               height: `${ITEM_H}px`,
               // 12px = p-3 top-padding of the item container below
-              top: `${12 + safeIdx * (ITEM_H + ITEM_GAP)}px`,
+              top: `${12 + safeIdx * (ITEM_H + ITEM_GAP) + dividerOffset}px`,
               borderRadius: "8px",
               background: "color-mix(in oklab, var(--brand) 12%, transparent)",
               transition: "top 400ms cubic-bezier(0.16, 1, 0.3, 1)",
@@ -185,27 +201,35 @@ function DashboardLayout() {
 
           {/* Items — p-3 padding + space-y-[2px] gap */}
           <div className="p-3 space-y-[2px]">
-            {NAV.map((item) => {
+            {NAV.map((item, idx) => {
               const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
+              const showDividerBefore = idx === 5 || idx === 8;
               return (
-                <Link
-                  key={item.to}
-                  to={item.to}
-                  className={cn(
-                    "relative z-10 flex items-center gap-3 px-3 py-2 rounded-lg",
-                    "text-sm font-medium transition-colors duration-150",
-                    active
-                      ? "text-brand"
-                      : "text-muted-foreground hover:text-foreground",
+                <Fragment key={item.to}>
+                  {showDividerBefore && (
+                    <div 
+                      className="h-px bg-border/30 shrink-0" 
+                      style={{ height: '1px', marginTop: '9px', marginBottom: '9px' }} 
+                    />
                   )}
-                  style={{ height: `${ITEM_H}px` }}
-                >
-                  <item.icon className={cn(
-                    "size-4 shrink-0 transition-colors",
-                    active ? "text-brand" : "text-muted-foreground",
-                  )} />
-                  {item.label}
-                </Link>
+                  <Link
+                    to={item.to}
+                    className={cn(
+                      "relative z-10 flex items-center gap-3 px-3 py-2 rounded-lg",
+                      "text-sm font-medium transition-colors duration-150",
+                      active
+                        ? "text-brand"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    style={{ height: `${ITEM_H}px` }}
+                  >
+                    <item.icon className={cn(
+                      "size-4 shrink-0 transition-colors",
+                      active ? "text-brand" : "text-muted-foreground",
+                    )} />
+                    {item.label}
+                  </Link>
+                </Fragment>
               );
             })}
           </div>
@@ -256,15 +280,16 @@ function DashboardLayout() {
             <div ref={notifRef} className="relative">
               <button
                 onClick={() => setNotifOpen((o) => !o)}
-                className="relative size-9 grid place-items-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-card transition-colors"
+                className="relative size-9 grid place-items-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-card transition-colors shrink-0"
               >
-                <Bell className="size-4" />
+                <Bell className="size-4 shrink-0" />
                 {unread > 0 && (
-                  <span className="absolute -top-1 -right-1 size-4 rounded-full bg-brand text-brand-foreground text-[9px] font-bold grid place-items-center">
+                  <span className="absolute -top-1 -right-1 size-4 rounded-full bg-brand text-brand-foreground text-[9px] font-bold grid place-items-center shrink-0">
                     {unread}
                   </span>
                 )}
               </button>
+
 
               {notifOpen && (
                 <div className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden animate-fade-down">
@@ -276,9 +301,10 @@ function DashboardLayout() {
                           Mark all read
                         </button>
                       )}
-                      <button onClick={() => setNotifOpen(false)} className="size-6 grid place-items-center text-muted-foreground hover:text-foreground transition-colors">
-                        <X className="size-3.5" />
+                      <button onClick={() => setNotifOpen(false)} className="size-6 grid place-items-center text-muted-foreground hover:text-foreground transition-colors shrink-0">
+                        <X className="size-3.5 shrink-0" />
                       </button>
+
                     </div>
                   </div>
                   <div className="max-h-96 overflow-y-auto">
@@ -301,8 +327,9 @@ function DashboardLayout() {
                                 {n.unread && <span className="inline-block ml-1.5 size-1.5 rounded-full bg-brand align-middle" />}
                               </p>
                               <button onClick={() => dismiss(n.id)} className="size-4 grid place-items-center text-muted-foreground/60 hover:text-muted-foreground shrink-0 transition-colors">
-                                <X className="size-3" />
+                                <X className="size-3 shrink-0" />
                               </button>
+
                             </div>
                             <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{n.body}</p>
                             <p className="text-[10px] text-muted-foreground/60 mt-1">{n.time}</p>
@@ -316,8 +343,8 @@ function DashboardLayout() {
             </div>
 
             {/* User */}
-            <div className="flex items-center gap-2.5">
-              <div className="size-9 rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-sm font-bold text-brand">
+            <div className="flex items-center gap-2.5 shrink-0">
+              <div className="size-9 rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-sm font-bold text-brand shrink-0">
                 {initials}
               </div>
               <div className="hidden md:block">
@@ -326,13 +353,14 @@ function DashboardLayout() {
               </div>
             </div>
 
+
             {/* Logout */}
             <button
               onClick={handleLogout}
-              className="size-9 grid place-items-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-card transition-colors"
+              className="size-9 grid place-items-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-card transition-colors shrink-0"
               title="Log out"
             >
-              <LogOut className="size-4" />
+              <LogOut className="size-4 shrink-0" />
             </button>
           </div>
         </header>

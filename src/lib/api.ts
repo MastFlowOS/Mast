@@ -1,6 +1,7 @@
 import type { GenerationMode, PlanId, PlanConfig } from "./plans";
 import { getPlan, PLANS } from "./plans";
 import { supabase } from "./supabase";
+import { addNotification } from "./notifications";
 
 export type { GenerationMode, PlanId } from "./plans";
 
@@ -403,9 +404,20 @@ async function checkAndResetUsage(profile: any): Promise<any> {
 
   // Daily Reset check
   if (!dailyReset || new Date(dailyReset) <= now) {
+    const wasInitialized = !!profile.next_daily_reset;
     dailyUsed = 0;
     dailyReset = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
     needsUpdate = true;
+    if (wasInitialized) {
+      addNotification({
+        icon: "CheckCircle2",
+        iconColor: "text-emerald-400",
+        iconBg: "bg-emerald-400/10 border-emerald-400/20",
+        title: "Daily Credits Reset",
+        body: "Your daily lead generation limit has been reset. Start acquiring new clients!",
+        category: "notifyCreditsReset",
+      });
+    }
   }
 
   // Monthly Reset check
@@ -997,12 +1009,23 @@ export async function getSettings(): Promise<SettingsMap> {
   return (data?.settings as SettingsMap) ?? {};
 }
 
-export async function updateSettings(body: SettingsMap): Promise<SettingsMap> {
+export async function updateSettings(body: SettingsMap, fullName?: string): Promise<SettingsMap> {
   const userId = await requireUserId();
   const { data: existing } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
   const merged = { ...(existing?.settings as SettingsMap ?? {}), ...body };
-  const { error } = await supabase!.from("profiles").update({ settings: merged }).eq("id", userId);
+  
+  const updateData: Record<string, any> = { settings: merged };
+  if (fullName !== undefined) {
+    updateData.full_name = fullName;
+  }
+  
+  const { error } = await supabase!.from("profiles").update(updateData).eq("id", userId);
   if (error) throw new ApiError(500, error.message, error);
+  
+  if (fullName !== undefined) {
+    await supabase!.auth.updateUser({ data: { full_name: fullName } });
+  }
+  
   return merged;
 }
 

@@ -18,6 +18,10 @@ import {
   Kanban,
   Bell,
   Settings,
+  Upload,
+  CreditCard,
+  Zap,
+  Network,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -29,11 +33,15 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Focus",    to: "/dashboard",            icon: Crosshair, exact: true },
-  { label: "Discover", to: "/dashboard/leads",      icon: Search },
-  { label: "Pipeline", to: "/dashboard/pipeline",   icon: Kanban },
-  { label: "Mission",  to: "/dashboard/follow-ups", icon: Bell },
-  { label: "Settings", to: "/dashboard/settings",   icon: Settings },
+  { label: "Focus",           to: "/dashboard",              icon: Crosshair, exact: true },
+  { label: "Discover",        to: "/dashboard/leads",        icon: Search },
+  { label: "Relationships",   to: "/dashboard/relationships", icon: Network },
+  { label: "Pipeline",        to: "/dashboard/pipeline",     icon: Kanban },
+  { label: "Mission",         to: "/dashboard/follow-ups",   icon: Bell },
+  { label: "Import / Export", to: "/dashboard/import",        icon: Upload },
+  { label: "Billing",         to: "/dashboard/billing",       icon: CreditCard },
+  { label: "Subscription",    to: "/dashboard/subscription",  icon: Zap },
+  { label: "Settings",        to: "/dashboard/settings",      icon: Settings },
 ];
 
 interface IndicatorStyle {

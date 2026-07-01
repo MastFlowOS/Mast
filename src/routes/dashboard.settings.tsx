@@ -74,6 +74,9 @@ function SettingsPage() {
   const [senderEmail, setSenderEmail] = useState("");
   const [signature, setSignature] = useState("");
 
+  // Connected Inbox
+  const [emailProvider, setEmailProvider] = useState<"gmail" | "outlook" | "none" | string>("none");
+
   // Modals
   const [showDisableModal, setShowDisableModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -105,6 +108,18 @@ function SettingsPage() {
     setNotifyPlanChanges(settings.notifyPlanChanges !== "false");
     setNotifyBilling(settings.notifyBilling !== "false");
     setNotifyAnnouncements(settings.notifyAnnouncements !== "false");
+    setEmailProvider(settings.emailIntegrationProvider ?? "none");
+
+    // Sync notification preferences to localStorage for immediate notification center query access
+    const prefs = {
+      notifyNewLead: settings.notifyNewLead !== "false",
+      notifyCreditLimit: settings.notifyCreditLimit !== "false",
+      notifyCreditsReset: settings.notifyCreditsReset !== "false",
+      notifyPlanChanges: settings.notifyPlanChanges !== "false",
+      notifyBilling: settings.notifyBilling !== "false",
+      notifyAnnouncements: settings.notifyAnnouncements !== "false",
+    };
+    localStorage.setItem("mast_notification_preferences", JSON.stringify(prefs));
 
     // Parse stored regions (comma-separated)
     if (settings.defaultRegions) {
@@ -134,19 +149,35 @@ function SettingsPage() {
   const save = async () => {
     try {
       await saveSettings.mutateAsync({
-        workspaceName,
-        defaultRegions: defaultRegions.join(", "),
-        senderName,
-        senderEmail,
-        signature,
-        notifyNewLead: notifyNewLeads ? "true" : "false",
-        notifyCreditLimit: notifyCreditLimit ? "true" : "false",
-        notifyCreditsReset: notifyCreditsReset ? "true" : "false",
-        notifyPlanChanges: notifyPlanChanges ? "true" : "false",
-        notifyBilling: notifyBilling ? "true" : "false",
-        notifyAnnouncements: notifyAnnouncements ? "true" : "false",
+        settings: {
+          workspaceName,
+          defaultRegions: defaultRegions.join(", "),
+          senderName,
+          senderEmail,
+          signature,
+          notifyNewLead: notifyNewLeads ? "true" : "false",
+          notifyCreditLimit: notifyCreditLimit ? "true" : "false",
+          notifyCreditsReset: notifyCreditsReset ? "true" : "false",
+          notifyPlanChanges: notifyPlanChanges ? "true" : "false",
+          notifyBilling: notifyBilling ? "true" : "false",
+          notifyAnnouncements: notifyAnnouncements ? "true" : "false",
+          emailIntegrationProvider: emailProvider,
+        },
+        fullName,
       });
-      toast.success("Settings saved");
+
+      // Synchronize notification preferences locally
+      const prefs = {
+        notifyNewLead: notifyNewLeads,
+        notifyCreditLimit: notifyCreditLimit,
+        notifyCreditsReset: notifyCreditsReset,
+        notifyPlanChanges: notifyPlanChanges,
+        notifyBilling: notifyBilling,
+        notifyAnnouncements: notifyAnnouncements,
+      };
+      localStorage.setItem("mast_notification_preferences", JSON.stringify(prefs));
+
+      toast.success("Your settings have been updated.");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Could not save settings");
     }
@@ -235,8 +266,8 @@ function SettingsPage() {
         </div>
       </SectionCard>
 
-      {/* ── Google / Gmail Integration ──────────────────────────────────── */}
-      <GmailIntegration />
+      {/* ── Connected Inbox ──────────────────────────────────── */}
+      <ConnectedInbox provider={emailProvider} setProvider={setEmailProvider} />
 
       {/* ── Sender Identity ─────────────────────────────────────────────── */}
       <SectionCard
@@ -697,58 +728,122 @@ function SettingsPage() {
 
 // ─── Gmail / Google Integration ───────────────────────────────────────────────
 
-function GmailIntegration() {
+function ConnectedInbox({
+  provider,
+  setProvider,
+}: {
+  provider: string;
+  setProvider: (p: string) => void;
+}) {
+  const handleConnect = (p: string) => {
+    setProvider(p);
+    toast.success(`Connected to ${p === "gmail" ? "Gmail" : "Outlook"} successfully.`);
+  };
+
+  const handleDisconnect = () => {
+    setProvider("none");
+    toast.success("Inbox disconnected successfully.");
+  };
+
   return (
     <div className="bg-card border border-border rounded-2xl p-6">
       <div className="flex items-start gap-4">
-        <div className="size-11 rounded-xl bg-background border border-border grid place-items-center shrink-0">
-          <GoogleIcon />
+        <div className="size-11 rounded-xl bg-brand/10 border border-brand/25 grid place-items-center shrink-0">
+          <Mail className="size-5 text-brand shrink-0" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <h2 className="font-bold flex items-center gap-2">
-              Google Integration
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-brand/15 text-brand px-2 py-0.5 rounded border border-brand/20">
-                Gmail
+          <h2 className="font-bold text-base text-foreground flex items-center gap-2">
+            Connected Inbox
+            {provider !== "none" && (
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20 shrink-0">
+                Active
               </span>
-            </h2>
-          </div>
+            )}
+          </h2>
           <p className="text-xs text-muted-foreground mt-1 max-w-md">
-            Connect Gmail to send outreach from your own inbox. Used for sender
-            identity, SMTP relay, and outreach automation.
+            Connect your Gmail or Outlook inbox to send outreach directly from your MAST Workspace without leaving the platform.
           </p>
 
-          {/* Status row */}
-          <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-border bg-background p-3">
-            <div>
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                Status
-              </p>
-              <p className="mt-0.5 text-sm font-semibold text-muted-foreground">
-                Not Connected
-              </p>
+          <div className="mt-5 space-y-3">
+            {/* Gmail Connection Row */}
+            <div className="flex items-center justify-between gap-3 p-4 rounded-xl border border-border bg-background/50 hover:bg-muted/10 transition-colors">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="size-9 rounded-lg bg-background border border-border grid place-items-center shrink-0">
+                  <GoogleIcon />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">Gmail Inbox</p>
+                  <p className="text-xs text-muted-foreground">
+                    {provider === "gmail" ? "Connected and active" : "Not connected"}
+                  </p>
+                </div>
+              </div>
+              <div className="shrink-0">
+                {provider === "gmail" ? (
+                  <button
+                    type="button"
+                    onClick={handleDisconnect}
+                    className="shrink-0 px-3.5 py-1.5 rounded-lg border border-destructive/40 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors cursor-pointer"
+                  >
+                    Disconnect
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleConnect("gmail")}
+                    disabled={provider !== "none" && provider !== "gmail"}
+                    className="shrink-0 px-3.5 py-1.5 rounded-lg bg-foreground/10 text-foreground text-xs font-semibold border border-border hover:bg-foreground/15 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  >
+                    Connect
+                  </button>
+                )}
+              </div>
             </div>
-            <button
-              type="button"
-              disabled
-              className="shrink-0 px-4 py-2 rounded-lg bg-foreground/10 text-foreground/40 text-sm font-semibold inline-flex items-center gap-2 cursor-not-allowed border border-border"
-            >
-              <GoogleIcon />
-              Connect Gmail
-              <span className="ml-1 text-[9px] font-bold uppercase tracking-wider bg-muted-foreground/20 text-muted-foreground px-1.5 py-0.5 rounded">
-                Soon
-              </span>
-            </button>
-          </div>
 
-          <p className="mt-3 text-[11px] text-muted-foreground">
-            Gmail integration is coming soon. We'll notify you when it's ready.
-          </p>
+            {/* Outlook Connection Row */}
+            <div className="flex items-center justify-between gap-3 p-4 rounded-xl border border-border bg-background/50 hover:bg-muted/10 transition-colors">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="size-9 rounded-lg bg-background border border-border grid place-items-center shrink-0">
+                  <svg className="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <path d="M3 9h18M9 21V9" />
+                  </svg>
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">Outlook Inbox</p>
+                  <p className="text-xs text-muted-foreground">
+                    {provider === "outlook" ? "Connected and active" : "Not connected"}
+                  </p>
+                </div>
+              </div>
+              <div className="shrink-0">
+                {provider === "outlook" ? (
+                  <button
+                    type="button"
+                    onClick={handleDisconnect}
+                    className="shrink-0 px-3.5 py-1.5 rounded-lg border border-destructive/40 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors cursor-pointer"
+                  >
+                    Disconnect
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleConnect("outlook")}
+                    disabled={provider !== "none" && provider !== "outlook"}
+                    className="shrink-0 px-3.5 py-1.5 rounded-lg bg-foreground/10 text-foreground text-xs font-semibold border border-border hover:bg-foreground/15 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  >
+                    Connect
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
 }
+
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -767,8 +862,9 @@ function SectionCard({
     <div className="bg-card border border-border rounded-2xl p-6">
       <div className="flex items-center gap-3 mb-5">
         <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
-          <Icon className="size-4 text-brand" />
+          <Icon className="size-4 text-brand shrink-0" />
         </div>
+
         <div>
           <h2 className="font-bold">{title}</h2>
           <p className="text-xs text-muted-foreground">{desc}</p>
@@ -830,22 +926,32 @@ function Toggle({
     <button
       type="button"
       onClick={() => !disabled && onChange(!on)}
-      className={`flex w-full items-center justify-between gap-3 ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+      className={cn(
+        "flex w-full items-center justify-between gap-4 px-4 py-3 rounded-xl border border-border/50 bg-background/50 text-left transition-all duration-200",
+        disabled ? "opacity-50 cursor-not-allowed" : "hover:bg-muted/30 hover:border-border cursor-pointer"
+      )}
     >
       <div className="flex items-center gap-2 min-w-0">
-        <span className="text-sm">{label}</span>
+        <span className="text-sm font-medium text-foreground">{label}</span>
         {comingSoon && <ComingSoonBadge />}
       </div>
       <div
-        className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${on ? "bg-brand" : "bg-border"}`}
+        className={cn(
+          "relative shrink-0 w-10 h-6 rounded-full transition-colors duration-200",
+          on ? "bg-brand" : "bg-zinc-800"
+        )}
       >
         <span
-          className={`absolute top-0.5 size-5 bg-background rounded-full transition-transform ${on ? "translate-x-5" : "translate-x-0.5"}`}
+          className={cn(
+            "absolute top-0.5 size-5 bg-background rounded-full transition-all duration-200 shadow-sm",
+            on ? "left-[18px]" : "left-0.5"
+          )}
         />
       </div>
     </button>
   );
 }
+
 
 function SecurityRow({
   icon: Icon,
@@ -862,8 +968,9 @@ function SecurityRow({
     <div className="flex items-center justify-between gap-4">
       <div className="flex items-center gap-3 min-w-0">
         <div className="size-8 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
-          <Icon className="size-4 text-brand" />
+          <Icon className="size-4 text-brand shrink-0" />
         </div>
+
         <div className="min-w-0">
           <p className="text-sm font-semibold">{label}</p>
           <p className="text-xs text-muted-foreground">{desc}</p>

@@ -25,11 +25,11 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
 import { Route as DashboardSubscriptionRouteImport } from './routes/dashboard.subscription'
 import { Route as DashboardSettingsRouteImport } from './routes/dashboard.settings'
+import { Route as DashboardRelationshipsRouteImport } from './routes/dashboard.relationships'
 import { Route as DashboardPipelineRouteImport } from './routes/dashboard.pipeline'
 import { Route as DashboardLeadsRouteImport } from './routes/dashboard.leads'
 import { Route as DashboardImportRouteImport } from './routes/dashboard.import'
 import { Route as DashboardFollowUpsRouteImport } from './routes/dashboard.follow-ups'
-import { Route as DashboardCrmRouteImport } from './routes/dashboard.crm'
 import { Route as DashboardBillingRouteImport } from './routes/dashboard.billing'
 import { Route as DashboardAnalyticsRouteImport } from './routes/dashboard.analytics'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
@@ -115,6 +115,11 @@ const DashboardSettingsRoute = DashboardSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => DashboardRoute,
 } as any)
+const DashboardRelationshipsRoute = DashboardRelationshipsRouteImport.update({
+  id: '/relationships',
+  path: '/relationships',
+  getParentRoute: () => DashboardRoute,
+} as any)
 const DashboardPipelineRoute = DashboardPipelineRouteImport.update({
   id: '/pipeline',
   path: '/pipeline',
@@ -133,11 +138,6 @@ const DashboardImportRoute = DashboardImportRouteImport.update({
 const DashboardFollowUpsRoute = DashboardFollowUpsRouteImport.update({
   id: '/follow-ups',
   path: '/follow-ups',
-  getParentRoute: () => DashboardRoute,
-} as any)
-const DashboardCrmRoute = DashboardCrmRouteImport.update({
-  id: '/crm',
-  path: '/crm',
   getParentRoute: () => DashboardRoute,
 } as any)
 const DashboardBillingRoute = DashboardBillingRouteImport.update({
@@ -178,11 +178,11 @@ export interface FileRoutesByFullPath {
   '/auth/callback': typeof AuthCallbackRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/billing': typeof DashboardBillingRoute
-  '/dashboard/crm': typeof DashboardCrmRoute
   '/dashboard/follow-ups': typeof DashboardFollowUpsRoute
   '/dashboard/import': typeof DashboardImportRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/pipeline': typeof DashboardPipelineRoute
+  '/dashboard/relationships': typeof DashboardRelationshipsRoute
   '/dashboard/settings': typeof DashboardSettingsRoute
   '/dashboard/subscription': typeof DashboardSubscriptionRoute
   '/dashboard/': typeof DashboardIndexRoute
@@ -204,11 +204,11 @@ export interface FileRoutesByTo {
   '/auth/callback': typeof AuthCallbackRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/billing': typeof DashboardBillingRoute
-  '/dashboard/crm': typeof DashboardCrmRoute
   '/dashboard/follow-ups': typeof DashboardFollowUpsRoute
   '/dashboard/import': typeof DashboardImportRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/pipeline': typeof DashboardPipelineRoute
+  '/dashboard/relationships': typeof DashboardRelationshipsRoute
   '/dashboard/settings': typeof DashboardSettingsRoute
   '/dashboard/subscription': typeof DashboardSubscriptionRoute
   '/dashboard': typeof DashboardIndexRoute
@@ -232,11 +232,11 @@ export interface FileRoutesById {
   '/auth/callback': typeof AuthCallbackRoute
   '/dashboard/analytics': typeof DashboardAnalyticsRoute
   '/dashboard/billing': typeof DashboardBillingRoute
-  '/dashboard/crm': typeof DashboardCrmRoute
   '/dashboard/follow-ups': typeof DashboardFollowUpsRoute
   '/dashboard/import': typeof DashboardImportRoute
   '/dashboard/leads': typeof DashboardLeadsRouteWithChildren
   '/dashboard/pipeline': typeof DashboardPipelineRoute
+  '/dashboard/relationships': typeof DashboardRelationshipsRoute
   '/dashboard/settings': typeof DashboardSettingsRoute
   '/dashboard/subscription': typeof DashboardSubscriptionRoute
   '/dashboard/': typeof DashboardIndexRoute
@@ -261,11 +261,11 @@ export interface FileRouteTypes {
     | '/auth/callback'
     | '/dashboard/analytics'
     | '/dashboard/billing'
-    | '/dashboard/crm'
     | '/dashboard/follow-ups'
     | '/dashboard/import'
     | '/dashboard/leads'
     | '/dashboard/pipeline'
+    | '/dashboard/relationships'
     | '/dashboard/settings'
     | '/dashboard/subscription'
     | '/dashboard/'
@@ -287,11 +287,11 @@ export interface FileRouteTypes {
     | '/auth/callback'
     | '/dashboard/analytics'
     | '/dashboard/billing'
-    | '/dashboard/crm'
     | '/dashboard/follow-ups'
     | '/dashboard/import'
     | '/dashboard/leads'
     | '/dashboard/pipeline'
+    | '/dashboard/relationships'
     | '/dashboard/settings'
     | '/dashboard/subscription'
     | '/dashboard'
@@ -314,11 +314,11 @@ export interface FileRouteTypes {
     | '/auth/callback'
     | '/dashboard/analytics'
     | '/dashboard/billing'
-    | '/dashboard/crm'
     | '/dashboard/follow-ups'
     | '/dashboard/import'
     | '/dashboard/leads'
     | '/dashboard/pipeline'
+    | '/dashboard/relationships'
     | '/dashboard/settings'
     | '/dashboard/subscription'
     | '/dashboard/'
@@ -456,6 +456,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardSettingsRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/dashboard/relationships': {
+      id: '/dashboard/relationships'
+      path: '/relationships'
+      fullPath: '/dashboard/relationships'
+      preLoaderRoute: typeof DashboardRelationshipsRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/dashboard/pipeline': {
       id: '/dashboard/pipeline'
       path: '/pipeline'
@@ -482,13 +489,6 @@ declare module '@tanstack/react-router' {
       path: '/follow-ups'
       fullPath: '/dashboard/follow-ups'
       preLoaderRoute: typeof DashboardFollowUpsRouteImport
-      parentRoute: typeof DashboardRoute
-    }
-    '/dashboard/crm': {
-      id: '/dashboard/crm'
-      path: '/crm'
-      fullPath: '/dashboard/crm'
-      preLoaderRoute: typeof DashboardCrmRouteImport
       parentRoute: typeof DashboardRoute
     }
     '/dashboard/billing': {
@@ -537,11 +537,11 @@ const DashboardLeadsRouteWithChildren = DashboardLeadsRoute._addFileChildren(
 interface DashboardRouteChildren {
   DashboardAnalyticsRoute: typeof DashboardAnalyticsRoute
   DashboardBillingRoute: typeof DashboardBillingRoute
-  DashboardCrmRoute: typeof DashboardCrmRoute
   DashboardFollowUpsRoute: typeof DashboardFollowUpsRoute
   DashboardImportRoute: typeof DashboardImportRoute
   DashboardLeadsRoute: typeof DashboardLeadsRouteWithChildren
   DashboardPipelineRoute: typeof DashboardPipelineRoute
+  DashboardRelationshipsRoute: typeof DashboardRelationshipsRoute
   DashboardSettingsRoute: typeof DashboardSettingsRoute
   DashboardSubscriptionRoute: typeof DashboardSubscriptionRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
@@ -550,11 +550,11 @@ interface DashboardRouteChildren {
 const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardAnalyticsRoute: DashboardAnalyticsRoute,
   DashboardBillingRoute: DashboardBillingRoute,
-  DashboardCrmRoute: DashboardCrmRoute,
   DashboardFollowUpsRoute: DashboardFollowUpsRoute,
   DashboardImportRoute: DashboardImportRoute,
   DashboardLeadsRoute: DashboardLeadsRouteWithChildren,
   DashboardPipelineRoute: DashboardPipelineRoute,
+  DashboardRelationshipsRoute: DashboardRelationshipsRoute,
   DashboardSettingsRoute: DashboardSettingsRoute,
   DashboardSubscriptionRoute: DashboardSubscriptionRoute,
   DashboardIndexRoute: DashboardIndexRoute,

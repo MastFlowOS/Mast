@@ -283,11 +283,12 @@ function Billing() {
                     : "bg-amber-500/10 text-amber-500 border-amber-500/20"
                 )}
               >
-                <ShieldCheck className="size-3.5" />
+                <ShieldCheck className="size-3.5 shrink-0" />
                 {isGoodStanding
                   ? "Account In Good Standing · No Outstanding Charges"
                   : "Account Requires Attention"}
               </div>
+
             </div>
           )}
         </div>
@@ -324,12 +325,13 @@ function Billing() {
             {/* Provider info */}
             <div className="flex items-start gap-4">
               <div className="size-10 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
-                <Plug className="size-5 text-brand" />
+                <Plug className="size-5 text-brand shrink-0" />
               </div>
+
               <div>
                 <p className="font-bold text-sm">Billing Provider</p>
                 <div className="flex items-center gap-1.5 mt-1">
-                  <span className="size-1.5 rounded-full bg-zinc-500 inline-block" />
+                  <span className="size-1.5 rounded-full bg-zinc-500 inline-block shrink-0" />
                   <span className="text-xs text-muted-foreground">
                     Not Connected
                   </span>
@@ -371,14 +373,15 @@ function Billing() {
         <div className="bg-card border border-border rounded-2xl overflow-hidden">
           <div className="p-6 border-b border-border flex items-center justify-between">
             <h3 className="font-semibold text-sm">Invoice History</h3>
-            <FileText className="size-4 text-muted-foreground" />
+            <FileText className="size-4 text-muted-foreground shrink-0" />
           </div>
 
           {/* Empty state */}
           <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
             <div className="size-12 rounded-2xl bg-border/40 grid place-items-center mb-4">
-              <FileText className="size-6 text-muted-foreground/60" />
+              <FileText className="size-6 text-muted-foreground/60 shrink-0" />
             </div>
+
             <p className="font-semibold text-sm text-foreground">
               No invoices available.
             </p>
@@ -396,7 +399,7 @@ function Billing() {
         <div className="bg-card border border-border rounded-2xl overflow-hidden">
           <div className="p-6 border-b border-border flex items-center justify-between">
             <h3 className="font-semibold text-sm">Timeline</h3>
-            <RefreshCw className="size-4 text-muted-foreground" />
+            <RefreshCw className="size-4 text-muted-foreground shrink-0" />
           </div>
 
           {isLoading ? (

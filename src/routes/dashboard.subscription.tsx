@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useState } from "react";
+import { addNotification } from "@/lib/notifications";
 import {
   CheckCircle2,
   Sun,
@@ -224,6 +225,15 @@ function Subscription() {
     try {
       await changePlan.mutateAsync(targetId);
       toast.success("Plan updated successfully");
+      
+      addNotification({
+        icon: "ArrowUpCircle",
+        iconColor: "text-brand",
+        iconBg: "bg-brand/10 border-brand/20",
+        title: "Plan Upgraded",
+        body: `Your workspace has been successfully migrated to the ${targetId.toUpperCase()} plan.`,
+        category: "notifyPlanChanges",
+      });
     } catch (err) {
       toast.error(
         err instanceof ApiError ? err.message : "Could not update plan"
@@ -314,13 +324,14 @@ function Subscription() {
         <div className="lg:col-span-1 bg-card border border-border rounded-2xl p-6 flex flex-col justify-between">
           <div className="space-y-4">
             <h2 className="font-bold text-base flex items-center gap-2">
-              <CreditCard className="size-4.5 text-brand" />
+              <CreditCard className="size-4.5 text-brand shrink-0" />
               Payment Method
             </h2>
 
+
             {currentPlan === "free" ? (
               <div className="rounded-xl border border-border/80 bg-background/30 p-6 text-center flex flex-col justify-center items-center h-[170px]">
-                <Lock className="size-6 text-muted-foreground/60 mb-2" />
+                <Lock className="size-6 text-muted-foreground/60 mb-2 shrink-0" />
                 <p className="text-sm font-semibold text-muted-foreground">
                   No payment method connected
                 </p>
@@ -333,7 +344,7 @@ function Subscription() {
                 <div className="flex items-center justify-between p-4 rounded-xl border border-border bg-background/50">
                   <div className="flex items-center gap-3">
                     <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
-                      <CreditCard className="size-4.5 text-brand" />
+                      <CreditCard className="size-4.5 text-brand shrink-0" />
                     </div>
                     <div>
                       <div className="flex items-center gap-1.5">
@@ -717,7 +728,7 @@ function UsageCard({
       <div className="flex items-center gap-2 mb-3">
         <Icon
           className={cn(
-            "size-4",
+            "size-4 shrink-0",
             atLimit ? "text-destructive" : warn ? "text-amber-500" : "text-brand"
           )}
         />
@@ -758,7 +769,7 @@ function UsageCard({
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
-          <Clock className="size-3" />
+          <Clock className="size-3 shrink-0" />
           {resetLabel}
         </span>
         {!atLimit && (
@@ -789,7 +800,7 @@ function ChannelUsageCard({
           {label}
         </span>
         <div className="size-8 rounded-lg bg-brand/10 border border-brand/20 flex items-center justify-center shrink-0">
-          <Icon className="size-4 text-brand" />
+          <Icon className="size-4 text-brand shrink-0" />
         </div>
       </div>
       <p className="text-2xl font-bold mb-2">{count.toLocaleString()}</p>
@@ -874,14 +885,14 @@ function PlanCard({
         {/* Daily / monthly limits highlighted */}
         <div className="mt-4 grid grid-cols-2 gap-2">
           <div className="rounded-lg bg-background border border-border p-2.5 text-center">
-            <Sun className="size-3.5 text-brand mx-auto mb-1" />
+            <Sun className="size-3.5 text-brand mx-auto mb-1 shrink-0" />
             <p className="text-xs font-bold text-foreground">
               {plan.dailyLeadLimit.toLocaleString()}
             </p>
             <p className="text-[10px] text-muted-foreground">leads/day</p>
           </div>
           <div className="rounded-lg bg-background border border-border p-2.5 text-center">
-            <Calendar className="size-3.5 text-brand mx-auto mb-1" />
+            <Calendar className="size-3.5 text-brand mx-auto mb-1 shrink-0" />
             <p className="text-xs font-bold text-foreground">
               {plan.monthlyLeadLimit.toLocaleString()}
             </p>

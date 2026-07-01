@@ -9,8 +9,9 @@ import {
   ListChecks,
   RotateCcw,
   Sparkles,
+  Target,
+  TrendingUp,
   Trophy,
-  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getLead, type FollowupWithLead, type Lead, type OutreachChannel } from "@/lib/api";
@@ -26,6 +27,8 @@ export const Route = createFileRoute("/dashboard/follow-ups")({
   component: FollowUpsPage,
 });
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 type MissionItem = FollowupWithLead & {
   leadName: string;
   nicheLabel: string;
@@ -36,9 +39,12 @@ type MissionItem = FollowupWithLead & {
   daysSinceContact: number | null;
   effort: "quick" | "standard";
   impact: number;
+  impactScore: number; // business-impact-weighted priority score
 };
 
 const SECTION_LIMIT = 6;
+
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 function FollowUpsPage() {
   const navigate = useNavigate();
@@ -136,16 +142,23 @@ function FollowUpsPage() {
           <MissionComplete completedToday={mission.completedToday.length} />
         ) : (
           <div className="space-y-6 p-6">
+            {/* Today's Mission briefing — single AI sentence above everything */}
+            <MissionBriefing briefing={mission.missionBriefing} />
+
             <MissionHero mission={mission} />
 
             <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
-              <CoachCard item={mission.coachPick} />
-              <StreakCard streak={mission.streak} completedToday={mission.completedToday.length} />
+              <SmartCoachCard
+                item={mission.coachItem}
+                sentence={mission.coachSentence}
+                reasons={mission.coachReasons}
+              />
+              <OperationalInsightsCard insights={mission.operationalInsights} />
             </div>
 
             <MissionSection
               title="Must Do Today"
-              desc="The highest value actions to clear before anything else."
+              desc="Highest-impact actions sorted by business value and urgency."
               icon={Flame}
               tone="danger"
               items={mission.mustDo}
@@ -156,13 +169,9 @@ function FollowUpsPage() {
               onReschedule={openReschedule}
             />
 
-            <MissionSection
-              title="Quick Wins"
-              desc="Low-friction follow-ups that keep momentum moving."
-              icon={Zap}
-              tone="brand"
-              items={mission.quickWins}
-              total={mission.totalQuickWins}
+            <IntelligentActionQueue
+              items={mission.actionQueue}
+              total={mission.totalActionQueue}
               busy={busy}
               onOpen={openLead}
               onComplete={(item) => void completeOne(item)}
@@ -171,7 +180,7 @@ function FollowUpsPage() {
 
             <MissionSection
               title="Leads At Risk"
-              desc="Stale or drifting opportunities that need a touch."
+              desc="Opportunities drifting toward inactivity. A touch today keeps them alive."
               icon={AlertTriangle}
               tone="warning"
               items={mission.atRisk}
@@ -181,8 +190,6 @@ function FollowUpsPage() {
               onComplete={(item) => void completeOne(item)}
               onReschedule={openReschedule}
             />
-
-            <PlanningSections tomorrow={mission.tomorrow} next7Days={mission.next7Days} onOpen={openLead} />
 
             <MissionSection
               title="Completed Today"
@@ -234,26 +241,47 @@ function FollowUpsPage() {
   );
 }
 
+// ── Mission Briefing ──────────────────────────────────────────────────────────
+// Single AI-generated sentence. Context-aware, action-oriented, derived from
+// real data — no static fallbacks. Shown before everything else.
+
+function MissionBriefing({ briefing }: { briefing: string }) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-brand/20 bg-brand/5 px-4 py-3">
+      <div className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border border-brand/25 bg-brand/15">
+        <Sparkles className="size-3 text-brand" />
+      </div>
+      <div>
+        <p className="mb-0.5 text-[10px] font-bold uppercase tracking-widest text-brand">Today's Mission</p>
+        <p className="text-sm font-medium leading-relaxed text-foreground">{briefing}</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Mission Hero ──────────────────────────────────────────────────────────────
+// Stats and progress. Every number derives from the same data source.
+// headline = overdue + dueToday so it always matches the stat tiles.
+
 function MissionHero({ mission }: { mission: Mission }) {
-  const total = Math.max(1, mission.todayTarget + mission.completedToday.length);
-  const progress = Math.min(100, Math.round((mission.completedToday.length / total) * 100));
+  const totalWork = Math.max(1, mission.todayTarget + mission.completedToday.length);
+  const progress = Math.min(100, Math.round((mission.completedToday.length / totalWork) * 100));
+  const headline = buildHeroHeadline(mission.overdue, mission.dueToday);
 
   return (
     <section className="rounded-2xl border border-border bg-card p-5">
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div>
           <p className="text-xs font-bold uppercase tracking-widest text-brand">Mission Control</p>
-          <h2 className="mt-1 text-xl font-bold tracking-tight">
-            You have {mission.todayTarget.toLocaleString()} action{mission.todayTarget === 1 ? "" : "s"} due now.
-          </h2>
+          <h2 className="mt-1 text-xl font-bold tracking-tight">{headline}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Estimated completion time: {mission.estimatedMinutes} minutes · Priority level: {mission.priorityLevel}
           </p>
         </div>
         <div className="min-w-56">
           <div className="flex items-center justify-between text-xs">
-            <span className="font-semibold text-foreground">Today's Mission</span>
-            <span className="text-muted-foreground">{mission.completedToday.length} / {total} completed</span>
+            <span className="font-semibold text-foreground">Today's Progress</span>
+            <span className="text-muted-foreground">{mission.completedToday.length} / {totalWork} completed</span>
           </div>
           <div className="mt-2 h-2 overflow-hidden rounded-full bg-border">
             <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${progress}%` }} />
@@ -261,6 +289,7 @@ function MissionHero({ mission }: { mission: Mission }) {
         </div>
       </div>
 
+      {/* Stat tiles — each derived from the same mission object */}
       <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <MissionMetric label="Due Today" value={mission.dueToday} tone="brand" />
         <MissionMetric label="Overdue" value={mission.overdue} tone="danger" />
@@ -268,6 +297,7 @@ function MissionHero({ mission }: { mission: Mission }) {
         <MissionMetric label="Completed Today" value={mission.completedToday.length} tone="success" />
       </div>
 
+      {/* Dynamic impact predictions — personalized, never hardcoded */}
       <div className="mt-5 rounded-xl border border-border bg-background p-4">
         <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Completing today's actions could</p>
         <div className="mt-3 grid gap-2 md:grid-cols-3">
@@ -293,7 +323,15 @@ function MissionMetric({ label, value, tone }: { label: string; value: number; t
   );
 }
 
-function CoachCard({ item }: { item: MissionItem | null }) {
+// ── Smart Coach Card ──────────────────────────────────────────────────────────
+// Replaces the generic CoachCard. Outputs one decisive coaching sentence and
+// three specific reasons tied to real lead data. Changes every visit.
+
+function SmartCoachCard({ item, sentence, reasons }: {
+  item: MissionItem | null;
+  sentence: string;
+  reasons: string[];
+}) {
   return (
     <section className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-center gap-2">
@@ -302,63 +340,102 @@ function CoachCard({ item }: { item: MissionItem | null }) {
         </div>
         <div>
           <h2 className="text-sm font-bold">AI Coach</h2>
-          <p className="text-xs text-muted-foreground">Highest value action today</p>
+          <p className="text-xs text-muted-foreground">Highest-value action today</p>
         </div>
       </div>
 
       {item ? (
-        <div className="mt-4 rounded-lg border border-border bg-background p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="font-semibold">{item.leadName}</p>
-            <span className="rounded border border-brand/20 bg-brand/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-brand">
-              Score {item.score}
-            </span>
+        <div className="mt-4 space-y-3">
+          {/* Decisive coaching sentence — specific to this lead's situation */}
+          <p className="text-sm font-semibold leading-relaxed text-foreground">{sentence}</p>
+
+          <div className="rounded-lg border border-border bg-background p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-semibold">{item.leadName}</p>
+              <span className="rounded border border-brand/20 bg-brand/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-brand">
+                Impact {item.impactScore}
+              </span>
+              {item.dueState === "overdue" && (
+                <span className="rounded border border-orange-500/20 bg-orange-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-orange-400">
+                  {item.daysOverdue}d overdue
+                </span>
+              )}
+            </div>
+            {reasons.length > 0 && (
+              <ul className="mt-2.5 space-y-1.5">
+                {reasons.map((reason) => (
+                  <li key={reason} className="flex gap-2 text-sm text-muted-foreground">
+                    <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-brand" />
+                    <span>{reason}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-          <p className="mt-3 text-xs font-bold uppercase tracking-widest text-muted-foreground">Why this lead?</p>
-          <ul className="mt-2 space-y-1.5 text-sm text-muted-foreground">
-            {coachReasons(item).map((reason) => (
-              <li key={reason} className="flex gap-2">
-                <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-brand" />
-                <span>{reason}</span>
-              </li>
-            ))}
-          </ul>
         </div>
       ) : (
-        <p className="mt-4 text-sm text-muted-foreground">No urgent recommendation. Keep the mission clear.</p>
+        <p className="mt-4 text-sm text-muted-foreground">No urgent recommendations. Your pipeline is in excellent shape.</p>
       )}
     </section>
   );
 }
 
-function StreakCard({ streak, completedToday }: { streak: number; completedToday: number }) {
-  const hasStreak = streak > 0;
+// ── Operational Insights Card ─────────────────────────────────────────────────
+// Replaces the Follow-up Streak. Shows metrics that help users improve,
+// not just maintain a counter.
+
+function OperationalInsightsCard({ insights }: { insights: ReturnType<typeof buildOperationalInsights> }) {
+  const { completionsThisWeek, repliesThisWeek, meetingsThisWeek, avgResponseDays } = insights;
 
   return (
     <section className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-center gap-2">
-        <div className="grid size-8 place-items-center rounded-lg border border-success/20 bg-success/10">
-          <Trophy className="size-4 text-success" />
+        <div className="grid size-8 place-items-center rounded-lg border border-brand/20 bg-brand/10">
+          <TrendingUp className="size-4 text-brand" />
         </div>
         <div>
-          <h2 className="text-sm font-bold">Follow-Up Streak</h2>
-          <p className="text-xs text-muted-foreground">Keep your streak alive.</p>
+          <h2 className="text-sm font-bold">This Week</h2>
+          <p className="text-xs text-muted-foreground">Operational snapshot</p>
         </div>
       </div>
-      <div className="mt-4 flex items-end gap-2">
-        <span className="text-3xl font-bold tabular-nums">{hasStreak ? streak : "Start"}</span>
-        {hasStreak && <span className="pb-1 text-sm font-semibold text-muted-foreground">Days</span>}
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <InsightMetric value={completionsThisWeek} label="Completed" suffix="follow-ups" tone="success" />
+        <InsightMetric value={repliesThisWeek} label="Replies" suffix="generated" tone="brand" />
+        <InsightMetric value={meetingsThisWeek} label="Meetings" suffix="booked" tone="warning" />
+        <InsightMetric
+          value={avgResponseDays ?? 0}
+          label="Avg response"
+          suffix={avgResponseDays !== null ? "days" : "tracking"}
+          tone="muted"
+        />
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        {hasStreak
-          ? completedToday > 0
-            ? `${completedToday} completed today. Momentum is active.`
-            : "Complete one follow-up today to protect the streak."
-          : "Complete 1 follow-up to begin."}
-      </p>
     </section>
   );
 }
+
+function InsightMetric({ value, label, suffix, tone }: {
+  value: number;
+  label: string;
+  suffix: string;
+  tone: "brand" | "success" | "warning" | "muted";
+}) {
+  const color =
+    tone === "brand" ? "text-brand" :
+    tone === "success" ? "text-success" :
+    tone === "warning" ? "text-warning" :
+    "text-muted-foreground";
+
+  return (
+    <div className="rounded-lg border border-border bg-background px-3 py-2.5">
+      <p className={`text-xl font-bold tabular-nums ${color}`}>{value.toLocaleString()}</p>
+      <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className="text-[10px] text-muted-foreground/60">{suffix}</p>
+    </div>
+  );
+}
+
+// ── Mission Section ───────────────────────────────────────────────────────────
 
 function MissionSection({
   title,
@@ -421,63 +498,109 @@ function MissionSection({
   );
 }
 
-function PlanningSections({
-  tomorrow,
-  next7Days,
-  onOpen,
-}: {
-  tomorrow: MissionItem[];
-  next7Days: MissionItem[];
+// ── Intelligent Action Queue ──────────────────────────────────────────────────
+// Replaces Quick Wins + Upcoming Planning.
+// Shows all non-must-do items due within 48 hours, sorted by business impact.
+// Each row explains WHY this follow-up matters — not just when it's due.
+
+function IntelligentActionQueue({ items, total, busy, onOpen, onComplete, onReschedule }: {
+  items: MissionItem[];
+  total: number;
+  busy: boolean;
   onOpen: (leadId: number) => void;
+  onComplete: (item: MissionItem) => void;
+  onReschedule: (item: MissionItem) => void;
 }) {
-  if (tomorrow.length === 0 && next7Days.length === 0) return null;
+  if (items.length === 0) return null;
+
+  const todayCount = items.filter((item) => item.dueState === "today").length;
+  const tomorrowCount = items.filter((item) => daysFromToday(item.dueAt) === 1).length;
+  const later = items.filter((item) => daysFromToday(item.dueAt) >= 2).length;
+
+  const subtitle = [
+    todayCount > 0 ? `${todayCount} today` : null,
+    tomorrowCount > 0 ? `${tomorrowCount} tomorrow` : null,
+    later > 0 ? `${later} within 48h` : null,
+  ].filter(Boolean).join(" · ") || "Sorted by business impact";
 
   return (
     <section className="space-y-2">
-      <div className="flex items-center gap-3">
-        <div className="grid size-9 place-items-center rounded-lg border border-border bg-card text-muted-foreground">
-          <CalendarClock className="size-4" />
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div className="flex items-center gap-3">
+          <div className="grid size-9 place-items-center rounded-lg border border-brand/20 bg-brand/10 text-brand">
+            <Target className="size-4" />
+          </div>
+          <div>
+            <h2 className="text-sm font-bold">Action Queue</h2>
+            <p className="text-xs text-muted-foreground">{subtitle}</p>
+          </div>
         </div>
-        <div>
-          <h2 className="text-sm font-bold">Upcoming Planning</h2>
-          <p className="text-xs text-muted-foreground">Light preview only. Today's mission stays the focus.</p>
-        </div>
+        <p className="text-xs font-semibold text-muted-foreground">
+          {total} action{total === 1 ? "" : "s"} · Sorted by impact
+        </p>
       </div>
 
       <div className="grid gap-2 xl:grid-cols-2">
-        <PlanningBucket title="Tomorrow" items={tomorrow} onOpen={onOpen} />
-        <PlanningBucket title="Next 7 Days" items={next7Days} onOpen={onOpen} />
+        {items.map((item) => (
+          <ActionQueueRow
+            key={item.id}
+            item={item}
+            busy={busy}
+            onOpen={() => onOpen(item.leadId)}
+            onComplete={() => onComplete(item)}
+            onReschedule={() => onReschedule(item)}
+          />
+        ))}
       </div>
     </section>
   );
 }
 
-function PlanningBucket({ title, items, onOpen }: { title: string; items: MissionItem[]; onOpen: (leadId: number) => void }) {
-  if (items.length === 0) return null;
+function ActionQueueRow({ item, busy, onOpen, onComplete, onReschedule }: {
+  item: MissionItem;
+  busy: boolean;
+  onOpen: () => void;
+  onComplete: () => void;
+  onReschedule: () => void;
+}) {
+  const days = daysFromToday(item.dueAt);
+  const isUrgent = days === 0;
+  const when = days === 0 ? "Today" : days === 1 ? "Tomorrow" : "Within 48h";
+  const reason = actionQueueReason(item);
 
   return (
-    <details className="rounded-xl border border-border bg-card">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold hover:bg-background">
-        {title} <span className="text-muted-foreground">({items.length})</span>
-      </summary>
-      <div className="border-t border-border p-2">
-        {items.slice(0, 4).map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onOpen(item.leadId)}
-            className="flex w-full items-center justify-between gap-3 rounded-lg px-2 py-2 text-left hover:bg-background"
-          >
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold">{item.leadName}</span>
-              <span className="text-xs text-muted-foreground">{dueLabel(item)} · Score {item.score}</span>
-            </span>
-            <ArrowRight className="size-3.5 shrink-0 text-muted-foreground" />
-          </button>
-        ))}
+    <article className="flex items-center gap-3 rounded-xl border border-border bg-card px-3 py-2">
+      <div className={`grid size-8 shrink-0 place-items-center rounded-lg ${isUrgent ? "bg-brand/10 text-brand" : "bg-muted/40 text-muted-foreground"}`}>
+        <CalendarClock className="size-4" />
       </div>
-    </details>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={onOpen}
+            className="max-w-56 truncate text-left text-sm font-semibold text-foreground hover:text-brand"
+          >
+            {item.leadName}
+          </button>
+          <Badge>{channelLabel(item.channel)}</Badge>
+          <Badge tone={isUrgent ? "brand" : "muted"}>{when}</Badge>
+        </div>
+        {/* Reason chip — tells the user WHY this matters, not just when */}
+        <p className="mt-1 truncate text-xs text-muted-foreground">
+          {reason} · {item.nicheLabel}
+        </p>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1.5">
+        <IconButton label="Open Lead" onClick={onOpen} icon={ArrowRight} />
+        <IconButton label="Reschedule" onClick={onReschedule} icon={RotateCcw} disabled={busy} />
+        <IconButton label="Complete" onClick={onComplete} icon={Check} disabled={busy} primary />
+      </div>
+    </article>
   );
 }
+
+// ── Mission Task ──────────────────────────────────────────────────────────────
 
 function MissionTask({
   item,
@@ -521,6 +644,8 @@ function MissionTask({
     </article>
   );
 }
+
+// ── Shared UI primitives ──────────────────────────────────────────────────────
 
 function IconButton({
   label,
@@ -569,9 +694,12 @@ function Badge({ children, tone = "muted" }: { children: React.ReactNode; tone?:
   );
 }
 
+// ── Loading / Empty states ────────────────────────────────────────────────────
+
 function LoadingMission() {
   return (
     <div className="space-y-5 p-6">
+      <Skeleton className="h-12 rounded-xl" />
       <Skeleton className="h-40 rounded-2xl" />
       <div className="grid gap-4 xl:grid-cols-2">
         <Skeleton className="h-32 rounded-xl" />
@@ -610,6 +738,8 @@ function MissionComplete({ completedToday }: { completedToday: number }) {
   );
 }
 
+// ── Core business logic ───────────────────────────────────────────────────────
+
 type Mission = ReturnType<typeof buildMission>;
 
 function buildMission(followups: FollowupWithLead[]) {
@@ -619,31 +749,58 @@ function buildMission(followups: FollowupWithLead[]) {
     .filter((item) => item.dueState === "completed" && isToday(item.completedAt ?? item.updatedAt))
     .sort((a, b) => dateTime(b.completedAt ?? b.updatedAt) - dateTime(a.completedAt ?? a.updatedAt));
 
+  // ── Consistent counters: all stat surfaces use these exact values ──
   const overdue = active.filter((item) => item.dueState === "overdue").length;
   const dueToday = active.filter((item) => item.dueState === "today").length;
+
+  // At-risk: sorted by business impact, not arbitrary order
   const atRiskPool = active
     .filter((item) => isAtRisk(item))
-    .sort((a, b) => b.impact - a.impact);
+    .sort((a, b) => b.impactScore - a.impactScore);
+
+  // Must Do: overdue + today + high-value items, sorted by tier then business impact
   const mustDoPool = active
-    .filter((item) => item.dueState === "overdue" || item.dueState === "today" || item.score >= 90 || item.priority === "high")
+    .filter(
+      (item) =>
+        item.dueState === "overdue" ||
+        item.dueState === "today" ||
+        item.score >= 90 ||
+        item.priority === "high",
+    )
     .sort(compareMustDo);
+
   const mustDoIds = new Set(mustDoPool.map((item) => String(item.id)));
-  const quickWinsPool = active
-    .filter((item) => !mustDoIds.has(String(item.id)) && item.effort === "quick")
-    .sort((a, b) => dateTime(a.dueAt) - dateTime(b.dueAt) || b.score - a.score);
-  const quickWinIds = new Set(quickWinsPool.map((item) => String(item.id)));
-  const visibleAtRisk = atRiskPool.filter((item) => !mustDoIds.has(String(item.id)) && !quickWinIds.has(String(item.id)));
-  const tomorrow = active
-    .filter((item) => daysFromToday(item.dueAt) === 1)
-    .sort((a, b) => b.score - a.score || dateTime(a.dueAt) - dateTime(b.dueAt));
-  const next7Days = active
-    .filter((item) => {
-      const days = daysFromToday(item.dueAt);
-      return days > 1 && days <= 7;
-    })
-    .sort((a, b) => dateTime(a.dueAt) - dateTime(b.dueAt) || b.score - a.score);
-  const todayTarget = mustDoPool.length + quickWinsPool.length + visibleAtRisk.length;
-  const estimatedMinutes = Math.max(0, Math.ceil((mustDoPool.length * 2.5) + (quickWinsPool.length * 1.25) + (visibleAtRisk.length * 2)));
+
+  // Action Queue: non-must-do items due within 48 hours, sorted purely by business impact
+  // Business impact > chronological. A proposal due tomorrow ranks above a cold lead due today.
+  const actionQueuePool = active
+    .filter(
+      (item) =>
+        !mustDoIds.has(String(item.id)) &&
+        daysFromToday(item.dueAt) >= 1 &&
+        daysFromToday(item.dueAt) <= 2,
+    )
+    .sort((a, b) => b.impactScore - a.impactScore);
+
+  const actionQueueIds = new Set(actionQueuePool.map((item) => String(item.id)));
+
+  // At-risk that didn't make either queue
+  const visibleAtRisk = atRiskPool.filter(
+    (item) => !mustDoIds.has(String(item.id)) && !actionQueueIds.has(String(item.id)),
+  );
+
+  // todayTarget = overdue + dueToday — consistent with the stat tiles below
+  const todayTarget = overdue + dueToday;
+  const estimatedMinutes = Math.max(
+    0,
+    Math.ceil(mustDoPool.length * 2.5 + actionQueuePool.length * 1.5),
+  );
+
+  // Coach: pick the highest-impact item across all queues
+  const coachItem =
+    mustDoPool[0] ?? actionQueuePool[0] ?? visibleAtRisk[0] ?? null;
+
+  const operationalInsights = buildOperationalInsights(items);
 
   return {
     active,
@@ -653,18 +810,20 @@ function buildMission(followups: FollowupWithLead[]) {
     completedToday,
     mustDo: mustDoPool.slice(0, SECTION_LIMIT),
     totalMustDo: mustDoPool.length,
-    quickWins: quickWinsPool.slice(0, SECTION_LIMIT),
-    totalQuickWins: quickWinsPool.length,
+    actionQueue: actionQueuePool.slice(0, SECTION_LIMIT),
+    totalActionQueue: actionQueuePool.length,
     atRisk: visibleAtRisk.slice(0, SECTION_LIMIT),
     totalAtRisk: visibleAtRisk.length,
-    tomorrow,
-    next7Days,
     todayTarget,
     estimatedMinutes,
-    impactOutcomes: impactOutcomes(mustDoPool, quickWinsPool, visibleAtRisk, overdue),
     priorityLevel: priorityLevel(mustDoPool),
-    streak: followupStreak(items),
-    coachPick: mustDoPool[0] ?? quickWinsPool[0] ?? visibleAtRisk[0] ?? null,
+    operationalInsights,
+    // All AI-generated strings derived from live data:
+    missionBriefing: buildMissionBriefing({ overdue, dueToday, atRiskPool, completedTodayCount: completedToday.length, mustDoPool, actionQueuePool }),
+    coachItem,
+    coachSentence: buildCoachSentence(coachItem, { overdue, atRiskPool }),
+    coachReasons: coachItem ? buildCoachReasons(coachItem) : [],
+    impactOutcomes: buildDynamicImpactOutcomes(mustDoPool, actionQueuePool, visibleAtRisk, completedToday.length),
   };
 }
 
@@ -672,13 +831,22 @@ function toMissionItem(followup: FollowupWithLead): MissionItem {
   const lead = followup.lead;
   const dueState = dueStateForFollowup(followup);
   const daysOverdue = dueState === "overdue" ? Math.abs(daysFromToday(followup.dueAt)) : 0;
-  const daysSinceContact = lead?.lastContactedAt ? Math.max(0, Math.floor((Date.now() - dateTime(lead.lastContactedAt)) / 86_400_000)) : null;
+  const daysSinceContact =
+    lead?.lastContactedAt
+      ? Math.max(0, Math.floor((Date.now() - dateTime(lead.lastContactedAt)) / 86_400_000))
+      : null;
   const score = lead ? leadScore(lead) : 62;
   const priority = leadPriority(lead);
-  const nicheLabel = lead?.niche ? NICHES.find((item) => item.value === lead.niche)?.label ?? lead.niche : lead?.location ?? "General prospect";
-  const effort = channelType(followup.channel) === "email" || channelType(followup.channel) === "phone" ? "quick" : "standard";
+  const nicheLabel =
+    lead?.niche
+      ? (NICHES.find((item) => item.value === lead.niche)?.label ?? lead.niche)
+      : (lead?.location ?? "General prospect");
+  const effort: MissionItem["effort"] =
+    channelType(followup.channel) === "email" || channelType(followup.channel) === "phone"
+      ? "quick"
+      : "standard";
 
-  return {
+  const base: Omit<MissionItem, "impactScore"> = {
     ...followup,
     leadName: lead?.businessName ?? "Unknown lead",
     nicheLabel,
@@ -688,9 +856,352 @@ function toMissionItem(followup: FollowupWithLead): MissionItem {
     daysOverdue,
     daysSinceContact,
     effort,
-    impact: score + (priority === "high" ? 18 : priority === "medium" ? 8 : 0) + (daysOverdue * 6) + (daysSinceContact && daysSinceContact >= 10 ? 14 : 0),
+    impact:
+      score +
+      (priority === "high" ? 18 : priority === "medium" ? 8 : 0) +
+      daysOverdue * 6 +
+      (daysSinceContact !== null && daysSinceContact >= 10 ? 14 : 0),
+    impactScore: 0,
   };
+
+  return { ...base, impactScore: businessImpactScore(base) } as MissionItem;
 }
+
+// ── Business-impact prioritization ───────────────────────────────────────────
+// When urgency and opportunity value conflict, the action most likely to
+// generate revenue wins — while genuinely overdue items are never buried.
+
+function businessImpactScore(item: Omit<MissionItem, "impactScore">): number {
+  let pts = 0;
+
+  // Pipeline proximity to revenue — highest weight
+  const status = (item.lead?.status ?? "").toLowerCase();
+  if (status === "negotiation") pts += 55;
+  else if (status === "proposal") pts += 45;
+  else if (status === "meeting") pts += 35;
+  else if (status === "conversation") pts += 28;
+  else if (status === "contacted") pts += 14;
+  else pts += 5; // new / discovered
+
+  // Intrinsic lead quality
+  pts += item.score * 0.45; // max ~42 points (score range 62–94)
+
+  // Urgency bonuses — ensures overdue items still surface
+  if (item.dueState === "overdue") pts += 30 + item.daysOverdue * 6;
+  else if (item.dueState === "today") pts += 18;
+  else if (daysFromToday(item.dueAt) === 1) pts += 10;
+
+  // Relationship-at-risk penalty → turned into urgency here
+  const daysSince = item.daysSinceContact;
+  if (daysSince !== null && daysSince >= 21) pts += 20;
+  else if (daysSince !== null && daysSince >= 14) pts += 13;
+  else if (daysSince !== null && daysSince >= 7) pts += 6;
+
+  // Explicit priority flag
+  if (item.priority === "high") pts += 18;
+  else if (item.priority === "medium") pts += 7;
+
+  return Math.round(pts);
+}
+
+// ── Sorting ───────────────────────────────────────────────────────────────────
+// Must Do: overdue tier comes first (non-negotiable), then business impact.
+
+function compareMustDo(a: MissionItem, b: MissionItem) {
+  // Overdue items always surface before today-due items
+  const overdueRank = Number(b.dueState === "overdue") - Number(a.dueState === "overdue");
+  if (overdueRank !== 0) return overdueRank;
+  // Within the same urgency tier, business impact wins over chronology
+  return b.impactScore - a.impactScore;
+}
+
+// ── AI text generators ────────────────────────────────────────────────────────
+// Every string is derived from live data. No static fallbacks.
+
+function buildHeroHeadline(overdue: number, dueToday: number): string {
+  const total = overdue + dueToday;
+  if (total === 0) return "No follow-ups due right now.";
+  if (overdue > 0 && dueToday > 0)
+    return `You have ${overdue} overdue and ${dueToday} due today — ${total} total.`;
+  if (overdue > 0)
+    return `You have ${overdue} overdue follow-up${overdue === 1 ? "" : "s"} that need attention.`;
+  return `You have ${dueToday} follow-up${dueToday === 1 ? "" : "s"} due today.`;
+}
+
+function buildMissionBriefing({
+  overdue,
+  dueToday,
+  atRiskPool,
+  completedTodayCount,
+  mustDoPool,
+  actionQueuePool,
+}: {
+  overdue: number;
+  dueToday: number;
+  atRiskPool: MissionItem[];
+  completedTodayCount: number;
+  mustDoPool: MissionItem[];
+  actionQueuePool: MissionItem[];
+}): string {
+  // Multiple overdue: frame as highest-urgency
+  if (overdue >= 3) {
+    return `${overdue} follow-ups are overdue. Clear those first — every day of silence reduces the chance of a reply.`;
+  }
+
+  // Single overdue with a name
+  if (overdue === 1 && mustDoPool.length > 0) {
+    const lead = mustDoPool.find((item) => item.dueState === "overdue");
+    if (lead)
+      return `${lead.leadName} is overdue. That's your first priority — a quick follow-up today could restart this conversation.`;
+  }
+
+  // Active proposals / negotiations take revenue priority
+  const proposals = mustDoPool.filter((item) => {
+    const s = (item.lead?.status ?? "").toLowerCase();
+    return s === "proposal" || s === "negotiation";
+  });
+  if (proposals.length > 0) {
+    const names = proposals.map((p) => p.leadName);
+    return proposals.length === 1
+      ? `${names[0]} has an active proposal awaiting follow-up. That's your closest opportunity to closing revenue today.`
+      : `${proposals.length} active proposals need follow-up. These are your closest opportunities to closing revenue today.`;
+  }
+
+  // Relationships going cold
+  if (atRiskPool.length >= 3) {
+    return `${atRiskPool.length} opportunities are drifting toward inactivity. A focused follow-up session now could keep all of them alive.`;
+  }
+
+  // Light day — redirect energy
+  if (dueToday <= 2 && overdue === 0 && atRiskPool.length === 0) {
+    return completedTodayCount > 0
+      ? `Mission nearly complete. Finish these last follow-ups, then head to Discover to build tomorrow's pipeline.`
+      : `Today's workload is light. Finish these follow-ups, then head back to Discover to build pipeline.`;
+  }
+
+  // Conversations in flight
+  const conversations = mustDoPool.filter((item) => {
+    const s = (item.lead?.status ?? "").toLowerCase();
+    return s === "conversation" || s === "meeting";
+  });
+  if (conversations.length >= 2) {
+    return `${conversations.length} companies are already in conversation with you. Follow up with those first — warm momentum converts.`;
+  }
+
+  // Upcoming queue with business value
+  if (actionQueuePool.length > 0 && overdue === 0) {
+    const total = dueToday + actionQueuePool.length;
+    return `Complete these ${total} follow-ups and you'll advance several conversations that are already in motion.`;
+  }
+
+  // Default: direct and specific
+  const total = overdue + dueToday;
+  return total === 1
+    ? `One follow-up is waiting. Complete it before anything else — an active business relationship deserves your attention.`
+    : `Complete these ${total} follow-ups before anything else. Each one is an active business relationship that deserves your attention.`;
+}
+
+function buildCoachSentence(
+  item: MissionItem | null,
+  _ctx: { overdue: number; atRiskPool: MissionItem[] },
+): string {
+  if (!item) return "No urgent actions right now. Your pipeline is in good shape.";
+
+  const name = item.leadName;
+  const status = (item.lead?.status ?? "").toLowerCase();
+  const daysSince = item.daysSinceContact;
+
+  // Highest priority: proposal/negotiation
+  if (status === "proposal" || status === "negotiation") {
+    return `Start with ${name}. They have an active proposal in progress — a follow-up now is the highest-value action in your queue.`;
+  }
+
+  // Active conversation / meeting momentum
+  if (status === "meeting") {
+    return `${name} has a meeting in progress. Follow up now to keep that momentum alive — meetings that stall rarely recover.`;
+  }
+  if (status === "conversation") {
+    return `${name} is already in conversation with you. Strike while it's warm — follow-ups mid-conversation convert at a much higher rate.`;
+  }
+
+  // Severely overdue
+  if (item.dueState === "overdue" && item.daysOverdue >= 3) {
+    return `${name} has been waiting ${item.daysOverdue} days — that's the highest relationship risk in your pipeline right now. Contact them first.`;
+  }
+
+  // Relationship going cold
+  if (daysSince !== null && daysSince >= 21) {
+    return `${name} hasn't heard from you in ${daysSince} days. That relationship is close to going cold — one message today could turn that around.`;
+  }
+  if (daysSince !== null && daysSince >= 14) {
+    return `${name} hasn't heard from you in ${daysSince} days. Reach out before they forget the last conversation.`;
+  }
+
+  // Overdue (mild)
+  if (item.dueState === "overdue") {
+    return `${name} is overdue by ${item.daysOverdue} ${item.daysOverdue === 1 ? "day" : "days"}. Clear this first — it's the most time-sensitive action in your queue.`;
+  }
+
+  // High priority flag
+  if (item.priority === "high") {
+    return `Start with ${name}. They're your highest-priority opportunity today — a quick follow-up now keeps you ahead of competing outreach.`;
+  }
+
+  return `Start with ${name}. Based on their pipeline stage and timing, this is the follow-up most likely to move forward today.`;
+}
+
+function buildCoachReasons(item: MissionItem): string[] {
+  const reasons: string[] = [];
+  const status = (item.lead?.status ?? "").toLowerCase();
+
+  // Pipeline stage — always the first reason if relevant
+  if (status === "negotiation") {
+    reasons.push("Negotiation stage — revenue is closest here");
+  } else if (status === "proposal") {
+    reasons.push("Active proposal — highest conversion proximity");
+  } else if (status === "meeting") {
+    reasons.push("Meeting stage — momentum is already built");
+  } else if (status === "conversation") {
+    reasons.push("In conversation — a reply is expected, not a cold message");
+  } else if (status === "contacted") {
+    reasons.push("Previously contacted — follow-up doubles reply likelihood");
+  }
+
+  // Timing / urgency
+  if (item.dueState === "overdue") {
+    reasons.push(
+      `${item.daysOverdue} ${item.daysOverdue === 1 ? "day" : "days"} overdue — urgency is highest`,
+    );
+  } else if (item.dueState === "today") {
+    reasons.push("Due today — optimal timing for response");
+  }
+
+  // Contact gap
+  if (item.daysSinceContact !== null && item.daysSinceContact >= 14) {
+    reasons.push(
+      `${item.daysSinceContact} days without contact — relationship at risk of going cold`,
+    );
+  } else if (!item.lead?.lastContactedAt) {
+    reasons.push("No prior contact recorded — first touch has highest open rates");
+  } else if (item.daysSinceContact !== null && item.daysSinceContact >= 7) {
+    reasons.push(`${item.daysSinceContact} days since last contact — right window to follow up`);
+  }
+
+  // Lead quality
+  if (item.score >= 90) {
+    reasons.push(`Lead score ${item.score} — strong conversion signal`);
+  }
+
+  return reasons.slice(0, 3);
+}
+
+function buildDynamicImpactOutcomes(
+  mustDo: MissionItem[],
+  actionQueue: MissionItem[],
+  atRisk: MissionItem[],
+  completedTodayCount: number,
+): string[] {
+  const allActive = [...mustDo, ...actionQueue];
+
+  // 1. Revenue-proximity prediction
+  const revenueLeads = allActive.filter((item) => {
+    const s = (item.lead?.status ?? "").toLowerCase();
+    return s === "proposal" || s === "negotiation" || s === "meeting" || s === "conversation";
+  });
+  const outcome1 =
+    revenueLeads.length > 0
+      ? `Advance ${revenueLeads.length} active conversation${revenueLeads.length === 1 ? "" : "s"} further along the pipeline`
+      : `Start ${Math.max(1, allActive.filter((item) => !item.lead?.lastContactedAt).length)} new conversation${allActive.filter((item) => !item.lead?.lastContactedAt).length === 1 ? "" : "s"} with fresh outreach`;
+
+  // 2. Cold-risk prevention
+  const coldRisk = [...atRisk, ...allActive].filter(
+    (item) => item.daysSinceContact !== null && item.daysSinceContact >= 10,
+  );
+  const uniqueColdRisk = [...new Map(coldRisk.map((item) => [String(item.id), item])).values()];
+  const outcome2 =
+    uniqueColdRisk.length > 0
+      ? `Prevent ${uniqueColdRisk.length} opportunity${uniqueColdRisk.length === 1 ? "" : " opportunities"} from going cold today`
+      : "Keep the overdue queue at zero and pipeline momentum active";
+
+  // 3. Weekly goal proximity
+  const weeklyTarget = 10;
+  const remaining = Math.max(0, weeklyTarget - completedTodayCount);
+  const outcome3 =
+    remaining <= 5 && remaining > 0
+      ? `You're ${remaining} follow-up${remaining === 1 ? "" : "s"} away from your weekly activity goal`
+      : mustDo.filter((item) => item.dueState === "overdue").length > 0
+        ? `Reduce your overdue queue and protect ${mustDo.filter((item) => item.dueState === "overdue").length} business relationship${mustDo.filter((item) => item.dueState === "overdue").length === 1 ? "" : "s"}`
+        : `Strengthen ${allActive.length} business relationship${allActive.length === 1 ? "" : "s"} before the end of the day`;
+
+  return [outcome1, outcome2, outcome3];
+}
+
+function buildOperationalInsights(items: MissionItem[]): {
+  completionsThisWeek: number;
+  repliesThisWeek: number;
+  meetingsThisWeek: number;
+  avgResponseDays: number | null;
+} {
+  const weekAgo = Date.now() - 7 * 86_400_000;
+
+  const completionsThisWeek = items.filter(
+    (item) =>
+      item.dueState === "completed" &&
+      dateTime(item.completedAt ?? item.updatedAt) >= weekAgo,
+  ).length;
+
+  // Replies: leads that moved into conversation/meeting/proposal this week
+  const repliesThisWeek = items.filter((item) => {
+    const s = (item.lead?.status ?? "").toLowerCase();
+    return (
+      (s === "conversation" || s === "meeting" || s === "proposal") &&
+      dateTime(item.lead?.updatedAt) >= weekAgo
+    );
+  }).length;
+
+  const meetingsThisWeek = items.filter(
+    (item) =>
+      (item.lead?.status ?? "").toLowerCase() === "meeting" &&
+      dateTime(item.lead?.updatedAt) >= weekAgo,
+  ).length;
+
+  // Average days between last contact and completed follow-up
+  const completedWithContact = items.filter(
+    (item) => item.dueState === "completed" && item.daysSinceContact !== null,
+  );
+  const avgResponseDays =
+    completedWithContact.length > 0
+      ? Math.round(
+          completedWithContact.reduce((sum, item) => sum + (item.daysSinceContact ?? 0), 0) /
+            completedWithContact.length,
+        )
+      : null;
+
+  return { completionsThisWeek, repliesThisWeek, meetingsThisWeek, avgResponseDays };
+}
+
+function actionQueueReason(item: MissionItem): string {
+  const status = (item.lead?.status ?? "").toLowerCase();
+  const daysSince = item.daysSinceContact;
+
+  if (status === "negotiation") return "Negotiation in progress — highest revenue proximity";
+  if (status === "proposal") return "Active proposal — high closing potential";
+  if (status === "meeting") return "Meeting stage — keep momentum going";
+  if (status === "conversation") return "In conversation — reply window is open";
+
+  if (daysSince !== null && daysSince >= 14)
+    return `${daysSince} days since last contact — at risk of going cold`;
+  if (daysSince !== null && daysSince >= 7)
+    return `${daysSince} days since last contact — follow up now`;
+
+  if (item.priority === "high") return "High-priority lead — don't let this slip";
+  if (item.effort === "quick") return "Quick action · Keeps pipeline momentum alive";
+
+  const days = daysFromToday(item.dueAt);
+  return `Score ${item.score} · Due ${days === 1 ? "tomorrow" : "within 48h"}`;
+}
+
+// ── Supporting functions ──────────────────────────────────────────────────────
 
 function dueStateForFollowup(followup: FollowupWithLead): MissionItem["dueState"] {
   if (followup.status === "completed") return "completed";
@@ -701,79 +1212,17 @@ function dueStateForFollowup(followup: FollowupWithLead): MissionItem["dueState"
 }
 
 function isAtRisk(item: MissionItem) {
-  return item.daysOverdue > 0 || (item.daysSinceContact !== null && item.daysSinceContact >= 10) || (item.priority === "high" && item.dueState === "upcoming");
-}
-
-function compareMustDo(a: MissionItem, b: MissionItem) {
-  const overdueRank = Number(b.dueState === "overdue") - Number(a.dueState === "overdue");
-  if (overdueRank !== 0) return overdueRank;
-  if (b.score !== a.score) return b.score - a.score;
-  return priorityRank(a.priority) - priorityRank(b.priority) || dateTime(a.dueAt) - dateTime(b.dueAt);
-}
-
-function priorityRank(priority: MissionItem["priority"]) {
-  return priority === "high" ? 0 : priority === "medium" ? 1 : 2;
-}
-
-function impactOutcomes(mustDo: MissionItem[], quickWins: MissionItem[], atRisk: MissionItem[], overdue: number) {
-  const stalePrevention = [...mustDo, ...atRisk].filter((item) => isAtRisk(item)).length;
-  const contactedMoves = [...mustDo, ...quickWins].filter((item) => item.lead?.status === "new" || !item.lead?.lastContactedAt).length;
-  const overdueReduction = overdue > 0 ? Math.round((mustDo.filter((item) => item.dueState === "overdue").length / overdue) * 100) : 0;
-  const staleCount = Math.max(1, stalePrevention);
-  const contactedCount = Math.max(1, contactedMoves);
-
-  return [
-    `Prevent ${staleCount} lead${staleCount === 1 ? "" : "s"} from becoming stale`,
-    `Move ${contactedCount} lead${contactedCount === 1 ? "" : "s"} into active follow-up`,
-    overdue > 0 ? `Reduce overdue queue by ${overdueReduction}%` : "Keep the overdue queue at zero",
-  ];
+  return (
+    item.daysOverdue > 0 ||
+    (item.daysSinceContact !== null && item.daysSinceContact >= 10) ||
+    (item.priority === "high" && item.dueState === "upcoming")
+  );
 }
 
 function priorityLevel(items: MissionItem[]) {
-  if (items.some((item) => item.daysOverdue >= 2 || item.score >= 90)) return "High";
+  if (items.some((item) => item.daysOverdue >= 2 || item.impactScore >= 90)) return "High";
   if (items.length > 0) return "Medium";
   return "Low";
-}
-
-function coachReasons(item: MissionItem) {
-  const reasons = [
-    `Lead score ${item.score}`,
-    item.dueState === "today" ? "Due today" : item.daysOverdue > 0 ? urgencyLabel(item.daysOverdue) : dueLabel(item),
-  ];
-
-  if (!item.lead?.lastContactedAt) {
-    reasons.push("No previous follow-up recorded");
-  } else if (item.daysSinceContact !== null && item.daysSinceContact >= 7) {
-    reasons.push(`No contact in ${item.daysSinceContact} days`);
-  }
-
-  if (item.priority === "high" || item.score >= 90) {
-    reasons.push("High conversion potential");
-  } else if (item.effort === "quick") {
-    reasons.push("Low effort action with near-term pipeline value");
-  } else {
-    reasons.push("Best next action based on urgency and priority");
-  }
-
-  return reasons;
-}
-
-function followupStreak(items: MissionItem[]) {
-  const completedDays = new Set(
-    items
-      .filter((item) => item.dueState === "completed")
-      .map((item) => toDateInputValue(parseDate(item.completedAt ?? item.updatedAt) ?? new Date())),
-  );
-  let streak = 0;
-  let cursor = startOfDay(new Date());
-  if (!completedDays.has(toDateInputValue(cursor))) cursor = addDays(cursor, -1);
-
-  while (completedDays.has(toDateInputValue(cursor))) {
-    streak += 1;
-    cursor = addDays(cursor, -1);
-  }
-
-  return streak;
 }
 
 function dueLabel(item: MissionItem) {

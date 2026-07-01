@@ -252,7 +252,7 @@ function Pipeline() {
         text: `${stalledCount} high-value leads are stalled in contacted stage.`,
         type: "danger" as const,
         action: "Send bump templates",
-        to: "/dashboard/crm"
+        to: "/dashboard/relationships"
       });
     }
 
@@ -276,7 +276,7 @@ function Pipeline() {
         text: "Replied stage has slowed down. 3 deals waiting for quote approval.",
         type: "info" as const,
         action: "Review pipeline",
-        to: "/dashboard/crm"
+        to: "/dashboard/relationships"
       });
     } else {
       recs.push({
@@ -694,7 +694,7 @@ function Pipeline() {
                           <button
                             onClick={() => {
                               // We can navigate to CRM. We pass the status parameter (we will validate this or use state)
-                              navigate({ to: "/dashboard/crm" });
+                              navigate({ to: "/dashboard/relationships" });
                             }}
                             className="w-full text-center text-[10px] font-semibold text-brand hover:text-brand-dark py-1"
                           >
@@ -953,7 +953,7 @@ function Pipeline() {
                   <button
                     onClick={() => {
                       setExpandedStage(null);
-                      navigate({ to: "/dashboard/crm" });
+                      navigate({ to: "/dashboard/relationships" });
                     }}
                     className="w-full rounded-xl bg-brand px-4 py-2.5 text-center text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark cursor-pointer"
                   >

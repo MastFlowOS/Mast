@@ -25,7 +25,7 @@ export const Route = createFileRoute("/dashboard")({
 const NAV = [
   { label: "Focus",         to: "/dashboard",              icon: Crosshair, exact: true },
   { label: "Discover",      to: "/dashboard/leads",        icon: Search },
-  { label: "Relationships", to: "/dashboard/crm",          icon: Network },
+  { label: "Relationships", to: "/dashboard/relationships",          icon: Network },
   { label: "Pipeline",      to: "/dashboard/pipeline",     icon: Kanban },
   { label: "Mission",       to: "/dashboard/follow-ups",   icon: Bell },
   { label: "Settings",      to: "/dashboard/settings",     icon: Settings },

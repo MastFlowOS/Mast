@@ -816,7 +816,7 @@ function ImportExportPage() {
                 </div>
                 <div className="mt-6 flex justify-center gap-3">
                   <Button variant="outline" onClick={reset}>Import Another File</Button>
-                  <Button onClick={() => navigate({ to: "/dashboard/crm" })} className="gap-2 bg-brand text-brand-foreground hover:bg-brand/90">
+                  <Button onClick={() => navigate({ to: "/dashboard/relationships" })} className="gap-2 bg-brand text-brand-foreground hover:bg-brand/90">
                     <ArrowRight className="size-4" /> View Relationships
                   </Button>
                 </div>

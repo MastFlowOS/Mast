@@ -564,7 +564,7 @@ function GetLeads() {
         params: { leadId: String(firstOpportunityId) },
       });
     } else {
-      navigate({ to: "/dashboard/crm" });
+      navigate({ to: "/dashboard/relationships" });
     }
   };
 

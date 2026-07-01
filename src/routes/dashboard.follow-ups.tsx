@@ -601,7 +601,7 @@ function MissionComplete({ completedToday }: { completedToday: number }) {
           <Link to="/dashboard/pipeline" className="rounded-lg border border-border px-4 py-2 text-sm font-semibold hover:bg-background">
             Review Pipeline
           </Link>
-          <Link to="/dashboard/crm" className="rounded-lg border border-border px-4 py-2 text-sm font-semibold hover:bg-background">
+          <Link to="/dashboard/relationships" className="rounded-lg border border-border px-4 py-2 text-sm font-semibold hover:bg-background">
             Open Relationships
           </Link>
         </div>

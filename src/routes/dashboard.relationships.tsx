@@ -53,7 +53,7 @@ import {
   normalizeLeadStatus,
 } from "@/lib/lead-workspace";
 
-export const Route = createFileRoute("/dashboard/crm")({
+export const Route = createFileRoute("/dashboard/relationships")({
   head: () => ({ meta: [{ title: "Relationships — Mast" }] }),
   component: Relationships,
 });

@@ -1,35 +1,94 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, ChevronLeft, ChevronRight, Filter, Instagram, Mail, Plus, Search, Star, Trash2, X } from "lucide-react";
-import { ApiError, type CreateLeadBody, type Lead, type LeadStatus } from "@/lib/api";
-import { useBulkDeleteLeads, useBulkUpdateLeads, useCreateLead, useLeads } from "@/hooks/use-mast-api";
+import {
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  Instagram,
+  Mail,
+  Plus,
+  Search,
+  Star,
+  Trash2,
+  X,
+} from "lucide-react";
+import {
+  ApiError,
+  type CreateLeadBody,
+  type Lead,
+  type LeadStatus,
+} from "@/lib/api";
+import {
+  useBulkDeleteLeads,
+  useBulkUpdateLeads,
+  useCreateLead,
+  useLeads,
+} from "@/hooks/use-mast-api";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { LEAD_STATUSES, NICHES, formatRelative, leadStatusColor, leadStatusLabel, normalizeLeadStatus } from "@/lib/lead-workspace";
+import {
+  LEAD_STATUSES,
+  NICHES,
+  formatRelative,
+  leadStatusColor,
+  leadStatusLabel,
+  normalizeLeadStatus,
+} from "@/lib/lead-workspace";
 
 export const Route = createFileRoute("/dashboard/crm")({
-  head: () => ({ meta: [{ title: "Opportunity Network — Mast" }] }),
-  component: CRM,
+  head: () => ({ meta: [{ title: "Relationships — Mast" }] }),
+  component: Relationships,
 });
 
 const ALL_VALUE = "__all__";
 const NONE_VALUE = "__none__";
 const PAGE_SIZE = 100;
+const STARRED_STORAGE_KEY = "mast_starred_relationships";
+
+// ─── Starred persistence (localStorage) ──────────────────────────────────────
+
+function loadStarred(): Set<number> {
+  try {
+    const raw = localStorage.getItem(STARRED_STORAGE_KEY);
+    if (raw) return new Set(JSON.parse(raw) as number[]);
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+function saveStarred(ids: Set<number>) {
+  try {
+    localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify(Array.from(ids)));
+  } catch { /* ignore */ }
+}
+
+// ─── Bulk status options (communication-oriented) ─────────────────────────────
 
 const BULK_STATUS_OPTIONS: Array<{ value: LeadStatus; label: string }> = [
-  { value: "priority", label: "Mark Priority" },
-  { value: "warm", label: "Mark Warm" },
-  { value: "contacted", label: "Mark Contacted" },
-  { value: "instagram_sent", label: "Mark IG Sent" },
+  { value: "new", label: "Mark New" },
   { value: "email_sent", label: "Mark Email Sent" },
+  { value: "called", label: "Mark Called" },
+  { value: "instagram_sent", label: "Mark Instagram Sent" },
   { value: "replied", label: "Mark Replied" },
-  { value: "interested", label: "Mark Interested" },
-  { value: "follow_up_due", label: "Follow-up Due" },
+  { value: "meeting_booked", label: "Mark Meeting Booked" },
+  { value: "closed", label: "Mark Closed" },
   { value: "dead", label: "Mark Dead" },
 ];
 
@@ -59,9 +118,10 @@ function NicheMultiSelect({
 
   const filtered = useMemo(
     () =>
-      NICHES.filter((n) =>
-        n.label.toLowerCase().includes(search.toLowerCase()) ||
-        n.value.toLowerCase().includes(search.toLowerCase())
+      NICHES.filter(
+        (n) =>
+          n.label.toLowerCase().includes(search.toLowerCase()) ||
+          n.value.toLowerCase().includes(search.toLowerCase())
       ),
     [search]
   );
@@ -91,7 +151,7 @@ function NicheMultiSelect({
           setOpen((o) => !o);
           setTimeout(() => inputRef.current?.focus(), 50);
         }}
-        className="flex min-h-10 w-52 flex-wrap items-center gap-1 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-left hover:border-muted-foreground/40 focus-visible:outline-none"
+        className="flex min-h-10 w-48 flex-wrap items-center gap-1 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-left hover:border-muted-foreground/40 focus-visible:outline-none"
       >
         <Filter className="size-4 shrink-0 text-muted-foreground" />
         {selected.length === 0 ? (
@@ -140,7 +200,9 @@ function NicheMultiSelect({
             </div>
             <div className="max-h-60 overflow-y-auto p-1">
               {filtered.length === 0 ? (
-                <p className="px-3 py-4 text-center text-xs text-muted-foreground">No niches found</p>
+                <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                  No niches found
+                </p>
               ) : (
                 filtered.map((niche) => {
                   const checked = selected.includes(niche.value);
@@ -159,8 +221,18 @@ function NicheMultiSelect({
                         }`}
                       >
                         {checked && (
-                          <svg viewBox="0 0 8 6" className="size-2 text-brand-foreground fill-current">
-                            <path d="M1 3l2 2 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                          <svg
+                            viewBox="0 0 8 6"
+                            className="size-2 text-brand-foreground fill-current"
+                          >
+                            <path
+                              d="M1 3l2 2 4-4"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              fill="none"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
                           </svg>
                         )}
                       </div>
@@ -188,23 +260,29 @@ function NicheMultiSelect({
   );
 }
 
-// ─── CRM Stats Bar ────────────────────────────────────────────────────────────
+// ─── Stats Bar ────────────────────────────────────────────────────────────────
 
 function StatsBar({ leads }: { leads: Lead[] }) {
   const total = leads.length;
-  const newCount = leads.filter((l) => normalizeLeadStatus(l.status) === "new").length;
+  const newCount = leads.filter(
+    (l) => normalizeLeadStatus(l.status) === "new"
+  ).length;
   const contactedCount = leads.filter((l) =>
-    ["contacted", "email_sent", "instagram_sent", "contact_form_sent"].includes(normalizeLeadStatus(l.status))
+    ["email_sent", "called", "instagram_sent"].includes(
+      normalizeLeadStatus(l.status)
+    )
   ).length;
   const repliedCount = leads.filter((l) =>
-    ["replied", "interested", "meeting_booked"].includes(normalizeLeadStatus(l.status))
+    ["replied", "meeting_booked"].includes(normalizeLeadStatus(l.status))
   ).length;
-  const closedCount = leads.filter((l) => normalizeLeadStatus(l.status) === "closed").length;
+  const closedCount = leads.filter(
+    (l) => normalizeLeadStatus(l.status) === "closed"
+  ).length;
 
   const stats = [
-    { label: "Total Opportunities", value: total, color: "text-foreground" },
+    { label: "Total", value: total, color: "text-foreground" },
     { label: "New", value: newCount, color: "text-blue-400" },
-    { label: "Contacted", value: contactedCount, color: "text-warning" },
+    { label: "Contacted", value: contactedCount, color: "text-indigo-400" },
     { label: "Replied", value: repliedCount, color: "text-brand" },
     { label: "Closed", value: closedCount, color: "text-success" },
   ];
@@ -214,31 +292,71 @@ function StatsBar({ leads }: { leads: Lead[] }) {
       {stats.map((stat, index) => (
         <div
           key={stat.label}
-          className={`flex flex-col items-center px-5 py-2.5 ${index < stats.length - 1 ? "border-r border-border" : ""}`}
+          className={`flex flex-col items-center px-5 py-2.5 ${
+            index < stats.length - 1 ? "border-r border-border" : ""
+          }`}
         >
-          <span className={`text-lg font-bold tabular-nums ${stat.color}`}>{stat.value.toLocaleString()}</span>
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{stat.label}</span>
+          <span className={`text-lg font-bold tabular-nums ${stat.color}`}>
+            {stat.value.toLocaleString()}
+          </span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {stat.label}
+          </span>
         </div>
       ))}
     </div>
   );
 }
 
-// ─── Main CRM Component ───────────────────────────────────────────────────────
+// ─── Star Button ──────────────────────────────────────────────────────────────
 
-function CRM() {
+function StarButton({
+  starred,
+  onToggle,
+}: {
+  starred: boolean;
+  onToggle: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={starred ? "Remove from starred" : "Star this relationship"}
+      className={`transition-all duration-150 rounded p-0.5 hover:scale-110 ${
+        starred
+          ? "text-amber-400 hover:text-amber-300"
+          : "text-muted-foreground/30 hover:text-amber-400/70"
+      }`}
+    >
+      <Star
+        className="size-3.5"
+        fill={starred ? "currentColor" : "none"}
+        strokeWidth={1.8}
+      />
+    </button>
+  );
+}
+
+// ─── Main Relationships Component ─────────────────────────────────────────────
+
+function Relationships() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState(ALL_VALUE);
   const [nicheFilters, setNicheFilters] = useState<string[]>([]);
+  const [starredOnly, setStarredOnly] = useState(false);
+  const [starred, setStarred] = useState<Set<number>>(() => loadStarred());
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [addOpen, setAddOpen] = useState(false);
   const [showDead, setShowDead] = useState(false);
   const [newLead, setNewLead] = useState(emptyLeadForm);
   const [page, setPage] = useState(1);
 
-  // Fetch a large batch — the backend supports up to whatever limit we give it
-  // We fetch 5000 and paginate client-side so the table never renders 5000 rows
+  // Sync starred to localStorage whenever it changes
+  useEffect(() => {
+    saveStarred(starred);
+  }, [starred]);
+
   const params = {
     search,
     status: statusFilter === ALL_VALUE ? undefined : statusFilter,
@@ -252,18 +370,31 @@ function CRM() {
 
   const allLeads = normalizeLeads(leadsPayload);
 
-  // Client-side niche filtering (the backend may not support multi-niche queries)
+  // Client-side niche filtering
   const nicheFiltered = useMemo(() => {
     if (nicheFilters.length === 0) return allLeads;
-    return allLeads.filter((lead) => lead.niche && nicheFilters.includes(lead.niche));
+    return allLeads.filter(
+      (lead) => lead.niche && nicheFilters.includes(lead.niche)
+    );
   }, [allLeads, nicheFilters]);
 
+  // Starred filter
+  const starFiltered = useMemo(() => {
+    if (!starredOnly) return nicheFiltered;
+    return nicheFiltered.filter((lead) => starred.has(lead.id));
+  }, [nicheFiltered, starredOnly, starred]);
+
   const visibleLeads = useMemo(
-    () => nicheFiltered.filter((lead) => showDead || normalizeLeadStatus(lead.status) !== "dead"),
-    [nicheFiltered, showDead]
+    () =>
+      starFiltered.filter(
+        (lead) => showDead || normalizeLeadStatus(lead.status) !== "dead"
+      ),
+    [starFiltered, showDead]
   );
 
-  const deadCount = nicheFiltered.filter((lead) => normalizeLeadStatus(lead.status) === "dead").length;
+  const deadCount = starFiltered.filter(
+    (lead) => normalizeLeadStatus(lead.status) === "dead"
+  ).length;
 
   // Pagination
   const totalLeads = visibleLeads.length;
@@ -273,17 +404,20 @@ function CRM() {
   const pageEnd = Math.min(pageStart + PAGE_SIZE, totalLeads);
   const pageLeads = visibleLeads.slice(pageStart, pageEnd);
 
-  // Reset page when filters change
   const resetPage = () => setPage(1);
 
-  const allSelected = pageLeads.length > 0 && pageLeads.every((lead) => selected.has(lead.id));
-  const someSelected = pageLeads.some((lead) => selected.has(lead.id)) && !allSelected;
+  const allSelected =
+    pageLeads.length > 0 && pageLeads.every((lead) => selected.has(lead.id));
+  const someSelected =
+    pageLeads.some((lead) => selected.has(lead.id)) && !allSelected;
   const selectedIds = Array.from(selected);
 
   const clearSelection = () => setSelected(new Set());
 
   const toggleAll = () => {
-    setSelected(allSelected ? new Set() : new Set(pageLeads.map((lead) => lead.id)));
+    setSelected(
+      allSelected ? new Set() : new Set(pageLeads.map((lead) => lead.id))
+    );
   };
 
   const toggleOne = (id: number) => {
@@ -295,11 +429,23 @@ function CRM() {
     });
   };
 
+  const toggleStar = (id: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setStarred((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const doBulkStatus = async (status: LeadStatus) => {
     if (selectedIds.length === 0) return;
     try {
       await bulkUpdate.mutateAsync({ ids: selectedIds, updates: { status } });
-      toast.success(`Updated ${selectedIds.length} lead${selectedIds.length === 1 ? "" : "s"} to ${leadStatusLabel(status)}`);
+      toast.success(
+        `Updated ${selectedIds.length} relationship${selectedIds.length === 1 ? "" : "s"} to ${leadStatusLabel(status)}`
+      );
       clearSelection();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Bulk update failed");
@@ -308,11 +454,15 @@ function CRM() {
 
   const doBulkDelete = async () => {
     if (selectedIds.length === 0) return;
-    const ok = window.confirm(`Delete ${selectedIds.length} lead${selectedIds.length === 1 ? "" : "s"}?`);
+    const ok = window.confirm(
+      `Remove ${selectedIds.length} relationship${selectedIds.length === 1 ? "" : "s"}?`
+    );
     if (!ok) return;
     try {
       await bulkDelete.mutateAsync({ ids: selectedIds });
-      toast.success(`${selectedIds.length} lead${selectedIds.length === 1 ? "" : "s"} removed`);
+      toast.success(
+        `${selectedIds.length} relationship${selectedIds.length === 1 ? "" : "s"} removed`
+      );
       clearSelection();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Bulk delete failed");
@@ -323,7 +473,9 @@ function CRM() {
     if (!newLead.businessName.trim()) return;
     const body: CreateLeadBody = {
       businessName: newLead.businessName.trim(),
-      instagramHandle: cleanOptional(newLead.instagramHandle.replace(/^@/, "")),
+      instagramHandle: cleanOptional(
+        newLead.instagramHandle.replace(/^@/, "")
+      ),
       email: cleanOptional(newLead.email),
       website: cleanOptional(newLead.website),
       phone: cleanOptional(newLead.phone),
@@ -334,22 +486,31 @@ function CRM() {
 
     try {
       const lead = await createLead.mutateAsync(body);
-      toast.success("Lead added");
+      toast.success("Relationship added");
       setAddOpen(false);
       setNewLead(emptyLeadForm);
-      navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(lead.id) } });
+      navigate({
+        to: "/dashboard/leads/$leadId",
+        params: { leadId: String(lead.id) },
+      });
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not add lead");
+      toast.error(
+        err instanceof ApiError ? err.message : "Could not add relationship"
+      );
     }
   };
 
-  // Page buttons to show (max 5 around current)
   const pageButtons = useMemo(() => {
-    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+    if (totalPages <= 7)
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
     const pages: (number | "…")[] = [];
     pages.push(1);
     if (safePage > 3) pages.push("…");
-    for (let p = Math.max(2, safePage - 1); p <= Math.min(totalPages - 1, safePage + 1); p++) {
+    for (
+      let p = Math.max(2, safePage - 1);
+      p <= Math.min(totalPages - 1, safePage + 1);
+      p++
+    ) {
       pages.push(p);
     }
     if (safePage < totalPages - 2) pages.push("…");
@@ -357,21 +518,26 @@ function CRM() {
     return pages;
   }, [totalPages, safePage]);
 
+  const starredCount = allLeads.filter((l) => starred.has(l.id)).length;
+
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="border-b border-border bg-card px-6 py-4">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Opportunity Network</h1>
-            <p className="text-sm text-muted-foreground">Search, select, import, and bulk-manage your relationship data.</p>
+            <h1 className="text-2xl font-bold tracking-tight">Relationships</h1>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              Find, organise, and continue working with every business you've discovered.
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {/* Search */}
             <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2">
               <Search className="size-4 text-muted-foreground" />
               <input
-                className="w-52 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-                placeholder="Search leads"
+                className="w-48 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                placeholder="Search relationships…"
                 value={search}
                 onChange={(event) => {
                   setSearch(event.target.value);
@@ -381,6 +547,7 @@ function CRM() {
               />
             </div>
 
+            {/* Status filter */}
             <Select
               value={statusFilter}
               onValueChange={(value) => {
@@ -389,7 +556,7 @@ function CRM() {
                 resetPage();
               }}
             >
-              <SelectTrigger className="h-10 w-40 bg-background text-sm">
+              <SelectTrigger className="h-10 w-44 bg-background text-sm">
                 <Filter className="mr-2 size-4 text-muted-foreground" />
                 <SelectValue />
               </SelectTrigger>
@@ -403,6 +570,7 @@ function CRM() {
               </SelectContent>
             </Select>
 
+            {/* Niche filter */}
             <NicheMultiSelect
               selected={nicheFilters}
               onChange={(next) => {
@@ -412,45 +580,115 @@ function CRM() {
               }}
             />
 
+            {/* Starred filter */}
+            <button
+              type="button"
+              onClick={() => {
+                setStarredOnly((s) => !s);
+                clearSelection();
+                resetPage();
+              }}
+              className={`inline-flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors ${
+                starredOnly
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                  : "border-border bg-background text-muted-foreground hover:text-foreground"
+              }`}
+              title="Show starred relationships"
+            >
+              <Star
+                className="size-4"
+                fill={starredOnly ? "currentColor" : "none"}
+                strokeWidth={1.8}
+              />
+              {starredOnly ? `Starred (${starredCount})` : "Starred"}
+            </button>
+
             <Link
               to="/dashboard/import"
               className="rounded-lg border border-border px-4 py-2 text-sm font-semibold hover:bg-background"
             >
-              Data Import / Export
+              Import / Export
             </Link>
 
             <Dialog open={addOpen} onOpenChange={setAddOpen}>
               <DialogTrigger asChild>
                 <button className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark">
-                  <Plus className="size-4" /> Add Opportunity
+                  <Plus className="size-4" /> Add Relationship
                 </button>
               </DialogTrigger>
               <DialogContent className="max-w-lg">
                 <DialogHeader>
-                  <DialogTitle>Add Opportunity</DialogTitle>
+                  <DialogTitle>Add Relationship</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4">
                   <div className="space-y-1.5">
                     <Label>Business name</Label>
                     <Input
                       value={newLead.businessName}
-                      onChange={(event) => setNewLead((current) => ({ ...current, businessName: event.target.value }))}
+                      onChange={(event) =>
+                        setNewLead((current) => ({
+                          ...current,
+                          businessName: event.target.value,
+                        }))
+                      }
                       placeholder="Acme Studio"
                       autoFocus
                     />
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label="Instagram" value={newLead.instagramHandle} onChange={(value) => setNewLead((current) => ({ ...current, instagramHandle: value }))} placeholder="@handle" />
-                    <Field label="Email" value={newLead.email} onChange={(value) => setNewLead((current) => ({ ...current, email: value }))} placeholder="hello@example.com" />
+                    <Field
+                      label="Instagram"
+                      value={newLead.instagramHandle}
+                      onChange={(value) =>
+                        setNewLead((current) => ({
+                          ...current,
+                          instagramHandle: value,
+                        }))
+                      }
+                      placeholder="@handle"
+                    />
+                    <Field
+                      label="Email"
+                      value={newLead.email}
+                      onChange={(value) =>
+                        setNewLead((current) => ({ ...current, email: value }))
+                      }
+                      placeholder="hello@example.com"
+                    />
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label="Website" value={newLead.website} onChange={(value) => setNewLead((current) => ({ ...current, website: value }))} placeholder="https://example.com" />
-                    <Field label="Phone" value={newLead.phone} onChange={(value) => setNewLead((current) => ({ ...current, phone: value }))} placeholder="+1 555 0100" />
+                    <Field
+                      label="Website"
+                      value={newLead.website}
+                      onChange={(value) =>
+                        setNewLead((current) => ({
+                          ...current,
+                          website: value,
+                        }))
+                      }
+                      placeholder="https://example.com"
+                    />
+                    <Field
+                      label="Phone"
+                      value={newLead.phone}
+                      onChange={(value) =>
+                        setNewLead((current) => ({ ...current, phone: value }))
+                      }
+                      placeholder="+1 555 0100"
+                    />
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1.5">
                       <Label>Niche</Label>
-                      <Select value={newLead.niche} onValueChange={(value) => setNewLead((current) => ({ ...current, niche: value }))}>
+                      <Select
+                        value={newLead.niche}
+                        onValueChange={(value) =>
+                          setNewLead((current) => ({
+                            ...current,
+                            niche: value,
+                          }))
+                        }
+                      >
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
@@ -464,14 +702,26 @@ function CRM() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <Field label="Location" value={newLead.location} onChange={(value) => setNewLead((current) => ({ ...current, location: value }))} placeholder="City, State" />
+                    <Field
+                      label="Location"
+                      value={newLead.location}
+                      onChange={(value) =>
+                        setNewLead((current) => ({
+                          ...current,
+                          location: value,
+                        }))
+                      }
+                      placeholder="City, State"
+                    />
                   </div>
                   <button
                     onClick={addLead}
-                    disabled={!newLead.businessName.trim() || createLead.isPending}
+                    disabled={
+                      !newLead.businessName.trim() || createLead.isPending
+                    }
                     className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark disabled:opacity-60"
                   >
-                    {createLead.isPending ? "Adding..." : "Add Opportunity"}
+                    {createLead.isPending ? "Adding…" : "Add Relationship"}
                   </button>
                 </div>
               </DialogContent>
@@ -486,19 +736,28 @@ function CRM() {
       {/* Bulk actions */}
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-b border-border bg-brand/5 px-6 py-3">
-          <span className="mr-1 text-sm font-semibold">{selected.size} selected</span>
-          <BulkButton onClick={() => void doBulkStatus("priority")} disabled={bulkUpdate.isPending} icon={Star}>
-            Priority
-          </BulkButton>
-          <BulkButton onClick={() => void doBulkStatus("instagram_sent")} disabled={bulkUpdate.isPending} icon={Instagram}>
+          <span className="mr-1 text-sm font-semibold">
+            {selected.size} selected
+          </span>
+          <BulkButton
+            onClick={() => void doBulkStatus("instagram_sent")}
+            disabled={bulkUpdate.isPending}
+            icon={Instagram}
+          >
             IG Sent
           </BulkButton>
-          <BulkButton onClick={() => void doBulkStatus("email_sent")} disabled={bulkUpdate.isPending} icon={Mail}>
+          <BulkButton
+            onClick={() => void doBulkStatus("email_sent")}
+            disabled={bulkUpdate.isPending}
+            icon={Mail}
+          >
             Email Sent
           </BulkButton>
-          <Select onValueChange={(value) => void doBulkStatus(value as LeadStatus)}>
+          <Select
+            onValueChange={(value) => void doBulkStatus(value as LeadStatus)}
+          >
             <SelectTrigger className="h-8 w-40 bg-background text-xs">
-              <SelectValue placeholder="Set status..." />
+              <SelectValue placeholder="Set status…" />
             </SelectTrigger>
             <SelectContent>
               {BULK_STATUS_OPTIONS.map((option) => (
@@ -513,7 +772,7 @@ function CRM() {
             disabled={bulkDelete.isPending}
             className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg bg-destructive px-3 text-xs font-semibold text-destructive-foreground hover:bg-destructive/90 disabled:opacity-60"
           >
-            <Trash2 className="size-3.5" /> Delete
+            <Trash2 className="size-3.5" /> Remove
           </button>
         </div>
       )}
@@ -524,8 +783,13 @@ function CRM() {
           <thead className="sticky top-0 z-10 border-b border-border bg-background/90 backdrop-blur">
             <tr>
               <th className="w-10 px-4 py-3 text-left">
-                <Checkbox checked={someSelected ? "indeterminate" : allSelected} onCheckedChange={toggleAll} />
+                <Checkbox
+                  checked={someSelected ? "indeterminate" : allSelected}
+                  onCheckedChange={toggleAll}
+                />
               </th>
+              {/* Star column */}
+              <th className="w-8 px-2 py-3" />
               <Th>Business</Th>
               <Th className="hidden md:table-cell">Niche</Th>
               <Th>Status</Th>
@@ -538,12 +802,27 @@ function CRM() {
             {isLoading ? (
               Array.from({ length: 8 }).map((_, index) => (
                 <tr key={index} className="border-b border-border/50">
-                  <td className="px-4 py-3"><Skeleton className="size-4" /></td>
-                  <td className="px-3 py-3"><Skeleton className="h-4 w-48" /></td>
-                  <td className="hidden px-3 py-3 md:table-cell"><Skeleton className="h-4 w-20" /></td>
-                  <td className="px-3 py-3"><Skeleton className="h-5 w-24" /></td>
-                  <td className="hidden px-3 py-3 lg:table-cell"><Skeleton className="h-4 w-20" /></td>
-                  <td className="hidden px-3 py-3 lg:table-cell"><Skeleton className="h-4 w-24" /></td>
+                  <td className="px-4 py-3">
+                    <Skeleton className="size-4" />
+                  </td>
+                  <td className="px-2 py-3">
+                    <Skeleton className="size-3.5" />
+                  </td>
+                  <td className="px-3 py-3">
+                    <Skeleton className="h-4 w-48" />
+                  </td>
+                  <td className="hidden px-3 py-3 md:table-cell">
+                    <Skeleton className="h-4 w-20" />
+                  </td>
+                  <td className="px-3 py-3">
+                    <Skeleton className="h-5 w-24" />
+                  </td>
+                  <td className="hidden px-3 py-3 lg:table-cell">
+                    <Skeleton className="h-4 w-20" />
+                  </td>
+                  <td className="hidden px-3 py-3 lg:table-cell">
+                    <Skeleton className="h-4 w-24" />
+                  </td>
                   <td className="px-3 py-3" />
                 </tr>
               ))
@@ -551,12 +830,22 @@ function CRM() {
               pageLeads.map((lead) => {
                 const selectedRow = selected.has(lead.id);
                 const dead = normalizeLeadStatus(lead.status) === "dead";
-                const nicheLabel = NICHES.find((n) => n.value === lead.niche)?.label ?? lead.niche;
+                const isStarred = starred.has(lead.id);
+                const nicheLabel =
+                  NICHES.find((n) => n.value === lead.niche)?.label ??
+                  lead.niche;
                 return (
                   <tr
                     key={lead.id}
-                    className={`cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/25 ${selectedRow ? "bg-brand/5" : ""} ${dead ? "opacity-50" : ""}`}
-                    onClick={() => navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(lead.id) } })}
+                    className={`cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/25 ${
+                      selectedRow ? "bg-brand/5" : ""
+                    } ${dead ? "opacity-50" : ""}`}
+                    onClick={() =>
+                      navigate({
+                        to: "/dashboard/leads/$leadId",
+                        params: { leadId: String(lead.id) },
+                      })
+                    }
                   >
                     <td
                       className="px-4 py-3"
@@ -565,23 +854,56 @@ function CRM() {
                         toggleOne(lead.id);
                       }}
                     >
-                      <Checkbox checked={selectedRow} onCheckedChange={() => undefined} />
+                      <Checkbox
+                        checked={selectedRow}
+                        onCheckedChange={() => undefined}
+                      />
+                    </td>
+                    {/* Star */}
+                    <td
+                      className="px-2 py-3"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <StarButton
+                        starred={isStarred}
+                        onToggle={(e) => toggleStar(lead.id, e)}
+                      />
                     </td>
                     <td className="px-3 py-3">
-                      <div className="font-semibold text-foreground">{lead.businessName}</div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        {lead.instagramHandle && <span className="inline-flex items-center gap-1"><Instagram className="size-3" />@{lead.instagramHandle.replace(/^@/, "")}</span>}
-                        {lead.email && <span className="inline-flex items-center gap-1"><Mail className="size-3" />{lead.email}</span>}
+                      <div className="font-semibold text-foreground">
+                        {lead.businessName}
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        {lead.instagramHandle && (
+                          <span className="inline-flex items-center gap-1">
+                            <Instagram className="size-3" />@
+                            {lead.instagramHandle.replace(/^@/, "")}
+                          </span>
+                        )}
+                        {lead.email && (
+                          <span className="inline-flex items-center gap-1">
+                            <Mail className="size-3" />
+                            {lead.email}
+                          </span>
+                        )}
                       </div>
                     </td>
-                    <td className="hidden px-3 py-3 text-muted-foreground md:table-cell">{nicheLabel ?? "-"}</td>
+                    <td className="hidden px-3 py-3 text-muted-foreground md:table-cell">
+                      {nicheLabel ?? "—"}
+                    </td>
                     <td className="px-3 py-3">
-                      <span className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${leadStatusColor(lead.status)}`}>
+                      <span
+                        className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${leadStatusColor(lead.status)}`}
+                      >
                         {leadStatusLabel(lead.status)}
                       </span>
                     </td>
-                    <td className="hidden px-3 py-3 text-muted-foreground lg:table-cell">{formatRelative(lead.lastContactedAt)}</td>
-                    <td className="hidden px-3 py-3 text-muted-foreground lg:table-cell">{lead.location ?? "-"}</td>
+                    <td className="hidden px-3 py-3 text-muted-foreground lg:table-cell">
+                      {formatRelative(lead.lastContactedAt)}
+                    </td>
+                    <td className="hidden px-3 py-3 text-muted-foreground lg:table-cell">
+                      {lead.location ?? "—"}
+                    </td>
                     <td className="px-3 py-3">
                       <ArrowRight className="size-4 text-muted-foreground" />
                     </td>
@@ -594,10 +916,32 @@ function CRM() {
 
         {!isLoading && visibleLeads.length === 0 && (
           <div className="py-16 text-center">
-            <p className="text-sm text-muted-foreground">No opportunities found.</p>
-            <Link to="/dashboard/import" className="mt-2 inline-block text-sm font-semibold text-brand hover:text-brand-dark">
-              Import opportunities from CSV
-            </Link>
+            {starredOnly ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  No starred relationships yet.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setStarredOnly(false)}
+                  className="mt-2 inline-block text-sm font-semibold text-brand hover:text-brand-dark"
+                >
+                  Show all relationships
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  No relationships found.
+                </p>
+                <Link
+                  to="/dashboard/import"
+                  className="mt-2 inline-block text-sm font-semibold text-brand hover:text-brand-dark"
+                >
+                  Import from CSV
+                </Link>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -607,11 +951,11 @@ function CRM() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span className="text-xs text-muted-foreground">
             {isLoading ? (
-              "Loading..."
+              "Loading relationships…"
             ) : totalLeads === 0 ? (
-              "No opportunities"
+              "No relationships"
             ) : (
-              `Showing ${pageStart + 1}–${pageEnd} of ${totalLeads.toLocaleString()} opportunit${totalLeads === 1 ? "y" : "ies"}${selected.size > 0 ? ` · ${selected.size} selected` : ""}`
+              `Showing ${pageStart + 1}–${pageEnd} of ${totalLeads.toLocaleString()} relationship${totalLeads === 1 ? "" : "s"}${selected.size > 0 ? ` · ${selected.size} selected` : ""}`
             )}
           </span>
 
@@ -640,7 +984,12 @@ function CRM() {
 
                 {pageButtons.map((btn, idx) =>
                   btn === "…" ? (
-                    <span key={`ellipsis-${idx}`} className="px-1 text-xs text-muted-foreground">…</span>
+                    <span
+                      key={`ellipsis-${idx}`}
+                      className="px-1 text-xs text-muted-foreground"
+                    >
+                      …
+                    </span>
                   ) : (
                     <button
                       key={btn}
@@ -672,7 +1021,9 @@ function CRM() {
   );
 }
 
-function normalizeLeads(payload: Lead[] | { leads?: Lead[] } | undefined) {
+function normalizeLeads(
+  payload: Lead[] | { leads?: Lead[] } | undefined
+): Lead[] {
   return Array.isArray(payload) ? payload : payload?.leads ?? [];
 }
 
@@ -695,14 +1046,26 @@ function Field({
   return (
     <div className="space-y-1.5">
       <Label>{label}</Label>
-      <Input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+      <Input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
     </div>
   );
 }
 
-function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+function Th({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <th className={`px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground ${className}`}>
+    <th
+      className={`px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground ${className}`}
+    >
       {children}
     </th>
   );

@@ -41,7 +41,7 @@ export function LeadDetailsDrawer({ lead, isOpen, onClose, onSaveToCRM }: LeadDe
   useEffect(() => {
     setGeneratedMessage(null);
     setIsGeneratingAI(false);
-    setIsSaved(lead?.status === "crm" || false);
+    setIsSaved(lead?.status === "new" || false);
   }, [lead, isOpen]);
 
   if (!lead) return null;
@@ -388,11 +388,11 @@ Mast Acquisition OS`;
               </>
             ) : isSaved ? (
               <>
-                <Check className="size-3.5" /> In Pipeline
+                <Check className="size-3.5" /> Saved
               </>
             ) : (
               <>
-                <Save className="size-3.5" /> Track Opportunity
+                <Save className="size-3.5" /> Save to Relationships
               </>
             )}
           </button>

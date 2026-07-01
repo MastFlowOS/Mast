@@ -15,7 +15,7 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
   const recordActivity = useRecordLeadActivity();
   const createLead = useCreateLead();
   const updateLeadMutation = useUpdateLead();
-  const [saved, setSaved] = useState(Boolean(lead.userId) || lead.status === "crm");
+  const [saved, setSaved] = useState(Boolean(lead.userId) || lead.status === "new");
   const [status, setStatus] = useState<LeadStatus>(normalizeLeadStatus(lead.status));
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPending, setMenuPending] = useState<string | null>(null);
@@ -23,7 +23,7 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setSaved(Boolean(lead.userId) || lead.status === "crm");
+    setSaved(Boolean(lead.userId) || lead.status === "new");
     setStatus(normalizeLeadStatus(lead.status));
   }, [lead.status, lead.userId]);
 
@@ -281,11 +281,11 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
           className={saved ? "bg-success/15 border border-success/30 text-success hover:bg-success/15" : "bg-brand hover:bg-brand/90 text-brand-foreground shadow-brand"}
         >
           {recordActivity.isPending ? (
-            <><Loader2 className="size-4 mr-1.5 animate-spin" /> Tracking…</>
+            <><Loader2 className="size-4 mr-1.5 animate-spin" /> Saving…</>
           ) : saved ? (
-            <><Check className="size-4 mr-1.5" /> In Pipeline</>
+            <><Check className="size-4 mr-1.5" /> Saved</>
           ) : (
-            "Track Opportunity"
+            "Save to Relationships"
           )}
         </Button>
       </div>

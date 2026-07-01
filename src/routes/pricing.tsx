@@ -48,7 +48,7 @@ type Tier = {
   popular: boolean;
   dailyLeads: string;
   monthlyLeads: string;
-  crm: string;
+  relationships: string;
   aiAccess: string;
   premiumPool: string;
   automations: string;
@@ -65,7 +65,7 @@ const tiers: Tier[] = [
     popular: false,
     dailyLeads: "10 / day",
     monthlyLeads: "300 / mo",
-    crm: "CSV export",
+    relationships: "CSV export",
     aiAccess: "—",
     premiumPool: "—",
     automations: "—",
@@ -85,7 +85,7 @@ const tiers: Tier[] = [
     popular: false,
     dailyLeads: "50 / day",
     monthlyLeads: "1,500 / mo",
-    crm: "Relationship data layer",
+    relationships: "Relationship data layer",
     aiAccess: "Limited",
     premiumPool: "—",
     automations: "—",
@@ -105,9 +105,9 @@ const tiers: Tier[] = [
     popular: true,
     dailyLeads: "200 / day",
     monthlyLeads: "6,000 / mo",
-    crm: "Full pipeline workspace",
-    aiAccess: "Higher",
-    premiumPool: "—",
+    relationships: "Full Pipeline & Relationships",
+    aiAccess: "Standard",
+    premiumPool: "Included",
     automations: "Sequences",
     teamSeats: "3 seats",
     features: [
@@ -127,7 +127,7 @@ const tiers: Tier[] = [
     popular: false,
     dailyLeads: "833 / day",
     monthlyLeads: "25,000 / mo",
-    crm: "Relationship automations",
+    relationships: "Relationship automations",
     aiAccess: "Highest",
     premiumPool: "✓",
     automations: "Full automations",
@@ -148,7 +148,7 @@ type ComparisonRowDef = { label: string; key: keyof Tier; icon?: React.Component
 const rows: ComparisonRowDef[] = [
   { label: "Daily lead usage", key: "dailyLeads", icon: Sun },
   { label: "Monthly lead usage", key: "monthlyLeads", icon: Calendar },
-  { label: "Relationship data access", key: "crm" },
+  { label: "Relationship data access", key: "relationships" },
   { label: "AI assistance", key: "aiAccess", icon: Bot },
   { label: "Premium intelligence pool", key: "premiumPool" },
   { label: "Automations", key: "automations" },

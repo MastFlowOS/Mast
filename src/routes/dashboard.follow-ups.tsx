@@ -602,7 +602,7 @@ function MissionComplete({ completedToday }: { completedToday: number }) {
             Review Pipeline
           </Link>
           <Link to="/dashboard/crm" className="rounded-lg border border-border px-4 py-2 text-sm font-semibold hover:bg-background">
-            Open Opportunity Network
+            Open Relationships
           </Link>
         </div>
       </div>

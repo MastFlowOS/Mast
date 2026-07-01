@@ -84,15 +84,14 @@ export type Account = {
 
 // ─── Lead types ───────────────────────────────────────────────────────────────
 export type LeadStatus =
-  | "discovered"
-  | "ready"
-  | "outreach"
-  | "conversation"
-  | "meeting"
-  | "proposal"
-  | "negotiation"
-  | "closed_won"
-  | "closed_lost";
+  | "new"
+  | "email_sent"
+  | "called"
+  | "instagram_sent"
+  | "replied"
+  | "meeting_booked"
+  | "closed"
+  | "dead";
 
 export type OutreachChannel = "email" | "instagram" | "phone" | "contact_form";
 

@@ -37,7 +37,7 @@ export const PLANS: PlanConfig[] = [
     features: [
       "20 leads / day (300 / mo)",
       "CSV Export",
-      "Basic CRM",
+      "Basic Relationships",
       "Limited AI Personalization",
       "1 Seat",
     ],
@@ -57,7 +57,7 @@ export const PLANS: PlanConfig[] = [
     aiAccess: "limited",
     features: [
       "100 leads / day (1,500 / mo)",
-      "Built-in CRM",
+      "Built-in Relationships",
       "Better AI Personalization",
       "Premium Lead Pools",
       "1 Seat",
@@ -78,7 +78,7 @@ export const PLANS: PlanConfig[] = [
     aiAccess: "standard",
     features: [
       "400 leads / day (6,000 / mo)",
-      "Full Pipeline CRM",
+      "Full Pipeline & Relationships",
       "Premium Lead Pools",
       "AI Personalization",
       "Automations",

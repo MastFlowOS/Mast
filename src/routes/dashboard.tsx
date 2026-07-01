@@ -10,7 +10,7 @@ import { BrandMark } from "@/components/mast/BrandMark";
 import { useAccount, useLogout, useMe } from "@/hooks/use-mast-api";
 import {
   Crosshair, Search, Kanban, Bell, Settings, LogOut, X,
-  CheckCircle2, ArrowUpCircle, Heart,
+  CheckCircle2, ArrowUpCircle, Network,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -25,7 +25,7 @@ export const Route = createFileRoute("/dashboard")({
 const NAV = [
   { label: "Focus",         to: "/dashboard",              icon: Crosshair, exact: true },
   { label: "Discover",      to: "/dashboard/leads",        icon: Search },
-  { label: "Relationships", to: "/dashboard/crm",          icon: Heart },
+  { label: "Relationships", to: "/dashboard/crm",          icon: Network },
   { label: "Pipeline",      to: "/dashboard/pipeline",     icon: Kanban },
   { label: "Mission",       to: "/dashboard/follow-ups",   icon: Bell },
   { label: "Settings",      to: "/dashboard/settings",     icon: Settings },

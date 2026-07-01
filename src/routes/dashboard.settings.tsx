@@ -24,6 +24,8 @@ import {
 import { supabase } from "@/lib/supabase";
 import { ApiError } from "@/lib/api";
 import { useMe, useSaveSettings, useSettings } from "@/hooks/use-mast-api";
+import { cn } from "@/lib/utils";
+
 
 export const Route = createFileRoute("/dashboard/settings")({
   head: () => ({ meta: [{ title: "Settings — Mast" }] }),

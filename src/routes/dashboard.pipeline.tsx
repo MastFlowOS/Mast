@@ -628,10 +628,10 @@ function Pipeline() {
       </div>
 
       {/* Main Layout Area */}
-      <div className="flex flex-col lg:flex-row lg:items-start">
+      <div className="flex flex-col lg:flex-row gap-6 p-6 lg:items-start">
         
         {/* Left Side: Pipeline Views & Funnel (3/4 width) */}
-        <div className="flex-1 flex flex-col p-6 space-y-6">
+        <div className="flex-1 flex flex-col space-y-6 min-w-0">
 
           {/* AI Executive Briefing */}
           {statsLoading ? (
@@ -935,7 +935,7 @@ function Pipeline() {
         </div>
 
         {/* Right Side: AI Coach & Feed (1/4 width) */}
-        <aside className="w-full lg:w-80 shrink-0 border-t lg:border-t-0 lg:border-l border-border bg-card/20 backdrop-blur-md flex flex-col">
+        <aside className="w-full lg:w-80 shrink-0 flex flex-col rounded-2xl border border-border bg-card/20 backdrop-blur-md overflow-hidden">
           
           {/* AI Recommendations Section */}
           <div className="p-5 border-b border-border">
@@ -987,7 +987,7 @@ function Pipeline() {
           </div>
 
           {/* Recent Activities Section */}
-          <div className="p-5 flex-1 min-h-[250px]">
+          <div className="p-5">
             <h3 className="text-sm font-bold uppercase tracking-wider text-foreground flex items-center gap-2 mb-4">
               <Activity className="size-4 text-brand" /> Recent Activity
             </h3>

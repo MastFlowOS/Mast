@@ -157,11 +157,11 @@ export function buildGreeting(firstName: string, ctx: FocusContext) {
   const hour = new Date().getHours();
   let period: "morning" | "afternoon" | "evening" | "night";
 
-  if (hour >= 5 && hour < 12) {
+  if (hour >= 7 && hour < 14) {
     period = "morning";
-  } else if (hour >= 12 && hour < 17) {
+  } else if (hour >= 14 && hour < 19) {
     period = "afternoon";
-  } else if (hour >= 17 && hour < 21) {
+  } else if (hour >= 19 && hour < 24) {
     period = "evening";
   } else {
     period = "night";

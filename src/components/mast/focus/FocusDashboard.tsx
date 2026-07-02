@@ -63,7 +63,6 @@ export function FocusDashboard() {
           ════════════════════════════════════════════════════════════════ */}
       <section className="focus-hero">
         <FocusGreeting
-          emoji={snapshot.greeting.emoji}
           period={snapshot.greeting.period}
           name={firstName}
           subtitle={snapshot.greeting.subtitle}

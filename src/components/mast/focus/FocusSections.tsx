@@ -26,13 +26,46 @@ import {
 // ── Greeting ────────────────────────────────────────────────────────────────
 
 type GreetingProps = {
-  emoji: string;
-  period: string;
+  period: "morning" | "afternoon" | "evening" | "night";
   name: string;
   subtitle: string;
 };
 
-export function FocusGreeting({ emoji, period, name, subtitle }: GreetingProps) {
+const GREETING_POOLS = {
+  morning: [
+    "Good Morning, {FirstName}",
+    "Rise and Shine, {FirstName}",
+    "Ready for another productive day?",
+    "Morning, {FirstName}",
+  ],
+  afternoon: [
+    "Welcome Back, {FirstName}",
+    "Good Afternoon, {FirstName}",
+    "Ready to keep the momentum going?",
+    "Back at it, {FirstName}?",
+  ],
+  evening: [
+    "Good Evening, {FirstName}",
+    "Welcome Back",
+    "Let's finish the day strong.",
+    "Evening, {FirstName}",
+  ],
+  night: [
+    "Welcome Back, Night Owl ✦",
+    "Burning the midnight oil?",
+    "Still chasing opportunities?",
+    "Working late? Let's make it count.",
+    "Night Shift Activated ✦",
+  ],
+};
+
+export function FocusGreeting({ period, name, subtitle }: GreetingProps) {
+  const [greetingText] = useState(() => {
+    const pool = GREETING_POOLS[period] || GREETING_POOLS.morning;
+    const template = pool[Math.floor(Math.random() * pool.length)];
+    return template.replace("{FirstName}", name);
+  });
+
   return (
     <header className="animate-fade-in focus-greeting-wrap">
       {/* Eyebrow */}
@@ -41,13 +74,9 @@ export function FocusGreeting({ emoji, period, name, subtitle }: GreetingProps) 
         AI Briefing
       </p>
 
-      {/* Display heading — period on its own line, name dominates */}
-      <h1 className="focus-greeting-headline">
-        <span className="focus-greeting-period">
-          <span className="focus-greeting-emoji" aria-hidden="true">{emoji}</span>
-          {period},
-        </span>
-        <span className="focus-greeting-name">{name}</span>
+      {/* Display heading */}
+      <h1 className={`focus-greeting-headline focus-greeting-${period}`}>
+        {greetingText}
       </h1>
 
       {/* Subtitle */}
@@ -58,6 +87,7 @@ export function FocusGreeting({ emoji, period, name, subtitle }: GreetingProps) 
           display: flex;
           flex-direction: column;
           align-items: center;
+          text-align: center;
         }
 
         .focus-eyebrow {
@@ -83,38 +113,33 @@ export function FocusGreeting({ emoji, period, name, subtitle }: GreetingProps) 
         }
 
         .focus-greeting-headline {
-          font-size: clamp(2.75rem, 9vw, 5.5rem);
+          font-size: clamp(2.25rem, 7vw, 4rem);
           font-weight: 800;
-          letter-spacing: -0.04em;
-          line-height: 1;
-          color: var(--color-foreground);
+          letter-spacing: -0.03em;
+          line-height: 1.15;
           margin: 0 0 1.5rem;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-        }
-
-        .focus-greeting-period {
-          font-size: 0.4em;
-          font-weight: 600;
-          letter-spacing: -0.01em;
-          color: var(--color-muted-foreground);
-          display: inline-flex;
-          align-items: baseline;
-          gap: 0.4em;
-          margin-bottom: 0.3em;
-        }
-
-        .focus-greeting-emoji {
-          font-size: 0.85em;
-          line-height: 1;
-        }
-
-        .focus-greeting-name {
-          background: linear-gradient(180deg, var(--color-foreground), color-mix(in oklab, var(--foreground) 75%, var(--brand) 25%));
+          display: block;
+          max-width: 800px;
           -webkit-background-clip: text;
           background-clip: text;
           color: transparent;
+        }
+
+        /* Sky Gradients based on Period */
+        .focus-greeting-morning {
+          background: linear-gradient(135deg, oklch(0.82 0.08 220), oklch(0.88 0.12 90), oklch(0.74 0.16 45));
+        }
+
+        .focus-greeting-afternoon {
+          background: linear-gradient(135deg, oklch(0.78 0.12 215), oklch(0.84 0.15 80), oklch(0.92 0.08 95));
+        }
+
+        .focus-greeting-evening {
+          background: linear-gradient(135deg, oklch(0.75 0.16 45), oklch(0.72 0.16 350), oklch(0.65 0.18 300));
+        }
+
+        .focus-greeting-night {
+          background: linear-gradient(135deg, oklch(0.55 0.11 250), oklch(0.68 0.14 260), oklch(0.88 0.04 220));
         }
 
         .focus-greeting-subtitle {
@@ -127,7 +152,7 @@ export function FocusGreeting({ emoji, period, name, subtitle }: GreetingProps) 
 
         @media (max-width: 680px) {
           .focus-greeting-headline {
-            font-size: clamp(2.5rem, 13vw, 3.5rem);
+            font-size: clamp(1.85rem, 10vw, 2.75rem);
           }
           .focus-greeting-subtitle {
             font-size: 1rem;

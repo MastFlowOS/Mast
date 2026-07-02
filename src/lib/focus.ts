@@ -48,7 +48,7 @@ export type FocusContext = {
 };
 
 export type FocusSnapshot = {
-  greeting: { emoji: string; period: string; subtitle: string };
+  greeting: { period: "morning" | "afternoon" | "evening" | "night"; subtitle: string };
   recommendations: FocusRecommendation[];
   weeklyMetrics: WeeklyMetric[];
   weeklySummary: string;
@@ -155,21 +155,16 @@ function countCompletedFollowupsToday(followups: FollowupWithLead[]) {
 
 export function buildGreeting(firstName: string, ctx: FocusContext) {
   const hour = new Date().getHours();
-  let emoji: string;
-  let period: string;
+  let period: "morning" | "afternoon" | "evening" | "night";
 
   if (hour >= 5 && hour < 12) {
-    emoji = "🌅";
-    period = "Good morning";
+    period = "morning";
   } else if (hour >= 12 && hour < 17) {
-    emoji = "☀️";
-    period = "Good afternoon";
+    period = "afternoon";
   } else if (hour >= 17 && hour < 21) {
-    emoji = "🌇";
-    period = "Good evening";
+    period = "evening";
   } else {
-    emoji = "🌙";
-    period = "Good night";
+    period = "night";
   }
 
   const uncontacted = ctx.leads.filter(isUncontacted).length;
@@ -206,7 +201,7 @@ export function buildGreeting(firstName: string, ctx: FocusContext) {
     subtitle = "Looks like we're building momentum. What should we tackle today?";
   }
 
-  return { emoji, period, subtitle, name: firstName };
+  return { period, subtitle, name: firstName };
 }
 
 // ── Recommendations ───────────────────────────────────────────────────────────

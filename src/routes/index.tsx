@@ -124,7 +124,7 @@ function Hero() {
               key={label}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card border border-border/60 text-[11px] font-semibold text-muted-foreground hover:border-brand/30 hover:text-foreground transition-all duration-200 cursor-default"
             >
-              <Icon size={12} strokeWidth={2.5} className="text-brand" style={{ shapeRendering: 'crispEdges' }} />
+              <Icon className="size-3 text-brand" />
               {label}
             </span>
           ))}

@@ -467,7 +467,6 @@ export function buildFocusSnapshot(firstName: string, ctx: FocusContext): FocusS
 
   return {
     greeting: {
-      emoji: greeting.emoji,
       period: greeting.period,
       subtitle: greeting.subtitle,
     },

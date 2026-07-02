@@ -120,26 +120,43 @@ export function FocusGreeting({ period, name, subtitle }: GreetingProps) {
           margin: 0 0 1.5rem;
           display: block;
           max-width: 800px;
-          -webkit-background-clip: text;
           background-clip: text;
+          -webkit-background-clip: text;
           color: transparent;
+          -webkit-text-fill-color: transparent;
         }
 
         /* Sky Gradients based on Period */
         .focus-greeting-morning {
-          background: linear-gradient(135deg, oklch(0.82 0.08 220), oklch(0.88 0.12 90), oklch(0.74 0.16 45));
+          background: linear-gradient(135deg, oklch(0.85 0.12 215), oklch(0.90 0.14 85), oklch(0.76 0.18 45));
+          background-clip: text;
+          -webkit-background-clip: text;
+          color: transparent;
+          -webkit-text-fill-color: transparent;
         }
 
         .focus-greeting-afternoon {
-          background: linear-gradient(135deg, oklch(0.78 0.12 215), oklch(0.84 0.15 80), oklch(0.92 0.08 95));
+          background: linear-gradient(135deg, oklch(0.78 0.14 210), oklch(0.85 0.16 80), oklch(0.94 0.08 95));
+          background-clip: text;
+          -webkit-background-clip: text;
+          color: transparent;
+          -webkit-text-fill-color: transparent;
         }
 
         .focus-greeting-evening {
-          background: linear-gradient(135deg, oklch(0.75 0.16 45), oklch(0.72 0.16 350), oklch(0.65 0.18 300));
+          background: linear-gradient(135deg, oklch(0.75 0.18 45), oklch(0.72 0.20 350), oklch(0.66 0.20 300));
+          background-clip: text;
+          -webkit-background-clip: text;
+          color: transparent;
+          -webkit-text-fill-color: transparent;
         }
 
         .focus-greeting-night {
-          background: linear-gradient(135deg, oklch(0.55 0.11 250), oklch(0.68 0.14 260), oklch(0.88 0.04 220));
+          background: linear-gradient(135deg, oklch(0.60 0.15 240), oklch(0.72 0.18 260), oklch(0.90 0.05 220));
+          background-clip: text;
+          -webkit-background-clip: text;
+          color: transparent;
+          -webkit-text-fill-color: transparent;
         }
 
         .focus-greeting-subtitle {

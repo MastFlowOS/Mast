@@ -144,6 +144,21 @@
     scrollbar-gutter: stable;
   }
 
+  /*
+    Lucide icons (lucide-react gives every <svg> it renders the class
+    "lucide" by default) are laid out inside flex rows throughout the
+    app, but flex items default to flex-shrink: 1. Without this, an
+    icon with no room to spare gets compressed toward 0px by the flex
+    algorithm before its siblings do (SVGs have no intrinsic min-content
+    size to resist shrinking), which reads as an icon "disappearing"
+    and only "coming back" once a zoom-triggered relayout gives it room
+    again. Scoped to svg.lucide only — this rule targets icon rendering
+    stability, not general SVG/layout behavior elsewhere in the app.
+  */
+  svg.lucide {
+    flex-shrink: 0;
+  }
+
   html, body {
     background-color: var(--color-background);
     color: var(--color-foreground);
@@ -213,16 +228,26 @@
 }
 
 /* -- Page-level entrance --------------------------------------- */
+/*
+  Intentionally opacity + transform only. This used to also animate
+  `filter: blur()`, but any non-zero filter forces the browser to
+  promote the whole subtree to its own compositing layer for the
+  animation's duration. These route roots contain `position: sticky`
+  and `backdrop-filter` descendants (headers, popovers), and Chromium/
+  WebKit have known quirks where such descendants can fail to paint
+  correctly inside a filtered/animated ancestor's layer — most visibly
+  as icons not rendering until something forces a re-composite (e.g.
+  changing browser zoom). Dropping the filter removes the trigger
+  without changing the visible motion.
+*/
 @keyframes page-enter {
   from {
     opacity: 0;
     transform: translateY(10px);
-    filter: blur(1px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
-    filter: blur(0);
   }
 }
 

@@ -628,7 +628,7 @@ function Pipeline() {
       </div>
 
       {/* Main Layout Area */}
-      <div className="flex flex-col lg:flex-row">
+      <div className="flex flex-col lg:flex-row lg:items-start">
         
         {/* Left Side: Pipeline Views & Funnel (3/4 width) */}
         <div className="flex-1 flex flex-col p-6 space-y-6">
@@ -721,7 +721,7 @@ function Pipeline() {
           {viewMode === "flow" ? (
             
             /* FLOW VIEW (Network of Nodes) */
-            <section className="flex-1 flex items-center justify-center min-h-[350px] relative">
+            <section className="flex items-center justify-center min-h-[350px] relative">
               <div className="w-full max-w-4xl flex flex-col md:flex-row items-stretch md:items-center justify-between gap-6 md:gap-4 relative py-8 px-4">
                 
                 {/* SVG Connecting Tracks & Pulses (Behind nodes) */}
@@ -802,7 +802,7 @@ function Pipeline() {
           ) : (
             
             /* KANBAN VIEW (Clean Performance Fallback) */
-            <div className="flex-1 overflow-x-auto min-h-[400px]">
+            <div className="overflow-x-auto min-h-[400px]">
               <div className="flex h-full gap-4 py-2" style={{ minWidth: `${PIPELINE_COLUMNS.length * 288 + (PIPELINE_COLUMNS.length - 1) * 16}px` }}>
                 {PIPELINE_COLUMNS.map((colStatus) => {
                   // Filter leads that are in this status from cached list (Virtualizing by rendering only 10 max)
@@ -935,7 +935,7 @@ function Pipeline() {
         </div>
 
         {/* Right Side: AI Coach & Feed (1/4 width) */}
-        <aside className="w-full lg:w-80 shrink-0 border-t lg:border-t-0 lg:border-l border-border bg-card/20 backdrop-blur-md flex flex-col overflow-y-auto">
+        <aside className="w-full lg:w-80 shrink-0 border-t lg:border-t-0 lg:border-l border-border bg-card/20 backdrop-blur-md flex flex-col">
           
           {/* AI Recommendations Section */}
           <div className="p-5 border-b border-border">

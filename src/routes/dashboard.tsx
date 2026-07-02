@@ -142,9 +142,15 @@ function DashboardLayout() {
   };
 
   return (
-    <div className="min-h-screen flex bg-background text-foreground">
+    <div className="h-screen flex bg-background text-foreground overflow-hidden">
 
       {/* ── Sidebar ──────────────────────────────────────────────────────── */}
+      {/*
+        No overflow here — the aside is already a well-formed scroll region
+        internally (logo shrink-0 / nav flex-1 overflow-y-auto / credits
+        shrink-0). Adding another overflow-y-auto on this parent would just
+        recreate the nested-scroll-container bug one level up.
+      */}
       <aside
         className="w-64 shrink-0 border-r border-border flex flex-col"
         style={{ background: "oklch(0.155 0.028 265)" }}
@@ -263,10 +269,18 @@ function DashboardLayout() {
       </aside>
 
       {/* ── Main area ────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/*
+        min-h-0 is required here: flex items default to min-height:auto,
+        which lets them refuse to shrink below their content's intrinsic
+        height even with flex-1. Without it, this column (and therefore
+        the h-screen shell above it) inflates to fit tall page content
+        instead of clamping to the viewport, which hands scrolling to the
+        document — a second scroll container fighting the one below.
+      */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
 
         {/* Topbar */}
-        <header className="h-16 border-b border-border flex items-center justify-between px-6 bg-background/80 backdrop-blur-xl sticky top-0 z-30">
+        <header className="h-16 border-b border-border flex items-center justify-between px-6 bg-background/80 backdrop-blur-xl sticky top-0 z-30 shrink-0">
           <div className="flex items-center gap-3 max-w-md w-full">
             <Search className="size-4 text-muted-foreground shrink-0" />
             <input
@@ -365,8 +379,12 @@ function DashboardLayout() {
           </div>
         </header>
 
-        {/* Page content — plain Outlet, no key trick */}
-        <main className="flex-1 overflow-y-auto">
+        {/* Page content — plain Outlet, no key trick.
+            min-h-0: same flex min-height reset as the column above, so this
+            is the ONE element that actually owns vertical scrolling.
+            overscroll-behavior: contain stops any residual scroll chaining
+            from ever bleeding into a scrollable ancestor. */}
+        <main className="flex-1 min-h-0 overflow-y-auto" style={{ overscrollBehavior: "contain" }}>
           <Outlet />
         </main>
       </div>

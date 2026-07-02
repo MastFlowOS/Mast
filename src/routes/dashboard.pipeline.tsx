@@ -548,7 +548,7 @@ function Pipeline() {
   };
 
   return (
-    <div className="flex h-full flex-col bg-background/50 bg-grid-sm">
+    <div className="flex min-h-full flex-col bg-background/50 bg-grid-sm">
       {/* Top Banner: Header, View Toggle, and Circular Health Score */}
       <div className="border-b border-border bg-card/45 backdrop-blur-md px-6 py-4 relative z-10">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -628,16 +628,16 @@ function Pipeline() {
       </div>
 
       {/* Main Layout Area */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
+      <div className="flex flex-col lg:flex-row">
         
         {/* Left Side: Pipeline Views & Funnel (3/4 width) */}
-        <div className="flex-1 flex flex-col overflow-y-auto p-6 space-y-6">
+        <div className="flex-1 flex flex-col p-6 space-y-6">
 
           {/* AI Executive Briefing */}
           {statsLoading ? (
             <Skeleton className="h-24 rounded-2xl w-full animate-pulse" />
           ) : (
-            <section className="relative overflow-hidden rounded-2xl border border-brand/20 bg-gradient-to-r from-brand/10 via-brand/5 to-transparent p-5 backdrop-blur-sm">
+            <section className="relative overflow-hidden rounded-2xl border border-brand/20 bg-gradient-to-r from-brand/10 via-brand/5 to-transparent p-5 backdrop-blur-sm shrink-0">
               <div className="absolute top-0 right-0 p-4 opacity-[0.03] pointer-events-none">
                 <Sparkles className="size-24 text-brand animate-pulse" />
               </div>
@@ -661,7 +661,7 @@ function Pipeline() {
           )}
 
           {/* Funnel Visualization */}
-          <section className="bg-card/30 backdrop-blur-sm border border-border rounded-2xl p-5 relative overflow-hidden">
+          <section className="bg-card/30 backdrop-blur-sm border border-border rounded-2xl p-5 relative overflow-hidden shrink-0">
             <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
               Conversion Funnel & Stage Volume
             </h3>

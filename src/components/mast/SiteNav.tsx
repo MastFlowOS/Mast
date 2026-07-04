@@ -17,7 +17,19 @@ const links = [
   { label: "Customers", anchor: "#testimonials" },
 ];
 
-export function SiteNav() {
+type SiteNavProps = {
+  /**
+   * Experimental flag — when true, replaces `backdrop-blur-*` with a
+   * near-opaque solid background instead. Used only by the landing page
+   * ("/") to test whether `backdrop-filter` is the cause of icons
+   * intermittently failing to paint at non-100% browser zoom.
+   * Defaults to false everywhere else (pricing, terms, privacy, refunds,
+   * security, status) so their rendering is completely unchanged.
+   */
+  disableBackdropBlur?: boolean;
+};
+
+export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -77,9 +89,13 @@ export function SiteNav() {
   return (
     <nav
       className={`sticky top-0 z-50 transition-all duration-300 ${
-        scrolled
-          ? "border-b border-border/60 bg-background/85 backdrop-blur-2xl shadow-[0_1px_0_0_rgba(255,255,255,0.04)]"
-          : "border-b border-transparent bg-background/40 backdrop-blur-xl"
+        disableBackdropBlur
+          ? scrolled
+            ? "border-b border-border/60 bg-background/95 shadow-[0_1px_0_0_rgba(255,255,255,0.04)]"
+            : "border-b border-transparent bg-background/90"
+          : scrolled
+            ? "border-b border-border/60 bg-background/85 backdrop-blur-2xl shadow-[0_1px_0_0_rgba(255,255,255,0.04)]"
+            : "border-b border-transparent bg-background/40 backdrop-blur-xl"
       }`}
     >
       <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
@@ -171,7 +187,11 @@ export function SiteNav() {
 
       {/* Mobile menu */}
       {mobileOpen && (
-        <div className="md:hidden border-t border-border/60 bg-background/95 backdrop-blur-xl px-6 py-4 space-y-1 animate-fade-up">
+        <div
+          className={`md:hidden border-t border-border/60 bg-background/95 px-6 py-4 space-y-1 animate-fade-up ${
+            disableBackdropBlur ? "" : "backdrop-blur-xl"
+          }`}
+        >
           {links.map((l) =>
             l.anchor ? (
               <a

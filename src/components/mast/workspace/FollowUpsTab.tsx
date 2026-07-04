@@ -115,7 +115,7 @@ export function FollowUpsTab({ lead }: { lead: Lead }) {
                     disabled={isPending}
                     className="gap-1.5"
                   >
-                    <Check className="size-3.5" /> Done
+                    <Check className="size-4" /> Done
                   </Button>
                 </div>
               ))}
@@ -137,7 +137,7 @@ export function FollowUpsTab({ lead }: { lead: Lead }) {
                 disabled={isPending}
                 className="gap-1.5"
               >
-                <Check className="size-3.5" /> Done
+                <Check className="size-4" /> Done
               </Button>
             </div>
           )}

@@ -124,7 +124,7 @@ function Hero() {
               key={label}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card border border-border/60 text-[11px] font-semibold text-muted-foreground hover:border-brand/30 hover:text-foreground transition-all duration-200 cursor-default"
             >
-              <Icon className="size-3 text-brand" />
+              <Icon className="size-4 text-brand" />
               {label}
             </span>
           ))}
@@ -222,7 +222,7 @@ function ProductPreview() {
               {/* AI insight card */}
               <div className="mt-auto bg-background/60 p-3 rounded-xl border border-brand/20 space-y-2">
                 <div className="flex items-center gap-1.5">
-                  <Sparkles className="size-3 text-brand" />
+                  <Sparkles className="size-4 text-brand" />
                   <p className="text-[10px] font-bold text-brand uppercase tracking-wider">AI Insight</p>
                 </div>
                 <p className="text-[11px] text-foreground leading-relaxed min-h-[52px]">
@@ -257,7 +257,7 @@ function ProductPreview() {
                     12 deals
                   </span>
                   <span className="flex items-center gap-1 px-2.5 py-1 bg-warning/10 text-warning text-[10px] font-bold border border-warning/20 rounded-md">
-                    <Clock className="size-2.5" />
+                    <Clock className="size-4" />
                     5 follow-ups due
                   </span>
                 </div>
@@ -325,7 +325,7 @@ function ProductPreview() {
                 {/* Activity feed */}
                 <aside className="w-44 shrink-0 border-l border-border/60 p-3 hidden xl:flex flex-col gap-2 bg-background/10">
                   <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                    <Activity className="size-2.5" /> Activity
+                    <Activity className="size-4" /> Activity
                   </p>
                   {feed.map((item, i) => (
                     <div
@@ -419,7 +419,7 @@ function Problem() {
             {/* AI card */}
             <div className="mt-5 rounded-2xl border border-brand/20 p-4 bg-background/40">
               <div className="flex items-center gap-2 mb-2.5">
-                <Sparkles className="size-3.5 text-brand" />
+                <Sparkles className="size-4 text-brand" />
                 <p className="text-[10px] font-bold text-brand uppercase tracking-wider">AI Recommendation</p>
               </div>
               <p className="text-sm text-foreground leading-relaxed">

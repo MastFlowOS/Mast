@@ -146,7 +146,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
                 to="/dashboard"
                 className="hidden sm:inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-2 rounded-lg hover:bg-white/[0.04]"
               >
-                <Crosshair className="size-3.5" />
+                <Crosshair className="size-4" />
                 Focus
               </Link>
               <button

@@ -316,7 +316,7 @@ function DashboardLayout() {
                         </button>
                       )}
                       <button onClick={() => setNotifOpen(false)} className="size-6 grid place-items-center text-muted-foreground hover:text-foreground transition-colors shrink-0">
-                        <X className="size-3.5 shrink-0" />
+                        <X className="size-4 shrink-0" />
                       </button>
 
                     </div>
@@ -341,7 +341,7 @@ function DashboardLayout() {
                                 {n.unread && <span className="inline-block ml-1.5 size-1.5 rounded-full bg-brand align-middle" />}
                               </p>
                               <button onClick={() => dismiss(n.id)} className="size-4 grid place-items-center text-muted-foreground/60 hover:text-muted-foreground shrink-0 transition-colors">
-                                <X className="size-3 shrink-0" />
+                                <X className="size-4 shrink-0" />
                               </button>
 
                             </div>

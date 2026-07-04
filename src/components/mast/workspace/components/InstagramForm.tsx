@@ -136,7 +136,7 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
           disabled={!body}
           className="w-full gap-1.5 sm:w-auto"
         >
-          {copied ? <><Check className="size-3.5" /> Copied</> : <><Copy className="size-3.5" /> Copy DM</>}
+          {copied ? <><Check className="size-4" /> Copied</> : <><Copy className="size-4" /> Copy DM</>}
         </Button>
 
         <Button
@@ -146,7 +146,7 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
           disabled={!lead.instagramHandle || recordActivity.isPending}
           className="w-full gap-1.5 sm:w-auto"
         >
-          <Instagram className="size-3.5" />
+          <Instagram className="size-4" />
           Open Instagram{body.trim() ? " + Copy" : ""}
         </Button>
 
@@ -157,7 +157,7 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
           disabled={isSent || recordActivity.isPending}
           className="w-full gap-1.5 text-muted-foreground hover:text-foreground sm:ml-auto sm:w-auto"
         >
-          <CheckCircle className={`size-3.5 ${isSent ? "text-green-500" : ""}`} />
+          <CheckCircle className={`size-4 ${isSent ? "text-green-500" : ""}`} />
           {isSent ? "Sent" : "Mark Sent"}
         </Button>
       </div>

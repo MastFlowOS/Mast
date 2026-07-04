@@ -283,7 +283,7 @@ function Billing() {
                     : "bg-amber-500/10 text-amber-500 border-amber-500/20"
                 )}
               >
-                <ShieldCheck className="size-3.5 shrink-0" />
+                <ShieldCheck className="size-4 shrink-0" />
                 {isGoodStanding
                   ? "Account In Good Standing · No Outstanding Charges"
                   : "Account Requires Attention"}

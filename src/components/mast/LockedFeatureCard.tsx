@@ -50,7 +50,7 @@ export function LockedFeatureCard({
             </div>
           </div>
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider bg-brand/15 text-brand border border-brand/25">
-            <Sparkles className="size-2.5" /> Premium
+            <Sparkles className="size-4" /> Premium
           </span>
         </div>
 
@@ -71,7 +71,7 @@ export function LockedFeatureCard({
           className="group flex w-full items-center justify-center gap-2 rounded-xl bg-foreground text-background py-2.5 text-xs font-bold transition-all hover:bg-foreground/90 active:scale-[0.99]"
         >
           <span>Upgrade to {plan.name}</span>
-          <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+          <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
         </Link>
       </div>
     </div>

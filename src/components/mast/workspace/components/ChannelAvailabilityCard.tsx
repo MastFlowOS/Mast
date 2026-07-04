@@ -47,7 +47,7 @@ export function ChannelAvailabilityCard({
                     : "flex w-full items-center gap-2 rounded-lg border border-border bg-background/50 px-3 py-2 text-left text-xs text-muted-foreground/50 cursor-not-allowed"
               }
             >
-              <item.icon className={active ? "size-3.5 shrink-0 text-brand" : "size-3.5 shrink-0"} />
+              <item.icon className={active ? "size-4 shrink-0 text-brand" : "size-4 shrink-0"} />
               <span className="min-w-0 flex-1 truncate">{item.label}</span>
               {available ? (
                 <span className="text-[10px] font-bold text-success">Available</span>

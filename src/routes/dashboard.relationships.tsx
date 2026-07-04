@@ -171,7 +171,7 @@ function NicheMultiSelect({
                   onClick={(e) => removeChip(selected[i], e)}
                   className="hover:text-brand-dark"
                 >
-                  <X className="size-2.5 shrink-0" />
+                  <X className="size-4 shrink-0" />
 
                 </button>
               </span>
@@ -191,7 +191,7 @@ function NicheMultiSelect({
           <div className="absolute left-0 top-full z-20 mt-1 w-64 rounded-xl border border-border bg-card shadow-lg">
             <div className="p-2 border-b border-border">
               <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
-                <Search className="size-3.5 text-muted-foreground shrink-0" />
+                <Search className="size-4 text-muted-foreground shrink-0" />
                 <input
                   ref={inputRef}
                   value={search}
@@ -559,12 +559,12 @@ function Relationships() {
             >
               {focusMode ? (
                 <>
-                  <ChevronDown className="size-3.5" />
+                  <ChevronDown className="size-4" />
                   <span>Exit Focus Mode</span>
                 </>
               ) : (
                 <>
-                  <ChevronUp className="size-3.5" />
+                  <ChevronUp className="size-4" />
                   <span>Focus Mode</span>
                 </>
               )}
@@ -831,7 +831,7 @@ function Relationships() {
             disabled={bulkDelete.isPending}
             className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg bg-destructive px-3 text-xs font-semibold text-destructive-foreground hover:bg-destructive/90 disabled:opacity-60"
           >
-            <Trash2 className="size-3.5 shrink-0" /> Remove
+            <Trash2 className="size-4 shrink-0" /> Remove
 
           </button>
         </div>
@@ -936,13 +936,13 @@ function Relationships() {
                       <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         {lead.instagramHandle && (
                           <span className="inline-flex items-center gap-1">
-                            <Instagram className="size-3 shrink-0" />@
+                            <Instagram className="size-4 shrink-0" />@
                             {lead.instagramHandle.replace(/^@/, "")}
                           </span>
                         )}
                         {lead.email && (
                           <span className="inline-flex items-center gap-1">
-                            <Mail className="size-3 shrink-0" />
+                            <Mail className="size-4 shrink-0" />
                             {lead.email}
                           </span>
                         )}
@@ -1041,7 +1041,7 @@ function Relationships() {
                   disabled={safePage === 1}
                   className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-background px-2 text-xs font-medium hover:bg-muted disabled:opacity-40"
                 >
-                  <ChevronLeft className="size-3.5 shrink-0" /> Prev
+                  <ChevronLeft className="size-4 shrink-0" /> Prev
                 </button>
 
                 {pageButtons.map((btn, idx) =>
@@ -1072,7 +1072,7 @@ function Relationships() {
                   disabled={safePage === totalPages}
                   className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-background px-2 text-xs font-medium hover:bg-muted disabled:opacity-40"
                 >
-                  Next <ChevronRight className="size-3.5 shrink-0" />
+                  Next <ChevronRight className="size-4 shrink-0" />
                 </button>
               </>
             )}
@@ -1150,7 +1150,7 @@ function BulkButton({
       disabled={disabled}
       className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-semibold hover:bg-card disabled:opacity-60"
     >
-      <Icon className="size-3.5 shrink-0" /> {children}
+      <Icon className="size-4 shrink-0" /> {children}
     </button>
   );
 }

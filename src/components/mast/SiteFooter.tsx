@@ -49,7 +49,7 @@ export function SiteFooter() {
                     rel={key === "email" ? undefined : "noopener noreferrer"}
                     className="size-8 rounded-lg border border-border/60 grid place-items-center text-muted-foreground hover:text-foreground hover:border-brand/30 hover:bg-brand/5 transition-all"
                   >
-                    <Icon className="size-3.5" />
+                    <Icon className="size-4" />
                   </a>
                 ))}
               </div>

@@ -197,7 +197,7 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
     <div className="space-y-5">
       <div className="flex items-center gap-2">
         <div className="size-7 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
-          <Sparkles className="size-3.5 text-brand" />
+          <Sparkles className="size-4 text-brand" />
         </div>
         <div className="min-w-0">
           <p className="text-sm font-semibold">AI Assistant</p>
@@ -267,7 +267,7 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
             disabled={isGenerating || !sourceBody.trim()}
             className="justify-start gap-2 text-xs"
           >
-            <RotateCcw className="size-3.5" />
+            <RotateCcw className="size-4" />
             {item.label}
           </Button>
         ))}
@@ -280,7 +280,7 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
             disabled={isGenerating}
             className="justify-start gap-2 text-xs"
           >
-            <MessageSquareText className="size-3.5" />
+            <MessageSquareText className="size-4" />
             Generate Objection Handling
           </Button>
         )}
@@ -317,7 +317,7 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
                   : "bg-brand hover:bg-brand/90 text-brand-foreground"
               }`}
             >
-              <ArrowDownToLine className="size-3.5" />
+              <ArrowDownToLine className="size-4" />
               {inserted ? "Inserted" : "Insert into Editor"}
             </Button>
           )}

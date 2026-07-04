@@ -84,7 +84,7 @@ export function LeftSidebar({
               {aiOverview && (
                 <div className="rounded-xl border border-brand/20 bg-brand/5 p-3 space-y-1 relative overflow-hidden">
                   <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand">
-                    <Sparkles className="size-3 text-brand" />
+                    <Sparkles className="size-4 text-brand" />
                     <span>AI Overview</span>
                   </div>
                   <p className="text-[11px] text-foreground leading-relaxed font-sans">
@@ -95,7 +95,7 @@ export function LeftSidebar({
               {suggestedAction && (
                 <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3 space-y-1 relative overflow-hidden">
                   <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-500">
-                    <Zap className="size-3 text-amber-500" />
+                    <Zap className="size-4 text-amber-500" />
                     <span>Suggested Action</span>
                   </div>
                   <p className="text-[11px] text-foreground leading-relaxed font-sans font-medium">
@@ -153,7 +153,7 @@ export function LeftSidebar({
               )}
               {lead.location && (
                 <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-background border border-border">
-                  <MapPin className="size-3.5 text-muted-foreground shrink-0" />
+                  <MapPin className="size-4 text-muted-foreground shrink-0" />
                   <span className="text-xs text-foreground truncate">{lead.location}</span>
                 </div>
               )}
@@ -173,7 +173,7 @@ export function LeftSidebar({
             {lead.priority && <InfoRow label="Priority" value={lead.priority} />}
             {nicheLabel && (
               <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-background border border-border">
-                <Tag className="size-3 text-brand shrink-0" />
+                <Tag className="size-4 text-brand shrink-0" />
                 <span className="text-xs text-foreground truncate">{nicheLabel}</span>
               </div>
             )}
@@ -236,16 +236,16 @@ function ContactRow({
   if (!value) return null;
   return (
     <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-background border border-border group hover:border-muted-foreground/30 transition-colors">
-      <Icon className="size-3.5 text-muted-foreground shrink-0" />
+      <Icon className="size-4 text-muted-foreground shrink-0" />
       <span className="text-xs text-foreground truncate flex-1">{value}</span>
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
         <button onClick={onCopy} className="size-5 rounded hover:bg-muted grid place-items-center" title={`Copy ${label}`}>
-          {copied ? <Check className="size-3 text-green-500" /> : <Copy className="size-3 text-muted-foreground" />}
+          {copied ? <Check className="size-4 text-green-500" /> : <Copy className="size-4 text-muted-foreground" />}
         </button>
         {href && (
           <a href={href} target="_blank" rel="noopener noreferrer"
             className="size-5 rounded hover:bg-muted grid place-items-center">
-            <ExternalLink className="size-3 text-muted-foreground hover:text-brand" />
+            <ExternalLink className="size-4 text-muted-foreground hover:text-brand" />
           </a>
         )}
       </div>

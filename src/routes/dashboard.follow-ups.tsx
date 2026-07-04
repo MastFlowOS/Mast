@@ -249,7 +249,7 @@ function MissionBriefing({ briefing }: { briefing: string }) {
   return (
     <div className="flex items-start gap-3 rounded-xl border border-brand/20 bg-brand/5 px-4 py-3">
       <div className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border border-brand/25 bg-brand/15">
-        <Sparkles className="size-3 text-brand" />
+        <Sparkles className="size-4 text-brand" />
       </div>
       <div>
         <p className="mb-0.5 text-[10px] font-bold uppercase tracking-widest text-brand">Today's Mission</p>
@@ -672,7 +672,7 @@ function IconButton({
           : "grid size-8 place-items-center rounded-lg border border-border bg-background hover:bg-muted disabled:opacity-60"
       }
     >
-      <Icon className="size-3.5" />
+      <Icon className="size-4" />
     </button>
   );
 }

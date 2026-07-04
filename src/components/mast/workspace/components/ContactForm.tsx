@@ -109,11 +109,11 @@ export function ContactForm({ lead, body, setBody }: ContactFormProps) {
         <Button variant="outline" size="sm" onClick={copyMessage} disabled={!body.trim()} className="w-full gap-1.5 sm:w-auto">
           {copied ? (
             <>
-              <Check className="size-3.5" /> Copied
+              <Check className="size-4" /> Copied
             </>
           ) : (
             <>
-              <Copy className="size-3.5" /> Copy Message
+              <Copy className="size-4" /> Copy Message
             </>
           )}
         </Button>
@@ -125,7 +125,7 @@ export function ContactForm({ lead, body, setBody }: ContactFormProps) {
           disabled={!lead.website || recordActivity.isPending}
           className="w-full gap-1.5 sm:w-auto"
         >
-          <ExternalLink className="size-3.5" />
+          <ExternalLink className="size-4" />
           Open Website
         </Button>
 
@@ -136,7 +136,7 @@ export function ContactForm({ lead, body, setBody }: ContactFormProps) {
           disabled={sent || recordActivity.isPending}
           className="w-full gap-1.5 text-muted-foreground hover:text-foreground sm:ml-auto sm:w-auto"
         >
-          <CheckCircle className={`size-3.5 ${sent ? "text-green-500" : ""}`} />
+          <CheckCircle className={`size-4 ${sent ? "text-green-500" : ""}`} />
           {sent ? "Sent" : "Mark Sent"}
         </Button>
       </div>

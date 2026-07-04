@@ -118,7 +118,7 @@ export function PhoneForm({ lead, body, setBody }: PhoneFormProps) {
           disabled={!callNotes.trim() || recordActivity.isPending}
           className="w-full gap-1.5 sm:w-auto"
         >
-          {recordActivity.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <MessagesSquare className="size-3.5" />}
+          {recordActivity.isPending ? <Loader2 className="size-4 animate-spin" /> : <MessagesSquare className="size-4" />}
           Save Call Notes
         </Button>
 
@@ -129,7 +129,7 @@ export function PhoneForm({ lead, body, setBody }: PhoneFormProps) {
           disabled={isCalled || recordActivity.isPending}
           className="w-full gap-1.5 text-muted-foreground hover:text-foreground sm:ml-auto sm:w-auto"
         >
-          <CheckCircle className={`size-3.5 ${isCalled ? "text-green-500" : ""}`} />
+          <CheckCircle className={`size-4 ${isCalled ? "text-green-500" : ""}`} />
           {isCalled ? "Called" : "Mark Called"}
         </Button>
       </div>

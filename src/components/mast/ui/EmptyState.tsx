@@ -165,7 +165,7 @@ function ActionLink({
   const content = (
     <>
       {action.label}
-      {!compact && <ArrowRight className="size-3.5" />}
+      {!compact && <ArrowRight className="size-4" />}
     </>
   );
 

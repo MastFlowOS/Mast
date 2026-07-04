@@ -572,7 +572,7 @@ function Pipeline() {
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                <GitBranch className="size-3.5" /> Flow
+                <GitBranch className="size-4" /> Flow
               </button>
               <button
                 onClick={() => handleToggleView("kanban")}
@@ -582,7 +582,7 @@ function Pipeline() {
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                <Kanban className="size-3.5" /> Kanban
+                <Kanban className="size-4" /> Kanban
               </button>
             </div>
 
@@ -654,7 +654,7 @@ function Pipeline() {
                   onClick={() => navigate({ to: aiBriefing.actionTo })}
                   className="shrink-0 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark transition-all duration-200 cursor-pointer self-start md:self-center"
                 >
-                  {aiBriefing.actionLabel} <ArrowRight className="size-3.5" />
+                  {aiBriefing.actionLabel} <ArrowRight className="size-4" />
                 </button>
               </div>
             </section>
@@ -885,7 +885,7 @@ function Pipeline() {
                                       </p>
                                     )}
                                   </div>
-                                  <ArrowRight className="size-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all duration-200 shrink-0" />
+                                  <ArrowRight className="size-4 text-muted-foreground opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all duration-200 shrink-0" />
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-1.5 mt-1">
@@ -897,13 +897,13 @@ function Pipeline() {
                                   
                                   {colStatus === "replied" && (now - new Date(lead.updatedAt).getTime()) > (3 * 24 * 60 * 60 * 1000) && (
                                     <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
-                                      <Clock className="size-2.5" /> Stalled
+                                      <Clock className="size-4" /> Stalled
                                     </span>
                                   )}
 
                                   {colStatus === "email_sent" && (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000) && (
                                     <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
-                                      <Clock className="size-2.5" /> Nudge Due
+                                      <Clock className="size-4" /> Nudge Due
                                     </span>
                                   )}
                                 </div>
@@ -1015,7 +1015,7 @@ function Pipeline() {
                             ? "bg-blue-500/10 border-blue-500/20 text-blue-400" 
                             : "bg-muted border-border text-muted-foreground"
                       }`}>
-                        {isSent ? <MessageSquare className="size-3.5" /> : <Clock className="size-3.5" />}
+                        {isSent ? <MessageSquare className="size-4" /> : <Clock className="size-4" />}
                       </div>
                       <div className="flex-1 min-w-0 text-left">
                         <p className="font-semibold text-foreground">
@@ -1083,7 +1083,7 @@ function Pipeline() {
                     <Sparkles className="size-16 text-brand" />
                   </div>
                   <h4 className="text-xs font-bold uppercase tracking-wider text-brand flex items-center gap-1.5">
-                    <Sparkles className="size-3.5" /> Stage AI Insight
+                    <Sparkles className="size-4" /> Stage AI Insight
                   </h4>
                   <p className="text-xs text-foreground mt-2 leading-relaxed">
                     {selectedStageData.aiInsight}
@@ -1098,7 +1098,7 @@ function Pipeline() {
                       onClick={() => navigate({ to: "/dashboard/leads" })}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark cursor-pointer"
                     >
-                      <Plus className="size-3.5" /> Discover
+                      <Plus className="size-4" /> Discover
                     </button>
                     <button 
                       onClick={() => toast.info("Triggered stage outreach sequence")}
@@ -1121,7 +1121,7 @@ function Pipeline() {
                     {selectedStageData.activities.map((act) => (
                       <div key={act.id} className="flex items-start gap-2.5 text-xs">
                         <div className="shrink-0 mt-0.5">
-                          <Activity className="size-3.5 text-brand" />
+                          <Activity className="size-4 text-brand" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="font-semibold text-foreground">
@@ -1177,7 +1177,7 @@ function Pipeline() {
                                 </option>
                               ))}
                             </select>
-                            <ArrowRight className="size-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                            <ArrowRight className="size-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                           </div>
                         </div>
                       ))}

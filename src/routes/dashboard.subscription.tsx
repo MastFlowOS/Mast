@@ -769,7 +769,7 @@ function UsageCard({
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
-          <Clock className="size-3 shrink-0" />
+          <Clock className="size-4 shrink-0" />
           {resetLabel}
         </span>
         {!atLimit && (
@@ -885,14 +885,14 @@ function PlanCard({
         {/* Daily / monthly limits highlighted */}
         <div className="mt-4 grid grid-cols-2 gap-2">
           <div className="rounded-lg bg-background border border-border p-2.5 text-center">
-            <Sun className="size-3.5 text-brand mx-auto mb-1 shrink-0" />
+            <Sun className="size-4 text-brand mx-auto mb-1 shrink-0" />
             <p className="text-xs font-bold text-foreground">
               {plan.dailyLeadLimit.toLocaleString()}
             </p>
             <p className="text-[10px] text-muted-foreground">leads/day</p>
           </div>
           <div className="rounded-lg bg-background border border-border p-2.5 text-center">
-            <Calendar className="size-3.5 text-brand mx-auto mb-1 shrink-0" />
+            <Calendar className="size-4 text-brand mx-auto mb-1 shrink-0" />
             <p className="text-xs font-bold text-foreground">
               {plan.monthlyLeadLimit.toLocaleString()}
             </p>

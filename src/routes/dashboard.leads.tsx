@@ -879,7 +879,7 @@ function GetLeads() {
 
             <div className="mt-5 pt-5 border-t border-border/60">
               <div className="flex items-center gap-2 mb-3">
-                <DollarSign className="size-3.5 text-muted-foreground" />
+                <DollarSign className="size-4 text-muted-foreground" />
                 <p className="text-xs font-semibold text-foreground">
                   Business Currency
                 </p>
@@ -929,7 +929,7 @@ function GetLeads() {
                         onClick={() => removeNiche(n)}
                         className="text-muted-foreground hover:text-foreground ml-0.5"
                       >
-                        <X className="size-3" />
+                        <X className="size-4" />
                       </button>
                     </span>
                   ))}
@@ -1044,7 +1044,7 @@ function GetLeads() {
                           : "size-5 rounded-full border-2 border-border shrink-0"
                       }
                     >
-                      {active && <Check className="size-3 text-brand-foreground shrink-0" strokeWidth={3} />}
+                      {active && <Check className="size-4 text-brand-foreground shrink-0" strokeWidth={3} />}
                     </div>
 
                   </button>
@@ -1092,7 +1092,7 @@ function GetLeads() {
                       </div>
                       <div className="text-right shrink-0">
                         <span className="inline-flex items-center gap-1 text-[10px] font-bold text-brand uppercase tracking-wider shrink-0">
-                          <Clock className="size-3 shrink-0" />
+                          <Clock className="size-4 shrink-0" />
                           {s.timeLabel}
                         </span>
                       </div>
@@ -1180,7 +1180,7 @@ function GetLeads() {
                   Session cost
                 </span>
                 <span className="inline-flex items-center gap-1.5 font-bold text-foreground tabular-nums">
-                  <TrendingUp className="size-3.5 text-brand shrink-0" />
+                  <TrendingUp className="size-4 text-brand shrink-0" />
                   {quantity.toLocaleString()} credits
 
                 </span>
@@ -1323,7 +1323,7 @@ function SpeedMetric({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-1">
-        <Icon className={`size-3 shrink-0 ${active ? "text-brand" : "text-muted-foreground"}`} />
+        <Icon className={`size-4 shrink-0 ${active ? "text-brand" : "text-muted-foreground"}`} />
 
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           {label}

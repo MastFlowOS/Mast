@@ -291,7 +291,7 @@ function PricingPage() {
                   >
                     <td className="p-4 text-muted-foreground font-medium text-xs">
                       <div className="flex items-center gap-1.5">
-                        {RowIcon && <RowIcon className="size-3 text-muted-foreground/60" />}
+                        {RowIcon && <RowIcon className="size-4 text-muted-foreground/60" />}
                         {label}
                       </div>
                     </td>

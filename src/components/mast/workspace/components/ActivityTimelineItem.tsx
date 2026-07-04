@@ -60,7 +60,7 @@ export function ActivityTimelineItem({
 
       {/* Icon */}
       <div className={`relative z-10 shrink-0 size-7 rounded-lg ${config.bg} border ${config.border} grid place-items-center`}>
-        <Icon className={`size-3.5 ${config.color}`} />
+        <Icon className={`size-4 ${config.color}`} />
       </div>
 
       {/* Content */}

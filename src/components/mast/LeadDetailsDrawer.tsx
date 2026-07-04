@@ -137,12 +137,12 @@ Mast Acquisition OS`;
               <div className="flex flex-wrap gap-1.5 pt-1">
                 {lead.niche && (
                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-brand/10 text-brand border border-brand/25">
-                    <Tag className="size-2.5" /> {lead.niche}
+                    <Tag className="size-4" /> {lead.niche}
                   </span>
                 )}
                 {lead.location && (
                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-muted text-muted-foreground border border-border">
-                    <MapPin className="size-2.5" /> {lead.location}
+                    <MapPin className="size-4" /> {lead.location}
                   </span>
                 )}
               </div>
@@ -193,7 +193,7 @@ Mast Acquisition OS`;
                   {aiOverview && (
                     <div className="rounded-xl border border-brand/20 bg-brand/5 p-4 space-y-1.5 relative overflow-hidden">
                       <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-brand">
-                        <Sparkles className="size-3.5 text-brand" />
+                        <Sparkles className="size-4 text-brand" />
                         <span>AI Overview</span>
                       </div>
                       <p className="text-xs text-foreground leading-relaxed font-sans">
@@ -204,7 +204,7 @@ Mast Acquisition OS`;
                   {suggestedAction && (
                     <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4 space-y-1.5 relative overflow-hidden">
                       <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-500">
-                        <Zap className="size-3.5 text-amber-500" />
+                        <Zap className="size-4 text-amber-500" />
                         <span>Suggested Action</span>
                       </div>
                       <p className="text-xs text-foreground leading-relaxed font-sans font-medium">
@@ -256,7 +256,7 @@ Mast Acquisition OS`;
                       rel="noopener noreferrer"
                       className="size-7 rounded bg-brand/10 hover:bg-brand/20 grid place-items-center text-brand transition-colors focus:outline-none"
                     >
-                      <ExternalLink className="size-3.5" />
+                      <ExternalLink className="size-4" />
                     </a>
                   ) : undefined
                 }
@@ -277,7 +277,7 @@ Mast Acquisition OS`;
                       rel="noopener noreferrer"
                       className="size-7 rounded bg-brand/10 hover:bg-brand/20 grid place-items-center text-brand transition-colors focus:outline-none"
                     >
-                      <ExternalLink className="size-3.5" />
+                      <ExternalLink className="size-4" />
                     </a>
                   ) : undefined
                 }
@@ -296,7 +296,7 @@ Mast Acquisition OS`;
             <div>
               <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Generated On</p>
               <div className="flex items-center gap-1.5 text-sm font-semibold text-foreground mt-1">
-                <Calendar className="size-3.5 text-muted-foreground" />
+                <Calendar className="size-4 text-muted-foreground" />
                 <span>{new Date(lead.createdAt).toLocaleDateString()}</span>
               </div>
             </div>
@@ -318,11 +318,11 @@ Mast Acquisition OS`;
                 >
                   {copiedField === "AI Message" ? (
                     <>
-                      <Check className="size-3" /> Copied
+                      <Check className="size-4" /> Copied
                     </>
                   ) : (
                     <>
-                      <Copy className="size-3" /> Copy Message
+                      <Copy className="size-4" /> Copy Message
                     </>
                   )}
                 </button>
@@ -356,7 +356,7 @@ Mast Acquisition OS`;
                   onClick={handleGenerateAIMessage}
                   className="inline-flex items-center justify-center gap-2 w-full bg-gradient-to-r from-brand to-brand-dark hover:opacity-95 text-brand-foreground text-xs font-bold py-2.5 px-4 rounded-lg shadow-brand transition-all hover:scale-[1.01] active:scale-[0.99] focus:outline-none"
                 >
-                  <Sparkles className="size-3.5" /> Generate AI Message
+                  <Sparkles className="size-4" /> Generate AI Message
                 </button>
               </div>
             )}
@@ -370,7 +370,7 @@ Mast Acquisition OS`;
             disabled={!lead.email}
             className="flex items-center justify-center gap-2 py-2.5 rounded-lg border border-border bg-background hover:bg-muted font-bold text-xs text-foreground transition-all disabled:opacity-50 disabled:hover:bg-background cursor-pointer"
           >
-            <Send className="size-3.5" /> Send Email
+            <Send className="size-4" /> Send Email
           </button>
 
           <button
@@ -384,15 +384,15 @@ Mast Acquisition OS`;
           >
             {isSaving ? (
               <>
-                <Loader2 className="size-3.5 animate-spin" /> Saving...
+                <Loader2 className="size-4 animate-spin" /> Saving...
               </>
             ) : isSaved ? (
               <>
-                <Check className="size-3.5" /> Saved
+                <Check className="size-4" /> Saved
               </>
             ) : (
               <>
-                <Save className="size-3.5" /> Save to Relationships
+                <Save className="size-4" /> Save to Relationships
               </>
             )}
           </button>
@@ -435,7 +435,7 @@ function ContactField({ label, value, icon: Icon, onCopy, isCopied, action }: Co
           className="size-7 rounded bg-background hover:bg-muted border border-border flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors focus:outline-none"
           title={`Copy ${label}`}
         >
-          {isCopied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+          {isCopied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
         </button>
         {action}
       </div>

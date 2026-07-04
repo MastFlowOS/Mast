@@ -109,7 +109,7 @@ export function StatCard({
         </p>
         {Icon && (
           <div className="size-7 rounded-lg bg-brand/10 grid place-items-center">
-            <Icon className="size-3.5 text-brand" />
+            <Icon className="size-4 text-brand" />
           </div>
         )}
       </div>
@@ -155,7 +155,7 @@ function DeltaBadge({
   if (positive === true) {
     return (
       <p className="flex items-center gap-1 text-xs font-medium text-success">
-        <TrendingUp className="size-3.5" />
+        <TrendingUp className="size-4" />
         {delta}
       </p>
     );
@@ -163,14 +163,14 @@ function DeltaBadge({
   if (positive === false) {
     return (
       <p className="flex items-center gap-1 text-xs font-medium text-destructive">
-        <TrendingDown className="size-3.5" />
+        <TrendingDown className="size-4" />
         {delta}
       </p>
     );
   }
   return (
     <p className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-      <Minus className="size-3.5" />
+      <Minus className="size-4" />
       {delta}
     </p>
   );

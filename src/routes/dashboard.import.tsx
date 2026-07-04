@@ -446,7 +446,7 @@ function ExportSection({
                     : "border-border bg-background text-muted-foreground hover:border-brand/40 hover:text-foreground"
                 }`}
               >
-                <Icon className="size-3.5 shrink-0" />
+                <Icon className="size-4 shrink-0" />
                 {label}
               </button>
             ))}
@@ -519,7 +519,7 @@ function ExportSection({
                 exportFormat === "csv" ? "border-brand bg-brand/10 text-brand" : "border-border bg-background text-muted-foreground hover:border-brand/40"
               }`}
             >
-              <FileText className="size-3.5" /> CSV
+              <FileText className="size-4" /> CSV
             </button>
 
             <button
@@ -535,8 +535,8 @@ function ExportSection({
                   : "border-border bg-muted/30 text-muted-foreground/50 cursor-not-allowed"
               }`}
             >
-              <FileSpreadsheet className="size-3.5" /> Excel (.xlsx)
-              {!isStarterPlus && <Lock className="size-3 ml-0.5 text-muted-foreground/50" />}
+              <FileSpreadsheet className="size-4" /> Excel (.xlsx)
+              {!isStarterPlus && <Lock className="size-4 ml-0.5 text-muted-foreground/50" />}
             </button>
 
             <button
@@ -544,13 +544,13 @@ function ExportSection({
               className="relative flex items-center gap-2 rounded-xl border border-border bg-muted/20 px-4 py-2.5 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
               title="Coming soon"
             >
-              <Globe className="size-3.5" /> Google Sheets
+              <Globe className="size-4" /> Google Sheets
               <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground/60">Soon</span>
             </button>
           </div>
           {!isStarterPlus && (
             <p className="text-xs text-muted-foreground">
-              <Lock className="inline size-3 mr-1" />
+              <Lock className="inline size-4 mr-1" />
               Excel export requires Starter plan or higher.{" "}
               <a href="/dashboard/subscription" className="text-brand hover:underline">Upgrade →</a>
             </p>
@@ -837,7 +837,7 @@ function ImportExportPage() {
                     <div className="max-h-56 overflow-y-auto border-t border-warning/20">
                       {importResult.errors.map((error) => (
                         <div key={`${error.row}-${error.reason}`} className="flex items-center gap-3 border-b border-warning/10 px-5 py-2 text-xs last:border-0">
-                          <XCircle className="size-3.5 shrink-0 text-warning" />
+                          <XCircle className="size-4 shrink-0 text-warning" />
                           <span className="w-16 font-semibold">Row {error.row}</span>
                           <span>{error.reason}</span>
                         </div>
@@ -877,7 +877,7 @@ function ImportExportPage() {
                   <tr key={entry.id} className="border-b border-border/40 last:border-0 hover:bg-card/50">
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-2">
-                        <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
                         <span className="font-medium text-foreground">{entry.fileName}</span>
                       </div>
                     </td>
@@ -918,7 +918,7 @@ function ImportExportPage() {
                     <td className="px-5 py-3 text-muted-foreground">{formatDate(entry.date)}</td>
                     <td className="px-5 py-3">
                       <span className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                        <Filter className="size-3" /> {entry.filter}
+                        <Filter className="size-4" /> {entry.filter}
                       </span>
                     </td>
                     <td className="px-5 py-3 text-right font-semibold text-foreground">{entry.recordCount.toLocaleString()}</td>
@@ -926,7 +926,7 @@ function ImportExportPage() {
                       <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-semibold ${
                         entry.format === "Excel" ? "bg-green-500/10 text-green-500" : "bg-brand/10 text-brand"
                       }`}>
-                        {entry.format === "Excel" ? <FileSpreadsheet className="size-3" /> : <FileText className="size-3" />}
+                        {entry.format === "Excel" ? <FileSpreadsheet className="size-4" /> : <FileText className="size-4" />}
                         {entry.format}
                       </span>
                     </td>

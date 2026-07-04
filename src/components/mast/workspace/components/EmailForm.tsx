@@ -153,7 +153,7 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
             disabled={recordActivity.isPending}
             className="w-full gap-1.5 sm:w-auto"
           >
-            <Mail className="size-3.5" />
+            <Mail className="size-4" />
             Open Email
           </Button>
         )}
@@ -164,7 +164,7 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
           size="sm"
           className="w-full gap-1.5 bg-brand hover:bg-brand/90 text-brand-foreground sm:ml-auto sm:w-auto"
         >
-          {sendEmail.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+          {sendEmail.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
           Send via Connected Email
         </Button>
 
@@ -182,7 +182,7 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
           disabled={isSent || recordActivity.isPending}
           className="w-full gap-1.5 text-muted-foreground hover:text-foreground sm:w-auto"
         >
-          <CheckCircle className={`size-3.5 ${isSent ? "text-green-500" : ""}`} />
+          <CheckCircle className={`size-4 ${isSent ? "text-green-500" : ""}`} />
           {isSent ? "Sent" : "Mark Sent"}
         </Button>
       </div>

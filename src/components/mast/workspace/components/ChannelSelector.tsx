@@ -28,7 +28,7 @@ export function ChannelSelector({
                 : "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-muted-foreground hover:text-foreground text-xs font-medium transition-colors"
             }
           >
-            <ch.icon className="size-3.5" />
+            <ch.icon className="size-4" />
             {ch.label}
           </button>
         );

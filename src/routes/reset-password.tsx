@@ -114,7 +114,7 @@ function ResetPasswordPage() {
               to="/login"
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
             >
-              <ArrowLeft className="size-3.5" /> Back to login
+              <ArrowLeft className="size-4" /> Back to login
             </Link>
           )}
 

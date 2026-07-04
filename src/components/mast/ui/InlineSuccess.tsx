@@ -67,7 +67,7 @@ export function InlineSuccess({
       )}
     >
       <span className="size-4 rounded-full bg-success/15 grid place-items-center">
-        <Check className="size-2.5 text-success" strokeWidth={3} />
+        <Check className="size-4 text-success" strokeWidth={3} />
       </span>
       {label}
     </span>

@@ -401,6 +401,7 @@ async function checkAndResetUsage(profile: any): Promise<any> {
   let activePlan = profile.subscription_plan || "free";
   let pendingPlan = profile.pending_plan_change || null;
   let needsUpdate = false;
+  let monthlyResetTriggered = false;
 
   // Daily Reset check
   if (!dailyReset || new Date(dailyReset) <= now) {
@@ -423,7 +424,8 @@ async function checkAndResetUsage(profile: any): Promise<any> {
   // Monthly Reset check
   if (!monthlyReset || new Date(monthlyReset) <= now) {
     monthlyUsed = 0;
-    
+    monthlyResetTriggered = true;
+
     // Apply pending downgrade plan on monthly cycle reset
     if (pendingPlan) {
       activePlan = pendingPlan;
@@ -438,15 +440,21 @@ async function checkAndResetUsage(profile: any): Promise<any> {
 
   if (needsUpdate) {
     console.log("[Mast:checkAndResetUsage] Lazy reset triggered for user", profile.id);
-    const updateObj = {
+    const updateObj: Record<string, unknown> = {
       daily_leads_used: dailyUsed,
       monthly_leads_used: monthlyUsed,
       next_daily_reset: dailyReset,
       next_monthly_reset: monthlyReset,
-      subscription_plan: activePlan,
-      pending_plan_change: pendingPlan,
     };
-    
+
+    // Only touch plan fields when the monthly branch actually recomputed them.
+    // A daily-only reset must never re-write subscription_plan / pending_plan_change,
+    // since doing so can clobber a plan change that committed concurrently elsewhere.
+    if (monthlyResetTriggered) {
+      updateObj.subscription_plan = activePlan;
+      updateObj.pending_plan_change = pendingPlan;
+    }
+
     const { error } = await supabase
       .from("profiles")
       .update(updateObj)
@@ -572,14 +580,7 @@ export async function startGoogleLogin() {
 
 // ─── Account (Supabase-only) ──────────────────────────────────────────────────
 
-export async function getAccount(): Promise<Account> {
-  const userId = await requireUserId();
-  const { data: profile, error } = await supabase!.from("profiles").select("*").eq("id", userId).single();
-  if (error) throw new ApiError(500, error.message, error);
-
-  // Lazy reset checks
-  const activeProfile = await checkAndResetUsage(profile);
-
+function buildAccountFromProfile(userId: string, activeProfile: any): Account {
   const resolvedPlan = ((activeProfile?.subscription_plan as PlanId) || "free");
   const planConfig = getPlan(resolvedPlan);
 
@@ -633,32 +634,41 @@ export async function getAccount(): Promise<Account> {
   };
 }
 
+  export async function getAccount(): Promise<Account> {
+  const userId = await requireUserId();
+  const { data: profile, error } = await supabase!.from("profiles").select("*").eq("id", userId).single();
+  if (error) throw new ApiError(500, error.message, error);
+
+  const activeProfile = await checkAndResetUsage(profile);
+  return buildAccountFromProfile(userId, activeProfile);
+}
+
 export async function updateSubscription(plan: PlanId): Promise<Account> {
   const userId = await requireUserId();
-  
+
+  // Single read to decide upgrade vs. downgrade — no second getAccount() call
+  // after the write, since that was firing a redundant checkAndResetUsage pass
+  // that could race with this very update.
   const currentAccount = await getAccount();
   const currentPlanConfig = getPlan(currentAccount.subscription.plan);
   const targetPlanConfig = getPlan(plan);
 
   const isDowngrade = targetPlanConfig.priceMonthly < currentPlanConfig.priceMonthly;
 
-  if (isDowngrade) {
-    // Downgrade: set pending_plan_change
-    const { error } = await supabase!
-      .from("profiles")
-      .update({ pending_plan_change: plan })
-      .eq("id", userId);
-    if (error) throw new ApiError(500, error.message, error);
-  } else {
-    // Upgrade: immediate and clear any pending downgrade
-    const { error } = await supabase!
-      .from("profiles")
-      .update({ subscription_plan: plan, pending_plan_change: null })
-      .eq("id", userId);
-    if (error) throw new ApiError(500, error.message, error);
-  }
+  const patch = isDowngrade
+    ? { pending_plan_change: plan }
+    : { subscription_plan: plan, pending_plan_change: null };
 
-  return getAccount();
+  const { data: updated, error } = await supabase!
+    .from("profiles")
+    .update(patch)
+    .eq("id", userId)
+    .select()
+    .single();
+
+  if (error) throw new ApiError(500, error.message, error);
+
+  return buildAccountFromProfile(userId, updated);
 }
 
 // ─── Leads (Supabase) ─────────────────────────────────────────────────────────

@@ -17,6 +17,11 @@ import {
   ShieldCheck,
   Lock,
   Database,
+  Mail,
+  Phone,
+  Instagram,
+  Check,
+  X,
 } from "lucide-react";
 import { PlanCard } from "./index";
 
@@ -49,10 +54,11 @@ type Tier = {
   dailyLeads: string;
   monthlyLeads: string;
   searchCoverage: string;
-  contactChannels: string;
-  aiAccess: string;
+  contactChannels: string[];
+  aiAccess: string[];
   relationships: string;
-  automations: string;
+  automations: boolean;
+  importExport: string;
   teamSeats: string;
   features: string[];
 };
@@ -64,14 +70,15 @@ const tiers: Tier[] = [
     desc: "Explore the platform",
     cta: "Start Free",
     popular: false,
-    dailyLeads: "20 Opportunities / Day",
-    monthlyLeads: "300 Opportunities / Month",
-    searchCoverage: "Local Search",
-    contactChannels: "Business Emails, Business Phone Numbers",
-    aiAccess: "AI-Assisted Opportunity Discovery",
-    relationships: "Relationships Workspace",
-    automations: "—",
-    teamSeats: "1 Team Seat",
+    dailyLeads: "20 / Day",
+    monthlyLeads: "300 / Month",
+    searchCoverage: "Local",
+    contactChannels: ["email", "phone"],
+    aiAccess: ["AI Discovery", "AI Message Templates"],
+    relationships: "✔",
+    automations: false,
+    importExport: "CSV",
+    teamSeats: "1 Seat",
     features: [
       "20 Opportunities / Day",
       "300 Opportunities / Month",
@@ -90,14 +97,15 @@ const tiers: Tier[] = [
     desc: "Solo operators & freelancers",
     cta: "Choose Starter",
     popular: false,
-    dailyLeads: "100 Opportunities / Day",
-    monthlyLeads: "1,500 Opportunities / Month",
-    searchCoverage: "Regional Search",
-    contactChannels: "Business Emails, Business Phone Numbers, Instagram Profiles",
-    aiAccess: "AI Discovery Recommendations",
-    relationships: "Relationships Workspace",
-    automations: "Mission Follow-ups",
-    teamSeats: "1 Team Seat",
+    dailyLeads: "100 / Day",
+    monthlyLeads: "1,500 / Month",
+    searchCoverage: "Regional",
+    contactChannels: ["email", "phone", "instagram"],
+    aiAccess: ["AI Discovery", "AI Recommendations"],
+    relationships: "✔",
+    automations: true,
+    importExport: "CSV",
+    teamSeats: "1 Seat",
     features: [
       "100 Opportunities / Day",
       "1,500 Opportunities / Month",
@@ -114,14 +122,15 @@ const tiers: Tier[] = [
     desc: "Growing agencies",
     cta: "Upgrade to Pro",
     popular: true,
-    dailyLeads: "400 Opportunities / Day",
-    monthlyLeads: "6,000 Opportunities / Month",
-    searchCoverage: "Regional Search",
-    contactChannels: "Business Emails, Business Phone Numbers, Instagram Profiles, Business Websites",
-    aiAccess: "AI Pipeline Coaching & Recommendations",
-    relationships: "Pipeline & Relationships Workspace",
-    automations: "Mission Follow-ups",
-    teamSeats: "3 Team Seats",
+    dailyLeads: "400 / Day",
+    monthlyLeads: "6,000 / Month",
+    searchCoverage: "Regional",
+    contactChannels: ["email", "phone", "instagram", "website"],
+    aiAccess: ["AI Pipeline Coaching"],
+    relationships: "✔ + Pipeline",
+    automations: true,
+    importExport: "CSV",
+    teamSeats: "3 Seats",
     features: [
       "400 Opportunities / Day",
       "6,000 Opportunities / Month",
@@ -137,14 +146,15 @@ const tiers: Tier[] = [
     desc: "Growth operators & enterprises",
     cta: "Contact Sales",
     popular: false,
-    dailyLeads: "1,000 Opportunities / Day",
-    monthlyLeads: "25,000 Opportunities / Month",
-    searchCoverage: "Regional Search",
-    contactChannels: "Business Emails, Business Phone Numbers, Instagram Profiles, Business Websites",
-    aiAccess: "AI Executive Briefings, Weekly Intelligence, AI Opportunity Insights",
-    relationships: "Pipeline & Relationships Workspace",
-    automations: "Mission Follow-ups",
-    teamSeats: "Unlimited Team Seats",
+    dailyLeads: "1,000 / Day",
+    monthlyLeads: "25,000 / Month",
+    searchCoverage: "Regional",
+    contactChannels: ["email", "phone", "instagram", "website"],
+    aiAccess: ["Executive Briefings", "Weekly Intelligence", "Opportunity Insights"],
+    relationships: "✔ + Pipeline",
+    automations: true,
+    importExport: "CSV",
+    teamSeats: "Unlimited",
     features: [
       "1,000 Opportunities / Day",
       "25,000 Opportunities / Month",
@@ -156,17 +166,88 @@ const tiers: Tier[] = [
   },
 ];
 
-type ComparisonRowDef = { label: string; key: keyof Tier; icon?: React.ComponentType<{ className?: string }> };
+// Contact channel icon renderer
+function ContactChannelIcons({ channels }: { channels: string[] }) {
+  const iconMap: Record<string, React.ReactNode> = {
+    email: <Mail key="email" className="size-4 text-sky-400" title="Business Email" />,
+    phone: <Phone key="phone" className="size-4 text-purple-400" title="Business Phone" />,
+    instagram: <Instagram key="instagram" className="size-4 text-pink-400" title="Instagram Profile" />,
+    website: <Globe2 key="website" className="size-4 text-teal-400" title="Business Website" />,
+  };
+  return (
+    <span className="inline-flex items-center gap-1.5 justify-center">
+      {channels.map((ch) => iconMap[ch])}
+    </span>
+  );
+}
+
+// AI features list renderer
+function AiFeatureList({ items, popular }: { items: string[]; popular: boolean }) {
+  return (
+    <ul className="space-y-1 text-left">
+      {items.map((item) => (
+        <li key={item} className={`flex items-center gap-1.5 text-xs ${popular ? "text-brand font-semibold" : "text-foreground/80"}`}>
+          <Bot className={`size-3 shrink-0 ${popular ? "text-brand" : "text-brand/60"}`} />
+          {item}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+type ComparisonRowDef = {
+  label: string;
+  key: keyof Tier;
+  icon?: React.ComponentType<{ className?: string }>;
+  renderCell?: (tier: Tier) => React.ReactNode;
+};
 
 const rows: ComparisonRowDef[] = [
-  { label: "Daily opportunity usage", key: "dailyLeads", icon: Sun },
-  { label: "Monthly opportunity usage", key: "monthlyLeads", icon: Calendar },
-  { label: "Search coverage", key: "searchCoverage" },
-  { label: "Contact channels", key: "contactChannels" },
-  { label: "AI features", key: "aiAccess", icon: Bot },
-  { label: "Relationships workspace", key: "relationships" },
-  { label: "Mission Follow-ups", key: "automations" },
-  { label: "Team seats", key: "teamSeats", icon: Users },
+  {
+    label: "Daily Limit",
+    key: "dailyLeads",
+    icon: Sun,
+  },
+  {
+    label: "Monthly Limit",
+    key: "monthlyLeads",
+    icon: Calendar,
+  },
+  {
+    label: "Search Coverage",
+    key: "searchCoverage",
+  },
+  {
+    label: "Contact Channels",
+    key: "contactChannels",
+    renderCell: (tier) => <ContactChannelIcons channels={tier.contactChannels as string[]} />,
+  },
+  {
+    label: "AI Features",
+    key: "aiAccess",
+    icon: Bot,
+    renderCell: (tier) => <AiFeatureList items={tier.aiAccess as string[]} popular={tier.popular} />,
+  },
+  {
+    label: "Relationships",
+    key: "relationships",
+  },
+  {
+    label: "Mission Follow-ups",
+    key: "automations",
+    renderCell: (tier) => tier.automations
+      ? <CheckCircle2 className="size-4 text-emerald-400 mx-auto" />
+      : <XCircle className="size-4 text-border mx-auto" />,
+  },
+  {
+    label: "Import / Export",
+    key: "importExport",
+  },
+  {
+    label: "Team Seats",
+    key: "teamSeats",
+    icon: Users,
+  },
 ];
 
 const faqs = [
@@ -298,35 +379,35 @@ function PricingPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(({ label, key, icon: RowIcon }, ri) => (
+                {rows.map(({ label, key, icon: RowIcon, renderCell }, ri) => (
                   <tr
                     key={key}
                     className={`border-b border-border/40 hover:bg-white/[0.02] transition-colors ${ri % 2 === 0 ? "bg-background/20" : ""}`}
                   >
                     <td className="p-4 text-muted-foreground font-medium text-xs">
                       <div className="flex items-center gap-1.5">
-                        {RowIcon && <RowIcon className="size-4 text-muted-foreground/60" />}
+                        {RowIcon && <RowIcon className="size-3.5 text-muted-foreground/60" />}
                         {label}
                       </div>
                     </td>
                     {tiers.map((t) => {
+                      if (renderCell) {
+                        return (
+                          <td
+                            key={t.name}
+                            className={`p-4 text-center text-xs ${t.popular ? "text-brand font-semibold" : "text-foreground"}`}
+                          >
+                            {renderCell(t)}
+                          </td>
+                        );
+                      }
                       const val = String(t[key]);
-                      const isDash = val === "—";
-                      const isCheck = val === "✓";
                       return (
                         <td
                           key={t.name}
-                          className={`p-4 text-center text-xs ${t.popular ? "text-brand font-semibold" : "text-foreground"}`}
+                          className={`p-4 text-center text-xs ${t.popular ? "text-brand font-semibold" : "text-foreground/80"}`}
                         >
-                          {isDash ? (
-                            <span className="inline-flex justify-center">
-                              <XCircle className="size-4 text-border" />
-                            </span>
-                          ) : isCheck ? (
-                            <span className="inline-flex justify-center">
-                              <CheckCircle2 className="size-4 text-brand" />
-                            </span>
-                          ) : val}
+                          {val}
                         </td>
                       );
                     })}

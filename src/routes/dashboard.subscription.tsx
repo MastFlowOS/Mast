@@ -16,6 +16,7 @@ import {
   Globe2,
   Check,
   X,
+  XCircle,
   CreditCard,
   Lock,
 } from "lucide-react";
@@ -552,86 +553,160 @@ function Subscription() {
             </tr>
           </thead>
           <tbody className="divide-y divide-border/50">
+            {/* Daily Limit */}
             <tr className="hover:bg-background/20 transition-colors">
-              <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                Daily Limit
+              <td className="p-4 font-semibold text-muted-foreground text-xs uppercase flex items-center gap-1.5">
+                <Sun className="size-3.5 shrink-0" /> Daily Limit
               </td>
-              <td className="p-4 text-foreground font-semibold">20 Opportunities / Day</td>
-              <td className="p-4 text-foreground font-semibold">100 Opportunities / Day</td>
-              <td className="p-4 text-foreground font-semibold">400 Opportunities / Day</td>
-              <td className="p-4 text-foreground font-semibold">1,000 Opportunities / Day</td>
+              <td className="p-4 text-foreground font-semibold">20 / Day</td>
+              <td className="p-4 text-foreground font-semibold">100 / Day</td>
+              <td className="p-4 text-foreground font-semibold">400 / Day</td>
+              <td className="p-4 text-foreground font-semibold">1,000 / Day</td>
             </tr>
+            {/* Monthly Limit */}
             <tr className="hover:bg-background/20 transition-colors">
-              <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                Monthly Limit
+              <td className="p-4 font-semibold text-muted-foreground text-xs uppercase flex items-center gap-1.5">
+                <Calendar className="size-3.5 shrink-0" /> Monthly Limit
               </td>
-              <td className="p-4 text-foreground">300 Opportunities / Month</td>
-              <td className="p-4 text-foreground">1,500 Opportunities / Month</td>
-              <td className="p-4 text-foreground">6,000 Opportunities / Month</td>
-              <td className="p-4 text-foreground">25,000 Opportunities / Month</td>
+              <td className="p-4 text-foreground/80">300 / Month</td>
+              <td className="p-4 text-foreground/80">1,500 / Month</td>
+              <td className="p-4 text-foreground/80">6,000 / Month</td>
+              <td className="p-4 text-foreground/80">25,000 / Month</td>
             </tr>
+            {/* Search Coverage */}
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Search Coverage
               </td>
-              <td className="p-4 text-foreground/80">Local Search</td>
-              <td className="p-4 text-foreground/80">Regional Search</td>
-              <td className="p-4 text-foreground/80">Regional Search</td>
-              <td className="p-4 text-foreground/80">Regional Search</td>
+              <td className="p-4 text-foreground/80">Local</td>
+              <td className="p-4 text-foreground/80">Regional</td>
+              <td className="p-4 text-foreground/80">Regional</td>
+              <td className="p-4 text-foreground/80">Regional</td>
             </tr>
+            {/* Contact Channels — icon-based */}
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Contact Channels
               </td>
-              <td className="p-4 text-foreground/80">Business Emails, Business Phone Numbers</td>
-              <td className="p-4 text-foreground/80">Business Emails, Business Phone Numbers, Instagram Profiles</td>
-              <td className="p-4 text-foreground/80">Business Emails, Business Phone Numbers, Instagram Profiles, Business Websites</td>
-              <td className="p-4 text-foreground/80">Business Emails, Business Phone Numbers, Instagram Profiles, Business Websites</td>
+              {/* Free: Email + Phone */}
+              <td className="p-4">
+                <span className="inline-flex items-center gap-1.5">
+                  <Mail className="size-4 text-sky-400" title="Business Email" />
+                  <Phone className="size-4 text-purple-400" title="Business Phone" />
+                </span>
+              </td>
+              {/* Starter: + Instagram */}
+              <td className="p-4">
+                <span className="inline-flex items-center gap-1.5">
+                  <Mail className="size-4 text-sky-400" title="Business Email" />
+                  <Phone className="size-4 text-purple-400" title="Business Phone" />
+                  <Instagram className="size-4 text-pink-400" title="Instagram Profile" />
+                </span>
+              </td>
+              {/* Pro: + Website */}
+              <td className="p-4">
+                <span className="inline-flex items-center gap-1.5">
+                  <Mail className="size-4 text-sky-400" title="Business Email" />
+                  <Phone className="size-4 text-purple-400" title="Business Phone" />
+                  <Instagram className="size-4 text-pink-400" title="Instagram Profile" />
+                  <Globe2 className="size-4 text-teal-400" title="Business Website" />
+                </span>
+              </td>
+              {/* Premium: all */}
+              <td className="p-4">
+                <span className="inline-flex items-center gap-1.5">
+                  <Mail className="size-4 text-sky-400" title="Business Email" />
+                  <Phone className="size-4 text-purple-400" title="Business Phone" />
+                  <Instagram className="size-4 text-pink-400" title="Instagram Profile" />
+                  <Globe2 className="size-4 text-teal-400" title="Business Website" />
+                </span>
+              </td>
             </tr>
+            {/* AI Features */}
+            <tr className="hover:bg-background/20 transition-colors">
+              <td className="p-4 font-semibold text-muted-foreground text-xs uppercase flex items-center gap-1.5">
+                <Bot className="size-3.5 shrink-0" /> AI Features
+              </td>
+              {/* Free */}
+              <td className="p-4">
+                <ul className="space-y-1">
+                  {["AI Discovery", "AI Message Templates"].map((f) => (
+                    <li key={f} className="flex items-center gap-1.5 text-xs text-foreground/80">
+                      <Bot className="size-3 shrink-0 text-brand/60" />{f}
+                    </li>
+                  ))}
+                </ul>
+              </td>
+              {/* Starter */}
+              <td className="p-4">
+                <ul className="space-y-1">
+                  {["AI Discovery", "AI Recommendations"].map((f) => (
+                    <li key={f} className="flex items-center gap-1.5 text-xs text-foreground/80">
+                      <Bot className="size-3 shrink-0 text-brand/60" />{f}
+                    </li>
+                  ))}
+                </ul>
+              </td>
+              {/* Pro */}
+              <td className="p-4">
+                <ul className="space-y-1">
+                  {["AI Pipeline Coaching"].map((f) => (
+                    <li key={f} className="flex items-center gap-1.5 text-xs text-foreground/80">
+                      <Bot className="size-3 shrink-0 text-brand/60" />{f}
+                    </li>
+                  ))}
+                </ul>
+              </td>
+              {/* Premium */}
+              <td className="p-4">
+                <ul className="space-y-1">
+                  {["Executive Briefings", "Weekly Intelligence", "Opportunity Insights"].map((f) => (
+                    <li key={f} className="flex items-center gap-1.5 text-xs text-foreground/80">
+                      <Bot className="size-3 shrink-0 text-brand/60" />{f}
+                    </li>
+                  ))}
+                </ul>
+              </td>
+            </tr>
+            {/* Relationships */}
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                AI Features
+                Relationships
               </td>
-              <td className="p-4 text-foreground/80">AI-Assisted Opportunity Discovery</td>
-              <td className="p-4 text-foreground/80">AI Discovery Recommendations</td>
-              <td className="p-4 text-foreground/80">AI Pipeline Coaching & Recommendations</td>
-              <td className="p-4 text-foreground/80">AI Executive Briefings, Weekly Intelligence, AI Opportunity Insights</td>
+              <td className="p-4 text-foreground/80">✔</td>
+              <td className="p-4 text-foreground/80">✔</td>
+              <td className="p-4 text-foreground/80">✔ + Pipeline</td>
+              <td className="p-4 text-foreground/80">✔ + Pipeline</td>
             </tr>
-            <tr className="hover:bg-background/20 transition-colors">
-              <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                Relationships Workspace
-              </td>
-              <td className="p-4 text-foreground/80">Relationships Workspace</td>
-              <td className="p-4 text-foreground/80">Relationships Workspace</td>
-              <td className="p-4 text-foreground/80">Pipeline & Relationships Workspace</td>
-              <td className="p-4 text-foreground/80">Pipeline & Relationships Workspace</td>
-            </tr>
+            {/* Mission Follow-ups */}
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Mission Follow-ups
               </td>
-              <td className="p-4 text-foreground/80">—</td>
-              <td className="p-4 text-foreground/80 font-medium">Mission Follow-ups</td>
-              <td className="p-4 text-foreground/80 font-medium">Mission Follow-ups</td>
-              <td className="p-4 text-foreground/80 font-medium">Mission Follow-ups</td>
+              <td className="p-4"><XCircle className="size-4 text-border" /></td>
+              <td className="p-4"><CheckCircle2 className="size-4 text-emerald-400" /></td>
+              <td className="p-4"><CheckCircle2 className="size-4 text-emerald-400" /></td>
+              <td className="p-4"><CheckCircle2 className="size-4 text-emerald-400" /></td>
             </tr>
+            {/* Import / Export */}
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Import / Export
               </td>
-              <td className="p-4 text-foreground/80">CSV Import / Export</td>
-              <td className="p-4 text-foreground/80">CSV Import / Export</td>
-              <td className="p-4 text-foreground/80">CSV Import / Export</td>
-              <td className="p-4 text-foreground/80">CSV Import / Export</td>
+              <td className="p-4 text-foreground/80">CSV</td>
+              <td className="p-4 text-foreground/80">CSV</td>
+              <td className="p-4 text-foreground/80">CSV</td>
+              <td className="p-4 text-foreground/80">CSV</td>
             </tr>
+            {/* Team Seats */}
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Team Seats
               </td>
-              <td className="p-4 text-foreground/80">1 Team Seat</td>
-              <td className="p-4 text-foreground/80">1 Team Seat</td>
-              <td className="p-4 text-foreground/80">3 Team Seats</td>
-              <td className="p-4 text-foreground/80">Unlimited Team Seats</td>
+              <td className="p-4 text-foreground/80">1 Seat</td>
+              <td className="p-4 text-foreground/80">1 Seat</td>
+              <td className="p-4 text-foreground/80">3 Seats</td>
+              <td className="p-4 text-foreground/80">Unlimited</td>
             </tr>
           </tbody>
         </table>

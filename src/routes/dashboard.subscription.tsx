@@ -101,26 +101,27 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
     let features: string[] = [];
     if (targetPlan === "starter") {
       features = [
-        "Relationships Workspace to track interactions",
-        "More daily opportunities (100/day cap)",
-        "AI discovery recommendations",
-        "Business phone numbers & Instagram contacts",
+        "Mission Follow-ups to track interactions",
+        "More daily opportunities (100 Opportunities / Day cap)",
+        "AI Discovery Recommendations",
+        "Instagram Profiles",
+        "Regional Search",
       ];
     } else if (targetPlan === "pro") {
       features = [
-        "Regional & national search",
-        "Full Pipeline workspace with Mission Follow-ups",
-        "AI pipeline coaching & recommendations",
-        "Higher discovery limits (400/day cap)",
-        "3 team seats",
+        "Full Pipeline workspace",
+        "Business Websites",
+        "AI Pipeline Coaching & Recommendations",
+        "Higher discovery limits (400 Opportunities / Day cap)",
+        "3 Team Seats",
       ];
     } else if (targetPlan === "premium") {
       features = [
-        "AI Executive Briefings & Weekly Intelligence",
-        "AI coaching & opportunity insights",
-        "Global search",
-        "Unlimited team seats",
-        "Highest discovery limits (1,000/day cap)",
+        "AI Executive Briefings",
+        "Weekly Intelligence",
+        "AI Opportunity Insights",
+        "Unlimited Team Seats",
+        "Highest discovery limits (1,000 Opportunities / Day cap)",
       ];
     }
     return { type: "upgrade", features };
@@ -128,24 +129,26 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
     let features: string[] = [];
     if (targetPlan === "free") {
       features = [
-        "Relationships Workspace",
-        "Daily opportunity discovery above 20/day",
-        "AI discovery recommendations",
-        "Business phone numbers & Instagram contacts",
+        "Mission Follow-ups",
+        "Instagram Profiles",
+        "AI Discovery Recommendations",
+        "Regional Search",
+        "Daily opportunity discovery above 20 Opportunities / Day",
       ];
     } else if (targetPlan === "starter") {
       features = [
-        "Regional & national search scopes",
-        "Full Pipeline & Mission Follow-ups",
-        "AI pipeline coaching",
-        "High daily caps (above 100/day)",
-        "Additional team seats (reduces to 1)",
+        "Full Pipeline workspace",
+        "Business Websites",
+        "AI Pipeline Coaching & Recommendations",
+        "High daily caps (above 100 Opportunities / Day)",
+        "Additional team seats (reduces to 1 Team Seat)",
       ];
     } else if (targetPlan === "pro") {
       features = [
-        "AI Executive Briefings & Weekly Intelligence",
-        "Global search",
-        "Unlimited team seats (reduces to 3)",
+        "AI Executive Briefings",
+        "Weekly Intelligence",
+        "AI Opportunity Insights",
+        "Unlimited Team Seats (reduces to 3 Team Seats)",
       ];
     }
     return { type: "downgrade", features };
@@ -452,55 +455,67 @@ function Subscription() {
         <h2 className="text-lg font-bold text-center mb-6">Why Users Upgrade</h2>
         <div className="grid md:grid-cols-3 gap-6">
           <div className="p-4 rounded-xl border border-border bg-background/30">
-            <h3 className="font-bold text-sm text-brand mb-2">Starter</h3>
+            <h3 className="font-bold text-sm text-brand mb-2">Why Upgrade to Starter</h3>
             <ul className="space-y-2 text-xs text-muted-foreground">
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Relationships Workspace to track interactions
+                <span className="text-brand font-bold shrink-0">✓</span> Mission Follow-ups
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> More daily opportunities (100/day cap)
+                <span className="text-brand font-bold shrink-0">✓</span> Instagram Profiles
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> AI discovery recommendations
+                <span className="text-brand font-bold shrink-0">✓</span> AI Discovery Recommendations
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Business phones & Instagram contacts
+                <span className="text-brand font-bold shrink-0">✓</span> Regional Search
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-brand font-bold shrink-0">✓</span> 100 Opportunities / Day (1,500 / Month)
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-brand font-bold shrink-0">✓</span> 1 Team Seat
               </li>
             </ul>
           </div>
 
           <div className="p-4 rounded-xl border border-border bg-background/30">
-            <h3 className="font-bold text-sm text-brand mb-2">Pro</h3>
+            <h3 className="font-bold text-sm text-brand mb-2">Why Upgrade to Pro</h3>
             <ul className="space-y-2 text-xs text-muted-foreground">
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Regional & national search
+                <span className="text-brand font-bold shrink-0">✓</span> Pipeline
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Full Pipeline with Mission Follow-ups
+                <span className="text-brand font-bold shrink-0">✓</span> Business Websites
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> AI pipeline coaching & recommendations
+                <span className="text-brand font-bold shrink-0">✓</span> AI Pipeline Coaching & Recommendations
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Higher discovery limits (400/day cap)
+                <span className="text-brand font-bold shrink-0">✓</span> 3 Team Seats
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-brand font-bold shrink-0">✓</span> 400 Opportunities / Day (6,000 / Month)
               </li>
             </ul>
           </div>
 
           <div className="p-4 rounded-xl border border-border bg-background/30">
-            <h3 className="font-bold text-sm text-brand mb-2">Premium</h3>
+            <h3 className="font-bold text-sm text-brand mb-2">Why Upgrade to Premium</h3>
             <ul className="space-y-2 text-xs text-muted-foreground">
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> AI Executive Briefings & Weekly Intelligence
+                <span className="text-brand font-bold shrink-0">✓</span> AI Executive Briefings
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> AI coaching & opportunity insights
+                <span className="text-brand font-bold shrink-0">✓</span> Weekly Intelligence
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Global search coverage
+                <span className="text-brand font-bold shrink-0">✓</span> AI Opportunity Insights
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Unlimited team seats
+                <span className="text-brand font-bold shrink-0">✓</span> Unlimited Team Seats
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-brand font-bold shrink-0">✓</span> 1,000 Opportunities / Day (25,000 / Month)
               </li>
             </ul>
           </div>
@@ -541,82 +556,82 @@ function Subscription() {
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Daily Limit
               </td>
-              <td className="p-4 text-foreground font-semibold">20 opportunities/day</td>
-              <td className="p-4 text-foreground font-semibold">100 opportunities/day</td>
-              <td className="p-4 text-foreground font-semibold">400 opportunities/day</td>
-              <td className="p-4 text-foreground font-semibold">1,000 opportunities/day</td>
+              <td className="p-4 text-foreground font-semibold">20 Opportunities / Day</td>
+              <td className="p-4 text-foreground font-semibold">100 Opportunities / Day</td>
+              <td className="p-4 text-foreground font-semibold">400 Opportunities / Day</td>
+              <td className="p-4 text-foreground font-semibold">1,000 Opportunities / Day</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Monthly Limit
               </td>
-              <td className="p-4 text-foreground">300 / mo</td>
-              <td className="p-4 text-foreground">1,500 / mo</td>
-              <td className="p-4 text-foreground">6,000 / mo</td>
-              <td className="p-4 text-foreground">25,000 / mo</td>
+              <td className="p-4 text-foreground">300 Opportunities / Month</td>
+              <td className="p-4 text-foreground">1,500 Opportunities / Month</td>
+              <td className="p-4 text-foreground">6,000 Opportunities / Month</td>
+              <td className="p-4 text-foreground">25,000 Opportunities / Month</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Search Coverage
               </td>
-              <td className="p-4 text-foreground/80">Local region</td>
-              <td className="p-4 text-foreground/80">Local region</td>
-              <td className="p-4 text-foreground/80">Regional & national</td>
-              <td className="p-4 text-foreground/80">Global search</td>
+              <td className="p-4 text-foreground/80">Local Search</td>
+              <td className="p-4 text-foreground/80">Regional Search</td>
+              <td className="p-4 text-foreground/80">Regional Search</td>
+              <td className="p-4 text-foreground/80">Regional Search</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Contact Channels
               </td>
-              <td className="p-4 text-foreground/80">Email & Website</td>
-              <td className="p-4 text-foreground/80">Email, Phone, Website & Instagram</td>
-              <td className="p-4 text-foreground/80">Email, Phone, Website & Instagram</td>
-              <td className="p-4 text-foreground/80">Email, Phone, Website & Instagram</td>
+              <td className="p-4 text-foreground/80">Business Emails, Business Phone Numbers</td>
+              <td className="p-4 text-foreground/80">Business Emails, Business Phone Numbers, Instagram Profiles</td>
+              <td className="p-4 text-foreground/80">Business Emails, Business Phone Numbers, Instagram Profiles, Business Websites</td>
+              <td className="p-4 text-foreground/80">Business Emails, Business Phone Numbers, Instagram Profiles, Business Websites</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 AI Features
               </td>
-              <td className="p-4 text-foreground/80">AI Opportunity Discovery</td>
-              <td className="p-4 text-foreground/80">AI discovery recommendations</td>
-              <td className="p-4 text-foreground/80">AI pipeline coaching & recommendations</td>
-              <td className="p-4 text-foreground/80">AI Executive Briefings, Coaching & Weekly Intelligence</td>
+              <td className="p-4 text-foreground/80">AI-Assisted Opportunity Discovery</td>
+              <td className="p-4 text-foreground/80">AI Discovery Recommendations</td>
+              <td className="p-4 text-foreground/80">AI Pipeline Coaching & Recommendations</td>
+              <td className="p-4 text-foreground/80">AI Executive Briefings, Weekly Intelligence, AI Opportunity Insights</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Relationships Workspace
               </td>
-              <td className="p-4 text-foreground/80">✗ Export only</td>
-              <td className="p-4 text-foreground/80">✓ Relationships Workspace</td>
-              <td className="p-4 text-foreground/80">✓ Pipeline & Relationships Workspace</td>
-              <td className="p-4 text-foreground/80">✓ Pipeline & Relationships Workspace</td>
+              <td className="p-4 text-foreground/80">Relationships Workspace</td>
+              <td className="p-4 text-foreground/80">Relationships Workspace</td>
+              <td className="p-4 text-foreground/80">Pipeline & Relationships Workspace</td>
+              <td className="p-4 text-foreground/80">Pipeline & Relationships Workspace</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Mission Follow-ups
               </td>
-              <td className="p-4 text-foreground/80">✗ No</td>
-              <td className="p-4 text-foreground/80">✗ No</td>
-              <td className="p-4 text-foreground/80">✓ Yes</td>
-              <td className="p-4 text-foreground/80">✓ Yes</td>
+              <td className="p-4 text-foreground/80">—</td>
+              <td className="p-4 text-foreground/80 font-medium">Mission Follow-ups</td>
+              <td className="p-4 text-foreground/80 font-medium">Mission Follow-ups</td>
+              <td className="p-4 text-foreground/80 font-medium">Mission Follow-ups</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Import / Export
               </td>
-              <td className="p-4 text-foreground/80">CSV export</td>
-              <td className="p-4 text-foreground/80">CSV import & export</td>
-              <td className="p-4 text-foreground/80">CSV import & export</td>
-              <td className="p-4 text-foreground/80">CSV import & export</td>
+              <td className="p-4 text-foreground/80">CSV Import / Export</td>
+              <td className="p-4 text-foreground/80">CSV Import / Export</td>
+              <td className="p-4 text-foreground/80">CSV Import / Export</td>
+              <td className="p-4 text-foreground/80">CSV Import / Export</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Team Seats
               </td>
-              <td className="p-4 text-foreground/80">1 Seat</td>
-              <td className="p-4 text-foreground/80">1 Seat</td>
-              <td className="p-4 text-foreground/80">3 Seats</td>
-              <td className="p-4 text-foreground/80">Unlimited Seats</td>
+              <td className="p-4 text-foreground/80">1 Team Seat</td>
+              <td className="p-4 text-foreground/80">1 Team Seat</td>
+              <td className="p-4 text-foreground/80">3 Team Seats</td>
+              <td className="p-4 text-foreground/80">Unlimited Team Seats</td>
             </tr>
           </tbody>
         </table>
@@ -892,43 +907,30 @@ function PlanCard({
             <p className="text-xs font-bold text-foreground">
               {plan.dailyLeadLimit.toLocaleString()}
             </p>
-            <p className="text-[10px] text-muted-foreground">opp/day</p>
+            <p className="text-[10px] text-muted-foreground">Opportunities / Day</p>
           </div>
           <div className="rounded-lg bg-background border border-border p-2.5 text-center">
             <Calendar className="size-4 text-brand mx-auto mb-1 shrink-0" />
             <p className="text-xs font-bold text-foreground">
               {plan.monthlyLeadLimit.toLocaleString()}
             </p>
-            <p className="text-[10px] text-muted-foreground">opp/mo</p>
+            <p className="text-[10px] text-muted-foreground">Opportunities / Month</p>
           </div>
         </div>
 
         <ul className="mt-5 space-y-2 text-sm text-muted-foreground font-medium">
           {/* AI access row */}
           <li className="flex items-start gap-2">
-            <Bot
-              className={cn(
-                "size-4 shrink-0 mt-0.5",
-                plan.aiAccess === "none" ? "text-border" : "text-brand"
-              )}
-            />
-            <span className={plan.aiAccess === "none" ? "text-muted-foreground/50 font-normal" : "text-foreground/80"}>
-              {aiLabel(plan.aiAccess)}
+            <Bot className="size-4 text-brand shrink-0 mt-0.5" />
+            <span className="text-foreground/80">
+              {aiLabel(plan.id)}
             </span>
           </li>
-          {/* Instant pool */}
-          {plan.allowPremiumPool && (
-            <li className="flex items-start gap-2 text-foreground/80">
-              <Zap className="size-4 text-brand shrink-0 mt-0.5" />
-              Regional & global search
-            </li>
-          )}
           {/* Remaining features */}
           {plan.features
             .filter(
               (f) =>
-                !f.toLowerCase().includes("leads") &&
-                !f.toLowerCase().includes("pool") &&
+                !f.toLowerCase().includes("opportunities") &&
                 !f.toLowerCase().includes("ai")
             )
             .map((f) => (
@@ -956,15 +958,17 @@ function PlanCard({
   );
 }
 
-function aiLabel(ai: PlanConfig["aiAccess"]): string {
-  switch (ai) {
-    case "none":
-      return "No AI features";
-    case "limited":
-      return "AI Opportunity Discovery";
-    case "standard":
-      return "AI pipeline coaching & recommendations";
-    case "full":
-      return "AI Executive Briefings, Coaching & Weekly Intelligence";
+function aiLabel(planId: PlanId): string {
+  switch (planId) {
+    case "free":
+      return "AI-Assisted Opportunity Discovery";
+    case "starter":
+      return "AI Discovery Recommendations";
+    case "pro":
+      return "AI Pipeline Coaching & Recommendations";
+    case "premium":
+      return "AI Executive Briefings, Weekly Intelligence & AI Opportunity Insights";
+    default:
+      return "";
   }
 }

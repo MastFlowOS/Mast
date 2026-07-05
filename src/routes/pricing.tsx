@@ -48,9 +48,10 @@ type Tier = {
   popular: boolean;
   dailyLeads: string;
   monthlyLeads: string;
-  relationships: string;
+  searchCoverage: string;
+  contactChannels: string;
   aiAccess: string;
-  premiumPool: string;
+  relationships: string;
   automations: string;
   teamSeats: string;
   features: string[];
@@ -63,18 +64,24 @@ const tiers: Tier[] = [
     desc: "Explore the platform",
     cta: "Start Free",
     popular: false,
-    dailyLeads: "20 / day",
-    monthlyLeads: "300 / mo",
-    relationships: "CSV export",
-    aiAccess: "AI Opportunity Discovery",
-    premiumPool: "—",
+    dailyLeads: "20 Opportunities / Day",
+    monthlyLeads: "300 Opportunities / Month",
+    searchCoverage: "Local Search",
+    contactChannels: "Business Emails, Business Phone Numbers",
+    aiAccess: "AI-Assisted Opportunity Discovery",
+    relationships: "Relationships Workspace",
     automations: "—",
-    teamSeats: "1 seat",
+    teamSeats: "1 Team Seat",
     features: [
-      "20 opportunities / day (300 / mo)",
-      "AI Opportunity Discovery",
-      "Business emails & websites",
+      "20 Opportunities / Day",
+      "300 Opportunities / Month",
+      "AI-Assisted Opportunity Discovery",
+      "Relationships Workspace",
+      "Business Emails",
+      "Business Phone Numbers",
       "CSV Import / Export",
+      "Local Search",
+      "1 Team Seat",
     ],
   },
   {
@@ -83,18 +90,22 @@ const tiers: Tier[] = [
     desc: "Solo operators & freelancers",
     cta: "Choose Starter",
     popular: false,
-    dailyLeads: "100 / day",
-    monthlyLeads: "1,500 / mo",
+    dailyLeads: "100 Opportunities / Day",
+    monthlyLeads: "1,500 Opportunities / Month",
+    searchCoverage: "Regional Search",
+    contactChannels: "Business Emails, Business Phone Numbers, Instagram Profiles",
+    aiAccess: "AI Discovery Recommendations",
     relationships: "Relationships Workspace",
-    aiAccess: "AI discovery recommendations",
-    premiumPool: "—",
-    automations: "—",
-    teamSeats: "1 seat",
+    automations: "Mission Follow-ups",
+    teamSeats: "1 Team Seat",
     features: [
-      "100 opportunities / day (1,500 / mo)",
-      "Relationships Workspace",
-      "AI discovery recommendations",
-      "Business emails, phones & Instagram",
+      "100 Opportunities / Day",
+      "1,500 Opportunities / Month",
+      "Mission Follow-ups",
+      "Instagram Profiles",
+      "AI Discovery Recommendations",
+      "Regional Search",
+      "1 Team Seat",
     ],
   },
   {
@@ -103,19 +114,21 @@ const tiers: Tier[] = [
     desc: "Growing agencies",
     cta: "Upgrade to Pro",
     popular: true,
-    dailyLeads: "400 / day",
-    monthlyLeads: "6,000 / mo",
+    dailyLeads: "400 Opportunities / Day",
+    monthlyLeads: "6,000 Opportunities / Month",
+    searchCoverage: "Regional Search",
+    contactChannels: "Business Emails, Business Phone Numbers, Instagram Profiles, Business Websites",
+    aiAccess: "AI Pipeline Coaching & Recommendations",
     relationships: "Pipeline & Relationships Workspace",
-    aiAccess: "AI pipeline coaching & recommendations",
-    premiumPool: "—",
     automations: "Mission Follow-ups",
-    teamSeats: "3 seats",
+    teamSeats: "3 Team Seats",
     features: [
-      "400 opportunities / day (6,000 / mo)",
+      "400 Opportunities / Day",
+      "6,000 Opportunities / Month",
       "Pipeline & Relationships Workspace",
-      "Mission Follow-ups",
-      "AI pipeline coaching & recommendations",
-      "Regional & national search · 3 team seats",
+      "Business Websites",
+      "AI Pipeline Coaching & Recommendations",
+      "3 Team Seats",
     ],
   },
   {
@@ -124,19 +137,21 @@ const tiers: Tier[] = [
     desc: "Growth operators & enterprises",
     cta: "Contact Sales",
     popular: false,
-    dailyLeads: "1,000 / day",
-    monthlyLeads: "25,000 / mo",
+    dailyLeads: "1,000 Opportunities / Day",
+    monthlyLeads: "25,000 Opportunities / Month",
+    searchCoverage: "Regional Search",
+    contactChannels: "Business Emails, Business Phone Numbers, Instagram Profiles, Business Websites",
+    aiAccess: "AI Executive Briefings, Weekly Intelligence, AI Opportunity Insights",
     relationships: "Pipeline & Relationships Workspace",
-    aiAccess: "AI Executive Briefings, Coaching & Weekly Intelligence",
-    premiumPool: "✓",
     automations: "Mission Follow-ups",
-    teamSeats: "Unlimited",
+    teamSeats: "Unlimited Team Seats",
     features: [
-      "1,000 opportunities / day (25,000 / mo)",
-      "AI Executive Briefings & Weekly Intelligence",
-      "AI coaching & opportunity insights",
-      "Global search",
-      "Unlimited team seats",
+      "1,000 Opportunities / Day",
+      "25,000 Opportunities / Month",
+      "AI Executive Briefings",
+      "Weekly Intelligence",
+      "AI Opportunity Insights",
+      "Unlimited Team Seats",
     ],
   },
 ];
@@ -146,8 +161,10 @@ type ComparisonRowDef = { label: string; key: keyof Tier; icon?: React.Component
 const rows: ComparisonRowDef[] = [
   { label: "Daily opportunity usage", key: "dailyLeads", icon: Sun },
   { label: "Monthly opportunity usage", key: "monthlyLeads", icon: Calendar },
-  { label: "Relationships workspace", key: "relationships" },
+  { label: "Search coverage", key: "searchCoverage" },
+  { label: "Contact channels", key: "contactChannels" },
   { label: "AI features", key: "aiAccess", icon: Bot },
+  { label: "Relationships workspace", key: "relationships" },
   { label: "Mission Follow-ups", key: "automations" },
   { label: "Team seats", key: "teamSeats", icon: Users },
 ];
@@ -225,7 +242,7 @@ function PricingPage() {
             Pay for outcomes,<br />not seat counts.
           </h1>
           <p className="animate-fade-up delay-200 text-muted-foreground text-[1rem] leading-relaxed max-w-xl mx-auto">
-            Every plan includes the full platform — prospect research, relationship data, pipeline,
+            Every plan includes the full platform — opportunity discovery, relationship data, pipeline,
             and AI assistance. Upgrade when you need more volume.
           </p>
         </div>
@@ -350,7 +367,7 @@ function PricingPage() {
                 icon: Bot,
                 label: "AI features",
                 sub: "Scales with plan",
-                desc: "Discovery recommendations on Free & Starter. Pipeline coaching on Pro. Executive Briefings & Weekly Intelligence on Premium.",
+                desc: "Opportunity discovery on Free. Recommendations on Starter. Pipeline coaching on Pro. Executive Briefings & Intelligence on Premium.",
               },
               {
                 icon: Zap,
@@ -397,7 +414,7 @@ function PricingPage() {
               {
                 icon: Globe2,
                 title: "Public business data",
-                desc: "Prospect information is sourced from publicly available business directories and websites.",
+                desc: "Opportunity information is sourced from publicly available business directories and websites.",
               },
               {
                 icon: Lock,
@@ -437,7 +454,7 @@ function PricingPage() {
             {[
               {
                 plan: "Free",
-                level: "AI Opportunity Discovery",
+                level: "AI-Assisted Opportunity Discovery",
                 color: "text-muted-foreground",
                 desc: "AI surfaces opportunity recommendations as you search — no manual research needed.",
               },
@@ -445,19 +462,19 @@ function PricingPage() {
                 plan: "Starter",
                 level: "AI Discovery Recommendations",
                 color: "text-brand/60",
-                desc: "Personalised opportunity suggestions based on your search criteria and history.",
+                desc: "Personalized opportunity suggestions based on your search criteria and history.",
               },
               {
                 plan: "Pro",
-                level: "AI Pipeline Coaching",
+                level: "AI Pipeline Coaching & Recommendations",
                 color: "text-brand",
-                desc: "AI coaching on pipeline health, follow-up prioritisation, and opportunity recommendations.",
+                desc: "AI coaching on pipeline health, follow-up prioritization, and opportunity recommendations.",
               },
               {
                 plan: "Premium",
                 level: "AI Executive Briefings & Intelligence",
                 color: "text-brand font-bold",
-                desc: "AI Executive Briefings, Weekly Intelligence reports, and in-depth opportunity coaching.",
+                desc: "AI Executive Briefings, Weekly Intelligence reports, and in-depth opportunity insights.",
               },
             ].map(({ plan, level, color, desc }, i) => (
               <div
@@ -477,24 +494,24 @@ function PricingPage() {
         </div>
       </section>
 
-      {/* Lead usage depth */}
+      {/* How Discovery Credits Work */}
       <section className="px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
-            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Opportunity Usage</span>
+            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">How Discovery Credits Work</span>
             <h2 className="mt-3 text-2xl font-bold">More data depth, more usage.</h2>
             <p className="mt-3 text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
-              Request richer information per prospect and it counts more toward your daily allowance —
+              Request richer information per opportunity and it counts more toward your daily allowance —
               but you get more to work with at every step.
             </p>
           </div>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-up delay-100">
             {[
-              { icon: Zap, label: "Business email", cost: "Base", desc: "Verified business email address" },
-              { icon: Globe2, label: "Business phone", cost: "Low +", desc: "Business phone number" },
-              { icon: MessageSquare, label: "Instagram profile", cost: "Medium +", desc: "Public Instagram presence" },
-              { icon: Code2, label: "Website", cost: "Higher +", desc: "Business website" },
+              { icon: Zap, label: "Business Emails", cost: "Base", desc: "Verified business email addresses" },
+              { icon: Globe2, label: "Business Phone Numbers", cost: "Low +", desc: "Business phone numbers" },
+              { icon: MessageSquare, label: "Instagram Profiles", cost: "Medium +", desc: "Public Instagram profiles" },
+              { icon: Code2, label: "Business Websites", cost: "Higher +", desc: "Business websites" },
             ].map(({ icon: Icon, label, cost, desc }, i) => (
               <div
                 key={label}
@@ -544,7 +561,7 @@ function PricingPage() {
               Your pipeline starts here.
             </h2>
             <p className="mt-4 text-muted-foreground max-w-md mx-auto text-sm leading-relaxed">
-              Free plan. 10 prospects per day. No credit card. See the whole platform from day one.
+              Free plan. 20 Opportunities / Day. No credit card. See the whole platform from day one.
             </p>
             <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
               <Link

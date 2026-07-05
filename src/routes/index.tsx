@@ -542,7 +542,17 @@ const plans = [
     price: "$0",
     forWho: "Explore the platform",
     outcome: "See if Mast fits your workflow.",
-    features: ["20 opportunities / day · 300 / mo", "AI Opportunity Discovery", "Business emails & websites", "CSV Import / Export"],
+    features: [
+      "20 Opportunities / Day",
+      "300 Opportunities / Month",
+      "AI-Assisted Opportunity Discovery",
+      "Relationships Workspace",
+      "Business Emails",
+      "Business Phone Numbers",
+      "CSV Import / Export",
+      "Local Search",
+      "1 Team Seat",
+    ],
     cta: "Start Free",
     popular: false,
   },
@@ -551,7 +561,15 @@ const plans = [
     price: "$29",
     forWho: "Solo operators",
     outcome: "Build a real pipeline, on your own.",
-    features: ["100 opportunities / day · 1,500 / mo", "Relationships Workspace", "AI discovery recommendations", "Business emails, phones & Instagram"],
+    features: [
+      "100 Opportunities / Day",
+      "1,500 Opportunities / Month",
+      "Mission Follow-ups",
+      "Instagram Profiles",
+      "AI Discovery Recommendations",
+      "Regional Search",
+      "1 Team Seat",
+    ],
     cta: "Get Started",
     popular: false,
   },
@@ -560,7 +578,14 @@ const plans = [
     price: "$79",
     forWho: "Growing agencies",
     outcome: "Scale your pipeline without scaling headcount.",
-    features: ["400 opportunities / day · 6,000 / mo", "Pipeline & Relationships Workspace", "Mission Follow-ups", "AI pipeline coaching · 3 team seats"],
+    features: [
+      "400 Opportunities / Day",
+      "6,000 Opportunities / Month",
+      "Pipeline & Relationships Workspace",
+      "Business Websites",
+      "AI Pipeline Coaching & Recommendations",
+      "3 Team Seats",
+    ],
     cta: "Upgrade to Pro",
     popular: true,
   },
@@ -569,7 +594,14 @@ const plans = [
     price: "$199",
     forWho: "Growth operators",
     outcome: "Run a full sales operation end-to-end.",
-    features: ["1,000 opportunities / day · 25,000 / mo", "AI Executive Briefings & Weekly Intelligence", "AI coaching & opportunity insights", "Global search · Unlimited seats"],
+    features: [
+      "1,000 Opportunities / Day",
+      "25,000 Opportunities / Month",
+      "AI Executive Briefings",
+      "Weekly Intelligence",
+      "AI Opportunity Insights",
+      "Unlimited Team Seats",
+    ],
     cta: "Contact Sales",
     popular: false,
   },
@@ -689,7 +721,7 @@ function CTA() {
             Your sales operation,<br />finally in one place.
           </h2>
           <p className="mt-5 text-muted-foreground max-w-md mx-auto text-[0.95rem] leading-relaxed animate-fade-up delay-200">
-            Start free. No credit card. Research your first prospects and see how MAST connects
+            Start free. No credit card. Research your first opportunities and see how MAST connects
             the dots between discovery, pipeline, and close.
           </p>
           <div className="mt-9 flex flex-col sm:flex-row gap-3 justify-center animate-fade-up delay-300">

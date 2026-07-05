@@ -101,25 +101,26 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
     let features: string[] = [];
     if (targetPlan === "starter") {
       features = [
-        "Relationship data layer to track interactions",
-        "More daily leads (50/day Cap)",
-        "Limited AI personalization",
+        "Relationships Workspace to track interactions",
+        "More daily opportunities (100/day cap)",
+        "AI discovery recommendations",
+        "Business phone numbers & Instagram contacts",
       ];
     } else if (targetPlan === "pro") {
       features = [
-        "Multi-region and global search",
-        "Full pipeline with triggers",
-        "Direct API access",
-        "Higher limits (200/day Cap)",
-        "Instant pool access",
+        "Regional & national search",
+        "Full Pipeline workspace with Mission Follow-ups",
+        "AI pipeline coaching & recommendations",
+        "Higher discovery limits (400/day cap)",
+        "3 team seats",
       ];
     } else if (targetPlan === "premium") {
       features = [
-        "Premium opportunity pool access",
-        "Full AI Personalization options",
-        "Advanced relationship automations",
-        "Team access up to 10 seats",
-        "Highest daily limits (833/day Cap)",
+        "AI Executive Briefings & Weekly Intelligence",
+        "AI coaching & opportunity insights",
+        "Global search",
+        "Unlimited team seats",
+        "Highest discovery limits (1,000/day cap)",
       ];
     }
     return { type: "upgrade", features };
@@ -127,25 +128,24 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
     let features: string[] = [];
     if (targetPlan === "free") {
       features = [
-        "Built-in relationship data workspace",
-        "Daily lead generation caps above 10",
-        "AI personalization support",
-        "Extended channel contact filters",
+        "Relationships Workspace",
+        "Daily opportunity discovery above 20/day",
+        "AI discovery recommendations",
+        "Business phone numbers & Instagram contacts",
       ];
     } else if (targetPlan === "starter") {
       features = [
-        "Multi-region search scopes",
-        "Full pipeline status tracking",
-        "Direct API access endpoints",
-        "Instant pool access",
-        "High daily caps (above 50/day)",
+        "Regional & national search scopes",
+        "Full Pipeline & Mission Follow-ups",
+        "AI pipeline coaching",
+        "High daily caps (above 100/day)",
+        "Additional team seats (reduces to 1)",
       ];
     } else if (targetPlan === "pro") {
       features = [
-        "Premium verified lead pool",
-        "Dedicated account manager",
-        "Up to 10 team seats (reduces to 3)",
-        "Advanced workflow automations",
+        "AI Executive Briefings & Weekly Intelligence",
+        "Global search",
+        "Unlimited team seats (reduces to 3)",
       ];
     }
     return { type: "downgrade", features };
@@ -295,7 +295,7 @@ function Subscription() {
             <div className="grid md:grid-cols-2 gap-4 mt-6">
               <UsageCard
                 icon={Sun}
-                title="Today's leads"
+                title="Today's opportunities"
                 used={dailyUsed}
                 limit={dailyLimit}
                 remaining={dailyRemaining}
@@ -307,7 +307,7 @@ function Subscription() {
 
               <UsageCard
                 icon={Calendar}
-                title="This month's leads"
+                title="This month's opportunities"
                 used={monthlyUsed}
                 limit={monthlyLimit}
                 remaining={monthlyRemaining}
@@ -392,7 +392,7 @@ function Subscription() {
       <div>
         <h2 className="text-lg font-bold">Change plan</h2>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Select a plan that fits your volume and intelligence needs.
+          Select a plan that fits your opportunity discovery volume and workflow.
         </p>
       </div>
 
@@ -416,31 +416,31 @@ function Subscription() {
       <div>
         <h2 className="text-lg font-bold">Usage by Contact Channel</h2>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Dynamic opportunity volume breakdown categorized by communication channel.
+          Opportunity volume breakdown categorized by available contact channel.
         </p>
       </div>
 
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <ChannelUsageCard
-          label="Email Leads"
+          label="Email Opportunities"
           count={emailLeadsCount}
           color="bg-sky-500"
           icon={Mail}
         />
         <ChannelUsageCard
-          label="Phone Leads"
+          label="Phone Opportunities"
           count={phoneLeadsCount}
           color="bg-purple-500"
           icon={Phone}
         />
         <ChannelUsageCard
-          label="Instagram Leads"
+          label="Instagram Opportunities"
           count={igLeadsCount}
           color="bg-pink-500"
           icon={Instagram}
         />
         <ChannelUsageCard
-          label="Website Leads"
+          label="Website Opportunities"
           count={websiteLeadsCount}
           color="bg-teal-500"
           icon={Globe2}
@@ -455,13 +455,16 @@ function Subscription() {
             <h3 className="font-bold text-sm text-brand mb-2">Starter</h3>
             <ul className="space-y-2 text-xs text-muted-foreground">
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Relationship data layer to track interactions
+                <span className="text-brand font-bold shrink-0">✓</span> Relationships Workspace to track interactions
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> More daily leads (50/day cap)
+                <span className="text-brand font-bold shrink-0">✓</span> More daily opportunities (100/day cap)
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Limited AI personalization
+                <span className="text-brand font-bold shrink-0">✓</span> AI discovery recommendations
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-brand font-bold shrink-0">✓</span> Business phones & Instagram contacts
               </li>
             </ul>
           </div>
@@ -470,16 +473,16 @@ function Subscription() {
             <h3 className="font-bold text-sm text-brand mb-2">Pro</h3>
             <ul className="space-y-2 text-xs text-muted-foreground">
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Multi-region and global search
+                <span className="text-brand font-bold shrink-0">✓</span> Regional & national search
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Full pipeline with follow-up triggers
+                <span className="text-brand font-bold shrink-0">✓</span> Full Pipeline with Mission Follow-ups
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Direct API access for integrations
+                <span className="text-brand font-bold shrink-0">✓</span> AI pipeline coaching & recommendations
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Higher limits (200/day cap)
+                <span className="text-brand font-bold shrink-0">✓</span> Higher discovery limits (400/day cap)
               </li>
             </ul>
           </div>
@@ -488,16 +491,16 @@ function Subscription() {
             <h3 className="font-bold text-sm text-brand mb-2">Premium</h3>
             <ul className="space-y-2 text-xs text-muted-foreground">
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Access to premium verified opportunity pools
+                <span className="text-brand font-bold shrink-0">✓</span> AI Executive Briefings & Weekly Intelligence
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Full AI personalization with templates
+                <span className="text-brand font-bold shrink-0">✓</span> AI coaching & opportunity insights
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> Relationship automations and workflows
+                <span className="text-brand font-bold shrink-0">✓</span> Global search coverage
               </li>
               <li className="flex items-start gap-1.5">
-                <span className="text-brand font-bold shrink-0">✓</span> 10 team seats & dedicated account support
+                <span className="text-brand font-bold shrink-0">✓</span> Unlimited team seats
               </li>
             </ul>
           </div>
@@ -538,73 +541,73 @@ function Subscription() {
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Daily Limit
               </td>
-              <td className="p-4 text-foreground font-semibold">10 leads/day</td>
-              <td className="p-4 text-foreground font-semibold">50 leads/day</td>
-              <td className="p-4 text-foreground font-semibold">200 leads/day</td>
-              <td className="p-4 text-foreground font-semibold">833 leads/day</td>
+              <td className="p-4 text-foreground font-semibold">20 opportunities/day</td>
+              <td className="p-4 text-foreground font-semibold">100 opportunities/day</td>
+              <td className="p-4 text-foreground font-semibold">400 opportunities/day</td>
+              <td className="p-4 text-foreground font-semibold">1,000 opportunities/day</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
                 Monthly Limit
               </td>
-              <td className="p-4 text-foreground">300 leads/mo</td>
-              <td className="p-4 text-foreground">1,500 leads/mo</td>
-              <td className="p-4 text-foreground">6,000 leads/mo</td>
-              <td className="p-4 text-foreground">25,000 leads/mo</td>
+              <td className="p-4 text-foreground">300 / mo</td>
+              <td className="p-4 text-foreground">1,500 / mo</td>
+              <td className="p-4 text-foreground">6,000 / mo</td>
+              <td className="p-4 text-foreground">25,000 / mo</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                Regions
+                Search Coverage
               </td>
-              <td className="p-4 text-foreground/80">Local region only</td>
-              <td className="p-4 text-foreground/80">National search</td>
+              <td className="p-4 text-foreground/80">Local region</td>
+              <td className="p-4 text-foreground/80">Local region</td>
+              <td className="p-4 text-foreground/80">Regional & national</td>
               <td className="p-4 text-foreground/80">Global search</td>
-              <td className="p-4 text-foreground/80">Global search</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                Channels
+                Contact Channels
               </td>
-              <td className="p-4 text-foreground/80">Email + Website</td>
-              <td className="p-4 text-foreground/80">Email, Phone, Website, IG</td>
-              <td className="p-4 text-foreground/80">All channels + Sequences</td>
-              <td className="p-4 text-foreground/80">All channels + Premium pool</td>
+              <td className="p-4 text-foreground/80">Email & Website</td>
+              <td className="p-4 text-foreground/80">Email, Phone, Website & Instagram</td>
+              <td className="p-4 text-foreground/80">Email, Phone, Website & Instagram</td>
+              <td className="p-4 text-foreground/80">Email, Phone, Website & Instagram</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                AI Level
+                AI Features
               </td>
-              <td className="p-4 text-foreground/80">None</td>
-              <td className="p-4 text-foreground/80">Limited AI Personalization</td>
-              <td className="p-4 text-foreground/80">Higher AI Personalization</td>
-              <td className="p-4 text-foreground/80">Full AI Personalization</td>
+              <td className="p-4 text-foreground/80">AI Opportunity Discovery</td>
+              <td className="p-4 text-foreground/80">AI discovery recommendations</td>
+              <td className="p-4 text-foreground/80">AI pipeline coaching & recommendations</td>
+              <td className="p-4 text-foreground/80">AI Executive Briefings, Coaching & Weekly Intelligence</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                Relationship Data Access
+                Relationships Workspace
               </td>
-              <td className="p-4 text-foreground/80">✗ None (Export only)</td>
-              <td className="p-4 text-foreground/80">✓ Relationship data layer</td>
-              <td className="p-4 text-foreground/80">✓ Full pipeline workspace</td>
-              <td className="p-4 text-foreground/80">✓ Relationship automations</td>
+              <td className="p-4 text-foreground/80">✗ Export only</td>
+              <td className="p-4 text-foreground/80">✓ Relationships Workspace</td>
+              <td className="p-4 text-foreground/80">✓ Pipeline & Relationships Workspace</td>
+              <td className="p-4 text-foreground/80">✓ Pipeline & Relationships Workspace</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                Premium Pool Access
+                Mission Follow-ups
               </td>
               <td className="p-4 text-foreground/80">✗ No</td>
               <td className="p-4 text-foreground/80">✗ No</td>
-              <td className="p-4 text-foreground/80">✓ Instant pool access</td>
-              <td className="p-4 text-foreground/80">✓ Premium lead pool</td>
+              <td className="p-4 text-foreground/80">✓ Yes</td>
+              <td className="p-4 text-foreground/80">✓ Yes</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
-                Export Access
+                Import / Export
               </td>
-              <td className="p-4 text-foreground/80">CSV only</td>
-              <td className="p-4 text-foreground/80">CSV only</td>
-              <td className="p-4 text-foreground/80">CSV + API</td>
-              <td className="p-4 text-foreground/80">CSV + API + Webhooks</td>
+              <td className="p-4 text-foreground/80">CSV export</td>
+              <td className="p-4 text-foreground/80">CSV import & export</td>
+              <td className="p-4 text-foreground/80">CSV import & export</td>
+              <td className="p-4 text-foreground/80">CSV import & export</td>
             </tr>
             <tr className="hover:bg-background/20 transition-colors">
               <td className="p-4 font-semibold text-muted-foreground text-xs uppercase">
@@ -613,7 +616,7 @@ function Subscription() {
               <td className="p-4 text-foreground/80">1 Seat</td>
               <td className="p-4 text-foreground/80">1 Seat</td>
               <td className="p-4 text-foreground/80">3 Seats</td>
-              <td className="p-4 text-foreground/80">10 Seats</td>
+              <td className="p-4 text-foreground/80">Unlimited Seats</td>
             </tr>
           </tbody>
         </table>
@@ -889,14 +892,14 @@ function PlanCard({
             <p className="text-xs font-bold text-foreground">
               {plan.dailyLeadLimit.toLocaleString()}
             </p>
-            <p className="text-[10px] text-muted-foreground">leads/day</p>
+            <p className="text-[10px] text-muted-foreground">opp/day</p>
           </div>
           <div className="rounded-lg bg-background border border-border p-2.5 text-center">
             <Calendar className="size-4 text-brand mx-auto mb-1 shrink-0" />
             <p className="text-xs font-bold text-foreground">
               {plan.monthlyLeadLimit.toLocaleString()}
             </p>
-            <p className="text-[10px] text-muted-foreground">leads/mo</p>
+            <p className="text-[10px] text-muted-foreground">opp/mo</p>
           </div>
         </div>
 
@@ -917,13 +920,7 @@ function PlanCard({
           {plan.allowPremiumPool && (
             <li className="flex items-start gap-2 text-foreground/80">
               <Zap className="size-4 text-brand shrink-0 mt-0.5" />
-              Premium lead pool
-            </li>
-          )}
-          {plan.allowInstantPool && !plan.allowPremiumPool && (
-            <li className="flex items-start gap-2 text-foreground/80">
-              <Zap className="size-4 text-brand shrink-0 mt-0.5" />
-              Instant pool access
+              Regional & global search
             </li>
           )}
           {/* Remaining features */}
@@ -962,12 +959,12 @@ function PlanCard({
 function aiLabel(ai: PlanConfig["aiAccess"]): string {
   switch (ai) {
     case "none":
-      return "No AI personalization";
+      return "No AI features";
     case "limited":
-      return "Limited AI";
+      return "AI Opportunity Discovery";
     case "standard":
-      return "Higher AI";
+      return "AI pipeline coaching & recommendations";
     case "full":
-      return "Highest AI";
+      return "AI Executive Briefings, Coaching & Weekly Intelligence";
   }
 }

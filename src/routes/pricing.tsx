@@ -26,12 +26,12 @@ export const Route = createFileRoute("/pricing")({
       { title: "Pricing — Mast" },
       {
         name: "description",
-        content: "Simple daily opportunity limits. Every plan includes prospect research, relationship data, pipeline, and AI assistance — no separate tools required.",
+        content: "Simple daily opportunity limits. Every plan includes AI opportunity discovery, relationships workspace, pipeline, and mission follow-ups — no separate tools required.",
       },
       { property: "og:title", content: "Mast Pricing" },
       {
         property: "og:description",
-        content: "Research, enrich, manage pipeline, and close deals. One platform. Simple pricing.",
+        content: "Discover opportunities, manage relationships, track pipeline, and close deals. One platform. Simple pricing.",
       },
     ],
   }),
@@ -63,18 +63,18 @@ const tiers: Tier[] = [
     desc: "Explore the platform",
     cta: "Start Free",
     popular: false,
-    dailyLeads: "10 / day",
+    dailyLeads: "20 / day",
     monthlyLeads: "300 / mo",
     relationships: "CSV export",
-    aiAccess: "—",
+    aiAccess: "AI Opportunity Discovery",
     premiumPool: "—",
     automations: "—",
     teamSeats: "1 seat",
     features: [
-      "10 prospects / day (300 / mo)",
-      "Business profile research",
-      "Multi-region search",
-      "CSV export",
+      "20 opportunities / day (300 / mo)",
+      "AI Opportunity Discovery",
+      "Business emails & websites",
+      "CSV Import / Export",
     ],
   },
   {
@@ -83,18 +83,18 @@ const tiers: Tier[] = [
     desc: "Solo operators & freelancers",
     cta: "Choose Starter",
     popular: false,
-    dailyLeads: "50 / day",
+    dailyLeads: "100 / day",
     monthlyLeads: "1,500 / mo",
-    relationships: "Relationship data layer",
-    aiAccess: "Limited",
+    relationships: "Relationships Workspace",
+    aiAccess: "AI discovery recommendations",
     premiumPool: "—",
     automations: "—",
     teamSeats: "1 seat",
     features: [
-      "50 prospects / day (1,500 / mo)",
-      "Full contact intelligence",
-      "Relationship data layer",
-      "Limited AI assistance",
+      "100 opportunities / day (1,500 / mo)",
+      "Relationships Workspace",
+      "AI discovery recommendations",
+      "Business emails, phones & Instagram",
     ],
   },
   {
@@ -103,20 +103,19 @@ const tiers: Tier[] = [
     desc: "Growing agencies",
     cta: "Upgrade to Pro",
     popular: true,
-    dailyLeads: "200 / day",
+    dailyLeads: "400 / day",
     monthlyLeads: "6,000 / mo",
-    relationships: "Full Pipeline & Relationships",
-    aiAccess: "Standard",
-    premiumPool: "Included",
-    automations: "Sequences",
+    relationships: "Pipeline & Relationships Workspace",
+    aiAccess: "AI pipeline coaching & recommendations",
+    premiumPool: "—",
+    automations: "Mission Follow-ups",
     teamSeats: "3 seats",
     features: [
-      "200 prospects / day (6,000 / mo)",
-      "All modules + sequences",
-      "Instant intelligence pool",
-      "Higher AI assistance",
-      "Full pipeline workspace",
-      "API access · 3 team seats",
+      "400 opportunities / day (6,000 / mo)",
+      "Pipeline & Relationships Workspace",
+      "Mission Follow-ups",
+      "AI pipeline coaching & recommendations",
+      "Regional & national search · 3 team seats",
     ],
   },
   {
@@ -125,20 +124,19 @@ const tiers: Tier[] = [
     desc: "Growth operators & enterprises",
     cta: "Contact Sales",
     popular: false,
-    dailyLeads: "833 / day",
+    dailyLeads: "1,000 / day",
     monthlyLeads: "25,000 / mo",
-    relationships: "Relationship automations",
-    aiAccess: "Highest",
+    relationships: "Pipeline & Relationships Workspace",
+    aiAccess: "AI Executive Briefings, Coaching & Weekly Intelligence",
     premiumPool: "✓",
-    automations: "Full automations",
+    automations: "Mission Follow-ups",
     teamSeats: "Unlimited",
     features: [
-      "833 prospects / day (25,000 / mo)",
-      "Premium intelligence pool",
-      "Highest AI assistance",
-      "Relationship automations",
+      "1,000 opportunities / day (25,000 / mo)",
+      "AI Executive Briefings & Weekly Intelligence",
+      "AI coaching & opportunity insights",
+      "Global search",
       "Unlimited team seats",
-      "Dedicated account manager",
     ],
   },
 ];
@@ -146,12 +144,11 @@ const tiers: Tier[] = [
 type ComparisonRowDef = { label: string; key: keyof Tier; icon?: React.ComponentType<{ className?: string }> };
 
 const rows: ComparisonRowDef[] = [
-  { label: "Daily lead usage", key: "dailyLeads", icon: Sun },
-  { label: "Monthly lead usage", key: "monthlyLeads", icon: Calendar },
-  { label: "Relationship data access", key: "relationships" },
-  { label: "AI assistance", key: "aiAccess", icon: Bot },
-  { label: "Premium intelligence pool", key: "premiumPool" },
-  { label: "Automations", key: "automations" },
+  { label: "Daily opportunity usage", key: "dailyLeads", icon: Sun },
+  { label: "Monthly opportunity usage", key: "monthlyLeads", icon: Calendar },
+  { label: "Relationships workspace", key: "relationships" },
+  { label: "AI features", key: "aiAccess", icon: Bot },
+  { label: "Mission Follow-ups", key: "automations" },
   { label: "Team seats", key: "teamSeats", icon: Users },
 ];
 
@@ -162,10 +159,10 @@ const faqs = [
   },
   {
     q: "What happens when I reach the daily limit?",
-    a: "Prospect discovery pauses until the next reset. Your monthly allowance is preserved and available again the following day.",
+    a: "Opportunity discovery pauses until the next reset. Your monthly allowance is preserved and available again the following day.",
   },
   {
-    q: "Do unused leads roll over?",
+    q: "Do unused credits roll over?",
     a: "Daily allowances don't carry over — each day starts fresh. Monthly caps reset at the start of your billing cycle.",
   },
   {
@@ -173,16 +170,16 @@ const faqs = [
     a: "Yes. Upgrade, downgrade, or cancel whenever you want. Changes take effect at the next billing cycle.",
   },
   {
-    q: "What's the difference between live research and the instant pool?",
-    a: "Live research fetches fresh business information in real time. The instant intelligence pool (Pro and Premium) gives immediate access to our pre-enriched company database — faster results, higher confidence.",
+    q: "What contact information does Mast surface?",
+    a: "Mast discovers business emails, business phone numbers, websites, and Instagram profiles for each opportunity. The channels available depend on your plan.",
   },
   {
-    q: "What does AI assistance include?",
-    a: "AI helps with outreach drafts, company context, and follow-up suggestions — from basic templates on Starter to fully adaptive multi-step sequences on Premium.",
+    q: "What does the AI actually do?",
+    a: "The AI helps surface opportunity recommendations, provides pipeline coaching, generates executive briefings, and delivers weekly intelligence — depending on your plan. It works within your existing workflow rather than replacing it.",
   },
   {
-    q: "Who owns my relationship data?",
-    a: "You do. Your contacts, notes, pipeline stages, and activity history are yours. Export everything at any time.",
+    q: "Who owns my data?",
+    a: "You do. Your contacts, notes, pipeline stages, and activity history are yours. Export everything at any time via CSV.",
   },
 ];
 
@@ -341,7 +338,7 @@ function PricingPage() {
                 icon: Sun,
                 label: "Daily allowance",
                 sub: "Resets at midnight UTC",
-                desc: "Fresh capacity every morning. Open MAST and it's ready to go.",
+                desc: "Fresh discovery capacity every morning. Open Mast and it's ready to go.",
               },
               {
                 icon: Calendar,
@@ -351,15 +348,15 @@ function PricingPage() {
               },
               {
                 icon: Bot,
-                label: "AI assistance",
+                label: "AI features",
                 sub: "Scales with plan",
-                desc: "Basic templates on Starter. Adaptive multi-step sequences on Premium.",
+                desc: "Discovery recommendations on Free & Starter. Pipeline coaching on Pro. Executive Briefings & Weekly Intelligence on Premium.",
               },
               {
                 icon: Zap,
-                label: "Instant pool",
+                label: "Mission Follow-ups",
                 sub: "Pro & Premium",
-                desc: "Pre-enriched intelligence available before you even click search.",
+                desc: "Structured follow-up tracking so opportunities never fall through the cracks.",
               },
             ].map(({ icon: Icon, label, sub, desc }, i) => (
               <div
@@ -440,27 +437,27 @@ function PricingPage() {
             {[
               {
                 plan: "Free",
-                level: "No AI",
+                level: "AI Opportunity Discovery",
                 color: "text-muted-foreground",
-                desc: "Manual workflow. You research, write, and track everything yourself.",
+                desc: "AI surfaces opportunity recommendations as you search — no manual research needed.",
               },
               {
                 plan: "Starter",
-                level: "Limited AI",
+                level: "AI Discovery Recommendations",
                 color: "text-brand/60",
-                desc: "Basic message templates with company-aware suggestions.",
+                desc: "Personalised opportunity suggestions based on your search criteria and history.",
               },
               {
                 plan: "Pro",
-                level: "Higher AI",
+                level: "AI Pipeline Coaching",
                 color: "text-brand",
-                desc: "Channel-specific drafts, tone selection, and multi-step sequences.",
+                desc: "AI coaching on pipeline health, follow-up prioritisation, and opportunity recommendations.",
               },
               {
                 plan: "Premium",
-                level: "Highest AI",
+                level: "AI Executive Briefings & Intelligence",
                 color: "text-brand font-bold",
-                desc: "Fully adaptive personalization across every channel and follow-up cadence.",
+                desc: "AI Executive Briefings, Weekly Intelligence reports, and in-depth opportunity coaching.",
               },
             ].map(({ plan, level, color, desc }, i) => (
               <div
@@ -495,9 +492,9 @@ function PricingPage() {
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-up delay-100">
             {[
               { icon: Zap, label: "Business email", cost: "Base", desc: "Verified business email address" },
-              { icon: Globe2, label: "Phone", cost: "Low +", desc: "Business phone line" },
-              { icon: MessageSquare, label: "Social profile", cost: "Medium +", desc: "Public social presence" },
-              { icon: Code2, label: "Website intel", cost: "Higher +", desc: "Website, tech stack, contacts" },
+              { icon: Globe2, label: "Business phone", cost: "Low +", desc: "Business phone number" },
+              { icon: MessageSquare, label: "Instagram profile", cost: "Medium +", desc: "Public Instagram presence" },
+              { icon: Code2, label: "Website", cost: "Higher +", desc: "Business website" },
             ].map(({ icon: Icon, label, cost, desc }, i) => (
               <div
                 key={label}

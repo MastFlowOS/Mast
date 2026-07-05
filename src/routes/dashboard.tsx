@@ -5,7 +5,7 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, useCallback } from "react";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { useAccount, useLogout, useMe } from "@/hooks/use-mast-api";
 import {
@@ -55,12 +55,45 @@ function DashboardLayout() {
     if (!authLoading && !user) navigate({ to: "/login" });
   }, [authLoading, navigate, user]);
 
-  // ── Sidebar indicator — index-based translateY, no DOM measurement ─────
-  const activeIdx = NAV.findIndex((item) =>
+  // ── Sidebar indicator — measured dynamically based on DOM layout ─────
+  const navContainerRef = useRef<HTMLElement>(null);
+  const itemRefs = useRef<Map<string, HTMLAnchorElement>>(new Map());
+  const [indicator, setIndicator] = useState<{ top: number; height: number; opacity: number }>({
+    top: 0,
+    height: 40,
+    opacity: 0,
+  });
+
+  const activeTo = NAV.find((item) =>
     item.exact ? pathname === item.to : pathname.startsWith(item.to)
-  );
-  const safeIdx = activeIdx >= 0 ? activeIdx : 0;
-  const dividerOffset = (safeIdx >= 5 ? 21 : 0) + (safeIdx >= 8 ? 21 : 0);
+  )?.to || NAV[0].to;
+
+  const measureItem = useCallback((to: string) => {
+    const container = navContainerRef.current;
+    const el = itemRefs.current.get(to);
+    if (!container || !el) return null;
+    const cr = container.getBoundingClientRect();
+    const er = el.getBoundingClientRect();
+    return { top: er.top - cr.top + container.scrollTop, height: er.height };
+  }, []);
+
+  useEffect(() => {
+    const update = () => {
+      const m = measureItem(activeTo);
+      if (m) {
+        setIndicator({ top: m.top, height: m.height, opacity: 1 });
+      }
+    };
+    
+    update();
+    const raf = requestAnimationFrame(update);
+
+    window.addEventListener("resize", update);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", update);
+    };
+  }, [activeTo, measureItem]);
 
   // ── Notification state ────────────────────────────────────────────────────
   const [notifOpen, setNotifOpen] = useState(false);
@@ -178,7 +211,7 @@ function DashboardLayout() {
               <indicator absolute>  ← translated by safeIdx; accounts for p-3 offset
               <div space-y p-3>     ← normal-flow items; items start at 12px from nav top
         */}
-        <nav className="relative flex-1 overflow-y-auto">
+        <nav ref={navContainerRef} className="relative flex-1 overflow-y-auto">
           {/* Gliding indicator — positioned to match the p-3 item container */}
           <div
             aria-hidden="true"
@@ -186,12 +219,12 @@ function DashboardLayout() {
               position: "absolute",
               left: "12px",
               right: "12px",
-              height: `${ITEM_H}px`,
-              // 12px = p-3 top-padding of the item container below
-              top: `${12 + safeIdx * (ITEM_H + ITEM_GAP) + dividerOffset}px`,
+              height: `${indicator.height}px`,
+              top: `${indicator.top}px`,
+              opacity: indicator.opacity,
               borderRadius: "8px",
               background: "color-mix(in oklab, var(--brand) 12%, transparent)",
-              transition: "top 400ms cubic-bezier(0.16, 1, 0.3, 1)",
+              transition: "top 400ms cubic-bezier(0.16, 1, 0.3, 1), height 400ms cubic-bezier(0.16, 1, 0.3, 1), opacity 150ms ease",
               pointerEvents: "none",
               zIndex: 0,
             }}
@@ -220,6 +253,10 @@ function DashboardLayout() {
                   )}
                   <Link
                     to={item.to}
+                    ref={(el: HTMLAnchorElement | null) => {
+                      if (el) itemRefs.current.set(item.to, el);
+                      else itemRefs.current.delete(item.to);
+                    }}
                     className={cn(
                       "relative z-10 flex items-center gap-3 px-3 py-2 rounded-lg",
                       "text-sm font-medium transition-colors duration-150",

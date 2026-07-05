@@ -9,100 +9,91 @@ import {
   XP_PER_GOAL,
   type FocusGoal,
 } from "@/lib/focus";
-
-const STORAGE_KEY = "mast-focus-progress";
-
-type FocusProgressState = {
-  xp: number;
-  celebratedGoals: Record<string, string>;
-  lastXpDate: string;
-};
+import { useAwardGoalXp, useGoalClaims, useXp } from "@/hooks/use-mast-api";
 
 function todayKey() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function readProgress(): FocusProgressState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { xp: 0, celebratedGoals: {}, lastXpDate: todayKey() };
-    const parsed = JSON.parse(raw) as FocusProgressState;
-    if (parsed.lastXpDate !== todayKey()) {
-      return { ...parsed, celebratedGoals: {}, lastXpDate: todayKey() };
-    }
-    return parsed;
-  } catch {
-    return { xp: 0, celebratedGoals: {}, lastXpDate: todayKey() };
-  }
-}
-
-function writeProgress(state: FocusProgressState) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
+/**
+ * Drives the Focus page's XP + milestone progression.
+ *
+ * There is no local or localStorage state here beyond transient UI (which
+ * goal rows have animated out this session). XP lives in `profiles.xp` in
+ * Supabase; which goals have already been awarded today lives in the
+ * `goal_completions` table. Both are fetched via React Query and mutated
+ * through `award_goal_xp`, a Postgres function that awards XP for a given
+ * goal/day exactly once no matter how many times it's called — so
+ * refreshes, extra tabs, and other devices can never double-award or lose
+ * progress.
+ */
 export function useFocusProgress(goals: FocusGoal[]) {
-  const [progress, setProgress] = useState<FocusProgressState>(() => readProgress());
+  const today = todayKey();
+  const { data: xp = 0, isLoading: xpLoading } = useXp();
+  const { data: claimedToday = [], isLoading: claimsLoading } = useGoalClaims(today);
+  const awardGoalXp = useAwardGoalXp();
+
   const [dismissedGoals, setDismissedGoals] = useState<Set<string>>(new Set());
-  const previousXpRef = useRef(progress.xp);
-  const celebratedRef = useRef(progress.celebratedGoals);
+  // Goal ids we've already attempted to award this session — guards against
+  // firing duplicate mutations while one is still in flight. The real
+  // duplicate-award protection lives server-side; this is just to avoid
+  // redundant network calls.
+  const attemptedRef = useRef<Set<string>>(new Set());
+  const claimedSet = new Set(claimedToday);
 
   useEffect(() => {
-    const day = todayKey();
-    const newlyCompleted: FocusGoal[] = [];
-
     for (const goal of goals) {
       if (!isGoalComplete(goal)) continue;
-      if (celebratedRef.current[goal.id] === day) continue;
-      newlyCompleted.push(goal);
+      if (claimedSet.has(goal.id)) continue;
+      if (attemptedRef.current.has(goal.id)) continue;
+
+      attemptedRef.current.add(goal.id);
+
+      awardGoalXp.mutate(
+        { goalId: goal.id, date: today, xp: XP_PER_GOAL },
+        {
+          onSuccess: ({ xp: newXp, awarded }) => {
+            if (!awarded) return; // Already claimed elsewhere — nothing new to celebrate.
+
+            toast.success("🎉 Congratulations!", {
+              description: pickCelebration(goal.id),
+              duration: 5000,
+            });
+            window.setTimeout(() => {
+              setDismissedGoals((prev) => new Set(prev).add(goal.id));
+            }, 2400);
+
+            const prevXp = newXp - XP_PER_GOAL;
+            const prevMilestone = getCurrentMilestone(prevXp);
+            const nextMilestone = getCurrentMilestone(newXp);
+            if (prevMilestone.id !== nextMilestone.id) {
+              window.setTimeout(() => {
+                toast("🏆 Milestone unlocked", {
+                  description: `You've reached ${nextMilestone.name}. ${nextMilestone.reward}.`,
+                  duration: 6000,
+                });
+              }, 800);
+            }
+          },
+          onError: () => {
+            // Allow a retry on the next data change instead of getting stuck.
+            attemptedRef.current.delete(goal.id);
+          },
+        },
+      );
     }
-
-    if (newlyCompleted.length === 0) return;
-
-    const nextCelebrated = { ...celebratedRef.current };
-    for (const goal of newlyCompleted) {
-      nextCelebrated[goal.id] = day;
-      toast.success("🎉 Congratulations!", {
-        description: pickCelebration(goal.id),
-        duration: 5000,
-      });
-      window.setTimeout(() => {
-        setDismissedGoals((prev) => new Set(prev).add(goal.id));
-      }, 2400);
-    }
-
-    const xpGain = newlyCompleted.length * XP_PER_GOAL;
-    const nextXp = progress.xp + xpGain;
-    const nextState = {
-      xp: nextXp,
-      celebratedGoals: nextCelebrated,
-      lastXpDate: day,
-    };
-
-    celebratedRef.current = nextCelebrated;
-    writeProgress(nextState);
-    setProgress(nextState);
-
-    const prevMilestone = getCurrentMilestone(previousXpRef.current);
-    const nextMilestone = getCurrentMilestone(nextXp);
-    if (prevMilestone.id !== nextMilestone.id) {
-      window.setTimeout(() => {
-        toast("🏆 Milestone unlocked", {
-          description: `You've reached ${nextMilestone.name}. ${nextMilestone.reward}.`,
-          duration: 6000,
-        });
-      }, 800);
-    }
-    previousXpRef.current = nextXp;
-  }, [goals, progress.xp]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [goals, today, claimedToday.join(",")]);
 
   const visibleGoals = goals.filter((goal) => !dismissedGoals.has(goal.id));
 
   return {
-    xp: progress.xp,
+    xp,
     visibleGoals,
-    currentMilestone: getCurrentMilestone(progress.xp),
-    nextMilestone: getNextMilestone(progress.xp),
-    milestonePct: milestoneProgress(progress.xp),
+    currentMilestone: getCurrentMilestone(xp),
+    nextMilestone: getNextMilestone(xp),
+    milestonePct: milestoneProgress(xp),
+    isLoading: xpLoading || claimsLoading,
   };
 }

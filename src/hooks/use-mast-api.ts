@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  awardGoalXp,
   bulkDeleteLeads,
   bulkImportLeads,
   bulkUpdateLeads,
@@ -12,6 +13,7 @@ import {
   getAccount,
   getAnalyticsSummary,
   getFollowups,
+  getGoalClaims,
   getLead,
   getLeadActivities,
   getLeadFollowups,
@@ -21,6 +23,7 @@ import {
   getPipelineStats,
   getRecentActivity,
   getSettings,
+  getXp,
   login,
   logout,
   sendLeadEmail,
@@ -50,6 +53,8 @@ export const queryKeys = {
   leads: (params?: Record<string, string | number | undefined>) => ["mast", "leads", params ?? {}] as const,
   analytics: ["mast", "analytics"] as const,
   settings: ["mast", "settings"] as const,
+  xp: ["mast", "xp"] as const,
+  goalClaims: (date: string) => ["mast", "goalClaims", date] as const,
   lead: (id: number | string | undefined) => ["mast", "lead", String(id)] as const,
   leadActivities: (id: number | string | undefined) => ["mast", "lead", String(id), "activities"] as const,
   leadMessages: (id: number | string | undefined) => ["mast", "lead", String(id), "messages"] as const,
@@ -115,6 +120,45 @@ export function useSettings(enabled = true) {
     queryKey: queryKeys.settings,
     queryFn: getSettings,
     enabled,
+  });
+}
+
+/** Persistent, server-side XP total. Never resets — only ever increases via `useAwardGoalXp`. */
+export function useXp(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.xp,
+    queryFn: getXp,
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
+/** Goal ids that have already had XP awarded for the given YYYY-MM-DD (local) day. */
+export function useGoalClaims(date: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.goalClaims(date),
+    queryFn: () => getGoalClaims(date),
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
+/**
+ * Award XP for completing a goal on a given day. The server enforces
+ * exactly-once-per-goal-per-day; `awarded` in the result tells the caller
+ * whether this call is what actually granted the XP (vs. already claimed).
+ */
+export function useAwardGoalXp() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ goalId, date, xp }: { goalId: string; date: string; xp: number }) =>
+      awardGoalXp(goalId, date, xp),
+    onSuccess: (result, variables) => {
+      queryClient.setQueryData(queryKeys.xp, result.xp);
+      queryClient.setQueryData(queryKeys.goalClaims(variables.date), (prev: string[] | undefined) =>
+        prev?.includes(variables.goalId) ? prev : [...(prev ?? []), variables.goalId],
+      );
+    },
   });
 }
 

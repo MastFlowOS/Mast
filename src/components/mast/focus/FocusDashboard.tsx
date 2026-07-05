@@ -22,7 +22,6 @@ export function FocusDashboard() {
 
   const firstName = auth?.user?.fullName?.split(/\s+/)[0] || "there";
   const leads = normalizeLeads(leadsPayload);
-  const loading = authLoading || analyticsLoading || leadsLoading || followupsLoading;
 
   const dailyUsed = account?.dailyUsage?.used ?? auth?.user?.dailyLeadsUsed ?? 0;
   const dailyLimit = account?.dailyUsage?.limit ?? (auth?.user ? getPlan(auth.user.plan).dailyLeadLimit : 20);
@@ -46,7 +45,16 @@ export function FocusDashboard() {
   );
 
   const snapshot = useMemo(() => buildFocusSnapshot(firstName, ctx), [firstName, ctx]);
-  const { visibleGoals, xp, currentMilestone, nextMilestone, milestonePct } = useFocusProgress(snapshot.goals);
+  const {
+    visibleGoals,
+    xp,
+    currentMilestone,
+    nextMilestone,
+    milestonePct,
+    isLoading: progressLoading,
+  } = useFocusProgress(snapshot.goals);
+
+  const loading = authLoading || analyticsLoading || leadsLoading || followupsLoading || progressLoading;
 
   if (loading) {
     return <FocusLoading />;

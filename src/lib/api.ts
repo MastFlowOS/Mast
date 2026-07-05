@@ -1029,6 +1029,65 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
   return merged;
 }
 
+// ─── Progression: XP & Goal Completions (Supabase) ────────────────────────────
+//
+// XP lives on `profiles.xp` and only ever increases. Daily goals are never
+// persisted — they're computed live from leads/followups (see lib/focus.ts).
+// Awarding XP for a goal is idempotent per (user, goal, calendar day) via the
+// `award_goal_xp` Postgres function and the unique constraint backing it, so
+// refreshes, duplicate tabs, and multiple devices can never double-award.
+
+export async function getXp(): Promise<number> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!.from("profiles").select("xp").eq("id", userId).single();
+  if (error) {
+    console.warn("[Mast:getXp] failed, defaulting to 0", error.message);
+    return 0;
+  }
+  return (data?.xp as number | null) ?? 0;
+}
+
+/** Goal ids that have already had XP awarded for the given calendar day (YYYY-MM-DD, local time). */
+export async function getGoalClaims(date: string): Promise<string[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!
+    .from("goal_completions")
+    .select("goal_id")
+    .eq("user_id", userId)
+    .eq("completed_on", date);
+
+  if (error) {
+    console.warn("[Mast:getGoalClaims] failed, returning empty", error.message);
+    return [];
+  }
+
+  return (data ?? []).map((row: { goal_id: string }) => row.goal_id);
+}
+
+/**
+ * Award XP for completing `goalId` on `date` (YYYY-MM-DD, local time).
+ * Safe to call more than once for the same goal/day: the server only awards
+ * XP the first time and reports `awarded: false` on every subsequent call,
+ * returning the user's current total either way.
+ */
+export async function awardGoalXp(
+  goalId: string,
+  date: string,
+  xp: number,
+): Promise<{ xp: number; awarded: boolean }> {
+  await requireUserId();
+  const { data, error } = await supabase!.rpc("award_goal_xp", {
+    p_goal_id: goalId,
+    p_completed_on: date,
+    p_xp: xp,
+  });
+
+  if (error) throw new ApiError(500, error.message, error);
+
+  const row = Array.isArray(data) ? data[0] : data;
+  return { xp: (row?.xp as number) ?? 0, awarded: !!row?.awarded };
+}
+
 // ─── Lead Activities (Supabase) ───────────────────────────────────────────────
 
 export async function getLeadActivities(id: number | string): Promise<LeadActivity[]> {

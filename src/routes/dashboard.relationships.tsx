@@ -332,7 +332,7 @@ function StarButton({
       }`}
     >
       <Star
-        className="size-3.5"
+        className="size-4"
         fill={starred ? "currentColor" : "none"}
         strokeWidth={1.8}
       />

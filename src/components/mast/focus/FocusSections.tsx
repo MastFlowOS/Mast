@@ -387,8 +387,8 @@ export function FocusRecommendations({ recommendations }: RecommendationsProps) 
         .rec-icon-danger  { background: color-mix(in oklab, var(--destructive) 12%, transparent); border-color: color-mix(in oklab, var(--destructive) 25%, transparent); color: oklch(0.7 0.22 25); }
 
         .rec-icon {
-          width: 0.9375rem;
-          height: 0.9375rem;
+          width: 1rem;
+          height: 1rem;
         }
 
         /* Title — single line, truncates instead of overflowing */
@@ -437,8 +437,8 @@ export function FocusRecommendations({ recommendations }: RecommendationsProps) 
           text-decoration: none;
         }
         .rec-detail-link-arrow {
-          width: 0.8125rem;
-          height: 0.8125rem;
+          width: 1rem;
+          height: 1rem;
           transition: transform 150ms ease;
         }
         .rec-detail-link:hover .rec-detail-link-arrow {
@@ -446,8 +446,8 @@ export function FocusRecommendations({ recommendations }: RecommendationsProps) 
         }
 
         .rec-action-arrow {
-          width: 0.9rem;
-          height: 0.9rem;
+          width: 1rem;
+          height: 1rem;
         }
 
         @media (max-width: 680px) {
@@ -764,7 +764,7 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
           color: var(--color-success);
         }
 
-        .goal-check-icon { width: 0.75rem; height: 0.75rem; }
+        .goal-check-icon { width: 1rem; height: 1rem; }
         .goal-check-num {
           font-size: 0.625rem;
           font-weight: 800;
@@ -1108,10 +1108,10 @@ export function FocusDiscoverCta() {
           transform: scale(0.97);
         }
 
-        .discover-cta-icon { width: 0.9rem; height: 0.9rem; }
+        .discover-cta-icon { width: 1rem; height: 1rem; }
         .discover-cta-arrow {
-          width: 0.875rem;
-          height: 0.875rem;
+          width: 1rem;
+          height: 1rem;
           transition: transform 150ms ease;
         }
         .discover-cta-link:hover .discover-cta-arrow {

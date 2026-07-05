@@ -263,53 +263,6 @@ function NicheMultiSelect({
   );
 }
 
-// ─── Stats Bar ────────────────────────────────────────────────────────────────
-
-function StatsBar({ leads }: { leads: Lead[] }) {
-  const total = leads.length;
-  const newCount = leads.filter(
-    (l) => normalizeLeadStatus(l.status) === "new"
-  ).length;
-  const contactedCount = leads.filter((l) =>
-    ["email_sent", "called", "instagram_sent"].includes(
-      normalizeLeadStatus(l.status)
-    )
-  ).length;
-  const repliedCount = leads.filter((l) =>
-    ["replied", "meeting_booked"].includes(normalizeLeadStatus(l.status))
-  ).length;
-  const closedCount = leads.filter(
-    (l) => normalizeLeadStatus(l.status) === "closed"
-  ).length;
-
-  const stats = [
-    { label: "Total", value: total, color: "text-foreground" },
-    { label: "New", value: newCount, color: "text-blue-400" },
-    { label: "Contacted", value: contactedCount, color: "text-indigo-400" },
-    { label: "Replied", value: repliedCount, color: "text-brand" },
-    { label: "Closed", value: closedCount, color: "text-success" },
-  ];
-
-  return (
-    <div className="flex flex-wrap items-center gap-0 border-b border-border bg-background/60">
-      {stats.map((stat, index) => (
-        <div
-          key={stat.label}
-          className={`flex flex-col items-center px-5 py-2.5 ${
-            index < stats.length - 1 ? "border-r border-border" : ""
-          }`}
-        >
-          <span className={`text-lg font-bold tabular-nums ${stat.color}`}>
-            {stat.value.toLocaleString()}
-          </span>
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {stat.label}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // ─── Star Button ──────────────────────────────────────────────────────────────
 
@@ -779,17 +732,6 @@ function Relationships() {
             </div>
           </div>
         </div>
-      </div>
-
-      {/* Stats bar */}
-      <div
-        className={`transition-all duration-300 ease-in-out origin-top overflow-hidden ${
-          focusMode
-            ? "max-h-0 opacity-0 pointer-events-none border-b-0"
-            : "max-h-[100px] opacity-100"
-        }`}
-      >
-        {!isLoading && allLeads.length > 0 && <StatsBar leads={allLeads} />}
       </div>
 
       {/* Bulk actions */}

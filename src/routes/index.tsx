@@ -14,7 +14,7 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Mast — The AI Sales Operating System" },
-      { name: "description", content: "Research companies, qualify opportunities, manage your pipeline, and run follow-ups — all in one AI-powered workspace. MAST is the operating system for modern sales teams." },
+      { name: "description", content: "Research businesses, manage opportunities, run your pipeline, and stay on top of every relationship — all in one AI-powered sales workspace. MAST is the operating system for modern sales teams." },
       { property: "og:title", content: "Mast — The AI Sales Operating System" },
       { property: "og:description", content: "One workspace. AI-powered. Built for teams that close deals." },
     ],
@@ -85,7 +85,7 @@ function Hero() {
         {/* Sub */}
         <p className="animate-fade-up delay-200 text-[1.1rem] text-muted-foreground mb-10 max-w-[520px] mx-auto leading-relaxed">
           MAST replaces your scattered sales stack with one AI workspace —
-          research, relationship data, pipeline, and follow-ups, all talking to each other.
+          business research, relationship data, pipeline, and reminders, all talking to each other.
         </p>
 
         {/* CTAs */}
@@ -114,11 +114,11 @@ function Hero() {
         {/* Platform pills */}
         <div className="animate-fade-up delay-500 mt-10 flex flex-wrap items-center justify-center gap-2">
           {[
-            { icon: Target, label: "Prospect Research" },
+            { icon: Target, label: "Business Research" },
             { icon: BarChart3, label: "Pipeline" },
             { icon: Users, label: "Relationship Data" },
             { icon: Sparkles, label: "AI Intelligence" },
-            { icon: Bell, label: "Follow-ups" },
+            { icon: Bell, label: "Reminders" },
           ].map(({ icon: Icon, label }) => (
             <span
               key={label}
@@ -200,7 +200,7 @@ function ProductPreview() {
               <nav className="space-y-0.5">
                 {[
                   { label: "Focus", active: false },
-                  { label: "Prospects", active: false },
+                  { label: "Research", active: false },
                   { label: "Pipeline", active: true },
                   { label: "Pipeline", active: false },
                   { label: "Insights", active: false },
@@ -365,10 +365,10 @@ function Problem() {
   const n3 = useCountUp(340, 1100, visible);
 
   const bullets = [
-    "Find the right companies before your competitors do.",
-    "Qualify fast with AI-enriched business profiles.",
+    "Research the right businesses before your competitors do.",
+    "Evaluate opportunities fast with AI-enriched business profiles.",
     "Track every deal in a pipeline that's already connected.",
-    "Never miss a follow-up. Never lose a deal to silence.",
+    "Never miss a reminder. Never lose a deal to silence.",
   ];
 
   return (
@@ -381,8 +381,8 @@ function Problem() {
             <span className="text-muted-foreground">Yours should.</span>
           </h2>
           <p className="mt-5 text-muted-foreground leading-relaxed text-[0.95rem]">
-            The average sales team juggles five separate tools — a scraper, a spreadsheet,
-            a database, a sequencer, and a calendar. Every handoff is a gap where deals fall through.
+            The average sales team juggles five separate tools — a research tool, a spreadsheet,
+            a database, a CRM, and a calendar. Every handoff is a gap where deals fall through.
             MAST closes those gaps.
           </p>
           <ul className="mt-8 space-y-3.5">
@@ -423,8 +423,8 @@ function Problem() {
                 <p className="text-[10px] font-bold text-brand uppercase tracking-wider">AI Recommendation</p>
               </div>
               <p className="text-sm text-foreground leading-relaxed">
-                Luminal AI hasn't heard from you in 6 days. Their funding round closes Friday.
-                Now is the right time to reach out.
+                Luminal AI hasn't had an update in 6 days and their funding round closes Friday.
+                Consider moving this opportunity forward with a follow-up meeting.
               </p>
               <p className="mt-2.5 text-[10px] text-muted-foreground">MAST Intelligence · Suggested action</p>
             </div>
@@ -439,9 +439,9 @@ function Problem() {
 const features = [
   {
     icon: Target,
-    outcome: "Find your next customer.",
-    title: "Prospect Research",
-    desc: "Discover and qualify companies using publicly available business information. Filter by industry, region, and size to surface the right opportunities.",
+    outcome: "Understand your market.",
+    title: "Business Research",
+    desc: "Research and evaluate companies using publicly available business information. Filter by industry, region, and size to organize the right opportunities.",
   },
   {
     icon: Sparkles,
@@ -453,7 +453,7 @@ const features = [
     icon: TrendingUp,
     outcome: "Work the best deals first.",
     title: "Opportunity Scoring",
-    desc: "Every prospect is scored on relevance signals. Your team always knows which accounts to prioritize.",
+    desc: "Every opportunity is scored on relevance signals. Your team always knows which accounts to prioritize.",
   },
   {
     icon: Users,
@@ -469,9 +469,9 @@ const features = [
   },
   {
     icon: Bell,
-    outcome: "Follow up before they forget you.",
-    title: "Automated Follow-ups",
-    desc: "Scheduled reminders and activity tracking ensure no opportunity goes cold from lack of attention.",
+    outcome: "Never let a relationship go quiet.",
+    title: "Reminders & Activity Tracking",
+    desc: "Scheduled reminders and activity tracking keep every opportunity and relationship moving forward.",
   },
   {
     icon: BarChart3,
@@ -481,15 +481,15 @@ const features = [
   },
   {
     icon: Layers,
-    outcome: "Reach out, all from one place.",
-    title: "Multi-channel Outreach",
-    desc: "Email, phone, and social channels coordinated inside the workspace. Every interaction logged automatically.",
+    outcome: "Every conversation, in one timeline.",
+    title: "Communication Management",
+    desc: "Email, phone, and social channels organized inside the workspace. Every interaction logged automatically into a single history.",
   },
   {
     icon: ShieldCheck,
     outcome: "Your data. Your relationship network.",
     title: "Privacy & Ownership",
-    desc: "All prospect data sourced from public business information. Your relationship data belongs to you — export any time.",
+    desc: "All business data sourced from public business information. Your relationship data belongs to you — export any time.",
   },
 ];
 
@@ -678,7 +678,7 @@ function PricingPreview() {
             One price. No surprises.
           </h2>
           <p className="mt-4 text-muted-foreground">
-            Daily lead limits keep your pipeline active all month, not just week one.
+            Daily opportunity limits keep your pipeline active all month, not just week one.
           </p>
         </div>
         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">

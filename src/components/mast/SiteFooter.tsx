@@ -34,7 +34,7 @@ export function SiteFooter() {
               <span className="font-bold tracking-[0.12em] text-foreground">MAST</span>
             </div>
             <p className="text-sm text-muted-foreground max-w-xs leading-relaxed">
-              The premium operating system for client acquisition. Built for modern agencies, freelancers, and growth operators.
+              The premium AI sales workspace for managing relationships and pipeline. Built for modern agencies, freelancers, and growth operators.
             </p>
 
             {/* Socials — only rendered if URLs are configured */}
@@ -88,7 +88,7 @@ export function SiteFooter() {
         {/* Bottom bar */}
         <div className="pt-8 border-t border-border/40 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-muted-foreground">
           <span>© 2026 Mast Intelligence Inc.</span>
-          <span className="text-muted-foreground/60">Built for operators who hate cold inboxes.</span>
+          <span className="text-muted-foreground/60">Built for operators who run a real sales process.</span>
         </div>
       </div>
     </footer>

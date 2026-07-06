@@ -1357,7 +1357,7 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
   const token = session?.access_token;
   if (!token) throw new ApiError(401, "Not authenticated", {});
 
-  const response = await fetch("/.netlify/functions/send-email", {
+  const response = await fetch("/api/send-email", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1415,7 +1415,7 @@ export async function testSmtpConnection(credentials: {
   const token = session?.access_token;
   if (!token) throw new ApiError(401, "Not authenticated", {});
 
-  const response = await fetch("/.netlify/functions/test-smtp", {
+  const response = await fetch("/api/test-smtp", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

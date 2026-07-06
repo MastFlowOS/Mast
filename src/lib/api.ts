@@ -43,6 +43,7 @@ export type AuthUser = {
   nextDailyReset: string | null;
   nextMonthlyReset: string | null;
   pendingPlanChange: PlanId | null;
+  workspaceStatus?: string;
 };
 
 export type Account = {
@@ -526,6 +527,7 @@ export async function getMe() {
     nextDailyReset: activeProfile?.next_daily_reset ?? null,
     nextMonthlyReset: activeProfile?.next_monthly_reset ?? null,
     pendingPlanChange: (activeProfile?.pending_plan_change as PlanId) || null,
+    workspaceStatus: (activeProfile?.settings as Record<string, any>)?.workspaceStatus || "active",
   };
   return { user };
 }
@@ -1344,8 +1346,135 @@ export async function generateOutreachDraft(_leadId: number, _body: OutreachDraf
   throw new ApiError(501, "AI outreach generation requires the Mast Lead Engine backend.", { code: "ENGINE_NOT_CONNECTED" });
 }
 
-export async function sendLeadEmail(_leadId: number, _body: SendEmailRequest): Promise<SendLeadEmailResponse> {
-  throw new ApiError(501, "Connected email send requires the Mast Lead Engine backend.", { code: "ENGINE_NOT_CONNECTED" });
+export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Promise<SendLeadEmailResponse> {
+  const userId = await requireUserId();
+  const lead = await getLead(leadId);
+  if (!lead.email) {
+    throw new Error("Lead does not have an email address.");
+  }
+
+  const { data: { session } } = await supabase!.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new ApiError(401, "Not authenticated", {});
+
+  const response = await fetch("/.netlify/functions/send-email", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({ to: lead.email, subject: body.subject, body: body.body })
+  });
+
+  const resData = await response.json();
+  if (!response.ok || !resData.success) {
+    throw new Error(resData.error || "Failed to send email");
+  }
+
+  // Update lead status and last contacted
+  const updatedLead = await updateLead(leadId, {
+    status: "email_sent",
+    lastContactedAt: new Date().toISOString(),
+  });
+
+  // Record lead activity
+  await createLeadActivity(leadId, {
+    type: "email_sent",
+    timestamp: new Date().toISOString(),
+    content: `Sent email: "${body.subject}"`,
+    channel: "email",
+    subject: body.subject,
+    body: body.body
+  });
+
+  // Create message record
+  const msg = await createMessage({
+    leadId,
+    channel: "email",
+    template: "outreach",
+    content: body.body,
+    subject: body.subject,
+    status: "sent",
+  });
+
+  return {
+    success: true,
+    lead: updatedLead,
+    message: msg
+  };
+}
+
+export async function testSmtpConnection(credentials: {
+  host: string;
+  port: string;
+  user: string;
+  pass: string;
+  encryption: string;
+}): Promise<{ success: boolean; message?: string; error?: string }> {
+  const { data: { session } } = await supabase!.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new ApiError(401, "Not authenticated", {});
+
+  const response = await fetch("/.netlify/functions/test-smtp", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify(credentials)
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || "SMTP test failed.");
+  }
+  return data;
+}
+
+export async function pauseWorkspace(): Promise<void> {
+  const userId = await requireUserId();
+  const { data: existing } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
+  const settings = (existing?.settings as Record<string, string>) || {};
+  const merged = { ...settings, workspaceStatus: "disabled" };
+  
+  const { error } = await supabase!.from("profiles").update({ settings: merged }).eq("id", userId);
+  if (error) throw new ApiError(500, error.message, error);
+}
+
+export async function enableWorkspace(): Promise<void> {
+  const userId = await requireUserId();
+  const { data: existing } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
+  const settings = (existing?.settings as Record<string, string>) || {};
+  const merged = { ...settings, workspaceStatus: "active" };
+  
+  const { error } = await supabase!.from("profiles").update({ settings: merged }).eq("id", userId);
+  if (error) throw new ApiError(500, error.message, error);
+}
+
+export async function deleteWorkspace(): Promise<void> {
+  const userId = await requireUserId();
+
+  // Delete dependencies first:
+  // 1. lead_followups
+  await supabase!.from("lead_followups").delete().eq("user_id", userId);
+  
+  // 2. lead_messages
+  await supabase!.from("lead_messages").delete().eq("user_id", userId);
+
+  // 3. lead_activities
+  await supabase!.from("lead_activities").delete().eq("user_id", userId);
+
+  // 4. goal_completions
+  await supabase!.from("goal_completions").delete().eq("user_id", userId);
+
+  // 5. leads
+  await supabase!.from("leads").delete().eq("user_id", userId);
+
+  // 6. profiles
+  await supabase!.from("profiles").delete().eq("id", userId);
+
+  // 7. Sign out
+  await supabase!.auth.signOut();
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

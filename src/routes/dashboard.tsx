@@ -7,12 +7,13 @@ import {
 } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState, useCallback } from "react";
 import { BrandMark } from "@/components/mast/BrandMark";
-import { useAccount, useLogout, useMe } from "@/hooks/use-mast-api";
+import { useAccount, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
 import {
   Crosshair, Search, Kanban, Bell, Settings, LogOut, X,
   CheckCircle2, ArrowUpCircle, Network, Upload, CreditCard, Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({ meta: [{ title: "Focus — Mast" }] }),
@@ -173,6 +174,11 @@ function DashboardLayout() {
     await logout.mutateAsync();
     await navigate({ to: "/login" });
   };
+
+  // ── Workspace Paused Guard ──────────────────────────────────────────────────
+  if (user.workspaceStatus === "disabled") {
+    return <WorkspacePausedScreen user={user} onLogout={handleLogout} />;
+  }
 
   return (
     <div className="h-screen flex bg-background text-foreground overflow-hidden">
@@ -424,6 +430,67 @@ function DashboardLayout() {
         <main className="flex-1 min-h-0 overflow-y-auto" style={{ overscrollBehavior: "contain" }}>
           <Outlet />
         </main>
+      </div>
+    </div>
+  );
+}
+
+function WorkspacePausedScreen({ user, onLogout }: { user: any; onLogout: () => void }) {
+  const enableWorkspace = useEnableWorkspace();
+  const [resuming, setResuming] = useState(false);
+
+  const handleResume = async () => {
+    setResuming(true);
+    try {
+      await enableWorkspace.mutateAsync();
+      toast.success("Workspace re-enabled. Full access restored.");
+      window.location.reload();
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to re-enable workspace.");
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[oklch(0.12_0.02_260)] text-foreground grid place-items-center px-4 relative overflow-hidden">
+      {/* Dynamic ambient background glow */}
+      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 rounded-full bg-orange-500/10 blur-[100px] pointer-events-none" />
+
+      <div className="relative z-10 w-full max-w-md bg-card/45 backdrop-blur-xl border border-orange-500/20 rounded-3xl p-8 shadow-2xl text-center space-y-6">
+        <div className="mx-auto size-16 rounded-2xl bg-orange-500/10 border border-orange-500/20 grid place-items-center animate-pulse">
+          <Zap className="size-8 text-orange-400" />
+        </div>
+
+        <div className="space-y-2">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Workspace Paused</h1>
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Your MAST workspace has been paused. Full client acquisition operations are temporarily restricted.
+          </p>
+        </div>
+
+        <div className="bg-orange-500/5 border border-orange-500/10 rounded-xl p-4 text-xs text-orange-300 text-left leading-relaxed">
+          All relationship data, opportunities, and configurations are securely preserved. Re-enabling your workspace will immediately restore full operational status.
+        </div>
+
+        <div className="space-y-3 pt-2">
+          <button
+            onClick={handleResume}
+            disabled={resuming}
+            className="w-full py-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-semibold text-sm transition-colors shadow-lg shadow-orange-500/10 disabled:opacity-50 cursor-pointer"
+          >
+            {resuming ? "Re-enabling..." : "Enable Workspace"}
+          </button>
+          
+          <button
+            onClick={onLogout}
+            className="w-full py-3 rounded-xl bg-background border border-border hover:bg-muted/10 text-muted-foreground hover:text-foreground font-semibold text-sm transition-colors inline-flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <LogOut className="size-4 shrink-0" />
+            Log Out
+          </button>
+        </div>
       </div>
     </div>
   );

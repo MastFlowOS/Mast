@@ -23,7 +23,15 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { ApiError } from "@/lib/api";
-import { useMe, useSaveSettings, useSettings } from "@/hooks/use-mast-api";
+import {
+  useMe,
+  useSaveSettings,
+  useSettings,
+  usePauseWorkspace,
+  useEnableWorkspace,
+  useDeleteWorkspace,
+  useTestSmtpConnection,
+} from "@/hooks/use-mast-api";
 import { cn } from "@/lib/utils";
 
 
@@ -52,6 +60,10 @@ function SettingsPage() {
   const { data: auth } = useMe();
   const { data: settings } = useSettings();
   const saveSettings = useSaveSettings();
+  const pauseWorkspaceMut = usePauseWorkspace();
+  const enableWorkspaceMut = useEnableWorkspace();
+  const deleteWorkspaceMut = useDeleteWorkspace();
+  const testSmtp = useTestSmtpConnection();
 
   // Profile
   const [fullName, setFullName] = useState("");
@@ -76,13 +88,24 @@ function SettingsPage() {
   const [senderEmail, setSenderEmail] = useState("");
   const [signature, setSignature] = useState("");
 
-  // Connected Inbox
-  const [emailProvider, setEmailProvider] = useState<"gmail" | "outlook" | "none" | string>("none");
+  // SMTP Settings
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("");
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [smtpEncryption, setSmtpEncryption] = useState("None");
+  const [smtpSenderName, setSmtpSenderName] = useState("");
+  const [smtpSenderEmail, setSmtpSenderEmail] = useState("");
 
-  // Modals
+  // Test status
+  const [connectionStatus, setConnectionStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  const [smtpError, setSmtpError] = useState("");
+
+  // Modals & destructive states
   const [showDisableModal, setShowDisableModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleteNameConfirm, setDeleteNameConfirm] = useState("");
 
   // Change Password state
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -92,6 +115,11 @@ function SettingsPage() {
   const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordError, setPasswordError] = useState("");
+
+  // Mutating loading states
+  const [pausingWorkspace, setPausingWorkspace] = useState(false);
+  const [enablingWorkspace, setEnablingWorkspace] = useState(false);
+  const [deletingWorkspace, setDeletingWorkspace] = useState(false);
 
   useEffect(() => {
     setFullName(auth?.user?.fullName ?? "");
@@ -110,9 +138,17 @@ function SettingsPage() {
     setNotifyPlanChanges(settings.notifyPlanChanges !== "false");
     setNotifyBilling(settings.notifyBilling !== "false");
     setNotifyAnnouncements(settings.notifyAnnouncements !== "false");
-    setEmailProvider(settings.emailIntegrationProvider ?? "none");
 
-    // Sync notification preferences to localStorage for immediate notification center query access
+    // Load SMTP Settings
+    setSmtpHost(settings.smtpHost ?? "");
+    setSmtpPort(settings.smtpPort ?? "");
+    setSmtpUser(settings.smtpUser ?? "");
+    setSmtpPassword(settings.smtpPassword ?? "");
+    setSmtpEncryption(settings.smtpEncryption ?? "None");
+    setSmtpSenderName(settings.smtpSenderName ?? "");
+    setSmtpSenderEmail(settings.smtpSenderEmail ?? "");
+
+    // Sync notification preferences
     const prefs = {
       notifyNewLead: settings.notifyNewLead !== "false",
       notifyCreditLimit: settings.notifyCreditLimit !== "false",
@@ -123,7 +159,7 @@ function SettingsPage() {
     };
     localStorage.setItem("mast_notification_preferences", JSON.stringify(prefs));
 
-    // Parse stored regions (comma-separated)
+    // Parse stored regions
     if (settings.defaultRegions) {
       const stored = settings.defaultRegions
         .split(",")
@@ -148,6 +184,74 @@ function SettingsPage() {
     }
   };
 
+  const handleTestConnection = async () => {
+    if (!smtpHost || !smtpPort || !smtpUser || !smtpPassword) {
+      toast.error("All connection details (host, port, username, password) are required to test.");
+      return;
+    }
+    setConnectionStatus("testing");
+    setSmtpError("");
+    try {
+      await testSmtp.mutateAsync({
+        host: smtpHost,
+        port: smtpPort,
+        user: smtpUser,
+        pass: smtpPassword,
+        encryption: smtpEncryption,
+      });
+      setConnectionStatus("success");
+      toast.success("✓ Connected successfully.");
+    } catch (err: any) {
+      setConnectionStatus("error");
+      const errMsg = err.message || "Failed to establish connection.";
+      setSmtpError(errMsg);
+      toast.error(`SMTP Test Failed: ${errMsg}`);
+    }
+  };
+
+  const handlePauseWorkspace = async () => {
+    setPausingWorkspace(true);
+    try {
+      await pauseWorkspaceMut.mutateAsync();
+      setShowDisableModal(false);
+      toast.success("Workspace paused. Access is now restricted.");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to pause workspace.");
+    } finally {
+      setPausingWorkspace(false);
+    }
+  };
+
+  const handleEnableWorkspace = async () => {
+    setEnablingWorkspace(true);
+    try {
+      await enableWorkspaceMut.mutateAsync();
+      toast.success("Workspace re-enabled. Full access restored.");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to enable workspace.");
+    } finally {
+      setEnablingWorkspace(false);
+    }
+  };
+
+  const handleDeleteWorkspace = async () => {
+    setDeletingWorkspace(true);
+    try {
+      await deleteWorkspaceMut.mutateAsync();
+      // Cleanup notifications
+      localStorage.removeItem("mast_notifications");
+      localStorage.removeItem("mast_notification_preferences");
+      setShowDeleteModal(false);
+      toast.success("Workspace deleted. Redirecting…");
+      // Redirect to landing page
+      window.location.assign("/");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete workspace.");
+    } finally {
+      setDeletingWorkspace(false);
+    }
+  };
+
   const save = async () => {
     try {
       await saveSettings.mutateAsync({
@@ -163,7 +267,14 @@ function SettingsPage() {
           notifyPlanChanges: notifyPlanChanges ? "true" : "false",
           notifyBilling: notifyBilling ? "true" : "false",
           notifyAnnouncements: notifyAnnouncements ? "true" : "false",
-          emailIntegrationProvider: emailProvider,
+          // Store SMTP Settings
+          smtpHost,
+          smtpPort,
+          smtpUser,
+          smtpPassword,
+          smtpEncryption,
+          smtpSenderName,
+          smtpSenderEmail,
         },
         fullName,
       });
@@ -268,8 +379,123 @@ function SettingsPage() {
         </div>
       </SectionCard>
 
-      {/* ── Connected Inbox ──────────────────────────────────── */}
-      <ConnectedInbox provider={emailProvider} setProvider={setEmailProvider} />
+      {/* ── SMTP Configuration ──────────────────────────────────── */}
+      <div className="bg-card border border-border rounded-2xl p-6">
+        <div className="flex items-start gap-4">
+          <div className="size-11 rounded-xl bg-brand/10 border border-brand/25 grid place-items-center shrink-0">
+            <Mail className="size-5 text-brand shrink-0" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="font-bold text-base text-foreground flex items-center gap-2">
+              SMTP Configuration
+              {connectionStatus === "success" && (
+                <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20 shrink-0">
+                  ✓ Connected
+                </span>
+              )}
+            </h2>
+            <p className="text-xs text-muted-foreground mt-1 max-w-md">
+              Configure any SMTP compatible email provider for sending outreach campaigns securely.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-5">
+              <Field
+                label="SMTP Host"
+                value={smtpHost}
+                onChange={setSmtpHost}
+                placeholder="smtp.example.com"
+              />
+              <Field
+                label="SMTP Port"
+                value={smtpPort}
+                onChange={setSmtpPort}
+                placeholder="587"
+              />
+              <Field
+                label="SMTP Username"
+                value={smtpUser}
+                onChange={setSmtpUser}
+                placeholder="user@example.com"
+              />
+              <label className="block">
+                <span className="block text-xs font-semibold text-muted-foreground mb-1.5">App Password</span>
+                <input
+                  type="password"
+                  value={smtpPassword}
+                  onChange={(e) => setSmtpPassword(e.target.value)}
+                  placeholder="••••••••••••"
+                  className="w-full bg-background border border-border focus:border-brand outline-none px-3.5 py-2.5 rounded-lg text-sm"
+                />
+              </label>
+              <Field
+                label="Sender Name"
+                value={smtpSenderName}
+                onChange={setSmtpSenderName}
+                placeholder="John Doe"
+              />
+              <Field
+                label="Sender Email"
+                value={smtpSenderEmail}
+                onChange={setSmtpSenderEmail}
+                placeholder="sender@example.com"
+              />
+              
+              <div>
+                <span className="block text-xs font-semibold text-muted-foreground mb-1.5">Encryption</span>
+                <div className="flex gap-2">
+                  {["None", "SSL", "TLS"].map((enc) => (
+                    <button
+                      key={enc}
+                      type="button"
+                      onClick={() => setSmtpEncryption(enc)}
+                      className={cn(
+                        "flex-1 py-2 rounded-lg border text-sm font-medium transition-colors",
+                        smtpEncryption === enc
+                          ? "border-brand bg-brand/10 text-foreground"
+                          : "border-border bg-background text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {enc}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-end justify-between md:col-span-2 mt-2">
+                <button
+                  type="button"
+                  disabled={connectionStatus === "testing"}
+                  onClick={handleTestConnection}
+                  className="px-4 py-2.5 rounded-lg bg-foreground/10 text-foreground text-xs font-semibold border border-border hover:bg-foreground/15 disabled:opacity-40 transition-colors"
+                >
+                  {connectionStatus === "testing" ? "Testing..." : "Test Connection"}
+                </button>
+                
+                {connectionStatus === "success" && (
+                  <span className="inline-flex items-center gap-1 text-sm font-semibold text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2.5 py-1 rounded-lg">
+                    <Check className="size-4 shrink-0" />
+                    Connected
+                  </span>
+                )}
+                {connectionStatus === "error" && (
+                  <div className="text-right">
+                    <span className="inline-flex items-center gap-1 text-sm font-semibold text-destructive bg-destructive/10 border border-destructive/20 px-2.5 py-1 rounded-lg">
+                      <X className="size-4 shrink-0" />
+                      Failed
+                    </span>
+                  </div>
+                )}
+              </div>
+              
+              {connectionStatus === "error" && smtpError && (
+                <p className="text-[11px] text-destructive md:col-span-2 mt-1 whitespace-pre-wrap leading-relaxed">
+                  Error: {smtpError}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* ── Sender Identity ─────────────────────────────────────────────── */}
       <SectionCard
@@ -387,37 +613,6 @@ function SettingsPage() {
         />
       </SectionCard>
 
-      {/* ── Billing ─────────────────────────────────────────────────────── */}
-      <SectionCard
-        icon={CreditCard}
-        title="Billing"
-        desc="Manage subscriptions, invoices, and plan access"
-      >
-        <SettingsLink
-          to="/dashboard/subscription"
-          label="Subscription"
-          desc="Review your plan, limits, and upgrade options"
-        />
-        <SettingsLink
-          to="/dashboard/billing"
-          label="Billing"
-          desc="View billing details and payment history"
-        />
-      </SectionCard>
-
-      {/* ── Data Import / Export ────────────────────────────────────────── */}
-      <SectionCard
-        icon={Upload}
-        title="Data Import / Export"
-        desc="Move opportunity data into and out of Mast"
-      >
-        <SettingsLink
-          to="/dashboard/import"
-          label="Open Data Import / Export"
-          desc="Upload CSVs, map fields, and export relationship data"
-        />
-      </SectionCard>
-
       {/* ── Workspace Status ─────────────────────────────────────────────── */}
       <SectionCard
         icon={Cpu}
@@ -426,10 +621,17 @@ function SettingsPage() {
       >
         <div className="space-y-3">
           <StatusRow label="Status">
-            <span className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-400">
-              <span className="size-2 rounded-full bg-emerald-400 shrink-0" />
-              Active
-            </span>
+            {auth?.user?.workspaceStatus === "disabled" ? (
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-orange-400">
+                <span className="size-2 rounded-full bg-orange-400 shrink-0 animate-pulse" />
+                Paused
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-400">
+                <span className="size-2 rounded-full bg-emerald-400 shrink-0" />
+                Active
+              </span>
+            )}
           </StatusRow>
           <StatusRow label="Created Date">
             <span className="text-sm font-medium">{createdDate}</span>
@@ -460,22 +662,34 @@ function SettingsPage() {
           Irreversible or high-impact actions
         </p>
         <div className="mt-5 space-y-4">
-          {/* Disable Workspace */}
+          {/* Pause Workspace */}
           <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background p-4">
             <div>
-              <p className="text-sm font-semibold">Disable Workspace</p>
+              <p className="text-sm font-semibold">Pause Workspace</p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Temporarily disable your workspace. This is reversible.
+                Temporarily pause your workspace. This is reversible.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowDisableModal(true)}
-              className="shrink-0 px-4 py-2 rounded-lg border border-orange-500/40 text-orange-400 text-sm font-semibold hover:bg-orange-500/10 transition-colors inline-flex items-center gap-2"
-            >
-              <Power className="size-4" />
-              Disable
-            </button>
+            {auth?.user?.workspaceStatus === "disabled" ? (
+              <button
+                type="button"
+                disabled={enablingWorkspace}
+                onClick={handleEnableWorkspace}
+                className="shrink-0 px-4 py-2 rounded-lg border border-brand/40 text-brand text-sm font-semibold hover:bg-brand/10 transition-colors inline-flex items-center gap-2"
+              >
+                <Check className="size-4" />
+                {enablingWorkspace ? "Enabling..." : "Enable"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowDisableModal(true)}
+                className="shrink-0 px-4 py-2 rounded-lg border border-orange-500/40 text-orange-400 text-sm font-semibold hover:bg-orange-500/10 transition-colors inline-flex items-center gap-2"
+              >
+                <Power className="size-4" />
+                Pause
+              </button>
+            )}
           </div>
 
           {/* Delete Workspace */}
@@ -498,17 +712,17 @@ function SettingsPage() {
         </div>
       </div>
 
-      {/* ── Disable Modal ────────────────────────────────────────────────── */}
+      {/* ── Pause Modal ────────────────────────────────────────────────── */}
       {showDisableModal && (
         <Modal
           onClose={() => setShowDisableModal(false)}
-          title="Disable Workspace?"
+          title="Pause Workspace?"
           icon={<Power className="size-5 text-orange-400" />}
           iconBg="bg-orange-500/10 border-orange-500/20"
         >
           <p className="text-sm text-muted-foreground">
-            Your workspace will be temporarily disabled. All data is preserved
-            and you can re-enable it at any time from your account.
+            Your workspace will be temporarily paused. All data is preserved
+            and you can re-enable it at any time.
           </p>
           <div className="mt-5 flex gap-3 justify-end">
             <button
@@ -518,13 +732,11 @@ function SettingsPage() {
               Cancel
             </button>
             <button
-              onClick={() => {
-                setShowDisableModal(false);
-                toast.success("Workspace disabled. You can re-enable it from your account.");
-              }}
-              className="px-4 py-2 rounded-lg bg-orange-500 text-white text-sm font-semibold hover:bg-orange-600 transition-colors"
+              disabled={pausingWorkspace}
+              onClick={handlePauseWorkspace}
+              className="px-4 py-2 rounded-lg bg-orange-500 text-white text-sm font-semibold hover:bg-orange-600 transition-colors disabled:opacity-50"
             >
-              Disable Workspace
+              {pausingWorkspace ? "Pausing..." : "Pause Workspace"}
             </button>
           </div>
         </Modal>
@@ -536,6 +748,7 @@ function SettingsPage() {
           onClose={() => {
             setShowDeleteModal(false);
             setDeleteConfirm("");
+            setDeleteNameConfirm("");
           }}
           title="Delete Workspace?"
           icon={<Trash2 className="size-5 text-destructive" />}
@@ -555,41 +768,55 @@ function SettingsPage() {
               All your opportunities, relationship data, campaigns, and settings will be erased.
             </p>
           </div>
-          <div className="mt-4">
-            <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
-              Type{" "}
-              <span className="font-mono text-foreground font-bold">
-                DELETE
-              </span>{" "}
-              to confirm
-            </label>
-            <input
-              value={deleteConfirm}
-              onChange={(e) => setDeleteConfirm(e.target.value)}
-              placeholder="DELETE"
-              className="w-full bg-background border border-border focus:border-destructive outline-none px-3.5 py-2.5 rounded-lg text-sm font-mono"
-            />
+          <div className="mt-4 space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+                Type workspace name{" "}
+                <span className="font-mono text-foreground font-bold">
+                  {workspaceName || "My Workspace"}
+                </span>{" "}
+                to confirm
+              </label>
+              <input
+                value={deleteNameConfirm}
+                onChange={(e) => setDeleteNameConfirm(e.target.value)}
+                placeholder={workspaceName || "My Workspace"}
+                className="w-full bg-background border border-border focus:border-destructive outline-none px-3.5 py-2.5 rounded-lg text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+                Type{" "}
+                <span className="font-mono text-foreground font-bold">
+                  DELETE
+                </span>{" "}
+                to confirm
+              </label>
+              <input
+                value={deleteConfirm}
+                onChange={(e) => setDeleteConfirm(e.target.value)}
+                placeholder="DELETE"
+                className="w-full bg-background border border-border focus:border-destructive outline-none px-3.5 py-2.5 rounded-lg text-sm font-mono"
+              />
+            </div>
           </div>
           <div className="mt-5 flex gap-3 justify-end">
             <button
               onClick={() => {
                 setShowDeleteModal(false);
                 setDeleteConfirm("");
+                setDeleteNameConfirm("");
               }}
               className="px-4 py-2 rounded-lg border border-border text-sm font-semibold hover:bg-card transition-colors"
             >
               Cancel
             </button>
             <button
-              disabled={deleteConfirm !== "DELETE"}
-              onClick={() => {
-                setShowDeleteModal(false);
-                setDeleteConfirm("");
-                toast.error("Workspace deleted. Redirecting…");
-              }}
-              className="px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 transition-colors disabled:opacity-40"
+              disabled={deleteConfirm !== "DELETE" || deleteNameConfirm !== (workspaceName || "My Workspace") || deletingWorkspace}
+              onClick={handleDeleteWorkspace}
+              className="px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 transition-colors disabled:opacity-45"
             >
-              Delete Workspace
+              {deletingWorkspace ? "Deleting..." : "Delete Workspace"}
             </button>
           </div>
         </Modal>
@@ -728,123 +955,7 @@ function SettingsPage() {
   );
 }
 
-// ─── Gmail / Google Integration ───────────────────────────────────────────────
 
-function ConnectedInbox({
-  provider,
-  setProvider,
-}: {
-  provider: string;
-  setProvider: (p: string) => void;
-}) {
-  const handleConnect = (p: string) => {
-    setProvider(p);
-    toast.success(`Connected to ${p === "gmail" ? "Gmail" : "Outlook"} successfully.`);
-  };
-
-  const handleDisconnect = () => {
-    setProvider("none");
-    toast.success("Inbox disconnected successfully.");
-  };
-
-  return (
-    <div className="bg-card border border-border rounded-2xl p-6">
-      <div className="flex items-start gap-4">
-        <div className="size-11 rounded-xl bg-brand/10 border border-brand/25 grid place-items-center shrink-0">
-          <Mail className="size-5 text-brand shrink-0" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h2 className="font-bold text-base text-foreground flex items-center gap-2">
-            Connected Inbox
-            {provider !== "none" && (
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20 shrink-0">
-                Active
-              </span>
-            )}
-          </h2>
-          <p className="text-xs text-muted-foreground mt-1 max-w-md">
-            Connect your Gmail or Outlook inbox to send outreach directly from your MAST Workspace without leaving the platform.
-          </p>
-
-          <div className="mt-5 space-y-3">
-            {/* Gmail Connection Row */}
-            <div className="flex items-center justify-between gap-3 p-4 rounded-xl border border-border bg-background/50 hover:bg-muted/10 transition-colors">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="size-9 rounded-lg bg-background border border-border grid place-items-center shrink-0">
-                  <GoogleIcon />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold">Gmail Inbox</p>
-                  <p className="text-xs text-muted-foreground">
-                    {provider === "gmail" ? "Connected and active" : "Not connected"}
-                  </p>
-                </div>
-              </div>
-              <div className="shrink-0">
-                {provider === "gmail" ? (
-                  <button
-                    type="button"
-                    onClick={handleDisconnect}
-                    className="shrink-0 px-3.5 py-1.5 rounded-lg border border-destructive/40 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors cursor-pointer"
-                  >
-                    Disconnect
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => handleConnect("gmail")}
-                    disabled={provider !== "none" && provider !== "gmail"}
-                    className="shrink-0 px-3.5 py-1.5 rounded-lg bg-foreground/10 text-foreground text-xs font-semibold border border-border hover:bg-foreground/15 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                  >
-                    Connect
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Outlook Connection Row */}
-            <div className="flex items-center justify-between gap-3 p-4 rounded-xl border border-border bg-background/50 hover:bg-muted/10 transition-colors">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="size-9 rounded-lg bg-background border border-border grid place-items-center shrink-0">
-                  <svg className="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="3" width="18" height="18" rx="2" />
-                    <path d="M3 9h18M9 21V9" />
-                  </svg>
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold">Outlook Inbox</p>
-                  <p className="text-xs text-muted-foreground">
-                    {provider === "outlook" ? "Connected and active" : "Not connected"}
-                  </p>
-                </div>
-              </div>
-              <div className="shrink-0">
-                {provider === "outlook" ? (
-                  <button
-                    type="button"
-                    onClick={handleDisconnect}
-                    className="shrink-0 px-3.5 py-1.5 rounded-lg border border-destructive/40 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors cursor-pointer"
-                  >
-                    Disconnect
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => handleConnect("outlook")}
-                    disabled={provider !== "none" && provider !== "outlook"}
-                    className="shrink-0 px-3.5 py-1.5 rounded-lg bg-foreground/10 text-foreground text-xs font-semibold border border-border hover:bg-foreground/15 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                  >
-                    Connect
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -1073,13 +1184,4 @@ function Modal({
   );
 }
 
-function GoogleIcon() {
-  return (
-    <svg className="size-4" viewBox="0 0 48 48">
-      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.2-.1-2.3-.4-3.5z" />
-      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16.1 19 13 24 13c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
-      <path fill="#4CAF50" d="M24 44c5.2 0 9.8-2 13.3-5.2l-6.2-5.2C29.1 35 26.7 36 24 36c-5.2 0-9.6-3.3-11.2-8l-6.5 5C9.6 39.6 16.2 44 24 44z" />
-      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.1 4-3.9 5.3l6.2 5.2C41 35 44 30 44 24c0-1.2-.1-2.3-.4-3.5z" />
-    </svg>
-  );
-}
+

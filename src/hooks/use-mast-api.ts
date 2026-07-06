@@ -33,6 +33,10 @@ import {
   updateFollowup,
   updateSettings,
   updateSubscription,
+  pauseWorkspace,
+  enableWorkspace,
+  deleteWorkspace,
+  testSmtpConnection,
   type AuthUser,
   type CreateLeadBody,
   type Followup,
@@ -483,5 +487,45 @@ export function useUpdateFollowup() {
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
     },
+  });
+}
+
+export function usePauseWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: pauseWorkspace,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.me });
+      queryClient.invalidateQueries({ queryKey: queryKeys.account });
+      queryClient.invalidateQueries({ queryKey: queryKeys.settings });
+    },
+  });
+}
+
+export function useEnableWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: enableWorkspace,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.me });
+      queryClient.invalidateQueries({ queryKey: queryKeys.account });
+      queryClient.invalidateQueries({ queryKey: queryKeys.settings });
+    },
+  });
+}
+
+export function useDeleteWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteWorkspace,
+    onSuccess: () => {
+      queryClient.clear();
+    },
+  });
+}
+
+export function useTestSmtpConnection() {
+  return useMutation({
+    mutationFn: testSmtpConnection,
   });
 }

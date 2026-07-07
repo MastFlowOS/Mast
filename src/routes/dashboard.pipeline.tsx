@@ -37,9 +37,15 @@ import {
 } from "@/lib/lead-workspace";
 import type { FlowStage } from "@/lib/lead-workspace";
 
+import { FeatureGate } from "@/components/mast/FeatureGate";
+
 export const Route = createFileRoute("/dashboard/pipeline")({
   head: () => ({ meta: [{ title: "Pipeline — Mast" }] }),
-  component: Pipeline,
+  component: () => (
+    <FeatureGate feature="pipeline">
+      <Pipeline />
+    </FeatureGate>
+  ),
 });
 
 function Pipeline() {
@@ -634,31 +640,33 @@ function Pipeline() {
         <div className="flex-1 flex flex-col space-y-6 min-w-0">
 
           {/* AI Executive Briefing */}
-          {statsLoading ? (
-            <Skeleton className="h-24 rounded-2xl w-full animate-pulse" />
-          ) : (
-            <section className="relative overflow-hidden rounded-2xl border border-brand/20 bg-gradient-to-r from-brand/10 via-brand/5 to-transparent p-5 backdrop-blur-sm shrink-0">
-              <div className="absolute top-0 right-0 p-4 opacity-[0.03] pointer-events-none">
-                <Sparkles className="size-24 text-brand animate-pulse" />
-              </div>
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
-                <div className="space-y-1.5 max-w-3xl text-left">
-                  <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-brand">
-                    <Sparkles className="size-4 animate-pulse-glow" /> Dynamic AI Executive Briefing
-                  </div>
-                  <p className="text-sm font-medium text-foreground leading-relaxed">
-                    {aiBriefing.text}
-                  </p>
+          <FeatureGate feature="executiveBriefings" fallback="card">
+            {statsLoading ? (
+              <Skeleton className="h-24 rounded-2xl w-full animate-pulse" />
+            ) : (
+              <section className="relative overflow-hidden rounded-2xl border border-brand/20 bg-gradient-to-r from-brand/10 via-brand/5 to-transparent p-5 backdrop-blur-sm shrink-0">
+                <div className="absolute top-0 right-0 p-4 opacity-[0.03] pointer-events-none">
+                  <Sparkles className="size-24 text-brand animate-pulse" />
                 </div>
-                <button
-                  onClick={() => navigate({ to: aiBriefing.actionTo })}
-                  className="shrink-0 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark transition-all duration-200 cursor-pointer self-start md:self-center"
-                >
-                  {aiBriefing.actionLabel} <ArrowRight className="size-4" />
-                </button>
-              </div>
-            </section>
-          )}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+                  <div className="space-y-1.5 max-w-3xl text-left">
+                    <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-brand">
+                      <Sparkles className="size-4 animate-pulse-glow" /> Dynamic AI Executive Briefing
+                    </div>
+                    <p className="text-sm font-medium text-foreground leading-relaxed">
+                      {aiBriefing.text}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => navigate({ to: aiBriefing.actionTo })}
+                    className="shrink-0 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark transition-all duration-200 cursor-pointer self-start md:self-center"
+                  >
+                    {aiBriefing.actionLabel} <ArrowRight className="size-4" />
+                  </button>
+                </div>
+              </section>
+            )}
+          </FeatureGate>
 
           {/* Funnel Visualization */}
           <section className="bg-card/30 backdrop-blur-sm border border-border rounded-2xl p-5 relative overflow-hidden shrink-0">
@@ -944,46 +952,48 @@ function Pipeline() {
             </h3>
             <p className="text-xs text-muted-foreground mt-1">Recommendations to optimize opportunity conversion.</p>
             
-            <div className="mt-4 space-y-3">
-              {statsLoading ? (
-                Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl w-full" />)
-              ) : (
-                aiRecommendations.map((rec) => (
-                  <div 
-                    key={rec.id} 
-                    className={`p-3.5 rounded-xl border bg-background/40 hover:bg-background/80 transition-all duration-200 text-xs text-left border-l-4 ${
-                      rec.type === "warning" ? "border-l-amber-500 border-border/60 hover:border-amber-500/50" :
-                      rec.type === "danger" ? "border-l-red-500 border-border/60 hover:border-red-500/50" :
-                      rec.type === "success" ? "border-l-success border-border/60 hover:border-success/50" :
-                      "border-l-blue-500 border-border/60 hover:border-blue-500/50"
-                    }`}
-                  >
-                    <div className="flex items-start gap-2.5">
-                      <div className="shrink-0 mt-0.5">
-                        {rec.type === "warning" ? (
-                          <AlertCircle className="size-4 text-amber-500" />
-                        ) : rec.type === "danger" ? (
-                          <AlertCircle className="size-4 text-red-500" />
-                        ) : rec.type === "success" ? (
-                          <Sparkles className="size-4 text-success" />
-                        ) : (
-                          <Sparkles className="size-4 text-blue-500" />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-foreground leading-relaxed select-text">{rec.text}</p>
-                        <button
-                          onClick={() => navigate({ to: rec.to })}
-                          className="mt-2.5 inline-flex items-center gap-1 text-[11px] font-bold text-brand hover:text-brand-dark transition-colors cursor-pointer"
-                        >
-                          {rec.action}
-                        </button>
+            <FeatureGate feature="pipelineCoaching" fallback="card">
+              <div className="mt-4 space-y-3">
+                {statsLoading ? (
+                  Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl w-full" />)
+                ) : (
+                  aiRecommendations.map((rec) => (
+                    <div 
+                      key={rec.id} 
+                      className={`p-3.5 rounded-xl border bg-background/40 hover:bg-background/80 transition-all duration-200 text-xs text-left border-l-4 ${
+                        rec.type === "warning" ? "border-l-amber-500 border-border/60 hover:border-amber-500/50" :
+                        rec.type === "danger" ? "border-l-red-500 border-border/60 hover:border-red-500/50" :
+                        rec.type === "success" ? "border-l-success border-border/60 hover:border-success/50" :
+                        "border-l-blue-500 border-border/60 hover:border-blue-500/50"
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <div className="shrink-0 mt-0.5">
+                          {rec.type === "warning" ? (
+                            <AlertCircle className="size-4 text-amber-500" />
+                          ) : rec.type === "danger" ? (
+                            <AlertCircle className="size-4 text-red-500" />
+                          ) : rec.type === "success" ? (
+                            <Sparkles className="size-4 text-success" />
+                          ) : (
+                            <Sparkles className="size-4 text-blue-500" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-foreground leading-relaxed select-text">{rec.text}</p>
+                          <button
+                            onClick={() => navigate({ to: rec.to })}
+                            className="mt-2.5 inline-flex items-center gap-1 text-[11px] font-bold text-brand hover:text-brand-dark transition-colors cursor-pointer"
+                          >
+                            {rec.action}
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))
-              )}
-            </div>
+                  ))
+                )}
+              </div>
+            </FeatureGate>
           </div>
 
           {/* Recent Activities Section */}

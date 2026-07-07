@@ -54,10 +54,16 @@ import {
   leadStatusLabel,
   normalizeLeadStatus,
 } from "@/lib/lead-workspace";
+import { FeatureGate } from "@/components/mast/FeatureGate";
+
 
 export const Route = createFileRoute("/dashboard/relationships")({
   head: () => ({ meta: [{ title: "Relationships — Mast" }] }),
-  component: Relationships,
+  component: () => (
+    <FeatureGate feature="relationships">
+      <Relationships />
+    </FeatureGate>
+  ),
 });
 
 const ALL_VALUE = "__all__";

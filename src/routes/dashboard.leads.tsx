@@ -27,10 +27,15 @@ import {
   Shield,
   Coins,
   Check,
+  Lock,
 } from "lucide-react";
 import { ApiError, type Lead } from "@/lib/api";
 import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings } from "@/hooks/use-mast-api";
 import { buildDiscoverInsights, type DiscoverInsight } from "@/lib/discover-insights";
+import { usePermissions } from "@/hooks/use-permissions";
+import { FeatureGate } from "@/components/mast/FeatureGate";
+import { type FeatureId } from "@/lib/permissions";
+import { cn } from "@/lib/utils";
 import { addNotification } from "@/lib/notifications";
 import {
   Dialog,
@@ -365,8 +370,9 @@ function GetLeads() {
   const { data: analytics } = useAnalytics();
   const { data: leadsPayload } = useLeads({ limit: 1000 });
   const generate = useGenerateLeads();
+  const { permissions } = usePermissions();
 
-  const maxQuantity = account?.limits.maxLeadRequest ?? 100;
+  const maxQuantity = permissions.limits.dailyOpportunities;
   const maxSliderIndex = qtyToSliderIndex(maxQuantity);
 
   // Quantity state — stored as step index; clamped to plan max when account loads
@@ -413,7 +419,7 @@ function GetLeads() {
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
   const monthlyRemaining = account?.monthlyUsage.remaining ?? 0;
   const currentSpeed = speeds.find((s) => s.id === speed)!;
-  const hasPremiumAccess = account?.limits.allowPremiumPool ?? false;
+  const hasPremiumAccess = permissions.can("premiumPool");
 
   const leads = Array.isArray(leadsPayload)
     ? leadsPayload
@@ -453,7 +459,15 @@ function GetLeads() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  const localRegion = (settings?.defaultRegions?.split(",")?.[0]?.trim() || "North America") as Region;
+  const hasRegionalSearch = permissions.can("regionalSearch");
+
   const toggleRegion = (r: Region) => {
+    if (!hasRegionalSearch && r !== localRegion) {
+      const meta = permissions.getFeatureMetadata("regionalSearch");
+      toast.error(`${meta.title} requires the ${meta.requiredPlan.toUpperCase()} plan. You are restricted to your local region (${localRegion}).`);
+      return;
+    }
     if (r === "Global") {
       setRegions(["Global"]);
     } else {
@@ -482,24 +496,33 @@ function GetLeads() {
   const removeNiche = (n: string) =>
     setNiches((prev) => prev.filter((x) => x !== n));
 
-  const toggleChannel = (id: ChannelId) =>
+  const channelToFeature: Record<ChannelId, FeatureId> = {
+    email: "emailChannel",
+    phone: "phoneChannel",
+    instagram: "instagramChannel",
+    website: "websiteChannel",
+  };
+
+  const toggleChannel = (id: ChannelId) => {
+    const feat = channelToFeature[id];
+    if (!permissions.can(feat)) {
+      const meta = permissions.getFeatureMetadata(feat);
+      toast.error(`${meta.title} requires the ${meta.requiredPlan.toUpperCase()} plan.`);
+      return;
+    }
     setChannels((c) =>
       c.includes(id) ? c.filter((x) => x !== id) : [...c, id]
     );
+  };
 
   const filteredNiches = NICHE_CATALOG.filter((n) =>
     n.toLowerCase().includes(nicheSearch.toLowerCase())
   );
 
-  const channelRestricted = account
-    ? channels.some(
-        (channel) => !account.limits.allowedChannels.includes(channel)
-      )
-    : false;
+  const channelRestricted = channels.some((c) => !permissions.can(channelToFeature[c]));
   const modeRestricted =
-    account &&
-    ((speed === "pool" && !account.limits.allowInstantPool) ||
-      (speed === "premium" && !account.limits.allowPremiumPool));
+    (speed === "pool" && !permissions.can("instantPool")) ||
+    (speed === "premium" && !permissions.can("premiumPool"));
   const exceedsDailyLimit = account ? quantity > dailyRemaining : false;
   const exceedsMonthlyLimit = account ? quantity > monthlyRemaining : false;
   const canGenerate =
@@ -862,19 +885,27 @@ function GetLeads() {
             stagger={1}
           >
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              {REGIONS.map((r) => (
-                <button
-                  key={r}
-                  onClick={() => toggleRegion(r)}
-                  className={
-                    regions.includes(r)
-                      ? "px-3 py-2.5 rounded-lg border-2 border-brand bg-brand/10 text-foreground text-sm font-medium text-center transition-all"
-                      : "px-3 py-2.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 text-sm font-medium text-center transition-colors"
-                  }
-                >
-                  {r}
-                </button>
-              ))}
+              {REGIONS.map((r) => {
+                const isSelected = regions.includes(r);
+                const isLocked = !hasRegionalSearch && r !== localRegion;
+                return (
+                  <button
+                    key={r}
+                    onClick={() => toggleRegion(r)}
+                    className={cn(
+                      isSelected
+                        ? "px-3 py-2.5 rounded-lg border-2 border-brand bg-brand/10 text-foreground text-sm font-medium text-center transition-all"
+                        : "px-3 py-2.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 text-sm font-medium text-center transition-colors",
+                      isLocked && "opacity-50 cursor-not-allowed"
+                    )}
+                  >
+                    <span className="flex items-center justify-center gap-1.5">
+                      {r}
+                      {isLocked && <Lock className="size-3 text-muted-foreground shrink-0" />}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="mt-5 pt-5 border-t border-border/60">
@@ -1000,15 +1031,18 @@ function GetLeads() {
             <div className="space-y-2">
               {channelOptions.map((c) => {
                 const active = channels.includes(c.id);
+                const feat = channelToFeature[c.id];
+                const isLocked = !permissions.can(feat);
                 return (
                   <button
                     key={c.id}
                     onClick={() => toggleChannel(c.id)}
-                    className={
+                    className={cn(
                       active
                         ? "w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border-2 border-brand bg-brand/5 text-left transition-all"
-                        : "w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border border-border hover:border-muted-foreground/30 hover:bg-muted/20 text-left transition-all"
-                    }
+                        : "w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border border-border hover:border-muted-foreground/30 hover:bg-muted/20 text-left transition-all",
+                      isLocked && "opacity-60 cursor-not-allowed"
+                    )}
                   >
                     <div
                       className={
@@ -1032,6 +1066,11 @@ function GetLeads() {
                         >
                           {c.costLabel}
                         </span>
+                        {isLocked && (
+                          <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
+                            <Lock className="size-2.5" /> Upgrade
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-muted-foreground mt-0.5 truncate">
                         {c.description}

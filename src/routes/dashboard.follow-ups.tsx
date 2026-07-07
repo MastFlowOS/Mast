@@ -22,9 +22,15 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NICHES, formatDate, formatRelative } from "@/lib/lead-workspace";
 
+import { FeatureGate } from "@/components/mast/FeatureGate";
+
 export const Route = createFileRoute("/dashboard/follow-ups")({
   head: () => ({ meta: [{ title: "Follow-ups — Mast" }] }),
-  component: FollowUpsPage,
+  component: () => (
+    <FeatureGate feature="mission">
+      <FollowUpsPage />
+    </FeatureGate>
+  ),
 });
 
 // ── Types ─────────────────────────────────────────────────────────────────────

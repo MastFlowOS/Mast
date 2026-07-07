@@ -27,10 +27,16 @@ import type { CreateLeadBody, Lead } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getPlan } from "@/lib/plans";
+import { FeatureGate } from "@/components/mast/FeatureGate";
+
 
 export const Route = createFileRoute("/dashboard/import")({
   head: () => ({ meta: [{ title: "Data Import / Export — Mast" }] }),
-  component: ImportExportPage,
+  component: () => (
+    <FeatureGate feature="importExport">
+      <ImportExportPage />
+    </FeatureGate>
+  ),
 });
 
 // ─── Constants ────────────────────────────────────────────────────────────────

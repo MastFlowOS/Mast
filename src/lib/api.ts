@@ -2,6 +2,9 @@ import type { GenerationMode, PlanId, PlanConfig } from "./plans";
 import { getPlan, PLANS } from "./plans";
 import { supabase } from "./supabase";
 import { addNotification } from "./notifications";
+import { buildPermissionsManager, getDevPlanOverride, type FeatureId } from "./permissions";
+import { UsageService } from "./usage";
+
 
 export type { GenerationMode, PlanId } from "./plans";
 
@@ -387,6 +390,37 @@ async function requireUserId(): Promise<string> {
   return session.user.id;
 }
 
+async function enforceCapability(featureId: FeatureId): Promise<void> {
+  const userId = await requireUserId();
+  const { data: profile } = await supabase!
+    .from("profiles")
+    .select("subscription_plan")
+    .eq("id", userId)
+    .single();
+  const plan = getDevPlanOverride() || ((profile?.subscription_plan as PlanId) || "free");
+  const permissions = buildPermissionsManager(plan);
+  if (!permissions.can(featureId)) {
+    throw new ApiError(403, `Access denied: feature '${featureId}' is restricted under your plan.`, {});
+  }
+}
+
+async function enforceTeamSeatLimit(): Promise<void> {
+  const userId = await requireUserId();
+  const { data: profile } = await supabase!
+    .from("profiles")
+    .select("subscription_plan")
+    .eq("id", userId)
+    .single();
+  const plan = getDevPlanOverride() || ((profile?.subscription_plan as PlanId) || "free");
+  const permissions = buildPermissionsManager(plan);
+  
+  // Query active team members (simulated as 1 since no multi-tenant workspace UI is present)
+  const currentMembersCount = 1;
+  if (currentMembersCount > permissions.limits.teamSeats) {
+    throw new ApiError(403, `Active team members exceed the limit of ${permissions.limits.teamSeats} seat(s) for your plan.`, {});
+  }
+}
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 // ─── Reset & Usage State checks (Lazy reset) ──────────────────────────────────
@@ -506,9 +540,9 @@ export async function getMe() {
     activeProfile = await checkAndResetUsage(profile);
   }
 
-  const resolvedPlan = ((activeProfile?.subscription_plan as PlanId) || "free");
-  const planConfig = getPlan(resolvedPlan);
-  const monthlyLimit = planConfig.monthlyLeadLimit;
+  const resolvedPlan = getDevPlanOverride() || ((activeProfile?.subscription_plan as PlanId) || "free");
+  const permissions = buildPermissionsManager(resolvedPlan);
+  const monthlyLimit = permissions.limits.monthlyOpportunities;
   const monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
   const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
 
@@ -589,11 +623,12 @@ export async function startGoogleLogin() {
 // ─── Account (Supabase-only) ──────────────────────────────────────────────────
 
 function buildAccountFromProfile(userId: string, activeProfile: any): Account {
-  const resolvedPlan = ((activeProfile?.subscription_plan as PlanId) || "free");
-  const planConfig = getPlan(resolvedPlan);
+  const resolvedPlan = getDevPlanOverride() || ((activeProfile?.subscription_plan as PlanId) || "free");
+  const permissions = buildPermissionsManager(resolvedPlan);
+  const planConfig = getPlan(permissions.plan);
 
-  const dailyLimit = planConfig.dailyLeadLimit;
-  const monthlyLimit = planConfig.monthlyLeadLimit;
+  const dailyLimit = permissions.limits.dailyOpportunities;
+  const monthlyLimit = permissions.limits.monthlyOpportunities;
 
   const dailyUsed = activeProfile?.daily_leads_used ?? 0;
   const monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
@@ -601,16 +636,21 @@ function buildAccountFromProfile(userId: string, activeProfile: any): Account {
   const dailyRemaining = Math.max(0, dailyLimit - dailyUsed);
   const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
 
+  // Determine allowed channels from permissions
+  const allowedChannels: string[] = ["email", "phone"];
+  if (permissions.can("instagramChannel")) allowedChannels.push("instagram");
+  if (permissions.can("websiteChannel")) allowedChannels.push("website");
+
   return {
     user: {
       id: userId,
       fullName: activeProfile?.full_name ?? "",
       email: activeProfile?.email ?? "",
-      plan: resolvedPlan,
+      plan: permissions.plan,
       subscriptionStatus: "active",
     },
     subscription: {
-      plan: resolvedPlan,
+      plan: permissions.plan,
       name: planConfig.name,
       status: "active",
       priceMonthly: planConfig.priceMonthly,
@@ -633,10 +673,10 @@ function buildAccountFromProfile(userId: string, activeProfile: any): Account {
     },
     limits: {
       maxLeadRequest: planConfig.maxLeadRequest,
-      allowedChannels: ["email", "phone", "instagram", "website"],
-      allowInstantPool: planConfig.allowInstantPool,
-      allowPremiumPool: planConfig.allowPremiumPool,
-      allowApiAccess: planConfig.allowApiAccess,
+      allowedChannels,
+      allowInstantPool: permissions.can("instantPool"),
+      allowPremiumPool: permissions.can("premiumPool"),
+      allowApiAccess: permissions.plan !== "free" && permissions.plan !== "starter",
     },
     plans: PLANS,
   };
@@ -717,6 +757,10 @@ export async function getLead(id: number | string): Promise<Lead> {
 
 export async function createLead(body: CreateLeadBody): Promise<Lead> {
   const userId = await requireUserId();
+  
+  // Enforce usage limit check and consumption
+  await UsageService.consumeAllowance(userId, 1);
+
   const row = { ...leadToDbRow(body as Partial<Lead>), user_id: userId };
   const { data, error } = await supabase!.from("leads").insert(row).select().single();
   if (error) throw new ApiError(500, error.message, error);
@@ -725,6 +769,12 @@ export async function createLead(body: CreateLeadBody): Promise<Lead> {
 
 export async function updateLead(id: number, body: UpdateLeadBody): Promise<Lead> {
   const userId = await requireUserId();
+
+  // Enforce restricted pipeline status update
+  if (body.status && !["new", "ready"].includes(body.status)) {
+    await enforceCapability("pipeline");
+  }
+
   const row = leadToDbRow(body as Partial<Lead>);
   row.updated_at = new Date().toISOString();
   const { data, error } = await supabase!.from("leads").update(row).eq("id", id).eq("user_id", userId).select().single();
@@ -751,6 +801,11 @@ export async function bulkDeleteLeads(body: { ids: number[] }): Promise<BulkDele
 }
 
 export async function bulkImportLeads(body: { leads: CreateLeadBody[] }): Promise<BulkImportResult> {
+  const userId = await requireUserId();
+  
+  // Centralized check for the total batch size before importing
+  await UsageService.checkAllowance(userId, body.leads.length);
+
   const leads: Lead[] = [];
   const errors: Array<{ row: number; reason: string }> = [];
   for (const [index, lead] of body.leads.entries()) {
@@ -768,6 +823,9 @@ export async function bulkImportLeads(body: { leads: CreateLeadBody[] }): Promis
 export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGenerationResponse> {
   const userId = await requireUserId();
 
+  // Enforce usage limit check before starting generation
+  await UsageService.checkAllowance(userId, body.quantity);
+
   const { data: profile, error: profileErr } = await supabase!
     .from("profiles")
     .select("*")
@@ -779,41 +837,26 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
   // Perform lazy resets to ensure correct active limits
   const activeProfile = await checkAndResetUsage(profile);
 
-  const resolvedPlan = ((activeProfile?.subscription_plan as PlanId) || "free");
-  const planConfig = getPlan(resolvedPlan);
-  const dailyLimit = planConfig.dailyLeadLimit;
-  const monthlyLimit = planConfig.monthlyLeadLimit;
+  const resolvedPlan = getDevPlanOverride() || ((activeProfile?.subscription_plan as PlanId) || "free");
+  const permissions = buildPermissionsManager(resolvedPlan);
 
-  const dailyUsed = activeProfile?.daily_leads_used ?? 0;
-  const monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
+  // Enforce channel restrictions on the backend
+  const requiredChannels: Record<string, FeatureId> = {
+    instagram: "instagramChannel",
+    website: "websiteChannel",
+  };
+  for (const ch of body.channels) {
+    const feat = requiredChannels[ch];
+    if (feat && !permissions.can(feat)) {
+      throw new ApiError(403, `Channel ${ch} is restricted under your plan.`, {});
+    }
+  }
 
-  const dailyRemaining = Math.max(0, dailyLimit - dailyUsed);
-  const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
+  // Enforce search coverage restrictions on the backend
+  if (body.region && body.region !== "North America" && !permissions.can("regionalSearch")) {
+    throw new ApiError(403, "Regional search is restricted under your plan.", {});
+  }
 
-  // Validation: Proceed only if BOTH limits allow the requested quantity
-  if (body.quantity > dailyRemaining && body.quantity > monthlyRemaining) {
-    throw new ApiError(400, "LIMIT_EXCEEDED_BOTH", {
-      reason: "both",
-      dailyLimit,
-      dailyRemaining,
-      monthlyLimit,
-      monthlyRemaining,
-    });
-  }
-  if (body.quantity > dailyRemaining) {
-    throw new ApiError(400, "LIMIT_EXCEEDED_DAILY", {
-      reason: "daily",
-      dailyLimit,
-      dailyRemaining,
-    });
-  }
-  if (body.quantity > monthlyRemaining) {
-    throw new ApiError(400, "LIMIT_EXCEEDED_MONTHLY", {
-      reason: "monthly",
-      monthlyLimit,
-      monthlyRemaining,
-    });
-  }
 
   // Simulate external Lead Engine: might return slightly fewer than requested
   // but never more, and never charge for what was not generated.
@@ -928,20 +971,13 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
   const generatedCount = generatedLeads.length;
 
   // Charge only for the actual generated leads
-  const newDailyUsed = dailyUsed + generatedCount;
-  const newMonthlyUsed = monthlyUsed + generatedCount;
-
-  const { error: updateErr } = await supabase!
-    .from("profiles")
-    .update({
-      daily_leads_used: newDailyUsed,
-      monthly_leads_used: newMonthlyUsed,
-    })
-    .eq("id", userId);
-
-  if (updateErr) {
-    console.error("[Mast:generateLeads] Error updating user profile usage:", updateErr.message);
+  try {
+    await UsageService.consumeAllowance(userId, generatedCount);
+  } catch (err) {
+    console.error("[Mast:generateLeads] Error updating user profile usage via UsageService:", err);
   }
+
+  const finalStatus = await UsageService.getUsageStatus(userId);
 
   return {
     leads: generatedLeads,
@@ -950,9 +986,9 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
     cost: generatedCount, // 1 lead = 1 usage count
     source: body.mode === "premium" ? "premium_pool" : body.mode === "pool" ? "instant_pool" : "live_scrape",
     credits: {
-      limit: monthlyLimit,
-      used: newMonthlyUsed,
-      remaining: Math.max(0, monthlyLimit - newMonthlyUsed),
+      limit: finalStatus.monthlyLimit,
+      used: finalStatus.monthlyUsed,
+      remaining: finalStatus.monthlyRemaining,
     },
   };
 }
@@ -980,6 +1016,7 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
 
 export async function getPipelineStats(): Promise<PipelineStat[]> {
   const userId = await requireUserId();
+  await enforceCapability("pipeline");
   const { data, error } = await supabase!.from("leads").select("status").eq("user_id", userId);
   if (error) throw new ApiError(500, error.message, error);
 
@@ -1238,6 +1275,7 @@ export async function createMessage(body: {
 
 export async function getLeadFollowups(id: number | string): Promise<Followup[]> {
   const userId = await requireUserId();
+  await enforceCapability("mission");
   const { data, error } = await supabase!
     .from("lead_followups")
     .select("*")
@@ -1252,6 +1290,7 @@ export async function getLeadFollowups(id: number | string): Promise<Followup[]>
 
 export async function getFollowups(params: Record<string, string | number | undefined> = {}): Promise<FollowupWithLead[]> {
   const userId = await requireUserId();
+  await enforceCapability("mission");
   let query = supabase!
     .from("lead_followups")
     .select("*, leads(*)")
@@ -1297,6 +1336,7 @@ export async function getFollowups(params: Record<string, string | number | unde
 
 export async function createFollowup(body: { leadId: number; channel: string; dueAt: string; notes?: string }): Promise<Followup> {
   const userId = await requireUserId();
+  await enforceCapability("mission");
   const row = {
     lead_id: body.leadId,
     user_id: userId,
@@ -1325,6 +1365,7 @@ export async function updateFollowup(id: number | string, body: {
   currentStep?: string | null;
 }): Promise<Followup> {
   const userId = await requireUserId();
+  await enforceCapability("mission");
   const row: Record<string, unknown> = {};
   if (body.status !== undefined) row.status = body.status;
   if (body.completedAt !== undefined) row.completed_at = body.completedAt;

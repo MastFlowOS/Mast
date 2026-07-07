@@ -8,6 +8,7 @@ import {
 import { Fragment, useEffect, useRef, useState, useCallback } from "react";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { useAccount, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
+import { DevPlanSwitcher } from "@/components/mast/DevPlanSwitcher";
 import {
   Crosshair, Search, Kanban, Bell, Settings, LogOut, X,
   CheckCircle2, ArrowUpCircle, Network, Upload, CreditCard, Zap,
@@ -431,6 +432,7 @@ function DashboardLayout() {
           <Outlet />
         </main>
       </div>
+      <DevPlanSwitcher />
     </div>
   );
 }

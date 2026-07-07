@@ -22,7 +22,7 @@ import {
   Lock,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useBulkImportLeads, useLeads, useMe } from "@/hooks/use-mast-api";
+import { useBulkImportLeads, useLeads, useMe, useRecordProgressionEvent } from "@/hooks/use-mast-api";
 import type { CreateLeadBody, Lead } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -356,6 +356,7 @@ function ExportSection({
   const [isExporting, setIsExporting] = useState(false);
 
   const { data: leadsData } = useLeads({ limit: 5000 });
+  const recordProgression = useRecordProgressionEvent();
   const allLeads: Lead[] = Array.isArray(leadsData) ? leadsData : (leadsData as { leads?: Lead[] })?.leads ?? [];
 
   const getFilteredLeads = (): Lead[] => {
@@ -403,6 +404,11 @@ function ExportSection({
       }
 
       toast.success(`${previewCount.toLocaleString()} opportunities exported`);
+      recordProgression.mutate({
+        eventType: "exports_completed",
+        quantity: 1,
+        metadata: { format: exportFormat, scope: exportScope, recordCount: previewCount },
+      });
       onExportComplete({
         id: Date.now().toString(),
         date: new Date().toISOString(),

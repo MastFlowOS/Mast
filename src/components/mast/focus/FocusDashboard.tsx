@@ -1,5 +1,13 @@
 import { useMemo } from "react";
-import { useAccount, useAnalytics, useFollowups, useLeads, useMe } from "@/hooks/use-mast-api";
+import {
+  useAccount,
+  useAnalytics,
+  useCompletedGoalIds,
+  useFollowups,
+  useLeads,
+  useMe,
+  useProgressionEventTotals,
+} from "@/hooks/use-mast-api";
 import { useFocusProgress } from "@/hooks/use-focus-progress";
 import { buildFocusSnapshot, type FocusContext } from "@/lib/focus";
 import { getPlan } from "@/lib/plans";
@@ -19,12 +27,15 @@ export function FocusDashboard() {
   const { data: analytics, isLoading: analyticsLoading } = useAnalytics();
   const { data: leadsPayload, isLoading: leadsLoading } = useLeads({ limit: 1000 });
   const { data: followups = [], isLoading: followupsLoading } = useFollowups({ limit: 1000 });
+  const { data: completedGoalIds = [], isLoading: completedGoalsLoading } = useCompletedGoalIds();
+  const { data: progressionEvents = {}, isLoading: progressionEventsLoading } = useProgressionEventTotals();
 
   const firstName = auth?.user?.fullName?.split(/\s+/)[0] || "there";
   const leads = normalizeLeads(leadsPayload);
 
   const dailyUsed = account?.dailyUsage?.used ?? auth?.user?.dailyLeadsUsed ?? 0;
   const dailyLimit = account?.dailyUsage?.limit ?? (auth?.user ? getPlan(auth.user.plan).dailyLeadLimit : 20);
+  const plan = account?.subscription?.plan ?? auth?.user?.plan ?? "free";
 
   const ctx: FocusContext = useMemo(
     () => ({
@@ -40,8 +51,11 @@ export function FocusDashboard() {
       },
       dailyDiscoverUsed: dailyUsed,
       dailyDiscoverLimit: dailyLimit,
+      plan,
+      completedGoalIds,
+      progressionEvents,
     }),
-    [leads, followups, analytics, dailyUsed, dailyLimit],
+    [leads, followups, analytics, dailyUsed, dailyLimit, plan, completedGoalIds, progressionEvents],
   );
 
   const snapshot = useMemo(() => buildFocusSnapshot(firstName, ctx), [firstName, ctx]);
@@ -54,7 +68,14 @@ export function FocusDashboard() {
     isLoading: progressLoading,
   } = useFocusProgress(snapshot.goals);
 
-  const loading = authLoading || analyticsLoading || leadsLoading || followupsLoading || progressLoading;
+  const loading =
+    authLoading ||
+    analyticsLoading ||
+    leadsLoading ||
+    followupsLoading ||
+    completedGoalsLoading ||
+    progressionEventsLoading ||
+    progressLoading;
 
   if (loading) {
     return <FocusLoading />;

@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { addNotification } from "@/lib/notifications";
 import {
   getCurrentMilestone,
   getNextMilestone,
   isGoalComplete,
   milestoneProgress,
   pickCelebration,
-  XP_PER_GOAL,
   type FocusGoal,
 } from "@/lib/focus";
-import { useAwardGoalXp, useGoalClaims, useXp } from "@/hooks/use-mast-api";
+import { useAwardGoalXp, useCompletedGoalIds, useGoalClaims, useXp } from "@/hooks/use-mast-api";
 
 function todayKey() {
   const date = new Date();
@@ -32,6 +32,7 @@ export function useFocusProgress(goals: FocusGoal[]) {
   const today = todayKey();
   const { data: xp = 0, isLoading: xpLoading } = useXp();
   const { data: claimedToday = [], isLoading: claimsLoading } = useGoalClaims(today);
+  const { data: completedGoalIds = [], isLoading: completedLoading } = useCompletedGoalIds();
   const awardGoalXp = useAwardGoalXp();
 
   const [dismissedGoals, setDismissedGoals] = useState<Set<string>>(new Set());
@@ -40,7 +41,7 @@ export function useFocusProgress(goals: FocusGoal[]) {
   // duplicate-award protection lives server-side; this is just to avoid
   // redundant network calls.
   const attemptedRef = useRef<Set<string>>(new Set());
-  const claimedSet = new Set(claimedToday);
+  const claimedSet = new Set([...claimedToday, ...completedGoalIds]);
 
   useEffect(() => {
     for (const goal of goals) {
@@ -51,27 +52,43 @@ export function useFocusProgress(goals: FocusGoal[]) {
       attemptedRef.current.add(goal.id);
 
       awardGoalXp.mutate(
-        { goalId: goal.id, date: today, xp: XP_PER_GOAL },
+        { goalId: goal.id, date: today, xp: goal.xp },
         {
           onSuccess: ({ xp: newXp, awarded }) => {
             if (!awarded) return; // Already claimed elsewhere — nothing new to celebrate.
 
-            toast.success("🎉 Congratulations!", {
-              description: pickCelebration(goal.id),
+            toast.success("Goal Completed", {
+              description: pickCelebration(goal),
               duration: 5000,
+            });
+            addNotification({
+              icon: "Target",
+              iconColor: "text-emerald-400",
+              iconBg: "bg-emerald-400/10 border-emerald-400/20",
+              title: "Goal Completed",
+              body: `${goal.label} +${goal.xp} XP`,
+              category: "notifyAnnouncements",
             });
             window.setTimeout(() => {
               setDismissedGoals((prev) => new Set(prev).add(goal.id));
             }, 2400);
 
-            const prevXp = newXp - XP_PER_GOAL;
+            const prevXp = newXp - goal.xp;
             const prevMilestone = getCurrentMilestone(prevXp);
             const nextMilestone = getCurrentMilestone(newXp);
             if (prevMilestone.id !== nextMilestone.id) {
               window.setTimeout(() => {
-                toast("🏆 Milestone unlocked", {
-                  description: `You've reached ${nextMilestone.name}. ${nextMilestone.reward}.`,
+                toast("Milestone Reached", {
+                  description: `+${goal.xp} XP. New milestone completed: ${nextMilestone.name}.`,
                   duration: 6000,
+                });
+                addNotification({
+                  icon: "Trophy",
+                  iconColor: "text-brand",
+                  iconBg: "bg-brand/10 border-brand/20",
+                  title: "Milestone Reached",
+                  body: `${nextMilestone.name} completed. Rewards are being prepared.`,
+                  category: "notifyAnnouncements",
                 });
               }, 800);
             }
@@ -84,7 +101,7 @@ export function useFocusProgress(goals: FocusGoal[]) {
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [goals, today, claimedToday.join(",")]);
+  }, [goals, today, claimedToday.join(","), completedGoalIds.join(",")]);
 
   const visibleGoals = goals.filter((goal) => !dismissedGoals.has(goal.id));
 
@@ -94,6 +111,6 @@ export function useFocusProgress(goals: FocusGoal[]) {
     currentMilestone: getCurrentMilestone(xp),
     nextMilestone: getNextMilestone(xp),
     milestonePct: milestoneProgress(xp),
-    isLoading: xpLoading || claimsLoading,
+    isLoading: xpLoading || claimsLoading || completedLoading,
   };
 }

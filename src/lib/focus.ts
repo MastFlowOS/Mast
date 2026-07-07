@@ -1,5 +1,14 @@
 import type { FollowupWithLead, Lead } from "@/lib/api";
 import { normalizeLeadStatus } from "@/lib/lead-workspace";
+import type { PlanId } from "@/lib/plans";
+import {
+  generateProgressionGoals,
+  isProgressionGoalComplete,
+  pickGoalCelebration,
+  progressionGoalProgress,
+  type GeneratedGoal,
+  type ProgressionEventTotals,
+} from "@/lib/progression";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -13,12 +22,7 @@ export type FocusRecommendation = {
   tone: "brand" | "warning" | "success" | "danger";
 };
 
-export type FocusGoal = {
-  id: string;
-  label: string;
-  target: number;
-  current: number;
-};
+export type FocusGoal = GeneratedGoal;
 
 export type WeeklyMetric = {
   label: string;
@@ -45,6 +49,9 @@ export type FocusContext = {
   };
   dailyDiscoverUsed: number;
   dailyDiscoverLimit: number;
+  plan: PlanId;
+  completedGoalIds: string[];
+  progressionEvents: ProgressionEventTotals;
 };
 
 export type FocusSnapshot = {
@@ -67,27 +74,6 @@ export const MILESTONE_TIERS: MilestoneTier[] = [
   { id: "growth_master", name: "Growth Master", xpRequired: 1200, reward: "Bonus leads pack" },
   { id: "revenue_architect", name: "Revenue Architect", xpRequired: 1800, reward: "Seasonal badge unlock" },
 ];
-
-export const XP_PER_GOAL = 25;
-
-export const GOAL_CELEBRATIONS: Record<string, string[]> = {
-  contact: [
-    "You crushed today's outreach goal.",
-    "Strong outreach day — momentum is building.",
-  ],
-  followups: [
-    "Follow-ups cleared — pipeline stays warm.",
-    "Mission discipline pays off. Nice work.",
-  ],
-  discover: [
-    "Discovery goal hit. Fresh opportunities incoming.",
-    "Your pipeline just got stronger.",
-  ],
-  meeting: [
-    "Meeting booked — that's real pipeline progress.",
-    "One step closer to closing. Well done.",
-  ],
-};
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -381,57 +367,14 @@ export function buildWeeklyReview(ctx: FocusContext) {
 // ── Daily goals ───────────────────────────────────────────────────────────────
 
 export function buildDailyGoals(ctx: FocusContext): FocusGoal[] {
-  const goals: FocusGoal[] = [];
-  const uncontacted = ctx.leads.filter(isUncontacted).length;
-  const overdue = countOverdueFollowups(ctx.followups);
-  const dueToday = countDueTodayFollowups(ctx.followups);
-  const followupTarget = Math.min(3, overdue + dueToday || 3);
-  const contactTarget = Math.min(10, Math.max(3, uncontacted || 5));
-  const discoverTarget = Math.min(
-    15,
-    Math.max(5, ctx.dailyDiscoverLimit - ctx.dailyDiscoverUsed || 10),
-  );
-
-  const contactsToday = ctx.leads.filter((l) => isToday(l.lastContactedAt)).length;
-  const followupsToday = countCompletedFollowupsToday(ctx.followups);
-  const discoveriesToday = ctx.leads.filter((l) => isToday(l.createdAt)).length;
-  const meetingsToday = ctx.leads.filter(
-    (l) => normalizeLeadStatus(l.status) === "meeting" && isToday(l.updatedAt),
-  ).length;
-
-  if (uncontacted > 0 || ctx.analytics.totalLeads > 0) {
-    goals.push({
-      id: "contact",
-      label: `Contact ${contactTarget} opportunities`,
-      target: contactTarget,
-      current: contactsToday,
-    });
-  }
-
-  if (overdue + dueToday > 0 || ctx.followups.length > 0) {
-    goals.push({
-      id: "followups",
-      label: `Complete ${followupTarget} follow-ups`,
-      target: followupTarget,
-      current: followupsToday,
-    });
-  }
-
-  goals.push({
-    id: "discover",
-    label: `Discover ${discoverTarget} new opportunities`,
-    target: discoverTarget,
-    current: Math.min(discoverTarget, ctx.dailyDiscoverUsed + discoveriesToday),
+  return generateProgressionGoals({
+    plan: ctx.plan,
+    leads: ctx.leads,
+    followups: ctx.followups,
+    completedGoalIds: ctx.completedGoalIds,
+    eventTotals: ctx.progressionEvents,
+    activeGoalCount: 4,
   });
-
-  goals.push({
-    id: "meeting",
-    label: "Book one meeting",
-    target: 1,
-    current: meetingsToday,
-  });
-
-  return goals;
 }
 
 // ── Milestone helpers ─────────────────────────────────────────────────────────
@@ -479,15 +422,13 @@ export function buildFocusSnapshot(firstName: string, ctx: FocusContext): FocusS
 }
 
 export function goalProgress(goal: FocusGoal) {
-  if (goal.target <= 0) return 100;
-  return Math.min(100, Math.round((goal.current / goal.target) * 100));
+  return progressionGoalProgress(goal);
 }
 
 export function isGoalComplete(goal: FocusGoal) {
-  return goal.current >= goal.target;
+  return isProgressionGoalComplete(goal);
 }
 
-export function pickCelebration(goalId: string) {
-  const messages = GOAL_CELEBRATIONS[goalId] ?? ["Goal complete. Keep the momentum going."];
-  return messages[Math.floor(Math.random() * messages.length)];
+export function pickCelebration(goal: FocusGoal) {
+  return pickGoalCelebration(goal);
 }

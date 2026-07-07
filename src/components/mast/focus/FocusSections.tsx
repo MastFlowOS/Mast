@@ -714,9 +714,12 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
       <div className="goal-content">
         <div className="goal-top">
           <p className={cn("goal-label", complete && "goal-label-done")}>{goal.label}</p>
-          <span className="goal-fraction">
-            {Math.min(goal.current, goal.target)}/{goal.target}
-          </span>
+          <div className="goal-meta">
+            <span className="goal-xp">+{goal.xp} XP</span>
+            <span className="goal-fraction">
+              {Math.min(goal.current, goal.target)}/{goal.target}
+            </span>
+          </div>
         </div>
 
         <div className="goal-track">
@@ -797,12 +800,34 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
           color: var(--color-success);
         }
 
+        .goal-meta {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          flex-shrink: 0;
+        }
+
+        .goal-xp {
+          font-size: 0.625rem;
+          font-weight: 800;
+          color: var(--color-brand);
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+        }
+
         .goal-fraction {
           font-size: 0.75rem;
           font-weight: 500;
           color: var(--color-muted-foreground);
           flex-shrink: 0;
           font-variant-numeric: tabular-nums;
+        }
+
+        @media (max-width: 420px) {
+          .goal-top {
+            align-items: flex-start;
+            flex-direction: column;
+          }
         }
 
         .goal-track {
@@ -839,6 +864,7 @@ type MilestonesProps = {
 export function FocusMilestones({ xp, currentName, nextName, progressPct }: MilestonesProps) {
   const currentIndex = MILESTONE_TIERS.findIndex((tier) => tier.name === currentName);
   const nextTier = MILESTONE_TIERS.find((t) => t.name === nextName);
+  const trackComplete = !nextName;
 
   return (
     <section className="animate-fade-up delay-400 milestones-block">
@@ -850,11 +876,11 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
       <div className="milestone-header">
         <div>
           <p className="milestone-tier-name">{currentName}</p>
-          {nextName && (
-            <p className="milestone-next-hint">
-              {nextTier ? `${nextTier.xpRequired - xp} XP to ${nextName}` : "Maximum tier"}
-            </p>
-          )}
+          <p className="milestone-next-hint">
+            {nextName && nextTier
+              ? `${nextTier.xpRequired - xp} XP to ${nextName}`
+              : "Keep grinding. More quests. More rewards. Coming soon."}
+          </p>
         </div>
         <div className="milestone-xp-badge">
           {xp.toLocaleString()} <span className="milestone-xp-unit">XP</span>
@@ -893,11 +919,15 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
         })}
       </div>
 
-      {nextName && nextTier && (
+      {trackComplete ? (
+        <p className="milestone-reward-hint">
+          Quest XP keeps accumulating while milestone rewards are prepared.
+        </p>
+      ) : nextTier ? (
         <p className="milestone-reward-hint">
           Next: <strong>{nextTier.reward}</strong>
         </p>
-      )}
+      ) : null}
 
       <style>{`
         .focus-section-header {

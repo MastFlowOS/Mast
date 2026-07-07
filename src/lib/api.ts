@@ -4,6 +4,7 @@ import { supabase } from "./supabase";
 import { addNotification } from "./notifications";
 import { buildPermissionsManager, getDevPlanOverride, type FeatureId } from "./permissions";
 import { UsageService } from "./usage";
+import type { ProgressionEventTotals, ProgressionMetric } from "./progression";
 
 
 export type { GenerationMode, PlanId } from "./plans";
@@ -115,6 +116,8 @@ export type LeadActivityType =
   | "message_generated"
   | "note_added"
   | "status_changed";
+
+export type ProgressionEventType = ProgressionMetric;
 
 export type Lead = {
   id: number;
@@ -1117,6 +1120,59 @@ export async function getGoalClaims(date: string): Promise<string[]> {
   }
 
   return (data ?? []).map((row: { goal_id: string }) => row.goal_id);
+}
+
+/** All completed progression goal ids for the current user. Used by the quest generator. */
+export async function getCompletedGoalIds(): Promise<string[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!
+    .from("goal_completions")
+    .select("goal_id")
+    .eq("user_id", userId);
+
+  if (error) {
+    console.warn("[Mast:getCompletedGoalIds] failed, returning empty", error.message);
+    return [];
+  }
+
+  return Array.from(new Set((data ?? []).map((row: { goal_id: string }) => row.goal_id)));
+}
+
+export async function getProgressionEventTotals(): Promise<ProgressionEventTotals> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!
+    .from("progression_events")
+    .select("event_type, quantity")
+    .eq("user_id", userId);
+
+  if (error) {
+    console.warn("[Mast:getProgressionEventTotals] failed, returning empty", error.message);
+    return {};
+  }
+
+  return (data ?? []).reduce<ProgressionEventTotals>((totals, row: { event_type: string; quantity: number | null }) => {
+    const metric = row.event_type as ProgressionMetric;
+    totals[metric] = (totals[metric] ?? 0) + (row.quantity ?? 1);
+    return totals;
+  }, {});
+}
+
+export async function recordProgressionEvent(
+  eventType: ProgressionEventType,
+  quantity = 1,
+  metadata: Record<string, unknown> = {},
+): Promise<void> {
+  const userId = await requireUserId();
+  const { error } = await supabase!.from("progression_events").insert({
+    user_id: userId,
+    event_type: eventType,
+    quantity,
+    metadata,
+  });
+
+  if (error) {
+    console.warn("[Mast:recordProgressionEvent] failed", error.message);
+  }
 }
 
 /**

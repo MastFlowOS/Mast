@@ -12,6 +12,7 @@ import {
   generateLeads,
   getAccount,
   getAnalyticsSummary,
+  getCompletedGoalIds,
   getFollowups,
   getGoalClaims,
   getLead,
@@ -21,6 +22,7 @@ import {
   getLeads,
   getMe,
   getPipelineStats,
+  getProgressionEventTotals,
   getRecentActivity,
   getSettings,
   getXp,
@@ -34,6 +36,7 @@ import {
   updateSettings,
   updateSubscription,
   pauseWorkspace,
+  recordProgressionEvent,
   enableWorkspace,
   deleteWorkspace,
   testSmtpConnection,
@@ -45,6 +48,7 @@ import {
   type LeadGenerationRequest,
   type OutreachDraftRequest,
   type PlanId,
+  type ProgressionEventType,
   type SendEmailRequest,
   type SettingsMap,
   type UpdateLeadBody,
@@ -59,6 +63,8 @@ export const queryKeys = {
   settings: ["mast", "settings"] as const,
   xp: ["mast", "xp"] as const,
   goalClaims: (date: string) => ["mast", "goalClaims", date] as const,
+  completedGoalIds: ["mast", "completedGoalIds"] as const,
+  progressionEvents: ["mast", "progressionEvents"] as const,
   lead: (id: number | string | undefined) => ["mast", "lead", String(id)] as const,
   leadActivities: (id: number | string | undefined) => ["mast", "lead", String(id), "activities"] as const,
   leadMessages: (id: number | string | undefined) => ["mast", "lead", String(id), "messages"] as const,
@@ -147,6 +153,35 @@ export function useGoalClaims(date: string, enabled = true) {
   });
 }
 
+export function useCompletedGoalIds(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.completedGoalIds,
+    queryFn: getCompletedGoalIds,
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
+export function useProgressionEventTotals(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.progressionEvents,
+    queryFn: getProgressionEventTotals,
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
+export function useRecordProgressionEvent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ eventType, quantity = 1, metadata = {} }: { eventType: ProgressionEventType; quantity?: number; metadata?: Record<string, unknown> }) =>
+      recordProgressionEvent(eventType, quantity, metadata),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+    },
+  });
+}
+
 /**
  * Award XP for completing a goal on a given day. The server enforces
  * exactly-once-per-goal-per-day; `awarded` in the result tells the caller
@@ -160,6 +195,9 @@ export function useAwardGoalXp() {
     onSuccess: (result, variables) => {
       queryClient.setQueryData(queryKeys.xp, result.xp);
       queryClient.setQueryData(queryKeys.goalClaims(variables.date), (prev: string[] | undefined) =>
+        prev?.includes(variables.goalId) ? prev : [...(prev ?? []), variables.goalId],
+      );
+      queryClient.setQueryData(queryKeys.completedGoalIds, (prev: string[] | undefined) =>
         prev?.includes(variables.goalId) ? prev : [...(prev ?? []), variables.goalId],
       );
     },
@@ -213,10 +251,15 @@ export function useGenerateLeads() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: LeadGenerationRequest) => generateLeads(body),
-    onSuccess: () => {
+    onSuccess: (result, body) => {
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.account });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+      void recordProgressionEvent("searches_performed", 1, { source: "lead_generation" });
+      if (body.niche) void recordProgressionEvent("industries_searched", 1, { niche: body.niche });
+      if (body.region) void recordProgressionEvent("regions_searched", 1, { region: body.region });
+      if (result.generated > 0) void recordProgressionEvent("opportunities_discovered", result.generated, { source: "lead_generation" });
     },
   });
 }
@@ -229,6 +272,8 @@ export function useCreateLead() {
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline });
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+      void recordProgressionEvent("relationships_created", 1, { source: "manual_create" });
     },
   });
 }
@@ -242,6 +287,7 @@ export function useBulkUpdateLeads() {
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline });
       queryClient.invalidateQueries({ queryKey: queryKeys.activity });
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
     },
   });
 }
@@ -262,11 +308,13 @@ export function useBulkImportLeads() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: { leads: CreateLeadBody[] }) => bulkImportLeads(body),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline });
       queryClient.invalidateQueries({ queryKey: queryKeys.activity });
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+      if (result.imported > 0) void recordProgressionEvent("relationships_created", result.imported, { source: "bulk_import" });
     },
   });
 }
@@ -339,21 +387,28 @@ export function useUpdateLead() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body }: { id: number; body: UpdateLeadBody }) => updateLead(id, body),
-    onSuccess: (updated) => {
+    onSuccess: (updated, variables) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.lead(updated.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.leadActivities(updated.id) });
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline });
       queryClient.invalidateQueries({ queryKey: ["mast", "followups"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+      recordLeadProgressionFromPatch(variables.body);
     },
   });
 }
 
 export function useGenerateOutreachDraft() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ leadId, body }: { leadId: number; body: OutreachDraftRequest }) =>
       generateOutreachDraft(leadId, body),
+    onSuccess: (_response, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+      void recordProgressionEvent("ai_actions", 1, { source: "outreach_draft", leadId: variables.leadId });
+    },
   });
 }
 
@@ -370,6 +425,8 @@ export function useSendLeadEmail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.leadActivities(variables.leadId) });
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+      void recordProgressionEvent("businesses_contacted", 1, { source: "send_email", leadId: variables.leadId });
     },
   });
 }
@@ -419,6 +476,8 @@ export function useRecordLeadActivity() {
       queryClient.invalidateQueries({ queryKey: queryKeys.leadActivities(variables.lead.id) });
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+      recordLeadProgressionFromActivity(variables.activity, variables.patch);
     },
   });
 }
@@ -480,14 +539,50 @@ export function useUpdateFollowup() {
   return useMutation({
     mutationFn: ({ id, body }: { id: number | string; body: { status?: string; completedAt?: string; notes?: string; dueAt?: string; sequenceName?: string | null; stepNumber?: number | null; currentStep?: string | null } }) =>
       updateFollowup(id, body),
-    onSuccess: (followup) => {
+    onSuccess: (followup, variables) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.leadFollowups(followup.leadId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.lead(followup.leadId) });
       queryClient.invalidateQueries({ queryKey: ["mast", "followups"] });
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
+      queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+      if (variables.body.status === "completed") {
+        void recordProgressionEvent("followups_completed", 1, { source: "followup_update", followupId: variables.id });
+      }
     },
   });
+}
+
+function recordLeadProgressionFromActivity(activity: WorkspaceActivityInput, patch: Partial<Lead>) {
+  if (activity.type === "message_generated") {
+    void recordProgressionEvent("ai_actions", 1, { source: "lead_activity" });
+  }
+  if (activity.type === "note_added") {
+    void recordProgressionEvent("notes_added", 1, { source: "lead_activity" });
+  }
+  if (activity.type === "email_sent" || activity.type === "ready_for_outreach") {
+    void recordProgressionEvent("businesses_contacted", 1, { source: "lead_activity", channel: activity.channel });
+  }
+  if (activity.type === "meeting_booked") {
+    void recordProgressionEvent("meetings_booked", 1, { source: "lead_activity" });
+  }
+  recordLeadProgressionFromPatch(patch);
+}
+
+function recordLeadProgressionFromPatch(patch: Partial<Lead>) {
+  const status = String(patch.status ?? "");
+  if (["email_sent", "instagram_sent", "called", "contacted", "outreach"].includes(status)) {
+    void recordProgressionEvent("businesses_contacted", 1, { source: "lead_status", status });
+  }
+  if (["meeting_booked", "meeting"].includes(status)) {
+    void recordProgressionEvent("meetings_booked", 1, { source: "lead_status", status });
+  }
+  if (["replied", "interested", "meeting_booked", "meeting", "proposal", "negotiation", "closed", "closed_won"].includes(status)) {
+    void recordProgressionEvent("pipeline_moves", 1, { source: "lead_status", status });
+  }
+  if (typeof patch.notes === "string" && patch.notes.trim()) {
+    void recordProgressionEvent("notes_added", 1, { source: "lead_patch" });
+  }
 }
 
 export function usePauseWorkspace() {

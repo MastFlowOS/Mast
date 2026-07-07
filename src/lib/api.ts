@@ -574,7 +574,13 @@ export async function startGoogleLogin() {
   if (!supabase) throw new Error("Supabase is not configured.");
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: "google",
-    options: { skipBrowserRedirect: true, redirectTo: `${window.location.origin}/auth/callback` },
+    options: {
+      skipBrowserRedirect: true,
+      redirectTo: `${window.location.origin}/auth/callback`,
+      queryParams: {
+        prompt: "select_account",
+      },
+    },
   });
   if (error) throw error;
   return { url: data.url };

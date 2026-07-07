@@ -112,6 +112,9 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
         options: {
           skipBrowserRedirect: true,
           redirectTo: `${window.location.origin}/auth/callback`,
+          queryParams: {
+            prompt: "select_account",
+          },
         },
       });
 
@@ -134,6 +137,9 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
           provider: "google",
           options: {
             redirectTo: `${window.location.origin}/dashboard`,
+            queryParams: {
+              prompt: "select_account",
+            },
           },
         });
         if (redirectErr) throw redirectErr;

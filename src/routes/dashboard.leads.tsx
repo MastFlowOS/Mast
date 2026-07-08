@@ -1176,19 +1176,14 @@ function GetLeads() {
 
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className={`text-sm font-semibold ${active ? "text-foreground" : "text-muted-foreground"}`}>
-                          {c.label}
-                        </span>
                         <span
-                          className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                            active ? "bg-brand/15 text-brand" : "bg-muted text-muted-foreground"
-                          }`}
+                          className={`text-sm font-semibold ${active ? "text-foreground" : "text-muted-foreground"}`}
                         >
-                          {c.costLabel}
+                          {c.label}
                         </span>
                         {isLocked && (
                           <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
-                            <Lock className="size-2.5" /> Upgrade
+                            <Lock className="size-4" /> Upgrade
                           </span>
                         )}
                       </div>

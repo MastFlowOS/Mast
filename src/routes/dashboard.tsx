@@ -54,7 +54,16 @@ function DashboardLayout() {
 
   // ── Auth redirect ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!authLoading && !user) navigate({ to: "/login" });
+    if (authLoading) return;
+    if (!user) {
+      navigate({ to: "/login" });
+      return;
+    }
+    // First login only: onboarding hasn't been completed yet — send the user
+    // through "Personalize Your Workspace" before they can reach the dashboard.
+    if (!user.onboardingCompleted) {
+      navigate({ to: "/onboarding", replace: true });
+    }
   }, [authLoading, navigate, user]);
 
   // ── Sidebar indicator — measured dynamically based on DOM layout ─────
@@ -148,8 +157,10 @@ function DashboardLayout() {
     try { localStorage.setItem("mast_notifications", JSON.stringify(updated)); } catch { /* ignore */ }
   };
 
-  // ── Loading / unauthenticated ─────────────────────────────────────────────
-  if (authLoading || !user) {
+  // ── Loading / unauthenticated / pending onboarding ────────────────────────
+  // Keep showing the loading state (instead of a flash of dashboard content)
+  // while we redirect users who haven't completed onboarding yet.
+  if (authLoading || !user || !user.onboardingCompleted) {
     return (
       <div className="min-h-screen bg-background text-foreground grid place-items-center">
         <div className="text-sm text-muted-foreground animate-pulse">

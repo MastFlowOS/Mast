@@ -338,22 +338,30 @@ export function useChangePlan() {
   return useMutation({
     mutationFn: (plan: PlanId) => updateSubscription(plan),
     onSuccess: (account) => {
-      const user: AuthUser = {
-        id: account.user.id,
-        fullName: account.user.fullName,
-        email: account.user.email,
-        plan: account.user.plan,
-        subscriptionStatus: account.user.subscriptionStatus,
-        creditsLimit: account.credits.limit,
-        creditsUsed: account.credits.used,
-        creditsRemaining: account.credits.remaining,
-        monthlyLeadsUsed: account.monthlyUsage.used,
-        dailyLeadsUsed: account.dailyUsage.used,
-        nextDailyReset: account.dailyUsage.resetsAt ?? null,
-        nextMonthlyReset: account.monthlyUsage.resetsAt ?? null,
-        pendingPlanChange: account.subscription.pendingPlanChange ?? null,
-      };
-      queryClient.setQueryData(queryKeys.me, { user });
+      // Merge onto the existing cached user rather than rebuilding from
+      // scratch — `account` doesn't carry every AuthUser field (e.g.
+      // onboardingCompleted, emailConfirmed, workspaceStatus), and those
+      // should survive a plan change untouched.
+      queryClient.setQueryData(queryKeys.me, (prev: { user: AuthUser | null } | undefined) => {
+        const prevUser = prev?.user;
+        const user: AuthUser = {
+          ...(prevUser as AuthUser),
+          id: account.user.id,
+          fullName: account.user.fullName,
+          email: account.user.email,
+          plan: account.user.plan,
+          subscriptionStatus: account.user.subscriptionStatus,
+          creditsLimit: account.credits.limit,
+          creditsUsed: account.credits.used,
+          creditsRemaining: account.credits.remaining,
+          monthlyLeadsUsed: account.monthlyUsage.used,
+          dailyLeadsUsed: account.dailyUsage.used,
+          nextDailyReset: account.dailyUsage.resetsAt ?? null,
+          nextMonthlyReset: account.monthlyUsage.resetsAt ?? null,
+          pendingPlanChange: account.subscription.pendingPlanChange ?? null,
+        };
+        return { user };
+      });
       queryClient.setQueryData(queryKeys.account, account);
     },
   });

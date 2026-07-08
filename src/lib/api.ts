@@ -48,6 +48,8 @@ export type AuthUser = {
   nextMonthlyReset: string | null;
   pendingPlanChange: PlanId | null;
   workspaceStatus?: string;
+  /** True once the user has completed the "Personalize Your Workspace" onboarding flow. */
+  onboardingCompleted: boolean;
 };
 
 export type Account = {
@@ -565,6 +567,7 @@ export async function getMe() {
     nextMonthlyReset: activeProfile?.next_monthly_reset ?? null,
     pendingPlanChange: (activeProfile?.pending_plan_change as PlanId) || null,
     workspaceStatus: (activeProfile?.settings as Record<string, any>)?.workspaceStatus || "active",
+    onboardingCompleted: (activeProfile?.settings as Record<string, any>)?.onboardingCompleted === "true",
   };
   return { user };
 }

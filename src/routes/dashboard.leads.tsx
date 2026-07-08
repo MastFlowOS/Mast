@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { createPortal } from "react-dom";
 import {
   Zap,
   Globe2,
@@ -582,11 +583,11 @@ function GetLeads() {
 
       const result = await generate.mutateAsync({
         quantity,
-         region: regionLabel,
-         niche: niches.length > 0 ? niches.join(", ") : "General",
-         mode: speed as "scrape" | "pool" | "premium",
-         channels,
-       });
+        region: regionLabel,
+        niche: niches.length > 0 ? niches.join(", ") : "General",
+        mode: speed as "scrape" | "pool" | "premium",
+        channels,
+      });
 
       // Maintain loading experience for at least 6 seconds so user experiences the live analysis
       const elapsedTime = Date.now() - startTime;
@@ -1340,7 +1341,7 @@ function Section({
         </div>
       </div>
       {children}
-    </div>
+    }
   );
 }
 

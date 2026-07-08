@@ -7,19 +7,33 @@ import {
   Briefcase,
   Building2,
   CalendarCheck,
+  Camera,
   Check,
   ChevronLeft,
+  Clapperboard,
+  Code,
+  Database,
+  Handshake,
+  Heart,
+  Instagram,
+  Landmark,
+  Linkedin,
   Loader2,
-  Plus,
+  Megaphone,
+  Music,
+  Palette,
+  PenTool,
   Rocket,
   Search,
+  Send,
+  ShoppingBag,
   Sparkles,
   Store,
   TrendingUp,
   User,
   Users,
   Waypoints,
-  X,
+  Workflow,
 } from "lucide-react";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { useMe, useSaveSettings } from "@/hooks/use-mast-api";
@@ -57,43 +71,35 @@ const GOALS = [
   { label: "Something else", icon: Sparkles },
 ] as const;
 
-const INDUSTRIES = [
-  "Real Estate",
-  "E-commerce & Retail",
-  "Health & Wellness",
-  "Fitness & Gyms",
-  "Restaurants & Food Service",
-  "Legal Services",
-  "Financial Services",
-  "Insurance",
-  "Home Services",
-  "Construction & Contracting",
-  "Automotive",
-  "Beauty & Salons",
-  "Dental & Medical Practices",
-  "Education & Coaching",
-  "SaaS & Technology",
-  "Marketing Agencies",
-  "Nonprofit",
-  "Hospitality & Travel",
-  "Manufacturing",
-  "B2B Services",
-  "Logistics & Supply Chain",
-  "Events & Entertainment",
-  "Photography & Creative",
-  "Interior Design",
-  "Pet Services",
-  "Cleaning Services",
-  "Landscaping",
-  "HVAC & Plumbing",
-  "Accounting & Bookkeeping",
-  "Consulting",
-  "Media & Publishing",
-  "Fashion & Apparel",
-  "Sports & Recreation",
-  "Childcare & Family Services",
-  "Agriculture",
-  "Energy & Utilities",
+// The single primary personalization category for the user — drives AI
+// outreach templates, recommendations, search defaults, dashboard content,
+// goals, and executive briefings. Intentionally a fixed, exhaustive list
+// (not freeform / not multi-select) so downstream AI features can rely on
+// it as a stable taxonomy. Do not add categories without updating every
+// feature that keys off `settings.focusArea`.
+const FOCUS_AREAS = [
+  { label: "Graphic Design", icon: Palette },
+  { label: "Digital Marketing", icon: Megaphone },
+  { label: "Writing & Translation", icon: PenTool },
+  { label: "Video & Animation", icon: Clapperboard },
+  { label: "Music & Audio", icon: Music },
+  { label: "Programming & Tech", icon: Code },
+  { label: "Data", icon: Database },
+  { label: "Business", icon: Briefcase },
+  { label: "Personal Growth & Hobbies", icon: Heart },
+  { label: "Photography", icon: Camera },
+  { label: "Finance", icon: Landmark },
+  { label: "End-to-End Project", icon: Workflow },
+] as const;
+
+const CLIENT_SOURCES = [
+  { label: "Fiverr", icon: ShoppingBag },
+  { label: "Upwork", icon: Briefcase },
+  { label: "LinkedIn", icon: Linkedin },
+  { label: "Instagram", icon: Instagram },
+  { label: "Cold Outreach", icon: Send },
+  { label: "Referrals", icon: Handshake },
+  { label: "Other", icon: Sparkles },
 ] as const;
 
 const STEP_COPY = [
@@ -108,9 +114,14 @@ const STEP_COPY = [
     desc: "This helps us tailor Mast to how you work.",
   },
   {
-    eyebrow: "Focus areas",
-    title: "Which industries or niches do you target?",
-    desc: "Search and select as many as apply. Totally optional.",
+    eyebrow: "Focus Area",
+    title: "What do you do?",
+    desc: "This helps MAST personalize your AI, recommendations, and outreach.",
+  },
+  {
+    eyebrow: "Client source",
+    title: "Where do you usually find clients?",
+    desc: "We'll tailor outreach tone, templates, and tips to where you actually work.",
   },
   {
     eyebrow: "Your goal",
@@ -140,9 +151,9 @@ function OnboardingPage() {
   const [name, setName] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
   const [role, setRole] = useState<string | null>(null);
-  const [industries, setIndustries] = useState<string[]>([]);
   const [goal, setGoal] = useState<string | null>(null);
-  const [industryQuery, setIndustryQuery] = useState("");
+  const [focusArea, setFocusArea] = useState<string | null>(null);
+  const [clientSource, setClientSource] = useState<string | null>(null);
 
   // Pre-fill name from signup / OAuth profile the first time it loads.
   useEffect(() => {
@@ -178,16 +189,10 @@ function OnboardingPage() {
   const canContinue =
     step === 0 ? name.trim().length > 0 :
     step === 1 ? role !== null :
-    step === 3 ? goal !== null :
+    step === 2 ? focusArea !== null :
+    step === 3 ? clientSource !== null :
+    step === 4 ? goal !== null :
     true;
-
-  const toggleIndustry = (value: string) => {
-    setIndustries((prev) => (prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]));
-  };
-
-  const addCustomIndustry = (value: string) => {
-    setIndustries((prev) => (prev.includes(value) ? prev : [...prev, value]));
-  };
 
   const goBack = () => {
     if (step === 0) return;
@@ -211,7 +216,11 @@ function OnboardingPage() {
         settings: {
           workspaceName: workspaceName.trim() || defaultWorkspaceName,
           onboardingRole: role ?? "",
-          onboardingIndustries: industries.join(", "),
+          // First-class personalization fields — reused by AI outreach
+          // templates, recommendations, search defaults, dashboard content,
+          // goals, and executive briefings.
+          focusArea: focusArea ?? "",
+          clientSource: clientSource ?? "",
           onboardingGoal: goal ?? "",
           onboardingCompleted: "true",
         },
@@ -302,16 +311,36 @@ function OnboardingPage() {
                   )}
 
                   {step === 2 && (
-                    <IndustryPicker
-                      query={industryQuery}
-                      onQueryChange={setIndustryQuery}
-                      selected={industries}
-                      onToggle={toggleIndustry}
-                      onAddCustom={addCustomIndustry}
-                    />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {FOCUS_AREAS.map((f, i) => (
+                        <OptionCard
+                          key={f.label}
+                          icon={f.icon}
+                          label={f.label}
+                          selected={focusArea === f.label}
+                          onClick={() => setFocusArea(f.label)}
+                          index={i}
+                        />
+                      ))}
+                    </div>
                   )}
 
                   {step === 3 && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {CLIENT_SOURCES.map((c, i) => (
+                        <OptionCard
+                          key={c.label}
+                          icon={c.icon}
+                          label={c.label}
+                          selected={clientSource === c.label}
+                          onClick={() => setClientSource(c.label)}
+                          index={i}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {step === 4 && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {GOALS.map((g, i) => (
                         <OptionCard
@@ -341,23 +370,11 @@ function OnboardingPage() {
                     Back
                   </button>
                 )}
-                {step === 2 && (
-                  <button
-                    type="button"
-                    onClick={goNext}
-                    className="ml-auto sm:ml-0 px-4 py-3 rounded-xl text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    Skip
-                  </button>
-                )}
                 <button
                   type="button"
                   onClick={goNext}
                   disabled={!canContinue || saveSettings.isPending}
-                  className={cn(
-                    "flex-1 sm:flex-none sm:min-w-[180px] inline-flex items-center justify-center gap-2 bg-brand hover:bg-brand-dark text-brand-foreground py-3 px-6 rounded-xl font-bold transition-colors shadow-brand disabled:opacity-50 disabled:cursor-not-allowed",
-                    step !== 2 && "ml-auto",
-                  )}
+                  className="ml-auto flex-1 sm:flex-none sm:min-w-[180px] inline-flex items-center justify-center gap-2 bg-brand hover:bg-brand-dark text-brand-foreground py-3 px-6 rounded-xl font-bold transition-colors shadow-brand disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {saveSettings.isPending ? (
                     <>
@@ -383,7 +400,8 @@ function OnboardingPage() {
               name={name}
               workspaceName={workspaceName.trim() || defaultWorkspaceName}
               role={role}
-              industries={industries}
+              focusArea={focusArea}
+              clientSource={clientSource}
               goal={goal}
               onContinue={() => void navigate({ to: "/dashboard", replace: true })}
             />
@@ -462,112 +480,6 @@ function OptionCard({
   );
 }
 
-// ─── Industry picker (searchable multi-select) ──────────────────────────────────
-
-function IndustryPicker({
-  query,
-  onQueryChange,
-  selected,
-  onToggle,
-  onAddCustom,
-}: {
-  query: string;
-  onQueryChange: (v: string) => void;
-  selected: string[];
-  onToggle: (v: string) => void;
-  onAddCustom: (v: string) => void;
-}) {
-  const trimmed = query.trim();
-  const filtered = INDUSTRIES.filter((i) => i.toLowerCase().includes(trimmed.toLowerCase()));
-  const exactMatch = INDUSTRIES.some((i) => i.toLowerCase() === trimmed.toLowerCase());
-  const canAddCustom = trimmed.length > 1 && !exactMatch && !selected.some((s) => s.toLowerCase() === trimmed.toLowerCase());
-
-  const handleAddCustom = () => {
-    if (!canAddCustom) return;
-    onAddCustom(trimmed);
-    onQueryChange("");
-  };
-
-  return (
-    <div>
-      {selected.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-3.5">
-          {selected.map((s) => (
-            <span
-              key={s}
-              className="inline-flex items-center gap-1.5 pl-3 pr-2 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-xs font-semibold text-foreground animate-in zoom-in-95 fade-in-0 duration-200"
-            >
-              {s}
-              <button
-                type="button"
-                onClick={() => onToggle(s)}
-                aria-label={`Remove ${s}`}
-                className="grid place-items-center rounded-full hover:bg-brand/20 size-4 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <X className="size-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="relative">
-        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground/60" />
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => onQueryChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              handleAddCustom();
-            }
-          }}
-          placeholder="Search industries — e.g. real estate, SaaS, fitness…"
-          className="w-full bg-card border border-border focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none pl-10 pr-3.5 py-2.5 rounded-lg text-sm text-foreground placeholder:text-muted-foreground/60 transition-all"
-        />
-      </div>
-
-      <div className="mt-3.5 max-h-56 overflow-y-auto pr-1 grid grid-cols-2 sm:grid-cols-3 gap-2">
-        {filtered.map((i) => {
-          const isSelected = selected.includes(i);
-          return (
-            <button
-              key={i}
-              type="button"
-              onClick={() => onToggle(i)}
-              title={i}
-              className={cn(
-                "px-3 py-2 rounded-lg border text-xs font-medium text-left transition-colors truncate",
-                isSelected
-                  ? "border-brand bg-brand/10 text-foreground"
-                  : "border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40",
-              )}
-            >
-              {i}
-            </button>
-          );
-        })}
-        {canAddCustom && (
-          <button
-            type="button"
-            onClick={handleAddCustom}
-            className="px-3 py-2 rounded-lg border border-dashed border-brand/40 text-brand text-xs font-semibold flex items-center gap-1.5 hover:bg-brand/10 transition-colors truncate"
-          >
-            <Plus className="size-3.5 shrink-0" />
-            Add “{trimmed}”
-          </button>
-        )}
-        {filtered.length === 0 && !canAddCustom && (
-          <p className="col-span-full text-xs text-muted-foreground py-4 text-center">
-            No matches yet — keep typing to add a custom industry.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ─── Small field wrapper ─────────────────────────────────────────────────────────
 
 function FieldBlock({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -586,14 +498,16 @@ function CompletionScreen({
   name,
   workspaceName,
   role,
-  industries,
+  focusArea,
+  clientSource,
   goal,
   onContinue,
 }: {
   name: string;
   workspaceName: string;
   role: string | null;
-  industries: string[];
+  focusArea: string | null;
+  clientSource: string | null;
   goal: string | null;
   onContinue: () => void;
 }) {
@@ -618,7 +532,8 @@ function CompletionScreen({
         style={{ animationDelay: "150ms" }}
       >
         <RecapRow label="Role" value={role ?? "Not specified"} />
-        <RecapRow label="Industries" value={industries.length ? industries.join(", ") : "Not specified"} />
+        <RecapRow label="Focus Area" value={focusArea ?? "Not specified"} />
+        <RecapRow label="Finds clients via" value={clientSource ?? "Not specified"} />
         <RecapRow label="Primary goal" value={goal ?? "Not specified"} />
       </div>
 

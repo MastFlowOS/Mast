@@ -404,6 +404,7 @@ function GetLeads() {
   const [nicheSearch, setNicheSearch] = useState("");
   const [nicheDropdownOpen, setNicheDropdownOpen] = useState(false);
   const nicheRef = useRef<HTMLDivElement>(null);
+  const [dropdownPosition, setDropdownPosition] = useState({ left: 0, top: 0, width: 0 });
 
   // Channels & generation mode
   const [speed, setSpeed] = useState(speeds[0].id);
@@ -458,6 +459,28 @@ function GetLeads() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  // Update dropdown position when open and on scroll/resize
+  useEffect(() => {
+    if (!nicheDropdownOpen) return;
+    const updatePosition = () => {
+      if (nicheRef.current) {
+        const rect = nicheRef.current.getBoundingClientRect();
+        setDropdownPosition({
+          left: rect.left,
+          top: rect.bottom,
+          width: rect.width,
+        });
+      }
+    };
+    updatePosition();
+    window.addEventListener('scroll', updatePosition);
+    window.addEventListener('resize', updatePosition);
+    return () => {
+      window.removeEventListener('scroll', updatePosition);
+      window.removeEventListener('resize', updatePosition);
+    };
+  }, [nicheDropdownOpen]);
 
   const localRegion = (settings?.defaultRegions?.split(",")?.[0]?.trim() || "North America") as Region;
   const hasRegionalSearch = permissions.can("regionalSearch");
@@ -559,11 +582,11 @@ function GetLeads() {
 
       const result = await generate.mutateAsync({
         quantity,
-        region: regionLabel,
-        niche: niches.length > 0 ? niches.join(", ") : "General",
-        mode: speed as "scrape" | "pool" | "premium",
-        channels,
-      });
+         region: regionLabel,
+         niche: niches.length > 0 ? niches.join(", ") : "General",
+         mode: speed as "scrape" | "pool" | "premium",
+         channels,
+       });
 
       // Maintain loading experience for at least 6 seconds so user experiences the live analysis
       const elapsedTime = Date.now() - startTime;
@@ -635,7 +658,7 @@ function GetLeads() {
               <div className="absolute inset-4 rounded-full bg-brand/30 border border-brand/50 flex items-center justify-center">
                 <Sparkles className="size-8 text-brand animate-spin [animation-duration:8s]" />
               </div>
-            </div>
+            }
           </div>
 
           {/* Stage Wording */}
@@ -743,7 +766,7 @@ function GetLeads() {
           </div>
 
           {/* CTAs */}
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+          <div className="flex flex-sm-row items-center justify-center gap-3 pt-2">
             <button
               onClick={handleBeginOutreach}
               className="w-full sm:w-auto px-8 py-3.5 bg-brand hover:bg-brand-dark text-brand-foreground font-bold rounded-xl shadow-brand hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
@@ -776,7 +799,7 @@ function GetLeads() {
                     navigate({
                       to: "/dashboard/leads/$leadId",
                       params: { leadId: String(opp.id) },
-                    });
+                    );
                   }}
                   className={`bg-card border border-border rounded-xl p-5 hover:border-brand/40 hover:shadow-lg transition-all cursor-pointer space-y-3 relative group card-hover animate-fade-up ${
                     idx === 0 ? "delay-100" : idx === 1 ? "delay-200" : "delay-300"
@@ -983,41 +1006,52 @@ function GetLeads() {
                 />
               </div>
 
-              {/* Dropdown */}
-              {nicheDropdownOpen && filteredNiches.length > 0 && (
-                <div className="absolute z-20 mt-1 w-full bg-card border border-border rounded-xl shadow-lg max-h-56 overflow-y-auto">
-                  {filteredNiches.map((n) => {
-                    const selected = niches.includes(n);
-                    return (
-                      <button
-                        key={n}
-                        onClick={() => {
-                          toggleNiche(n);
-                          setNicheSearch("");
-                        }}
-                        className={`w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-muted/40 transition-colors text-left ${
-                          selected
-                            ? "text-brand font-medium"
-                            : "text-foreground"
-                        }`}
-                      >
-                        <span>{n}</span>
-                        {selected && (
-                          <CheckSquare className="size-4 text-brand shrink-0" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-
-              {nicheDropdownOpen &&
-                nicheSearch.length > 0 &&
-                filteredNiches.length === 0 && (
-                  <div className="absolute z-20 mt-1 w-full bg-card border border-border rounded-xl shadow-lg px-4 py-3 text-sm text-muted-foreground">
-                    No niches match "{nicheSearch}"
+              {/* Dropdown via portal to avoid clipping */}
+              {nicheDropdownOpen && (
+                <>
+                  <div
+                    className="fixed z-20"
+                    style={{
+                      left: dropdownPosition.left,
+                      top: dropdownPosition.top,
+                      width: dropdownPosition.width,
+                    }}
+                  >
+                    <div className="bg-card border border-border rounded-xl shadow-lg max-h-56 overflow-y-auto w-full">
+                      {filteredNiches.length > 0 ? (
+                        <>
+                          {filteredNiches.map((n) => {
+                            const selected = niches.includes(n);
+                            return (
+                              <button
+                                key={n}
+                                onClick={() => {
+                                  toggleNiche(n);
+                                  setNicheSearch("");
+                                }}
+                                className={`w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-muted/40 transition-colors text-left ${
+                                  selected
+                                    ? "text-brand font-medium"
+                                    : "text-foreground"
+                                }`}
+                              >
+                                <span>{n}</span>
+                                {selected && (
+                                  <CheckSquare className="size-4 text-brand shrink-0" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </>
+                      ) : (
+                        <div className="px-4 py-3 text-sm text-muted-foreground">
+                          No niches match "{nicheSearch}"
+                        </div>
+                      )}
+                    </div>
                   </div>
-                )}
+                </>
+              )}
             </div>
           </Section>
 

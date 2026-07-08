@@ -659,7 +659,7 @@ function GetLeads() {
               <div className="absolute inset-4 rounded-full bg-brand/30 border border-brand/50 flex items-center justify-center">
                 <Sparkles className="size-8 text-brand animate-spin [animation-duration:8s]" />
               </div>
-            }
+            </div>
           </div>
 
           {/* Stage Wording */}
@@ -800,7 +800,7 @@ function GetLeads() {
                     navigate({
                       to: "/dashboard/leads/$leadId",
                       params: { leadId: String(opp.id) },
-                    );
+                    });
                   }}
                   className={`bg-card border border-border rounded-xl p-5 hover:border-brand/40 hover:shadow-lg transition-all cursor-pointer space-y-3 relative group card-hover animate-fade-up ${
                     idx === 0 ? "delay-100" : idx === 1 ? "delay-200" : "delay-300"
@@ -1341,7 +1341,7 @@ function Section({
         </div>
       </div>
       {children}
-    }
+    </div>
   );
 }
 

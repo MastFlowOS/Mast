@@ -404,7 +404,14 @@ function GetLeads() {
   const [niches, setNiches] = useState<string[]>([]);
   const [nicheSearch, setNicheSearch] = useState("");
   const [nicheDropdownOpen, setNicheDropdownOpen] = useState(false);
-  const nicheRef = useRef<HTMLDivElement>(null);
+  const [nicheActiveIndex, setNicheActiveIndex] = useState(0);
+  // Anchor container (chips + input) — used for outside-click detection.
+  const nicheContainerRef = useRef<HTMLDivElement>(null);
+  // Wraps just the search input — the dropdown is positioned directly beneath this.
+  const nicheInputWrapRef = useRef<HTMLDivElement>(null);
+  // The portaled dropdown itself — also needed for outside-click detection,
+  // since it no longer lives inside nicheContainerRef in the DOM.
+  const nicheDropdownRef = useRef<HTMLDivElement>(null);
   const [dropdownPosition, setDropdownPosition] = useState({ left: 0, top: 0, width: 0 });
 
   // Channels & generation mode
@@ -450,10 +457,15 @@ function GetLeads() {
     { title: "Preparing Action Plans", desc: "Drafting custom outreach angles for your pipeline..." }
   ];
 
-  // Close niche dropdown on outside click
+  // Close niche dropdown on outside click.
+  // The dropdown is portaled to document.body, so it's no longer a DOM
+  // descendant of the anchor — both refs must be checked.
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (nicheRef.current && !nicheRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const clickedAnchor = nicheContainerRef.current?.contains(target);
+      const clickedDropdown = nicheDropdownRef.current?.contains(target);
+      if (!clickedAnchor && !clickedDropdown) {
         setNicheDropdownOpen(false);
       }
     };
@@ -461,27 +473,46 @@ function GetLeads() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // Update dropdown position when open and on scroll/resize
+  // Escape closes the dropdown from anywhere while it's open.
+  useEffect(() => {
+    if (!nicheDropdownOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setNicheDropdownOpen(false);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [nicheDropdownOpen]);
+
+  // Reset keyboard-highlighted option whenever the visible list changes.
+  useEffect(() => {
+    setNicheActiveIndex(0);
+  }, [nicheSearch, nicheDropdownOpen]);
+
+  // Track the dropdown's position off the *input wrapper* (not the whole
+  // chips+input block), recalculated on open, on chip changes (chips can
+  // wrap and shift the input down), and on scroll/resize anywhere in the
+  // page — using the capture phase so scrolling inside a nested scroll
+  // container (which doesn't bubble) still triggers a reposition.
   useEffect(() => {
     if (!nicheDropdownOpen) return;
     const updatePosition = () => {
-      if (nicheRef.current) {
-        const rect = nicheRef.current.getBoundingClientRect();
+      if (nicheInputWrapRef.current) {
+        const rect = nicheInputWrapRef.current.getBoundingClientRect();
         setDropdownPosition({
           left: rect.left,
-          top: rect.bottom,
+          top: rect.bottom + 4,
           width: rect.width,
         });
       }
     };
     updatePosition();
-    window.addEventListener('scroll', updatePosition);
-    window.addEventListener('resize', updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    window.addEventListener("resize", updatePosition);
     return () => {
-      window.removeEventListener('scroll', updatePosition);
-      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", updatePosition);
     };
-  }, [nicheDropdownOpen]);
+  }, [nicheDropdownOpen, niches.length]);
 
   const localRegion = (settings?.defaultRegions?.split(",")?.[0]?.trim() || "North America") as Region;
   const hasRegionalSearch = permissions.can("regionalSearch");
@@ -542,6 +573,12 @@ function GetLeads() {
   const filteredNiches = NICHE_CATALOG.filter((n) =>
     n.toLowerCase().includes(nicheSearch.toLowerCase())
   );
+
+  useEffect(() => {
+    nicheDropdownRef.current
+      ?.querySelector('[data-niche-active="true"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [nicheActiveIndex]);
 
   const channelRestricted = channels.some((c) => !permissions.can(channelToFeature[c]));
   const modeRestricted =
@@ -970,7 +1007,7 @@ function GetLeads() {
             subtitle="Select one or more verticals to target"
             stagger={2}
           >
-            <div ref={nicheRef} className="relative">
+            <div ref={nicheContainerRef} className="relative">
               {/* Selected niche chips */}
               {niches.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mb-2">
@@ -992,10 +1029,14 @@ function GetLeads() {
               )}
 
               {/* Search input */}
-              <div className="relative">
+              <div ref={nicheInputWrapRef} className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
                 <input
                   type="text"
+                  role="combobox"
+                  aria-expanded={nicheDropdownOpen}
+                  aria-controls="niche-listbox"
+                  aria-autocomplete="list"
                   placeholder="Search niches… (e.g. Restaurant, Marketing Agency)"
                   value={nicheSearch}
                   onChange={(e) => {
@@ -1003,56 +1044,100 @@ function GetLeads() {
                     setNicheDropdownOpen(true);
                   }}
                   onFocus={() => setNicheDropdownOpen(true)}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      if (!nicheDropdownOpen) {
+                        setNicheDropdownOpen(true);
+                        return;
+                      }
+                      setNicheActiveIndex((i) => Math.min(i + 1, filteredNiches.length - 1));
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setNicheActiveIndex((i) => Math.max(i - 1, 0));
+                    } else if (e.key === "Enter") {
+                      e.preventDefault();
+                      const target = filteredNiches[nicheActiveIndex];
+                      if (target) {
+                        toggleNiche(target);
+                        setNicheSearch("");
+                      }
+                    } else if (e.key === "Escape") {
+                      setNicheDropdownOpen(false);
+                    }
+                  }}
                   className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-brand placeholder:text-muted-foreground"
                 />
               </div>
 
-              {/* Dropdown via portal to avoid clipping */}
-              {nicheDropdownOpen && (
-                <>
+              {/*
+                Rendered through a real portal into document.body.
+                The old version used `position: fixed` while staying a normal
+                DOM descendant of this Section — but Section's `animate-fade-up`
+                class applies a CSS transform, and any transformed ancestor
+                becomes the containing block for `position: fixed` descendants.
+                That trapped the dropdown inside its own Section instead of the
+                viewport, which is why it rendered clipped and behind sibling
+                sections no matter what z-index it was given. Portaling escapes
+                that stacking context entirely.
+              */}
+              {nicheDropdownOpen &&
+                createPortal(
                   <div
-                    className="fixed z-20"
+                    ref={nicheDropdownRef}
+                    className="fixed z-[100]"
                     style={{
                       left: dropdownPosition.left,
                       top: dropdownPosition.top,
                       width: dropdownPosition.width,
                     }}
                   >
-                    <div className="bg-card border border-border rounded-xl shadow-lg max-h-56 overflow-y-auto w-full">
+                    <div
+                      id="niche-listbox"
+                      role="listbox"
+                      aria-multiselectable="true"
+                      className="bg-card border border-border rounded-xl shadow-lg max-h-56 overflow-y-auto w-full"
+                    >
                       {filteredNiches.length > 0 ? (
-                        <>
-                          {filteredNiches.map((n) => {
-                            const selected = niches.includes(n);
-                            return (
-                              <button
-                                key={n}
-                                onClick={() => {
-                                  toggleNiche(n);
-                                  setNicheSearch("");
-                                }}
-                                className={`w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-muted/40 transition-colors text-left ${
-                                  selected
-                                    ? "text-brand font-medium"
-                                    : "text-foreground"
-                                }`}
-                              >
-                                <span>{n}</span>
-                                {selected && (
-                                  <CheckSquare className="size-4 text-brand shrink-0" />
-                                )}
-                              </button>
-                            );
-                          })}
-                        </>
+                        filteredNiches.map((n, idx) => {
+                          const selected = niches.includes(n);
+                          const active = idx === nicheActiveIndex;
+                          return (
+                            <button
+                              key={n}
+                              role="option"
+                              aria-selected={selected}
+                              data-niche-active={active}
+                              onMouseEnter={() => setNicheActiveIndex(idx)}
+                              // Selecting must never blur the search input — multi-select
+                              // relies on the input staying focused between picks.
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => {
+                                toggleNiche(n);
+                                setNicheSearch("");
+                              }}
+                              className={cn(
+                                "w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors text-left",
+                                active ? "bg-muted/40" : "hover:bg-muted/40",
+                                selected ? "text-brand font-medium" : "text-foreground"
+                              )}
+                            >
+                              <span>{n}</span>
+                              {selected && (
+                                <CheckSquare className="size-4 text-brand shrink-0" />
+                              )}
+                            </button>
+                          );
+                        })
                       ) : (
                         <div className="px-4 py-3 text-sm text-muted-foreground">
                           No niches match "{nicheSearch}"
                         </div>
                       )}
                     </div>
-                  </div>
-                </>
-              )}
+                  </div>,
+                  document.body
+                )}
             </div>
           </Section>
 

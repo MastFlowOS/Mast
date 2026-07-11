@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "./supabase.js";
+import { supabaseAdmin } from "./supabaseAdmin.js";
 
 /**
  * Gathers the real numbers every Phase 8 AI prompt is grounded in. Nothing

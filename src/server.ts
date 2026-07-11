@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import pinoHttp from "pino-http";
+import { pinoHttp } from "pino-http";
 import { env } from "./config/env.js";
 import { healthRouter } from "./server/routes/health.js";
 import { accountRouter } from "./server/routes/account.js";

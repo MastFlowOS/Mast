@@ -12,6 +12,8 @@ type DiscoverJobPayload = {
   channels: string[];
   professionSlug: string | null;
   quantity: number;
+  dailyLimit: number;
+  monthlyLimit: number;
 };
 
 async function main() {

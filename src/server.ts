@@ -1,13 +1,35 @@
-/**
- * src/server.ts — STUBBED
- *
- * This was a Cloudflare Workers / TanStack Start SSR server entry point.
- * MAST is now a pure Vite SPA deployed on Netlify. This file is no longer
- * used and is kept only to avoid breaking any tooling that references it.
- *
- * The Netlify deployment uses the standard SPA setup:
- *   - Build: npm run build → dist/
- *   - Publish: dist/
- *   - SPA redirect: /* → /index.html (200) via netlify.toml
- */
-export default {};
+import express from "express";
+import cors from "cors";
+import pinoHttp from "pino-http";
+import { env } from "./config/env.js";
+import { healthRouter } from "./routes/health.js";
+import { accountRouter } from "./routes/account.js";
+import { discoverRouter } from "./routes/discover.js";
+import { intelligenceRouter } from "./routes/intelligence.js";
+
+const app = express();
+
+app.use(pinoHttp());
+app.use(express.json({ limit: "1mb" }));
+app.use(
+  cors({
+    origin: env.ALLOWED_ORIGIN,
+    credentials: true,
+  }),
+);
+
+app.use("/health", healthRouter);
+app.use("/v1/account", accountRouter);
+app.use("/v1/discover", discoverRouter);
+app.use("/v1/intelligence", intelligenceRouter);
+
+// Centralized error handler — anything thrown/next(err)'d in a route lands here.
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  req.log?.error(err);
+  const message = err instanceof Error ? err.message : "Internal server error";
+  res.status(500).json({ code: "internal_error", message });
+});
+
+app.listen(env.PORT, () => {
+  console.log(`[gateway] listening on :${env.PORT} (${env.NODE_ENV})`);
+});

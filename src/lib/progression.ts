@@ -1,5 +1,5 @@
 import type { FollowupWithLead, Lead } from "@/lib/api";
-import { normalizeLeadStatus } from "@/lib/lead-workspace";
+import { isRelationshipLead, normalizeLeadStatus } from "@/lib/lead-workspace";
 import type { PlanId } from "@/lib/plans";
 
 export type ProgressionMetric =
@@ -44,6 +44,14 @@ export type GoalDefinition = {
   difficulty: GoalDifficulty;
   minPlan: PlanId;
   weight: number;
+  /**
+   * Whether a real, wired application action currently increments this
+   * goal's metric. Goals whose metric has no event source anywhere in the
+   * app must be marked `false` so they're excluded from generation — a
+   * goal a user can never complete should never be shown. Defaults to
+   * `true` when omitted.
+   */
+  implemented?: boolean;
 };
 
 export type GeneratedGoal = {
@@ -201,6 +209,9 @@ export const GOAL_DEFINITIONS: GoalDefinition[] = [
     difficulty: "medium",
     minPlan: "free",
     weight: 62,
+    // No UI action anywhere records `relationships_reviewed`. Excluded from
+    // generation until a real "review" action is wired up. See audit §5/§10.
+    implemented: false,
   },
   {
     key: "executive-briefings",
@@ -211,6 +222,10 @@ export const GOAL_DEFINITIONS: GoalDefinition[] = [
     difficulty: "very_hard",
     minPlan: "premium",
     weight: 80,
+    // The Executive Briefing panel (dashboard.pipeline.tsx) is a passive,
+    // auto-generated summary with no discrete "complete" action — nothing
+    // records `executive_briefings`. Excluded from generation for now.
+    implemented: false,
   },
   {
     key: "weekly-intelligence",
@@ -221,6 +236,9 @@ export const GOAL_DEFINITIONS: GoalDefinition[] = [
     difficulty: "hard",
     minPlan: "premium",
     weight: 78,
+    // Same situation as executive-briefings: the Weekly Intelligence panel
+    // is passively rendered, nothing records `weekly_intelligence`.
+    implemented: false,
   },
   {
     key: "opportunity-insights",
@@ -231,33 +249,30 @@ export const GOAL_DEFINITIONS: GoalDefinition[] = [
     difficulty: "hard",
     minPlan: "premium",
     weight: 72,
+    // No "Opportunity Insights" feature exists yet in the app beyond
+    // marketing copy — nothing records `opportunity_insights`.
+    implemented: false,
   },
 ];
 
+// Both sets are only ever checked against the output of `normalizeLeadStatus`
+// (see `buildProgressionCounters` below), which always returns one of the 8
+// canonical `LeadStatus` values. Only canonical values belong here — legacy
+// strings like "outreach" or "meeting" are translated to their canonical
+// form by `normalizeLeadStatus` before they'd ever reach these sets.
 const CONTACTED_STATUSES = new Set([
   "email_sent",
   "instagram_sent",
   "called",
-  "contacted",
-  "outreach",
   "replied",
   "meeting_booked",
-  "meeting",
-  "proposal",
-  "negotiation",
   "closed",
-  "closed_won",
 ]);
 
 const PIPELINE_STATUSES = new Set([
   "replied",
-  "interested",
   "meeting_booked",
-  "meeting",
-  "proposal",
-  "negotiation",
   "closed",
-  "closed_won",
 ]);
 
 export function canUseGoalDefinition(plan: PlanId, definition: GoalDefinition) {
@@ -289,8 +304,13 @@ export function buildProgressionCounters(ctx: Omit<ProgressionContext, "complete
   const derived: Record<ProgressionMetric, number> = {
     opportunities_discovered: leads.length,
     businesses_contacted: leads.filter((lead) => CONTACTED_STATUSES.has(normalizeLeadStatus(lead.status)) || Boolean(lead.lastContactedAt)).length,
-    relationships_created: leads.filter((lead) => Boolean(lead.userId) || normalizeLeadStatus(lead.status) !== "discovered").length,
-    meetings_booked: leadStatuses.filter((status) => status === "meeting_booked" || status === "meeting").length,
+    // A "relationship" is a lead the user has deliberately brought into
+    // their workspace — manually added, imported, or a Discover result
+    // they've since engaged with — not just any row in `leads` (which
+    // would make this identical to `opportunities_discovered`). See
+    // `isRelationshipLead` for the exact rule and audit Priority 3.
+    relationships_created: leads.filter((lead) => isRelationshipLead(lead)).length,
+    meetings_booked: leadStatuses.filter((status) => status === "meeting_booked").length,
     pipeline_moves: leadStatuses.filter((status) => PIPELINE_STATUSES.has(status)).length,
     followups_completed: ctx.followups.filter((followup) => followup.status === "completed").length,
     notes_added: leads.filter((lead) => Boolean(lead.notes?.trim())).length,
@@ -320,7 +340,7 @@ export function generateProgressionGoals(ctx: ProgressionContext): GeneratedGoal
   const usedCategories = new Set<GoalCategory>();
 
   const candidates = GOAL_DEFINITIONS
-    .filter((definition) => canUseGoalDefinition(ctx.plan, definition))
+    .filter((definition) => definition.implemented !== false && canUseGoalDefinition(ctx.plan, definition))
     .map((definition) => {
       const capped = definition.targets.at(-1)!;
       const nextUncompletedTarget = definition.targets.find((item) => !completed.has(goalId(definition, item)));

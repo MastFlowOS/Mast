@@ -31,6 +31,39 @@ export function isMissingBackendEndpoint(_error: unknown): boolean {
   return false;
 }
 
+// ─── Opportunity Engine backend (Part 3) ───────────────────────────────────────
+// Separate service from Supabase — see mast-backend. Only `/v1/discover` is
+// called from here today; everything else (leads CRUD, settings, etc.)
+// still talks to Supabase directly, unchanged.
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
+
+async function backendFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  if (!API_BASE_URL) {
+    throw new ApiError(0, "VITE_API_BASE_URL is not configured", {});
+  }
+  if (!supabase) throw new ApiError(0, "Supabase not configured", {});
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session) throw new ApiError(401, "Not authenticated", {});
+
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+      ...(options.headers ?? {}),
+    },
+  });
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ApiError(res.status, (payload as { message?: string }).message ?? res.statusText, payload);
+  }
+  return payload as T;
+}
+
 // ─── Auth types ───────────────────────────────────────────────────────────────
 export type AuthUser = {
   id: string;
@@ -146,6 +179,10 @@ export type Lead = {
   updatedAt: string;
   lastContactedAt?: string | null;
   followUpAt?: string | null;
+  /** Opportunity Engine (Part 3) fields — populated for leads delivered via Discover, null for older/manual leads. */
+  businessId?: string | null;
+  opportunityScore?: number | null;
+  professionSlug?: string | null;
 };
 
 export type CreateLeadBody = Partial<
@@ -330,6 +367,28 @@ export type LeadGenerationResponse = {
     used: number;
     remaining: number;
   };
+  /** The scrape_jobs id — pass to subscribeToDiscoverJob() to watch it resolve. */
+  jobId: string;
+  /** The ACTUAL mode the backend used, derived server-side from the user's real plan — not necessarily what was requested. */
+  mode: GenerationMode;
+  /**
+   * True when more opportunities may still arrive for this job after this
+   * call returns: always true for Free's Live Discovery (nothing has
+   * landed yet), and true for Starter/Pro/Premium when the pool fell short
+   * and a follow-up scrape is running under the same job id.
+   */
+  pending: boolean;
+};
+
+type DiscoverBackendResponse = {
+  jobId: string;
+  mode: GenerationMode;
+  status: "queued" | "streaming" | "completed" | "failed";
+  requested: number;
+  delivered?: number;
+  shortfall?: number;
+  backgroundExpansionQueued?: boolean;
+  results?: Array<{ businessId: string; opportunityScore: number | null }>;
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -360,6 +419,9 @@ function dbRowToLead(row: Record<string, unknown>): Lead {
     updatedAt: (row.updated_at as string) ?? new Date().toISOString(),
     lastContactedAt: (row.last_contacted_at as string | null) ?? null,
     followUpAt: (row.follow_up_at as string | null) ?? null,
+    businessId: (row.business_id as string | null) ?? null,
+    opportunityScore: (row.opportunity_score as number | null) ?? null,
+    professionSlug: (row.profession_slug as string | null) ?? null,
   };
 }
 
@@ -386,6 +448,58 @@ function leadToDbRow(body: Partial<Lead & CreateLeadBody>) {
   if (body.lastContactedAt !== undefined) row.last_contacted_at = body.lastContactedAt;
   if (body.followUpAt !== undefined) row.follow_up_at = body.followUpAt;
   return row;
+}
+
+function backendModeToGenerationMode(mode: string): GenerationMode {
+  if (mode === "live") return "scrape";
+  if (mode === "instant_pool_ranked") return "premium";
+  return "pool"; // instant_pool
+}
+
+async function currentCreditsSnapshot(userId: string) {
+  const status = await UsageService.getUsageStatus(userId);
+  return { limit: status.monthlyLimit, used: status.monthlyUsed, remaining: status.monthlyRemaining };
+}
+
+/**
+ * Subscribes to a discover job's live results. Calls `onLead` for every new
+ * CRM row (`leads`) that lands under this job id, and `onStatusChange`
+ * whenever the job's `scrape_jobs` row moves (queued -> streaming ->
+ * completed | failed). Returns an unsubscribe function.
+ *
+ * This is what makes both Free's Live Discovery AND a Starter/Pro Instant
+ * Discovery shortfall's follow-up feel like one continuous stream — the
+ * caller never needs to know which underlying path produced a given lead.
+ */
+export function subscribeToDiscoverJob(
+  jobId: string,
+  handlers: {
+    onLead: (lead: Lead) => void;
+    onStatusChange: (status: "queued" | "streaming" | "completed" | "failed", resultsCount: number) => void;
+  },
+): () => void {
+  if (!supabase) return () => {};
+
+  const channel = supabase
+    .channel(`discover-job-${jobId}`)
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "leads", filter: `scrape_job_id=eq.${jobId}` },
+      (payload) => handlers.onLead(dbRowToLead(payload.new as Record<string, unknown>)),
+    )
+    .on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "scrape_jobs", filter: `id=eq.${jobId}` },
+      (payload) => {
+        const row = payload.new as { status: string; results_count: number };
+        handlers.onStatusChange(row.status as "queued" | "streaming" | "completed" | "failed", row.results_count ?? 0);
+      },
+    )
+    .subscribe();
+
+  return () => {
+    supabase?.removeChannel(channel);
+  };
 }
 
 async function requireUserId(): Promise<string> {
@@ -829,24 +943,24 @@ export async function bulkImportLeads(body: { leads: CreateLeadBody[] }): Promis
 export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGenerationResponse> {
   const userId = await requireUserId();
 
-  // Enforce usage limit check before starting generation
+  // Client-side pre-flight check + lazy daily/monthly reset — reused as-is
+  // from the previous mock. This is a fast-fail / UX convenience only; the
+  // gateway re-checks the same limits server-side and is the authoritative
+  // enforcement (see mast-backend src/routes/discover.ts).
   await UsageService.checkAllowance(userId, body.quantity);
-
-  const { data: profile, error: profileErr } = await supabase!
-    .from("profiles")
-    .select("*")
-    .eq("id", userId)
-    .single();
-
+  const { data: profile, error: profileErr } = await supabase!.from("profiles").select("*").eq("id", userId).single();
   if (profileErr) throw new ApiError(500, profileErr.message, profileErr);
-
-  // Perform lazy resets to ensure correct active limits
   const activeProfile = await checkAndResetUsage(profile);
 
+  // Channel/region restrictions — reused as-is from the mock. NOTE: this is
+  // a client-side pre-check only; the gateway (mast-backend) does not yet
+  // re-enforce these server-side (it enforces plan/credit/daily/monthly
+  // limits, but not per-channel or regional-search gating). Flagged as a
+  // gap in Phase 4 deliverables, not fixed here — it's a backend change,
+  // out of scope for "Discover integration."
   const resolvedPlan = getDevPlanOverride() || ((activeProfile?.subscription_plan as PlanId) || "free");
   const permissions = buildPermissionsManager(resolvedPlan);
 
-  // Enforce channel restrictions on the backend
   const requiredChannels: Record<string, FeatureId> = {
     instagram: "instagramChannel",
     website: "websiteChannel",
@@ -857,146 +971,150 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
       throw new ApiError(403, `Channel ${ch} is restricted under your plan.`, {});
     }
   }
-
-  // Enforce search coverage restrictions on the backend
   if (body.region && body.region !== "North America" && !permissions.can("regionalSearch")) {
     throw new ApiError(403, "Regional search is restricted under your plan.", {});
   }
 
+  // Note: `body.mode` (the UI's speed selector) is NOT sent — the backend
+  // derives the real discovery mode from the user's actual subscription
+  // plan, per the product philosophy ("MAST decides, not the user"). See
+  // Phase 4 deliverables notes for the resulting UI inconsistency this
+  // surfaces in the speed selector, flagged there rather than silently
+  // papered over here.
+  const backendResponse = await backendFetch<DiscoverBackendResponse>("/v1/discover", {
+    method: "POST",
+    body: JSON.stringify({
+      quantity: body.quantity,
+      region: body.region,
+      niche: body.niche,
+      channels: body.channels,
+    }),
+  });
 
-  // Simulate external Lead Engine: might return slightly fewer than requested
-  // but never more, and never charge for what was not generated.
-  const successRate = 0.9 + Math.random() * 0.1; // 90% to 100% success rate
-  const actualCount = Math.max(1, Math.min(body.quantity, Math.round(body.quantity * successRate)));
+  const credits = await currentCreditsSnapshot(userId);
+  const mode = backendModeToGenerationMode(backendResponse.mode);
 
-  const generatedLeads: Lead[] = [];
-  const nichesList = body.niche && body.niche !== "General" ? body.niche.split(", ") : ["Software Agency", "Local Bakery", "Consulting Firm", "Dental Clinic"];
-  const regionsList = body.region && body.region !== "Global" ? body.region.split(", ") : ["New York, US", "London, UK", "Toronto, CA", "Sydney, AU"];
-
-  for (let i = 0; i < actualCount; i++) {
-    const niche = nichesList[i % nichesList.length];
-    const location = regionsList[i % regionsList.length];
-    const businessName = `${niche} Co. ${Math.floor(Math.random() * 900 + 100)}`;
-    
-    // Customize research notes based on vertical/niche
-    let brandingDesc = "Visual presence is established but lacks coordination across active channels. Color usage could be more cohesive.";
-    let websiteDesc = "Web layout is responsive but lacks clean conversion pathways above the fold. Loading speed has optimization potential.";
-    let actionRecommendation = "Send personalized outreach introducing a high-impact design enhancement for their website.";
-    
-    if (niche.toLowerCase().includes("restaurant") || niche.toLowerCase().includes("bakery") || niche.toLowerCase().includes("coffee") || niche.toLowerCase().includes("cafe")) {
-      brandingDesc = "Instagram aesthetic is strong, but menu branding and photography are inconsistent. Recommended: Standardize grid layout and highlight signature items.";
-      websiteDesc = "Online ordering system is functional but requires 4 clicks to access. Lacks clear menu CTAs on mobile home page. Mobile speed is 3.4s.";
-      actionRecommendation = "Initiate contact via Instagram DM or Email with a mobile wireframe mockup showing a 1-click ordering pathway.";
-    } else if (niche.toLowerCase().includes("agency") || niche.toLowerCase().includes("consulting") || niche.toLowerCase().includes("firm") || niche.toLowerCase().includes("services") || niche.toLowerCase().includes("law") || niche.toLowerCase().includes("accounting")) {
-      brandingDesc = "Brand positioning is formal but feels generic. Lacks video case studies or partner headshots. Recommended: Highlight testimonials and modern typography.";
-      websiteDesc = "Case studies are buried in the navigation. Form fields are too long (8 inputs), causing lead drop-off. Mobile speed is 2.9s.";
-      actionRecommendation = "Send email highlighting a simplified 3-field contact form case study, showing how it increases conversions by 50%.";
-    } else if (niche.toLowerCase().includes("clinic") || niche.toLowerCase().includes("dental") || niche.toLowerCase().includes("health") || niche.toLowerCase().includes("medical") || niche.toLowerCase().includes("veterinary")) {
-      brandingDesc = "Patient trust signals (reviews, safety badges) are not featured prominently. Color scheme is clean but feels cold.";
-      websiteDesc = "Appointment booking is redirected to an external portal that is not mobile-optimized. Load time is 3.1s on mobile.";
-      actionRecommendation = "Initiate outreach with an email offering a patient booking flow audit, focusing on booking page bounce rates.";
-    }
-
-    const brandingNotes = `${brandingDesc} Recommendation: Sync visual style and modern fonts across all platforms to build stronger trust.`;
-    const websiteNotes = `${websiteDesc} Recommendation: Add a primary sticky 'Schedule Appointment' button in the header.`;
-    const notes = `AI Overview: ${businessName} is a growing ${niche} business in ${location}. Their local customer satisfaction is high, but their digital footprint leaks conversions due to friction in booking/ordering and inconsistent cross-channel branding.\n\nSuggested First Action: ${actionRecommendation}`;
-
-    const leadRow: CreateLeadBody = {
-      businessName,
-      niche,
-      location,
-      status: "ready", // Active in momentum pipeline
-      email: body.channels.includes("email") ? `contact@${businessName.toLowerCase().replace(/[^a-z0-9]/g, "")}.com` : null,
-      phone: body.channels.includes("phone") ? `+1 (555) ${Math.floor(Math.random() * 900 + 100)}-${Math.floor(Math.random() * 9000 + 1000)}` : null,
-      instagramHandle: body.channels.includes("instagram") ? `${businessName.toLowerCase().replace(/[^a-z0-9]/g, "")}_ig` : null,
-      website: body.channels.includes("website") ? `https://www.${businessName.toLowerCase().replace(/[^a-z0-9]/g, "")}.com` : null,
-      source: `Engine (${body.mode === "premium" ? "premium" : body.mode === "pool" ? "pool" : "scrape"})`,
-      brandingNotes,
-      websiteNotes,
-      notes,
-      igFollowers: body.channels.includes("instagram") ? `${Math.floor(Math.random() * 8000 + 1200)}` : null,
-      igBio: body.channels.includes("instagram") ? `Premium ${niche} services. Contact us today!` : null,
+  if (backendResponse.status === "queued") {
+    // Free tier — nothing has been delivered yet. Caller must subscribe via
+    // subscribeToDiscoverJob(jobId, ...) to receive leads as they stream in.
+    return {
+      leads: [],
+      requested: backendResponse.requested,
+      generated: 0,
+      cost: 0,
+      source: "live_scrape",
+      credits,
+      jobId: backendResponse.jobId,
+      mode,
+      pending: true,
     };
-
-    // Insert lead into Supabase workspace
-    const row = { ...leadToDbRow(leadRow), user_id: userId };
-    const { data: dbLead, error: insertErr } = await supabase!.from("leads").insert(row).select().single();
-    if (insertErr) {
-      console.error("[Mast:generateLeads] Mock lead insert failed:", insertErr.message);
-    } else if (dbLead) {
-      const opportunity = dbRowToLead(dbLead);
-      generatedLeads.push(opportunity);
-
-      // Seed 5 spaced timeline events
-      const nowMs = Date.now();
-      const activities = [
-        {
-          lead_id: dbLead.id,
-          user_id: userId,
-          type: "opportunity_discovered",
-          timestamp: new Date(nowMs - 5 * 60 * 1000).toISOString(),
-          content: "Opportunity discovered via target segment search",
-        },
-        {
-          lead_id: dbLead.id,
-          user_id: userId,
-          type: "company_analyzed",
-          timestamp: new Date(nowMs - 4 * 60 * 1000).toISOString(),
-          content: `Analyzed company structure and digital footprint for ${dbLead.business_name}`,
-        },
-        {
-          lead_id: dbLead.id,
-          user_id: userId,
-          type: "contact_verified",
-          timestamp: new Date(nowMs - 3 * 60 * 1000).toISOString(),
-          content: "Verified contact details and verified active outreach channels",
-        },
-        {
-          lead_id: dbLead.id,
-          user_id: userId,
-          type: "workspace_prepared",
-          timestamp: new Date(nowMs - 2 * 60 * 1000).toISOString(),
-          content: "Outreach workspace initialized with research highlights",
-        },
-        {
-          lead_id: dbLead.id,
-          user_id: userId,
-          type: "ready_for_outreach",
-          timestamp: new Date(nowMs - 1 * 60 * 1000).toISOString(),
-          content: "Opportunity marked ready for outreach campaigns",
-        },
-      ];
-
-      const { error: actErr } = await supabase!.from("lead_activities").insert(activities);
-      if (actErr) {
-        console.error("[Mast:generateLeads] Failed to seed activities:", actErr.message);
-      }
-    }
   }
 
-  const generatedCount = generatedLeads.length;
+  // Instant Discovery — whatever the pool already had is in `leads` by now;
+  // the gateway only returned business ids + scores, so fetch the actual
+  // CRM rows the same way the rest of the app reads leads.
+  const { data: rows, error: rowsErr } = await supabase!
+    .from("leads")
+    .select("*")
+    .eq("scrape_job_id", backendResponse.jobId)
+    .order("created_at", { ascending: true });
+  if (rowsErr) throw new ApiError(500, rowsErr.message, rowsErr);
 
-  // Charge only for the actual generated leads
-  try {
-    await UsageService.consumeAllowance(userId, generatedCount);
-  } catch (err) {
-    console.error("[Mast:generateLeads] Error updating user profile usage via UsageService:", err);
-  }
-
-  const finalStatus = await UsageService.getUsageStatus(userId);
+  const leads = (rows ?? []).map(dbRowToLead);
 
   return {
-    leads: generatedLeads,
-    requested: body.quantity,
-    generated: generatedCount,
-    cost: generatedCount, // 1 lead = 1 usage count
-    source: body.mode === "premium" ? "premium_pool" : body.mode === "pool" ? "instant_pool" : "live_scrape",
-    credits: {
-      limit: finalStatus.monthlyLimit,
-      used: finalStatus.monthlyUsed,
-      remaining: finalStatus.monthlyRemaining,
-    },
+    leads,
+    requested: backendResponse.requested,
+    generated: leads.length,
+    cost: leads.length,
+    source: backendResponse.mode,
+    credits,
+    jobId: backendResponse.jobId,
+    mode,
+    // status "streaming" means the pool fell short and a follow-up scrape
+    // is running under this same job id — more leads may still arrive.
+    pending: backendResponse.status === "streaming",
   };
+}
+
+// ─── Opportunity Intelligence (Part 3, Phase 8) ────────────────────────────────
+// All calls go through backendFetch — same gateway as /v1/discover — never a
+// second AI implementation on the frontend. Every shape here mirrors
+// mast-backend src/routes/intelligence.ts's response bodies exactly.
+
+export type OpportunityExplanationReason = {
+  component: "website" | "branding" | "social" | "growth" | "newness";
+  label: string;
+  detail: string;
+  weight: number;
+  value: number;
+};
+
+export type OpportunityExplanation = {
+  score: number;
+  professionSlug: string;
+  professionMatch: "strong" | "moderate" | "weak";
+  reasons: OpportunityExplanationReason[];
+  summary: string;
+};
+
+/** Deterministic — reads the real Opportunity Score breakdown, not AI. Available on every plan. */
+export async function getOpportunityExplanation(leadId: number | string): Promise<OpportunityExplanation> {
+  return backendFetch<OpportunityExplanation>(`/v1/intelligence/explain/${leadId}`);
+}
+
+export type OpportunityInsight = {
+  headline: string;
+  talking_points: string[];
+  opening_line: string;
+  score_snapshot: number;
+  generated_at: string;
+  explanation: OpportunityExplanation;
+  cached: boolean;
+};
+
+/** AI-generated (Premium) — cached per business+profession on the backend. */
+export async function getOpportunityInsight(businessId: string): Promise<OpportunityInsight> {
+  return backendFetch<OpportunityInsight>(`/v1/intelligence/opportunities/${businessId}`);
+}
+
+export type ExecutiveBriefing = {
+  summary: string;
+  priorities: string[];
+  tone: "brand" | "warning" | "success";
+  generatedAt: string;
+  cached: boolean;
+};
+
+/** AI-generated (Premium) — cached once per user per day. */
+export async function getExecutiveBriefing(): Promise<ExecutiveBriefing> {
+  return backendFetch<ExecutiveBriefing>("/v1/intelligence/briefing");
+}
+
+export type WeeklyIntelligence = {
+  reflection: string;
+  wins: string[];
+  focusForNextWeek: string[];
+  generatedAt: string;
+  cached: boolean;
+};
+
+/** AI-generated (Premium) — cached once per user per ISO week. */
+export async function getWeeklyIntelligence(): Promise<WeeklyIntelligence> {
+  return backendFetch<WeeklyIntelligence>("/v1/intelligence/weekly");
+}
+
+export type PipelineCoachingAlert = { businessName: string; message: string; suggestedAction: string };
+export type PipelineCoaching = {
+  alerts: PipelineCoachingAlert[];
+  allClear: boolean;
+  generatedAt: string;
+  cached: boolean;
+};
+
+/** AI-generated (Pro+) — cached once per user per day. */
+export async function getPipelineCoaching(): Promise<PipelineCoaching> {
+  return backendFetch<PipelineCoaching>("/v1/intelligence/coaching");
 }
 
 // ─── Analytics (computed from Supabase leads) ─────────────────────────────────

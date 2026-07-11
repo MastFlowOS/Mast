@@ -3,13 +3,16 @@ import {
   useAccount,
   useAnalytics,
   useCompletedGoalIds,
+  useExecutiveBriefing,
   useFollowups,
   useLeads,
   useMe,
   useProgressionEventTotals,
+  useWeeklyIntelligence,
 } from "@/hooks/use-mast-api";
 import { useFocusProgress } from "@/hooks/use-focus-progress";
-import { buildFocusSnapshot, type FocusContext } from "@/lib/focus";
+import { usePermissions } from "@/hooks/use-permissions";
+import { buildFocusSnapshot, type FocusContext, type FocusRecommendation } from "@/lib/focus";
 import { getPlan } from "@/lib/plans";
 import type { Lead } from "@/lib/api";
 import {
@@ -29,6 +32,16 @@ export function FocusDashboard() {
   const { data: followups = [], isLoading: followupsLoading } = useFollowups({ limit: 1000 });
   const { data: completedGoalIds = [], isLoading: completedGoalsLoading } = useCompletedGoalIds();
   const { data: progressionEvents = {}, isLoading: progressionEventsLoading } = useProgressionEventTotals();
+  const { permissions } = usePermissions();
+
+  // AI Executive Briefing / Weekly Intelligence (Premium — Part 3 Phase 8).
+  // Only fetched for plans that actually have the capability; everyone else
+  // keeps the existing rule-based "Today's Briefing" / "Weekly Intelligence"
+  // panels exactly as before.
+  const canBriefing = permissions.can("executiveBriefings");
+  const canWeekly = permissions.can("weeklyIntelligence");
+  const { data: aiBriefing } = useExecutiveBriefing(canBriefing);
+  const { data: aiWeekly } = useWeeklyIntelligence(canWeekly);
 
   const firstName = auth?.user?.fullName?.split(/\s+/)[0] || "there";
   const leads = normalizeLeads(leadsPayload);
@@ -59,6 +72,34 @@ export function FocusDashboard() {
   );
 
   const snapshot = useMemo(() => buildFocusSnapshot(firstName, ctx), [firstName, ctx]);
+
+  // When a real AI Executive Briefing is available, present it through the
+  // exact same <FocusRecommendations> panel — one recommendation card per
+  // priority — instead of the rule-based list. Falls back to the rule-based
+  // recommendations while loading or for non-Premium plans, so nothing
+  // regresses.
+  const recommendations: FocusRecommendation[] = useMemo(() => {
+    if (!canBriefing || !aiBriefing) return snapshot.recommendations;
+    if (aiBriefing.priorities.length === 0) return snapshot.recommendations;
+    return aiBriefing.priorities.map((priority, index) => ({
+      id: `ai-briefing-${index}`,
+      title: priority,
+      description: aiBriefing.summary,
+      actionLabel: "Open Relationships",
+      to: "/dashboard/relationships",
+      priority: 100 - index,
+      tone: aiBriefing.tone,
+    }));
+  }, [canBriefing, aiBriefing, snapshot.recommendations]);
+
+  // Same idea for Weekly Intelligence — real numbers stay (snapshot.weeklyMetrics
+  // is already computed from actual analytics), only the reflective text
+  // becomes AI-generated for Premium.
+  const weeklySummary = canWeekly && aiWeekly ? aiWeekly.reflection : snapshot.weeklySummary;
+  const weeklyRecommendation = canWeekly && aiWeekly && aiWeekly.focusForNextWeek.length > 0
+    ? aiWeekly.focusForNextWeek[0]
+    : snapshot.weeklyRecommendation;
+
   const {
     visibleGoals,
     xp,
@@ -106,10 +147,10 @@ export function FocusDashboard() {
         <div className="focus-briefing-grid">
           <FocusWeeklyReview
             metrics={snapshot.weeklyMetrics}
-            summary={snapshot.weeklySummary}
-            recommendation={snapshot.weeklyRecommendation}
+            summary={weeklySummary}
+            recommendation={weeklyRecommendation}
           />
-          <FocusRecommendations recommendations={snapshot.recommendations} />
+          <FocusRecommendations recommendations={recommendations} />
         </div>
       </section>
 

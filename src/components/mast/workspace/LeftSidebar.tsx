@@ -1,4 +1,4 @@
-import { Mail, Phone, Globe, Instagram, MapPin, Tag, ExternalLink, Copy, Check, Sparkles, Zap } from "lucide-react";
+import { Mail, Phone, Globe, Instagram, MapPin, Tag, ExternalLink, Copy, Check, Sparkles, Zap, Lightbulb, MessageCircle } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import type { Lead } from "@/lib/api";
@@ -6,6 +6,8 @@ import type { Channel } from "@/routes/dashboard.leads.$leadId";
 import { ChannelAvailabilityCard } from "./components/ChannelAvailabilityCard";
 import { NICHES, stripActivityMarkers } from "@/lib/lead-workspace";
 import { staggerDelay } from "@/lib/motion";
+import { useOpportunityExplanation, useOpportunityInsight } from "@/hooks/use-mast-api";
+import { FeatureGate } from "@/components/mast/FeatureGate";
 
 function formatSourceLabel(source: string | null | undefined): string {
   if (!source) return "Mast Opportunity Engine";
@@ -34,10 +36,24 @@ export function LeftSidebar({
     setTimeout(() => setCopied(null), 2000);
   };
 
-  const score = lead.priority === "high" ? 94 : lead.priority === "normal" ? 78 : 62;
+  // Real Opportunity Score (Part 3 Phase 6) when this lead came through the
+  // Opportunity Engine. Older/manual leads have no business_id/opportunity_score
+  // yet — fall back to the priority-based estimate that was already here so
+  // nothing regresses for pre-existing data.
+  const hasRealScore = lead.opportunityScore != null;
+  const score = hasRealScore ? Math.round(lead.opportunityScore!) : lead.priority === "high" ? 94 : lead.priority === "normal" ? 78 : 62;
   const nicheLabel = NICHES.find((n) => n.value === lead.niche)?.label ?? lead.niche;
 
   const hasContactData = lead.email || lead.phone || lead.website || lead.instagramHandle || lead.location;
+
+  // Deterministic Opportunity Explanation (Part 3 Phase 8) — reads the real
+  // score breakdown, never fabricated. Only leads with a linked business
+  // (i.e. delivered via Discover) have one to explain.
+  const { data: explanation, isLoading: explanationLoading } = useOpportunityExplanation(lead.id, Boolean(lead.businessId));
+
+  // AI Opportunity Insight (Premium) — headline/talking points/opening line
+  // grounded in the same explanation, gated below with <FeatureGate>.
+  const { data: insight, isLoading: insightLoading } = useOpportunityInsight(lead.businessId);
 
   // Extract AI Overview and Suggested Action
   let aiOverview = "";
@@ -75,6 +91,69 @@ export function LeftSidebar({
             />
           </div>
         </div>
+
+        {/* Opportunity Explanation — why MAST surfaced this business, from the
+            real Opportunity Score breakdown (Part 3 Phase 8). Deterministic,
+            available on every plan. */}
+        {lead.businessId && (
+          <section className={`space-y-3 animate-fade-up ${staggerDelay(1)}`}>
+            <SectionHeading>Why This Opportunity</SectionHeading>
+            {explanationLoading ? (
+              <div className="h-16 rounded-xl bg-muted/30 animate-pulse" />
+            ) : explanation ? (
+              <div className="rounded-xl border border-brand/20 bg-brand/5 p-3 space-y-2.5">
+                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand">
+                  <Lightbulb className="size-4 text-brand" />
+                  <span>{explanation.professionMatch === "strong" ? "Strong match for your profession" : explanation.professionMatch === "moderate" ? "Moderate profession match" : "Profession match"}</span>
+                </div>
+                <p className="text-[11px] text-foreground leading-relaxed font-sans">{explanation.summary}</p>
+                <ul className="space-y-1.5">
+                  {explanation.reasons.map((reason) => (
+                    <li key={reason.component} className="text-[11px] leading-relaxed">
+                      <span className="font-semibold text-foreground">{reason.label}:</span>{" "}
+                      <span className="text-muted-foreground">{reason.detail}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </section>
+        )}
+
+        {/* AI Opportunity Insight — Premium. Headline + talking points +
+            suggested opening line, grounded in the explanation above, cached
+            server-side per business+profession. */}
+        {lead.businessId && (
+          <FeatureGate feature="opportunityInsights" fallback="hide">
+            <section className="space-y-3 animate-fade-up">
+              <SectionHeading>AI Opportunity Insight</SectionHeading>
+              {insightLoading ? (
+                <div className="h-24 rounded-xl bg-muted/30 animate-pulse" />
+              ) : insight ? (
+                <div className="rounded-xl border border-brand/20 bg-brand/5 p-3 space-y-2.5">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand">
+                    <Sparkles className="size-4 text-brand" />
+                    <span>{insight.headline}</span>
+                  </div>
+                  {insight.talking_points.length > 0 && (
+                    <ul className="space-y-1 list-disc list-inside">
+                      {insight.talking_points.map((point, i) => (
+                        <li key={i} className="text-[11px] text-foreground leading-relaxed">{point}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1">
+                    <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-500">
+                      <MessageCircle className="size-4 text-amber-500" />
+                      <span>Suggested Opening</span>
+                    </div>
+                    <p className="text-[11px] text-foreground leading-relaxed font-medium">{insight.opening_line}</p>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          </FeatureGate>
+        )}
 
         {/* Contextual Intelligence */}
         {(aiOverview || suggestedAction) && (

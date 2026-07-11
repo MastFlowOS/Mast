@@ -195,6 +195,29 @@ export type DraftContent = {
 
 const ACTIVITY_MARKER = "[[mast:activity]]";
 
+export function isDiscoveredOpportunity(lead: Pick<Lead, "source">): boolean {
+  return Boolean(lead.source) && lead.source!.trim().toLowerCase().startsWith("engine (");
+}
+
+/**
+ * A "relationship" is a lead the user has deliberately brought into their
+ * workspace, as opposed to a raw, untouched Discover result:
+ *  - manually added (Add Lead form) or CSV/bulk imported — never came from
+ *    the Discover engine, so it's a relationship from the moment it exists
+ *  - a Discover result the user has since engaged with (contacted, or
+ *    moved off the default "new" status)
+ *
+ * A freshly-Discovered lead the user hasn't touched yet is NOT a
+ * relationship — see audit Priority 3. This function backs both the
+ * `relationships_created` progression counter and the "Save to
+ * Relationships" button state.
+ */
+export function isRelationshipLead(lead: Pick<Lead, "source" | "lastContactedAt" | "status">): boolean {
+  if (!isDiscoveredOpportunity(lead)) return true;
+  if (Boolean(lead.lastContactedAt)) return true;
+  return normalizeLeadStatus(lead.status) !== "new";
+}
+
 export function normalizeLeadStatus(status?: string | null): LeadStatus {
   const normalized = (status ?? "new").toLowerCase().trim().replace(/\s+/g, "_");
   if (LEAD_STATUSES.some((item) => item.value === normalized)) return normalized as LeadStatus;

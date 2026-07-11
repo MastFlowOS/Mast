@@ -26,6 +26,11 @@ import {
   getRecentActivity,
   getSettings,
   getXp,
+  getOpportunityExplanation,
+  getOpportunityInsight,
+  getExecutiveBriefing,
+  getWeeklyIntelligence,
+  getPipelineCoaching,
   login,
   logout,
   sendLeadEmail,
@@ -52,6 +57,11 @@ import {
   type SendEmailRequest,
   type SettingsMap,
   type UpdateLeadBody,
+  type OpportunityExplanation,
+  type OpportunityInsight,
+  type ExecutiveBriefing,
+  type WeeklyIntelligence,
+  type PipelineCoaching,
 } from "@/lib/api";
 import { appendActivityToNotes, buildActivitiesFromLead, normalizeActivitiesPayload, type WorkspaceActivityInput } from "@/lib/lead-workspace";
 
@@ -72,6 +82,11 @@ export const queryKeys = {
   followups: (params?: Record<string, string | number | undefined>) => ["mast", "followups", params ?? {}] as const,
   pipeline: ["mast", "analytics", "pipeline"] as const,
   activity: ["mast", "analytics", "activity"] as const,
+  opportunityExplanation: (leadId: number | string | undefined) => ["mast", "intelligence", "explain", String(leadId)] as const,
+  opportunityInsight: (businessId: string | undefined) => ["mast", "intelligence", "opportunity", businessId ?? ""] as const,
+  executiveBriefing: ["mast", "intelligence", "briefing"] as const,
+  weeklyIntelligence: ["mast", "intelligence", "weekly"] as const,
+  pipelineCoaching: ["mast", "intelligence", "coaching"] as const,
 };
 
 export function useMe() {
@@ -403,7 +418,7 @@ export function useUpdateLead() {
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline });
       queryClient.invalidateQueries({ queryKey: ["mast", "followups"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
-      recordLeadProgressionFromPatch(variables.body);
+      recordLeadProgressionEvents(null, variables.body);
     },
   });
 }
@@ -413,9 +428,13 @@ export function useGenerateOutreachDraft() {
   return useMutation({
     mutationFn: ({ leadId, body }: { leadId: number; body: OutreachDraftRequest }) =>
       generateOutreachDraft(leadId, body),
-    onSuccess: (_response, variables) => {
+    onSuccess: (_response, _variables) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
-      void recordProgressionEvent("ai_actions", 1, { source: "outreach_draft", leadId: variables.leadId });
+      // Not recording ai_actions here: the caller (AIAssistant) always
+      // follows a successful generation with a recordActivity({ type:
+      // "message_generated" }) call, which is the single source of truth
+      // for this metric. Recording it here too double-counted every AI
+      // draft. See audit Priority 1.
     },
   });
 }
@@ -434,7 +453,12 @@ export function useSendLeadEmail() {
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
       queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
-      void recordProgressionEvent("businesses_contacted", 1, { source: "send_email", leadId: variables.leadId });
+      // Not recording businesses_contacted here: EmailForm's handleSend
+      // always follows a successful send with a recordActivity({ type:
+      // "email_sent" }, { patch: { status: "outreach" } }) call, which is
+      // the single source of truth for this metric. Recording it here too
+      // meant one "Send Email" click could record businesses_contacted up
+      // to three times. See audit Priority 1.
     },
   });
 }
@@ -485,7 +509,7 @@ export function useRecordLeadActivity() {
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
       queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
-      recordLeadProgressionFromActivity(variables.activity, variables.patch);
+      recordLeadProgressionEvents(variables.activity, variables.patch);
     },
   });
 }
@@ -561,35 +585,58 @@ export function useUpdateFollowup() {
   });
 }
 
-function recordLeadProgressionFromActivity(activity: WorkspaceActivityInput, patch: Partial<Lead>) {
-  if (activity.type === "message_generated") {
-    void recordProgressionEvent("ai_actions", 1, { source: "lead_activity" });
-  }
-  if (activity.type === "note_added") {
-    void recordProgressionEvent("notes_added", 1, { source: "lead_activity" });
-  }
-  if (activity.type === "email_sent" || activity.type === "ready_for_outreach") {
-    void recordProgressionEvent("businesses_contacted", 1, { source: "lead_activity", channel: activity.channel });
-  }
-  if (activity.type === "meeting_booked") {
-    void recordProgressionEvent("meetings_booked", 1, { source: "lead_activity" });
-  }
-  recordLeadProgressionFromPatch(patch);
-}
+/**
+ * Single source of truth for turning a lead activity + a lead patch into
+ * progression events. Called from every place that records a lead action
+ * (`useRecordLeadActivity`) or applies a direct lead patch (`useUpdateLead`).
+ *
+ * Both `activity` and `patch` are inspected, but each metric is fired AT
+ * MOST ONCE per call via the `metrics` Set below — even if both the
+ * activity-type rule and the patch-status rule independently match the same
+ * metric for the same call (e.g. sending an email tags the activity as
+ * `email_sent` AND patches `status: "outreach"`; without the Set, that one
+ * user action would record `businesses_contacted` twice). See audit
+ * Priority 1.
+ */
+function recordLeadProgressionEvents(activity: WorkspaceActivityInput | null, patch: Partial<Lead> | undefined) {
+  const metrics = new Set<ProgressionEventType>();
 
-function recordLeadProgressionFromPatch(patch: Partial<Lead>) {
-  const status = String(patch.status ?? "");
-  if (["email_sent", "instagram_sent", "called", "contacted", "outreach"].includes(status)) {
-    void recordProgressionEvent("businesses_contacted", 1, { source: "lead_status", status });
+  if (activity) {
+    if (activity.type === "message_generated") {
+      metrics.add("ai_actions");
+    }
+    if (activity.type === "note_added") {
+      metrics.add("notes_added");
+    }
+    if (activity.type === "email_sent" || activity.type === "ready_for_outreach") {
+      metrics.add("businesses_contacted");
+    }
+    // "Save to Relationships" tags its status_changed activity with
+    // metadata.saved — the one clear, explicit trigger for turning a
+    // Discover result into a saved relationship. See audit Priority 3.
+    if (activity.type === "status_changed" && activity.metadata?.saved === true) {
+      metrics.add("relationships_created");
+    }
   }
-  if (["meeting_booked", "meeting"].includes(status)) {
-    void recordProgressionEvent("meetings_booked", 1, { source: "lead_status", status });
+
+  if (patch) {
+    const status = String(patch.status ?? "");
+    if (["email_sent", "instagram_sent", "called", "contacted", "outreach"].includes(status)) {
+      metrics.add("businesses_contacted");
+    }
+    if (["meeting_booked", "meeting"].includes(status)) {
+      metrics.add("meetings_booked");
+    }
+    if (["replied", "interested", "meeting_booked", "meeting", "proposal", "negotiation", "closed", "closed_won"].includes(status)) {
+      metrics.add("pipeline_moves");
+    }
+    if (typeof patch.notes === "string" && patch.notes.trim()) {
+      metrics.add("notes_added");
+    }
   }
-  if (["replied", "interested", "meeting_booked", "meeting", "proposal", "negotiation", "closed", "closed_won"].includes(status)) {
-    void recordProgressionEvent("pipeline_moves", 1, { source: "lead_status", status });
-  }
-  if (typeof patch.notes === "string" && patch.notes.trim()) {
-    void recordProgressionEvent("notes_added", 1, { source: "lead_patch" });
+
+  for (const metric of metrics) {
+    void recordProgressionEvent(metric, 1, { source: activity ? "lead_activity" : "lead_patch" });
   }
 }
 
@@ -630,5 +677,64 @@ export function useDeleteWorkspace() {
 export function useTestSmtpConnection() {
   return useMutation({
     mutationFn: testSmtpConnection,
+  });
+}
+
+// ─── Opportunity Intelligence (Part 3, Phase 8) ────────────────────────────────
+// Reads only — mast-backend owns generation + caching, these hooks just fetch
+// and let TanStack Query cache the result client-side on top of that.
+
+/** Deterministic Opportunity Explanation — available on every plan, no gating needed here. */
+export function useOpportunityExplanation(leadId: number | string | undefined, enabled = true) {
+  return useQuery<OpportunityExplanation>({
+    queryKey: queryKeys.opportunityExplanation(leadId),
+    queryFn: () => getOpportunityExplanation(leadId!),
+    enabled: enabled && leadId !== undefined,
+    retry: false,
+    staleTime: 60_000,
+  });
+}
+
+/** AI Opportunity Insight (Premium) — callers should gate visibility with <FeatureGate feature="opportunityInsights">. */
+export function useOpportunityInsight(businessId: string | null | undefined, enabled = true) {
+  return useQuery<OpportunityInsight>({
+    queryKey: queryKeys.opportunityInsight(businessId ?? undefined),
+    queryFn: () => getOpportunityInsight(businessId!),
+    enabled: enabled && Boolean(businessId),
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** AI Executive Briefing (Premium) — callers should gate visibility with <FeatureGate feature="executiveBriefings">. */
+export function useExecutiveBriefing(enabled = true) {
+  return useQuery<ExecutiveBriefing>({
+    queryKey: queryKeys.executiveBriefing,
+    queryFn: getExecutiveBriefing,
+    enabled,
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** Weekly Intelligence (Premium) — callers should gate visibility with <FeatureGate feature="weeklyIntelligence">. */
+export function useWeeklyIntelligence(enabled = true) {
+  return useQuery<WeeklyIntelligence>({
+    queryKey: queryKeys.weeklyIntelligence,
+    queryFn: getWeeklyIntelligence,
+    enabled,
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** AI Pipeline Coaching (Pro+) — callers should gate visibility with <FeatureGate feature="pipelineCoaching">. */
+export function usePipelineCoaching(enabled = true) {
+  return useQuery<PipelineCoaching>({
+    queryKey: queryKeys.pipelineCoaching,
+    queryFn: getPipelineCoaching,
+    enabled,
+    retry: false,
+    staleTime: 5 * 60_000,
   });
 }

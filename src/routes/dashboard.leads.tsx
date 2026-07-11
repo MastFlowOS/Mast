@@ -30,8 +30,9 @@ import {
   Check,
   Lock,
 } from "lucide-react";
-import { ApiError, type Lead } from "@/lib/api";
-import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings } from "@/hooks/use-mast-api";
+import { ApiError, subscribeToDiscoverJob, type Lead } from "@/lib/api";
+import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings, queryKeys } from "@/hooks/use-mast-api";
+import { useQueryClient } from "@tanstack/react-query";
 import { buildDiscoverInsights, type DiscoverInsight } from "@/lib/discover-insights";
 import { usePermissions } from "@/hooks/use-permissions";
 import { FeatureGate } from "@/components/mast/FeatureGate";
@@ -372,6 +373,13 @@ function GetLeads() {
   const { data: leadsPayload } = useLeads({ limit: 1000 });
   const generate = useGenerateLeads();
   const { permissions } = usePermissions();
+  const queryClient = useQueryClient();
+
+  // Live-streaming plumbing for Phase 4: the unsubscribe fn for whatever
+  // discover job is currently being watched, and a set of lead ids already
+  // shown, so a realtime INSERT can never produce a visible duplicate.
+  const unsubscribeJobRef = useRef<(() => void) | null>(null);
+  const seenLeadIdsRef = useRef<Set<number>>(new Set());
 
   const maxQuantity = permissions.limits.dailyOpportunities;
   const maxSliderIndex = qtyToSliderIndex(maxQuantity);
@@ -598,17 +606,71 @@ function GetLeads() {
   const handleGenerate = async () => {
     if (!canGenerate) return;
 
+    // Clean up any previous subscription before starting a new search.
+    unsubscribeJobRef.current?.();
+    unsubscribeJobRef.current = null;
+    seenLeadIdsRef.current = new Set();
+
     setIsGenerating(true);
     setCurrentStageIndex(0);
     setShowCompletion(false);
     setNewOpportunities([]);
 
-    // Staged progress interval
+    // Cosmetic stage-text rotation — purely visual, decoupled from actual
+    // completion (which now waits for the real job, not a fixed timer).
     const stageInterval = setInterval(() => {
       setCurrentStageIndex((prev) => (prev < loadingStages.length - 1 ? prev + 1 : prev));
     }, 1200);
 
     const startTime = Date.now();
+
+    // A very short minimum so an instant, fully-cached Instant Discovery
+    // response doesn't flash the loading screen for a single frame — not a
+    // fabricated delay, just enough to avoid visual flicker.
+    const MIN_VISIBLE_MS = 700;
+
+    const finish = (finalCount: number) => {
+      clearInterval(stageInterval);
+      unsubscribeJobRef.current?.();
+      unsubscribeJobRef.current = null;
+
+      const elapsed = Date.now() - startTime;
+      const wait = Math.max(0, MIN_VISIBLE_MS - elapsed);
+
+      setTimeout(() => {
+        setIsGenerating(false);
+        setShowCompletion(true);
+        toast.success(`${finalCount} opportunities added to pipeline`);
+        addNotification({
+          icon: "CheckCircle2",
+          iconColor: "text-emerald-400",
+          iconBg: "bg-emerald-400/10 border-emerald-400/20",
+          title: "Leads Generated",
+          body: `Successfully generated ${finalCount} new opportunities for your pipeline.`,
+          category: "notifyNewLead",
+        });
+        // Final sync — credits/counters/CRM/analytics all reflect what was
+        // actually delivered, not just the initial (possibly partial) batch.
+        queryClient.invalidateQueries({ queryKey: queryKeys.account });
+        queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
+        queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
+        queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
+      }, wait);
+    };
+
+    const appendLead = (lead: Lead) => {
+      if (seenLeadIdsRef.current.has(lead.id)) return; // no duplicate opportunities, ever
+      seenLeadIdsRef.current.add(lead.id);
+      setNewOpportunities((prev) => {
+        const next = [...prev, lead];
+        if (prev.length === 0) setFirstOpportunityId(lead.id);
+        return next;
+      });
+      // Keep credits/counters live as each opportunity lands, not just at
+      // the very end — this is what "stay synchronized" means for a
+      // multi-second Live Discovery run.
+      queryClient.invalidateQueries({ queryKey: queryKeys.account });
+    };
 
     try {
       const regionLabel = [
@@ -626,31 +688,34 @@ function GetLeads() {
         channels,
       });
 
-      // Maintain loading experience for at least 6 seconds so user experiences the live analysis
-      const elapsedTime = Date.now() - startTime;
-      const minDelay = 6000;
-      const remainingTime = Math.max(0, minDelay - elapsedTime);
+      // Whatever arrived synchronously (Instant Discovery's pool hit) shows
+      // immediately.
+      result.leads.forEach(appendLead);
 
-      setTimeout(() => {
-        clearInterval(stageInterval);
-        setIsGenerating(false);
-        setNewOpportunities(result.leads);
-        if (result.leads.length > 0) {
-          setFirstOpportunityId(result.leads[0].id);
-        }
-        setShowCompletion(true);
-        toast.success(`${result.generated} opportunities added to pipeline`);
+      if (!result.pending) {
+        // Nothing more coming — Instant Discovery fully satisfied the
+        // request from the pool alone.
+        finish(result.leads.length);
+        return;
+      }
 
-        addNotification({
-          icon: "CheckCircle2",
-          iconColor: "text-emerald-400",
-          iconBg: "bg-emerald-400/10 border-emerald-400/20",
-          title: "Leads Generated",
-          body: `Successfully generated ${result.generated} new opportunities for your pipeline.`,
-          category: "notifyNewLead",
-        });
-      }, remainingTime);
-
+      // Free's Live Discovery (nothing delivered yet), or an Instant
+      // Discovery shortfall still being backfilled — either way, watch the
+      // SAME job id until it resolves. The UI never needs to know which.
+      unsubscribeJobRef.current = subscribeToDiscoverJob(result.jobId, {
+        onLead: appendLead,
+        onStatusChange: (status) => {
+          if (status === "completed") {
+            finish(seenLeadIdsRef.current.size);
+          } else if (status === "failed") {
+            clearInterval(stageInterval);
+            unsubscribeJobRef.current?.();
+            unsubscribeJobRef.current = null;
+            setIsGenerating(false);
+            toast.error("Discovery engine failed. Please try again.");
+          }
+        },
+      });
     } catch (err) {
       clearInterval(stageInterval);
       setIsGenerating(false);
@@ -667,6 +732,13 @@ function GetLeads() {
       }
     }
   };
+
+  // Stop listening for a job's results if the user navigates away mid-search.
+  useEffect(() => {
+    return () => {
+      unsubscribeJobRef.current?.();
+    };
+  }, []);
 
   const handleBeginOutreach = () => {
     if (firstOpportunityId) {
@@ -760,7 +832,17 @@ function GetLeads() {
             })}
           </div>
 
-          {/* Mock terminal log output */}
+          {newOpportunities.length > 0 && (
+            <div className="flex items-center justify-center gap-2 text-sm font-semibold text-brand animate-in fade-in">
+              <span className="relative flex size-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand opacity-75" />
+                <span className="relative inline-flex size-2 rounded-full bg-brand" />
+              </span>
+              {newOpportunities.length} opportunit{newOpportunities.length === 1 ? "y" : "ies"} found so far...
+            </div>
+          )}
+
+          {/* Decorative status log */}
           <div className="rounded-lg bg-black/40 border border-border/60 p-3.5 font-mono text-[10px] text-muted-foreground space-y-1 overflow-hidden h-24 select-none">
             <p className="text-brand/60">[SYSTEM] Booting discovery engine...</p>
             {currentStageIndex >= 1 && <p className="text-blue-400/80">[SCANNER] Parsing geo-coordinates for {regions.join(", ")}...</p>}
@@ -1211,7 +1293,7 @@ function GetLeads() {
           <Section
             icon={Gauge}
             title="Discovery Speed"
-            subtitle="Choose how Mast sources and verifies your businesses"
+            subtitle="Mast automatically uses the method matched to your plan"
             stagger={4}
           >
             <div className="space-y-3">

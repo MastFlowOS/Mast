@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCreateLead, useRecordLeadActivity, useUpdateLead } from "@/hooks/use-mast-api";
 import type { Lead, LeadStatus } from "@/lib/api";
-import { LEAD_STATUSES, leadStatusColor, leadStatusLabel, normalizeLeadStatus } from "@/lib/lead-workspace";
+import { LEAD_STATUSES, isRelationshipLead, leadStatusColor, leadStatusLabel, normalizeLeadStatus } from "@/lib/lead-workspace";
 
 type ConfirmAction = "archive" | "delete" | null;
 
@@ -15,7 +15,7 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
   const recordActivity = useRecordLeadActivity();
   const createLead = useCreateLead();
   const updateLeadMutation = useUpdateLead();
-  const [saved, setSaved] = useState(Boolean(lead.userId) || lead.status === "new");
+  const [saved, setSaved] = useState(isRelationshipLead(lead));
   const [status, setStatus] = useState<LeadStatus>(normalizeLeadStatus(lead.status));
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPending, setMenuPending] = useState<string | null>(null);
@@ -23,9 +23,9 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setSaved(Boolean(lead.userId) || lead.status === "new");
+    setSaved(isRelationshipLead(lead));
     setStatus(normalizeLeadStatus(lead.status));
-  }, [lead.status, lead.userId]);
+  }, [lead.status, lead.userId, lead.source, lead.lastContactedAt]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {

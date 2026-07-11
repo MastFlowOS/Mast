@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Lead, LeadStatus } from "@/lib/api";
-import { useLeads, useUpdateLead, usePipelineStats, useRecentActivity } from "@/hooks/use-mast-api";
+import { useLeads, useUpdateLead, usePipelineStats, useRecentActivity, useExecutiveBriefing, usePipelineCoaching } from "@/hooks/use-mast-api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { 
@@ -38,6 +38,7 @@ import {
 import type { FlowStage } from "@/lib/lead-workspace";
 
 import { FeatureGate } from "@/components/mast/FeatureGate";
+import { usePermissions } from "@/hooks/use-permissions";
 
 export const Route = createFileRoute("/dashboard/pipeline")({
   head: () => ({ meta: [{ title: "Pipeline — Mast" }] }),
@@ -51,6 +52,16 @@ export const Route = createFileRoute("/dashboard/pipeline")({
 function Pipeline() {
   const navigate = useNavigate();
   const updateLead = useUpdateLead();
+  const { permissions } = usePermissions();
+
+  // AI Executive Briefing / Pipeline Coaching (Part 3 Phase 8). Only
+  // fetched when the plan actually has the capability — the FeatureGate
+  // blocks below already prevent non-qualifying plans from seeing this UI,
+  // this just avoids the request too.
+  const canBriefing = permissions.can("executiveBriefings");
+  const canCoaching = permissions.can("pipelineCoaching");
+  const { data: realAiBriefing, isLoading: realAiBriefingLoading } = useExecutiveBriefing(canBriefing);
+  const { data: realCoaching, isLoading: realCoachingLoading } = usePipelineCoaching(canCoaching);
 
   // Mode Selection: Flow (default) or Kanban
   const [viewMode, setViewMode] = useState<"flow" | "kanban">(() => {
@@ -383,6 +394,37 @@ function Pipeline() {
     };
   }, [leads]);
 
+  // Real AI Executive Briefing (Part 3 Phase 8) replaces the rule-based
+  // `aiBriefing` above once it's loaded for Premium plans; same shape, same
+  // panel below, so nothing else needs to change. Falls back to the
+  // rule-based text while loading or for non-Premium plans.
+  const displayBriefing = canBriefing && realAiBriefing
+    ? { text: realAiBriefing.summary, actionLabel: "Open Relationships", actionTo: "/dashboard/relationships" }
+    : aiBriefing;
+  const briefingLoading = statsLoading || (canBriefing && realAiBriefingLoading && !realAiBriefing);
+
+  // Real AI Pipeline Coaching (Part 3 Phase 8) replaces the rule-based
+  // `aiRecommendations` above once loaded for Pro+ plans — mapped into the
+  // same { id, text, type, action, to } card shape the panel already renders.
+  const displayRecommendations = canCoaching && realCoaching
+    ? realCoaching.allClear
+      ? [{
+          id: "coaching-all-clear",
+          text: "No stalled deals right now — pipeline is healthy. Keep the momentum going by discovering fresh opportunities.",
+          type: "success" as const,
+          action: "Discover Leads →",
+          to: "/dashboard/leads",
+        }]
+      : realCoaching.alerts.map((alert, index) => ({
+          id: `coaching-${index}`,
+          text: `${alert.businessName}: ${alert.message}`,
+          type: "warning" as const,
+          action: `${alert.suggestedAction} →`,
+          to: "/dashboard/relationships",
+        }))
+    : aiRecommendations;
+  const coachingLoading = statsLoading || (canCoaching && realCoachingLoading && !realCoaching);
+
   // Dynamic AI Pulse for Kanban Columns
   const aiPulses = useMemo(() => {
     const pulses: Record<LeadStatus, { text: string; isAlert: boolean }> = {} as any;
@@ -641,7 +683,7 @@ function Pipeline() {
 
           {/* AI Executive Briefing */}
           <FeatureGate feature="executiveBriefings" fallback="card">
-            {statsLoading ? (
+            {briefingLoading ? (
               <Skeleton className="h-24 rounded-2xl w-full animate-pulse" />
             ) : (
               <section className="relative overflow-hidden rounded-2xl border border-brand/20 bg-gradient-to-r from-brand/10 via-brand/5 to-transparent p-5 backdrop-blur-sm shrink-0">
@@ -654,14 +696,14 @@ function Pipeline() {
                       <Sparkles className="size-4 animate-pulse-glow" /> Dynamic AI Executive Briefing
                     </div>
                     <p className="text-sm font-medium text-foreground leading-relaxed">
-                      {aiBriefing.text}
+                      {displayBriefing.text}
                     </p>
                   </div>
                   <button
-                    onClick={() => navigate({ to: aiBriefing.actionTo })}
+                    onClick={() => navigate({ to: displayBriefing.actionTo })}
                     className="shrink-0 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark transition-all duration-200 cursor-pointer self-start md:self-center"
                   >
-                    {aiBriefing.actionLabel} <ArrowRight className="size-4" />
+                    {displayBriefing.actionLabel} <ArrowRight className="size-4" />
                   </button>
                 </div>
               </section>
@@ -954,10 +996,10 @@ function Pipeline() {
             
             <FeatureGate feature="pipelineCoaching" fallback="card">
               <div className="mt-4 space-y-3">
-                {statsLoading ? (
+                {coachingLoading ? (
                   Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl w-full" />)
                 ) : (
-                  aiRecommendations.map((rec) => (
+                  displayRecommendations.map((rec) => (
                     <div 
                       key={rec.id} 
                       className={`p-3.5 rounded-xl border bg-background/40 hover:bg-background/80 transition-all duration-200 text-xs text-left border-l-4 ${

@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { requireAuth } from "../middleware/auth.js";
-import { supabaseAdmin } from "../lib/supabase.js";
-import { getPlan, PLANS } from "../config/plans.js";
+import { requireAuth } from "../../middleware/auth.js";
+import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
+import { getPlan, PLANS } from "../../config/plans.js";
 
 export const accountRouter = Router();
 

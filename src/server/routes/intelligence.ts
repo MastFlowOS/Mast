@@ -1,13 +1,13 @@
 import { Router } from "express";
-import { requireAuth } from "../middleware/auth.js";
-import { supabaseAdmin } from "../lib/supabase.js";
-import { getPlan, type PlanId } from "../config/plans.js";
-import { canUseAiFeature } from "../lib/aiAccess.js";
-import { aiEnabled, generateJSON, AI_MODEL } from "../lib/ai.js";
-import { buildPipelineSnapshot } from "../lib/intelligenceContext.js";
-import { computeOpportunityScores, type ScorableBusiness } from "../scoring/opportunityScore.js";
-import { explainOpportunity } from "../scoring/explainOpportunity.js";
-import { PROFESSION_SLUGS, type ProfessionSlug } from "../scoring/professionWeights.js";
+import { requireAuth } from "../../middleware/auth.js";
+import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
+import { getPlan, type PlanId } from "../../config/plans.js";
+import { canUseAiFeature } from "../../lib/aiAccess.js";
+import { aiEnabled, generateJSON, AI_MODEL } from "../../lib/ai.js";
+import { buildPipelineSnapshot } from "../../lib/intelligenceContext.js";
+import { computeOpportunityScores, type ScorableBusiness } from "../../scoring/opportunityScore.js";
+import { explainOpportunity } from "../../scoring/explainOpportunity.js";
+import { PROFESSION_SLUGS, type ProfessionSlug } from "../../scoring/professionWeights.js";
 
 export const intelligenceRouter = Router();
 

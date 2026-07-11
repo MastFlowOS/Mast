@@ -2,10 +2,10 @@ import express from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import { env } from "./config/env.js";
-import { healthRouter } from "./routes/health.js";
-import { accountRouter } from "./routes/account.js";
-import { discoverRouter } from "./routes/discover.js";
-import { intelligenceRouter } from "./routes/intelligence.js";
+import { healthRouter } from "./server/routes/health.js";
+import { accountRouter } from "./server/routes/account.js";
+import { discoverRouter } from "./server/routes/discover.js";
+import { intelligenceRouter } from "./server/routes/intelligence.js";
 
 const app = express();
 

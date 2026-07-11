@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "../lib/supabase.js";
+import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { insertLeadForUser, type PoolBusiness } from "../scraperBridge/deliverLead.js";
 
 export type PoolLookupParams = {

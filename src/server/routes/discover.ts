@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireAuth } from "../middleware/auth.js";
-import { supabaseAdmin } from "../lib/supabase.js";
-import { getPlan } from "../config/plans.js";
-import { getBoss, QUEUES } from "../lib/queue.js";
-import { lookupAndDeliverFromPool } from "../lib/poolLookup.js";
+import { requireAuth } from "../../middleware/auth.js";
+import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
+import { getPlan } from "../../config/plans.js";
+import { getBoss, QUEUES } from "../../lib/queue.js";
+import { lookupAndDeliverFromPool } from "../../lib/poolLookup.js";
 
 export const discoverRouter = Router();
 

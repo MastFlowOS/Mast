@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "../lib/supabase.js";
+import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { runEngineQuery } from "../scraperBridge/pythonBridge.js";
 import { deliverLead } from "../scraperBridge/deliverLead.js";
 

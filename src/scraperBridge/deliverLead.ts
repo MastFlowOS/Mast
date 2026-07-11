@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "../lib/supabase.js";
+import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import type { EngineLead } from "./pythonBridge.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
 import { applyRediscoverySuccess, CONFIDENCE_DEFAULT, VERIFICATION_INTERVAL_MS } from "../scoring/confidenceModel.js";

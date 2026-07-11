@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "../lib/supabase.js";
+import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { runEngineVerify } from "../scraperBridge/pythonBridge.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
 import {

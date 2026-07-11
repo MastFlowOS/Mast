@@ -1,5 +1,5 @@
 import { getBoss, QUEUES } from "../lib/queue.js";
-import { supabaseAdmin } from "../lib/supabase.js";
+import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { handleDiscoverJob } from "../jobs/discoverJob.js";
 import { handlePoolExpandJob } from "../jobs/poolExpandJob.js";
 import { handleVerificationJob } from "../jobs/verificationJob.js";
@@ -20,7 +20,7 @@ async function main() {
   // discover.live is the only queued discovery path as of Phase 3 — Instant
   // Discovery (Starter/Pro/Premium) is a synchronous pool lookup in the
   // gateway request handler now, not a queue job. See src/lib/poolLookup.ts
-  // and src/routes/discover.ts.
+  // and src/server/routes/discover.ts.
   await boss.work<DiscoverJobPayload>(QUEUES.discoverLive, async ([job]) => {
     await runJob(job.id, job.data.scrapeJobId, () => handleDiscoverJob(job.data));
   });

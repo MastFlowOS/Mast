@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "../lib/supabase.js";
+import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { computeOpportunityScores, type ScorableBusiness } from "./opportunityScore.js";
 import { PROFESSION_SLUGS } from "./professionWeights.js";
 

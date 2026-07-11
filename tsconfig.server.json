@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true
+  },
+  "include": [
+    "src/server.ts",
+    "src/workers/index.ts",
+    "src/config/env.ts",
+    "src/config/plans.ts",
+    "src/middleware/auth.ts",
+    "src/routes/health.ts",
+    "src/routes/account.ts",
+    "src/routes/discover.ts",
+    "src/routes/intelligence.ts",
+    "src/lib/queue.ts",
+    "src/lib/supabase.ts",
+    "src/lib/poolLookup.ts",
+    "src/lib/aiAccess.ts",
+    "src/lib/ai.ts",
+    "src/lib/intelligenceContext.ts",
+    "src/jobs/**/*.ts",
+    "src/scraperBridge/**/*.ts",
+    "src/scoring/**/*.ts"
+  ]
+}

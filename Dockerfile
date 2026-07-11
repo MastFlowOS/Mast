@@ -11,7 +11,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
-RUN npm run build
+RUN npm run build:server
 
 FROM node:20-slim
 WORKDIR /app
@@ -28,8 +28,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 # Expects the mast-lead-engine directory to be present as a sibling at
 # build time — e.g. via a monorepo layout or a build-context copy step in
 # CI, not committed into this repo (the engine has its own repo/history).
-COPY mast-lead-engine ./mast-lead-engine
-RUN pip3 install --break-system-packages --no-cache-dir -r mast-lead-engine/requirements.txt
+#
+# Placed at /mast-lead-engine (sibling of /app, not inside it) because
+# SCRAPER_ENGINE_PATH defaults to "../mast-lead-engine" (src/config/env.ts),
+# resolved relative to the gateway/worker process's cwd (/app, from
+# WORKDIR above) — i.e. it must land one level up from /app, exactly
+# mirroring the sibling-repo layout pythonBridge.ts expects in local dev.
+COPY mast-lead-engine /mast-lead-engine
+RUN pip3 install --break-system-packages --no-cache-dir -r /mast-lead-engine/requirements.txt
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules

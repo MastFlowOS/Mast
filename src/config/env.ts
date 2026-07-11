@@ -23,7 +23,7 @@ const EnvSchema = z.object({
   // Path to the Part 1 engine on disk (see scraper-bridge/README.md). The
   // worker fleet shells out to this as a subprocess in Phase 2 — the gateway
   // never calls it directly.
-  SCRAPER_ENGINE_PATH: z.string().default("../mast-lead-engine"),
+  SCRAPER_ENGINE_PATH: z.string().default("./mast-lead-engine"),
 
   // PHASE 8 — AI Opportunity Intelligence (Executive Briefings, Weekly
   // Intelligence, Opportunity Insights, Pipeline Coaching). Optional: if

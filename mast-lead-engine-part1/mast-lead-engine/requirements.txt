@@ -1,0 +1,27 @@
+# Mast Lead Engine — Python dependencies
+# Install: pip install -r requirements.txt
+# Playwright setup: playwright install chromium
+
+# ── Core async runtime ────────────────────────────────────────────────────────
+playwright==1.44.0
+
+# ── HTTP (used by SheetsWriter and future Yelp/DDG layers) ───────────────────
+aiohttp==3.9.5
+aiohttp-retry==2.8.3
+
+# ── HTML parsing ──────────────────────────────────────────────────────────────
+beautifulsoup4==4.12.3
+lxml==5.2.2
+
+# ── Data / serialization ──────────────────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── Google Sheets (optional output target) ────────────────────────────────────
+google-auth==2.29.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+google-api-python-client==2.131.0
+
+# ── Dev / testing ─────────────────────────────────────────────────────────────
+pytest==8.2.1
+pytest-asyncio==0.23.7

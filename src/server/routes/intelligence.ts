@@ -11,6 +11,31 @@ import { PROFESSION_SLUGS, type ProfessionSlug } from "../../scoring/professionW
 
 export const intelligenceRouter = Router();
 
+// ─── AI response contract enforcement ──────────────────────────────────────
+// generateJSON() only guarantees the model's reply parses as JSON — it does
+// NOT guarantee the shape matches the TypeScript generic it was called with
+// (see lib/ai.ts's own doc comment: "callers own their own schema/
+// validation"). A model that omits a field (e.g. returns {summary, tone}
+// with no "priorities") produces a value that is valid JSON but `undefined`
+// at that key. Every one of these responses is cached verbatim and served
+// to the frontend, which reads them assuming the full contract holds (e.g.
+// `aiBriefing.priorities.length` in FocusDashboard.tsx) — so an under-shaped
+// model reply becomes a hard crash on the dashboard. Normalizing here, at
+// the point where untrusted model output enters the system, is the actual
+// fix: it guarantees the contract these routes have always promised,
+// instead of pushing defensive optional-chaining out to every consumer.
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function asEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
 function slugifyProfession(label: string): string {
   return label
     .toLowerCase()
@@ -166,9 +191,9 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, async (req, re
     const row = {
       business_id: businessId,
       profession_slug: professionSlug,
-      headline: insight.headline,
-      talking_points: insight.talkingPoints,
-      opening_line: insight.openingLine,
+      headline: asString(insight.headline, business.name ? `A fresh opportunity: ${business.name}` : "A fresh opportunity"),
+      talking_points: asStringArray(insight.talkingPoints),
+      opening_line: asString(insight.openingLine, "Hi — I came across your business and had a few ideas that could help."),
       score_snapshot: result.score,
       model: AI_MODEL,
       generated_at: new Date().toISOString(),
@@ -238,6 +263,10 @@ intelligenceRouter.get("/briefing", requireAuth, async (req, res, next) => {
       maxTokens: 512,
     });
 
+    briefing.summary = asString(briefing.summary, "Here's where your pipeline stands today.");
+    briefing.priorities = asStringArray(briefing.priorities);
+    briefing.tone = asEnum(briefing.tone, ["brand", "warning", "success"] as const, "brand");
+
     const generatedAt = new Date().toISOString();
     const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
       {
@@ -302,6 +331,10 @@ intelligenceRouter.get("/weekly", requireAuth, async (req, res, next) => {
       user: JSON.stringify(snapshot),
       maxTokens: 640,
     });
+
+    weekly.reflection = asString(weekly.reflection, "Here's a look back at your last 7 days.");
+    weekly.wins = asStringArray(weekly.wins);
+    weekly.focusForNextWeek = asStringArray(weekly.focusForNextWeek);
 
     const generatedAt = new Date().toISOString();
     const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
@@ -376,7 +409,15 @@ intelligenceRouter.get("/coaching", requireAuth, async (req, res, next) => {
       maxTokens: 640,
     });
 
-    const content = { alerts: coaching.alerts, allClear: false };
+    const alerts = (Array.isArray(coaching.alerts) ? coaching.alerts : [])
+      .filter((alert): alert is { businessName: string; message: string; suggestedAction: string } => !!alert)
+      .map((alert) => ({
+        businessName: asString(alert.businessName, "A business in your pipeline"),
+        message: asString(alert.message, "This deal has been stalled and may need a follow-up."),
+        suggestedAction: asString(alert.suggestedAction, "Send a follow-up message."),
+      }));
+
+    const content = { alerts, allClear: alerts.length === 0 };
     const generatedAt = new Date().toISOString();
     const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
       { user_id: userId, kind: "pipeline_coaching", period_key: periodKey, content, model: AI_MODEL, generated_at: generatedAt },

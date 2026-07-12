@@ -16,6 +16,10 @@ RUN npm run build:server
 FROM node:22-slim
 WORKDIR /app
 ENV NODE_ENV=production
+# Must match the COPY destination below (a sibling of WORKDIR, i.e. one level
+# up from /app). Pinned explicitly so this never again silently drifts out of
+# sync with src/config/env.ts's default (see env.ts comment history).
+ENV SCRAPER_ENGINE_PATH=/mast-lead-engine
 
 # Phase 2: the worker image needs Python + the Part 1 engine to actually
 # spawn `python3 service.py` (see src/scraperBridge/pythonBridge.ts). The

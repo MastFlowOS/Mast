@@ -16,6 +16,19 @@
 -- by RLS (`auth.uid() = user_id`). The gateway/worker also write to it via
 -- deliverLead.ts using the service-role client, which bypasses RLS entirely
 -- — the policies below only govern the browser's anon-key access.
+--
+-- ── PRODUCTION FIX (2026-07-13) ─────────────────────────────────────────
+-- This file originally used `create policy if not exists`, which is not
+-- valid PostgreSQL syntax (IF NOT EXISTS is not supported on CREATE POLICY).
+-- That statement raised a syntax error the first time this file ran, which
+-- aborted the entire script inside its transaction — so `lead_activities`
+-- was never reliably created at all, which is the actual root cause of the
+-- reported "permission denied for table lead_activities" errors, and of
+-- `POST /v1/discover` failing partway through delivery (deliverLead.ts's
+-- insert into lead_activities was throwing/warning against a table that
+-- didn't exist). Fixed below by using `drop policy if exists` +
+-- `create policy` (idempotent and valid). Explicit GRANTs are also added as
+-- defense-in-depth. This file is safe to re-run any number of times.
 
 create table if not exists lead_activities (
   id uuid primary key default gen_random_uuid(),
@@ -39,23 +52,30 @@ create index if not exists idx_lead_activities_user_created
 
 alter table lead_activities enable row level security;
 
-create policy if not exists lead_activities_owner_select
+drop policy if exists lead_activities_owner_select on lead_activities;
+create policy lead_activities_owner_select
   on lead_activities for select
   to authenticated
   using (auth.uid() = user_id);
 
-create policy if not exists lead_activities_owner_insert
+drop policy if exists lead_activities_owner_insert on lead_activities;
+create policy lead_activities_owner_insert
   on lead_activities for insert
   to authenticated
   with check (auth.uid() = user_id);
 
-create policy if not exists lead_activities_owner_update
+drop policy if exists lead_activities_owner_update on lead_activities;
+create policy lead_activities_owner_update
   on lead_activities for update
   to authenticated
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
-create policy if not exists lead_activities_owner_delete
+drop policy if exists lead_activities_owner_delete on lead_activities;
+create policy lead_activities_owner_delete
   on lead_activities for delete
   to authenticated
   using (auth.uid() = user_id);
+
+grant select, insert, update, delete on lead_activities to authenticated;
+grant select, insert, update, delete on lead_activities to service_role;

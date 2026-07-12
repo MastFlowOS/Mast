@@ -4,6 +4,13 @@ import { handleDiscoverJob } from "../jobs/discoverJob.js";
 import { handlePoolExpandJob } from "../jobs/poolExpandJob.js";
 import { handleVerificationJob } from "../jobs/verificationJob.js";
 
+process.on("uncaughtException", (err) => {
+  console.error("[worker] uncaughtException", { message: err?.message, stack: err?.stack, err });
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[worker] unhandledRejection", { reason });
+});
+
 type DiscoverJobPayload = {
   scrapeJobId: string;
   userId: string;

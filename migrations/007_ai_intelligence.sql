@@ -12,6 +12,24 @@
 --  - keeps LLM spend bounded and predictable per plan tier
 --  - "Today's Briefing" / "Weekly Intelligence" are meant to read as a
 --    considered snapshot, not something that reshuffles on every refresh
+--
+-- ── PRODUCTION FIX (2026-07-13) ─────────────────────────────────────────
+-- `create policy if not exists` is NOT valid PostgreSQL syntax — IF NOT
+-- EXISTS is only supported for CREATE TABLE / INDEX / SEQUENCE / etc., never
+-- CREATE POLICY. When this file was originally run, that statement raised a
+-- syntax error and aborted the whole script (run inside a single transaction
+-- by scripts/run-migrations.mjs, and Postgres's simple-query protocol
+-- implicitly wraps a multi-statement SQL Editor paste the same way) — so
+-- NONE of this file's objects were reliably committed, which is the root
+-- cause of `/v1/intelligence/briefing`, `/weekly`, and `/coaching` all
+-- returning 500 (they fall through to an `.upsert()` into `ai_intelligence`
+-- that throws once the table/policies don't exist). Fixed below by using
+-- `drop policy if exists` + `create policy`, which IS idempotent and valid.
+-- Explicit GRANTs are also added as defense-in-depth against "permission
+-- denied for table X", in case the connecting migration role doesn't have
+-- ALTER DEFAULT PRIVILEGES configured for schema `public` the way the
+-- Supabase dashboard's default `postgres` role does. This file is safe to
+-- re-run any number of times.
 
 create table if not exists ai_intelligence (
   id uuid primary key default gen_random_uuid(),
@@ -28,9 +46,18 @@ create index if not exists idx_ai_intelligence_user_kind on ai_intelligence (use
 
 alter table ai_intelligence enable row level security;
 
-create policy if not exists ai_intelligence_owner_read
+drop policy if exists ai_intelligence_owner_read on ai_intelligence;
+create policy ai_intelligence_owner_read
   on ai_intelligence for select
+  to authenticated
   using (auth.uid() = user_id);
+
+-- All INSERT/UPDATE on ai_intelligence happens exclusively via the backend
+-- gateway's service-role client (src/server/routes/intelligence.ts), which
+-- bypasses RLS entirely — no client-writable policy is defined here.
+
+grant select on ai_intelligence to authenticated;
+grant select, insert, update, delete on ai_intelligence to service_role;
 
 -- Opportunity Insights are cached per (business, profession) — same
 -- rationale as business_opportunity_scores: the underlying facts about a
@@ -51,9 +78,14 @@ create table if not exists business_opportunity_insights (
 
 alter table business_opportunity_insights enable row level security;
 
-create policy if not exists business_opportunity_insights_read
+drop policy if exists business_opportunity_insights_read on business_opportunity_insights;
+create policy business_opportunity_insights_read
   on business_opportunity_insights for select
+  to authenticated
   using (true);
+
+grant select on business_opportunity_insights to authenticated;
+grant select, insert, update, delete on business_opportunity_insights to service_role;
 
 comment on table ai_intelligence is
   'Cached AI Opportunity Intelligence output (Phase 8): executive briefings, '

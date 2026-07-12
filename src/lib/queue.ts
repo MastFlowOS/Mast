@@ -46,7 +46,24 @@ export async function getBoss(): Promise<PgBoss> {
 
   boss.on("error", (err) => console.error("[pg-boss] error", err));
 
-  await boss.start();
+  try {
+    await boss.start();
+  } catch (err) {
+    // pg-boss needs LISTEN/NOTIFY + session-scoped prepared statements.
+    // Supabase's Transaction pooler (port 6543 / pgbouncer transaction mode)
+    // supports neither, and fails here with an opaque low-level error. This
+    // is the single most common cause of "discover" jobs failing right
+    // after boss.start() is reached — re-thrown with an explicit pointer to
+    // the fix rather than surfacing only the raw driver error.
+    const hint =
+      "pg-boss failed to start. If DATABASE_URL points at Supabase's " +
+      "Transaction pooler (port 6543), switch to the Session pooler or a " +
+      "direct connection (port 5432) — pg-boss requires LISTEN/NOTIFY and " +
+      "session-scoped prepared statements, which the transaction pooler " +
+      "does not support.";
+    console.error(`[pg-boss] ${hint}`, err);
+    throw new Error(`${hint} Original error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   for (const queueName of Object.values(QUEUES)) {
     await boss.createQueue(queueName);

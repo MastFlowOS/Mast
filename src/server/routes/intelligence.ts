@@ -152,12 +152,13 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, async (req, re
     const result = scores[professionSlug];
     const explanation = explainOpportunity(business as ScorableBusiness, result, professionSlug);
 
-    const { data: cached } = await supabaseAdmin
+    const { data: cached, error: cacheError } = await supabaseAdmin
       .from("business_opportunity_insights")
       .select("headline, talking_points, opening_line, score_snapshot, generated_at")
       .eq("business_id", businessId)
       .eq("profession_slug", professionSlug)
       .maybeSingle();
+    if (cacheError) console.error("[intelligence] business_opportunity_insights read failed", cacheError);
 
     // Regenerate if there's no cache yet, or the score has drifted more
     // than 10 points since the cached copy was written (a re-verification
@@ -236,13 +237,14 @@ intelligenceRouter.get("/briefing", requireAuth, async (req, res, next) => {
 
     const periodKey = new Date().toISOString().slice(0, 10);
 
-    const { data: cached } = await supabaseAdmin
+    const { data: cached, error: cacheError } = await supabaseAdmin
       .from("ai_intelligence")
       .select("content, generated_at")
       .eq("user_id", userId)
       .eq("kind", "executive_briefing")
       .eq("period_key", periodKey)
       .maybeSingle();
+    if (cacheError) console.error("[intelligence] ai_intelligence (executive_briefing) read failed", cacheError);
     if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
 
     if (!aiEnabled()) {
@@ -304,13 +306,14 @@ intelligenceRouter.get("/weekly", requireAuth, async (req, res, next) => {
 
     const periodKey = isoWeekKey(new Date());
 
-    const { data: cached } = await supabaseAdmin
+    const { data: cached, error: cacheError } = await supabaseAdmin
       .from("ai_intelligence")
       .select("content, generated_at")
       .eq("user_id", userId)
       .eq("kind", "weekly_intelligence")
       .eq("period_key", periodKey)
       .maybeSingle();
+    if (cacheError) console.error("[intelligence] ai_intelligence (weekly_intelligence) read failed", cacheError);
     if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
 
     if (!aiEnabled()) {
@@ -373,13 +376,14 @@ intelligenceRouter.get("/coaching", requireAuth, async (req, res, next) => {
 
     const periodKey = new Date().toISOString().slice(0, 10);
 
-    const { data: cached } = await supabaseAdmin
+    const { data: cached, error: cacheError } = await supabaseAdmin
       .from("ai_intelligence")
       .select("content, generated_at")
       .eq("user_id", userId)
       .eq("kind", "pipeline_coaching")
       .eq("period_key", periodKey)
       .maybeSingle();
+    if (cacheError) console.error("[intelligence] ai_intelligence (pipeline_coaching) read failed", cacheError);
     if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
 
     if (!aiEnabled()) {

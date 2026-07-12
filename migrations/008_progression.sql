@@ -18,6 +18,18 @@
 -- because it isn't part of the Opportunity Engine / Discover surface that
 -- mast-backend owns — it's ordinary per-user app data, same category as
 -- leads and settings.
+--
+-- ── PRODUCTION FIX (2026-07-13) ─────────────────────────────────────────
+-- This file originally used `create policy if not exists`, which is not
+-- valid PostgreSQL syntax (IF NOT EXISTS is not supported on CREATE POLICY).
+-- That statement raised a syntax error the first time this file ran, which
+-- aborted the entire script inside its transaction — so `progression_events`,
+-- `goal_completions`, `profiles.xp`, and `award_goal_xp()` were never
+-- reliably created at all, which is the actual root cause of the reported
+-- "permission denied for table progression_events" errors. Fixed below by
+-- using `drop policy if exists` + `create policy` (idempotent and valid).
+-- Explicit GRANTs are also added as defense-in-depth. This file is safe to
+-- re-run any number of times.
 
 -- ─── profiles.xp ────────────────────────────────────────────────────────────
 -- Persistent XP total read by getXp() / awarded by award_goal_xp(). Additive
@@ -44,15 +56,20 @@ create index if not exists idx_progression_events_user_type
 
 alter table progression_events enable row level security;
 
-create policy if not exists progression_events_owner_select
+drop policy if exists progression_events_owner_select on progression_events;
+create policy progression_events_owner_select
   on progression_events for select
   to authenticated
   using (auth.uid() = user_id);
 
-create policy if not exists progression_events_owner_insert
+drop policy if exists progression_events_owner_insert on progression_events;
+create policy progression_events_owner_insert
   on progression_events for insert
   to authenticated
   with check (auth.uid() = user_id);
+
+grant select, insert on progression_events to authenticated;
+grant select, insert, update, delete on progression_events to service_role;
 
 -- ─── goal_completions ───────────────────────────────────────────────────────
 -- One row per (user, goal, calendar day) the instant XP is awarded for that
@@ -74,7 +91,8 @@ create index if not exists idx_goal_completions_user_day
 
 alter table goal_completions enable row level security;
 
-create policy if not exists goal_completions_owner_select
+drop policy if exists goal_completions_owner_select on goal_completions;
+create policy goal_completions_owner_select
   on goal_completions for select
   to authenticated
   using (auth.uid() = user_id);
@@ -83,6 +101,9 @@ create policy if not exists goal_completions_owner_select
 -- through award_goal_xp() (security definer), which enforces the
 -- exactly-once-per-goal-per-day rule atomically. Letting the client insert
 -- directly would let it self-award XP by bypassing that function.
+
+grant select on goal_completions to authenticated;
+grant select, insert, update, delete on goal_completions to service_role;
 
 -- ─── award_goal_xp() ────────────────────────────────────────────────────────
 -- Atomically: (1) tries to insert a goal_completions row for

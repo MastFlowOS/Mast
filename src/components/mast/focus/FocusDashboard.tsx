@@ -78,10 +78,20 @@ export function FocusDashboard() {
   // priority — instead of the rule-based list. Falls back to the rule-based
   // recommendations while loading or for non-Premium plans, so nothing
   // regresses.
+  //
+  // aiBriefing.priorities is guaranteed to be an array by the backend
+  // (src/server/routes/intelligence.ts normalizes every AI-generated field
+  // before it's ever cached or returned) — Array.isArray is checked here
+  // too because a TS type only holds at compile time, not for whatever a
+  // network response actually contains at runtime (e.g. an older cached
+  // frontend bundle talking to a backend build from before that
+  // normalization existed). This is not blanket optional-chaining: it's
+  // the one field this panel actually depends on being an array.
   const recommendations: FocusRecommendation[] = useMemo(() => {
     if (!canBriefing || !aiBriefing) return snapshot.recommendations;
-    if (aiBriefing.priorities.length === 0) return snapshot.recommendations;
-    return aiBriefing.priorities.map((priority, index) => ({
+    const priorities = Array.isArray(aiBriefing.priorities) ? aiBriefing.priorities : [];
+    if (priorities.length === 0) return snapshot.recommendations;
+    return priorities.map((priority, index) => ({
       id: `ai-briefing-${index}`,
       title: priority,
       description: aiBriefing.summary,
@@ -94,10 +104,11 @@ export function FocusDashboard() {
 
   // Same idea for Weekly Intelligence — real numbers stay (snapshot.weeklyMetrics
   // is already computed from actual analytics), only the reflective text
-  // becomes AI-generated for Premium.
+  // becomes AI-generated for Premium. Same runtime-array guard as above.
+  const aiFocusForNextWeek = Array.isArray(aiWeekly?.focusForNextWeek) ? aiWeekly!.focusForNextWeek : [];
   const weeklySummary = canWeekly && aiWeekly ? aiWeekly.reflection : snapshot.weeklySummary;
-  const weeklyRecommendation = canWeekly && aiWeekly && aiWeekly.focusForNextWeek.length > 0
-    ? aiWeekly.focusForNextWeek[0]
+  const weeklyRecommendation = canWeekly && aiWeekly && aiFocusForNextWeek.length > 0
+    ? aiFocusForNextWeek[0]
     : snapshot.weeklyRecommendation;
 
   const {

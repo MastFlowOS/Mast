@@ -11,10 +11,16 @@ const EnvSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_JWT_SECRET: z.string().min(1), // used to verify user access tokens locally, no round trip per request
 
-  // Postgres connection string for pg-boss (same Supabase Postgres instance,
-  // via the "session" pooler / direct connection — pg-boss needs LISTEN/NOTIFY
-  // and long-lived connections, so it should NOT go through the transaction
-  // pooler (pgbouncer in transaction mode)).
+  // Postgres connection string for pg-boss (same Supabase Postgres instance).
+  // Must be the SESSION pooler host (aws-0-<region>.pooler.supabase.com:5432)
+  // — pg-boss needs LISTEN/NOTIFY and session-scoped prepared statements, so
+  // it should NOT go through the transaction pooler (pgbouncer in
+  // transaction mode, port 6543). It also must NOT be the "direct
+  // connection" host (db.<project-ref>.supabase.co): on projects without
+  // Supabase's paid IPv4 add-on that host is IPv6-only, and Railway has no
+  // IPv6 egress, so it fails at TCP level with `connect ENETUNREACH`
+  // before Postgres ever sees the connection. See src/lib/queue.ts for the
+  // startup check that enforces this.
   DATABASE_URL: z.string().min(1),
 
   // Where the frontend is deployed, for CORS.

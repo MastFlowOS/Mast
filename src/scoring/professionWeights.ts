@@ -1,27 +1,15 @@
 /**
  * Profession slugs mirror migrations/001_opportunity_engine.sql's
  * `professions` table exactly (which itself mirrors the frontend's
- * onboarding.tsx FOCUS_AREAS). Kept as a TS constant here (not read from
- * the DB) since the weight vectors below are indexed by it at compute
- * time for every business — a DB round trip per business would be wasteful
- * for something that changes as rarely as "what professions MAST supports."
+ * onboarding.tsx FOCUS_AREAS). Sourced from lib/professions.ts — the
+ * single canonical list — rather than hand-copied here a second time.
+ * (A second hand-copied list is exactly how this table and the
+ * label->slug generator in discover.ts/intelligence.ts drifted apart in
+ * the first place; see lib/professions.ts's doc comment.) Re-exported so
+ * existing `from "./professionWeights.js"` imports elsewhere keep working.
  */
-export const PROFESSION_SLUGS = [
-  "graphic_design",
-  "digital_marketing",
-  "writing_translation",
-  "video_animation",
-  "music_audio",
-  "programming_tech",
-  "data",
-  "business",
-  "personal_growth_hobbies",
-  "photography",
-  "finance",
-  "end_to_end_project",
-] as const;
-
-export type ProfessionSlug = (typeof PROFESSION_SLUGS)[number];
+export { PROFESSION_SLUGS, type ProfessionSlug } from "../lib/professions.js";
+import type { ProfessionSlug } from "../lib/professions.js";
 
 /**
  * The Opportunity Score blends five 0-100 "need" components (each already

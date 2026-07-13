@@ -5,6 +5,7 @@ import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan } from "../../config/plans.js";
 import { getBoss, QUEUES } from "../../lib/queue.js";
 import { lookupAndDeliverFromPool } from "../../lib/poolLookup.js";
+import { professionSlugForLabel } from "../../lib/professions.js";
 
 export const discoverRouter = Router();
 
@@ -14,14 +15,6 @@ const DiscoverRequestSchema = z.object({
   niche: z.string().min(1),
   channels: z.array(z.string()).default([]),
 });
-
-function slugifyProfession(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/&/g, "and")
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
 
 /**
  * POST /v1/discover
@@ -102,7 +95,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
     }
 
     const focusAreaLabel = (profile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined;
-    const professionSlug = focusAreaLabel ? slugifyProfession(focusAreaLabel) : null;
+    const professionSlug = professionSlugForLabel(focusAreaLabel);
 
     const quantity = Math.min(body.quantity, plan.dailyLeadLimit - dailyUsed, plan.monthlyLeadLimit - monthlyUsed);
 

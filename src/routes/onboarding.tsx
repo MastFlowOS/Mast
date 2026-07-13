@@ -38,6 +38,7 @@ import {
 import { BrandMark } from "@/components/mast/BrandMark";
 import { useMe, useSaveSettings } from "@/hooks/use-mast-api";
 import { ApiError } from "@/lib/api";
+import { FOCUS_AREA_LABELS } from "@/lib/professions";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/onboarding")({
@@ -77,20 +78,27 @@ const GOALS = [
 // (not freeform / not multi-select) so downstream AI features can rely on
 // it as a stable taxonomy. Do not add categories without updating every
 // feature that keys off `settings.focusArea`.
-const FOCUS_AREAS = [
-  { label: "Graphic Design", icon: Palette },
-  { label: "Digital Marketing", icon: Megaphone },
-  { label: "Writing & Translation", icon: PenTool },
-  { label: "Video & Animation", icon: Clapperboard },
-  { label: "Music & Audio", icon: Music },
-  { label: "Programming & Tech", icon: Code },
-  { label: "Data", icon: Database },
-  { label: "Business", icon: Briefcase },
-  { label: "Personal Growth & Hobbies", icon: Heart },
-  { label: "Photography", icon: Camera },
-  { label: "Finance", icon: Landmark },
-  { label: "End-to-End Project", icon: Workflow },
+//
+// Labels come from lib/professions.ts's FOCUS_AREA_LABELS (the same list
+// the backend uses to resolve settings.focusArea -> profession_slug) so
+// this list and the backend's can never drift apart again — see that
+// file's doc comment for the bug this replaced.
+const FOCUS_AREA_ICONS = [
+  Palette,
+  Megaphone,
+  PenTool,
+  Clapperboard,
+  Music,
+  Code,
+  Database,
+  Briefcase,
+  Heart,
+  Camera,
+  Landmark,
+  Workflow,
 ] as const;
+
+const FOCUS_AREAS = FOCUS_AREA_LABELS.map((label, i) => ({ label, icon: FOCUS_AREA_ICONS[i] }));
 
 const CLIENT_SOURCES = [
   { label: "Fiverr", icon: ShoppingBag },

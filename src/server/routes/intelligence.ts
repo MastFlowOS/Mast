@@ -7,7 +7,8 @@ import { aiEnabled, generateJSON, AI_MODEL } from "../../lib/ai.js";
 import { buildPipelineSnapshot } from "../../lib/intelligenceContext.js";
 import { computeOpportunityScores, type ScorableBusiness } from "../../scoring/opportunityScore.js";
 import { explainOpportunity } from "../../scoring/explainOpportunity.js";
-import { PROFESSION_SLUGS, type ProfessionSlug } from "../../scoring/professionWeights.js";
+import { type ProfessionSlug } from "../../scoring/professionWeights.js";
+import { professionSlugForLabel } from "../../lib/professions.js";
 
 export const intelligenceRouter = Router();
 
@@ -36,14 +37,6 @@ function asEnum<T extends string>(value: unknown, allowed: readonly T[], fallbac
   return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-function slugifyProfession(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/&/g, "and")
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
 async function resolveUserPlanAndProfession(userId: string): Promise<{ plan: PlanId; professionSlug: ProfessionSlug | null }> {
   const { data: profile, error } = await supabaseAdmin
     .from("profiles")
@@ -54,8 +47,7 @@ async function resolveUserPlanAndProfession(userId: string): Promise<{ plan: Pla
 
   const plan = getPlan(profile?.subscription_plan).id;
   const focusAreaLabel = (profile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined;
-  const slug = focusAreaLabel ? slugifyProfession(focusAreaLabel) : null;
-  const professionSlug = (PROFESSION_SLUGS as readonly string[]).includes(slug ?? "") ? (slug as ProfessionSlug) : null;
+  const professionSlug = professionSlugForLabel(focusAreaLabel);
 
   return { plan, professionSlug };
 }

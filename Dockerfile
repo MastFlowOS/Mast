@@ -3,8 +3,22 @@
 # can scale gateway replicas and worker replicas independently from the same
 # build.
 #
-# Gateway:  CMD ["node", "dist/server.js"]
-# Worker:   CMD ["node", "dist/workers/index.js"]
+# Gateway:  CMD ["node", "dist/server.js"]        (this file's default CMD)
+# Worker:   CMD ["node", "dist/workers/index.js"]  (override — see below)
+#
+# On Railway this means TWO services in the same project, both built from
+# this Dockerfile, from the same repo:
+#   - "gateway" service: no override needed, uses this file's default CMD.
+#     Config-as-code: railway.json (repo root).
+#   - "worker" service: must override the start command, because without a
+#     running `dist/workers/index.js` process nothing ever calls
+#     pg-boss's `boss.work()` — queued discover.live/pool.expand/pool.verify
+#     jobs sit in pgboss.job with state='created' forever and NO leads are
+#     ever produced, regardless of how correct the gateway/queue/DB code is.
+#     Config-as-code: railway.worker.json — set this service's
+#     Settings -> Deploy -> "Config File Path" to railway.worker.json so
+#     Railway applies its startCommand instead of this file's CMD.
+# See RAILWAY_DEPLOYMENT.md for the full setup checklist.
 
 FROM node:22-slim AS build
 WORKDIR /app
@@ -40,6 +54,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 # mirroring the sibling-repo layout pythonBridge.ts expects in local dev.
 COPY mast-lead-engine /mast-lead-engine
 RUN pip3 install --break-system-packages --no-cache-dir -r /mast-lead-engine/requirements.txt
+
+# requirements.txt pins the playwright PYTHON PACKAGE, but that package is
+# just bindings — it does not ship the actual Chromium binary the engine
+# launches at runtime. Without this step, every scrape_jobs run reaches the
+# worker, spawns `python3 service.py`, and immediately crashes the first
+# time the engine tries to open a browser (Playwright's
+# "Executable doesn't exist" error). `--with-deps` also apt-installs the
+# OS-level shared libraries Chromium needs (libnss3, libatk, etc.) so this
+# doesn't need to be kept in sync by hand.
+RUN python3 -m playwright install --with-deps chromium
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules

@@ -148,10 +148,21 @@ def fingerprints_for(biz: dict) -> set[str]:
     if fb:
         keys.add(f"fb:{fb}")
 
+    # C2 fix: the bare `name:<name>` key (no city) used to be registered
+    # unconditionally whenever a name existed. Because the TS delivery layer
+    # (deliverLead.ts::findExistingBusiness) does a set-overlap match
+    # against ALL fingerprints, two unrelated real businesses that happen to
+    # share a common name in two different cities (e.g. "Bella Vista Salon"
+    # in Miami and in Denver) collided on this key alone — even though the
+    # more specific `name:<name>|<city>` key already distinguishes them
+    # correctly. Worse, the collision didn't just suppress the second
+    # business: it applied a rediscovery-confidence bump to the FIRST
+    # (wrong) business's record, merging two unrelated identities. Bare
+    # name alone is not a safe identity fingerprint at any error tolerance
+    # this product implies — dropped entirely; the city-qualified key below
+    # is the only name-based fingerprint now.
     name = norm_text(biz.get("name"))
     city = norm_text(biz.get("city"))
-    if name:
-        keys.add(f"name:{name}")
     if name and city:
         keys.add(f"name:{name}|{city}")
 

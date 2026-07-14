@@ -16,6 +16,7 @@ export type EngineLead = {
   website: string;
   instagram: string;
   facebook: string;
+  linkedin: string;
   contact_form: string;
   maps_link: string;
   rating: number | null;
@@ -41,6 +42,27 @@ export type EngineLead = {
   fingerprints: string[];
   /** Phase 6 — chain/cannabis verdict from Part 1's own is_chain/is_cannabis */
   is_disqualified: boolean;
+
+  // ── Quality & Intelligence pass additions ──────────────────────────────
+  /** C5 fix — every email found, role-ranked: [{email, role}] */
+  emails?: { email: string; role: string }[];
+  /** C5 fix — every distinct phone number found */
+  phones?: string[];
+  /** C3 fix — only keys actually detected; never a fabricated negative */
+  growth_signals?: { hiring?: boolean; new_location?: boolean };
+  /** Priority 5 — on-page SEO signals from already-fetched HTML */
+  seo?: { has_title?: boolean; title_length?: number; has_meta_description?: boolean; meta_description_length?: number };
+  /** Priority 5/6 — blog/news presence + staleness */
+  blog?: { has_blog?: boolean; blog_url?: string; last_post_days?: number };
+  /** I2 fix — real certificate probe, not a string check. null = http:// or not crawled */
+  ssl_valid?: boolean | null;
+  /** I3 fix — real page-load timing from the crawler's own goto() */
+  load_time_ms?: number | null;
+  /** Priority 2/3 — per-field source attribution built during enrichment */
+  field_provenance?: Record<string, { value: unknown; source: string; method: string }>;
+  /** O2 fix — single source of truth for "weak/templated site", computed once by the engine */
+  website_is_weak?: boolean;
+
   [key: string]: unknown;
 };
 
@@ -72,10 +94,19 @@ export type EngineVerifyResult = {
   website_data: {
     instagram?: string;
     facebook?: string;
+    linkedin?: string;
     email?: string;
+    emails?: { email: string; role: string }[];
     contact_form?: string;
     phone?: string;
+    phones?: string[];
     tech_stack?: Record<string, unknown>;
+    growth_signals?: { hiring?: boolean; new_location?: boolean };
+    seo?: Record<string, unknown>;
+    blog?: Record<string, unknown>;
+    ssl_valid?: boolean | null;
+    load_time_ms?: number | null;
+    field_sources?: Record<string, { source_url: string; method: string }>;
   };
   instagram_ok: boolean | null;
   instagram_data: {
@@ -124,6 +155,13 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
   return JSON.parse(stdout) as EngineVerifyResult;
 }
 
+export type EngineDoneInfo = {
+  delivered: number;
+  requested: number;
+  /** true when the engine's own search space ran out before `requested` was reached */
+  exhausted: boolean;
+};
+
 /**
  * Spawns `python service.py` inside the Part 1 engine directory and streams
  * results back as they're discovered — one JSON object per stdout line.
@@ -131,8 +169,17 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
  * This is the entire integration surface with the Python engine. Nothing
  * upstream of this function (job handlers, routes) knows or cares that the
  * engine is Python; they just get an async iterator of lead objects.
+ *
+ * `onDone`, when provided, receives the engine's `__done__` sentinel
+ * (delivered/requested/exhausted) once the subprocess finishes streaming —
+ * this is how callers distinguish "this query is genuinely exhausted, try
+ * another niche/variation" from "we just didn't need any more of these".
  */
-export async function* runEngineQuery(params: EngineQueryParams, signal?: AbortSignal): AsyncGenerator<EngineLead> {
+export async function* runEngineQuery(
+  params: EngineQueryParams,
+  signal?: AbortSignal,
+  onDone?: (info: EngineDoneInfo) => void,
+): AsyncGenerator<EngineLead> {
   const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
 
   const child = spawn("python3", ["service.py"], {
@@ -174,7 +221,12 @@ export async function* runEngineQuery(params: EngineQueryParams, signal?: AbortS
       }
 
       if (parsed.__done__) {
-        console.log(`[scraper-bridge] engine reported done, delivered=${parsed.delivered}`);
+        console.log(`[scraper-bridge] engine reported done, delivered=${parsed.delivered} exhausted=${parsed.exhausted}`);
+        onDone?.({
+          delivered: Number(parsed.delivered ?? 0),
+          requested: Number(parsed.requested ?? 0),
+          exhausted: Boolean(parsed.exhausted),
+        });
         continue;
       }
 

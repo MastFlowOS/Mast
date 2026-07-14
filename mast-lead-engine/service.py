@@ -93,13 +93,36 @@ async def run_query(
         async with MapsScraper(config, proxy_manager, stats) as scraper:
             pipeline = EnrichmentPipeline(config=config, browser=scraper.browser, store=store, stats=stats)
 
+            # ROOT CAUSE fix ("requested quantity is not honored"): this used
+            # to ask MapsScraper for only `max_results * 3` raw places, on
+            # the assumption that ~1/3 of raw Maps listings survive
+            # enrichment + the outreach-viability gate. In production that
+            # pass rate is routinely much lower (strict min_channels=2 gate,
+            # dedup, chain/cannabis/review filters), so the raw generator
+            # would exhaust itself — and the `async for` loop below would
+            # simply end — long before `delivered` reached `max_results`,
+            # even though Google Maps still had plenty more *unseen*
+            # listings for this query. The caller then saw "10 requested, 3
+            # delivered, done" and had no way to tell that from genuine
+            # exhaustion.
+            #
+            # The fix: stop tying the raw-supply cap to a guessed pass rate.
+            # Request a generous ceiling instead, so MapsScraper.search()'s
+            # OWN exhaustion signals — the "end of results" sentinel or
+            # scroll_max_rounds — are what actually decide "no more matching
+            # businesses", while this loop's `delivered >= max_results`
+            # check is what decides "requested quantity reached". Whichever
+            # condition is true first is correct; neither was reliably
+            # reachable before when the artificial 3x cap won first.
+            raw_supply_cap = max(max_results * 20, 200)
+
             async for raw_place in scraper.search(
                 query=query,
                 city=city,
                 country=country,
                 niche=niche,
                 region=region,
-                max_results=max_results * 3,  # over-fetch to account for filters, same ratio as main.py
+                max_results=raw_supply_cap,
             ):
                 if delivered >= max_results:
                     break
@@ -134,6 +157,7 @@ async def run_query(
 async def _main_cli() -> None:
     raw_args = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
     params = json.loads(raw_args)
+    requested = params.get("max_results", 60)
 
     delivered = 0
     async for lead_dict in run_query(**params):
@@ -141,7 +165,17 @@ async def _main_cli() -> None:
         sys.stdout.write(json.dumps(lead_dict, default=str) + "\n")
         sys.stdout.flush()
 
-    sys.stdout.write(json.dumps({"__done__": True, "delivered": delivered}) + "\n")
+    # `exhausted=True` means this query's own search space ran out (Maps
+    # end-of-results / scroll cap) before `requested` was reached — i.e.
+    # this is a genuine shortfall for this query, not an artificial stop.
+    # `exhausted=False` means we stopped because we delivered everything
+    # that was asked for; there may well be more out there.
+    sys.stdout.write(json.dumps({
+        "__done__": True,
+        "delivered": delivered,
+        "requested": requested,
+        "exhausted": delivered < requested,
+    }) + "\n")
     sys.stdout.flush()
 
 

@@ -1,7 +1,9 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import type { EngineLead } from "./pythonBridge.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
+import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { applyRediscoverySuccess, CONFIDENCE_DEFAULT, VERIFICATION_INTERVAL_MS } from "../scoring/confidenceModel.js";
+import { buildFieldTrust } from "../scoring/fieldTrust.js";
 
 export type DeliveryContext = {
   /** null for background pool.expand jobs that aren't attached to a user */
@@ -38,25 +40,43 @@ export type PoolBusiness = {
   email: string | null;
   phone: string | null;
   instagram: string | null;
+  linkedin?: string | null;
 };
 
 function extractSignals(lead: EngineLead) {
   // Everything scoring needs that doesn't have its own column — kept as a
   // jsonb bag rather than growing the businesses table schema every time a
   // new signal matters to the Opportunity Score.
+  //
+  // A2 fix: this used to mix genuinely-populated fields with structurally
+  // dead ones (`growth_signals` was always null/undefined — see audit C3 —
+  // and `legacy_lead_score`/`legacy_tier` duplicated Part 1's own generic
+  // score for a "comparison" that was never actually read anywhere). Now:
+  //  - `growth_signals` is real (site_crawler.py's cheap hiring/new-location
+  //    detection) and only present when actually detected.
+  //  - `legacy_lead_score`/`legacy_tier` are still captured (Part 1's score
+  //    still runs on every scrape and dropping the read silently would lose
+  //    debugging signal), but explicitly labeled below as deprecated/
+  //    comparison-only — see audit Q3. Removing Part 1's own scoring pass
+  //    entirely is flagged as future work in the deliverables doc, since
+  //    other Part 1 internals (viability gating, chain/cannabis gating)
+  //    still depend on it running.
   return {
     tech_stack: lead.tech_stack,
+    linkedin: lead.linkedin || null, // superseded by businesses.linkedin column (C4) — kept here too for signals-shaped readers
     ig_activity: lead.ig_activity,
     ig_legitimacy: lead.ig_legitimacy,
     ig_last_post_days: lead.ig_last_post_days,
     owner_responds_to_reviews: lead.owner_responds_to_reviews,
-    growth_signals: lead.growth_signals ?? null,
+    growth_signals: lead.growth_signals && Object.keys(lead.growth_signals).length > 0 ? lead.growth_signals : null,
+    seo: lead.seo ?? null,
+    blog: lead.blog ?? null,
     is_google_verified: lead.is_google_verified,
     multi_location: lead.multi_location,
     has_popular_times: lead.has_popular_times,
     price_range: lead.price_range,
-    legacy_lead_score: lead.score, // Part 1's current (non-Opportunity) score, kept for comparison once Phase 6 lands
-    legacy_tier: lead.tier,
+    _deprecated_legacy_lead_score: lead.score, // Q3: Part 1's non-Opportunity score, comparison-only, never surfaced to users
+    _deprecated_legacy_tier: lead.tier,
   };
 }
 
@@ -97,9 +117,25 @@ export async function upsertBusinessFromEngineLead(lead: EngineLead, region: str
         verification_due_at: new Date(Date.now() + VERIFICATION_INTERVAL_MS).toISOString(),
         last_verification_kind: "rediscovery",
         confidence: nextConfidence,
+        // C4/C5 fix: a rediscovery is a fresh crawl too — refresh these
+        // fields rather than leaving them stuck at whatever the first
+        // discovery happened to find, exactly like refreshedFields does in
+        // verificationJob.ts's success path.
+        ...(lead.linkedin ? { linkedin: lead.linkedin } : {}),
+        ...(lead.emails?.length ? { emails: lead.emails } : {}),
+        ...(lead.phones?.length ? { phones: lead.phones } : {}),
+        ...(lead.field_provenance ? { field_provenance: buildFieldTrust(lead) } : {}),
+        ...(lead.website_is_weak != null ? { website_is_weak: lead.website_is_weak } : {}),
+        ...(lead.ssl_valid !== undefined ? { ssl_valid: lead.ssl_valid } : {}),
+        ...(lead.load_time_ms != null ? { load_time_ms: lead.load_time_ms } : {}),
+        ...(lead.seo ? { seo: lead.seo } : {}),
+        ...(lead.blog ? { blog: lead.blog } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq("id", existing.id);
+
+    await computeAndStoreOpportunityScores(existing.id as string);
+    await computeAndStoreBusinessHealth(existing.id as string);
     return existing.id as string;
   }
 
@@ -117,6 +153,21 @@ export async function upsertBusinessFromEngineLead(lead: EngineLead, region: str
       phone: lead.phone || null,
       instagram: lead.instagram || null,
       facebook: lead.facebook || null,
+      // C4 fix: LinkedIn now gets a real column instead of living only in
+      // the `signals` jsonb bag where nothing ever read it.
+      linkedin: lead.linkedin || null,
+      // C5 fix: preserve every contact found, not just the single "best" pick.
+      emails: lead.emails ?? [],
+      phones: lead.phones ?? [],
+      // Priority 2/3 fix: per-field source attribution + confidence.
+      field_provenance: buildFieldTrust(lead),
+      // O2 fix: single source of truth for "weak site" comes from the
+      // engine (utils/parsing.py::is_weak_site), not a re-implemented list.
+      website_is_weak: lead.website_is_weak ?? null,
+      ssl_valid: lead.ssl_valid ?? null,
+      load_time_ms: lead.load_time_ms ?? null,
+      seo: lead.seo ?? {},
+      blog: lead.blog ?? {},
       reviews_count: lead.reviews ?? 0,
       reviews_rating: lead.rating,
       has_photos: lead.has_photos,
@@ -138,6 +189,11 @@ export async function upsertBusinessFromEngineLead(lead: EngineLead, region: str
   // ranking-eligible the moment it enters the pool.
   await computeAndStoreOpportunityScores(inserted.id as string);
 
+  // Priority 7: Business Health Score, computed alongside (but stored
+  // separately from) the Opportunity Score — see business_health_scores'
+  // table comment for why the two are kept independent.
+  await computeAndStoreBusinessHealth(inserted.id as string);
+
   return inserted.id as string;
 }
 
@@ -157,6 +213,7 @@ function toLeadRow(
 
     business_name: business.name,
     instagram_handle: business.instagram || null,
+    linkedin_handle: business.linkedin || null,
     email: business.email || null,
     website: business.website || null,
     phone: business.phone || null,
@@ -308,6 +365,7 @@ export async function deliverLead(lead: EngineLead, ctx: DeliveryContext, region
       email: lead.email || null,
       phone: lead.phone || null,
       instagram: lead.instagram || null,
+      linkedin: lead.linkedin || null,
     },
     ctx,
     {

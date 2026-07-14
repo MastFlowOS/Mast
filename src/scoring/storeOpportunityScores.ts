@@ -17,7 +17,10 @@ import { PROFESSION_SLUGS } from "./professionWeights.js";
 export async function computeAndStoreOpportunityScores(businessId: string): Promise<void> {
   const { data: business, error } = await supabaseAdmin
     .from("businesses")
-    .select("website, instagram, facebook, has_photos, reviews_count, reviews_rating, is_disqualified, signals")
+    .select(
+      "website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, " +
+        "website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
+    )
     .eq("id", businessId)
     .single();
   if (error) throw error;

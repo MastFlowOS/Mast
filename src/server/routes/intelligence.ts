@@ -92,7 +92,7 @@ intelligenceRouter.get("/explain/:leadId", requireAuth, async (req, res, next) =
 
     const { data: business, error: bizError } = await supabaseAdmin
       .from("businesses")
-      .select("website, instagram, facebook, has_photos, reviews_count, reviews_rating, is_disqualified, signals")
+      .select("website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
       .eq("id", lead.business_id)
       .single();
     if (bizError) throw bizError;
@@ -108,8 +108,64 @@ intelligenceRouter.get("/explain/:leadId", requireAuth, async (req, res, next) =
 });
 
 /**
- * GET /v1/intelligence/opportunities/:businessId
+ * GET /v1/intelligence/trust/:leadId
  *
+ * Priority 2/3/7 readout: per-field source attribution/confidence
+ * (`field_provenance`) plus the separate Business Health Score. This is
+ * what lets the frontend show "Website — Verified, Confidence 100%,
+ * Source: Google Business" per field, and "Business Health: 82/100" as its
+ * own independent number — never blended into the Opportunity Score (see
+ * businessHealth.ts's doc comment for why the two are kept apart).
+ */
+intelligenceRouter.get("/trust/:leadId", requireAuth, async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const leadId = req.params.leadId;
+
+    const { data: lead, error: leadError } = await supabaseAdmin
+      .from("leads")
+      .select("id, business_id")
+      .eq("id", leadId)
+      .eq("user_id", userId)
+      .single();
+    if (leadError) throw leadError;
+    if (!lead?.business_id) {
+      return res.status(404).json({ code: "not_found", message: "Lead has no linked business to explain (pre-Opportunity-Engine lead)." });
+    }
+
+    const { data: business, error: bizError } = await supabaseAdmin
+      .from("businesses")
+      .select("confidence, field_provenance, emails, phones, linkedin, last_verified_at, last_verification_kind")
+      .eq("id", lead.business_id)
+      .single();
+    if (bizError) throw bizError;
+
+    const { data: health } = await supabaseAdmin
+      .from("business_health_scores")
+      .select("health_score, breakdown, computed_at")
+      .eq("business_id", lead.business_id)
+      .maybeSingle();
+
+    res.json({
+      overallConfidence: business.confidence,
+      lastVerifiedAt: business.last_verified_at,
+      lastVerificationKind: business.last_verification_kind,
+      fieldTrust: business.field_provenance ?? {},
+      contacts: {
+        emails: business.emails ?? [],
+        phones: business.phones ?? [],
+        linkedin: business.linkedin ?? null,
+      },
+      businessHealth: health
+        ? { score: health.health_score, breakdown: health.breakdown, computedAt: health.computed_at }
+        : null,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
  * AI Opportunity Insights (Premium): the deterministic explanation, plus a
  * short AI-written headline and a suggested opening line for outreach.
  * Cached per (business, profession) in business_opportunity_insights —
@@ -135,7 +191,7 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, async (req, re
     const businessId = req.params.businessId;
     const { data: business, error: bizError } = await supabaseAdmin
       .from("businesses")
-      .select("name, niche, website, instagram, facebook, has_photos, reviews_count, reviews_rating, is_disqualified, signals")
+      .select("name, niche, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
       .eq("id", businessId)
       .single();
     if (bizError) throw bizError;

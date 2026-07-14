@@ -169,9 +169,26 @@ def website_quality_score(biz: dict) -> int:
 
     score = 55
 
-    # HTTPS bonus
-    if website.lower().startswith("https://"):
+    # HTTPS bonus — ROOT CAUSE fix (I2): previously this was a bare
+    # `startswith("https://")` string check, so a site with an expired or
+    # self-signed cert, or one that silently downgrades to http, scored as
+    # if SSL were fine. `ssl_valid` (set by SiteCrawler._check_ssl, a real
+    # certificate probe) is used when we have it; the string check remains
+    # only as a fallback for when no crawl was attempted.
+    ssl_valid = biz.get("ssl_valid")
+    if ssl_valid is True:
         score += 10
+    elif ssl_valid is False:
+        score -= 15
+    elif website.lower().startswith("https://"):
+        score += 10
+
+    # Slow-site penalty (I3) — "slow site" is a literal Web Developer
+    # opportunity example in the brief; page-load timing is captured for
+    # free during the crawl's own goto().
+    load_ms = biz.get("load_time_ms")
+    if isinstance(load_ms, (int, float)) and load_ms > 4000:
+        score -= 10
 
     # TLD quality
     host = domain_of(website)
@@ -425,17 +442,26 @@ def professionalism_score(biz: dict) -> int:
 
 
 def growth_signals_score(biz: dict) -> int:
-    """0–8. Points for hiring, new location, funding, rebranding signals."""
+    """0–8. Points for growth signals that are actually verifiable today.
+
+    ROOT CAUSE fix (audit C3): this used to read `hiring`/`new_location`/
+    `recently_rebranded`/`funding` from `growth_signals`, but nothing in the
+    engine ever populated ANY of those keys — the score was always 0 and
+    `explainOpportunity.ts` narrated that as a confident "no growth signals
+    found", when the engine had never actually looked. `hiring` and
+    `new_location` are now real, cheap detections from already-fetched HTML
+    (see enrichment/site_crawler.py's `_detect_growth_signals`).
+    `recently_rebranded` and `funding` are NOT scored here — detecting
+    either reliably needs a historical snapshot or a news/press API this
+    engine doesn't have; per the brief's "if a signal cannot exist, remove
+    it," they're simply absent rather than always contributing zero.
+    """
     score = 0
     signals = biz.get("growth_signals") or {}
     if signals.get("hiring"):
         score += 4
     if signals.get("new_location"):
         score += 4
-    if signals.get("recently_rebranded"):
-        score += 3
-    if signals.get("funding"):
-        score += 6
     return min(8, score)
 
 

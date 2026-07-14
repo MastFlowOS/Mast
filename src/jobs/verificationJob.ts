@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { runEngineVerify } from "../scraperBridge/pythonBridge.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
+import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import {
   applyFullVerificationSuccess,
   applyVerificationFailure,
@@ -88,9 +89,11 @@ async function verifyOne(business: DueBusiness): Promise<"success" | "failure" |
     instagram: business.instagram ?? undefined,
   });
 
-  const checkedResults = [result.website_ok, result.instagram_ok].filter((v) => v !== null) as boolean[];
+  const checked: { channel: "website" | "instagram"; ok: boolean }[] = [];
+  if (result.website_ok !== null) checked.push({ channel: "website", ok: result.website_ok });
+  if (result.instagram_ok !== null) checked.push({ channel: "instagram", ok: result.instagram_ok });
 
-  if (checkedResults.length === 0) {
+  if (checked.length === 0) {
     // Nothing on file to check (no website AND no instagram) — can't
     // conclude anything either way. Still worth confirming we looked, so
     // don't leave it stuck at the same due date forever, but don't touch
@@ -107,29 +110,64 @@ async function verifyOne(business: DueBusiness): Promise<"success" | "failure" |
     return "inconclusive";
   }
 
-  const allOk = checkedResults.every((ok) => ok);
+  // C1 fix (audit root cause): this used to compute one whole-business
+  // `allOk = checkedResults.every(ok => ok)` verdict across every channel
+  // that was checked. If a business had a perfectly live, reachable
+  // website but its Instagram handle had merely changed or gone private,
+  // `allOk` was false, the business went down the FAILURE path, confidence
+  // dropped, and — after enough cycles — it was silently ARCHIVED for
+  // every user, forever, over an Instagram-only problem. A rebranded or
+  // deleted IG handle is unrelated to whether the phone/email/website
+  // still work.
+  //
+  // Fix: any channel that is still confirmed alive counts as a real,
+  // positive verification result for the business as a whole. Archiving
+  // (the failure path) is now reserved for the case the audit's "best
+  // solution" describes as the minimum bar: every channel that was checked
+  // has failed — i.e. there is no live channel left at all, not "one
+  // channel among several."
+  const anyChannelAlive = checked.some((c) => c.ok);
 
-  if (allOk) {
+  if (anyChannelAlive) {
+    const websiteAlive = checked.find((c) => c.channel === "website")?.ok ?? null;
+    const instagramAlive = checked.find((c) => c.channel === "instagram")?.ok ?? null;
+
     const refreshedFields: Record<string, unknown> = {};
-    // Only overwrite with genuinely new, truthy values — a temporary
-    // extraction miss on an otherwise-reachable site shouldn't blank out
-    // previously-known good data.
-    if (result.website_data.email) refreshedFields.email = result.website_data.email;
-    if (result.website_data.phone) refreshedFields.phone = result.website_data.phone;
-    if (result.website_data.instagram) refreshedFields.instagram = result.website_data.instagram;
-    if (result.website_data.facebook) refreshedFields.facebook = result.website_data.facebook;
+    // Only refresh fields belonging to a channel that's actually alive —
+    // a dead Instagram channel should never get to overwrite/clear website
+    // fields, and vice versa. Only overwrite with genuinely new, truthy
+    // values — a temporary extraction miss on an otherwise-reachable site
+    // shouldn't blank out previously-known good data.
+    if (websiteAlive) {
+      if (result.website_data.email) refreshedFields.email = result.website_data.email;
+      if (result.website_data.phone) refreshedFields.phone = result.website_data.phone;
+      if (result.website_data.instagram) refreshedFields.instagram = result.website_data.instagram;
+      if (result.website_data.facebook) refreshedFields.facebook = result.website_data.facebook;
+      if (result.website_data.linkedin) refreshedFields.linkedin = result.website_data.linkedin;
+      if (result.website_data.emails?.length) refreshedFields.emails = result.website_data.emails;
+      if (result.website_data.phones?.length) refreshedFields.phones = result.website_data.phones;
+      if (result.website_data.ssl_valid !== undefined) refreshedFields.ssl_valid = result.website_data.ssl_valid;
+      if (result.website_data.load_time_ms != null) refreshedFields.load_time_ms = result.website_data.load_time_ms;
+      if (result.website_data.seo) refreshedFields.seo = result.website_data.seo;
+      if (result.website_data.blog) refreshedFields.blog = result.website_data.blog;
+    }
 
     const { data: current } = await supabaseAdmin.from("businesses").select("signals").eq("id", business.id).single();
     const mergedSignals = {
       ...(current?.signals ?? {}),
-      ...(result.website_data.tech_stack ? { tech_stack: result.website_data.tech_stack } : {}),
-      ...(result.instagram_ok
+      ...(websiteAlive && result.website_data.tech_stack ? { tech_stack: result.website_data.tech_stack } : {}),
+      ...(websiteAlive && result.website_data.growth_signals && Object.keys(result.website_data.growth_signals).length > 0
+        ? { growth_signals: result.website_data.growth_signals }
+        : {}),
+      ...(instagramAlive
         ? {
             ig_activity: result.instagram_data.private ? "PRIVATE" : "VERIFIED",
             ig_last_post_days: result.instagram_data.last_post_days ?? null,
             ig_legitimacy: result.instagram_data.legitimacy_score ?? 0,
           }
-        : {}),
+        : instagramAlive === false
+          ? { ig_activity: "UNREACHABLE" } // record the dead channel without touching whole-record confidence
+          : {}),
     };
 
     await supabaseAdmin
@@ -146,9 +184,12 @@ async function verifyOne(business: DueBusiness): Promise<"success" | "failure" |
       .eq("id", business.id);
 
     await computeAndStoreOpportunityScores(business.id);
+    await computeAndStoreBusinessHealth(business.id);
     return "success";
   }
 
+  // Every channel that was checked has failed — no live channel remains.
+  // This IS a real archival candidate.
   const archivedNow = await applyFailureAndMaybeArchive(business);
   return archivedNow ? "archived" : "failure";
 }
@@ -188,6 +229,7 @@ async function applyFailureAndMaybeArchive(business: DueBusiness): Promise<boole
   // Rescore regardless — a failed channel (e.g. website now unreachable)
   // is itself a signal change worth reflecting in the Opportunity Score.
   await computeAndStoreOpportunityScores(business.id);
+  await computeAndStoreBusinessHealth(business.id);
 
   return archive;
 }

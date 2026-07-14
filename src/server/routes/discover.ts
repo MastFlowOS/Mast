@@ -144,6 +144,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
       scrapeJobId: job.id,
       dailyLimit: plan.dailyLeadLimit,
       monthlyLimit: plan.monthlyLeadLimit,
+      channels: body.channels,
     });
 
     let backgroundExpansionQueued = false;
@@ -166,6 +167,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
           scrapeJobId: job.id,
           dailyLimit: plan.dailyLeadLimit,
           monthlyLimit: plan.monthlyLeadLimit,
+          channels: body.channels,
         },
       });
       backgroundExpansionQueued = true;

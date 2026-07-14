@@ -40,42 +40,61 @@ export type WeightVector = {
   social: number;
   growth: number;
   newness: number;
+  /**
+   * I1 fix: tech-stack evidence (chatbot/booking-flow/analytics presence,
+   * already fingerprinted per-page by site_crawler.py's `detect_tech_stack`
+   * but never fed into scoring before this pass) — no chatbot -> AI
+   * Automation opportunity, no booking flow -> AI Automation/web dev
+   * opportunity, per the brief's Priority 5 examples.
+   */
+  tech: number;
 };
 
-export const PROFESSION_WEIGHTS: Record<ProfessionSlug, WeightVector> = {
-  // Cares most about visual identity/branding; website itself is secondary.
-  graphic_design: { website: 0.1, branding: 0.45, social: 0.2, growth: 0.1, newness: 0.15 },
-
-  // Cares most about active marketing/social presence and audience-building.
-  digital_marketing: { website: 0.15, branding: 0.2, social: 0.4, growth: 0.15, newness: 0.1 },
-
-  // Website copy/content quality is the closest proxy available; otherwise general.
-  writing_translation: { website: 0.3, branding: 0.2, social: 0.2, growth: 0.15, newness: 0.15 },
-
-  // Visual/motion content — branding and social (where video would be posted) dominate.
-  video_animation: { website: 0.1, branding: 0.3, social: 0.35, growth: 0.1, newness: 0.15 },
-
-  // Audio/podcast production — closest available proxies are social presence and branding.
-  music_audio: { website: 0.15, branding: 0.25, social: 0.35, growth: 0.1, newness: 0.15 },
-
-  // The strongest, most directly measurable dimension we have: website quality itself.
-  programming_tech: { website: 0.55, branding: 0.1, social: 0.1, growth: 0.15, newness: 0.1 },
-
-  // Data/analytics work correlates more with an operationally growing business than branding.
-  data: { website: 0.35, branding: 0.1, social: 0.1, growth: 0.3, newness: 0.15 },
-
-  // General business consulting — broad weighting, leans toward growth signals.
-  business: { website: 0.2, branding: 0.2, social: 0.15, growth: 0.3, newness: 0.15 },
-
-  // Coaching/hobby-adjacent services — personal brand and social presence dominate.
-  personal_growth_hobbies: { website: 0.2, branding: 0.3, social: 0.3, growth: 0.05, newness: 0.15 },
-
-  // Visual content is the whole product — has_photos / branding dominate heavily.
-  photography: { website: 0.1, branding: 0.35, social: 0.3, growth: 0.05, newness: 0.2 },
-
-  // Financial advisory tracks operational maturity/growth more than any visual signal.
-  finance: { website: 0.15, branding: 0.1, social: 0.1, growth: 0.4, newness: 0.25 },
-
-  // No single specialty — equal weighting across all five components.
-  end_to_end_project: { website: 0.2, branding: 0.2, social: 0.2, growth: 0.2, newness: 0.2 },
+/**
+ * Raw (not-yet-normalized) per-profession weights, INCLUDING the new `tech`
+ * dimension. Adding a 6th component by hand-editing 12 rows of weights that
+ * must each sum to exactly 1.0 is exactly the kind of arithmetic error this
+ * avoids: weights below are written by relative importance only, then
+ * `normalizeWeights()` scales each profession's row so it sums to 1.0. This
+ * also means adding a 7th component later never requires re-deriving 12
+ * existing rows by hand again.
+ */
+const RAW_WEIGHTS: Record<ProfessionSlug, WeightVector> = {
+  graphic_design:            { website: 0.10, branding: 0.45, social: 0.20, growth: 0.10, newness: 0.15, tech: 0.03 },
+  digital_marketing:         { website: 0.15, branding: 0.20, social: 0.40, growth: 0.15, newness: 0.10, tech: 0.05 },
+  writing_translation:       { website: 0.30, branding: 0.20, social: 0.20, growth: 0.15, newness: 0.15, tech: 0.03 },
+  video_animation:           { website: 0.10, branding: 0.30, social: 0.35, growth: 0.10, newness: 0.15, tech: 0.03 },
+  music_audio:               { website: 0.15, branding: 0.25, social: 0.35, growth: 0.10, newness: 0.15, tech: 0.03 },
+  // Programmer/dev: tech-stack gaps (no chatbot, no booking flow, stale CMS)
+  // are as direct a signal as website quality itself — weighted heavily.
+  programming_tech:          { website: 0.45, branding: 0.08, social: 0.08, growth: 0.12, newness: 0.08, tech: 0.30 },
+  data:                      { website: 0.30, branding: 0.08, social: 0.08, growth: 0.28, newness: 0.13, tech: 0.15 },
+  // Closest existing fit for "AI Automation" (no dedicated profession slug
+  // yet — see deliverables doc): manual workflows / no booking / no chatbot
+  // are exactly this profile's opportunity signal.
+  business:                  { website: 0.15, branding: 0.15, social: 0.12, growth: 0.28, newness: 0.12, tech: 0.20 },
+  personal_growth_hobbies:   { website: 0.18, branding: 0.28, social: 0.28, growth: 0.05, newness: 0.15, tech: 0.03 },
+  photography:               { website: 0.10, branding: 0.35, social: 0.28, growth: 0.05, newness: 0.19, tech: 0.02 },
+  finance:                   { website: 0.13, branding: 0.08, social: 0.08, growth: 0.35, newness: 0.22, tech: 0.10 },
+  end_to_end_project:        { website: 0.18, branding: 0.18, social: 0.18, growth: 0.18, newness: 0.18, tech: 0.10 },
 };
+
+function normalizeWeights(raw: Record<ProfessionSlug, WeightVector>): Record<ProfessionSlug, WeightVector> {
+  const out = {} as Record<ProfessionSlug, WeightVector>;
+  for (const slug of Object.keys(raw) as ProfessionSlug[]) {
+    const w = raw[slug];
+    const sum = w.website + w.branding + w.social + w.growth + w.newness + w.tech;
+    out[slug] = {
+      website: w.website / sum,
+      branding: w.branding / sum,
+      social: w.social / sum,
+      growth: w.growth / sum,
+      newness: w.newness / sum,
+      tech: w.tech / sum,
+    };
+  }
+  return out;
+}
+
+/** Guaranteed to sum to 1.0 per profession by construction (normalizeWeights), not by hand-checked arithmetic. */
+export const PROFESSION_WEIGHTS: Record<ProfessionSlug, WeightVector> = normalizeWeights(RAW_WEIGHTS);

@@ -175,6 +175,54 @@ def extract_emails(html: str) -> list[str]:
     return found
 
 
+_EMAIL_ROLE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("owner",   ("owner", "proprietor")),
+    ("founder", ("founder", "cofounder", "co-founder")),
+    ("ceo",     ("ceo", "president", "director", "principal")),
+    ("sales",   ("sales", "business", "bd", "partnerships")),
+    ("support", ("support", "help", "service", "care")),
+    ("info",    ("info", "contact", "office", "admin")),
+    ("hello",   ("hello", "hi", "team", "hey")),
+)
+
+
+def classify_email_role(email: str) -> str:
+    """Classify an email's local-part into a coarse outreach role.
+
+    Returns one of: owner, founder, ceo, sales, support, info, hello, other.
+    Role emails are NOT all equal for outreach — a decision-maker address
+    (owner/founder/ceo) should outrank a generic mailbox (info/hello) which
+    should outrank a narrow-purpose one (support/sales), even though all are
+    "valid" emails.
+    """
+    if not email or "@" not in email:
+        return "other"
+    local = email.split("@", 1)[0].lower()
+    for role, needles in _EMAIL_ROLE_PATTERNS:
+        if any(n in local for n in needles):
+            return role
+    return "other"
+
+
+_ROLE_PRIORITY = ("owner", "founder", "ceo", "hello", "info", "sales", "support", "other")
+
+
+def rank_emails_by_role(emails: list[str]) -> list[dict]:
+    """Return emails as [{email, role}], ordered decision-maker-first.
+
+    This is the "preserve multiple contacts, don't discard" list — display
+    logic can still show `pick_best_email()`'s single winner as a default,
+    but nothing about a founder's personal address is lost just because a
+    generic info@ also existed.
+    """
+    def _rank_key(e: str) -> int:
+        role = classify_email_role(e)
+        return _ROLE_PRIORITY.index(role) if role in _ROLE_PRIORITY else len(_ROLE_PRIORITY)
+
+    ranked = sorted(dict.fromkeys(e.lower() for e in emails if e), key=_rank_key)
+    return [{"email": e, "role": classify_email_role(e)} for e in ranked]
+
+
 def pick_best_email(candidates: list[str], preferred_domain: str = "") -> str:
     """Pick the highest-priority outreach email."""
     if not candidates:
@@ -444,6 +492,43 @@ def extract_ig_urls(text: str) -> list[str]:
             continue
         url = f"https://www.instagram.com/{handle}/"
         if url not in seen and is_real_ig_handle(url):
+            seen.add(url)
+            results.append(url)
+    return results
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LinkedIn URL helpers
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# ROOT CAUSE this fixes: scoring/scorer.py::social_presence_score() already
+# reads `biz.get("linkedin")` (has done since it was written), but nothing in
+# the engine ever extracted a `linkedin` value — RawPlace, Lead, and
+# SiteCrawler.crawl()'s result dict all lacked the field entirely. LinkedIn
+# was a silently-dead scoring signal. This mirrors extract_ig_urls() exactly,
+# just for the /company/ and /in/ path shapes LinkedIn actually uses.
+
+_LINKEDIN_NON_HANDLES = frozenset({
+    "in", "company", "school", "showcase", "pub", "feed", "jobs",
+    "help", "legal", "login", "signup", "authwall", "uas", "sharing",
+})
+
+_LINKEDIN_URL_RE = re.compile(
+    r"https?://(?:www\.)?linkedin\.com/(company|in|school)/([A-Za-z0-9_\-.%]+)",
+    re.IGNORECASE,
+)
+
+
+def extract_linkedin_urls(text: str) -> list[str]:
+    """Find all LinkedIn company/profile URLs in an HTML blob."""
+    results: list[str] = []
+    seen: set[str] = set()
+    for kind, handle in _LINKEDIN_URL_RE.findall(text):
+        h = handle.strip("/").lower()
+        if not h or h in _LINKEDIN_NON_HANDLES:
+            continue
+        url = f"https://www.linkedin.com/{kind.lower()}/{h}/"
+        if url not in seen:
             seen.add(url)
             results.append(url)
     return results

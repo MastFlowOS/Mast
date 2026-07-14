@@ -63,6 +63,7 @@ from storage.dedup import LeadStore
 from utils.parsing import (
     pick_best_email,
     pick_best_phone,
+    rank_emails_by_role,
     extract_ig_urls,
     is_weak_site,
     domain_of,
@@ -95,6 +96,7 @@ class Lead:
     website: str = ""
     instagram: str = ""
     facebook: str = ""
+    linkedin: str = ""
     contact_form: str = ""
 
     # ── Google Maps signals ───────────────────────────────────────────────────
@@ -129,6 +131,32 @@ class Lead:
     # ── Website enrichment ────────────────────────────────────────────────────
     tech_stack: dict = field(default_factory=dict)
 
+    # ── Contact intelligence (C5 / Priority 4 — preserve ALL contacts found,
+    # not just one "winner") ──────────────────────────────────────────────────
+    emails: list = field(default_factory=list)   # [{email, role}], role-ranked
+    phones: list = field(default_factory=list)   # all distinct numbers found
+
+    # ── Growth / opportunity intelligence (C3 fix — only real, verified
+    # signals; keys are simply absent when not detected, never a fabricated
+    # confident negative) ─────────────────────────────────────────────────────
+    growth_signals: dict = field(default_factory=dict)
+    seo: dict = field(default_factory=dict)
+    blog: dict = field(default_factory=dict)
+    ssl_valid: bool | None = None
+    load_time_ms: int | None = None
+
+    # ── Field-level trust (Priority 2/3 — source attribution architecture) ──
+    # field_name -> {value, source, method, verified_at}. Built in _merge()
+    # from every layer's own field_sources/attribution, not re-derived.
+    field_provenance: dict = field(default_factory=dict)
+
+    # Single source of truth for "is this a weak/templated site" — computed
+    # here from utils.parsing.is_weak_site() (O2 fix: the TS layer used to
+    # keep its own separately hand-written, already-drifted copy of this
+    # domain list; it now just reads this boolean instead of reimplementing
+    # the check).
+    website_is_weak: bool = False
+
     # ── Scoring (applied after all enrichment) ────────────────────────────────
     score: int = 0
     quality: str = "COLD"
@@ -149,6 +177,7 @@ class Lead:
             "website": self.website,
             "instagram": self.instagram,
             "facebook": self.facebook,
+            "linkedin": self.linkedin,
             "contact_form": self.contact_form,
             "maps_link": self.maps_link,
             "rating": self.rating,
@@ -176,6 +205,15 @@ class Lead:
             "ig_external_url": self.ig_external_url,
             "ig_email": self.ig_email,
             "tech_stack": self.tech_stack,
+            "emails": self.emails,
+            "phones": self.phones,
+            "growth_signals": self.growth_signals,
+            "seo": self.seo,
+            "blog": self.blog,
+            "ssl_valid": self.ssl_valid,
+            "load_time_ms": self.load_time_ms,
+            "field_provenance": self.field_provenance,
+            "website_is_weak": self.website_is_weak,
             "score": self.score,
             "quality": self.quality,
             "tier": self.tier,
@@ -376,19 +414,41 @@ class EnrichmentPipeline:
                 else ig_from_site.get(key)
             )
 
-        # Best email: prioritize IG bio email → site crawler email → nothing
-        all_emails = [
-            ig.get("email_from_bio") or "",
-            site.get("email") or "",
-        ]
-        email = pick_best_email(
-            [e for e in all_emails if e],
-            preferred_domain=domain_of(raw.website),
-        )
+        # Q1 fix: `bio_contact_hints()` (ig_intel.py) has always been able to
+        # pull phone/website hints out of an IG bio ("link in bio" URLs,
+        # phone numbers) but was imported into this module and never
+        # called — only the email half happened, inline inside ig_intel's
+        # own extraction. Wiring it in here is a same-crawl, zero-extra-
+        # request improvement: it only ever *fills gaps*, never overrides
+        # a real Maps/site-crawl value.
+        ig_bio_hints = bio_contact_hints(ig.get("bio") or "")
 
-        # Best phone
-        all_phones = [raw.phone, site.get("phone") or ""]
-        phone = pick_best_phone([p for p in all_phones if p])
+        # C5 fix: preserve every email/phone actually found instead of
+        # collapsing to one. `pick_best_email`/`pick_best_phone` remain the
+        # *display default* selector; the full deduplicated, role-ranked
+        # list travels alongside it so a founder's personal address next to
+        # a generic info@ is never silently discarded.
+        all_email_candidates = [
+            e for e in (
+                ig.get("email_from_bio") or "",
+                ig_bio_hints.get("email") or "",
+                site.get("email") or "",
+                *[e.get("email", "") for e in (site.get("emails") or [])],
+            ) if e
+        ]
+        email = pick_best_email(all_email_candidates, preferred_domain=domain_of(raw.website))
+        emails = rank_emails_by_role(all_email_candidates)
+
+        all_phone_candidates = [
+            p for p in (
+                raw.phone,
+                site.get("phone") or "",
+                ig_bio_hints.get("phone") or "",
+                *(site.get("phones") or []),
+            ) if p
+        ]
+        phone = pick_best_phone(all_phone_candidates)
+        phones = sorted(set(all_phone_candidates))
 
         # IG URL: prefer Maps → site → IG external URL
         ig_url = (
@@ -399,12 +459,54 @@ class EnrichmentPipeline:
         if ig_url and not ig_url.startswith("http"):
             ig_url = f"https://www.instagram.com/{ig_url.strip('@')}/"
 
-        # Website: prefer non-weak site; try IG external as fallback
+        # Website: prefer non-weak, reachable site; try IG external as fallback.
+        # ROOT CAUSE fix: this used to trust raw.website unconditionally
+        # (only swapping it out when is_weak_site() flagged it), so a
+        # website that SiteCrawler.crawl() actually tried and failed to
+        # reach (dead domain, expired site, DNS failure, timeout) was still
+        # returned as a live "website channel" — nothing ever inspected it.
+        # `site.get("reachable")` is only False when a crawl was attempted
+        # and explicitly failed (None means "never attempted", e.g.
+        # skip_site_crawl or no website at all — in that case we still
+        # trust the Maps-sourced value rather than discarding it).
         website = raw.website
-        if is_weak_site(website):
+        website_unreachable = site.get("reachable") is False
+        if is_weak_site(website) or website_unreachable:
             alt = ig.get("external_url") or ""
             if alt and not is_weak_site(alt):
                 website = alt
+            elif website_unreachable:
+                website = ""
+
+        website_is_weak = is_weak_site(website)
+
+        # Priority 2/3 fix (field-level trust / source attribution): build
+        # one consolidated provenance map from every layer's own
+        # attribution instead of leaving confidence as a single
+        # whole-record number. Each entry can be traced back to exactly
+        # where a value came from and how it was checked.
+        field_provenance: dict = {}
+        site_sources = site.get("field_sources") or {}
+        for field_name, src in site_sources.items():
+            field_provenance[field_name] = {
+                "value": {
+                    "instagram": ig_url, "facebook": site.get("facebook"),
+                    "linkedin": site.get("linkedin"), "email": email,
+                    "contact_form": site.get("contact_form"), "phone": phone,
+                }.get(field_name),
+                "source": src.get("source_url"),
+                "method": src.get("method", "website_crawl"),
+            }
+        if not field_provenance.get("email") and (ig.get("email_from_bio") or ig_bio_hints.get("email")):
+            field_provenance["email"] = {
+                "value": email, "source": ig_url or "instagram_bio", "method": "instagram_bio",
+            }
+        if raw.phone and not field_provenance.get("phone"):
+            field_provenance["phone"] = {"value": raw.phone, "source": raw.maps_link, "method": "google_maps"}
+        if raw.website and not field_provenance.get("website"):
+            field_provenance["website"] = {"value": website, "source": raw.maps_link, "method": "google_maps"}
+        if ig_url and not field_provenance.get("instagram"):
+            field_provenance["instagram"] = {"value": ig_url, "source": raw.maps_link, "method": "google_maps"}
 
         return Lead(
             # Identity
@@ -422,6 +524,7 @@ class EnrichmentPipeline:
             website=website,
             instagram=ig_url,
             facebook=site.get("facebook") or "",
+            linkedin=site.get("linkedin") or "",
             contact_form=site.get("contact_form") or "",
 
             # Maps
@@ -455,6 +558,21 @@ class EnrichmentPipeline:
 
             # Tech stack
             tech_stack=site.get("tech_stack") or {},
+
+            # Contact intelligence (C5 / Priority 4)
+            emails=emails,
+            phones=phones,
+
+            # Growth / opportunity intelligence (C3)
+            growth_signals=site.get("growth_signals") or {},
+            seo=site.get("seo") or {},
+            blog=site.get("blog") or {},
+            ssl_valid=site.get("ssl_valid"),
+            load_time_ms=site.get("load_time_ms"),
+
+            # Field-level trust (Priority 2/3)
+            field_provenance=field_provenance,
+            website_is_weak=website_is_weak,
         )
 
     async def _crawl_site(self, url: str) -> dict:

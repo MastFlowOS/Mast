@@ -28,19 +28,114 @@ Tech stack detection:
 from __future__ import annotations
 
 import re
+import time
 from urllib.parse import urljoin, urlparse
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from utils.parsing import (
-    extract_emails, extract_phones, extract_ig_urls,
-    pick_best_email, pick_best_phone, is_ordering_platform,
+    extract_emails, extract_phones, extract_ig_urls, extract_linkedin_urls,
+    pick_best_email, pick_best_phone, rank_emails_by_role, is_ordering_platform,
     is_directory_site, is_weak_site, domain_of, origin_of,
     clean_url,
 )
 from utils.runtime import RateLimiter, get_logger, ScraperConfig
 
 log = get_logger("site_crawler")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Growth signal detection (C3 fix)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# ROOT CAUSE this fixes: `growth_signals` was read by three scoring/
+# explanation layers but never populated anywhere, and the absence was
+# narrated to users as a confident "no growth signals found" — see audit
+# C3. This is a real, cheap detector reusing HTML the crawler already
+# fetched (no extra requests): a careers/jobs link or "we're hiring"
+# phrasing on the homepage/about page, and "new location" / "opening soon"
+# phrasing for expansion. `recently_rebranded` and `funding` are NOT
+# implemented here — there is no reliable, verifiable signal for either
+# from a single site crawl (rebrand needs historical comparison, funding
+# needs a press/news API) — per the brief's "if a signal cannot exist,
+# remove it," those two keys are omitted entirely rather than always-false.
+
+_HIRING_LINK_HINTS = ("/careers", "/jobs", "/join-us", "/join-our-team", "/work-with-us")
+_HIRING_PHRASE_RE = re.compile(
+    r"we(?:'|’)re hiring|now hiring|join our team|open positions|current openings|careers page",
+    re.IGNORECASE,
+)
+_NEW_LOCATION_PHRASE_RE = re.compile(
+    r"new location|opening soon|coming soon|now open in|second location|our new (?:shop|store|studio|location)",
+    re.IGNORECASE,
+)
+
+
+def _detect_growth_signals(html: str, anchors: list[str]) -> dict:
+    """Cheap, verifiable growth-signal detection from already-fetched HTML."""
+    if not html:
+        return {}
+    signals: dict = {}
+    low = html.lower()
+
+    hiring_link = any(any(h in (a or "").lower() for h in _HIRING_LINK_HINTS) for a in anchors)
+    if hiring_link or _HIRING_PHRASE_RE.search(low):
+        signals["hiring"] = True
+
+    if _NEW_LOCATION_PHRASE_RE.search(low):
+        signals["new_location"] = True
+
+    return signals
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Lightweight on-page SEO signal detection (supports Priority 5's
+# marketing-specific opportunity evidence: "poor SEO, missing metadata")
+# ──────────────────────────────────────────────────────────────────────────────
+
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_META_DESC_RE = re.compile(
+    r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']*)["\']', re.IGNORECASE
+)
+_BLOG_LINK_RE = re.compile(r'href=["\']([^"\']*?/(?:blog|news|articles|insights)[^"\']*)["\']', re.IGNORECASE)
+_DATE_RE = re.compile(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})")
+
+
+def _detect_seo_signals(html: str) -> dict:
+    """Missing/weak title + meta description — trivial from HTML already fetched."""
+    if not html:
+        return {}
+    title_m = _TITLE_RE.search(html)
+    title = (title_m.group(1).strip() if title_m else "")
+    desc_m = _META_DESC_RE.search(html)
+    desc = (desc_m.group(1).strip() if desc_m else "")
+
+    return {
+        "has_title": bool(title),
+        "title_length": len(title),
+        "has_meta_description": bool(desc),
+        "meta_description_length": len(desc),
+    }
+
+
+def _detect_blog_signal(html: str) -> dict:
+    """Presence of a blog/news section and, if a date is visible, how stale it looks."""
+    if not html:
+        return {}
+    m = _BLOG_LINK_RE.search(html)
+    if not m:
+        return {"has_blog": False}
+    result: dict = {"has_blog": True, "blog_url": m.group(1)}
+    dates = _DATE_RE.findall(html)
+    if dates:
+        try:
+            from datetime import date
+            y, mo, d = (int(x) for x in dates[0])
+            days = (date.today() - date(y, mo, d)).days
+            if 0 <= days < 3650:
+                result["last_post_days"] = days
+        except Exception:
+            pass
+    return result
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Contact page detection
@@ -195,21 +290,49 @@ class SiteCrawler:
 
         Returns:
           {
-            "instagram": str,
-            "facebook": str,
-            "email": str,
+            "instagram": str, "facebook": str, "linkedin": str,
+            "email": str, "emails": list[dict],   # [{email, role}], ranked
             "contact_form": str,
-            "phone": str,
+            "phone": str, "phones": list[str],     # all distinct numbers found
             "tech_stack": dict,
+            "growth_signals": dict,                # only keys actually detected
+            "seo": dict, "blog": dict,
+            "ssl_valid": bool | None, "load_time_ms": int | None,
+            "field_sources": dict,                 # field -> {source_url, method}
+            "reachable": bool | None,
           }
         """
         result: dict = {
             "instagram": "",
             "facebook": "",
+            "linkedin": "",
             "email": "",
+            "emails": [],
             "contact_form": "",
             "phone": "",
+            "phones": [],
             "tech_stack": {},
+            "growth_signals": {},
+            "seo": {},
+            "blog": {},
+            "ssl_valid": None,
+            "load_time_ms": None,
+            # ROOT CAUSE fix (Priority 2/3 — field-level trust): every field
+            # extracted below now records exactly which page it came from,
+            # so downstream storage can build a real
+            # "Email — found on Contact page" style provenance instead of
+            # a single whole-record confidence number (see storage/dedup's
+            # sibling gap and audit Q2/A1).
+            "field_sources": {},
+            # ROOT CAUSE fix: previously this dict gave no way to tell "the
+            # site was inspected and genuinely has no Instagram/email/etc."
+            # apart from "the site never loaded at all" — both looked like
+            # an all-empty dict to the caller. pipeline.py needs this
+            # distinction to avoid presenting a dead link as a live website
+            # channel (see EnrichmentPipeline._merge). None = never
+            # attempted (no url / directory site), True = page loaded,
+            # False = goto failed (timeout or navigation error).
+            "reachable": None,
         }
 
         if not url or is_directory_site(url):
@@ -221,18 +344,27 @@ class SiteCrawler:
         page = await self._browser.new_page()
         try:
             await self._limiter.acquire("site")
+            started_at = time.perf_counter()
             try:
                 response = await page.goto(
                     url,
                     wait_until="domcontentloaded",
                     timeout=self.config.site_timeout_ms,
                 )
+                # I3 fix: page-load timing, reusing the goto() the crawler
+                # already performs — zero extra requests. "Slow site" is a
+                # literal Web Developer opportunity example in the brief.
+                result["load_time_ms"] = int((time.perf_counter() - started_at) * 1000)
                 headers = dict(response.headers) if response else {}
+                result["reachable"] = True
+                result["ssl_valid"] = await self._check_ssl(page, response, url)
             except PlaywrightTimeoutError:
                 log.debug(f"[site] timeout: {url}")
+                result["reachable"] = False
                 return result
             except Exception as e:
                 log.debug(f"[site] error loading {url}: {e}")
+                result["reachable"] = False
                 return result
 
             base = origin_of(page.url) or origin_of(url)
@@ -241,11 +373,7 @@ class SiteCrawler:
             # Tech stack from homepage
             result["tech_stack"] = detect_tech_stack(home_html, headers)
 
-            # Extract from homepage
-            self._extract_into(home_html, result, page_url=page.url,
-                               site_domain=site_domain)
-
-            # Find contact page candidates
+            # Find contact page candidates (also feeds hiring-link detection)
             try:
                 anchors = await page.evaluate(
                     "() => Array.from(document.querySelectorAll('a[href]'))"
@@ -253,6 +381,22 @@ class SiteCrawler:
                 )
             except Exception:
                 anchors = []
+
+            # Growth / SEO / blog signals — all read from HTML already in
+            # memory from the homepage load above (Priority 9: no extra
+            # requests). Only set keys that were actually detected (C3 fix:
+            # never assert a confident negative for something we can't
+            # verify — absence of the key means "not detected", not "we
+            # looked and found nothing" for the parts we can't check).
+            growth = _detect_growth_signals(home_html, anchors)
+            if growth:
+                result["growth_signals"] = growth
+            result["seo"] = _detect_seo_signals(home_html)
+            result["blog"] = _detect_blog_signal(home_html)
+
+            # Extract from homepage
+            self._extract_into(home_html, result, page_url=page.url,
+                               site_domain=site_domain)
 
             contact_candidates: list[str] = []
             for href in anchors:
@@ -276,8 +420,25 @@ class SiteCrawler:
 
             budget = 2 if self.config.fast else self.config.site_contact_page_budget
 
+            # P1 fix: `_result_is_complete` used to require email + instagram
+            # + contact_form ALL at once, so a business with genuinely no
+            # Instagram (common for B2B/professional services) always burned
+            # its full page budget hoping to find an IG link that doesn't
+            # exist. `ig_attempted` tracks whether we've already looked for
+            # it on at least one sub-page; once email + contact_form are in
+            # hand and IG still hasn't turned up, further visits are very
+            # unlikely to find it either — stop rather than keep spending
+            # budget on a channel that isn't there.
+            ig_attempted = False
             for candidate in contact_candidates[:budget]:
                 if self._result_is_complete(result):
+                    break
+                if (
+                    result.get("email")
+                    and result.get("contact_form")
+                    and ig_attempted
+                    and not result.get("instagram")
+                ):
                     break
                 await self._limiter.acquire("site_sub")
                 try:
@@ -292,6 +453,7 @@ class SiteCrawler:
                         page_url=page.url,
                         site_domain=site_domain,
                     )
+                    ig_attempted = True
                 except Exception:
                     continue
 
@@ -302,10 +464,49 @@ class SiteCrawler:
                         result["contact_form"] = cand
                         break
 
+            # Rank the accumulated raw email/phone pools (Priority 4 —
+            # owner@/founder@/ceo@ should never be silently equal to
+            # info@/support@). `email`/`phone` stay the single "best" pick
+            # other code already expects; `emails`/`phones` preserve
+            # everything found instead of discarding it (C5 fix).
+            result["emails"] = rank_emails_by_role(result.get("_email_pool", []))
+            result.pop("_email_pool", None)
+            result["phones"] = result.pop("_phone_pool", [])
+
         finally:
             await page.close()
 
         return result
+
+    async def _check_ssl(self, page: Page, response, url: str) -> bool | None:
+        """Real certificate probe (I2 fix), not a string check.
+
+        ROOT CAUSE this fixes: `scoring/scorer.py::website_quality_score`
+        previously only checked `website.startswith("https://")` — a site
+        with an expired/self-signed cert, or one that silently downgrades
+        https -> http, scored as if SSL were fine. Playwright already
+        performs the navigation `response` we need; `security_details()` is
+        read at zero extra request cost. Returns None (not False) when the
+        site is plain http:// by design — that's a different, already-
+        visible signal, not a broken-cert one.
+        """
+        if not url.lower().startswith("https://"):
+            return None
+        try:
+            final_url = page.url or ""
+            if final_url and final_url.lower().startswith("http://"):
+                return False  # silently downgraded from https -> http
+            details = await response.security_details() if response else None
+            if details is None:
+                # Chromium-only API; if unavailable, fall back to "loaded
+                # over https without erroring" as a weaker but honest signal.
+                return True
+            valid_to = details.get("validTo")
+            if valid_to is not None and valid_to < time.time():
+                return False
+            return True
+        except Exception:
+            return None
 
     def _result_is_complete(self, result: dict) -> bool:
         """Return True when we have all the key fields we're hunting for."""
@@ -326,11 +527,22 @@ class SiteCrawler:
         if not html:
             return
 
+        sources: dict = sink.setdefault("field_sources", {})
+
+        def _tag(field: str) -> None:
+            # First page a field is found on wins the attribution — later
+            # pages may repeat the same contact info in a footer, but the
+            # *original* page it was found on is the more useful "found on
+            # X" label for the user.
+            if field not in sources and page_url:
+                sources[field] = {"source_url": page_url, "method": "website_crawl"}
+
         # Instagram
         if not sink["instagram"]:
             ig_urls = extract_ig_urls(html)
             if ig_urls:
                 sink["instagram"] = ig_urls[0]
+                _tag("instagram")
 
         # Facebook
         if not sink["facebook"]:
@@ -338,14 +550,31 @@ class SiteCrawler:
                 clean = _clean_facebook(m)
                 if clean:
                     sink["facebook"] = clean
+                    _tag("facebook")
                     break
 
-        # Email (priority-ranked with domain preference)
-        if not sink["email"]:
-            candidates = extract_emails(html)
-            best = pick_best_email(candidates, preferred_domain=site_domain)
-            if best:
-                sink["email"] = best
+        # LinkedIn
+        if not sink.get("linkedin"):
+            li_urls = extract_linkedin_urls(html)
+            if li_urls:
+                sink["linkedin"] = li_urls[0]
+                _tag("linkedin")
+
+        # Email — C5 fix: accumulate ALL emails found across every page into
+        # `_email_pool` instead of stopping at the first match. The single
+        # `sink["email"]` "best pick" is kept for existing callers that just
+        # want one display value.
+        candidates = extract_emails(html)
+        if candidates:
+            pool = sink.setdefault("_email_pool", [])
+            for c in candidates:
+                if c not in pool:
+                    pool.append(c)
+            if not sink["email"]:
+                best = pick_best_email(candidates, preferred_domain=site_domain)
+                if best:
+                    sink["email"] = best
+                    _tag("email")
 
         # Contact form detection
         if not sink["contact_form"] and page_url:
@@ -367,9 +596,15 @@ class SiteCrawler:
 
             if not_platform and is_contact and (has_native_form or has_embedded_form):
                 sink["contact_form"] = page_url
+                _tag("contact_form")
 
-        # Phone
-        if not sink["phone"]:
-            phones = extract_phones(html)
-            if phones:
+        # Phone — C5 fix: accumulate all distinct phone numbers found.
+        phones = extract_phones(html)
+        if phones:
+            pool = sink.setdefault("_phone_pool", [])
+            for p in phones:
+                if p not in pool:
+                    pool.append(p)
+            if not sink["phone"]:
                 sink["phone"] = phones[0]
+                _tag("phone")

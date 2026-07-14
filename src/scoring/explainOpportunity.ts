@@ -34,23 +34,30 @@ const COMPONENT_LABELS: Record<keyof OpportunityScoreResult["breakdown"], string
   social: "Social presence",
   growth: "Growth signals",
   newness: "Business maturity",
+  tech: "Automation & tooling",
 };
 
 function websiteDetail(b: ScorableBusiness, value: number): string {
   const site = (b.website ?? "").trim();
   if (!site) return "No website found — a common gap this profession can close.";
+  if (b.ssl_valid === false) return "Website exists but its SSL certificate is invalid or expired.";
+  if (typeof b.load_time_ms === "number" && b.load_time_ms > 4000) return "Website exists but loads slowly.";
   if (value >= 60) return "Website exists but runs on a free/templated builder rather than a custom site.";
   return "Has an established, custom-domain website.";
 }
 
 function brandingDetail(b: ScorableBusiness, value: number): string {
+  const seo = b.seo;
+  if (seo && !(seo.has_title && seo.has_meta_description)) {
+    return "Missing SEO basics (title tag or meta description) alongside weak brand presence.";
+  }
   if (value >= 70) return "Little visible brand investment: no photos, inactive or missing social, no rating signal.";
   if (value >= 40) return "Some brand presence, but inconsistent across channels.";
   return "Already has a fairly consistent, professional brand presence.";
 }
 
 function socialDetail(b: ScorableBusiness, value: number): string {
-  const hasAny = Boolean((b.instagram ?? "").trim()) || Boolean((b.facebook ?? "").trim());
+  const hasAny = Boolean((b.instagram ?? "").trim()) || Boolean((b.facebook ?? "").trim()) || Boolean((b.linkedin ?? "").trim());
   if (!hasAny) return "No social media presence detected on any channel.";
   const days = b.signals?.ig_last_post_days;
   if (days == null) return "Has social channels, but activity level is unknown.";
@@ -59,13 +66,17 @@ function socialDetail(b: ScorableBusiness, value: number): string {
 }
 
 function growthDetail(b: ScorableBusiness, value: number): string {
+  // C3 fix: only ever describes hiring/new_location, both real detections
+  // (see enrichment/site_crawler.py's `_detect_growth_signals`). Never
+  // claims funding/rebrand were checked — they aren't, and saying "no
+  // growth signals (hiring, new location, funding, rebrand)" when funding
+  // and rebrand were never actually looked at was exactly the audit's C3
+  // finding: a confident negative for something never verified.
   const g = b.signals?.growth_signals;
-  if (!g || value === 0) return "No detected growth signals (hiring, new location, funding, rebrand).";
+  if (!g || value === 0) return "No hiring or new-location signals detected on the website.";
   const signals: string[] = [];
   if (g.hiring) signals.push("hiring");
   if (g.new_location) signals.push("opening a new location");
-  if (g.recently_rebranded) signals.push("recently rebranded");
-  if (g.funding) signals.push("recent funding");
   return `Showing growth signals: ${signals.join(", ")} — likely has budget to spend.`;
 }
 
@@ -76,12 +87,26 @@ function newnessDetail(b: ScorableBusiness, value: number): string {
   return `Established review history (${count} reviews) suggests a more mature business.`;
 }
 
+function techDetail(b: ScorableBusiness, value: number): string {
+  // I1 fix: tech-stack fingerprint was captured on every crawl and never
+  // used in any explanation before this pass.
+  if (!b.website) return "No website to evaluate for automation tooling.";
+  const stack = (b.signals?.tech_stack ?? {}) as Record<string, unknown>;
+  const missing: string[] = [];
+  if (!stack.chat) missing.push("no chatbot");
+  if (!stack.booking) missing.push("no online booking");
+  if (!(Array.isArray(stack.analytics) ? stack.analytics.length > 0 : stack.analytics)) missing.push("no analytics detected");
+  if (missing.length === 0) return "Already has chat, booking, and analytics tooling in place.";
+  return `Manual/missing tooling detected: ${missing.join(", ")}.`;
+}
+
 const DETAIL_FNS: Record<keyof OpportunityScoreResult["breakdown"], (b: ScorableBusiness, v: number) => string> = {
   website: websiteDetail,
   branding: brandingDetail,
   social: socialDetail,
   growth: growthDetail,
   newness: newnessDetail,
+  tech: techDetail,
 };
 
 export type OpportunityExplanation = {

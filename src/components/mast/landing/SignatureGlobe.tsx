@@ -1,32 +1,38 @@
 import { useEffect, useRef } from "react";
-import { WORLD_DOTS, nearestHub, type LatLon } from "./worldDots";
+import { WORLD_DOTS, TARGET_COUNTRIES } from "./worldDots";
 
 type Phase = "rotate" | "settle" | "focus" | "release";
 
 const DURATIONS: Record<Phase, number> = {
-  rotate: 4600,
-  settle: 1700,
-  focus: 3600,
-  release: 1500,
+  rotate: 3400,
+  settle: 1800,
+  focus: 4200,
+  release: 1600,
 };
 const CYCLE_MS = DURATIONS.rotate + DURATIONS.settle + DURATIONS.focus + DURATIONS.release;
-const BASE_SPEED = 0.045; // radians / second, freely rotating
+const BASE_SPEED = 0.05; // radians / second, freely rotating
 const TILT = 0.36; // radians, fixed axial tilt
+const ZOOM_MAX = 1.62;
 
 function easeInOutCubic(t: number) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
-
-interface Lit extends LatLon {
-  x: number;
-  y: number;
-  z: number;
-  d: number; // distance from view-center, radians-ish
+function easeOutBack(t: number) {
+  const c1 = 1.5;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+// Deterministic 0..1 pseudo-random from an index, so dot pop-in order is
+// stable across renders instead of reshuffling every mount.
+function hash01(i: number) {
+  const x = Math.sin(i * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
 }
 
 export function SignatureGlobe({ className = "" }: { className?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const labelRef = useRef<HTMLDivElement>(null);
+  const subLabelRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -71,12 +77,20 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     let elapsed = 0;
     let rotation = 0.6;
 
-    const project = (lat: number, lon: number, scale: number, cx: number, cy: number, r: number) => {
+    // Which country we're rotating toward, and the rotation bookkeeping
+    // used to land exactly on it during the "settle" phase.
+    const order = TARGET_COUNTRIES;
+    let countryIdx = -1;
+    let prevPhase: Phase | null = null;
+    let rotationAtSettleStart = rotation;
+    let targetRotation = rotation;
+
+    const project = (lat: number, lon: number, scale: number, cx: number, cy: number, r: number, rot: number) => {
       const phi = (lat * Math.PI) / 180;
       const lambda = (lon * Math.PI) / 180;
-      const x = Math.cos(phi) * Math.sin(lambda - rotation);
+      const x = Math.cos(phi) * Math.sin(lambda - rot);
       const y0 = Math.sin(phi);
-      const z0 = Math.cos(phi) * Math.cos(lambda - rotation);
+      const z0 = Math.cos(phi) * Math.cos(lambda - rot);
       const y = y0 * Math.cos(TILT) - z0 * Math.sin(TILT);
       const z = y0 * Math.sin(TILT) + z0 * Math.cos(TILT);
       return {
@@ -110,33 +124,60 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         phase = "release"; p = (t - DURATIONS.rotate - DURATIONS.settle - DURATIONS.focus) / DURATIONS.release;
       }
 
-      // Angular speed factor: full speed while rotating, ease to a stop, hold, ease back up.
-      let speedFactor = 1;
-      if (phase === "settle") speedFactor = 1 - easeInOutCubic(p);
-      else if (phase === "focus") speedFactor = 0;
-      else if (phase === "release") speedFactor = easeInOutCubic(p);
-      if (!reduceMotion) rotation += BASE_SPEED * speedFactor * (dt / 1000);
+      // Phase transitions: pick the next country as we enter "rotate", and
+      // lock in the exact rotation angle that centers it as we enter "settle".
+      if (phase !== prevPhase) {
+        if (phase === "rotate") {
+          countryIdx = (countryIdx + 1) % order.length;
+        }
+        if (phase === "settle") {
+          rotationAtSettleStart = rotation;
+          const country = order[countryIdx] ?? order[0];
+          const targetLambda = (country.lon * Math.PI) / 180;
+          const delta = (((targetLambda - rotationAtSettleStart) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+          targetRotation = rotationAtSettleStart + delta;
+        }
+        prevPhase = phase;
+      }
+
+      const country = order[countryIdx] ?? order[0];
+
+      // Rotation: free-spin while rotating; precisely interpolate onto the
+      // target country during settle; hold while focused; spin away on release.
+      if (!reduceMotion) {
+        if (phase === "rotate") {
+          rotation += BASE_SPEED * (dt / 1000);
+        } else if (phase === "settle") {
+          rotation = rotationAtSettleStart + (targetRotation - rotationAtSettleStart) * easeInOutCubic(p);
+        } else if (phase === "focus") {
+          rotation = targetRotation;
+        } else if (phase === "release") {
+          rotation = targetRotation;
+          rotation += BASE_SPEED * easeInOutCubic(p) * (dt / 1000);
+        }
+      }
 
       // Zoom: push in during settle + focus, ease back during release.
       let zoom = 1;
-      if (phase === "settle") zoom = 1 + 0.32 * easeInOutCubic(p);
-      else if (phase === "focus") zoom = 1.32;
-      else if (phase === "release") zoom = 1 + 0.32 * (1 - easeInOutCubic(p));
+      if (phase === "settle") zoom = 1 + (ZOOM_MAX - 1) * easeInOutCubic(p);
+      else if (phase === "focus") zoom = ZOOM_MAX;
+      else if (phase === "release") zoom = 1 + (ZOOM_MAX - 1) * (1 - easeInOutCubic(p));
 
-      // Glow strength for lit cities / connections.
+      // Glow / reveal strength for the country's opportunity dots + label.
       let glow = 0;
-      if (phase === "focus") glow = p < 0.2 ? p / 0.2 : p > 0.85 ? (1 - p) / 0.15 : 1;
-      else if (phase === "release") glow = Math.max(0, 1 - easeInOutCubic(p) * 1.4);
+      if (phase === "settle") glow = Math.max(0, p - 0.55) / 0.45;
+      else if (phase === "focus") glow = p < 0.1 ? p / 0.1 : p > 0.88 ? (1 - p) / 0.12 : 1;
+      else if (phase === "release") glow = Math.max(0, 1 - easeInOutCubic(p) * 1.5);
 
-      // ---- backdrop sphere shading (glass/metal desk-globe feel) ----
+      // ---- backdrop sphere shading — kept subtle/matte, not a glowing orb ----
       const sphereR = r * zoom;
       const bg = ctx.createRadialGradient(
         cx - sphereR * 0.35, cy - sphereR * 0.4, sphereR * 0.1,
         cx, cy, sphereR * 1.05,
       );
-      bg.addColorStop(0, "rgba(70, 82, 140, 0.35)");
-      bg.addColorStop(0.55, "rgba(20, 24, 62, 0.55)");
-      bg.addColorStop(1, "rgba(3, 4, 20, 0.05)");
+      bg.addColorStop(0, "rgba(58, 68, 116, 0.22)");
+      bg.addColorStop(0.55, "rgba(16, 19, 48, 0.40)");
+      bg.addColorStop(1, "rgba(3, 4, 20, 0.04)");
       ctx.beginPath();
       ctx.arc(cx, cy, sphereR, 0, Math.PI * 2);
       ctx.fillStyle = bg;
@@ -148,68 +189,49 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       ctx.scale(1, 0.34);
       ctx.beginPath();
       ctx.arc(0, 0, sphereR * 1.14, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(201, 166, 107, 0.22)";
-      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = "rgba(201, 166, 107, 0.16)";
+      ctx.lineWidth = 1.2;
       ctx.stroke();
       ctx.restore();
 
-      // ---- project + draw land dots ----
-      const projected: Array<{ sx: number; sy: number; z: number; x: number; y: number; lat: number; lon: number }> = [];
+      // ---- project + draw base land dots (quiet, unlit) ----
       for (const d of WORLD_DOTS) {
-        const pr = project(d.lat, d.lon, zoom, cx, cy, r);
+        const pr = project(d.lat, d.lon, zoom, cx, cy, r, rotation);
         if (pr.z <= -0.02) continue;
-        projected.push({ ...pr, lat: d.lat, lon: d.lon });
-      }
-
-      for (const d of projected) {
-        const alpha = Math.max(0, Math.min(1, d.z)) * 0.85 + 0.08;
+        const alpha = Math.max(0, Math.min(1, pr.z)) * 0.65 + 0.05;
         ctx.beginPath();
-        ctx.arc(d.sx, d.sy, 1.15, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(210, 218, 255, ${alpha * 0.55})`;
+        ctx.arc(pr.sx, pr.sy, 1.05, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(196, 204, 240, ${alpha * 0.4})`;
         ctx.fill();
       }
 
-      // ---- pick "lit" cities near view-center during settle/focus/release ----
-      let lit: Lit[] = [];
-      let label = "";
-      if (phase !== "rotate") {
-        const withDist = projected
-          .filter((d) => d.z > 0.55)
-          .map((d) => ({ ...d, d: Math.hypot(d.x, d.y) }))
-          .sort((a, b) => a.d - b.d);
-        lit = withDist.slice(0, 6);
-        if (lit[0]) {
-          const hub = nearestHub(lit[0].lat, lit[0].lon);
-          label = hub.name;
-        }
-      }
+      // ---- the "discovery" moment: gold opportunity dots blooming across
+      // the target country as we settle into it ----
+      if (glow > 0.005 && country) {
+        const dots = country.dots;
+        for (let i = 0; i < dots.length; i++) {
+          const d = dots[i];
+          const pr = project(d.lat, d.lon, zoom, cx, cy, r, rotation);
+          if (pr.z <= 0.05) continue;
 
-      if (lit.length && glow > 0.01) {
-        for (const c of lit) {
-          const pulse = 2.2 + Math.sin(elapsed / 260 + c.lat) * 0.6;
+          const dotDelay = (hash01(i + 1) * 0.55);
+          const popRaw = phase === "release"
+            ? 1
+            : Math.max(0, Math.min(1, (p - dotDelay) / 0.35));
+          if (popRaw <= 0) continue;
+          const pop = easeOutBack(popRaw);
+          const localAlpha = glow * Math.max(0, Math.min(1, popRaw * 1.4));
+          if (localAlpha <= 0.01) continue;
+
+          const rad = Math.max(0.1, 1.7 * pop);
           ctx.beginPath();
-          ctx.arc(c.sx, c.sy, pulse * 2.4, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(224, 184, 110, ${0.10 * glow})`;
+          ctx.arc(pr.sx, pr.sy, rad * 2, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(224, 184, 110, ${0.07 * localAlpha})`;
           ctx.fill();
           ctx.beginPath();
-          ctx.arc(c.sx, c.sy, pulse, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(238, 205, 140, ${0.92 * glow})`;
+          ctx.arc(pr.sx, pr.sy, rad, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(238, 205, 140, ${0.95 * localAlpha})`;
           ctx.fill();
-        }
-
-        // A couple of elegant connection arcs between the lit cluster.
-        const links = Math.min(3, lit.length - 1);
-        for (let i = 0; i < links; i++) {
-          const a = lit[i];
-          const b = lit[(i + 1) % lit.length];
-          const mx = (a.sx + b.sx) / 2;
-          const my = (a.sy + b.sy) / 2 - r * 0.16;
-          ctx.beginPath();
-          ctx.moveTo(a.sx, a.sy);
-          ctx.quadraticCurveTo(mx, my, b.sx, b.sy);
-          ctx.strokeStyle = `rgba(216, 178, 106, ${0.55 * glow})`;
-          ctx.lineWidth = 1;
-          ctx.stroke();
         }
       }
 
@@ -219,14 +241,18 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       ctx.scale(1, 0.34);
       ctx.beginPath();
       ctx.arc(0, 0, sphereR * 1.14, Math.PI * 0.08, Math.PI * 0.42);
-      ctx.strokeStyle = "rgba(226, 194, 133, 0.35)";
-      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = "rgba(226, 194, 133, 0.22)";
+      ctx.lineWidth = 1.3;
       ctx.stroke();
       ctx.restore();
 
-      if (labelRef.current) {
-        labelRef.current.style.opacity = String(label ? glow * 0.9 : 0);
-        if (label) labelRef.current.textContent = label;
+      if (labelRef.current && subLabelRef.current) {
+        const showLabel = phase === "focus" || (phase === "settle" && p > 0.7) || (phase === "release" && glow > 0.15);
+        const labelOpacity = showLabel ? Math.max(glow, phase === "settle" ? (p - 0.7) / 0.3 : 0) : 0;
+        labelRef.current.style.opacity = String(Math.max(0, Math.min(1, labelOpacity)) * 0.95);
+        labelRef.current.textContent = country ? country.name : "";
+        subLabelRef.current.style.opacity = String(Math.max(0, Math.min(1, labelOpacity)) * 0.7);
+        subLabelRef.current.textContent = country ? `${country.dots.length} opportunities found` : "";
       }
     };
 
@@ -254,11 +280,18 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
   return (
     <div ref={containerRef} className={`relative ${className}`}>
       <canvas ref={canvasRef} className="block w-full h-full" aria-hidden="true" />
-      <div
-        ref={labelRef}
-        className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 translate-y-[calc(50%+1.1rem)] text-[10px] font-semibold tracking-[0.25em] uppercase text-[color:var(--landing-gold-bright,#e8c77e)] transition-opacity duration-500"
-        style={{ opacity: 0 }}
-      />
+      <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 translate-y-[calc(50%+0.9rem)] flex flex-col items-center gap-1">
+        <div
+          ref={labelRef}
+          className="text-[11px] font-bold tracking-[0.28em] uppercase text-[color:var(--landing-gold-bright,#e8c77e)] transition-opacity duration-300"
+          style={{ opacity: 0 }}
+        />
+        <div
+          ref={subLabelRef}
+          className="text-[10px] font-medium tracking-[0.08em] text-muted-foreground transition-opacity duration-300"
+          style={{ opacity: 0 }}
+        />
+      </div>
     </div>
   );
 }

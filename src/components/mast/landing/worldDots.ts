@@ -69,7 +69,7 @@ const ISLAND_SCATTER: LatLon[] = [
   { lat: 18.5, lon: -70.0 }, { lat: 23.1, lon: -82.4 }, { lat: 18.0, lon: -76.8 },
 ];
 
-function pointInPolygon(lon: number, lat: number, poly: Poly): boolean {
+export function pointInPolygon(lon: number, lat: number, poly: Poly): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const [xi, yi] = poly[i];
@@ -113,6 +113,90 @@ export const HUB_CITIES: (LatLon & { name: string })[] = [
   { name: "Toronto", lat: 43.6, lon: -79.4 },
   { name: "Mumbai", lat: 19.1, lon: 72.9 },
 ];
+
+// ---------------------------------------------------------------------------
+// Target countries — the globe rotates through these and "zooms in" to
+// reveal a dense field of gold opportunity dots scattered across the
+// country's landmass. Outlines are intentionally low-fidelity (same art
+// style as CONTINENTS above), just detailed enough to read as the country
+// once dots are rasterised inside them.
+// ---------------------------------------------------------------------------
+const COUNTRY_POLYS: Record<string, Poly> = {
+  Egypt: [
+    [25, 31.5], [33.2, 31.7], [34.9, 29.9], [34.3, 27.9],
+    [36.9, 22.0], [24.7, 22.0], [25, 31.5],
+  ],
+  "United States": [
+    [-124.7, 48.4], [-123, 49], [-95, 49], [-83, 42.5], [-79, 43.5],
+    [-71, 45], [-67, 45], [-70, 41], [-75, 38.5], [-77, 34], [-80, 26],
+    [-82, 25], [-88, 30], [-94, 29.5], [-97, 26], [-100, 29], [-104, 29],
+    [-106, 31.8], [-109, 31.3], [-114.7, 32.5], [-117, 32.5], [-122, 37],
+    [-124, 40], [-124.7, 48.4],
+  ],
+  "United Kingdom": [
+    [-5.5, 58.6], [-3, 58.6], [-1.7, 57.7], [-2, 55.8], [0.3, 52.9],
+    [1.6, 51.4], [-0.9, 50.7], [-3, 50.2], [-5.6, 50], [-4.3, 51.2],
+    [-5.3, 51.9], [-4.7, 52.9], [-4.2, 53.4], [-3, 54.5], [-5, 54.6],
+    [-5.5, 55], [-5.5, 58.6],
+  ],
+  France: [
+    [-1.8, 50.9], [1.6, 51], [3.1, 50.3], [4.2, 49.9], [7.6, 49.0],
+    [7.6, 47.6], [6.7, 45.9], [7.0, 44.1], [7.5, 43.8], [6.5, 43.1],
+    [4.5, 43.3], [3, 42.5], [-1.4, 43.3], [-1.7, 44.0], [-1.2, 46.2],
+    [-2.0, 47.3], [-4.8, 48.6], [-1.8, 50.9],
+  ],
+  Canada: [
+    [-141, 69.5], [-125, 55], [-130, 52], [-125, 49], [-95, 49],
+    [-84, 46], [-79.5, 43.5], [-76, 44.5], [-70, 45], [-64, 46],
+    [-60, 46.5], [-55, 47.5], [-53, 47], [-56, 52], [-65, 58],
+    [-75, 62], [-85, 67], [-95, 68], [-110, 68], [-125, 69], [-141, 69.5],
+  ],
+  Australia: CONTINENTS[6],
+};
+
+function centroidOf(poly: Poly): LatLon {
+  let sLat = 0;
+  let sLon = 0;
+  for (const [lon, lat] of poly) { sLat += lat; sLon += lon; }
+  return { lat: sLat / poly.length, lon: sLon / poly.length };
+}
+
+function generateCountryDots(poly: Poly): LatLon[] {
+  const dots: LatLon[] = [];
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+  for (const [lon, lat] of poly) {
+    minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon);
+    minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
+  }
+  // Adaptive grid step so a tiny country (UK) still gets a satisfying
+  // scatter of dots, and a huge one (Canada) doesn't flood the canvas
+  // with thousands of them.
+  const area = Math.max(1, (maxLon - minLon) * (maxLat - minLat));
+  const step = Math.min(1.7, Math.max(0.55, Math.sqrt(area / 210)));
+  for (let lat = minLat; lat <= maxLat; lat += step) {
+    for (let lon = minLon; lon <= maxLon; lon += step) {
+      if (pointInPolygon(lon, lat, poly)) {
+        const jitter = () => (Math.random() - 0.5) * step * 0.5;
+        dots.push({ lat: lat + jitter(), lon: lon + jitter() });
+      }
+    }
+  }
+  return dots;
+}
+
+export type CountryTarget = {
+  name: string;
+  lat: number;
+  lon: number;
+  dots: LatLon[];
+};
+
+export const TARGET_COUNTRIES: CountryTarget[] = Object.entries(COUNTRY_POLYS).map(
+  ([name, poly]) => {
+    const c = centroidOf(poly);
+    return { name, lat: c.lat, lon: c.lon, dots: generateCountryDots(poly) };
+  },
+);
 
 export function nearestHub(lat: number, lon: number) {
   let best = HUB_CITIES[0];

@@ -4,6 +4,7 @@ import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunitySco
 import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { applyRediscoverySuccess, CONFIDENCE_DEFAULT, VERIFICATION_INTERVAL_MS } from "../scoring/confidenceModel.js";
 import { buildFieldTrust } from "../scoring/fieldTrust.js";
+import type { Json } from "../types/database.types.js";
 
 export type DeliveryContext = {
   /** null for background pool.expand jobs that aren't attached to a user */
@@ -173,8 +174,8 @@ export async function upsertBusinessFromEngineLead(lead: EngineLead, region: str
       has_photos: lead.has_photos,
       is_disqualified: Boolean(lead.is_disqualified),
       last_verification_kind: "full",
-      signals: extractSignals(lead),
-      raw_data: lead,
+      signals: extractSignals(lead) as Json,
+      raw_data: lead as unknown as Json,
       fingerprints: lead.fingerprints,
     })
     .select("id")

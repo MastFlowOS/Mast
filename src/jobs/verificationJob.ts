@@ -9,6 +9,7 @@ import {
   VERIFICATION_INTERVAL_MS,
   FAILED_VERIFICATION_RECHECK_MS,
 } from "../scoring/confidenceModel.js";
+import type { Json } from "../types/database.types.js";
 
 export type VerificationJobPayload = {
   batchSize: number;
@@ -153,8 +154,9 @@ async function verifyOne(business: DueBusiness): Promise<"success" | "failure" |
     }
 
     const { data: current } = await supabaseAdmin.from("businesses").select("signals").eq("id", business.id).single();
+    const currentSignals = (current?.signals ?? {}) as Record<string, unknown>;
     const mergedSignals = {
-      ...(current?.signals ?? {}),
+      ...currentSignals,
       ...(websiteAlive && result.website_data.tech_stack ? { tech_stack: result.website_data.tech_stack } : {}),
       ...(websiteAlive && result.website_data.growth_signals && Object.keys(result.website_data.growth_signals).length > 0
         ? { growth_signals: result.website_data.growth_signals }
@@ -174,7 +176,7 @@ async function verifyOne(business: DueBusiness): Promise<"success" | "failure" |
       .from("businesses")
       .update({
         ...refreshedFields,
-        signals: mergedSignals,
+        signals: mergedSignals as Json,
         confidence: applyFullVerificationSuccess(business.confidence),
         last_verified_at: new Date().toISOString(),
         verification_due_at: new Date(Date.now() + VERIFICATION_INTERVAL_MS).toISOString(),

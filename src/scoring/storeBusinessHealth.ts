@@ -14,8 +14,7 @@ export async function computeAndStoreBusinessHealth(businessId: string): Promise
   const { data: business, error } = await supabaseAdmin
     .from("businesses")
     .select(
-      "website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, confidence, " +
-        "website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
+      "website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, confidence, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
     )
     .eq("id", businessId)
     .single();

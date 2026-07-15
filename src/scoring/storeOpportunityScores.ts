@@ -18,8 +18,7 @@ export async function computeAndStoreOpportunityScores(businessId: string): Prom
   const { data: business, error } = await supabaseAdmin
     .from("businesses")
     .select(
-      "website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, " +
-        "website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
+      "website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
     )
     .eq("id", businessId)
     .single();

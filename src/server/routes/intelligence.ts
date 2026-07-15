@@ -72,7 +72,10 @@ function isoWeekKey(d: Date): string {
 intelligenceRouter.get("/explain/:leadId", requireAuth, async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    const leadId = req.params.leadId;
+    const leadId = Number(req.params.leadId);
+    if (!Number.isFinite(leadId)) {
+      return res.status(400).json({ code: "invalid_lead_id", message: "leadId must be numeric." });
+    }
 
     const { data: lead, error: leadError } = await supabaseAdmin
       .from("leads")
@@ -120,7 +123,10 @@ intelligenceRouter.get("/explain/:leadId", requireAuth, async (req, res, next) =
 intelligenceRouter.get("/trust/:leadId", requireAuth, async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    const leadId = req.params.leadId;
+    const leadId = Number(req.params.leadId);
+    if (!Number.isFinite(leadId)) {
+      return res.status(400).json({ code: "invalid_lead_id", message: "leadId must be numeric." });
+    }
 
     const { data: lead, error: leadError } = await supabaseAdmin
       .from("leads")
@@ -165,7 +171,7 @@ intelligenceRouter.get("/trust/:leadId", requireAuth, async (req, res, next) => 
   }
 });
 
-
+/**
  * AI Opportunity Insights (Premium): the deterministic explanation, plus a
  * short AI-written headline and a suggested opening line for outreach.
  * Cached per (business, profession) in business_opportunity_insights —

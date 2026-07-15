@@ -635,3 +635,64 @@
 [role="tabpanel"] {
   animation: fade-in var(--duration-fast) var(--ease-out);
 }
+
+/* ---------------------------------------------------------------
+   MAST Landing Page — premium navy & gold scope override
+   Every token below is redefined only inside `.mast-landing`, so
+   the dashboard, auth screens, and legal pages are completely
+   unaffected. Utilities like `bg-background`, `text-brand`,
+   `shadow-brand`, `.card-hover`, etc. all inherit these values
+   automatically wherever they're used inside the landing page.
+--------------------------------------------------------------- */
+.mast-landing {
+  --background: #000035;
+  --card: #060626;
+  --popover: #060626;
+  --secondary: #0b0b3c;
+  --muted: #0b0b3c;
+  --accent: #10104a;
+  --input: #0b0b3c;
+  --border: #1d1d55;
+
+  --foreground: oklch(0.97 0.006 250);
+  --card-foreground: oklch(0.97 0.006 250);
+  --popover-foreground: oklch(0.97 0.006 250);
+  --primary: oklch(0.97 0.006 250);
+  --primary-foreground: #000035;
+  --secondary-foreground: oklch(0.97 0.006 250);
+  --muted-foreground: #8a90ba;
+  --accent-foreground: oklch(0.97 0.006 250);
+
+  --brand: #c9a66b;
+  --brand-dark: #a9843f;
+  --brand-foreground: #17122a;
+  --success: oklch(0.72 0.13 155);
+  --warning: #d8a24a;
+  --ring: #c9a66b;
+
+  --landing-gold-bright: #e8c77e;
+  --landing-gold-soft: rgba(201, 166, 107, 0.32);
+  --landing-navy-deep: #000024;
+
+  background-color: var(--background);
+}
+
+@layer utilities {
+  .mast-landing .text-gold-gradient {
+    background: linear-gradient(115deg, #e8c77e 0%, #c9a66b 45%, #f2dca0 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .mast-landing .divider-gold {
+    height: 1px;
+    background: linear-gradient(to right, transparent, var(--landing-gold-soft), transparent);
+  }
+
+  .mast-landing .bg-aurora {
+    background:
+      radial-gradient(60% 50% at 50% -10%, color-mix(in oklab, var(--brand) 16%, transparent), transparent 70%),
+      radial-gradient(40% 40% at 85% 15%, color-mix(in oklab, var(--brand) 8%, transparent), transparent 70%);
+  }
+}

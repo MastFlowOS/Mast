@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
+import { SignatureGlobe } from "@/components/mast/landing/SignatureGlobe";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -24,9 +25,10 @@ export const Route = createFileRoute("/")({
 
 function LandingPage() {
   return (
-    <div className="min-h-screen bg-background text-foreground overflow-x-hidden">
+    <div className="mast-landing min-h-screen bg-background text-foreground overflow-x-hidden">
       <SiteNav disableBackdropBlur />
       <Hero />
+      <SignatureMoment />
       <ProductPreview />
       <Problem />
       <Features />
@@ -58,20 +60,15 @@ function useCountUp(target: number, duration = 1200, start = false) {
 // ─── Hero ─────────────────────────────────────────────────────────────────────
 function Hero() {
   return (
-    <header className="relative pt-28 pb-20 px-6 overflow-hidden">
-      <div className="pointer-events-none absolute inset-0 bg-grid opacity-[0.18] [mask-image:radial-gradient(ellipse_at_top,black_20%,transparent_65%)]" />
+    <header className="relative pt-36 pb-24 px-6 overflow-hidden bg-aurora">
       <div
-        className="pointer-events-none absolute top-[-180px] left-1/2 -translate-x-1/2 size-[700px] rounded-full opacity-30 animate-pulse-glow"
+        className="pointer-events-none absolute top-[-220px] left-1/2 -translate-x-1/2 size-[780px] rounded-full opacity-[0.18] animate-pulse-glow"
         style={{ background: "radial-gradient(closest-side, var(--brand), transparent)" }}
       />
-      <div className="pointer-events-none absolute top-[60px] left-[8%] size-[320px] rounded-full opacity-10"
-        style={{ background: "radial-gradient(closest-side, oklch(0.76 0.15 215), transparent)" }} />
-      <div className="pointer-events-none absolute top-[100px] right-[6%] size-[280px] rounded-full opacity-10"
-        style={{ background: "radial-gradient(closest-side, oklch(0.72 0.17 155), transparent)" }} />
 
       <div className="relative max-w-4xl mx-auto text-center">
         {/* Badge */}
-        <div className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[11px] font-bold tracking-wider uppercase mb-8 shadow-[0_0_20px_-8px_var(--color-brand)]">
+        <div className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[11px] font-bold tracking-wider uppercase mb-9 shadow-[0_0_20px_-8px_var(--color-brand)]">
           <span className="relative size-2 rounded-full bg-success ping-dot" />
           The AI Sales Operating System
         </div>
@@ -79,7 +76,7 @@ function Hero() {
         {/* Headline */}
         <h1 className="animate-fade-up delay-100 text-[clamp(2.6rem,7vw,5rem)] font-bold text-foreground tracking-tight mb-7 leading-[1.04]">
           Stop switching tabs.<br />
-          <span className="text-brand-gradient">Start closing deals.</span>
+          <span className="text-gold-gradient">Start closing deals.</span>
         </h1>
 
         {/* Sub */}
@@ -131,6 +128,28 @@ function Hero() {
         </div>
       </div>
     </header>
+  );
+}
+
+// ─── Signature Moment — the globe ──────────────────────────────────────────────
+function SignatureMoment() {
+  return (
+    <section className="relative px-6 pt-4 pb-28 md:pb-36 overflow-hidden">
+      <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 h-[560px] opacity-[0.14]"
+        style={{ background: "radial-gradient(closest-side, var(--brand), transparent)" }} />
+
+      <div className="relative max-w-xl mx-auto text-center mb-2 animate-fade-up">
+        <span className="text-[10px] font-bold text-brand uppercase tracking-[0.3em]">
+          Worldwide discovery
+        </span>
+      </div>
+
+      <div className="relative mx-auto w-full max-w-[640px] h-[380px] sm:h-[460px] md:h-[560px] animate-scale-in delay-150">
+        <SignatureGlobe className="w-full h-full" />
+      </div>
+
+      <div className="relative mx-auto mt-2 w-40 divider-gold animate-fade-in delay-500" />
+    </section>
   );
 }
 
@@ -372,7 +391,7 @@ function Problem() {
   ];
 
   return (
-    <section id="solutions" className="py-28 px-6">
+    <section id="solutions" className="py-32 px-6">
       <div className="max-w-6xl mx-auto grid md:grid-cols-2 gap-20 items-center">
         <div className="animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Why MAST</span>
@@ -495,7 +514,7 @@ const features = [
 
 function Features() {
   return (
-    <section className="py-28 px-6 border-t border-border/50">
+    <section className="py-32 px-6 border-t border-border/50">
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-20 max-w-2xl mx-auto animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Platform</span>
@@ -670,7 +689,7 @@ export function PlanCard({ name, price, forWho, outcome, features, cta, popular 
 
 function PricingPreview() {
   return (
-    <section className="py-28 px-6 border-t border-border/50">
+    <section className="py-32 px-6 border-t border-border/50">
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-16 animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Pricing</span>
@@ -705,7 +724,7 @@ function PricingPreview() {
 // ─── CTA ──────────────────────────────────────────────────────────────────────
 function CTA() {
   return (
-    <section className="py-24 px-6">
+    <section className="py-28 px-6">
       <div className="max-w-5xl mx-auto relative rounded-3xl overflow-hidden border border-border/60 p-16 text-center gradient-border">
         <div className="absolute inset-0 bg-card" />
         <div

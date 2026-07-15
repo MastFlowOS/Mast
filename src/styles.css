@@ -674,6 +674,14 @@
   --landing-gold-soft: rgba(201, 166, 107, 0.32);
   --landing-navy-deep: #000024;
 
+  /* Interactive accent — buttons, active tabs/badges, selection states.
+     Gold stays reserved for the globe, headline highlight, and checkmarks. */
+  --landing-blue: #0b47e3;
+  --landing-blue-hover: #0a3cc4;
+  --landing-blue-bright: #4f83e8;
+  --landing-blue-tint: rgba(11, 71, 227, 0.14);
+  --landing-blue-border: rgba(79, 131, 232, 0.38);
+
   background-color: var(--background);
 }
 

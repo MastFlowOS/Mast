@@ -80,8 +80,8 @@ function Hero() {
       <div className="relative max-w-7xl mx-auto grid lg:grid-cols-[1.05fr_1fr] gap-4 lg:gap-2 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left">
-          <div className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[11px] font-bold tracking-wider uppercase mb-8 shadow-[0_0_20px_-8px_var(--color-brand)]">
-            <span className="relative size-2 rounded-full bg-success ping-dot" />
+          <div className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--landing-blue-tint)] border border-[var(--landing-blue-border)] text-[var(--landing-blue-bright)] text-[11px] font-bold tracking-wider uppercase mb-8 shadow-[0_0_20px_-8px_var(--landing-blue)]">
+            <span className="relative size-2 rounded-full bg-[var(--landing-blue-bright)] ping-dot" />
             The AI Sales Operating System
           </div>
 
@@ -98,7 +98,7 @@ function Hero() {
           <div className="animate-fade-up delay-300 flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-3">
             <Link
               to="/signup"
-              className="group relative w-full sm:w-auto bg-brand text-brand-foreground px-8 py-3.5 rounded-xl font-semibold hover:bg-brand-dark transition-all duration-200 inline-flex items-center justify-center gap-2 btn-press overflow-hidden shadow-brand"
+              className="group relative w-full sm:w-auto bg-[var(--landing-blue)] text-white px-8 py-3.5 rounded-xl font-semibold hover:bg-[var(--landing-blue-hover)] transition-all duration-200 inline-flex items-center justify-center gap-2 btn-press overflow-hidden shadow-[0_10px_30px_-10px_var(--landing-blue)]"
             >
               <span className="relative z-10 flex items-center gap-2">
                 Start for free <ArrowRight className="size-4 group-hover:translate-x-1 transition-transform duration-200" />
@@ -121,7 +121,7 @@ function Hero() {
           <div className="animate-fade-up delay-500 mt-10 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4 gap-x-6 gap-y-6 max-w-lg mx-auto lg:mx-0 pt-8 border-t border-border/50">
             {heroStats.map(({ icon: Icon, value, label }) => (
               <div key={label} className="flex items-center gap-2.5 justify-center lg:justify-start">
-                <Icon className="size-4 text-brand shrink-0" />
+                <Icon className="size-4 text-foreground/70 shrink-0" />
                 <div className="text-left leading-tight">
                   <p className="text-lg font-bold text-foreground tabular-nums">{value}</p>
                   <p className="text-[10.5px] text-muted-foreground font-medium">{label}</p>
@@ -159,17 +159,17 @@ function Workflow() {
             {workflowSteps.map((step, i) => (
               <div key={step.title} className="flex items-center md:contents">
                 <div className="flex flex-col items-center text-center gap-2.5 flex-1 md:px-2">
-                  <div className="relative size-11 rounded-full bg-brand/10 border border-brand/30 grid place-items-center">
-                    <span className="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-brand text-brand-foreground text-[10px] font-bold grid place-items-center border-2 border-card">
+                  <div className="relative size-11 rounded-full bg-[var(--landing-blue-tint)] border border-[var(--landing-blue-border)] grid place-items-center">
+                    <span className="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-[var(--landing-blue)] text-white text-[10px] font-bold grid place-items-center border-2 border-card">
                       {i + 1}
                     </span>
-                    <step.icon className="size-5 text-brand" />
+                    <step.icon className="size-5 text-[var(--landing-blue-bright)]" />
                   </div>
                   <p className="font-bold text-foreground text-[13px]">{step.title}</p>
                   <p className="text-[11px] text-muted-foreground leading-snug max-w-[130px]">{step.desc}</p>
                 </div>
                 {i < workflowSteps.length - 1 && (
-                  <ArrowRight className="hidden md:block size-4 text-brand/30 mx-1 shrink-0" />
+                  <ArrowRight className="hidden md:block size-4 text-muted-foreground/40 mx-1 shrink-0" />
                 )}
               </div>
             ))}
@@ -297,17 +297,17 @@ function PanelShell({ activeNav, breadcrumb, children }: { activeNav: string; br
             {navItems.map((label) => (
               <div
                 key={label}
-                className={`px-3 py-2 rounded-lg text-[13px] font-medium transition-all ${
+                className={`px-3 py-2 rounded-lg text-[13px] font-medium transition-all border-l-2 ${
                   label === activeNav
-                    ? "bg-brand/15 text-brand relative nav-active-bar"
-                    : "text-muted-foreground"
+                    ? "bg-[var(--landing-blue-tint)] text-[var(--landing-blue-bright)] border-l-[var(--landing-blue)]"
+                    : "text-muted-foreground border-l-transparent"
                 }`}
               >
                 {label}
               </div>
             ))}
           </nav>
-          <div className="mt-auto bg-background/60 p-3 rounded-xl border border-brand/20 space-y-2">
+          <div className="mt-auto bg-background/60 p-3 rounded-xl border border-border/60 space-y-2">
             <div className="flex items-center gap-1.5">
               <Sparkles className="size-4 text-brand" />
               <p className="text-[10px] font-bold text-brand uppercase tracking-wider">AI Insight</p>
@@ -348,7 +348,7 @@ function ResearchPanel() {
             </div>
           </div>
           <div className="text-right shrink-0 bg-background/50 border border-border/60 rounded-xl px-3 py-2">
-            <p className="text-xl font-bold text-brand leading-none">92</p>
+            <p className="text-xl font-bold text-foreground leading-none">92</p>
             <p className="text-[9px] text-muted-foreground uppercase tracking-wider mt-1">Opportunity Score</p>
           </div>
         </div>
@@ -628,7 +628,7 @@ function ProductShowcase() {
               onClick={() => setActive(t.id)}
               className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-[13px] font-semibold border transition-all duration-200 btn-press ${
                 active === t.id
-                  ? "bg-brand/15 border-brand/50 text-brand shadow-[0_0_20px_-8px_var(--color-brand)]"
+                  ? "bg-[var(--landing-blue-tint)] border-[var(--landing-blue-border)] text-[var(--landing-blue-bright)] shadow-[0_0_20px_-8px_var(--landing-blue)]"
                   : "border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
               }`}
             >
@@ -641,7 +641,7 @@ function ProductShowcase() {
         <div className="grid lg:grid-cols-2 gap-10 lg:gap-14 items-center">
           {/* Copy */}
           <div key={tab.id} className="animate-fade-up">
-            <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">{tab.eyebrow}</span>
+            <span className="text-[10px] font-bold text-[var(--landing-blue-bright)] uppercase tracking-[0.2em]">{tab.eyebrow}</span>
             <h2 className="mt-4 text-[clamp(1.8rem,3.6vw,2.6rem)] font-bold tracking-tight leading-[1.12]">
               {tab.headline}
               <br />
@@ -658,7 +658,7 @@ function ProductShowcase() {
             </ul>
             <Link
               to="/signup"
-              className="group mt-8 inline-flex items-center gap-2 bg-brand text-brand-foreground px-6 py-3 rounded-xl font-semibold hover:bg-brand-dark transition-all duration-200 btn-press shadow-brand"
+              className="group mt-8 inline-flex items-center gap-2 bg-[var(--landing-blue)] text-white px-6 py-3 rounded-xl font-semibold hover:bg-[var(--landing-blue-hover)] transition-all duration-200 btn-press shadow-[0_10px_30px_-10px_var(--landing-blue)]"
             >
               {tab.cta}
               <ArrowRight className="size-4 group-hover:translate-x-1 transition-transform duration-200" />
@@ -1077,7 +1077,7 @@ function CTA() {
         <div className="absolute bottom-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/20 to-transparent" />
 
         <div className="relative">
-          <p className="animate-fade-up text-[11px] font-bold text-brand uppercase tracking-[0.2em] mb-5">Get started today</p>
+          <p className="animate-fade-up text-[11px] font-bold text-[var(--landing-blue-bright)] uppercase tracking-[0.2em] mb-5">Get started today</p>
           <h2 className="text-[clamp(1.9rem,5vw,3rem)] font-bold tracking-tight leading-tight animate-fade-up delay-100">
             Your sales operation,<br />finally in one place.
           </h2>
@@ -1088,7 +1088,7 @@ function CTA() {
           <div className="mt-9 flex flex-col sm:flex-row gap-3 justify-center animate-fade-up delay-300">
             <Link
               to="/signup"
-              className="group relative bg-brand text-brand-foreground px-8 py-3.5 rounded-xl font-semibold shadow-brand hover:bg-brand-dark transition-all duration-200 btn-press overflow-hidden"
+              className="group relative bg-[var(--landing-blue)] text-white px-8 py-3.5 rounded-xl font-semibold shadow-[0_10px_30px_-10px_var(--landing-blue)] hover:bg-[var(--landing-blue-hover)] transition-all duration-200 btn-press overflow-hidden"
             >
               <span className="relative z-10">Start for free</span>
               <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />

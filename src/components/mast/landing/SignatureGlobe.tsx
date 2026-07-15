@@ -85,6 +85,17 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     let rotationAtSettleStart = rotation;
     let targetRotation = rotation;
 
+    // A handful of "opportunity nodes" per country, connected by thin gold
+    // arcs — evokes deals/leads linking up as the globe settles on a region.
+    let connectionNodes: { lat: number; lon: number }[] = [];
+    const buildConnectionNodes = (dots: { lat: number; lon: number }[]) => {
+      const count = Math.min(5, Math.max(3, Math.floor(dots.length / 12)));
+      const nodes: { lat: number; lon: number }[] = [];
+      const stride = Math.max(1, Math.floor(dots.length / count));
+      for (let i = 0; i < dots.length && nodes.length < count; i += stride) nodes.push(dots[i]);
+      return nodes;
+    };
+
     const project = (lat: number, lon: number, scale: number, cx: number, cy: number, r: number, rot: number) => {
       const phi = (lat * Math.PI) / 180;
       const lambda = (lon * Math.PI) / 180;
@@ -129,6 +140,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       if (phase !== prevPhase) {
         if (phase === "rotate") {
           countryIdx = (countryIdx + 1) % order.length;
+          connectionNodes = buildConnectionNodes(order[countryIdx]?.dots ?? []);
         }
         if (phase === "settle") {
           rotationAtSettleStart = rotation;
@@ -231,6 +243,37 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           ctx.beginPath();
           ctx.arc(pr.sx, pr.sy, rad, 0, Math.PI * 2);
           ctx.fillStyle = `rgba(238, 205, 140, ${0.95 * localAlpha})`;
+          ctx.fill();
+        }
+      }
+
+      // ---- subtle gold connection lines between opportunity nodes ----
+      if (glow > 0.08 && connectionNodes.length > 1) {
+        const pts = connectionNodes
+          .map((d) => project(d.lat, d.lon, zoom, cx, cy, r, rotation))
+          .filter((pr) => pr.z > 0.05);
+        const lineAlpha = glow * 0.4;
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          if (!a || !b) continue;
+          const mx = (a.sx + b.sx) / 2;
+          const my = (a.sy + b.sy) / 2 - 14; // gentle arc lift
+          ctx.beginPath();
+          ctx.moveTo(a.sx, a.sy);
+          ctx.quadraticCurveTo(mx, my, b.sx, b.sy);
+          ctx.strokeStyle = `rgba(232, 199, 126, ${lineAlpha})`;
+          ctx.lineWidth = 0.9;
+          ctx.stroke();
+
+          // a small pulse of light traveling along the arc
+          const travel = ((elapsed % 2200) / 2200 + i * 0.17) % 1;
+          const tt = travel;
+          const px = (1 - tt) * (1 - tt) * a.sx + 2 * (1 - tt) * tt * mx + tt * tt * b.sx;
+          const py = (1 - tt) * (1 - tt) * a.sy + 2 * (1 - tt) * tt * my + tt * tt * b.sy;
+          ctx.beginPath();
+          ctx.arc(px, py, 1.4, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(246, 222, 170, ${lineAlpha * 1.8})`;
           ctx.fill();
         }
       }

@@ -645,22 +645,22 @@
    automatically wherever they're used inside the landing page.
 --------------------------------------------------------------- */
 .mast-landing {
-  --background: #000035;
-  --card: #060626;
-  --popover: #060626;
-  --secondary: #0b0b3c;
-  --muted: #0b0b3c;
-  --accent: #10104a;
-  --input: #0b0b3c;
-  --border: #1d1d55;
+  --background: #02040c;
+  --card: #05070f;
+  --popover: #05070f;
+  --secondary: #070a16;
+  --muted: #070a16;
+  --accent: #0a0e1c;
+  --input: #070a16;
+  --border: #12172a;
 
   --foreground: oklch(0.97 0.006 250);
   --card-foreground: oklch(0.97 0.006 250);
   --popover-foreground: oklch(0.97 0.006 250);
   --primary: oklch(0.97 0.006 250);
-  --primary-foreground: #000035;
+  --primary-foreground: #02040c;
   --secondary-foreground: oklch(0.97 0.006 250);
-  --muted-foreground: #8a90ba;
+  --muted-foreground: #7d84a8;
   --accent-foreground: oklch(0.97 0.006 250);
 
   --brand: #c9a66b;
@@ -672,7 +672,7 @@
 
   --landing-gold-bright: #e8c77e;
   --landing-gold-soft: rgba(201, 166, 107, 0.32);
-  --landing-navy-deep: #000024;
+  --landing-navy-deep: #000004;
 
   /* Interactive accent — buttons, active tabs/badges, selection states.
      Pulled way down in value/chroma so gold stays the thing your eye
@@ -684,7 +684,7 @@
   --landing-blue-border: rgba(70, 90, 160, 0.28);
 
   /* Header sits darker than the page body — a distinct "ink" band */
-  --landing-nav-bg: #000018;
+  --landing-nav-bg: #000000;
 
   background-color: var(--background);
 }
@@ -733,7 +733,7 @@
 .mast-landing .liquid-gold-bg {
   position: fixed;
   inset: 0;
-  z-index: -1;
+  z-index: 0;
   pointer-events: none;
   overflow: hidden;
 }
@@ -752,16 +752,16 @@
 .mast-landing .liquid-gold-bg::before {
   transform: translate(-55%, -50%);
   background: radial-gradient(closest-side,
-    color-mix(in oklab, var(--brand) 20%, transparent) 0%,
-    color-mix(in oklab, var(--brand) 6%, transparent) 42%,
+    color-mix(in oklab, var(--brand) 26%, transparent) 0%,
+    color-mix(in oklab, var(--brand) 9%, transparent) 42%,
     transparent 72%);
   animation: liquid-drift-a 42s ease-in-out infinite;
 }
 .mast-landing .liquid-gold-bg::after {
   transform: translate(-45%, -55%);
   background: radial-gradient(closest-side,
-    color-mix(in oklab, var(--landing-gold-bright) 14%, transparent) 0%,
-    color-mix(in oklab, var(--brand) 5%, transparent) 45%,
+    color-mix(in oklab, var(--landing-gold-bright) 20%, transparent) 0%,
+    color-mix(in oklab, var(--brand) 8%, transparent) 45%,
     transparent 70%);
   animation: liquid-drift-b 56s ease-in-out infinite;
 }
@@ -769,7 +769,7 @@
 .mast-landing .starfield {
   position: fixed;
   inset: 0;
-  z-index: -1;
+  z-index: 0;
   pointer-events: none;
   opacity: 0.55;
   background-image:

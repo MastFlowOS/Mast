@@ -684,7 +684,7 @@ const trustedLogos = [
 
 function TrustedBy() {
   return (
-    <section className="px-6 pb-24 md:pb-28">
+    <section className="relative px-6 pb-24 md:pb-28">
       <div className="max-w-5xl mx-auto text-center animate-fade-up">
         <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.2em] mb-8">
           Trusted by growing teams worldwide
@@ -730,7 +730,7 @@ function Problem() {
   ];
 
   return (
-    <section id="solutions" className="py-32 px-6">
+    <section id="solutions" className="relative py-32 px-6">
       <div className="max-w-6xl mx-auto grid md:grid-cols-2 gap-20 items-center">
         <div className="animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Why MAST</span>
@@ -853,7 +853,7 @@ const features = [
 
 function Features() {
   return (
-    <section className="py-32 px-6 border-t border-border/50">
+    <section className="relative py-32 px-6 border-t border-border/50">
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-20 max-w-2xl mx-auto animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Platform</span>
@@ -1028,7 +1028,7 @@ export function PlanCard({ name, price, forWho, outcome, features, cta, popular 
 
 function PricingPreview() {
   return (
-    <section className="py-32 px-6 border-t border-border/50">
+    <section className="relative py-32 px-6 border-t border-border/50">
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-16 animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Pricing</span>
@@ -1063,7 +1063,7 @@ function PricingPreview() {
 // ─── CTA ──────────────────────────────────────────────────────────────────────
 function CTA() {
   return (
-    <section className="py-28 px-6">
+    <section className="relative py-28 px-6">
       <div className="max-w-5xl mx-auto relative rounded-3xl overflow-hidden border border-border/60 p-16 text-center gradient-border">
         <div className="absolute inset-0 bg-card" />
         <div

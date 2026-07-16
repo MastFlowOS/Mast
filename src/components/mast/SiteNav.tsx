@@ -113,17 +113,17 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
       }`}
       style={
         disableBackdropBlur
-          ? { backgroundColor: `color-mix(in oklab, var(--landing-nav-bg, #000018) ${scrolled ? 97 : 90}%, transparent)` }
+          ? { backgroundColor: `color-mix(in oklab, var(--landing-nav-bg, #000000) ${scrolled ? 100 : 96}%, transparent)` }
           : undefined
       }
     >
       {disableBackdropBlur && (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 opacity-70"
+          className="pointer-events-none absolute inset-0 opacity-90"
           style={{
             backgroundImage:
-              "linear-gradient(115deg, transparent 20%, color-mix(in oklab, var(--brand, #c9a66b) 10%, transparent) 48%, transparent 76%)",
+              "linear-gradient(115deg, transparent 15%, color-mix(in oklab, var(--brand, #c9a66b) 16%, transparent) 48%, transparent 82%)",
             backgroundSize: "220% 100%",
             backgroundPositionX: `${-sheenOffset}px`,
           }}

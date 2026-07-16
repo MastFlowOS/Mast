@@ -134,8 +134,6 @@ function Hero() {
         </div>
       </div>
     </header>
-      </div>
-    </header>
   );
 }
 

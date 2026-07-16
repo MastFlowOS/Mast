@@ -50,9 +50,12 @@ export function LandingAtmosphere() {
   );
 }
 
-// ─── Scrolling 3D viscous liquid gold streams ─────────────────────────────────
-// This scrolls WITH the page content. It features a custom specular lighting
-// filter to render a thick, glossy, 3D reflective metallic texture.
+// ─── Scrolling liquid gold streams ─────────────────────────────────────────
+// This scrolls WITH the page content. Thin, semi-transparent flowing threads
+// with a soft blur (no bevel/specular lighting) so the texture reads as a
+// faint, elegant wash of light rather than a physical 3D object. It's
+// strongest near the top of the page (around the globe) and gently fades
+// out as it moves further down through the content.
 export function LandingGoldStreams() {
   return (
     <div
@@ -60,66 +63,70 @@ export function LandingGoldStreams() {
       aria-hidden="true"
     >
       <svg
-        className="absolute inset-0 w-full h-full opacity-[0.72]"
+        className="absolute inset-0 w-full h-full opacity-[0.4]"
         viewBox="0 0 1440 5000"
         fill="none"
         preserveAspectRatio="none"
       >
         <defs>
-          {/* Metallic cylindrical gradient for base gold colour stops */}
+          {/* Delicate gold colour stops — soft, translucent, no hard metallic highlight */}
           <linearGradient id="gold-stream-grad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%"   stopColor="#8a6f27" stopOpacity="0.0" />
-            <stop offset="15%"  stopColor="#a67c1e" stopOpacity="0.8" />
-            <stop offset="35%"  stopColor="#c9a66b" stopOpacity="1.0" />
-            <stop offset="50%"  stopColor="#fff7db" stopOpacity="1.0" />
-            <stop offset="65%"  stopColor="#c9a66b" stopOpacity="1.0" />
-            <stop offset="85%"  stopColor="#a67c1e" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="#8a6f27" stopOpacity="0.0" />
+            <stop offset="0%"   stopColor="#8a6f27" stopOpacity="0" />
+            <stop offset="20%"  stopColor="#b08a3e" stopOpacity="0.28" />
+            <stop offset="45%"  stopColor="#e8c77a" stopOpacity="0.5" />
+            <stop offset="55%"  stopColor="#fdf0cf" stopOpacity="0.55" />
+            <stop offset="70%"  stopColor="#e8c77a" stopOpacity="0.45" />
+            <stop offset="88%"  stopColor="#b08a3e" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="#8a6f27" stopOpacity="0" />
           </linearGradient>
 
-          {/* 3D Specular Bevel filter matching viscous, reflective liquid gold splash texture */}
-          <filter id="liquid-gold-bevel" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur in="SourceAlpha" stdDeviation="5" result="blur" />
-            <feSpecularLighting in="blur" specularExponent="28" specularConstant="1.6" lighting-color="#ffffff" result="specLight">
-              <feDistantLight azimuth="45" elevation="55" />
-            </feSpecularLighting>
-            <feComposite in="specLight" in2="SourceAlpha" operator="in" result="specOut" />
-            <feFlood flood-color="#d4af37" result="goldColor" />
-            <feBlend mode="multiply" in="SourceGraphic" in2="goldColor" result="litBase" />
-            <feComposite in="litBase" in2="specOut" operator="arithmetic" k1="0" k2="1" k3="1.3" k4="0" result="litGold" />
-            <feDropShadow dx="3" dy="8" stdDeviation="7" flood-color="#000000" flood-opacity="0.5" />
+          {/* Soft feather — a gentle blur only, no bevel/specular/3D lighting */}
+          <filter id="liquid-gold-glow" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" />
           </filter>
+
+          {/* Vertical fade so the texture lives mostly behind/around the globe
+              at the top of the page, and quietly recedes further down */}
+          <linearGradient id="gold-fade" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="16%"  stopColor="#ffffff" stopOpacity="0.85" />
+            <stop offset="32%"  stopColor="#ffffff" stopOpacity="0.45" />
+            <stop offset="55%"  stopColor="#ffffff" stopOpacity="0.2" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0.08" />
+          </linearGradient>
+          <mask id="gold-fade-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1440" height="5000">
+            <rect x="0" y="0" width="1440" height="5000" fill="url(#gold-fade)" />
+          </mask>
         </defs>
 
-        {/* Stream 1 — left side winding flow */}
-        <path
-          d="M 120,0 C 350,800 -100,1600 250,2400 C 600,3200 50,4000 180,5000"
-          stroke="url(#gold-stream-grad)"
-          strokeWidth="11"
-          strokeLinecap="round"
-          filter="url(#liquid-gold-bevel)"
-          className="liquid-gold-path-1"
-        />
+        <g mask="url(#gold-fade-mask)" filter="url(#liquid-gold-glow)">
+          {/* Stream 1 — left side winding flow */}
+          <path
+            d="M 120,0 C 350,800 -100,1600 250,2400 C 600,3200 50,4000 180,5000"
+            stroke="url(#gold-stream-grad)"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            className="liquid-gold-path-1"
+          />
 
-        {/* Stream 2 — right side winding flow */}
-        <path
-          d="M 1320,300 C 1000,1100 1450,1900 1100,2700 C 700,3500 1350,4300 1200,5000"
-          stroke="url(#gold-stream-grad)"
-          strokeWidth="13"
-          strokeLinecap="round"
-          filter="url(#liquid-gold-bevel)"
-          className="liquid-gold-path-2"
-        />
+          {/* Stream 2 — right side winding flow */}
+          <path
+            d="M 1320,300 C 1000,1100 1450,1900 1100,2700 C 700,3500 1350,4300 1200,5000"
+            stroke="url(#gold-stream-grad)"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            className="liquid-gold-path-2"
+          />
 
-        {/* Stream 3 — centre lower flow */}
-        <path
-          d="M 600,1500 C 850,2300 300,3100 750,4100 C 1000,4600 650,4800 720,5000"
-          stroke="url(#gold-stream-grad)"
-          strokeWidth="9.5"
-          strokeLinecap="round"
-          filter="url(#liquid-gold-bevel)"
-          className="liquid-gold-path-3"
-        />
+          {/* Stream 3 — centre lower flow */}
+          <path
+            d="M 600,1500 C 850,2300 300,3100 750,4100 C 1000,4600 650,4800 720,5000"
+            stroke="url(#gold-stream-grad)"
+            strokeWidth="1.1"
+            strokeLinecap="round"
+            className="liquid-gold-path-3"
+          />
+        </g>
       </svg>
     </div>
   );

@@ -34,8 +34,8 @@ function LandingPage() {
       <LandingAtmosphere />
       {/* SiteNav must be OUTSIDE any overflow-hidden ancestor — that breaks sticky */}
       <SiteNav disableBackdropBlur />
-      {/* Page content wrapper — relative so gold streams can be absolute inside it */}
-      <div className="mast-landing relative min-h-screen text-foreground">
+      {/* Page content wrapper — relative z-10 so gold streams can be absolute inside it, and it sits above atmosphere */}
+      <div className="mast-landing relative z-10 min-h-screen text-foreground">
         {/* Gold streams scroll WITH the page so they wind down all sections */}
         <LandingGoldStreams />
         <Hero />
@@ -78,66 +78,78 @@ const heroStats = [
   { icon: Layers, value: "1", label: "Unified workspace" },
 ];
 
-
 function Hero() {
   return (
-    <header className="relative pt-20 pb-16 px-8 sm:px-12 md:px-16 lg:px-20 overflow-visible">
-      <div className="relative max-w-7xl mx-auto grid lg:grid-cols-[1.1fr_1fr] gap-8 lg:gap-16 items-center">
+    <header className="relative pt-20 pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-visible">
+      <div className="relative max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
         {/* Copy column */}
-        <div className="text-center lg:text-left">
-          <div className="animate-fade-up inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-[var(--landing-blue-tint)] border border-[var(--landing-blue-border)] text-[var(--landing-blue-bright)] text-[10px] font-bold tracking-wider uppercase mb-6 shadow-[0_0_20px_-8px_var(--landing-blue)]">
-            <span className="relative size-1.5 rounded-full bg-[var(--landing-blue-bright)] ping-dot" />
-            The AI Sales Operating System
+        <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">
+          <div className="relative p-6 sm:p-8 md:p-9 rounded-[24px] border border-white/[0.06] bg-card/25 backdrop-blur-md shadow-[0_24px_50px_rgba(0,0,0,0.5)] overflow-hidden">
+            {/* Ambient glows inside card */}
+            <div className="absolute -top-10 -left-10 size-40 rounded-full bg-brand/5 blur-3xl pointer-events-none" />
+            <div className="absolute -bottom-10 -right-10 size-40 rounded-full bg-[var(--landing-blue-bright)]/5 blur-3xl pointer-events-none" />
+
+            {/* Pill Badge */}
+            <div className="animate-fade-up inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[var(--landing-blue-tint)] border border-[var(--landing-blue-border)] text-[var(--landing-blue-bright)] text-[10px] font-bold tracking-wider uppercase mb-5 shadow-[0_0_20px_-8px_var(--landing-blue)]">
+              <span className="relative size-1.5 rounded-full bg-[var(--landing-blue-bright)] ping-dot" />
+              The AI Sales Operating System
+            </div>
+
+            {/* Heading */}
+            <h1 className="animate-fade-up delay-100 text-[clamp(1.8rem,4vw,2.7rem)] font-extrabold text-foreground tracking-tight mb-5 leading-[1.1]">
+              Stop switching tabs.<br />
+              Start <span className="font-serif italic font-normal text-brand text-glow-gold">closing</span> deals.
+            </h1>
+
+            {/* Subtext */}
+            <p className="animate-fade-up delay-200 text-[0.88rem] md:text-sm text-muted-foreground/90 mb-7 leading-relaxed">
+              MAST replaces your scattered sales stack with one unified AI workspace —
+              business research, relationship data, pipeline, and reminders, all talking to each other.
+            </p>
+
+            {/* Action buttons */}
+            <div className="animate-fade-up delay-300 flex flex-col sm:flex-row items-center gap-3">
+              <Link
+                to="/signup"
+                className="group relative w-full sm:w-auto bg-[var(--landing-blue)] text-white px-6 py-3 rounded-lg text-sm font-semibold hover:bg-[var(--landing-blue-hover)] transition-all duration-200 inline-flex items-center justify-center gap-2 btn-press overflow-hidden shadow-[0_10px_30px_-10px_var(--landing-blue)]"
+              >
+                <span className="relative z-10 flex items-center gap-2">
+                  Start for free <ArrowRight className="size-4 group-hover:translate-x-1 transition-transform duration-200" />
+                </span>
+                <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
+              </Link>
+              <Link
+                to="/pricing"
+                className="w-full sm:w-auto bg-white/[0.04] border border-white/[0.08] px-6 py-3 rounded-lg text-sm font-semibold hover:border-brand/40 hover:bg-white/[0.08] transition-all duration-200 btn-press text-foreground"
+              >
+                See pricing
+              </Link>
+            </div>
+
+            {/* Sub-note */}
+            <p className="animate-fade-up delay-400 text-[10px] text-muted-foreground/50 mt-4 text-left">
+              No credit card required · Free plan available · Cancel anytime
+            </p>
           </div>
- 
-          <h1 className="animate-fade-up delay-100 text-[clamp(1.9rem,4.5vw,3.1rem)] font-extrabold text-foreground tracking-tight mb-5 leading-[1.08] lg:max-w-[540px]">
-            Stop switching tabs.<br />
-            <span className="text-gold-gradient">Start closing deals.</span>
-          </h1>
- 
-          <p className="animate-fade-up delay-200 text-[0.95rem] text-muted-foreground/90 mb-7 max-w-[520px] mx-auto lg:mx-0 leading-relaxed">
-            MAST replaces your scattered sales stack with one unified AI workspace —
-            business research, relationship data, pipeline, and reminders, all talking to each other.
-          </p>
- 
-          <div className="animate-fade-up delay-300 flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-3">
-            <Link
-              to="/signup"
-              className="group relative w-full sm:w-auto bg-[var(--landing-blue)] text-white px-7 py-3 rounded-lg text-sm font-semibold hover:bg-[var(--landing-blue-hover)] transition-all duration-200 inline-flex items-center justify-center gap-2 btn-press overflow-hidden shadow-[0_10px_30px_-10px_var(--landing-blue)]"
-            >
-              <span className="relative z-10 flex items-center gap-2">
-                Start for free <ArrowRight className="size-4 group-hover:translate-x-1 transition-transform duration-200" />
-              </span>
-              <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
-            </Link>
-            <Link
-              to="/pricing"
-              className="w-full sm:w-auto bg-card/65 backdrop-blur-sm border border-border px-7 py-3 rounded-lg text-sm font-semibold hover:border-brand/40 hover:bg-card/95 transition-all duration-200 btn-press"
-            >
-              See pricing
-            </Link>
-          </div>
- 
-          <p className="animate-fade-up delay-400 text-[11px] text-muted-foreground/80 mt-5">
-            No credit card required · Free plan available · Cancel anytime
-          </p>
- 
-          {/* Stat strip - Styled as a premium glassmorphic dashboard panel */}
-          <div className="animate-fade-up delay-500 mt-10 bg-card/30 backdrop-blur-sm border border-border/40 rounded-xl p-4.5 max-w-lg mx-auto lg:mx-0 shadow-card">
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4 gap-x-4 gap-y-4">
+
+          {/* Stat strip - Styled as a glassy dashboard widget below the main card */}
+          <div className="animate-fade-up delay-500 mt-5 bg-card/20 backdrop-blur-md border border-white/[0.05] rounded-[18px] p-4 shadow-card">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               {heroStats.map(({ icon: Icon, value, label }) => (
-                <div key={label} className="flex items-center gap-2.5 justify-center lg:justify-start">
-                  <Icon className="size-4 text-brand/85 shrink-0" />
-                  <div className="text-left leading-tight">
-                    <p className="text-sm font-bold text-foreground tabular-nums">{value}</p>
-                    <p className="text-[9px] text-muted-foreground/75 font-semibold uppercase tracking-wider">{label.split(" ")[0]} {label.split(" ")[1] || ""}</p>
+                <div key={label} className="flex flex-col items-center sm:items-start text-center sm:text-left gap-1">
+                  <div className="flex items-center gap-1.5">
+                    <Icon className="size-4 text-brand/85 shrink-0" />
+                    <p className="text-sm font-bold text-foreground tabular-nums leading-none">{value}</p>
                   </div>
+                  <p className="text-[9px] text-muted-foreground/75 font-semibold uppercase tracking-wider leading-tight">
+                    {label}
+                  </p>
                 </div>
               ))}
             </div>
           </div>
         </div>
- 
+
         {/* Globe column — overflow-visible so zoom animations never clip */}
         <div className="relative h-[280px] sm:h-[340px] md:h-[420px] lg:h-[480px] animate-scale-in delay-150 lg:-mr-4 xl:-mr-6 overflow-visible">
           <SignatureGlobe className="w-full h-full overflow-visible" />

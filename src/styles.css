@@ -1,5 +1,5 @@
 @import "tailwindcss" source(none);
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@1,400;1,500;1,600;1,700&family=Space+Grotesk:wght@400;500;600;700&family=Syne:wght@700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
 @source "../src";
 @import "tw-animate-css";
 
@@ -647,6 +647,10 @@
    automatically wherever they're used inside the landing page.
 --------------------------------------------------------------- */
 .mast-landing {
+  --font-sans: "Space Grotesk", sans-serif;
+  --font-display: "Syne", sans-serif;
+  --font-serif: "Cormorant Garamond", serif;
+
   --background: #02040c;
   --card: #05070f;
   --popover: #05070f;
@@ -688,6 +692,7 @@
   /* Header sits darker than the page body — a distinct "ink" band */
   --landing-nav-bg: #000000;
 
+  font-family: var(--font-sans);
   background-color: transparent;
 }
 
@@ -698,17 +703,22 @@
 .mast-landing h5,
 .mast-landing h6 {
   font-family: var(--font-display);
+  letter-spacing: -0.02em;
 }
 
 @layer utilities {
   .mast-landing .text-gold-gradient {
-    background: linear-gradient(90deg, #c9a66b 0%, #f2dca0 25%, #ffffff 50%, #f2dca0 75%, #c9a66b 100%);
+    background: linear-gradient(90deg, #8a6f27 0%, #c9a66b 25%, #ffffff 48%, #ffeeb3 52%, #c9a66b 75%, #8a6f27 100%);
     background-size: 200% auto;
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
-    animation: gold-shine 6s linear infinite;
-    filter: drop-shadow(0 0 1px rgba(242, 220, 160, 0.15));
+    animation: gold-shine 5s linear infinite;
+    filter: drop-shadow(0 0 6px rgba(242, 220, 160, 0.35)) drop-shadow(0 1px 2px rgba(138, 111, 39, 0.5));
+  }
+
+  .mast-landing .text-glow-gold {
+    text-shadow: 0 0 10px rgba(201, 166, 107, 0.6), 0 0 20px rgba(242, 220, 160, 0.3);
   }
 
   .mast-landing .divider-gold {
@@ -802,21 +812,21 @@
 }
 
 .liquid-gold-path-1 {
-  stroke-dasharray: 180 600;
-  animation: gold-flow 24s linear infinite;
-  filter: drop-shadow(0 0 3px rgba(242, 220, 160, 0.45)) drop-shadow(0 0 10px rgba(201, 166, 107, 0.25));
+  stroke-dasharray: 200 600;
+  animation: gold-flow 20s linear infinite;
+  filter: drop-shadow(0 0 6px rgba(242, 220, 160, 0.6)) drop-shadow(0 2px 10px rgba(138, 111, 39, 0.4));
 }
 
 .liquid-gold-path-2 {
-  stroke-dasharray: 140 500;
-  animation: gold-flow 18s linear infinite;
-  filter: drop-shadow(0 0 4px rgba(242, 220, 160, 0.5)) drop-shadow(0 0 12px rgba(201, 166, 107, 0.3));
+  stroke-dasharray: 180 500;
+  animation: gold-flow 15s linear infinite;
+  filter: drop-shadow(0 0 8px rgba(242, 220, 160, 0.7)) drop-shadow(0 3px 12px rgba(138, 111, 39, 0.5));
 }
 
 .liquid-gold-path-3 {
-  stroke-dasharray: 160 550;
-  animation: gold-flow 28s linear infinite;
-  filter: drop-shadow(0 0 3px rgba(242, 220, 160, 0.45)) drop-shadow(0 0 8px rgba(201, 166, 107, 0.25));
+  stroke-dasharray: 190 550;
+  animation: gold-flow 24s linear infinite;
+  filter: drop-shadow(0 0 6px rgba(242, 220, 160, 0.6)) drop-shadow(0 2px 8px rgba(138, 111, 39, 0.4));
 }
 
 .animate-gold-float {

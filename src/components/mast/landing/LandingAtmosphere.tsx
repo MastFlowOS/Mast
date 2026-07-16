@@ -3,17 +3,22 @@ import { useEffect, useState } from "react";
 // ─── Fixed backdrop: stars, nebulae, deep sky ─────────────────────────────────
 // This sits fixed behind everything and covers the full viewport as you scroll.
 export function LandingAtmosphere() {
-  const [stars, setStars] = useState<{ id: number; x: number; y: number; size: number; delay: number; duration: number }[]>([]);
+  const [stars, setStars] = useState<{ id: number; x: number; y: number; size: number; delay: number; duration: number; opacity: number }[]>([]);
 
   useEffect(() => {
-    // Generate organic star positions only once on mount
-    const starList = Array.from({ length: 60 }).map((_, i) => ({
+    // Generate organic star positions only once on mount. Opacity is now
+    // baked into the star record itself (was previously computed inline
+    // in the render via Math.random(), which re-rolled a new value — and
+    // caused the browser to re-diff every star's style — on every parent
+    // re-render, not just on mount).
+    const starList = Array.from({ length: 38 }).map((_, i) => ({
       id: i,
       x: Math.random() * 100,
       y: Math.random() * 100,
       size: Math.random() * 1.6 + 0.6, // sizes 0.6px to 2.2px
       delay: Math.random() * 4,
       duration: Math.random() * 3 + 3, // 3s to 6s twinkle cycle
+      opacity: 0.1 + Math.random() * 0.45,
     }));
     setStars(starList);
   }, []);
@@ -24,9 +29,9 @@ export function LandingAtmosphere() {
       <div className="absolute inset-0 bg-[#02040c]" />
 
       {/* Cloudy nebula vibe: extremely soft, drifting colored blobs of extremely low opacity */}
-      <div className="absolute top-[8%] left-[10%] w-[70vw] h-[70vw] rounded-full bg-indigo-950/8 blur-[130px] mix-blend-screen animate-cloud-drift-1" />
-      <div className="absolute bottom-[25%] right-[5%] w-[65vw] h-[65vw] rounded-full bg-purple-950/8 blur-[110px] mix-blend-screen animate-cloud-drift-2" />
-      <div className="absolute top-[45%] right-[20%] w-[50vw] h-[50vw] rounded-full bg-amber-950/4 blur-[110px] mix-blend-screen animate-cloud-drift-3" />
+      <div className="absolute top-[8%] left-[10%] w-[70vw] h-[70vw] rounded-full bg-indigo-950/8 blur-[110px] mix-blend-screen animate-cloud-drift-1 will-change-transform" />
+      <div className="absolute bottom-[25%] right-[5%] w-[65vw] h-[65vw] rounded-full bg-purple-950/8 blur-[95px] mix-blend-screen animate-cloud-drift-2 will-change-transform" />
+      <div className="absolute top-[45%] right-[20%] w-[50vw] h-[50vw] rounded-full bg-amber-950/4 blur-[95px] mix-blend-screen animate-cloud-drift-3 will-change-transform" />
 
       {/* Stars twinkle overlay */}
       <div className="absolute inset-0">
@@ -41,7 +46,7 @@ export function LandingAtmosphere() {
               height: `${star.size}px`,
               animationDelay: `${star.delay}s`,
               animationDuration: `${star.duration}s`,
-              opacity: 0.1 + Math.random() * 0.45,
+              opacity: star.opacity,
             }}
           />
         ))}

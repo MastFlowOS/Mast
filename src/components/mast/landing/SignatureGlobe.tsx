@@ -24,6 +24,18 @@ function easeOutBack(t: number) {
   const c3 = c1 + 1;
   return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
 }
+// Smooth in/out — used to soften what were previously linear glow ramps
+// (dot bloom, label fade, connection lines) so transitions ease naturally
+// instead of moving at a constant rate.
+function easeInOutQuad(t: number) {
+  const c = Math.max(0, Math.min(1, t));
+  return c < 0.5 ? 2 * c * c : 1 - Math.pow(-2 * c + 2, 2) / 2;
+}
+// Number of discrete alpha "buckets" used to batch base land-dot rendering.
+// Instead of one fill() call per dot (thousands per frame), dots are grouped
+// by quantized depth-alpha into a handful of Path2D batches and filled once
+// each — same visual result, far fewer canvas state changes per frame.
+const ALPHA_BUCKETS = 20;
 // Deterministic 0..1 pseudo-random from an index, so dot pop-in order is
 // stable across renders instead of reshuffling every mount.
 function hash01(i: number) {
@@ -189,45 +201,83 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       const ecy = cy + panDelta; // effective vertical center used by every projection below
 
       // Glow / reveal strength for the country's opportunity dots + label.
+      // Eased (was linear) so the discovery moment settles in and fades
+      // out gradually rather than at a constant rate.
       let glow = 0;
-      if (phase === "settle") glow = Math.max(0, p - 0.55) / 0.45;
-      else if (phase === "focus") glow = p < 0.1 ? p / 0.1 : p > 0.88 ? (1 - p) / 0.12 : 1;
-      else if (phase === "release") glow = Math.max(0, 1 - easeInOutCubic(p) * 1.5);
+      if (phase === "settle") glow = easeInOutQuad(Math.max(0, p - 0.55) / 0.45);
+      else if (phase === "focus") glow = p < 0.1 ? easeInOutQuad(p / 0.1) : p > 0.88 ? easeInOutQuad((1 - p) / 0.12) : 1;
+      else if (phase === "release") glow = Math.max(0, 1 - easeInOutQuad(easeInOutCubic(p) * 1.5));
 
-      // ---- backdrop sphere shading — kept subtle/matte, not a glowing orb ----
+      // ---- backdrop sphere shading — kept subtle/matte, not a glowing orb.
+      // An extra mid-stop softens the falloff for a smoother, more
+      // dimensional gradient (was a 3-stop gradient with a harder knee). ----
       const sphereR = r * zoom;
       const bg = ctx.createRadialGradient(
         cx - sphereR * 0.35, ecy - sphereR * 0.4, sphereR * 0.1,
         cx, ecy, sphereR * 1.05,
       );
-      bg.addColorStop(0, "rgba(58, 68, 116, 0.22)");
-      bg.addColorStop(0.55, "rgba(16, 19, 48, 0.40)");
-      bg.addColorStop(1, "rgba(3, 4, 20, 0.04)");
+      bg.addColorStop(0, "rgba(62, 73, 122, 0.22)");
+      bg.addColorStop(0.32, "rgba(40, 47, 92, 0.32)");
+      bg.addColorStop(0.62, "rgba(16, 19, 48, 0.38)");
+      bg.addColorStop(0.85, "rgba(7, 9, 28, 0.18)");
+      bg.addColorStop(1, "rgba(3, 4, 20, 0.03)");
       ctx.beginPath();
       ctx.arc(cx, ecy, sphereR, 0, Math.PI * 2);
       ctx.fillStyle = bg;
       ctx.fill();
 
-      // meridian ring (the "stand" cue of a desk globe) — behind the dots
+      // soft rim light along the sphere's upper-left edge — a thin, quiet
+      // highlight that reads as premium studio lighting without adding a
+      // new "effect" to the scene (it's an edge of the same sphere fill).
+      const rim = ctx.createRadialGradient(
+        cx - sphereR * 0.32, ecy - sphereR * 0.38, sphereR * 0.78,
+        cx - sphereR * 0.32, ecy - sphereR * 0.38, sphereR * 1.02,
+      );
+      rim.addColorStop(0, "rgba(210, 218, 255, 0)");
+      rim.addColorStop(0.85, "rgba(210, 218, 255, 0)");
+      rim.addColorStop(1, "rgba(212, 221, 255, 0.10)");
+      ctx.beginPath();
+      ctx.arc(cx, ecy, sphereR, 0, Math.PI * 2);
+      ctx.fillStyle = rim;
+      ctx.fill();
+
+      // meridian / orbit ring (the "stand" cue of a desk globe) — behind the
+      // dots. Thinner and lower-opacity than before so it supports the globe
+      // instead of competing with it, and fades softly at its own edges.
       ctx.save();
       ctx.translate(cx, ecy);
       ctx.scale(1, 0.34);
       ctx.beginPath();
       ctx.arc(0, 0, sphereR * 1.14, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(201, 166, 107, 0.16)";
-      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = "rgba(201, 166, 107, 0.09)";
+      ctx.lineWidth = 0.75;
       ctx.stroke();
       ctx.restore();
 
       // ---- project + draw base land dots (quiet, unlit) ----
+      // Batched by quantized alpha into a handful of Path2D fills instead of
+      // one beginPath/arc/fill per dot — same per-dot depth shading, far
+      // fewer canvas draw calls (the dominant cost of this scene per frame).
+      const bucketPaths: (Path2D | null)[] = new Array(ALPHA_BUCKETS + 1).fill(null);
       for (const d of WORLD_DOTS) {
         const pr = project(d.lat, d.lon, zoom, cx, ecy, r, rotation);
         if (pr.z <= -0.02) continue;
         const alpha = Math.max(0, Math.min(1, pr.z)) * 0.65 + 0.05;
-        ctx.beginPath();
-        ctx.arc(pr.sx, pr.sy, 1.05, 0, Math.PI * 2);
+        const bucket = Math.round(alpha * ALPHA_BUCKETS);
+        let path = bucketPaths[bucket];
+        if (!path) {
+          path = new Path2D();
+          bucketPaths[bucket] = path;
+        }
+        path.moveTo(pr.sx + 1.05, pr.sy);
+        path.arc(pr.sx, pr.sy, 1.05, 0, Math.PI * 2);
+      }
+      for (let b = 0; b <= ALPHA_BUCKETS; b++) {
+        const path = bucketPaths[b];
+        if (!path) continue;
+        const alpha = b / ALPHA_BUCKETS;
         ctx.fillStyle = `rgba(196, 204, 240, ${alpha * 0.4})`;
-        ctx.fill();
+        ctx.fill(path);
       }
 
       // ---- gold outline of the target country — same hue as its
@@ -267,8 +317,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
           const rad = Math.max(0.15, 2.6 * pop);
           ctx.beginPath();
-          ctx.arc(pr.sx, pr.sy, rad * 2.2, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(224, 184, 110, ${0.1 * localAlpha})`;
+          ctx.arc(pr.sx, pr.sy, rad * 2.0, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(224, 184, 110, ${0.07 * localAlpha})`;
           ctx.fill();
           ctx.beginPath();
           ctx.arc(pr.sx, pr.sy, rad, 0, Math.PI * 2);
@@ -308,14 +358,16 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         }
       }
 
-      // front meridian arc gleam (subtle, sells the "metal ring" cue)
+      // front orbit-ring gleam (subtle, sells the "metal ring" cue) —
+      // thinner and softer than before so it supports the globe rather
+      // than drawing the eye
       ctx.save();
       ctx.translate(cx, ecy);
       ctx.scale(1, 0.34);
       ctx.beginPath();
       ctx.arc(0, 0, sphereR * 1.14, Math.PI * 0.08, Math.PI * 0.42);
-      ctx.strokeStyle = "rgba(226, 194, 133, 0.22)";
-      ctx.lineWidth = 1.3;
+      ctx.strokeStyle = "rgba(226, 194, 133, 0.13)";
+      ctx.lineWidth = 0.8;
       ctx.stroke();
       ctx.restore();
 

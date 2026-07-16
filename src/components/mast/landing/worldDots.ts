@@ -89,7 +89,7 @@ function generateLandDots(): LatLon[] {
     for (let lon = -180; lon <= 180; lon += step) {
       for (const poly of CONTINENTS) {
         if (pointInPolygon(lon, lat, poly)) {
-          const jitter = () => (Math.random() - 0.5) * step * 0.55;
+          const jitter = () => (Math.random() - 0.5) * step * 0.42;
           dots.push({ lat: lat + jitter(), lon: lon + jitter() });
           break;
         }

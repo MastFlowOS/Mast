@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+// ─── Fixed backdrop: stars, nebulae, deep sky ─────────────────────────────────
+// This sits fixed behind everything and covers the full viewport as you scroll.
 export function LandingAtmosphere() {
   const [stars, setStars] = useState<{ id: number; x: number; y: number; size: number; delay: number; duration: number }[]>([]);
 
@@ -17,7 +19,7 @@ export function LandingAtmosphere() {
   }, []);
 
   return (
-    <div className="absolute inset-0 overflow-hidden pointer-events-none z-0 min-h-full">
+    <div className="fixed inset-0 overflow-hidden pointer-events-none z-0 w-screen h-screen">
       {/* Deep sky base color */}
       <div className="absolute inset-0 bg-[#02040c]" />
 
@@ -44,20 +46,36 @@ export function LandingAtmosphere() {
           />
         ))}
       </div>
+    </div>
+  );
+}
 
-      {/* Liquid Gold Flowing Streams */}
-      <svg className="absolute inset-0 w-full h-full opacity-[0.25]" viewBox="0 0 1440 5000" fill="none" preserveAspectRatio="none">
+// ─── Scrolling gold streams: positioned absolute inside the page ───────────────
+// This scrolls WITH the page content so the streams span the entire landing page
+// from top to bottom. Must be placed inside the page's content wrapper.
+export function LandingGoldStreams() {
+  return (
+    <div
+      className="absolute inset-0 overflow-hidden pointer-events-none z-0"
+      aria-hidden="true"
+    >
+      <svg
+        className="absolute inset-0 w-full h-full opacity-[0.22]"
+        viewBox="0 0 1440 5000"
+        fill="none"
+        preserveAspectRatio="none"
+      >
         <defs>
           <linearGradient id="gold-stream-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#e8c77e" stopOpacity="0.02" />
-            <stop offset="20%" stopColor="#c9a66b" stopOpacity="0.3" />
-            <stop offset="50%" stopColor="#f2dca0" stopOpacity="0.4" />
-            <stop offset="80%" stopColor="#c9a66b" stopOpacity="0.3" />
+            <stop offset="0%"   stopColor="#e8c77e" stopOpacity="0.02" />
+            <stop offset="20%"  stopColor="#c9a66b" stopOpacity="0.30" />
+            <stop offset="50%"  stopColor="#f2dca0" stopOpacity="0.40" />
+            <stop offset="80%"  stopColor="#c9a66b" stopOpacity="0.30" />
             <stop offset="100%" stopColor="#e8c77e" stopOpacity="0.02" />
           </linearGradient>
         </defs>
-        
-        {/* Stream 1 - Left side flow */}
+
+        {/* Stream 1 — left side winding flow */}
         <path
           d="M 120,0 C 350,800 -100,1600 250,2400 C 600,3200 50,4000 180,5000"
           stroke="url(#gold-stream-grad)"
@@ -66,7 +84,7 @@ export function LandingAtmosphere() {
           className="liquid-gold-path-1"
         />
 
-        {/* Stream 2 - Right side flow */}
+        {/* Stream 2 — right side winding flow */}
         <path
           d="M 1320,300 C 1000,1100 1450,1900 1100,2700 C 700,3500 1350,4300 1200,5000"
           stroke="url(#gold-stream-grad)"
@@ -75,9 +93,9 @@ export function LandingAtmosphere() {
           className="liquid-gold-path-2"
         />
 
-        {/* Stream 3 - Center bottom flow */}
+        {/* Stream 3 — centre lower flow */}
         <path
-          d="M 600,1500 C 850,2300 300,3100 750,4100"
+          d="M 600,1500 C 850,2300 300,3100 750,4100 C 1000,4600 650,4800 720,5000"
           stroke="url(#gold-stream-grad)"
           strokeWidth="1.8"
           strokeLinecap="round"

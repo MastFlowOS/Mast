@@ -4,7 +4,7 @@ import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { SignatureGlobe } from "@/components/mast/landing/SignatureGlobe";
-import { LandingAtmosphere } from "@/components/mast/landing/LandingAtmosphere";
+import { LandingAtmosphere, LandingGoldStreams } from "@/components/mast/landing/LandingAtmosphere";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -29,19 +29,26 @@ export const Route = createFileRoute("/")({
 
 function LandingPage() {
   return (
-    <div className="mast-landing min-h-screen bg-background text-foreground overflow-x-hidden">
+    <>
+      {/* Fixed backdrop: stars, nebulae, deep sky — always covers full viewport */}
       <LandingAtmosphere />
+      {/* SiteNav must be OUTSIDE any overflow-hidden ancestor — that breaks sticky */}
       <SiteNav disableBackdropBlur />
-      <Hero />
-      <Workflow />
-      <ProductShowcase />
-      <TrustedBy />
-      <Problem />
-      <Features />
-      <PricingPreview />
-      <CTA />
-      <SiteFooter />
-    </div>
+      {/* Page content wrapper — relative so gold streams can be absolute inside it */}
+      <div className="mast-landing relative min-h-screen text-foreground">
+        {/* Gold streams scroll WITH the page so they wind down all sections */}
+        <LandingGoldStreams />
+        <Hero />
+        <Workflow />
+        <ProductShowcase />
+        <TrustedBy />
+        <Problem />
+        <Features />
+        <PricingPreview />
+        <CTA />
+        <SiteFooter />
+      </div>
+    </>
   );
 }
 
@@ -128,9 +135,9 @@ function Hero() {
           </div>
         </div>
  
-        {/* Globe column */}
-        <div className="relative h-[260px] sm:h-[320px] md:h-[400px] lg:h-[480px] animate-scale-in delay-150 lg:-mr-4 xl:-mr-6">
-          <SignatureGlobe className="w-full h-full" />
+        {/* Globe column — overflow-visible so zoom animations never clip */}
+        <div className="relative h-[260px] sm:h-[320px] md:h-[400px] lg:h-[480px] animate-scale-in delay-150 lg:-mr-4 xl:-mr-6 overflow-visible">
+          <SignatureGlobe className="w-full h-full overflow-visible" />
         </div>
       </div>
     </header>

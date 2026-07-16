@@ -19,7 +19,7 @@ export function LandingAtmosphere() {
   }, []);
 
   return (
-    <div className="fixed inset-0 overflow-hidden pointer-events-none z-0 w-screen h-screen">
+    <div className="fixed inset-0 overflow-hidden pointer-events-none z-[-10] w-screen h-screen">
       {/* Deep sky base color */}
       <div className="absolute inset-0 bg-[#02040c]" />
 
@@ -50,17 +50,32 @@ export function LandingAtmosphere() {
   );
 }
 
-// ─── Scrolling gold streams: positioned absolute inside the page ───────────────
+// ─── Scrolling gold streams + shiny particles ──────────────────────────────────
 // This scrolls WITH the page content so the streams span the entire landing page
 // from top to bottom. Must be placed inside the page's content wrapper.
 export function LandingGoldStreams() {
+  const [particles, setParticles] = useState<{ id: number; x: number; y: number; size: number; delay: number; duration: number }[]>([]);
+
+  useEffect(() => {
+    // Generate organic floating gold particles along/near the stream paths
+    const pList = Array.from({ length: 40 }).map((_, i) => ({
+      id: i,
+      x: Math.random() * 90 + 5, // Keep slightly inside edges
+      y: Math.random() * 95 + 2, // Distributed down 5000px content
+      size: Math.random() * 2.5 + 1.5, // sizes 1.5px to 4px
+      delay: Math.random() * 5,
+      duration: Math.random() * 5 + 7, // slow floating cycles
+    }));
+    setParticles(pList);
+  }, []);
+
   return (
     <div
       className="absolute inset-0 overflow-hidden pointer-events-none z-0"
       aria-hidden="true"
     >
       <svg
-        className="absolute inset-0 w-full h-full opacity-[0.22]"
+        className="absolute inset-0 w-full h-full opacity-[0.28]"
         viewBox="0 0 1440 5000"
         fill="none"
         preserveAspectRatio="none"
@@ -68,9 +83,9 @@ export function LandingGoldStreams() {
         <defs>
           <linearGradient id="gold-stream-grad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%"   stopColor="#e8c77e" stopOpacity="0.02" />
-            <stop offset="20%"  stopColor="#c9a66b" stopOpacity="0.30" />
-            <stop offset="50%"  stopColor="#f2dca0" stopOpacity="0.40" />
-            <stop offset="80%"  stopColor="#c9a66b" stopOpacity="0.30" />
+            <stop offset="15%"  stopColor="#c9a66b" stopOpacity="0.45" />
+            <stop offset="50%"  stopColor="#fff3d1" stopOpacity="0.75" />
+            <stop offset="85%"  stopColor="#c9a66b" stopOpacity="0.45" />
             <stop offset="100%" stopColor="#e8c77e" stopOpacity="0.02" />
           </linearGradient>
         </defs>
@@ -102,6 +117,25 @@ export function LandingGoldStreams() {
           className="liquid-gold-path-3"
         />
       </svg>
+
+      {/* Floating Shiny Gold Particles */}
+      <div className="absolute inset-0">
+        {particles.map((p) => (
+          <div
+            key={p.id}
+            className="absolute rounded-full bg-gradient-to-r from-[#ffe5a3] via-[#e8c77e] to-[#c9a66b] animate-gold-float animate-gold-twinkle"
+            style={{
+              left: `${p.x}%`,
+              top: `${p.y}%`,
+              width: `${p.size}px`,
+              height: `${p.size}px`,
+              animationDelay: `${p.delay}s`,
+              animationDuration: `${p.duration}s`,
+              boxShadow: "0 0 4px #ffeab5, 0 0 10px #e8c77e",
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

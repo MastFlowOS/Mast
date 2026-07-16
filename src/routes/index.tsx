@@ -78,31 +78,32 @@ const heroStats = [
   { icon: Layers, value: "1", label: "Unified workspace" },
 ];
 
+
 function Hero() {
   return (
-    <header className="relative pt-16 pb-12 px-6 overflow-visible">
-      <div className="relative max-w-7xl mx-auto grid lg:grid-cols-[1.05fr_1fr] gap-4 lg:gap-2 items-center">
+    <header className="relative pt-20 pb-16 px-8 sm:px-12 md:px-16 lg:px-20 overflow-visible">
+      <div className="relative max-w-7xl mx-auto grid lg:grid-cols-[1.1fr_1fr] gap-8 lg:gap-16 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left">
-          <div className="animate-fade-up inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[var(--landing-blue-tint)] border border-[var(--landing-blue-border)] text-[var(--landing-blue-bright)] text-[10px] font-bold tracking-wider uppercase mb-5 shadow-[0_0_20px_-8px_var(--landing-blue)]">
+          <div className="animate-fade-up inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-[var(--landing-blue-tint)] border border-[var(--landing-blue-border)] text-[var(--landing-blue-bright)] text-[10px] font-bold tracking-wider uppercase mb-6 shadow-[0_0_20px_-8px_var(--landing-blue)]">
             <span className="relative size-1.5 rounded-full bg-[var(--landing-blue-bright)] ping-dot" />
             The AI Sales Operating System
           </div>
  
-          <h1 className="animate-fade-up delay-100 text-[clamp(1.8rem,4.5vw,3rem)] font-bold text-foreground tracking-tight mb-4 leading-[1.05]">
+          <h1 className="animate-fade-up delay-100 text-[clamp(1.9rem,4.5vw,3.1rem)] font-extrabold text-foreground tracking-tight mb-5 leading-[1.08] lg:max-w-[540px]">
             Stop switching tabs.<br />
             <span className="text-gold-gradient">Start closing deals.</span>
           </h1>
  
-          <p className="animate-fade-up delay-200 text-[0.95rem] text-muted-foreground mb-6 max-w-[450px] mx-auto lg:mx-0 leading-relaxed">
-            MAST replaces your scattered sales stack with one AI workspace —
+          <p className="animate-fade-up delay-200 text-[0.95rem] text-muted-foreground/90 mb-7 max-w-[520px] mx-auto lg:mx-0 leading-relaxed">
+            MAST replaces your scattered sales stack with one unified AI workspace —
             business research, relationship data, pipeline, and reminders, all talking to each other.
           </p>
  
-          <div className="animate-fade-up delay-300 flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-2.5">
+          <div className="animate-fade-up delay-300 flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-3">
             <Link
               to="/signup"
-              className="group relative w-full sm:w-auto bg-[var(--landing-blue)] text-white px-6 py-2.5 rounded-lg text-sm font-semibold hover:bg-[var(--landing-blue-hover)] transition-all duration-200 inline-flex items-center justify-center gap-2 btn-press overflow-hidden shadow-[0_10px_30px_-10px_var(--landing-blue)]"
+              className="group relative w-full sm:w-auto bg-[var(--landing-blue)] text-white px-7 py-3 rounded-lg text-sm font-semibold hover:bg-[var(--landing-blue-hover)] transition-all duration-200 inline-flex items-center justify-center gap-2 btn-press overflow-hidden shadow-[0_10px_30px_-10px_var(--landing-blue)]"
             >
               <span className="relative z-10 flex items-center gap-2">
                 Start for free <ArrowRight className="size-4 group-hover:translate-x-1 transition-transform duration-200" />
@@ -111,32 +112,34 @@ function Hero() {
             </Link>
             <Link
               to="/pricing"
-              className="w-full sm:w-auto bg-card border border-border px-6 py-2.5 rounded-lg text-sm font-semibold hover:border-brand/40 hover:bg-card/80 transition-all duration-200 btn-press"
+              className="w-full sm:w-auto bg-card/65 backdrop-blur-sm border border-border px-7 py-3 rounded-lg text-sm font-semibold hover:border-brand/40 hover:bg-card/95 transition-all duration-200 btn-press"
             >
               See pricing
             </Link>
           </div>
  
-          <p className="animate-fade-up delay-400 text-[11px] text-muted-foreground mt-4">
+          <p className="animate-fade-up delay-400 text-[11px] text-muted-foreground/80 mt-5">
             No credit card required · Free plan available · Cancel anytime
           </p>
  
-          {/* Stat strip */}
-          <div className="animate-fade-up delay-500 mt-8 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4 gap-x-4 gap-y-4 max-w-lg mx-auto lg:mx-0 pt-6 border-t border-border/50">
-            {heroStats.map(({ icon: Icon, value, label }) => (
-              <div key={label} className="flex items-center gap-2 justify-center lg:justify-start">
-                <Icon className="size-4 text-foreground/70 shrink-0" />
-                <div className="text-left leading-tight">
-                  <p className="text-base font-bold text-foreground tabular-nums">{value}</p>
-                  <p className="text-[10px] text-muted-foreground font-medium">{label}</p>
+          {/* Stat strip - Styled as a premium glassmorphic dashboard panel */}
+          <div className="animate-fade-up delay-500 mt-10 bg-card/30 backdrop-blur-sm border border-border/40 rounded-xl p-4.5 max-w-lg mx-auto lg:mx-0 shadow-card">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4 gap-x-4 gap-y-4">
+              {heroStats.map(({ icon: Icon, value, label }) => (
+                <div key={label} className="flex items-center gap-2.5 justify-center lg:justify-start">
+                  <Icon className="size-4 text-brand/85 shrink-0" />
+                  <div className="text-left leading-tight">
+                    <p className="text-sm font-bold text-foreground tabular-nums">{value}</p>
+                    <p className="text-[9px] text-muted-foreground/75 font-semibold uppercase tracking-wider">{label.split(" ")[0]} {label.split(" ")[1] || ""}</p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
  
         {/* Globe column — overflow-visible so zoom animations never clip */}
-        <div className="relative h-[260px] sm:h-[320px] md:h-[400px] lg:h-[480px] animate-scale-in delay-150 lg:-mr-4 xl:-mr-6 overflow-visible">
+        <div className="relative h-[280px] sm:h-[340px] md:h-[420px] lg:h-[480px] animate-scale-in delay-150 lg:-mr-4 xl:-mr-6 overflow-visible">
           <SignatureGlobe className="w-full h-full overflow-visible" />
         </div>
       </div>

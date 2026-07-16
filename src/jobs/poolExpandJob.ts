@@ -108,20 +108,20 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       let roundsLeft = countries.length * 6 + 20;
 
       while (stillNeededNow() > 0 && !rotation.isFullyExhausted && roundsLeft-- > 0) {
-        for (const country of rotation.round()) {
+        for (const { country, city } of rotation.round()) {
           const remaining = stillNeededNow();
           if (remaining <= 0) break;
 
           const chunk = rotation.chunkSize(remaining);
           const askFor = Math.max(chunk * 4, target);
 
-          let countryExhausted = false;
+          let citySearchExhausted = false;
           let deliveredThisChunk = 0;
 
           for await (const lead of runEngineQuery(
             {
               query: singleNiche,
-              city: country.name,
+              city, // ROOT CAUSE FIX: a real city (e.g. "Lagos"), never country.name
               country: country.code,
               niche: singleNiche,
               region: payload.region,
@@ -130,7 +130,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             },
             abortController.signal,
             (info) => {
-              countryExhausted = info.exhausted;
+              citySearchExhausted = info.exhausted;
             },
           )) {
             if (followUp && !channelsSatisfied(lead, followUp.channels)) {
@@ -183,8 +183,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             }
           }
 
-          if (countryExhausted) {
-            rotation.markExhausted(country);
+          if (citySearchExhausted) {
+            // Advances to this country's next city; only drops the whole
+            // country once every one of its cities is exhausted.
+            rotation.markCurrentSearchExhausted(country);
           }
         }
       }

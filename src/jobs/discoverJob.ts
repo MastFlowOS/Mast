@@ -84,6 +84,30 @@ export type DiscoverJobPayload = {
  *   - `payload.region` is still passed through to `deliverLead`/pool
  *     storage unchanged — that's the free-text label `businesses.region`
  *     and `pool_lookup()` already match against, untouched by this fix.
+ *
+ * ROOT CAUSE FIX (this pass): the ARCHITECTURE FIX above only got the
+ * region→country expansion right; it still handed `country.name` (e.g.
+ * "United States", "Canada", "Mexico") to the engine as `city`, so every
+ * search was really "<niche> in United States" — a query Google Maps has
+ * no normal per-listing results feed for. Instead of the usual bounded
+ * results panel, Maps tries to cluster/render a nationwide result set with
+ * no natural cap, and with no resource blocking in the scraper, that grew
+ * the Playwright page's memory until Chromium's renderer OOM-crashed
+ * ("Target crashed"), surfacing on whatever Playwright call happened to
+ * run next (`page.query_selector_all`, per the reported traceback) —
+ * nothing to do with that selector itself. Fix:
+ *   - `CountryInfo` (src/lib/geo/countries.ts) now carries `majorCities`,
+ *     each country's 3 largest real, Maps-searchable cities.
+ *   - `CountryRotation.round()` now yields `{ country, city }` pairs using
+ *     the country's CURRENT city, instead of the bare `CountryInfo`.
+ *   - `country.name` is never sent to the engine again — only real city
+ *     names are.
+ *   - `markExhausted()` → `markCurrentSearchExhausted()`: a city's own
+ *     exhaustion now advances the rotation to that country's NEXT city;
+ *     the whole country is only dropped once every one of its cities has
+ *     been exhausted, so a single small city no longer prematurely drops
+ *     an entire country from the rotation the way one crash used to end
+ *     the whole run.
  */
 export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<void> {
   const niches = splitNicheQuery(payload.niche);
@@ -110,7 +134,7 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
     let roundsLeft = countries.length * 6 + 20;
 
     while (delivered < payload.quantity && !rotation.isFullyExhausted && roundsLeft-- > 0) {
-      for (const country of rotation.round()) {
+      for (const { country, city } of rotation.round()) {
         if (delivered >= payload.quantity) break;
 
         const remaining = payload.quantity - delivered;
@@ -119,13 +143,13 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
         // below discards a fraction of what streams back.
         const askFor = Math.max(chunk * 4, chunk);
 
-        let countryExhausted = false;
+        let citySearchExhausted = false;
         let deliveredThisChunk = 0;
 
         for await (const lead of runEngineQuery(
           {
             query: singleNiche,
-            city: country.name,
+            city, // ROOT CAUSE FIX: a real city (e.g. "Toronto"), never country.name
             country: country.code,
             niche: singleNiche,
             region: payload.region,
@@ -134,7 +158,7 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
           },
           abortController.signal,
           (info) => {
-            countryExhausted = info.exhausted;
+            citySearchExhausted = info.exhausted;
           },
         )) {
           if (!channelsSatisfied(lead, payload.channels)) {
@@ -180,8 +204,10 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
           }
         }
 
-        if (countryExhausted) {
-          rotation.markExhausted(country);
+        if (citySearchExhausted) {
+          // Advances to this country's next city; only drops the whole
+          // country once every one of its cities is exhausted.
+          rotation.markCurrentSearchExhausted(country);
         }
       }
     }

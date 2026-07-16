@@ -103,17 +103,38 @@ function dedupeByCode(countries: CountryInfo[]): CountryInfo[] {
   return out;
 }
 
+/** One (country, real-city) pair to actually search — never the bare
+ * country. See ROOT CAUSE FIX note on CountryRotation below. */
+export interface CountrySearchTarget {
+  country: CountryInfo;
+  city: string;
+}
+
 /**
  * Tracks per-country exhaustion across search rounds and hands out the next
- * country + a suggested chunk size, so a single country never dominates a
- * request (requirement #3): each round splits the remaining quantity evenly
- * across every still-active country, and a country that reports genuine
- * exhaustion (engine's onDone.exhausted) is dropped from future rounds so
- * the rotation naturally moves on to the next one.
+ * (country, city) target + a suggested chunk size, so a single country never
+ * dominates a request (requirement #3): each round splits the remaining
+ * quantity evenly across every still-active country, and a country that
+ * reports genuine exhaustion (engine's onDone.exhausted) is dropped from
+ * future rounds so the rotation naturally moves on to the next one.
+ *
+ * ROOT CAUSE FIX: this used to hand out bare `CountryInfo` objects, and the
+ * caller (discoverJob.ts) took `country.name` — the country's own name,
+ * e.g. "United States" — and passed it straight through as the engine's
+ * `city` search field. Google Maps has no per-listing results feed for a
+ * query scoped to an entire country; it tries to cluster/render a
+ * nationwide result set with no natural cap, which is what was ballooning
+ * the Playwright page's memory until Chromium's renderer OOM-crashed
+ * ("Target crashed"). The rotation now hands out a real city from
+ * `country.majorCities` instead, and only advances to the next city (via
+ * `markCurrentSearchExhausted`) once the engine reports that city's search
+ * space as genuinely exhausted — the whole country is only dropped once
+ * every one of its cities has been exhausted this way.
  */
 export class CountryRotation {
   private readonly countries: CountryInfo[];
   private readonly exhausted = new Set<string>();
+  private readonly cityIndex = new Map<string, number>();
 
   constructor(countries: CountryInfo[]) {
     this.countries = countries;
@@ -127,14 +148,44 @@ export class CountryRotation {
     return this.activeCount <= 0;
   }
 
-  markExhausted(country: CountryInfo): void {
-    this.exhausted.add(country.code);
+  private citiesFor(country: CountryInfo): string[] {
+    // Defensive fallback only — every entry in COUNTRIES ships with real
+    // cities (see countries.ts). This must never fall back to
+    // `country.name`, since that's exactly the bug being fixed here.
+    return country.majorCities.length > 0 ? country.majorCities : [country.name];
   }
 
-  /** One pass over every still-active country, in stable order. */
-  *round(): IterableIterator<CountryInfo> {
+  private currentCity(country: CountryInfo): string {
+    const cities = this.citiesFor(country);
+    const idx = this.cityIndex.get(country.code) ?? 0;
+    return cities[Math.min(idx, cities.length - 1)];
+  }
+
+  /**
+   * Marks the CURRENT city for this country as exhausted (per the engine's
+   * own onDone.exhausted signal for that city's search). Advances to the
+   * next city in the country's list; only marks the whole country
+   * exhausted once every one of its cities has reported exhaustion this
+   * way — a single city (e.g. a small town with few listings) can no
+   * longer prematurely drop an entire country from the rotation.
+   */
+  markCurrentSearchExhausted(country: CountryInfo): void {
+    const cities = this.citiesFor(country);
+    const nextIdx = (this.cityIndex.get(country.code) ?? 0) + 1;
+    if (nextIdx >= cities.length) {
+      this.exhausted.add(country.code);
+    } else {
+      this.cityIndex.set(country.code, nextIdx);
+    }
+  }
+
+  /** One pass over every still-active country's CURRENT city, in stable
+   * order. */
+  *round(): IterableIterator<CountrySearchTarget> {
     for (const c of this.countries) {
-      if (!this.exhausted.has(c.code)) yield c;
+      if (!this.exhausted.has(c.code)) {
+        yield { country: c, city: this.currentCity(c) };
+      }
     }
   }
 

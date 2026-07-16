@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { addNotification } from "@/lib/notifications";
 import {
@@ -10,23 +10,34 @@ import {
   type FocusGoal,
 } from "@/lib/focus";
 import { useAwardGoalXp, useCompletedGoalIds, useGoalClaims, useXp } from "@/hooks/use-mast-api";
+import { bumpMilestoneBadge, flyXpToMilestone } from "@/lib/xp-fly";
 
 function todayKey() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+/** How long the exit animation (fade + collapse) plays before a claimed goal is removed from the DOM. */
+const EXIT_MS = 380;
+
 /**
  * Drives the Focus page's XP + milestone progression.
  *
- * There is no local or localStorage state here beyond transient UI (which
- * goal rows have animated out this session). XP lives in `profiles.xp` in
- * Supabase; which goals have already been awarded today lives in the
- * `goal_completions` table. Both are fetched via React Query and mutated
- * through `award_goal_xp`, a Postgres function that awards XP for a given
- * goal/day exactly once no matter how many times it's called — so
- * refreshes, extra tabs, and other devices can never double-award or lose
- * progress.
+ * XP lives in `profiles.xp` in Supabase; which goals have already been
+ * awarded today lives in the `goal_completions` table. Both are fetched via
+ * React Query and mutated through `award_goal_xp`, a Postgres function that
+ * awards XP for a given goal/day exactly once no matter how many times it's
+ * called — so refreshes, extra tabs, and other devices can never
+ * double-award or lose progress (enforced server-side; this hook's
+ * `claimingGoalIds` guard just avoids firing redundant network requests
+ * while a click is already in flight).
+ *
+ * XP is claimed by explicit user action (clicking a completed goal card),
+ * not automatically the instant a goal crosses its target. `claimGoal`
+ * sequences: award mutation -> XP-fly-to-counter animation -> milestone
+ * counter/progress bump -> card exit animation -> removal from the visible
+ * list (which lets the next generated goal, already present once
+ * `completedGoalIds` includes this goal's id, take its place).
  */
 export function useFocusProgress(goals: FocusGoal[]) {
   const today = todayKey();
@@ -36,26 +47,58 @@ export function useFocusProgress(goals: FocusGoal[]) {
   const awardGoalXp = useAwardGoalXp();
 
   const [dismissedGoals, setDismissedGoals] = useState<Set<string>>(new Set());
-  // Goal ids we've already attempted to award this session — guards against
-  // firing duplicate mutations while one is still in flight. The real
-  // duplicate-award protection lives server-side; this is just to avoid
-  // redundant network calls.
-  const attemptedRef = useRef<Set<string>>(new Set());
-  const claimedSet = new Set([...claimedToday, ...completedGoalIds]);
+  const [claimingGoalIds, setClaimingGoalIds] = useState<Set<string>>(new Set());
+  const [exitingGoalIds, setExitingGoalIds] = useState<Set<string>>(new Set());
+  // Bumped every time a claim lands, so <FocusMilestones> can key a
+  // one-shot bump animation off of it without needing its own XP-diff logic.
+  const [xpBumpTick, setXpBumpTick] = useState(0);
+  // Set while a milestone-tier level-up animation should be playing.
+  const [leveledUpTier, setLeveledUpTier] = useState<string | null>(null);
 
-  useEffect(() => {
-    for (const goal of goals) {
-      if (!isGoalComplete(goal)) continue;
-      if (claimedSet.has(goal.id)) continue;
-      if (attemptedRef.current.has(goal.id)) continue;
+  const claimedSet = useMemo(
+    () => new Set([...claimedToday, ...completedGoalIds]),
+    [claimedToday, completedGoalIds],
+  );
 
-      attemptedRef.current.add(goal.id);
+  const inFlightRef = useRef<Set<string>>(new Set());
+
+  function settleGoal(goalId: string) {
+    setExitingGoalIds((prev) => new Set(prev).add(goalId));
+    window.setTimeout(() => {
+      setDismissedGoals((prev) => new Set(prev).add(goalId));
+      setExitingGoalIds((prev) => {
+        const next = new Set(prev);
+        next.delete(goalId);
+        return next;
+      });
+    }, EXIT_MS);
+  }
+
+  const claimGoal = useCallback(
+    (goal: FocusGoal, cardEl: HTMLElement | null) => {
+      if (!isGoalComplete(goal)) return;
+      if (claimedSet.has(goal.id)) return;
+      if (inFlightRef.current.has(goal.id)) return;
+
+      inFlightRef.current.add(goal.id);
+      setClaimingGoalIds((prev) => new Set(prev).add(goal.id));
 
       awardGoalXp.mutate(
         { goalId: goal.id, date: today, xp: goal.xp },
         {
-          onSuccess: ({ xp: newXp, awarded }) => {
-            if (!awarded) return; // Already claimed elsewhere — nothing new to celebrate.
+          onSuccess: async ({ xp: newXp, awarded }) => {
+            if (!awarded) {
+              // Already claimed elsewhere (another tab/device) — just settle
+              // the card out of the way, nothing new to celebrate or animate.
+              inFlightRef.current.delete(goal.id);
+              setClaimingGoalIds((prev) => {
+                const next = new Set(prev);
+                next.delete(goal.id);
+                return next;
+              });
+              settleGoal(goal.id);
+              return;
+            }
 
             toast.success("Goal Completed", {
               description: pickCelebration(goal),
@@ -69,14 +112,20 @@ export function useFocusProgress(goals: FocusGoal[]) {
               body: `${goal.label} +${goal.xp} XP`,
               category: "notifyAnnouncements",
             });
-            window.setTimeout(() => {
-              setDismissedGoals((prev) => new Set(prev).add(goal.id));
-            }, 2400);
 
             const prevXp = newXp - goal.xp;
             const prevMilestone = getCurrentMilestone(prevXp);
             const nextMilestone = getCurrentMilestone(newXp);
-            if (prevMilestone.id !== nextMilestone.id) {
+            const milestoneLeveledUp = prevMilestone.id !== nextMilestone.id;
+
+            // Let the flying XP pill actually travel before the counter/bar update.
+            await flyXpToMilestone(cardEl, goal.xp);
+
+            setXpBumpTick((tick) => tick + 1);
+            bumpMilestoneBadge();
+
+            if (milestoneLeveledUp) {
+              setLeveledUpTier(nextMilestone.id);
               window.setTimeout(() => {
                 toast("Milestone Reached", {
                   description: `+${goal.xp} XP. New milestone completed: ${nextMilestone.name}.`,
@@ -90,18 +139,35 @@ export function useFocusProgress(goals: FocusGoal[]) {
                   body: `${nextMilestone.name} completed. Rewards are being prepared.`,
                   category: "notifyAnnouncements",
                 });
-              }, 800);
+              }, 200);
+              window.setTimeout(() => setLeveledUpTier(null), 2200);
             }
+
+            inFlightRef.current.delete(goal.id);
+            setClaimingGoalIds((prev) => {
+              const next = new Set(prev);
+              next.delete(goal.id);
+              return next;
+            });
+            settleGoal(goal.id);
           },
           onError: () => {
-            // Allow a retry on the next data change instead of getting stuck.
-            attemptedRef.current.delete(goal.id);
+            inFlightRef.current.delete(goal.id);
+            setClaimingGoalIds((prev) => {
+              const next = new Set(prev);
+              next.delete(goal.id);
+              return next;
+            });
+            toast.error("Couldn't claim that goal", {
+              description: "Please try again in a moment.",
+            });
           },
         },
       );
-    }
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [goals, today, claimedToday.join(","), completedGoalIds.join(",")]);
+    [claimedSet, today],
+  );
 
   const visibleGoals = goals.filter((goal) => !dismissedGoals.has(goal.id));
 
@@ -112,5 +178,11 @@ export function useFocusProgress(goals: FocusGoal[]) {
     nextMilestone: getNextMilestone(xp),
     milestonePct: milestoneProgress(xp),
     isLoading: xpLoading || claimsLoading || completedLoading,
+    claimGoal,
+    claimedGoalIds: claimedSet,
+    claimingGoalIds,
+    exitingGoalIds,
+    xpBumpTick,
+    leveledUpTier,
   };
 }

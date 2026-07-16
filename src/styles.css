@@ -838,3 +838,30 @@
 }
 
 
+
+/* ---------------------------------------------------------------
+   Focus / Goals & Milestones — XP fly-to-counter pill
+   Appended to document.body imperatively by src/lib/xp-fly.ts
+   (it needs to travel between two unrelated React subtrees), so
+   it's styled globally rather than via a component-scoped <style>.
+--------------------------------------------------------------- */
+.xp-fly-pill {
+  position: fixed;
+  z-index: 9999;
+  transform: translate(0, 0) scale(1);
+  translate: -50% -50%;
+  opacity: 1;
+  pointer-events: none;
+  padding: 0.25rem 0.625rem;
+  border-radius: 99px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--color-brand);
+  background: color-mix(in oklab, var(--brand) 16%, var(--color-card));
+  border: 1px solid color-mix(in oklab, var(--brand) 40%, transparent);
+  box-shadow: 0 4px 16px color-mix(in oklab, var(--brand) 30%, transparent);
+  white-space: nowrap;
+  transition: transform 650ms cubic-bezier(0.16, 1, 0.3, 1), opacity 650ms cubic-bezier(0.4, 0, 1, 1);
+  will-change: transform, opacity;
+}

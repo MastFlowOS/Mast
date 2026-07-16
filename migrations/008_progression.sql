@@ -139,11 +139,11 @@ begin
   get diagnostics v_inserted = row_count;
 
   if v_inserted then
-    update profiles set xp = coalesce(xp, 0) + p_xp
-    where id = v_user_id
+    update profiles set xp = coalesce(profiles.xp, 0) + p_xp
+    where profiles.id = v_user_id
     returning profiles.xp into v_xp;
   else
-    select profiles.xp into v_xp from profiles where id = v_user_id;
+    select profiles.xp into v_xp from profiles where profiles.id = v_user_id;
   end if;
 
   return query select coalesce(v_xp, 0), v_inserted;
@@ -155,6 +155,9 @@ comment on function award_goal_xp is
   '(user, goal, day) no matter how many times it is called — refreshes, '
   'duplicate tabs, and other devices can never double-award. Security '
   'definer so it can update profiles.xp without a client-writable UPDATE '
-  'policy on that column.';
+  'policy on that column. All references to the xp column are qualified '
+  'with profiles. to avoid ambiguity with the RETURNS TABLE(xp, ...) '
+  'out-parameter of the same name (root cause of a 400/42702 bug fixed '
+  '2026-07-16 — see migrations/014_fix_award_goal_xp_ambiguous_column.sql).';
 
 grant execute on function award_goal_xp(text, date, integer) to authenticated;

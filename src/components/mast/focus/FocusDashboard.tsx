@@ -31,7 +31,8 @@ export function FocusDashboard() {
   const { data: leadsPayload, isLoading: leadsLoading } = useLeads({ limit: 1000 });
   const { data: followups = [], isLoading: followupsLoading } = useFollowups({ limit: 1000 });
   const { data: completedGoalIds = [], isLoading: completedGoalsLoading } = useCompletedGoalIds();
-  const { data: progressionEvents = {}, isLoading: progressionEventsLoading } = useProgressionEventTotals();
+  const { data: progressionEvents = {}, isLoading: progressionEventsLoading } =
+    useProgressionEventTotals();
   const { permissions } = usePermissions();
 
   // AI Executive Briefing / Weekly Intelligence (Premium — Part 3 Phase 8).
@@ -47,7 +48,8 @@ export function FocusDashboard() {
   const leads = normalizeLeads(leadsPayload);
 
   const dailyUsed = account?.dailyUsage?.used ?? auth?.user?.dailyLeadsUsed ?? 0;
-  const dailyLimit = account?.dailyUsage?.limit ?? (auth?.user ? getPlan(auth.user.plan).dailyLeadLimit : 20);
+  const dailyLimit =
+    account?.dailyUsage?.limit ?? (auth?.user ? getPlan(auth.user.plan).dailyLeadLimit : 20);
   const plan = account?.subscription?.plan ?? auth?.user?.plan ?? "free";
 
   const ctx: FocusContext = useMemo(
@@ -105,11 +107,14 @@ export function FocusDashboard() {
   // Same idea for Weekly Intelligence — real numbers stay (snapshot.weeklyMetrics
   // is already computed from actual analytics), only the reflective text
   // becomes AI-generated for Premium. Same runtime-array guard as above.
-  const aiFocusForNextWeek = Array.isArray(aiWeekly?.focusForNextWeek) ? aiWeekly!.focusForNextWeek : [];
+  const aiFocusForNextWeek = Array.isArray(aiWeekly?.focusForNextWeek)
+    ? aiWeekly!.focusForNextWeek
+    : [];
   const weeklySummary = canWeekly && aiWeekly ? aiWeekly.reflection : snapshot.weeklySummary;
-  const weeklyRecommendation = canWeekly && aiWeekly && aiFocusForNextWeek.length > 0
-    ? aiFocusForNextWeek[0]
-    : snapshot.weeklyRecommendation;
+  const weeklyRecommendation =
+    canWeekly && aiWeekly && aiFocusForNextWeek.length > 0
+      ? aiFocusForNextWeek[0]
+      : snapshot.weeklyRecommendation;
 
   const {
     visibleGoals,
@@ -118,6 +123,11 @@ export function FocusDashboard() {
     nextMilestone,
     milestonePct,
     isLoading: progressLoading,
+    claimGoal,
+    claimedGoalIds,
+    claimingGoalIds,
+    exitingGoalIds,
+    leveledUpTier,
   } = useFocusProgress(snapshot.goals);
 
   const loading =
@@ -175,9 +185,16 @@ export function FocusDashboard() {
           currentName={currentMilestone.name}
           nextName={nextMilestone?.name ?? null}
           progressPct={milestonePct}
+          leveledUpTier={leveledUpTier}
         />
 
-        <FocusGoals goals={visibleGoals} />
+        <FocusGoals
+          goals={visibleGoals}
+          onClaim={claimGoal}
+          claimedGoalIds={claimedGoalIds}
+          claimingGoalIds={claimingGoalIds}
+          exitingGoalIds={exitingGoalIds}
+        />
 
         <FocusDiscoverCta />
       </section>
@@ -274,9 +291,23 @@ function FocusLoading() {
     <div className="focus-page-root">
       <section className="focus-hero">
         <div style={{ width: "100%", maxWidth: "520px" }}>
-          <div className="mast-skeleton" style={{ height: "0.75rem", width: "30%", borderRadius: "8px", margin: "0 auto 1.5rem" }} />
-          <div className="mast-skeleton" style={{ height: "3.5rem", width: "80%", borderRadius: "12px", margin: "0 auto 1rem" }} />
-          <div className="mast-skeleton" style={{ height: "1rem", width: "60%", borderRadius: "8px", margin: "0 auto" }} />
+          <div
+            className="mast-skeleton"
+            style={{
+              height: "0.75rem",
+              width: "30%",
+              borderRadius: "8px",
+              margin: "0 auto 1.5rem",
+            }}
+          />
+          <div
+            className="mast-skeleton"
+            style={{ height: "3.5rem", width: "80%", borderRadius: "12px", margin: "0 auto 1rem" }}
+          />
+          <div
+            className="mast-skeleton"
+            style={{ height: "1rem", width: "60%", borderRadius: "8px", margin: "0 auto" }}
+          />
         </div>
       </section>
 
@@ -336,5 +367,5 @@ function FocusLoading() {
 }
 
 function normalizeLeads(payload: Lead[] | { leads?: Lead[] } | undefined): Lead[] {
-  return Array.isArray(payload) ? payload : payload?.leads ?? [];
+  return Array.isArray(payload) ? payload : (payload?.leads ?? []);
 }

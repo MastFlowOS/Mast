@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -10,6 +10,7 @@ import {
   Sparkles,
   Target,
   TrendingUp,
+  Trophy,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,7 @@ import {
   type FocusRecommendation,
   type WeeklyMetric,
 } from "@/lib/focus";
+import { MILESTONE_XP_BADGE_ID } from "@/lib/xp-fly";
 
 // ── Greeting ────────────────────────────────────────────────────────────────
 
@@ -75,9 +77,7 @@ export function FocusGreeting({ period, name, subtitle }: GreetingProps) {
       </p>
 
       {/* Display heading */}
-      <h1 className={`focus-greeting-headline focus-greeting-${period}`}>
-        {greetingText}
-      </h1>
+      <h1 className={`focus-greeting-headline focus-greeting-${period}`}>{greetingText}</h1>
 
       {/* Subtitle */}
       <p className="focus-greeting-subtitle">{subtitle}</p>
@@ -635,9 +635,60 @@ export function FocusWeeklyReview({ metrics, summary, recommendation }: WeeklyRe
 
 type GoalsProps = {
   goals: FocusGoal[];
+  onClaim: (goal: FocusGoal, cardEl: HTMLElement | null) => void;
+  claimedGoalIds: Set<string>;
+  claimingGoalIds: Set<string>;
+  exitingGoalIds: Set<string>;
 };
 
-export function FocusGoals({ goals }: GoalsProps) {
+export function FocusGoals({
+  goals,
+  onClaim,
+  claimedGoalIds,
+  claimingGoalIds,
+  exitingGoalIds,
+}: GoalsProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  // FLIP bookkeeping: last-known position of each still-visible goal row,
+  // keyed by goal id, so that when a claimed card is removed and the grid
+  // reflows, the surviving cards can be animated from their old position to
+  // their new one instead of snapping (CSS Grid doesn't animate reflow on
+  // its own).
+  const prevRectsRef = useRef<Map<string, DOMRect>>(new Map());
+
+  useLayoutEffect(() => {
+    const container = listRef.current;
+    if (!container) return;
+
+    const prevRects = prevRectsRef.current;
+    const nextRects = new Map<string, DOMRect>();
+
+    const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-goal-id]"));
+    for (const row of rows) {
+      const id = row.dataset.goalId!;
+      const rect = row.getBoundingClientRect();
+      nextRects.set(id, rect);
+
+      const prev = prevRects.get(id);
+      if (prev) {
+        const dx = prev.left - rect.left;
+        const dy = prev.top - rect.top;
+        if (dx || dy) {
+          row.style.transition = "none";
+          row.style.transform = `translate(${dx}px, ${dy}px)`;
+          // Next frame: release the transform with a transition so the row
+          // glides into its new slot.
+          requestAnimationFrame(() => {
+            row.style.transition = "transform 420ms cubic-bezier(0.16, 1, 0.3, 1)";
+            row.style.transform = "";
+          });
+        }
+      }
+    }
+
+    prevRectsRef.current = nextRects;
+  }, [goals]);
+
   if (goals.length === 0) return null;
 
   return (
@@ -646,9 +697,17 @@ export function FocusGoals({ goals }: GoalsProps) {
         <h2 className="focus-section-title">Today's Goals</h2>
       </div>
 
-      <div className="goals-list">
+      <div className="goals-list" ref={listRef}>
         {goals.map((goal, index) => (
-          <GoalRow key={goal.id} goal={goal} index={index} />
+          <GoalRow
+            key={goal.id}
+            goal={goal}
+            index={index}
+            claimed={claimedGoalIds.has(goal.id)}
+            claiming={claimingGoalIds.has(goal.id)}
+            exiting={exitingGoalIds.has(goal.id)}
+            onClaim={onClaim}
+          />
         ))}
       </div>
 
@@ -689,17 +748,57 @@ export function FocusGoals({ goals }: GoalsProps) {
   );
 }
 
-function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
+function GoalRow({
+  goal,
+  index,
+  claimed,
+  claiming,
+  exiting,
+  onClaim,
+}: {
+  goal: FocusGoal;
+  index: number;
+  claimed: boolean;
+  claiming: boolean;
+  exiting: boolean;
+  onClaim: (goal: FocusGoal, cardEl: HTMLElement | null) => void;
+}) {
   const pct = goalProgress(goal);
   const complete = isGoalComplete(goal);
+  const claimable = complete && !claimed && !claiming;
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [pulsing, setPulsing] = useState(false);
+
+  function handleClick() {
+    if (!claimable) return;
+    setPulsing(true);
+    window.setTimeout(() => setPulsing(false), 420);
+    onClaim(goal, cardRef.current);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    handleClick();
+  }
 
   return (
     <div
+      ref={cardRef}
+      data-goal-id={goal.id}
       className={cn(
         "goal-row animate-fade-up",
         complete && "goal-row-complete",
+        claimable && "goal-row-claimable",
+        pulsing && "goal-row-pulse",
+        exiting && "goal-row-exit",
         staggerDelay(index, 70),
       )}
+      role={claimable ? "button" : undefined}
+      tabIndex={claimable ? 0 : undefined}
+      aria-label={claimable ? `Claim ${goal.xp} XP for ${goal.label}` : undefined}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
     >
       {/* Completion indicator */}
       <div className={cn("goal-check", complete ? "goal-check-done" : "goal-check-pending")}>
@@ -710,12 +809,16 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
         )}
       </div>
 
-      {/* Label + progress bar */}
+      {/* Label + progress bar / completed badge */}
       <div className="goal-content">
         <div className="goal-top">
           <p className={cn("goal-label", complete && "goal-label-done")}>{goal.label}</p>
           <div className="goal-meta">
-            <span className="goal-xp">+{goal.xp} XP</span>
+            {complete ? (
+              <span className="goal-completed-badge">Completed</span>
+            ) : (
+              <span className="goal-xp">+{goal.xp} XP</span>
+            )}
             <span className="goal-fraction">
               {Math.min(goal.current, goal.target)}/{goal.target}
             </span>
@@ -724,7 +827,11 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
 
         <div className="goal-track">
           <div
-            className={cn("goal-fill animate-progress", complete ? "goal-fill-done" : "goal-fill-active")}
+            className={cn(
+              "goal-fill",
+              !complete && "animate-progress",
+              complete ? "goal-fill-done" : "goal-fill-active",
+            )}
             style={{ width: `${pct}%` }}
           />
         </div>
@@ -732,6 +839,7 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
 
       <style>{`
         .goal-row {
+          position: relative;
           display: flex;
           align-items: center;
           gap: 0.875rem;
@@ -739,12 +847,31 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
           border-radius: 12px;
           border: 1px solid var(--color-border);
           background: var(--color-card);
-          transition: border-color 250ms ease, background 250ms ease;
+          transition: border-color 250ms ease, background 250ms ease, opacity 250ms ease;
         }
         .goal-row-complete {
-          border-color: color-mix(in oklab, var(--success) 25%, transparent);
-          background: color-mix(in oklab, var(--success) 5%, var(--card));
-          opacity: 0.85;
+          border-color: color-mix(in oklab, var(--success) 55%, transparent);
+          background: color-mix(in oklab, var(--success) 45%, var(--card));
+        }
+        .goal-row-claimable {
+          cursor: pointer;
+        }
+        .goal-row-claimable:hover {
+          border-color: color-mix(in oklab, var(--success) 70%, transparent);
+          background: color-mix(in oklab, var(--success) 50%, var(--card));
+        }
+        .goal-row-claimable:focus-visible {
+          outline: 2px solid var(--color-success);
+          outline-offset: 2px;
+        }
+
+        .goal-row-pulse {
+          animation: goal-claim-pulse 420ms cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .goal-row-exit {
+          animation: goal-exit-fade 380ms cubic-bezier(0.4, 0, 1, 1) forwards;
+          pointer-events: none;
         }
 
         .goal-check {
@@ -762,8 +889,8 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
           color: var(--color-muted-foreground);
         }
         .goal-check-done {
-          border-color: color-mix(in oklab, var(--success) 40%, transparent);
-          background: color-mix(in oklab, var(--success) 15%, transparent);
+          border-color: color-mix(in oklab, var(--success) 55%, transparent);
+          background: color-mix(in oklab, var(--success) 25%, transparent);
           color: var(--color-success);
         }
 
@@ -815,6 +942,18 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
           text-transform: uppercase;
         }
 
+        .goal-completed-badge {
+          font-size: 0.625rem;
+          font-weight: 800;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          color: var(--color-success);
+          background: color-mix(in oklab, var(--success) 20%, transparent);
+          border: 1px solid color-mix(in oklab, var(--success) 40%, transparent);
+          border-radius: 99px;
+          padding: 0.125rem 0.5rem;
+        }
+
         .goal-fraction {
           font-size: 0.75rem;
           font-weight: 500;
@@ -847,6 +986,18 @@ function GoalRow({ goal, index }: { goal: FocusGoal; index: number }) {
         .goal-fill-done {
           background: var(--color-success);
         }
+
+        @keyframes goal-claim-pulse {
+          0%   { transform: scale(1); box-shadow: 0 0 0 0 color-mix(in oklab, var(--success) 45%, transparent); }
+          40%  { transform: scale(0.96); box-shadow: 0 0 0 6px color-mix(in oklab, var(--success) 25%, transparent); }
+          70%  { transform: scale(1.015); box-shadow: 0 0 0 10px color-mix(in oklab, var(--success) 0%, transparent); }
+          100% { transform: scale(1); box-shadow: 0 0 0 0 color-mix(in oklab, var(--success) 0%, transparent); }
+        }
+
+        @keyframes goal-exit-fade {
+          0%   { opacity: 1; transform: scale(1); }
+          100% { opacity: 0; transform: scale(0.92); }
+        }
       `}</style>
     </div>
   );
@@ -859,15 +1010,27 @@ type MilestonesProps = {
   currentName: string;
   nextName: string | null;
   progressPct: number;
+  leveledUpTier?: string | null;
 };
 
-export function FocusMilestones({ xp, currentName, nextName, progressPct }: MilestonesProps) {
+export function FocusMilestones({
+  xp,
+  currentName,
+  nextName,
+  progressPct,
+  leveledUpTier,
+}: MilestonesProps) {
   const currentIndex = MILESTONE_TIERS.findIndex((tier) => tier.name === currentName);
   const nextTier = MILESTONE_TIERS.find((t) => t.name === nextName);
   const trackComplete = !nextName;
 
   return (
-    <section className="animate-fade-up delay-400 milestones-block">
+    <section
+      className={cn(
+        "animate-fade-up delay-400 milestones-block",
+        leveledUpTier && "milestones-block-leveled-up",
+      )}
+    >
       <div className="focus-section-header">
         <h2 className="focus-section-title">Milestone Journey</h2>
       </div>
@@ -882,17 +1045,14 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
               : "Keep grinding. More quests. More rewards. Coming soon."}
           </p>
         </div>
-        <div className="milestone-xp-badge">
+        <div id={MILESTONE_XP_BADGE_ID} className="milestone-xp-badge">
           {xp.toLocaleString()} <span className="milestone-xp-unit">XP</span>
         </div>
       </div>
 
       {/* Progress bar */}
       <div className="milestone-track">
-        <div
-          className="milestone-fill animate-progress"
-          style={{ width: `${progressPct}%` }}
-        />
+        <div className="milestone-fill animate-progress" style={{ width: `${progressPct}%` }} />
       </div>
 
       {/* Tier dots */}
@@ -900,18 +1060,34 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
         {MILESTONE_TIERS.map((tier, index) => {
           const unlocked = xp >= tier.xpRequired;
           const active = index === currentIndex;
+          const justLeveledUp = leveledUpTier === tier.id;
           return (
             <div
               key={tier.id}
               className={cn("milestone-tier-item", !unlocked && "milestone-tier-locked")}
             >
-              <div
-                className={cn(
-                  "milestone-dot",
-                  active ? "milestone-dot-active" : unlocked ? "milestone-dot-unlocked" : "milestone-dot-locked",
+              <div className="milestone-dot-wrap">
+                <div
+                  className={cn(
+                    "milestone-dot",
+                    active
+                      ? "milestone-dot-active"
+                      : unlocked
+                        ? "milestone-dot-unlocked"
+                        : "milestone-dot-locked",
+                    justLeveledUp && "milestone-dot-levelup",
+                  )}
+                />
+                {justLeveledUp && (
+                  <>
+                    <span className="milestone-dot-ring" aria-hidden="true" />
+                    <Trophy className="milestone-levelup-icon" aria-hidden="true" />
+                  </>
                 )}
-              />
-              <span className={cn("milestone-tier-label", active ? "milestone-tier-label-active" : "")}>
+              </div>
+              <span
+                className={cn("milestone-tier-label", active ? "milestone-tier-label-active" : "")}
+              >
                 {tier.name}
               </span>
             </div>
@@ -946,6 +1122,7 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
         }
 
         .milestones-block {
+          position: relative;
           display: flex;
           flex-direction: column;
           gap: 0;
@@ -954,6 +1131,13 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
           background: color-mix(in oklab, var(--card) 96%, var(--brand) 4%);
           padding: 2rem 2.25rem 1.75rem;
           overflow: hidden;
+          transition: border-color 400ms ease, box-shadow 400ms ease;
+        }
+
+        .milestones-block-leveled-up {
+          border-color: color-mix(in oklab, var(--brand) 55%, transparent);
+          box-shadow: 0 0 0 1px color-mix(in oklab, var(--brand) 20%, transparent), 0 0 32px color-mix(in oklab, var(--brand) 25%, transparent);
+          animation: milestone-block-flash 900ms ease;
         }
 
         .milestone-header {
@@ -992,6 +1176,10 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
           line-height: 1.2;
         }
 
+        .milestone-xp-badge-bump {
+          animation: milestone-xp-badge-bump 700ms cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
         .milestone-xp-unit {
           font-size: 0.6875rem;
           font-weight: 700;
@@ -1011,6 +1199,7 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
           height: 100%;
           border-radius: 99px;
           background: linear-gradient(90deg, var(--color-brand), color-mix(in oklab, var(--brand) 60%, oklch(0.7 0.2 300)));
+          transition: width 700ms cubic-bezier(0.16, 1, 0.3, 1);
         }
 
         .milestone-tiers {
@@ -1034,12 +1223,19 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
           opacity: 0.38;
         }
 
+        .milestone-dot-wrap {
+          position: relative;
+          display: grid;
+          place-items: center;
+        }
+
         .milestone-dot {
           width: 0.5rem;
           height: 0.5rem;
           border-radius: 50%;
           border: 1.5px solid;
           flex-shrink: 0;
+          transition: transform 300ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 300ms ease;
         }
         .milestone-dot-active {
           border-color: var(--color-brand);
@@ -1053,6 +1249,29 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
         .milestone-dot-locked {
           border-color: var(--color-border);
           background: var(--color-background);
+        }
+        .milestone-dot-levelup {
+          animation: milestone-dot-levelup 900ms cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .milestone-dot-ring {
+          position: absolute;
+          width: 0.5rem;
+          height: 0.5rem;
+          border-radius: 50%;
+          border: 1.5px solid var(--color-brand);
+          animation: milestone-ring-expand 900ms cubic-bezier(0, 0, 0.2, 1);
+          pointer-events: none;
+        }
+
+        .milestone-levelup-icon {
+          position: absolute;
+          top: -1.25rem;
+          width: 0.875rem;
+          height: 0.875rem;
+          color: var(--color-brand);
+          animation: milestone-trophy-pop 1.1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+          pointer-events: none;
         }
 
         .milestone-tier-label {
@@ -1080,6 +1299,37 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
           font-weight: 600;
         }
 
+        @keyframes milestone-block-flash {
+          0%   { background: color-mix(in oklab, var(--card) 96%, var(--brand) 4%); }
+          30%  { background: color-mix(in oklab, var(--card) 82%, var(--brand) 18%); }
+          100% { background: color-mix(in oklab, var(--card) 96%, var(--brand) 4%); }
+        }
+
+        @keyframes milestone-xp-badge-bump {
+          0%   { transform: scale(1); }
+          35%  { transform: scale(1.16); }
+          65%  { transform: scale(0.97); }
+          100% { transform: scale(1); }
+        }
+
+        @keyframes milestone-dot-levelup {
+          0%   { transform: scale(1); }
+          40%  { transform: scale(1.9); }
+          100% { transform: scale(1); }
+        }
+
+        @keyframes milestone-ring-expand {
+          0%   { transform: scale(1);   opacity: 0.8; }
+          100% { transform: scale(3.2); opacity: 0; }
+        }
+
+        @keyframes milestone-trophy-pop {
+          0%   { opacity: 0; transform: translateY(4px) scale(0.6); }
+          25%  { opacity: 1; transform: translateY(0) scale(1.1); }
+          75%  { opacity: 1; transform: translateY(-2px) scale(1); }
+          100% { opacity: 0; transform: translateY(-8px) scale(0.9); }
+        }
+
         @media (max-width: 680px) {
           .milestones-block {
             padding: 1.5rem 1.25rem 1.375rem;
@@ -1095,10 +1345,7 @@ export function FocusMilestones({ xp, currentName, nextName, progressPct }: Mile
 export function FocusDiscoverCta() {
   return (
     <div className="animate-fade-up delay-500 discover-cta-wrap">
-      <Link
-        to="/dashboard/leads"
-        className="discover-cta-link"
-      >
+      <Link to="/dashboard/leads" className="discover-cta-link">
         <Search className="discover-cta-icon" />
         Discover Opportunities
         <ArrowRight className="discover-cta-arrow" />

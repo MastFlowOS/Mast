@@ -1,12 +1,89 @@
-// Fixed, page-wide ambience behind every section of the landing page:
-// a slow, non-rhythmic "liquid gold" drift (replaces the old pulsing glow
-// blob) plus a barely-visible starfield for a night-sky feel. Both sit at
-// z-index -1 so they never fight normal content for stacking order.
+import { useEffect, useState } from "react";
+
 export function LandingAtmosphere() {
+  const [stars, setStars] = useState<{ id: number; x: number; y: number; size: number; delay: number; duration: number }[]>([]);
+
+  useEffect(() => {
+    // Generate organic star positions only once on mount
+    const starList = Array.from({ length: 60 }).map((_, i) => ({
+      id: i,
+      x: Math.random() * 100,
+      y: Math.random() * 100,
+      size: Math.random() * 1.6 + 0.6, // sizes 0.6px to 2.2px
+      delay: Math.random() * 4,
+      duration: Math.random() * 3 + 3, // 3s to 6s twinkle cycle
+    }));
+    setStars(starList);
+  }, []);
+
   return (
-    <>
-      <div className="liquid-gold-bg" aria-hidden="true" />
-      <div className="starfield" aria-hidden="true" />
-    </>
+    <div className="absolute inset-0 overflow-hidden pointer-events-none z-0 min-h-full">
+      {/* Deep sky base color */}
+      <div className="absolute inset-0 bg-[#02040c]" />
+
+      {/* Cloudy nebula vibe: extremely soft, drifting colored blobs of extremely low opacity */}
+      <div className="absolute top-[8%] left-[10%] w-[70vw] h-[70vw] rounded-full bg-indigo-950/8 blur-[130px] mix-blend-screen animate-cloud-drift-1" />
+      <div className="absolute bottom-[25%] right-[5%] w-[65vw] h-[65vw] rounded-full bg-purple-950/8 blur-[110px] mix-blend-screen animate-cloud-drift-2" />
+      <div className="absolute top-[45%] right-[20%] w-[50vw] h-[50vw] rounded-full bg-amber-950/4 blur-[110px] mix-blend-screen animate-cloud-drift-3" />
+
+      {/* Stars twinkle overlay */}
+      <div className="absolute inset-0">
+        {stars.map((star) => (
+          <div
+            key={star.id}
+            className="absolute bg-white rounded-full animate-twinkle"
+            style={{
+              left: `${star.x}%`,
+              top: `${star.y}%`,
+              width: `${star.size}px`,
+              height: `${star.size}px`,
+              animationDelay: `${star.delay}s`,
+              animationDuration: `${star.duration}s`,
+              opacity: 0.1 + Math.random() * 0.45,
+            }}
+          />
+        ))}
+      </div>
+
+      {/* Liquid Gold Flowing Streams */}
+      <svg className="absolute inset-0 w-full h-full opacity-[0.25]" viewBox="0 0 1440 5000" fill="none" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="gold-stream-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#e8c77e" stopOpacity="0.02" />
+            <stop offset="20%" stopColor="#c9a66b" stopOpacity="0.3" />
+            <stop offset="50%" stopColor="#f2dca0" stopOpacity="0.4" />
+            <stop offset="80%" stopColor="#c9a66b" stopOpacity="0.3" />
+            <stop offset="100%" stopColor="#e8c77e" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        
+        {/* Stream 1 - Left side flow */}
+        <path
+          d="M 120,0 C 350,800 -100,1600 250,2400 C 600,3200 50,4000 180,5000"
+          stroke="url(#gold-stream-grad)"
+          strokeWidth="2"
+          strokeLinecap="round"
+          className="liquid-gold-path-1"
+        />
+
+        {/* Stream 2 - Right side flow */}
+        <path
+          d="M 1320,300 C 1000,1100 1450,1900 1100,2700 C 700,3500 1350,4300 1200,5000"
+          stroke="url(#gold-stream-grad)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          className="liquid-gold-path-2"
+        />
+
+        {/* Stream 3 - Center bottom flow */}
+        <path
+          d="M 600,1500 C 850,2300 300,3100 750,4100"
+          stroke="url(#gold-stream-grad)"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          className="liquid-gold-path-3"
+        />
+      </svg>
+    </div>
   );
 }

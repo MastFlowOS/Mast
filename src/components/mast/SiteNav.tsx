@@ -102,22 +102,17 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
 
   return (
     <nav
-      className={`sticky top-0 z-50 transition-all duration-300 relative overflow-hidden ${
+      className={`sticky top-0 z-50 transition-all duration-300 overflow-hidden ${
         disableBackdropBlur
           ? scrolled
-            ? "border-b border-white/[0.06] shadow-[0_1px_0_0_rgba(255,255,255,0.04)]"
-            : "border-b border-transparent"
+            ? "border-b border-brand/20 shadow-[0_4px_30px_rgba(201,166,107,0.05)] bg-[#02040c]/85"
+            : "border-b border-transparent bg-transparent"
           : scrolled
-            ? "border-b border-border/60 bg-background/85 backdrop-blur-2xl shadow-[0_1px_0_0_rgba(255,255,255,0.04)]"
-            : "border-b border-transparent bg-background/40 backdrop-blur-xl"
+            ? "border-b border-brand/20 bg-background/80 backdrop-blur-md shadow-[0_4px_30px_rgba(201,166,107,0.05)]"
+            : "border-b border-transparent bg-transparent backdrop-blur-none"
       }`}
-      style={
-        disableBackdropBlur
-          ? { backgroundColor: `color-mix(in oklab, var(--landing-nav-bg, #000000) ${scrolled ? 100 : 96}%, transparent)` }
-          : undefined
-      }
     >
-      {disableBackdropBlur && (
+      {disableBackdropBlur && scrolled && (
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 opacity-90"
@@ -141,7 +136,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
                   key={l.label}
                   href={`/${l.anchor}`}
                   onClick={(e) => handleAnchorClick(e, l.anchor!)}
-                  className="relative px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors duration-150 rounded-lg hover:bg-white/[0.04] group"
+                  className="relative px-3 py-2 text-sm font-medium text-muted-foreground hover:text-brand transition-colors duration-150 rounded-lg hover:bg-brand/5 group"
                 >
                   {l.label}
                 </a>
@@ -149,15 +144,15 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
                 <Link
                   key={l.label}
                   to={l.to as "/"}
-                  className={`relative px-3 py-2 text-sm font-medium transition-colors duration-150 rounded-lg hover:bg-white/[0.04] group ${
+                  className={`relative px-3 py-2 text-sm font-medium transition-colors duration-150 rounded-lg hover:bg-brand/5 group ${
                     pathname === l.to
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
+                      ? "text-brand"
+                      : "text-muted-foreground hover:text-brand"
                   }`}
                 >
                   {l.label}
                   {pathname === l.to && (
-                    <span className="absolute inset-x-3 -bottom-px h-px bg-brand/60" />
+                    <span className="absolute inset-x-3 -bottom-px h-0.5 bg-brand" />
                   )}
                 </Link>
               ),
@@ -219,7 +214,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
       {/* Mobile menu */}
       {mobileOpen && (
         <div
-          className={`md:hidden border-t border-border/60 bg-background/95 px-6 py-4 space-y-1 animate-fade-up ${
+          className={`md:hidden border-t border-brand/20 bg-[#02040c]/95 px-6 py-4 space-y-1 animate-fade-up ${
             disableBackdropBlur ? "" : "backdrop-blur-xl"
           }`}
         >
@@ -229,7 +224,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
                 key={l.label}
                 href={`/${l.anchor}`}
                 onClick={(e) => handleAnchorClick(e, l.anchor!)}
-                className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground rounded-lg hover:bg-white/[0.05] transition-colors"
+                className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
               >
                 {l.label}
               </a>
@@ -237,25 +232,25 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
               <Link
                 key={l.label}
                 to={l.to as "/"}
-                className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground rounded-lg hover:bg-white/[0.05] transition-colors"
+                className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
                 onClick={() => setMobileOpen(false)}
               >
                 {l.label}
               </Link>
             ),
           )}
-          <div className="pt-2 border-t border-border/50 space-y-1">
+          <div className="pt-2 border-t border-brand/10 space-y-1">
             {user ? (
               <>
                 <Link
                   to="/dashboard"
-                  className="block px-3 py-2.5 text-sm font-medium text-muted-foreground"
+                  className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
                   onClick={() => setMobileOpen(false)}
                 >
                   Focus
                 </Link>
                 <button
-                  className="block w-full text-left px-3 py-2.5 text-sm font-medium text-muted-foreground"
+                  className="block w-full text-left px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
                   onClick={() => {
                     setMobileOpen(false);
                     handleLogout();
@@ -267,7 +262,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
             ) : (
               <Link
                 to="/login"
-                className="block px-3 py-2.5 text-sm font-medium text-muted-foreground"
+                className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
                 onClick={() => setMobileOpen(false)}
               >
                 Login

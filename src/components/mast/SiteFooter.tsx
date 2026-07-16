@@ -18,28 +18,28 @@ const socialButtons = [
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-border/50 pt-16 pb-10 px-6 mt-8 relative overflow-hidden">
+    <footer className="border-t border-border/50 pt-10 pb-6 px-6 mt-4 relative overflow-hidden">
       {/* Subtle glow */}
       <div
-        className="pointer-events-none absolute bottom-0 left-1/2 -translate-x-1/2 size-[400px] opacity-10 rounded-full"
+        className="pointer-events-none absolute bottom-0 left-1/2 -translate-x-1/2 size-[300px] opacity-10 rounded-full"
         style={{ background: "radial-gradient(closest-side, var(--brand), transparent)" }}
       />
 
       <div className="max-w-7xl mx-auto relative">
-        <div className="grid md:grid-cols-5 gap-10 mb-14">
+        <div className="grid md:grid-cols-5 gap-6 mb-8">
           {/* Brand col */}
           <div className="md:col-span-2">
-            <div className="flex items-center gap-2.5 mb-4">
-              <BrandMark size={28} />
-              <span className="font-bold tracking-[0.12em] text-foreground">MAST</span>
+            <div className="flex items-center gap-2 mb-3">
+              <BrandMark size={24} />
+              <span className="font-bold tracking-[0.12em] text-foreground text-sm">MAST</span>
             </div>
-            <p className="text-sm text-muted-foreground max-w-xs leading-relaxed">
+            <p className="text-xs text-muted-foreground max-w-xs leading-relaxed">
               The premium AI sales workspace for managing relationships and pipeline. Built for modern agencies, freelancers, and growth operators.
             </p>
 
             {/* Socials — only rendered if URLs are configured */}
             {socialButtons.length > 0 && (
-              <div className="flex items-center gap-2 mt-6">
+              <div className="flex items-center gap-2 mt-4">
                 {socialButtons.map(({ key, icon: Icon, label }) => (
                   <a
                     key={key}
@@ -47,9 +47,9 @@ export function SiteFooter() {
                     aria-label={label}
                     target={key === "email" ? undefined : "_blank"}
                     rel={key === "email" ? undefined : "noopener noreferrer"}
-                    className="size-8 rounded-lg border border-border/60 grid place-items-center text-muted-foreground hover:text-foreground hover:border-brand/30 hover:bg-brand/5 transition-all"
+                    className="size-7 rounded-lg border border-border/60 grid place-items-center text-muted-foreground hover:text-foreground hover:border-brand/30 hover:bg-brand/5 transition-all"
                   >
-                    <Icon className="size-4" />
+                    <Icon className="size-3.5" />
                   </a>
                 ))}
               </div>
@@ -86,7 +86,7 @@ export function SiteFooter() {
         </div>
 
         {/* Bottom bar */}
-        <div className="pt-8 border-t border-border/40 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-muted-foreground">
+        <div className="pt-5 border-t border-border/40 flex flex-col sm:flex-row justify-between items-center gap-3 text-[11px] text-muted-foreground">
           <span>© 2026 Mast Intelligence Inc.</span>
           <span className="text-muted-foreground/60">Built for operators who run a real sales process.</span>
         </div>
@@ -98,13 +98,13 @@ export function SiteFooter() {
 function FooterCol({ title, links }: { title: string; links: [string, string][] }) {
   return (
     <div>
-      <h4 className="text-[10px] font-bold uppercase tracking-[0.18em] text-foreground mb-5">{title}</h4>
-      <ul className="space-y-3">
+      <h4 className="text-[10px] font-bold uppercase tracking-[0.18em] text-foreground mb-3">{title}</h4>
+      <ul className="space-y-2">
         {links.map(([label, href]) => (
           <li key={label}>
             <Link
               to={href as "/"}
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors duration-150"
+              className="text-[13px] text-muted-foreground hover:text-foreground transition-colors duration-150"
             >
               {label}
             </Link>

@@ -116,16 +116,11 @@ export const HUB_CITIES: (LatLon & { name: string })[] = [
 
 // ---------------------------------------------------------------------------
 // Target countries — the globe rotates through these and "zooms in" to
-// reveal a dense field of gold opportunity dots scattered across the
-// country's landmass. Outlines are intentionally low-fidelity (same art
-// style as CONTINENTS above), just detailed enough to read as the country
-// once dots are rasterised inside them.
+// reveal 7-8 gold opportunity dots scattered across the country's landmass.
+// Outlines are intentionally low-fidelity (same art style as CONTINENTS
+// above), just detailed enough to read as the country once traced in gold.
 // ---------------------------------------------------------------------------
-const COUNTRY_POLYS: Record<string, Poly> = {
-  Egypt: [
-    [25, 31.5], [33.2, 31.7], [34.9, 29.9], [34.3, 27.9],
-    [36.9, 22.0], [24.7, 22.0], [25, 31.5],
-  ],
+export const COUNTRY_POLYS: Record<string, Poly> = {
   "United States": [
     [-124.7, 48.4], [-123, 49], [-95, 49], [-83, 42.5], [-79, 43.5],
     [-71, 45], [-67, 45], [-70, 41], [-75, 38.5], [-77, 34], [-80, 26],
@@ -133,23 +128,45 @@ const COUNTRY_POLYS: Record<string, Poly> = {
     [-106, 31.8], [-109, 31.3], [-114.7, 32.5], [-117, 32.5], [-122, 37],
     [-124, 40], [-124.7, 48.4],
   ],
-  "United Kingdom": [
-    [-5.5, 58.6], [-3, 58.6], [-1.7, 57.7], [-2, 55.8], [0.3, 52.9],
-    [1.6, 51.4], [-0.9, 50.7], [-3, 50.2], [-5.6, 50], [-4.3, 51.2],
-    [-5.3, 51.9], [-4.7, 52.9], [-4.2, 53.4], [-3, 54.5], [-5, 54.6],
-    [-5.5, 55], [-5.5, 58.6],
-  ],
-  France: [
-    [-1.8, 50.9], [1.6, 51], [3.1, 50.3], [4.2, 49.9], [7.6, 49.0],
-    [7.6, 47.6], [6.7, 45.9], [7.0, 44.1], [7.5, 43.8], [6.5, 43.1],
-    [4.5, 43.3], [3, 42.5], [-1.4, 43.3], [-1.7, 44.0], [-1.2, 46.2],
-    [-2.0, 47.3], [-4.8, 48.6], [-1.8, 50.9],
-  ],
   Canada: [
     [-141, 69.5], [-125, 55], [-130, 52], [-125, 49], [-95, 49],
     [-84, 46], [-79.5, 43.5], [-76, 44.5], [-70, 45], [-64, 46],
     [-60, 46.5], [-55, 47.5], [-53, 47], [-56, 52], [-65, 58],
     [-75, 62], [-85, 67], [-95, 68], [-110, 68], [-125, 69], [-141, 69.5],
+  ],
+  Brazil: [
+    [-50, 5], [-44, 0], [-35, -8], [-38, -13], [-40, -20], [-48, -25],
+    [-53, -33], [-58, -33], [-57, -25], [-62, -22], [-66, -18], [-70, -10],
+    [-73, -5], [-70, 0], [-67, 2], [-60, 4], [-50, 5],
+  ],
+  Egypt: [
+    [25, 31.5], [33.2, 31.7], [34.9, 29.9], [34.3, 27.9],
+    [36.9, 22.0], [24.7, 22.0], [25, 31.5],
+  ],
+  Germany: [
+    [6, 51.5], [7, 53.5], [8.5, 55], [11, 54.5], [13.5, 54.3],
+    [14.5, 52.5], [15, 51], [14.5, 50], [12.5, 48], [13, 47.5],
+    [10, 47.3], [8.5, 47.6], [7.5, 48.9], [6, 49.5], [6, 51.5],
+  ],
+  Italy: [
+    [7, 45], [9, 46.5], [12, 46.6], [13.7, 46.5], [13.9, 45.6],
+    [12.3, 44.2], [14, 42.3], [16, 41.9], [17.2, 40.1], [16, 39.8],
+    [15.7, 38.2], [15.1, 37.5], [13.4, 38.1], [12.4, 37.9], [13.7, 37.5],
+    [15.6, 38], [16.5, 38.2], [18.4, 40.1], [18.5, 40.7], [17, 41.9],
+    [15, 41.9], [14, 42.5], [13.6, 43.6], [12.3, 44.1], [10.5, 43.9],
+    [9, 44.4], [7.5, 44], [7, 45],
+  ],
+  Spain: [
+    [-9, 43.5], [-8, 43.7], [-1.5, 43.4], [3, 42.4], [3, 41],
+    [0, 40.5], [-0.5, 38.5], [0.2, 38], [-1.5, 37], [-4, 36.7],
+    [-6, 37], [-7.5, 37.2], [-7, 38.5], [-9, 39.5], [-9.3, 41.9], [-9, 43.5],
+  ],
+  China: [
+    [75, 40], [80, 45], [87, 49], [97, 52], [110, 53], [120, 50],
+    [125, 48], [130, 46], [131, 43], [126, 42], [124, 40], [121, 38],
+    [119, 34], [121, 31], [122, 29], [120, 27], [117, 23], [113, 22],
+    [108, 21], [106, 22], [102, 22], [99, 25], [97, 28], [92, 28],
+    [88, 28], [80, 30], [76, 34], [75, 40],
   ],
   Australia: CONTINENTS[6],
 };
@@ -161,24 +178,58 @@ function centroidOf(poly: Poly): LatLon {
   return { lat: sLat / poly.length, lon: sLon / poly.length };
 }
 
-function generateCountryDots(poly: Poly): LatLon[] {
-  const dots: LatLon[] = [];
+// A sparse, well-spread scatter of 7–8 "opportunity" points across a
+// country's landmass — not a dense fill grid. Deterministic per-country
+// (seeded by name) so the same country always reveals the same points.
+function seededRandom(seed: number) {
+  let s = seed % 2147483647;
+  if (s <= 0) s += 2147483646;
+  return () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+}
+
+function generateCountryDots(poly: Poly, seed: number): LatLon[] {
   let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
   for (const [lon, lat] of poly) {
     minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon);
     minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
   }
-  // Adaptive grid step so a tiny country (UK) still gets a satisfying
-  // scatter of dots, and a huge one (Canada) doesn't flood the canvas
-  // with thousands of them.
-  const area = Math.max(1, (maxLon - minLon) * (maxLat - minLat));
-  const step = Math.min(1.7, Math.max(0.55, Math.sqrt(area / 210)));
-  for (let lat = minLat; lat <= maxLat; lat += step) {
-    for (let lon = minLon; lon <= maxLon; lon += step) {
-      if (pointInPolygon(lon, lat, poly)) {
-        const jitter = () => (Math.random() - 0.5) * step * 0.5;
-        dots.push({ lat: lat + jitter(), lon: lon + jitter() });
-      }
+  const target = 7 + (seed % 2); // 7 or 8 points
+  const minSep = Math.max(maxLon - minLon, maxLat - minLat) * 0.11;
+  const rand = seededRandom(seed + 1);
+  const dots: LatLon[] = [];
+  let attempts = 0;
+  while (dots.length < target && attempts < 2500) {
+    attempts++;
+    const lon = minLon + rand() * (maxLon - minLon);
+    const lat = minLat + rand() * (maxLat - minLat);
+    if (!pointInPolygon(lon, lat, poly)) continue;
+    const tooClose = dots.some((d) => {
+      const dLon = d.lon - lon, dLat = d.lat - lat;
+      return Math.sqrt(dLon * dLon + dLat * dLat) < minSep;
+    });
+    if (tooClose) continue;
+    dots.push({ lat, lon });
+  }
+  // Fallback for very thin shapes (e.g. Italy's boot) that can starve the
+  // rejection sampler — relax spacing until we hit the target count.
+  let relax = minSep;
+  while (dots.length < target && relax > 0.1) {
+    relax *= 0.7;
+    let guard = 0;
+    while (dots.length < target && guard < 2500) {
+      guard++;
+      const lon = minLon + rand() * (maxLon - minLon);
+      const lat = minLat + rand() * (maxLat - minLat);
+      if (!pointInPolygon(lon, lat, poly)) continue;
+      const tooClose = dots.some((d) => {
+        const dLon = d.lon - lon, dLat = d.lat - lat;
+        return Math.sqrt(dLon * dLon + dLat * dLat) < relax;
+      });
+      if (tooClose) continue;
+      dots.push({ lat, lon });
     }
   }
   return dots;
@@ -189,12 +240,20 @@ export type CountryTarget = {
   lat: number;
   lon: number;
   dots: LatLon[];
+  /** Raw polygon vertices ({lat, lon}) for drawing the gold country outline. */
+  outline: LatLon[];
 };
 
 export const TARGET_COUNTRIES: CountryTarget[] = Object.entries(COUNTRY_POLYS).map(
-  ([name, poly]) => {
+  ([name, poly], i) => {
     const c = centroidOf(poly);
-    return { name, lat: c.lat, lon: c.lon, dots: generateCountryDots(poly) };
+    return {
+      name,
+      lat: c.lat,
+      lon: c.lon,
+      dots: generateCountryDots(poly, i * 97 + 13),
+      outline: poly.map(([lon, lat]) => ({ lat, lon })),
+    };
   },
 );
 

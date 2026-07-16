@@ -19,8 +19,8 @@
       restriction — the entire page stays blank indefinitely.
 
       Fix: load as media="print" (non-blocking), swap to media="all" on load.
-      The page renders immediately with the system font stack; Inter swaps in
-      once the stylesheet arrives. font-display:swap in the URL ensures individual
+      The page renders immediately with the system font stack; Plus Jakarta Sans
+      swaps in once the stylesheet arrives. font-display:swap in the URL ensures individual
       glyphs don't block text rendering either.
     -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -28,18 +28,18 @@
     <link
       rel="preload"
       as="style"
-      href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&display=swap"
     />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&display=swap"
       media="print"
       onload="this.media='all'"
     />
     <noscript>
       <link
         rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&display=swap"
       />
     </noscript>
 

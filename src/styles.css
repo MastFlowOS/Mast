@@ -47,7 +47,7 @@
   --color-warning:             var(--warning);
 
   /* -- Typography --------------------------------------------- */
-  --font-sans: "Inter", system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
 
   /* -- Elevation / shadow ------------------------------------- */
   --shadow-brand:    0 10px 40px -10px  color-mix(in oklab, var(--brand) 50%, transparent);
@@ -675,12 +675,16 @@
   --landing-navy-deep: #000024;
 
   /* Interactive accent — buttons, active tabs/badges, selection states.
-     Gold stays reserved for the globe, headline highlight, and checkmarks. */
-  --landing-blue: #0b47e3;
-  --landing-blue-hover: #0a3cc4;
-  --landing-blue-bright: #4f83e8;
-  --landing-blue-tint: rgba(11, 71, 227, 0.14);
-  --landing-blue-border: rgba(79, 131, 232, 0.38);
+     Pulled way down in value/chroma so gold stays the thing your eye
+     lands on; blue now reads as "deep ink", not a bright CTA color. */
+  --landing-blue: #050b2c;
+  --landing-blue-hover: #08123c;
+  --landing-blue-bright: #5b76b8;
+  --landing-blue-tint: rgba(8, 16, 52, 0.55);
+  --landing-blue-border: rgba(70, 90, 160, 0.28);
+
+  /* Header sits darker than the page body — a distinct "ink" band */
+  --landing-nav-bg: #000018;
 
   background-color: var(--background);
 }
@@ -703,4 +707,85 @@
       radial-gradient(60% 50% at 50% -10%, color-mix(in oklab, var(--brand) 16%, transparent), transparent 70%),
       radial-gradient(40% 40% at 85% 15%, color-mix(in oklab, var(--brand) 8%, transparent), transparent 70%);
   }
+}
+
+/* ---------------------------------------------------------------
+   Landing atmosphere — slow liquid-gold drift + a barely-there
+   starfield, both fixed behind all page content. Replaces the old
+   pulsing radial "flicker" blob with continuous, non-rhythmic motion.
+--------------------------------------------------------------- */
+@keyframes liquid-drift-a {
+  0%   { transform: translate3d(-6%, -4%, 0) scale(1);    }
+  33%  { transform: translate3d(4%, 3%, 0) scale(1.12);   }
+  66%  { transform: translate3d(-2%, 6%, 0) scale(0.96);  }
+  100% { transform: translate3d(-6%, -4%, 0) scale(1);    }
+}
+@keyframes liquid-drift-b {
+  0%   { transform: translate3d(5%, 5%, 0) scale(1.05);   }
+  50%  { transform: translate3d(-5%, -2%, 0) scale(0.92); }
+  100% { transform: translate3d(5%, 5%, 0) scale(1.05);   }
+}
+@keyframes star-twinkle {
+  0%, 100% { opacity: 0.55; }
+  50%       { opacity: 1; }
+}
+
+.mast-landing .liquid-gold-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+.mast-landing .liquid-gold-bg::before,
+.mast-landing .liquid-gold-bg::after {
+  content: "";
+  position: absolute;
+  width: 130vmax;
+  height: 130vmax;
+  left: 50%;
+  top: 30%;
+  border-radius: 9999px;
+  filter: blur(90px);
+  will-change: transform;
+}
+.mast-landing .liquid-gold-bg::before {
+  transform: translate(-55%, -50%);
+  background: radial-gradient(closest-side,
+    color-mix(in oklab, var(--brand) 20%, transparent) 0%,
+    color-mix(in oklab, var(--brand) 6%, transparent) 42%,
+    transparent 72%);
+  animation: liquid-drift-a 42s ease-in-out infinite;
+}
+.mast-landing .liquid-gold-bg::after {
+  transform: translate(-45%, -55%);
+  background: radial-gradient(closest-side,
+    color-mix(in oklab, var(--landing-gold-bright) 14%, transparent) 0%,
+    color-mix(in oklab, var(--brand) 5%, transparent) 45%,
+    transparent 70%);
+  animation: liquid-drift-b 56s ease-in-out infinite;
+}
+
+.mast-landing .starfield {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.55;
+  background-image:
+    radial-gradient(1px 1px at 8% 12%, #fff, transparent),
+    radial-gradient(1px 1px at 22% 68%, #fff, transparent),
+    radial-gradient(1.5px 1.5px at 35% 22%, #fff, transparent),
+    radial-gradient(1px 1px at 48% 82%, #fff, transparent),
+    radial-gradient(1px 1px at 61% 15%, #fff, transparent),
+    radial-gradient(1.5px 1.5px at 73% 55%, #fff, transparent),
+    radial-gradient(1px 1px at 85% 30%, #fff, transparent),
+    radial-gradient(1px 1px at 92% 72%, #fff, transparent),
+    radial-gradient(1px 1px at 15% 90%, #fff, transparent),
+    radial-gradient(1.5px 1.5px at 55% 45%, #fff, transparent),
+    radial-gradient(1px 1px at 68% 92%, #fff, transparent),
+    radial-gradient(1px 1px at 3% 45%, #fff, transparent);
+  background-repeat: repeat;
+  background-size: 100% 2400px;
+  animation: star-twinkle 7s ease-in-out infinite;
 }

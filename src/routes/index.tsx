@@ -4,6 +4,7 @@ import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { SignatureGlobe } from "@/components/mast/landing/SignatureGlobe";
+import { LandingAtmosphere } from "@/components/mast/landing/LandingAtmosphere";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -29,6 +30,7 @@ export const Route = createFileRoute("/")({
 function LandingPage() {
   return (
     <div className="mast-landing min-h-screen bg-background text-foreground overflow-x-hidden">
+      <LandingAtmosphere />
       <SiteNav disableBackdropBlur />
       <Hero />
       <Workflow />
@@ -71,12 +73,7 @@ const heroStats = [
 
 function Hero() {
   return (
-    <header className="relative pt-32 md:pt-40 pb-16 md:pb-20 px-6 overflow-hidden bg-aurora">
-      <div
-        className="pointer-events-none absolute top-[-220px] left-1/2 -translate-x-1/2 size-[780px] rounded-full opacity-[0.10] animate-pulse-glow"
-        style={{ background: "radial-gradient(closest-side, var(--brand), transparent)" }}
-      />
-
+    <header className="relative pt-32 md:pt-40 pb-16 md:pb-20 px-6 overflow-hidden">
       <div className="relative max-w-7xl mx-auto grid lg:grid-cols-[1.05fr_1fr] gap-4 lg:gap-2 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left">
@@ -132,7 +129,7 @@ function Hero() {
         </div>
 
         {/* Globe column */}
-        <div className="relative h-[340px] sm:h-[420px] md:h-[500px] lg:h-[580px] animate-scale-in delay-150 lg:-mr-6 xl:-mr-10">
+        <div className="relative h-[380px] sm:h-[460px] md:h-[560px] lg:h-[660px] animate-scale-in delay-150 lg:-mr-6 xl:-mr-10">
           <SignatureGlobe className="w-full h-full" />
         </div>
       </div>

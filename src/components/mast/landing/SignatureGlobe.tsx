@@ -10,9 +10,11 @@ const DURATIONS: Record<Phase, number> = {
   release: 1600,
 };
 const CYCLE_MS = DURATIONS.rotate + DURATIONS.settle + DURATIONS.focus + DURATIONS.release;
-const BASE_SPEED = 0.05; // radians / second, freely rotating
+const BASE_SPEED = 0.045; // radians / second, freely rotating — very slow
 const TILT = 0.36; // radians, fixed axial tilt
-const ZOOM_MAX = 1.62;
+const SPHERE_FRACTION = 0.42; // bigger, more visible base globe
+const ZOOM_MAX = 1.2; // subtle — the globe itself barely grows
+const PAN_STRENGTH = 0.92; // camera push toward the target country's latitude
 
 function easeInOutCubic(t: number) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -85,16 +87,9 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     let rotationAtSettleStart = rotation;
     let targetRotation = rotation;
 
-    // A handful of "opportunity nodes" per country, connected by thin gold
-    // arcs — evokes deals/leads linking up as the globe settles on a region.
+    // The country's own sparse 7–8 "opportunity" points double as the
+    // nodes for the gold connection lines drawn between them.
     let connectionNodes: { lat: number; lon: number }[] = [];
-    const buildConnectionNodes = (dots: { lat: number; lon: number }[]) => {
-      const count = Math.min(5, Math.max(3, Math.floor(dots.length / 12)));
-      const nodes: { lat: number; lon: number }[] = [];
-      const stride = Math.max(1, Math.floor(dots.length / count));
-      for (let i = 0; i < dots.length && nodes.length < count; i += stride) nodes.push(dots[i]);
-      return nodes;
-    };
 
     const project = (lat: number, lon: number, scale: number, cx: number, cy: number, r: number, rot: number) => {
       const phi = (lat * Math.PI) / 180;
@@ -113,6 +108,17 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       };
     };
 
+    // Unit-sphere "y" (before cx/cy/r scaling) — used to pan the camera
+    // vertically toward a country's latitude instead of inflating the
+    // whole sphere in place.
+    const unitY = (lat: number, lon: number, rot: number) => {
+      const phi = (lat * Math.PI) / 180;
+      const lambda = (lon * Math.PI) / 180;
+      const y0 = Math.sin(phi);
+      const z0 = Math.cos(phi) * Math.cos(lambda - rot);
+      return y0 * Math.cos(TILT) - z0 * Math.sin(TILT);
+    };
+
     const draw = (dt: number) => {
       if (!reduceMotion) elapsed += dt;
       ctx.clearRect(0, 0, width, height);
@@ -120,7 +126,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
       const cx = width / 2;
       const cy = height / 2;
-      const r = Math.min(width, height) * 0.36;
+      const r = Math.min(width, height) * SPHERE_FRACTION;
 
       const t = reduceMotion ? 0 : elapsed % CYCLE_MS;
       let phase: Phase = "rotate";
@@ -140,7 +146,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       if (phase !== prevPhase) {
         if (phase === "rotate") {
           countryIdx = (countryIdx + 1) % order.length;
-          connectionNodes = buildConnectionNodes(order[countryIdx]?.dots ?? []);
+          connectionNodes = order[countryIdx]?.dots ?? [];
         }
         if (phase === "settle") {
           rotationAtSettleStart = rotation;
@@ -169,11 +175,18 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         }
       }
 
-      // Zoom: push in during settle + focus, ease back during release.
+      // Zoom: the globe itself only grows a little (ZOOM_MAX ~1.2) — the
+      // "zoom in on a country" feeling instead comes from panning the
+      // camera toward that country's latitude (see panDelta below).
       let zoom = 1;
       if (phase === "settle") zoom = 1 + (ZOOM_MAX - 1) * easeInOutCubic(p);
       else if (phase === "focus") zoom = ZOOM_MAX;
       else if (phase === "release") zoom = 1 + (ZOOM_MAX - 1) * (1 - easeInOutCubic(p));
+
+      const panProgress = ZOOM_MAX > 1 ? Math.max(0, Math.min(1, (zoom - 1) / (ZOOM_MAX - 1))) : 0;
+      const targetUnitY = country ? unitY(country.lat, country.lon, rotation) : 0;
+      const panDelta = targetUnitY * r * zoom * panProgress * PAN_STRENGTH;
+      const ecy = cy + panDelta; // effective vertical center used by every projection below
 
       // Glow / reveal strength for the country's opportunity dots + label.
       let glow = 0;
@@ -184,20 +197,20 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       // ---- backdrop sphere shading — kept subtle/matte, not a glowing orb ----
       const sphereR = r * zoom;
       const bg = ctx.createRadialGradient(
-        cx - sphereR * 0.35, cy - sphereR * 0.4, sphereR * 0.1,
-        cx, cy, sphereR * 1.05,
+        cx - sphereR * 0.35, ecy - sphereR * 0.4, sphereR * 0.1,
+        cx, ecy, sphereR * 1.05,
       );
       bg.addColorStop(0, "rgba(58, 68, 116, 0.22)");
       bg.addColorStop(0.55, "rgba(16, 19, 48, 0.40)");
       bg.addColorStop(1, "rgba(3, 4, 20, 0.04)");
       ctx.beginPath();
-      ctx.arc(cx, cy, sphereR, 0, Math.PI * 2);
+      ctx.arc(cx, ecy, sphereR, 0, Math.PI * 2);
       ctx.fillStyle = bg;
       ctx.fill();
 
       // meridian ring (the "stand" cue of a desk globe) — behind the dots
       ctx.save();
-      ctx.translate(cx, cy);
+      ctx.translate(cx, ecy);
       ctx.scale(1, 0.34);
       ctx.beginPath();
       ctx.arc(0, 0, sphereR * 1.14, 0, Math.PI * 2);
@@ -208,7 +221,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
       // ---- project + draw base land dots (quiet, unlit) ----
       for (const d of WORLD_DOTS) {
-        const pr = project(d.lat, d.lon, zoom, cx, cy, r, rotation);
+        const pr = project(d.lat, d.lon, zoom, cx, ecy, r, rotation);
         if (pr.z <= -0.02) continue;
         const alpha = Math.max(0, Math.min(1, pr.z)) * 0.65 + 0.05;
         ctx.beginPath();
@@ -217,13 +230,30 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         ctx.fill();
       }
 
-      // ---- the "discovery" moment: gold opportunity dots blooming across
-      // the target country as we settle into it ----
+      // ---- gold outline of the target country — same hue as its
+      // opportunity dots, traced in as we settle/focus on it ----
+      if (glow > 0.03 && country?.outline?.length) {
+        ctx.beginPath();
+        let started = false;
+        for (const v of country.outline) {
+          const pr = project(v.lat, v.lon, zoom, cx, ecy, r, rotation);
+          if (pr.z <= 0.02) { started = false; continue; }
+          if (!started) { ctx.moveTo(pr.sx, pr.sy); started = true; }
+          else ctx.lineTo(pr.sx, pr.sy);
+        }
+        ctx.strokeStyle = `rgba(238, 205, 140, ${glow * 0.85})`;
+        ctx.lineWidth = 1.4;
+        ctx.lineJoin = "round";
+        ctx.stroke();
+      }
+
+      // ---- the "discovery" moment: 7–8 gold opportunity dots blooming
+      // across the target country as we settle into it ----
       if (glow > 0.005 && country) {
         const dots = country.dots;
         for (let i = 0; i < dots.length; i++) {
           const d = dots[i];
-          const pr = project(d.lat, d.lon, zoom, cx, cy, r, rotation);
+          const pr = project(d.lat, d.lon, zoom, cx, ecy, r, rotation);
           if (pr.z <= 0.05) continue;
 
           const dotDelay = (hash01(i + 1) * 0.55);
@@ -235,10 +265,10 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           const localAlpha = glow * Math.max(0, Math.min(1, popRaw * 1.4));
           if (localAlpha <= 0.01) continue;
 
-          const rad = Math.max(0.1, 1.7 * pop);
+          const rad = Math.max(0.15, 2.6 * pop);
           ctx.beginPath();
-          ctx.arc(pr.sx, pr.sy, rad * 2, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(224, 184, 110, ${0.07 * localAlpha})`;
+          ctx.arc(pr.sx, pr.sy, rad * 2.2, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(224, 184, 110, ${0.1 * localAlpha})`;
           ctx.fill();
           ctx.beginPath();
           ctx.arc(pr.sx, pr.sy, rad, 0, Math.PI * 2);
@@ -250,7 +280,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       // ---- subtle gold connection lines between opportunity nodes ----
       if (glow > 0.08 && connectionNodes.length > 1) {
         const pts = connectionNodes
-          .map((d) => project(d.lat, d.lon, zoom, cx, cy, r, rotation))
+          .map((d) => project(d.lat, d.lon, zoom, cx, ecy, r, rotation))
           .filter((pr) => pr.z > 0.05);
         const lineAlpha = glow * 0.4;
         for (let i = 0; i < pts.length; i++) {
@@ -280,7 +310,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
       // front meridian arc gleam (subtle, sells the "metal ring" cue)
       ctx.save();
-      ctx.translate(cx, cy);
+      ctx.translate(cx, ecy);
       ctx.scale(1, 0.34);
       ctx.beginPath();
       ctx.arc(0, 0, sphereR * 1.14, Math.PI * 0.08, Math.PI * 0.42);

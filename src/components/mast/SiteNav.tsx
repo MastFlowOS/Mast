@@ -31,6 +31,7 @@ type SiteNavProps = {
 
 export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   const [scrolled, setScrolled] = useState(false);
+  const [sheenOffset, setSheenOffset] = useState(0);
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
@@ -41,7 +42,20 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   const logout = useLogout();
 
   useEffect(() => {
-    const handler = () => setScrolled(window.scrollY > 12);
+    let ticking = false;
+    const handler = () => {
+      setScrolled(window.scrollY > 12);
+      if (!ticking) {
+        ticking = true;
+        requestAnimationFrame(() => {
+          // Slow, subtle gold sheen that drifts across the header as you
+          // scroll — gives the bar a sense of moving with the page instead
+          // of sitting as a static, flat-colored strip.
+          setSheenOffset(window.scrollY * 0.25);
+          ticking = false;
+        });
+      }
+    };
     window.addEventListener("scroll", handler, { passive: true });
     return () => window.removeEventListener("scroll", handler);
   }, []);
@@ -88,17 +102,34 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
 
   return (
     <nav
-      className={`sticky top-0 z-50 transition-all duration-300 ${
+      className={`sticky top-0 z-50 transition-all duration-300 relative overflow-hidden ${
         disableBackdropBlur
           ? scrolled
-            ? "border-b border-border/60 bg-background/95 shadow-[0_1px_0_0_rgba(255,255,255,0.04)]"
-            : "border-b border-transparent bg-background/90"
+            ? "border-b border-white/[0.06] shadow-[0_1px_0_0_rgba(255,255,255,0.04)]"
+            : "border-b border-transparent"
           : scrolled
             ? "border-b border-border/60 bg-background/85 backdrop-blur-2xl shadow-[0_1px_0_0_rgba(255,255,255,0.04)]"
             : "border-b border-transparent bg-background/40 backdrop-blur-xl"
       }`}
+      style={
+        disableBackdropBlur
+          ? { backgroundColor: `color-mix(in oklab, var(--landing-nav-bg, #000018) ${scrolled ? 97 : 90}%, transparent)` }
+          : undefined
+      }
     >
-      <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      {disableBackdropBlur && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-70"
+          style={{
+            backgroundImage:
+              "linear-gradient(115deg, transparent 20%, color-mix(in oklab, var(--brand, #c9a66b) 10%, transparent) 48%, transparent 76%)",
+            backgroundSize: "220% 100%",
+            backgroundPositionX: `${-sheenOffset}px`,
+          }}
+        />
+      )}
+      <div className="relative max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
         {/* Left: logo + links */}
         <div className="flex items-center gap-10">
           <Logo />

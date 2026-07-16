@@ -26,7 +26,11 @@ export function splitNicheQuery(niche: string): string[] {
     .map((n) => n.trim())
     .filter((n) => n.length > 0);
 
-  if (parts.length === 0) return [niche.trim() || "General"];
+  // Niche selection is required at the API boundary (see
+  // DiscoverRequestSchema in server/routes/discover.ts) — an empty result
+  // here means something upstream failed to enforce that, not a case to
+  // paper over with a fabricated "General" search.
+  if (parts.length === 0) return [];
 
   // De-dupe case-insensitively while preserving first-seen casing/order.
   const seen = new Set<string>();

@@ -4,6 +4,8 @@ import { deliverLead } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
+import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
+import type { CountryInfo } from "../lib/geo/countries.js";
 
 export type PoolExpandFollowUp = {
   userId: string;
@@ -20,6 +22,8 @@ export type PoolExpandJobPayload = {
   region: string;
   niche: string;
   shortfall: number;
+  /** Target currencies, if any — see src/lib/geo/regions.ts. */
+  currencies?: string[];
   /**
    * When present, this expand run is a direct continuation of a specific
    * user's Instant Discovery request that fell short — each newly-
@@ -52,20 +56,38 @@ export type PoolExpandJobPayload = {
  *     populated correctly instead of being left blank.
  *  2. `followUp.channels`, when present, is enforced post-enrichment via
  *     channelsSatisfied() before a lead is delivered to that user.
- *  3. The engine is asked for generous headroom per niche and the loop
- *     keeps going — across niches — until `shortfall` is actually met or
- *     every niche genuinely exhausts (engine `onDone.exhausted`), instead
- *     of stopping after one under-sized engine call.
+ *  3. The engine is asked for generous headroom per niche/country and the
+ *     loop keeps going until `shortfall` is actually met or every
+ *     niche/country combination genuinely exhausts (engine
+ *     `onDone.exhausted`), instead of stopping after one under-sized
+ *     engine call.
+ *
+ * ARCHITECTURE FIX (this pass): same as discoverJob.ts — `region` is
+ * expanded into real countries via resolveCountriesForSelection() (never
+ * searched literally), distributed across those countries with
+ * CountryRotation so one country can't dominate the pool, and — if
+ * `currencies` was provided — narrowed to countries where a discovered
+ * business can realistically pay in that currency. `payload.region` is
+ * still passed through to deliverLead/pool storage unchanged.
  */
 export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promise<void> {
   const { followUp } = payload;
   const niches = splitNicheQuery(payload.niche);
+  const countries = resolveCountriesForSelection(payload.region, { currencies: payload.currencies });
 
   let delivered = 0; // total businesses newly added to the pool (all niches)
   let newForUser = 0; // of those, how many were credited/delivered to followUp.userId
 
   if (followUp) {
     await supabaseAdmin.from("scrape_jobs").update({ status: "streaming" }).eq("id", followUp.scrapeJobId);
+  }
+
+  if (countries.length === 0) {
+    console.error(`[poolExpandJob] no countries resolved for region=${JSON.stringify(payload.region)} — nothing to search`);
+    if (followUp) {
+      await supabaseAdmin.from("scrape_jobs").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", followUp.scrapeJobId);
+    }
+    return;
   }
 
   const abortController = new AbortController();
@@ -77,73 +99,95 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   const target = payload.shortfall;
 
   try {
+    const stillNeededNow = () => (followUp ? payload.shortfall - newForUser : payload.shortfall - delivered);
+
     outer: for (const singleNiche of niches) {
-      const stillNeeded = followUp ? payload.shortfall - newForUser : payload.shortfall - delivered;
-      if (stillNeeded <= 0) break;
+      if (stillNeededNow() <= 0) break;
 
-      const askFor = Math.max(stillNeeded * 4, target);
-      let nicheExhausted = false;
+      const rotation = new CountryRotation(countries);
+      let roundsLeft = countries.length * 6 + 20;
 
-      for await (const lead of runEngineQuery(
-        {
-          query: singleNiche,
-          city: payload.region,
-          niche: singleNiche,
-          region: payload.region,
-          max_results: askFor,
-          db_path: `data/leads-pool-expand.db`,
-        },
-        abortController.signal,
-        (info) => {
-          nicheExhausted = info.exhausted;
-        },
-      )) {
-        if (followUp && !channelsSatisfied(lead, followUp.channels)) {
-          continue; // doesn't satisfy every requested channel for the waiting user — not counted
-        }
+      while (stillNeededNow() > 0 && !rotation.isFullyExhausted && roundsLeft-- > 0) {
+        for (const country of rotation.round()) {
+          const remaining = stillNeededNow();
+          if (remaining <= 0) break;
 
-        const validation = validateLead(lead);
-        if (!validation.valid) {
-          console.log(`[poolExpandJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
-          continue;
-        }
+          const chunk = rotation.chunkSize(remaining);
+          const askFor = Math.max(chunk * 4, target);
 
-        const result = await deliverLead(
-          lead,
-          {
-            userId: followUp?.userId ?? null,
-            professionSlug: followUp?.professionSlug ?? null,
-            discoveryMode: followUp?.rank ? "instant_pool_ranked" : "instant_pool",
-            scrapeJobId: followUp?.scrapeJobId ?? "",
-            dailyLimit: followUp?.dailyLimit,
-            monthlyLimit: followUp?.monthlyLimit,
-          },
-          payload.region,
-        );
+          let countryExhausted = false;
+          let deliveredThisChunk = 0;
 
-        delivered += 1;
-        if (result.wasNewForUser) newForUser += 1;
+          for await (const lead of runEngineQuery(
+            {
+              query: singleNiche,
+              city: country.name,
+              country: country.code,
+              niche: singleNiche,
+              region: payload.region,
+              max_results: askFor,
+              db_path: `data/leads-pool-expand.db`,
+            },
+            abortController.signal,
+            (info) => {
+              countryExhausted = info.exhausted;
+            },
+          )) {
+            if (followUp && !channelsSatisfied(lead, followUp.channels)) {
+              continue; // doesn't satisfy every requested channel for the waiting user — not counted
+            }
 
-        if (followUp) {
-          await supabaseAdmin.from("scrape_jobs").update({ results_count: newForUser }).eq("id", followUp.scrapeJobId);
+            const validation = validateLead(lead);
+            if (!validation.valid) {
+              console.log(`[poolExpandJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
+              continue;
+            }
 
-          if (result.limitReached) {
-            console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
-            abortController.abort();
-            break outer;
+            const result = await deliverLead(
+              lead,
+              {
+                userId: followUp?.userId ?? null,
+                professionSlug: followUp?.professionSlug ?? null,
+                discoveryMode: followUp?.rank ? "instant_pool_ranked" : "instant_pool",
+                scrapeJobId: followUp?.scrapeJobId ?? "",
+                dailyLimit: followUp?.dailyLimit,
+                monthlyLimit: followUp?.monthlyLimit,
+              },
+              payload.region,
+            );
+
+            delivered += 1;
+            deliveredThisChunk += 1;
+            if (result.wasNewForUser) newForUser += 1;
+
+            if (followUp) {
+              await supabaseAdmin.from("scrape_jobs").update({ results_count: newForUser }).eq("id", followUp.scrapeJobId);
+
+              if (result.limitReached) {
+                console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
+                abortController.abort();
+                break outer;
+              }
+
+              if (newForUser >= payload.shortfall) {
+                abortController.abort();
+                break outer;
+              }
+            } else if (delivered >= payload.shortfall) {
+              abortController.abort();
+              break outer;
+            }
+
+            if (deliveredThisChunk >= chunk) {
+              break; // this country's chunk is satisfied for this round — move on
+            }
           }
 
-          if (newForUser >= payload.shortfall) {
-            abortController.abort();
-            break outer;
+          if (countryExhausted) {
+            rotation.markExhausted(country);
           }
-        } else if (delivered >= payload.shortfall) {
-          abortController.abort();
-          break outer;
         }
       }
-
-      void nicheExhausted; // exhaustion just means "move to next niche", already the loop's natural behavior
     }
 
     if (followUp) {
@@ -163,7 +207,8 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   }
 
   console.log(
-    `[poolExpandJob] region=${payload.region} niches=${JSON.stringify(niches)} shortfall=${payload.shortfall} ` +
+    `[poolExpandJob] region=${payload.region} niches=${JSON.stringify(niches)} ` +
+      `countries=${JSON.stringify(countries.map((c: CountryInfo) => c.code))} shortfall=${payload.shortfall} ` +
       `delivered=${delivered}${followUp ? ` newForUser=${newForUser} (followUp for user=${followUp.userId})` : ""}`,
   );
 }

@@ -12,8 +12,20 @@ export const discoverRouter = Router();
 const DiscoverRequestSchema = z.object({
   quantity: z.number().int().positive(),
   region: z.string().min(1),
-  niche: z.string().min(1),
+  // At least one niche is required — the engine must never fall back to a
+  // "General" search. z.string().min(1) alone would let whitespace or a
+  // literal "General" through, so this is checked explicitly too.
+  niche: z
+    .string()
+    .min(1)
+    .refine((n) => n.trim().length > 0 && n.trim().toLowerCase() !== "general", {
+      message: "At least one niche must be selected",
+    }),
   channels: z.array(z.string()).default([]),
+  /** Target currencies, if any — narrows which countries get searched per
+   * region to ones where discovered businesses can realistically pay in
+   * that currency. See src/lib/geo/regions.ts. */
+  currencies: z.array(z.string()).default([]),
 });
 
 /**
@@ -90,7 +102,8 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
         return res.status(403).json({ code: "channel_restricted", message: `Channel '${ch}' is restricted under your plan.` });
       }
     }
-    if (body.region && body.region !== "North America" && !plan.regionalSearch) {
+    const requestedRegions = body.region.split(",").map((r) => r.trim()).filter(Boolean);
+    if (requestedRegions.some((r) => r !== "North America") && !plan.regionalSearch) {
       return res.status(403).json({ code: "region_restricted", message: "Regional search is restricted under your plan." });
     }
 
@@ -105,7 +118,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
         user_id: userId,
         mode: plan.discoveryMode,
         status: "queued",
-        query: { region: body.region, niche: body.niche, channels: body.channels, profession_slug: professionSlug, quantity },
+        query: { region: body.region, niche: body.niche, channels: body.channels, currencies: body.currencies, profession_slug: professionSlug, quantity },
       })
       .select()
       .single();
@@ -119,6 +132,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
         region: body.region,
         niche: body.niche,
         channels: body.channels,
+        currencies: body.currencies,
         professionSlug,
         quantity,
         dailyLimit: plan.dailyLeadLimit,
@@ -160,6 +174,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
         region: body.region,
         niche: body.niche,
         shortfall,
+        currencies: body.currencies,
         followUp: {
           userId,
           professionSlug,
@@ -182,7 +197,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
         .eq("id", job.id);
 
       const boss = await getBoss();
-      await boss.send(QUEUES.poolExpand, { region: body.region, niche: body.niche, shortfall });
+      await boss.send(QUEUES.poolExpand, { region: body.region, niche: body.niche, shortfall, currencies: body.currencies });
     } else {
       await supabaseAdmin
         .from("scrape_jobs")

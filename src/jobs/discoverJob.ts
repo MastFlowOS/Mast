@@ -4,6 +4,8 @@ import { deliverLead } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
+import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
+import type { CountryInfo } from "../lib/geo/countries.js";
 
 export type DiscoverJobPayload = {
   scrapeJobId: string;
@@ -15,6 +17,10 @@ export type DiscoverJobPayload = {
   quantity: number;
   dailyLimit: number;
   monthlyLimit: number;
+  /** Target currencies, if any — narrows which countries are searched per
+   * region to ones where discovered businesses can realistically pay in
+   * that currency. See src/lib/geo/regions.ts. */
+  currencies?: string[];
 };
 
 /**
@@ -39,9 +45,10 @@ export type DiscoverJobPayload = {
  *     took whatever came back, even if the engine stopped short of
  *     `quantity` for reasons that had nothing to do with the search space
  *     being exhausted (see service.py's raw_supply_cap fix). Now: keep
- *     pulling from the engine — across niches — until either `quantity`
- *     opportunities have actually been delivered, or every niche's engine
- *     run reports genuine exhaustion (via the new `onDone` callback).
+ *     pulling from the engine — across niches AND countries — until either
+ *     `quantity` opportunities have actually been delivered, or every
+ *     niche/country combination reports genuine exhaustion (via the
+ *     `onDone` callback).
  *
  *  2. "Channel filters not respected" — `channels` was accepted by this
  *     job's payload but never used. Now every engine lead is checked with
@@ -58,9 +65,34 @@ export type DiscoverJobPayload = {
  *     independent niches, each run as its own query AND passed as the
  *     engine's `niche` param (previously omitted entirely, which is why
  *     every delivered lead's `niche` column was blank/"—" downstream).
+ *
+ * ARCHITECTURE FIX (this pass): `region` was being handed to the engine as
+ * the literal `city` search term — i.e. the Maps query was genuinely
+ * "Bakery in North America", which is not a place Maps can search. Region
+ * is a UI/analytics grouping, not a search location. Now:
+ *   - `resolveCountriesForSelection()` (src/lib/geo/regions.ts) expands the
+ *     selected region(s) — and, if a target currency was chosen, filters to
+ *     countries where a discovered business can realistically pay in it —
+ *     into the real list of countries to search.
+ *   - `CountryRotation` distributes `quantity` evenly across those
+ *     countries per round, moving on the moment a country's search space is
+ *     genuinely exhausted (per its own `onDone.exhausted`), instead of one
+ *     country ever dominating the results.
+ *   - The engine itself is untouched: it still just receives one real
+ *     country (`city` + `country`) per call and performs a normal search —
+ *     all the expansion/distribution logic lives here in orchestration.
+ *   - `payload.region` is still passed through to `deliverLead`/pool
+ *     storage unchanged — that's the free-text label `businesses.region`
+ *     and `pool_lookup()` already match against, untouched by this fix.
  */
 export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<void> {
   const niches = splitNicheQuery(payload.niche);
+  const countries = resolveCountriesForSelection(payload.region, { currencies: payload.currencies });
+
+  if (countries.length === 0) {
+    console.error(`[discoverJob] no countries resolved for region=${JSON.stringify(payload.region)} — nothing to search`);
+    return;
+  }
 
   let delivered = 0; // channel-passing, validated, requested-worth deliveries
   let newForUser = 0;
@@ -71,68 +103,86 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
   outer: for (const singleNiche of niches) {
     if (delivered >= payload.quantity) break;
 
-    // Ask the engine for generous headroom, not just the remaining
-    // shortfall — channel filtering/validation below may discard a
-    // fraction of what it streams back, so under-asking would reproduce
-    // bug #1 one level up. The engine's own exhaustion (reported via
-    // onDone) is what actually caps this, not this number.
-    const askFor = Math.max((payload.quantity - delivered) * 4, payload.quantity);
+    const rotation = new CountryRotation(countries);
+    // Safety valve so a pathological "every country reports not-exhausted
+    // but yields nothing" case can't loop forever — normal completion is
+    // always via quantity reached or rotation.isFullyExhausted.
+    let roundsLeft = countries.length * 6 + 20;
 
-    let nicheExhausted = false;
+    while (delivered < payload.quantity && !rotation.isFullyExhausted && roundsLeft-- > 0) {
+      for (const country of rotation.round()) {
+        if (delivered >= payload.quantity) break;
 
-    for await (const lead of runEngineQuery(
-      {
-        query: singleNiche,
-        city: payload.region,
-        niche: singleNiche,
-        region: payload.region,
-        max_results: askFor,
-        db_path: `data/leads-${payload.userId}.db`,
-      },
-      abortController.signal,
-      (info) => {
-        nicheExhausted = info.exhausted;
-      },
-    )) {
-      if (!channelsSatisfied(lead, payload.channels)) {
-        continue; // doesn't satisfy every requested channel — not counted, keep streaming
-      }
+        const remaining = payload.quantity - delivered;
+        const chunk = rotation.chunkSize(remaining);
+        // Same over-ask rationale as before: channel filtering/validation
+        // below discards a fraction of what streams back.
+        const askFor = Math.max(chunk * 4, chunk);
 
-      const validation = validateLead(lead);
-      if (!validation.valid) {
-        console.log(`[discoverJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
-        continue;
-      }
+        let countryExhausted = false;
+        let deliveredThisChunk = 0;
 
-      const result = await deliverLead(
-        lead,
-        {
-          userId: payload.userId,
-          professionSlug: payload.professionSlug,
-          discoveryMode: "live",
-          scrapeJobId: payload.scrapeJobId,
-          dailyLimit: payload.dailyLimit,
-          monthlyLimit: payload.monthlyLimit,
-        },
-        payload.region,
-      );
+        for await (const lead of runEngineQuery(
+          {
+            query: singleNiche,
+            city: country.name,
+            country: country.code,
+            niche: singleNiche,
+            region: payload.region,
+            max_results: askFor,
+            db_path: `data/leads-${payload.userId}.db`,
+          },
+          abortController.signal,
+          (info) => {
+            countryExhausted = info.exhausted;
+          },
+        )) {
+          if (!channelsSatisfied(lead, payload.channels)) {
+            continue; // doesn't satisfy every requested channel — not counted, keep streaming
+          }
 
-      if (result.wasNewForUser) {
-        delivered += 1;
-        newForUser += 1;
-      }
+          const validation = validateLead(lead);
+          if (!validation.valid) {
+            console.log(`[discoverJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
+            continue;
+          }
 
-      await supabaseAdmin.from("scrape_jobs").update({ results_count: newForUser, status: "streaming" }).eq("id", payload.scrapeJobId);
+          const result = await deliverLead(
+            lead,
+            {
+              userId: payload.userId,
+              professionSlug: payload.professionSlug,
+              discoveryMode: "live",
+              scrapeJobId: payload.scrapeJobId,
+              dailyLimit: payload.dailyLimit,
+              monthlyLimit: payload.monthlyLimit,
+            },
+            payload.region,
+          );
 
-      if (result.limitReached) {
-        console.log(`[discoverJob] user=${payload.userId} hit their plan limit mid-run — stopping early`);
-        sawLimitReached = true;
-        abortController.abort();
-        break outer;
-      }
+          if (result.wasNewForUser) {
+            delivered += 1;
+            newForUser += 1;
+            deliveredThisChunk += 1;
+          }
 
-      if (delivered >= payload.quantity) {
-        break; // quantity satisfied — let this niche's stream wind down via abort below
+          await supabaseAdmin.from("scrape_jobs").update({ results_count: newForUser, status: "streaming" }).eq("id", payload.scrapeJobId);
+
+          if (result.limitReached) {
+            console.log(`[discoverJob] user=${payload.userId} hit their plan limit mid-run — stopping early`);
+            sawLimitReached = true;
+            abortController.abort();
+            break outer;
+          }
+
+          if (delivered >= payload.quantity || deliveredThisChunk >= chunk) {
+            break; // this country's chunk (or the whole request) is satisfied — move on
+          }
+        }
+
+        if (countryExhausted) {
+          rotation.markExhausted(country);
+        }
       }
     }
 
@@ -140,18 +190,12 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
       abortController.abort();
       break;
     }
-
-    // nicheExhausted === true means this niche's search space is genuinely
-    // exhausted at the current region/channel filter — move on to the next
-    // niche (if any) to keep working toward `quantity`. If it's false, we
-    // stopped consuming for some other reason (already handled above);
-    // either way there's nothing more to extract from this niche right now.
-    void nicheExhausted;
   }
 
   const exhaustedEverySearchVariation = delivered < payload.quantity && !sawLimitReached;
   console.log(
     `[discoverJob] live user=${payload.userId} region=${payload.region} niches=${JSON.stringify(niches)} ` +
+      `countries=${JSON.stringify(countries.map((c: CountryInfo) => c.code))} ` +
       `requested=${payload.quantity} delivered=${delivered} newForUser=${newForUser} ` +
       `exhaustedEverySearchVariation=${exhaustedEverySearchVariation}`,
   );

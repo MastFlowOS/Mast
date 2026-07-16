@@ -594,8 +594,12 @@ function GetLeads() {
     (speed === "premium" && !permissions.can("premiumPool"));
   const exceedsDailyLimit = account ? quantity > dailyRemaining : false;
   const exceedsMonthlyLimit = account ? quantity > monthlyRemaining : false;
+  // Niche selection is required — the engine must never receive an empty
+  // niche (which used to silently fall back to "General").
+  const noNicheSelected = niches.length === 0;
   const canGenerate =
     !!account &&
+    !noNicheSelected &&
     channels.length > 0 &&
     !channelRestricted &&
     !modeRestricted &&
@@ -673,19 +677,17 @@ function GetLeads() {
     };
 
     try {
-      const regionLabel = [
-        regions.join(", "),
-        currencies.length > 0 ? `Currency: ${currencies.join(", ")}` : null,
-      ]
-        .filter(Boolean)
-        .join(" · ");
-
+      // Niche selection is required — canGenerate already gates the button
+      // on niches.length > 0, so this should never actually be empty. No
+      // "General" fallback: an unselected niche must never reach the
+      // backend/engine.
       const result = await generate.mutateAsync({
         quantity,
-        region: regionLabel,
-        niche: niches.length > 0 ? niches.join(", ") : "General",
+        region: regions.join(", "),
+        niche: niches.join(", "),
         mode: speed as "scrape" | "pool" | "premium",
         channels,
+        currencies,
       });
 
       // Whatever arrived synchronously (Instant Discovery's pool hit) shows
@@ -1086,11 +1088,16 @@ function GetLeads() {
           <Section
             icon={Sparkles}
             title="Business Niche"
-            subtitle="Select one or more verticals to target"
+            subtitle="Select one or more verticals to target — required"
             stagger={2}
           >
             <div ref={nicheContainerRef} className="relative">
               {/* Selected niche chips */}
+              {niches.length === 0 && (
+                <p className="text-[11px] text-muted-foreground mb-2">
+                  Choose at least one niche to start a discovery session.
+                </p>
+              )}
               {niches.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   {niches.map((n) => (
@@ -1392,7 +1399,7 @@ function GetLeads() {
               )}
               <SummaryRow
                 label="Niches"
-                value={niches.length > 0 ? niches.join(", ") : "Any vertical"}
+                value={niches.length > 0 ? niches.join(", ") : "Select a niche"}
                 truncate
               />
               <SummaryRow
@@ -1445,9 +1452,11 @@ function GetLeads() {
               {isGenerating ? "Analyzing..." : "Launch Discovery Session"}
 
             </button>
-            {(channelRestricted || modeRestricted || exceedsDailyLimit || exceedsMonthlyLimit) && (
+            {(noNicheSelected || channelRestricted || modeRestricted || exceedsDailyLimit || exceedsMonthlyLimit) && (
               <p className="text-[11px] text-destructive text-center mt-2.5 leading-relaxed">
-                {exceedsDailyLimit
+                {noNicheSelected
+                  ? "Select at least one niche before launching a discovery session."
+                  : exceedsDailyLimit
                   ? `Daily limit: only ${dailyRemaining} remaining today.`
                   : exceedsMonthlyLimit
                   ? `Monthly limit: only ${monthlyRemaining} remaining.`

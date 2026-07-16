@@ -354,6 +354,10 @@ export type LeadGenerationRequest = {
   niche: string;
   mode: GenerationMode;
   channels: string[];
+  /** Target currencies, if any — narrows which countries get searched per
+   * region to ones where discovered businesses can realistically pay in
+   * that currency. */
+  currencies?: string[];
 };
 
 export type LeadGenerationResponse = {
@@ -971,7 +975,11 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
       throw new ApiError(403, `Channel ${ch} is restricted under your plan.`, {});
     }
   }
-  if (body.region && body.region !== "North America" && !permissions.can("regionalSearch")) {
+  const requestedRegions = body.region
+    .split(",")
+    .map((r) => r.trim())
+    .filter(Boolean);
+  if (requestedRegions.some((r) => r !== "North America") && !permissions.can("regionalSearch")) {
     throw new ApiError(403, "Regional search is restricted under your plan.", {});
   }
 
@@ -988,6 +996,7 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
       region: body.region,
       niche: body.niche,
       channels: body.channels,
+      currencies: body.currencies ?? [],
     }),
   });
 

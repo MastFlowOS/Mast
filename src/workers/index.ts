@@ -17,6 +17,7 @@ type DiscoverJobPayload = {
   region: string;
   niche: string;
   channels: string[];
+  currencies?: string[];
   professionSlug: string | null;
   quantity: number;
   dailyLimit: number;

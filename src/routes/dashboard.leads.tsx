@@ -30,7 +30,8 @@ import {
   Check,
   Lock,
 } from "lucide-react";
-import { ApiError, subscribeToDiscoverJob, type Lead } from "@/lib/api";
+import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead } from "@/lib/api";
+
 import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings, queryKeys } from "@/hooks/use-mast-api";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildDiscoverInsights, type DiscoverInsight } from "@/lib/discover-insights";
@@ -432,6 +433,11 @@ function GetLeads() {
   const [showCompletion, setShowCompletion] = useState(false);
   const [newOpportunities, setNewOpportunities] = useState<Lead[]>([]);
   const [firstOpportunityId, setFirstOpportunityId] = useState<number | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
+  // Tracks the active scrapeJobId so the Cancel button can reference it
+  // even after the discovery subscription has been removed.
+  const activeJobIdRef = useRef<string | null>(null);
+
 
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
   const monthlyRemaining = account?.monthlyUsage.remaining ?? 0;
@@ -614,6 +620,9 @@ function GetLeads() {
     unsubscribeJobRef.current?.();
     unsubscribeJobRef.current = null;
     seenLeadIdsRef.current = new Set();
+    activeJobIdRef.current = null;
+    setIsCancelling(false);
+
 
     setIsGenerating(true);
     setCurrentStageIndex(0);
@@ -704,20 +713,57 @@ function GetLeads() {
       // Free's Live Discovery (nothing delivered yet), or an Instant
       // Discovery shortfall still being backfilled — either way, watch the
       // SAME job id until it resolves. The UI never needs to know which.
+      activeJobIdRef.current = result.jobId;
       unsubscribeJobRef.current = subscribeToDiscoverJob(result.jobId, {
         onLead: appendLead,
         onStatusChange: (status) => {
           if (status === "completed") {
             finish(seenLeadIdsRef.current.size);
+          } else if (status === "completed_partial") {
+            // Engine reached genuine exhaustion before hitting the full count.
+            clearInterval(stageInterval);
+            unsubscribeJobRef.current?.();
+            unsubscribeJobRef.current = null;
+            activeJobIdRef.current = null;
+            setIsGenerating(false);
+            setIsCancelling(false);
+            const found = seenLeadIdsRef.current.size;
+            setShowCompletion(true);
+            toast.info(
+              found > 0
+                ? `Found ${found} opportunities — market is thin for this query.`
+                : "Market exhausted. No new opportunities available for this combination.",
+            );
+            queryClient.invalidateQueries({ queryKey: queryKeys.account });
+            queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
+          } else if (status === "cancelled") {
+            clearInterval(stageInterval);
+            unsubscribeJobRef.current?.();
+            unsubscribeJobRef.current = null;
+            activeJobIdRef.current = null;
+            setIsGenerating(false);
+            setIsCancelling(false);
+            const found = seenLeadIdsRef.current.size;
+            if (found > 0) {
+              setShowCompletion(true);
+              toast.info(`Search cancelled — ${found} opportunit${found === 1 ? "y" : "ies"} saved.`);
+              queryClient.invalidateQueries({ queryKey: queryKeys.account });
+              queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
+            } else {
+              toast.info("Search cancelled.");
+            }
           } else if (status === "failed") {
             clearInterval(stageInterval);
             unsubscribeJobRef.current?.();
             unsubscribeJobRef.current = null;
+            activeJobIdRef.current = null;
             setIsGenerating(false);
+            setIsCancelling(false);
             toast.error("Discovery engine failed. Please try again.");
           }
         },
       });
+
     } catch (err) {
       clearInterval(stageInterval);
       setIsGenerating(false);
@@ -852,6 +898,33 @@ function GetLeads() {
             {currentStageIndex >= 3 && <p className="text-indigo-400/80">[SMTP] Verifying mail server connection handles...</p>}
             {currentStageIndex >= 4 && <p className="text-brand/80">[INTELLIGENCE] Seeding workspace dashboards & initial draft copies...</p>}
           </div>
+          {/* Cancel Search button */}
+          <button
+            type="button"
+            disabled={isCancelling}
+            onClick={async () => {
+              const jobId = activeJobIdRef.current;
+              if (!jobId || isCancelling) return;
+              setIsCancelling(true);
+              try {
+                await cancelDiscoverJob(jobId);
+                // UI update comes via the Realtime subscription's
+                // onStatusChange('cancelled') callback; we don't need to
+                // tear down state here.
+              } catch (err) {
+                setIsCancelling(false);
+                if (err instanceof ApiError && err.status === 409) {
+                  // Already terminal — treat as if we'd received the callback.
+                  toast.info("Search already completed.");
+                } else {
+                  toast.error("Failed to cancel search. Please try again.");
+                }
+              }
+            }}
+            className="mt-2 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isCancelling ? "Cancelling..." : "Cancel Search"}
+          </button>
         </div>
       </div>
     );

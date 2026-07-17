@@ -36,6 +36,17 @@ const EnvSchema = z.object({
   DISCOVERY_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
   ENRICHMENT_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(8),
 
+  // Stale-task timeouts (milliseconds). A discovery_task or
+  // business_processing_task that has been in 'running' state for longer
+  // than the corresponding threshold — without an updated heartbeat — is
+  // assumed to belong to a crashed worker and may be re-claimed. Set to a
+  // value comfortably longer than the expected worst-case single-task
+  // runtime so a slow-but-alive worker is not prematurely preempted.
+  //   STALE_TASK_TIMEOUT_MS          : discovery_tasks (default 8 min)
+  //   STALE_BUSINESS_TASK_TIMEOUT_MS : business_processing_tasks (default 5 min)
+  STALE_TASK_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(8 * 60 * 1000),
+  STALE_BUSINESS_TASK_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(5 * 60 * 1000),
+
   // PHASE 8 — AI Opportunity Intelligence (Executive Briefings, Weekly
   // Intelligence, Opportunity Insights, Pipeline Coaching). Optional: if
   // unset, /v1/intelligence's AI-backed endpoints return 503 rather than

@@ -74,18 +74,26 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   const { followUp } = payload;
   const niches = splitNicheQuery(payload.niche);
   const countries = resolveCountriesForSelection(payload.region, { currencies: payload.currencies });
+  const jobStartedAt = Date.now();
 
   let delivered = 0; // total businesses newly added to the pool (all niches)
   let newForUser = 0; // of those, how many were credited/delivered to followUp.userId
 
   if (followUp) {
-    await supabaseAdmin.from("scrape_jobs").update({ status: "streaming" }).eq("id", followUp.scrapeJobId);
+    await supabaseAdmin.from("scrape_jobs")
+      .update({ status: "streaming" })
+      .eq("id", followUp.scrapeJobId)
+      .not("status", "eq", "cancelled");
   }
 
   if (countries.length === 0) {
     console.error(`[poolExpandJob] no countries resolved for region=${JSON.stringify(payload.region)} — nothing to search`);
     if (followUp) {
-      await supabaseAdmin.from("scrape_jobs").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", followUp.scrapeJobId);
+      await supabaseAdmin.from("scrape_jobs").update({
+        status: "completed_partial",
+        completed_at: new Date().toISOString(),
+        job_summary: { requested: payload.shortfall, delivered: 0, shortfall: payload.shortfall, completion_reason: "no_countries", runtime_ms: 0 },
+      }).eq("id", followUp.scrapeJobId);
     }
     return;
   }
@@ -161,7 +169,18 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             if (result.wasNewForUser) newForUser += 1;
 
             if (followUp) {
-              await supabaseAdmin.from("scrape_jobs").update({ results_count: newForUser }).eq("id", followUp.scrapeJobId);
+              // Guard: if the job was cancelled while we were running, stop.
+              const { data: jobStatus } = await supabaseAdmin.from("scrape_jobs")
+                .select("status").eq("id", followUp.scrapeJobId).maybeSingle();
+              if (jobStatus?.status === "cancelled") {
+                abortController.abort();
+                break outer;
+              }
+
+              await supabaseAdmin.from("scrape_jobs")
+                .update({ results_count: newForUser })
+                .eq("id", followUp.scrapeJobId)
+                .not("status", "eq", "cancelled");
 
               if (result.limitReached) {
                 console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
@@ -192,18 +211,44 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       }
     }
 
+    // Determine final status and write summary metrics.
     if (followUp) {
-      await supabaseAdmin
-        .from("scrape_jobs")
-        .update({ status: "completed", completed_at: new Date().toISOString() })
-        .eq("id", followUp.scrapeJobId);
+      const { data: finalRow } = await supabaseAdmin.from("scrape_jobs")
+        .select("status").eq("id", followUp.scrapeJobId).maybeSingle();
+      const wasCancelled = finalRow?.status === "cancelled";
+
+      const completionReason = wasCancelled
+        ? "cancelled"
+        : newForUser >= payload.shortfall
+          ? "quantity_reached"
+          : "exhausted";
+
+      const finalStatus = wasCancelled
+        ? "cancelled"
+        : newForUser >= payload.shortfall
+          ? "completed"
+          : "completed_partial";
+
+      await supabaseAdmin.from("scrape_jobs").update({
+        status: finalStatus,
+        completed_at: new Date().toISOString(),
+        job_summary: {
+          requested: payload.shortfall,
+          delivered: newForUser,
+          shortfall: Math.max(0, payload.shortfall - newForUser),
+          completion_reason: completionReason,
+          runtime_ms: Date.now() - jobStartedAt,
+        },
+      }).eq("id", followUp.scrapeJobId);
     }
+
   } catch (err) {
     if (followUp) {
       await supabaseAdmin
         .from("scrape_jobs")
         .update({ status: "failed", error: err instanceof Error ? err.message : String(err), completed_at: new Date().toISOString() })
-        .eq("id", followUp.scrapeJobId);
+        .eq("id", followUp.scrapeJobId)
+        .not("status", "eq", "cancelled"); // preserve cancellation even on error
     }
     throw err;
   }

@@ -162,12 +162,16 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
       channels: body.channels,
     });
 
+    // ── Instant pool: mark completed_partial when we couldn't satisfy all
+    // ── of the request (limit or pool exhaustion).
+    const finalInstantStatus =
+      shortfall > 0 && !limitReached ? "streaming" : delivered.length >= quantity ? "completed" : "completed_partial";
+
     let backgroundExpansionQueued = false;
 
     if (shortfall > 0 && !limitReached) {
-      // Leave the job "streaming" rather than "completed" — poolExpandJob
-      // (with a followUp attached) is what flips it to completed once it
-      // finishes delivering the rest under this same job id.
+      // Leave the job "streaming" — poolExpandJob (with a followUp attached)
+      // flips it to completed / completed_partial once it finishes.
       await supabaseAdmin.from("scrape_jobs").update({ status: "streaming", results_count: delivered.length }).eq("id", job.id);
 
       const boss = await getBoss();
@@ -188,10 +192,6 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
       });
       backgroundExpansionQueued = true;
     } else if (shortfall > 0 && limitReached) {
-      // The shortfall here is "out of credit," not "pool was thin" — no
-      // point following up for THIS user, but still worth growing the pool
-      // for whoever asks next. No followUp attached, so no CRM/credit
-      // side effects; the job is simply done for this user.
       await supabaseAdmin
         .from("scrape_jobs")
         .update({ status: "completed", results_count: delivered.length, completed_at: new Date().toISOString() })
@@ -200,16 +200,17 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
       const boss = await getBoss();
       await boss.send(QUEUES.poolExpand, { region: body.region, niche: body.niche, shortfall, currencies: body.currencies });
     } else {
+      const poolFinalStatus = delivered.length >= quantity ? "completed" : "completed_partial";
       await supabaseAdmin
         .from("scrape_jobs")
-        .update({ status: "completed", results_count: delivered.length, completed_at: new Date().toISOString() })
+        .update({ status: poolFinalStatus, results_count: delivered.length, completed_at: new Date().toISOString() })
         .eq("id", job.id);
     }
 
     res.status(200).json({
       jobId: job.id,
       mode: plan.discoveryMode,
-      status: shortfall > 0 && !limitReached ? "streaming" : "completed",
+      status: finalInstantStatus,
       requested: quantity,
       delivered: delivered.length,
       shortfall,
@@ -217,6 +218,53 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
       backgroundExpansionQueued,
       results: delivered,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /v1/discover/:jobId/cancel
+ *
+ * Marks a scrape_job as "cancelled" so that in-flight workers will detect
+ * the change on their next per-lead loop iteration and stop cleanly.  Only
+ * the owning user may cancel their own job, and only if the job is still
+ * in a non-terminal state.
+ */
+discoverRouter.post("/:jobId/cancel", requireAuth, async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const { jobId } = req.params;
+
+    const { data: job, error: fetchError } = await supabaseAdmin
+      .from("scrape_jobs")
+      .select("id, user_id, status")
+      .eq("id", jobId)
+      .maybeSingle();
+
+    if (fetchError) throw fetchError;
+    if (!job) return res.status(404).json({ code: "not_found", message: "Job not found." });
+    if (job.user_id !== userId) return res.status(403).json({ code: "forbidden", message: "You do not own this job." });
+
+    const terminalStatuses = ["completed", "completed_partial", "failed", "cancelled"];
+    if (terminalStatuses.includes(job.status)) {
+      return res.status(409).json({
+        code: "already_terminal",
+        message: `Job is already in terminal state '${job.status}' and cannot be cancelled.`,
+        currentStatus: job.status,
+      });
+    }
+
+    const { error: updateError } = await supabaseAdmin
+      .from("scrape_jobs")
+      .update({ status: "cancelled", completed_at: new Date().toISOString() })
+      .eq("id", jobId)
+      .not("status", "in", `(${terminalStatuses.map((s) => `"${s}"`).join(",")})`)
+      .eq("user_id", userId);
+
+    if (updateError) throw updateError;
+
+    return res.status(200).json({ jobId, status: "cancelled" });
   } catch (err) {
     next(err);
   }

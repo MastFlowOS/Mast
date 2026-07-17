@@ -6,6 +6,7 @@ import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
 import { toJson, isJsonObject } from "../lib/json.js";
 import type { Json } from "../types/database.types.js";
+import { env } from "../config/env.js";
 
 export type ProcessingKind = "enrich" | "score";
 export type BusinessProcessingPayload = { taskId: string };
@@ -29,10 +30,15 @@ export type BusinessProcessingPayload = { taskId: string };
  * reopened; a "queued"/"running" row already has a wake-up in flight (or
  * about to be claimed) and is left alone so we don't spam duplicate
  * messages for the same row.
+ *
+ * HEARTBEAT CRASH RECOVERY: a task stuck in "running" with a heartbeat
+ * older than STALE_BUSINESS_TASK_TIMEOUT_MS belongs to a crashed worker.
+ * It is treated as "completed" was never reached, i.e. we re-queue it,
+ * so the business's enrichment/scoring is not silently lost.
  */
 async function claimOrCreateProcessingTask(businessId: string, kind: ProcessingKind): Promise<{ id: string } | null> {
   const { data: existing, error: fetchError } = await supabaseAdmin.from("business_processing_tasks")
-    .select("id, status").eq("business_id", businessId).eq("kind", kind).maybeSingle();
+    .select("id, status, last_heartbeat_at").eq("business_id", businessId).eq("kind", kind).maybeSingle();
   if (fetchError) throw fetchError;
 
   if (!existing) {
@@ -50,6 +56,24 @@ async function claimOrCreateProcessingTask(businessId: string, kind: ProcessingK
     return inserted; // brand new row — definitely needs a wake-up
   }
 
+  // Heartbeat-based stale detection: a running task with an old heartbeat
+  // belongs to a crashed worker — treat it as needing a fresh wake-up.
+  const staleMs = env.STALE_BUSINESS_TASK_TIMEOUT_MS;
+  const isStaleRunning =
+    existing.status === "running" &&
+    existing.last_heartbeat_at != null &&
+    Date.now() - Date.parse(existing.last_heartbeat_at) > staleMs;
+
+  if (isStaleRunning) {
+    const { data: reopened, error: staleUpdateErr } = await supabaseAdmin.from("business_processing_tasks")
+      .update({ status: "queued", error: "stale: assumed crashed worker", completed_at: null })
+      .eq("id", existing.id).eq("status", "running")
+      .select("id").maybeSingle();
+    if (staleUpdateErr) throw staleUpdateErr;
+    if (!reopened) return claimOrCreateProcessingTask(businessId, kind);
+    return reopened;
+  }
+
   if (existing.status === "queued" || existing.status === "running") return null;
 
   // "completed" or "failed" — reopen instead of leaving it permanently
@@ -63,6 +87,7 @@ async function claimOrCreateProcessingTask(businessId: string, kind: ProcessingK
   return reopened;
 }
 
+
 /** Persist first, then wake a specialised worker.  The row remains queued if
  * publishing fails, which makes this safe to replay from an operations job. */
 export async function enqueueBusinessProcessing(businessId: string, kind: ProcessingKind): Promise<void> {
@@ -75,10 +100,31 @@ export async function enqueueBusinessProcessing(businessId: string, kind: Proces
 export async function handleBusinessProcessingJob(payload: BusinessProcessingPayload): Promise<void> {
   const { data: task, error } = await supabaseAdmin.from("business_processing_tasks").select("*").eq("id", payload.taskId).single();
   if (error) throw error;
+
+  // Heartbeat-based stale re-claim: if this task is 'running' but its
+  // heartbeat is older than STALE_BUSINESS_TASK_TIMEOUT_MS, the original
+  // worker crashed — we may safely take it over.
+  const staleMs = env.STALE_BUSINESS_TASK_TIMEOUT_MS;
+  const isStale =
+    task.status === "running" &&
+    task.last_heartbeat_at != null &&
+    Date.now() - Date.parse(task.last_heartbeat_at) > staleMs;
+
   const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")
-    .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), error: null })
-    .eq("id", task.id).eq("status", "queued").select("id").maybeSingle();
+    .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), last_heartbeat_at: new Date().toISOString(), error: null })
+    .eq("id", task.id)
+    .in("status", isStale ? ["running"] : ["queued"])
+    .select("id").maybeSingle();
   if (!claimed) return;
+
+  // Heartbeat pulse — updates last_heartbeat_at so stale-detector knows
+  // this worker is still alive during a long enrichment crawl.
+  const heartbeatInterval = setInterval(() => {
+    supabaseAdmin.from("business_processing_tasks")
+      .update({ last_heartbeat_at: new Date().toISOString() })
+      .eq("id", task.id)
+      .then(() => {/* fire-and-forget */}, (e: unknown) => console.warn("[businessProcessing] heartbeat failed", e));
+  }, 15_000);
 
   try {
     if (task.kind === "enrich") await enrichBusiness(task.business_id);
@@ -86,11 +132,13 @@ export async function handleBusinessProcessingJob(payload: BusinessProcessingPay
       await computeAndStoreOpportunityScores(task.business_id);
       await computeAndStoreBusinessHealth(task.business_id);
     }
-    await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", task.id);
+    clearInterval(heartbeatInterval);
+    await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString(), last_heartbeat_at: null }).eq("id", task.id);
   } catch (err) {
+    clearInterval(heartbeatInterval);
     // Resetting to queued lets pg-boss retry the same wake-up and leaves a
     // durable, inspectable record for a dispatcher if the process dies.
-    await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err) }).eq("id", task.id);
+    await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err), last_heartbeat_at: null }).eq("id", task.id);
     throw err;
   }
 }

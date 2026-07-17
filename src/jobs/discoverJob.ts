@@ -112,9 +112,15 @@ export type DiscoverJobPayload = {
 export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<void> {
   const niches = splitNicheQuery(payload.niche);
   const countries = resolveCountriesForSelection(payload.region, { currencies: payload.currencies });
+  const jobStartedAt = Date.now();
 
   if (countries.length === 0) {
     console.error(`[discoverJob] no countries resolved for region=${JSON.stringify(payload.region)} — nothing to search`);
+    await supabaseAdmin.from("scrape_jobs").update({
+      status: "completed_partial",
+      completed_at: new Date().toISOString(),
+      job_summary: { requested: payload.quantity, delivered: 0, shortfall: payload.quantity, completion_reason: "no_countries", runtime_ms: 0 },
+    }).eq("id", payload.scrapeJobId);
     return;
   }
 
@@ -235,7 +241,21 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
             deliveredThisChunk += 1;
           }
 
-          await supabaseAdmin.from("scrape_jobs").update({ results_count: newForUser, status: "streaming" }).eq("id", payload.scrapeJobId);
+          // ── Per-lead cancellation check ────────────────────────────────────
+          // The user may have cancelled mid-run; abort cleanly without marking
+          // the job failed — it simply stops delivering and closes as cancelled.
+          const { data: jobRow } = await supabaseAdmin.from("scrape_jobs")
+            .select("status").eq("id", payload.scrapeJobId).maybeSingle();
+          if (jobRow?.status === "cancelled") {
+            console.log(`[discoverJob] user=${payload.userId} cancelled mid-run — aborting`);
+            abortController.abort();
+            break outer;
+          }
+
+          await supabaseAdmin.from("scrape_jobs")
+            .update({ results_count: newForUser, status: "streaming" })
+            .eq("id", payload.scrapeJobId)
+            .not("status", "eq", "cancelled");
 
           if (result.limitReached) {
             console.log(`[discoverJob] user=${payload.userId} hit their plan limit mid-run — stopping early`);
@@ -262,6 +282,45 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
       break;
     }
   }
+
+  // ── Determine completion reason and final status ─────────────────────────
+  const { data: finalJobRow } = await supabaseAdmin.from("scrape_jobs")
+    .select("status").eq("id", payload.scrapeJobId).maybeSingle();
+  const wasCancelled = finalJobRow?.status === "cancelled";
+
+  const completionReason = wasCancelled
+    ? "cancelled"
+    : sawLimitReached
+      ? "limit_reached"
+      : delivered >= payload.quantity
+        ? "quantity_reached"
+        : "exhausted";
+
+  const finalStatus = wasCancelled
+    ? "cancelled"
+    : delivered >= payload.quantity
+      ? "completed"
+      : "completed_partial";
+
+  const jobSummary = {
+    requested: payload.quantity,
+    delivered,
+    shortfall: Math.max(0, payload.quantity - delivered),
+    duplicates: alreadyOwnedByUser,
+    completion_reason: completionReason,
+    runtime_ms: Date.now() - jobStartedAt,
+  };
+
+  // runJob() in workers/index.ts will set status='completed' after this
+  // function returns (it only knows about scrapeJobId for the legacy
+  // discover.live queue). We write the real terminal status here first;
+  // workers/index.ts is patched to not overwrite a non-streaming status.
+  await supabaseAdmin.from("scrape_jobs").update({
+    status: finalStatus,
+    results_count: newForUser,
+    completed_at: new Date().toISOString(),
+    job_summary: jobSummary,
+  }).eq("id", payload.scrapeJobId);
 
   const exhaustedEverySearchVariation = delivered < payload.quantity && !sawLimitReached;
   console.log(

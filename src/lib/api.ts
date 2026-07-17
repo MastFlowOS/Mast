@@ -469,17 +469,20 @@ async function currentCreditsSnapshot(userId: string) {
  * Subscribes to a discover job's live results. Calls `onLead` for every new
  * CRM row (`leads`) that lands under this job id, and `onStatusChange`
  * whenever the job's `scrape_jobs` row moves (queued -> streaming ->
- * completed | failed). Returns an unsubscribe function.
+ * completed | completed_partial | cancelled | failed). Returns an unsubscribe
+ * function.
  *
  * This is what makes both Free's Live Discovery AND a Starter/Pro Instant
  * Discovery shortfall's follow-up feel like one continuous stream — the
  * caller never needs to know which underlying path produced a given lead.
  */
+export type DiscoverJobStatus = "queued" | "running" | "streaming" | "completed" | "completed_partial" | "cancelled" | "failed";
+
 export function subscribeToDiscoverJob(
   jobId: string,
   handlers: {
     onLead: (lead: Lead) => void;
-    onStatusChange: (status: "queued" | "streaming" | "completed" | "failed", resultsCount: number) => void;
+    onStatusChange: (status: DiscoverJobStatus, resultsCount: number) => void;
   },
 ): () => void {
   if (!supabase) return () => {};
@@ -496,7 +499,7 @@ export function subscribeToDiscoverJob(
       { event: "UPDATE", schema: "public", table: "scrape_jobs", filter: `id=eq.${jobId}` },
       (payload) => {
         const row = payload.new as { status: string; results_count: number };
-        handlers.onStatusChange(row.status as "queued" | "streaming" | "completed" | "failed", row.results_count ?? 0);
+        handlers.onStatusChange(row.status as DiscoverJobStatus, row.results_count ?? 0);
       },
     )
     .subscribe();
@@ -505,6 +508,18 @@ export function subscribeToDiscoverJob(
     supabase?.removeChannel(channel);
   };
 }
+
+/**
+ * Cancels an in-flight discover job. The worker will detect the status
+ * change on its next per-lead loop iteration and stop cleanly.
+ * Resolves with { jobId, status: "cancelled" } on success.
+ * Throws ApiError if the job is already terminal (409) or not found (404).
+ */
+export async function cancelDiscoverJob(jobId: string): Promise<{ jobId: string; status: string }> {
+  return backendFetch<{ jobId: string; status: string }>(`/v1/discover/${jobId}/cancel`, { method: "POST" });
+}
+
+
 
 async function requireUserId(): Promise<string> {
   if (!supabase) throw new ApiError(0, "Supabase not configured", {});

@@ -74,13 +74,28 @@ async function main() {
 
 async function runJob(bossJobId: string, scrapeJobId: string | null, fn: () => Promise<void>) {
   if (scrapeJobId) {
-    await supabaseAdmin.from("scrape_jobs").update({ status: "running", started_at: new Date().toISOString() }).eq("id", scrapeJobId);
+    // Only transition to 'running' if the job is in an appropriate pre-run
+    // state. Do NOT overwrite 'cancelled' (set by the user before we even
+    // started) or any terminal state left by a previous crashed attempt.
+    await supabaseAdmin.from("scrape_jobs")
+      .update({ status: "running", started_at: new Date().toISOString() })
+      .eq("id", scrapeJobId)
+      .in("status", ["queued", "running"]);
   }
 
   try {
     await fn();
     if (scrapeJobId) {
-      await supabaseAdmin.from("scrape_jobs").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", scrapeJobId);
+      // The handler (e.g. handleDiscoverJob) writes its own terminal state
+      // (completed | completed_partial | cancelled) together with job_summary.
+      // runJob only needs to write 'completed' as a safe fallback for jobs
+      // where the handler exited cleanly but didn't write a terminal state
+      // (e.g. an older handler or discovery_plan flows).
+      // We must NOT overwrite completed_partial / cancelled / completed.
+      await supabaseAdmin.from("scrape_jobs")
+        .update({ status: "completed", completed_at: new Date().toISOString() })
+        .eq("id", scrapeJobId)
+        .in("status", ["running", "streaming"]); // only apply when handler left it non-terminal
     }
   } catch (err) {
     console.error(`[worker] job ${bossJobId} failed`, err);
@@ -88,11 +103,13 @@ async function runJob(bossJobId: string, scrapeJobId: string | null, fn: () => P
       await supabaseAdmin
         .from("scrape_jobs")
         .update({ status: "failed", error: err instanceof Error ? err.message : String(err), completed_at: new Date().toISOString() })
-        .eq("id", scrapeJobId);
+        .eq("id", scrapeJobId)
+        .not("status", "eq", "cancelled"); // never overwrite a user cancellation with 'failed'
     }
     throw err; // let pg-boss apply its retry policy
   }
 }
+
 
 main().catch((err) => {
   console.error("[worker] fatal startup error", err);

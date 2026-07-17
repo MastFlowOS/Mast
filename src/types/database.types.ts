@@ -307,37 +307,40 @@ export type Database = {
           id: string;
           user_id: string | null;
           mode: "live" | "instant_pool" | "instant_pool_ranked" | "background_expand" | "verification";
-          status: "queued" | "running" | "streaming" | "completed" | "failed";
+          status: "queued" | "running" | "streaming" | "completed" | "completed_partial" | "failed" | "cancelled";
           query: Json;
           results_count: number;
           error: string | null;
           created_at: string;
           started_at: string | null;
           completed_at: string | null;
+          job_summary: Json | null;
         };
         Insert: {
           id?: string;
           user_id?: string | null;
           mode: "live" | "instant_pool" | "instant_pool_ranked" | "background_expand" | "verification";
-          status?: "queued" | "running" | "streaming" | "completed" | "failed";
+          status?: "queued" | "running" | "streaming" | "completed" | "completed_partial" | "failed" | "cancelled";
           query: Json;
           results_count?: number;
           error?: string | null;
           created_at?: string;
           started_at?: string | null;
           completed_at?: string | null;
+          job_summary?: Json | null;
         };
         Update: {
           id?: string;
           user_id?: string | null;
           mode?: "live" | "instant_pool" | "instant_pool_ranked" | "background_expand" | "verification";
-          status?: "queued" | "running" | "streaming" | "completed" | "failed";
+          status?: "queued" | "running" | "streaming" | "completed" | "completed_partial" | "failed" | "cancelled";
           query?: Json;
           results_count?: number;
           error?: string | null;
           created_at?: string;
           started_at?: string | null;
           completed_at?: string | null;
+          job_summary?: Json | null;
         };
         Relationships: [];
       };
@@ -403,6 +406,7 @@ export type Database = {
           created_at: string;
           started_at: string | null;
           completed_at: string | null;
+          last_heartbeat_at: string | null;
         };
         Insert: {
           id?: string;
@@ -414,6 +418,7 @@ export type Database = {
           created_at?: string;
           started_at?: string | null;
           completed_at?: string | null;
+          last_heartbeat_at?: string | null;
         };
         Update: {
           id?: string;
@@ -425,6 +430,7 @@ export type Database = {
           created_at?: string;
           started_at?: string | null;
           completed_at?: string | null;
+          last_heartbeat_at?: string | null;
         };
         Relationships: [];
       };

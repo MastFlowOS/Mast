@@ -337,6 +337,17 @@ class ScraperConfig:
     scroll_delay_ms: int = int(os.environ.get("SCROLL_DELAY_MS", "1500"))
     feed_wait_ms: int = int(os.environ.get("FEED_WAIT_MS", "15000"))
 
+    # Crash recovery — ROOT CAUSE FIX: a renderer crash ("Target crashed",
+    # typically an OOM kill on memory-constrained hosts like Railway) used
+    # to be treated as fatal for the entire search — one crash discarded
+    # every place already yielded for that city and reported the whole
+    # query as done/exhausted, even after 10+ minutes of real progress. Now
+    # MapsScraper.search() catches a crash, tears down and rebuilds the
+    # context/page, re-navigates, and resumes scrolling from where it left
+    # off (seen_hrefs / yielded are preserved across the rebuild) — up to
+    # this many times per search before finally giving up.
+    max_crash_retries: int = int(os.environ.get("MAX_CRASH_RETRIES", "2"))
+
     # Mode flags
     fast: bool = bool(os.environ.get("SCRAPER_FAST", ""))
     headless: bool = True

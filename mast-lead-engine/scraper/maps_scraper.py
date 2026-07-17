@@ -270,6 +270,31 @@ class RawPlace:
 # Browser helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Resource blocking — ROOT CAUSE FIX (memory): nothing in this module ever
+# blocked a single request. Every map tile, marker icon, font, and photo on
+# a Maps search + scroll + place-detail pass was loaded in full, for every
+# search. That's the dominant contributor to the renderer's memory growth
+# that eventually OOM-crashes Chromium ("Target crashed") on a
+# memory-constrained host (e.g. Railway's default container). None of the
+# extraction logic in this file reads pixel data — it only reads text,
+# attributes, and HTML — so blocking these resource types costs nothing
+# functionally while substantially cutting per-page memory.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+
+
+async def _block_heavy_resources(ctx: BrowserContext) -> None:
+    async def _handle(route):
+        if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+            await route.abort()
+        else:
+            await route.continue_()
+
+    await ctx.route("**/*", _handle)
+
+
 async def _new_stealth_context(browser: Browser, proxy: str | None = None) -> BrowserContext:
     """Create a new browser context with anti-detection configuration."""
     viewport = random.choice(_VIEWPORTS)
@@ -301,6 +326,9 @@ async def _new_stealth_context(browser: Browser, proxy: str | None = None) -> Br
 
     # Apply stealth script to every new page
     await ctx.add_init_script(_STEALTH_JS)
+
+    # ROOT CAUSE FIX (memory): see _block_heavy_resources docblock above.
+    await _block_heavy_resources(ctx)
 
     return ctx
 
@@ -664,11 +692,24 @@ class MapsScraper:
             niche:       Niche tag from the niche catalog
             region:      Region tag from regional config
             max_results: Stop after yielding this many places
-        """
-        proxy = await self._proxy_manager.next() if self._proxy_manager else None
-        ctx = await _new_stealth_context(self.browser, proxy=proxy)
-        page = await ctx.new_page()
 
+        ROOT CAUSE FIX (memory / crash recovery): a Chromium renderer crash
+        ("Target crashed" — typically an OOM kill on a memory-constrained
+        host) used to be caught by the outer `except Exception` below and
+        treated as fatal: the whole search ended immediately, discarding
+        every place already yielded for this city, even after several
+        minutes of real progress (see production logs — a New York search
+        crashed after ~10 places with nothing to show for it). Combined
+        with `_block_heavy_resources` (images/media/fonts never loading in
+        the first place, cutting the memory pressure that causes the crash
+        at all), this method now also treats a crash as *recoverable*: it
+        tears down the crashed context/page, builds a fresh one, re-goes to
+        the same search URL, fast-forwards scrolling back to roughly where
+        it left off, and resumes — `seen_hrefs`/`yielded` are preserved
+        across the rebuild so nothing already collected is lost and nothing
+        gets double-counted. Only after `config.max_crash_retries`
+        consecutive crashes does the search finally give up.
+        """
         full_query = f"{query} in {city}"
         search_url = (
             "https://www.google.com/maps/search/"
@@ -677,138 +718,196 @@ class MapsScraper:
 
         log.info(f"[maps] searching: {full_query!r}")
 
-        try:
-            await self._limiter.acquire("maps_search")
+        proxy = await self._proxy_manager.next() if self._proxy_manager else None
+
+        yielded = 0
+        seen_hrefs: set[str] = set()
+        # Rounds actually scrolled so far, summed ACROSS every attempt —
+        # this is what a post-crash rebuild fast-forwards through, and it
+        # also caps total work across all retries so a search that keeps
+        # crashing can't scroll forever.
+        total_scroll_rounds = 0
+        max_total_rounds = self.config.scroll_max_rounds * (self.config.max_crash_retries + 1)
+        max_attempts = self.config.max_crash_retries + 1
+        attempt = 0
+
+        while attempt < max_attempts:
+            attempt += 1
+            ctx = await _new_stealth_context(self.browser, proxy=proxy)
+            page = await ctx.new_page()
+            crashed = False
+
             try:
-                await page.goto(search_url, wait_until="networkidle",
-                                timeout=self.config.maps_timeout_ms)
-            except PlaywrightTimeoutError:
-                await page.goto(search_url, wait_until="domcontentloaded",
-                                timeout=self.config.maps_timeout_ms)
-
-            # Wait for results to appear
-            panel_sel = None
-            for sel in _PANEL_SELECTORS:
+                await self._limiter.acquire("maps_search")
                 try:
-                    await page.wait_for_selector(sel, timeout=8000)
-                    panel_sel = sel
-                    break
+                    await page.goto(search_url, wait_until="networkidle",
+                                    timeout=self.config.maps_timeout_ms)
                 except PlaywrightTimeoutError:
-                    continue
+                    await page.goto(search_url, wait_until="domcontentloaded",
+                                    timeout=self.config.maps_timeout_ms)
 
-            if not panel_sel:
-                log.warning(f"[maps] no result panel found for: {full_query!r}")
-                return
-
-            yielded = 0
-            seen_hrefs: set[str] = set()
-            scroll_round = 0
-
-            while yielded < max_results and scroll_round < self.config.scroll_max_rounds:
-                scroll_round += 1
-
-                # Collect all visible listing anchors
-                listing_anchors = await page.query_selector_all(
-                    "a[href*='/maps/place/']"
-                )
-
-                # Deduplicate
-                new_anchors = []
-                for a in listing_anchors:
+                # Wait for results to appear
+                panel_sel = None
+                for sel in _PANEL_SELECTORS:
                     try:
-                        href = await a.get_attribute("href") or ""
-                        href_key = href.split("?")[0]
-                        if href_key not in seen_hrefs and "/maps/place/" in href_key:
-                            seen_hrefs.add(href_key)
-                            new_anchors.append(a)
-                    except Exception:
-                        continue
-
-                for anchor in new_anchors:
-                    if yielded >= max_results:
-                        return
-
-                    try:
-                        await _human_click(page, anchor)
-                    except Exception:
-                        continue
-
-                    # Wait for place panel to open
-                    try:
-                        await page.wait_for_selector(
-                            _PLACE_NAME_SELECTORS[0],
-                            timeout=self.config.place_timeout_ms,
-                        )
+                        await page.wait_for_selector(sel, timeout=8000)
+                        panel_sel = sel
+                        break
                     except PlaywrightTimeoutError:
+                        continue
+
+                if not panel_sel:
+                    log.warning(f"[maps] no result panel found for: {full_query!r}")
+                    return
+
+                if attempt > 1:
+                    log.info(
+                        f"[maps] recovered from crash for {full_query!r} — "
+                        f"attempt {attempt}/{max_attempts}, resuming with "
+                        f"{yielded} place(s) already yielded"
+                    )
+                    # Fast-forward back toward roughly where the crashed
+                    # attempt left off. seen_hrefs dedupes anything
+                    # re-encountered along the way, so overshooting or
+                    # undershooting slightly is harmless.
+                    for _ in range(total_scroll_rounds):
+                        await _human_scroll(page, panel_sel, config=self.config)
+                        await asyncio.sleep(0.15)
+
+                rounds_this_attempt = 0
+
+                while (
+                    yielded < max_results
+                    and rounds_this_attempt < self.config.scroll_max_rounds
+                    and total_scroll_rounds < max_total_rounds
+                ):
+                    rounds_this_attempt += 1
+                    total_scroll_rounds += 1
+
+                    # Collect all visible listing anchors
+                    listing_anchors = await page.query_selector_all(
+                        "a[href*='/maps/place/']"
+                    )
+
+                    # Deduplicate
+                    new_anchors = []
+                    for a in listing_anchors:
                         try:
-                            await page.wait_for_selector("h1", timeout=5000)
-                        except PlaywrightTimeoutError:
+                            href = await a.get_attribute("href") or ""
+                            href_key = href.split("?")[0]
+                            if href_key not in seen_hrefs and "/maps/place/" in href_key:
+                                seen_hrefs.add(href_key)
+                                new_anchors.append(a)
+                        except Exception:
                             continue
 
-                    await self._limiter.acquire("maps_place")
+                    for anchor in new_anchors:
+                        if yielded >= max_results:
+                            return
 
-                    try:
-                        place = await _extract_place_data(
-                            page,
-                            config=self.config,
-                            query=full_query,
-                            niche=niche,
-                            region=region,
-                            city=city,
-                            country=country,
+                        try:
+                            await _human_click(page, anchor)
+                        except Exception:
+                            continue
+
+                        # Wait for place panel to open
+                        try:
+                            await page.wait_for_selector(
+                                _PLACE_NAME_SELECTORS[0],
+                                timeout=self.config.place_timeout_ms,
+                            )
+                        except PlaywrightTimeoutError:
+                            try:
+                                await page.wait_for_selector("h1", timeout=5000)
+                            except PlaywrightTimeoutError:
+                                continue
+
+                        await self._limiter.acquire("maps_place")
+
+                        try:
+                            place = await _extract_place_data(
+                                page,
+                                config=self.config,
+                                query=full_query,
+                                niche=niche,
+                                region=region,
+                                city=city,
+                                country=country,
+                            )
+                        except Exception as exc:
+                            log.debug(f"[maps] extraction error: {exc}")
+                            self._stats.errors += 1
+                            continue
+
+                        if not place:
+                            continue
+
+                        # Skip permanently closed
+                        if place.closed:
+                            self._stats.skip("permanently_closed")
+                            continue
+
+                        log.debug(
+                            f"[maps] ✓ {place.name!r} | "
+                            f"reviews={place.reviews} | "
+                            f"rating={place.rating} | "
+                            f"website={place.website[:40]!r}"
                         )
-                    except Exception as exc:
-                        log.debug(f"[maps] extraction error: {exc}")
-                        self._stats.errors += 1
-                        continue
 
-                    if not place:
-                        continue
+                        yield place
+                        yielded += 1
 
-                    # Skip permanently closed
-                    if place.closed:
-                        self._stats.skip("permanently_closed")
-                        continue
+                    # Check for end of results
+                    try:
+                        body_text = await page.evaluate(
+                            "() => document.body?.innerText || ''"
+                        )
+                        if any(eol in body_text for eol in _EOL_TEXTS):
+                            log.debug(f"[maps] reached end of results after {yielded} places")
+                            return
+                    except Exception:
+                        pass
 
-                    log.debug(
-                        f"[maps] ✓ {place.name!r} | "
-                        f"reviews={place.reviews} | "
-                        f"rating={place.rating} | "
-                        f"website={place.website[:40]!r}"
+                    # Scroll the results panel
+                    await _human_scroll(page, panel_sel, config=self.config)
+                    await asyncio.sleep(
+                        random.uniform(
+                            self.config.scroll_delay_ms / 1500,
+                            self.config.scroll_delay_ms / 750,
+                        )
                     )
 
-                    yield place
-                    yielded += 1
+                # Finished this attempt's scroll budget without crashing —
+                # max_results reached, the per-attempt or cross-attempt
+                # scroll cap was hit, or EOL already returned above.
+                # Nothing left to retry.
+                return
 
-                # Check for end of results
+            except Exception as exc:
+                crashed = True
+                is_last_attempt = attempt >= max_attempts
+                log.error(
+                    f"[maps] {'fatal' if is_last_attempt else 'recoverable'} "
+                    f"error for {full_query!r} (attempt {attempt}/{max_attempts}, "
+                    f"{yielded} place(s) already yielded): {exc}"
+                )
+                if proxy:
+                    self._proxy_manager.report_failure(proxy)
+                if is_last_attempt:
+                    return
+                # else: fall through to `finally`, then the `while` loop
+                # retries with a freshly built context/page.
+            finally:
                 try:
-                    body_text = await page.evaluate(
-                        "() => document.body?.innerText || ''"
-                    )
-                    if any(eol in body_text for eol in _EOL_TEXTS):
-                        log.debug(f"[maps] reached end of results after {yielded} places")
-                        break
+                    await page.close()
                 except Exception:
                     pass
-
-                # Scroll the results panel
-                await _human_scroll(page, panel_sel, config=self.config)
-                await asyncio.sleep(
-                    random.uniform(
-                        self.config.scroll_delay_ms / 1500,
-                        self.config.scroll_delay_ms / 750,
-                    )
-                )
-
-        except Exception as exc:
-            log.error(f"[maps] fatal error for {full_query!r}: {exc}")
-            if proxy:
-                self._proxy_manager.report_failure(proxy)
-        finally:
-            await page.close()
-            await ctx.close()
-            if proxy:
-                self._proxy_manager.report_success(proxy)
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
+                if not crashed and proxy:
+                    self._proxy_manager.report_success(proxy)
 
     async def get_place_by_url(
         self,

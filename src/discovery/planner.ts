@@ -99,6 +99,28 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
   await dispatchQueuedDiscoveryTasks(planId, request);
 }
 
+/**
+ * RELIABILITY FIX: discovery.task work is a Playwright/browser subprocess
+ * (see runEngineQuery in scraperBridge/pythonBridge.ts) — browser crashes,
+ * page crashes, and navigation timeouts are expected, recoverable failures
+ * for this queue specifically, not a reason to give up on a city/niche.
+ * pg-boss's global default (queue.ts: retryLimit 3) is shared by every
+ * queue, including ones where a failure IS more likely to be permanent
+ * (e.g. a malformed payload). discovery.task gets its own, much more
+ * patient policy here so "restart the worker/browser and resume" (per the
+ * reliability requirement) actually gets enough attempts to succeed before
+ * the task is given up on. DISCOVERY_TASK_MAX_ATTEMPTS in
+ * jobs/discoveryPlanJob.ts mirrors retryLimit + 1 so the DB-side attempts
+ * counter and pg-boss's own retry budget agree on when a task is truly done
+ * retrying (as opposed to being stuck "queued" forever with no worker ever
+ * picking it up again — the bug this fixes).
+ */
+export const DISCOVERY_TASK_RETRY_OPTIONS = {
+  retryLimit: 8,
+  retryBackoff: true,
+  retryDelay: 3,
+};
+
 export async function dispatchQueuedDiscoveryTasks(planId: string, request: DiscoveryPlanRequest): Promise<void> {
   const { data, error } = await db
     .from("discovery_tasks")
@@ -108,5 +130,7 @@ export async function dispatchQueuedDiscoveryTasks(planId: string, request: Disc
     .order("priority", { ascending: false });
   if (error) throw error;
   const boss = await getBoss();
-  for (const task of data ?? []) await boss.send(QUEUES.discoveryTask, { taskId: task.id, planId, request });
+  for (const task of data ?? []) {
+    await boss.send(QUEUES.discoveryTask, { taskId: task.id, planId, request }, DISCOVERY_TASK_RETRY_OPTIONS);
+  }
 }

@@ -11,6 +11,22 @@ const db = supabaseAdmin as any;
 export type DiscoveryPlanPayload = DiscoveryPlanRequest & { planId: string };
 export type DiscoveryTaskPayload = { taskId: string; planId: string; request: DiscoveryPlanRequest };
 
+/**
+ * RELIABILITY FIX: mirrors planner.ts's DISCOVERY_TASK_RETRY_OPTIONS
+ * (retryLimit: 8 → up to 9 total attempts). A discovery_tasks row used to
+ * be reset to status "queued" on every failure unconditionally, including
+ * the LAST failure pg-boss would ever retry. Once pg-boss's own retry
+ * budget was exhausted, nothing was left to pick that "queued" row back up
+ * — no live job existed for it anymore — so it sat there forever, and
+ * completePlanIfDrained() (which treats "queued" as still-in-flight) could
+ * never finish the plan even after every other task genuinely completed.
+ * Now the row is only left "queued" while pg-boss still has retries left
+ * for it; on the final attempt it's marked "failed" (a terminal status)
+ * instead, so the plan can still conclude — a single stubborn city/niche
+ * can no longer hang an entire discovery request indefinitely.
+ */
+const DISCOVERY_TASK_MAX_ATTEMPTS = 9;
+
 export async function handleDiscoveryPlanJob(payload: DiscoveryPlanPayload): Promise<void> {
   await db.from("discovery_plans").update({ status: "planning" }).eq("id", payload.planId).eq("status", "queued");
   await materializeDiscoveryPlan(payload.planId, payload);
@@ -31,10 +47,26 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   const { data: task, error: taskError } = await db.from("discovery_tasks").select("*").eq("id", payload.taskId).single();
   if (taskError) throw taskError;
 
+  const currentAttempt = (task.attempts ?? 0) + 1;
   const { data: claimed } = await db.from("discovery_tasks")
-    .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), error: null })
+    .update({ status: "running", attempts: currentAttempt, started_at: new Date().toISOString(), error: null })
     .eq("id", payload.taskId).eq("status", "queued").select("id").maybeSingle();
   if (!claimed) return; // duplicate wake-up or a retry already owns this task
+
+  // RELIABILITY FIX (efficiency, not correctness): the requested quantity
+  // is a hard target, but once it's already been met there's no reason for
+  // a task that hasn't started yet to spin up a fresh browser/subprocess
+  // just to have its eventual delivery attempt rejected by
+  // claim_discovery_delivery(). Tasks that are already mid-flight aren't
+  // affected — this only short-circuits ones still sitting in the queue
+  // when a sibling task already finished satisfying the plan.
+  const { data: planProgress } = await db.from("discovery_plans")
+    .select("requested_count, delivered_count").eq("id", payload.planId).maybeSingle();
+  if (planProgress && planProgress.delivered_count >= planProgress.requested_count) {
+    await recordTaskOutcome(task, { discovered: 0, accepted: 0, rejected: 0, exhausted: false, status: "completed" });
+    await completePlanIfDrained(payload.planId);
+    return;
+  }
 
   let discovered = 0;
   let accepted = 0;
@@ -119,8 +151,31 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     await recordTaskOutcome(task, { discovered, accepted, rejected, exhausted, status: "completed" });
     await completePlanIfDrained(payload.planId);
   } catch (error) {
-    await recordTaskOutcome(task, { discovered, accepted, rejected, exhausted, status: "queued", error: error instanceof Error ? error.message : String(error) });
-    throw error;
+    // RELIABILITY FIX: a recoverable failure (browser/page crash, nav
+    // timeout, rate limit, network blip) should give pg-boss's retry a
+    // chance to "restart the worker" — that only works while attempts are
+    // still within the retry budget planner.ts gave this queue
+    // (DISCOVERY_TASK_RETRY_OPTIONS.retryLimit). Once this was the last
+    // attempt pg-boss will ever make, leaving the row "queued" would strand
+    // it forever with no job left to claim it — so it's marked "failed"
+    // (terminal) instead, letting completePlanIfDrained() treat this
+    // city/niche as genuinely given-up-on rather than eternally pending.
+    const willRetry = currentAttempt < DISCOVERY_TASK_MAX_ATTEMPTS;
+    await recordTaskOutcome(task, {
+      discovered,
+      accepted,
+      rejected,
+      exhausted,
+      status: willRetry ? "queued" : "failed",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    if (!willRetry) {
+      // No further pg-boss retry is coming for this task — the plan must
+      // still be allowed to conclude (quantity reached, or every OTHER
+      // task genuinely exhausted) instead of hanging on this one city.
+      await completePlanIfDrained(payload.planId);
+    }
+    throw error; // let pg-boss apply its own retry/backoff while attempts remain
   }
 }
 

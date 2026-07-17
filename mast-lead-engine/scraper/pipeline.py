@@ -266,6 +266,14 @@ class EnrichmentPipeline:
         raw_dict = raw.to_dict()
         max_ig = max_ig_followers or self.config.max_ig_followers
         max_rev = max_reviews or self.config.max_reviews
+        # RELIABILITY FIX (balanced filtering): max_ig/max_rev above are now
+        # SOFT thresholds — they no longer reject here, they just tell
+        # scoring where the "ideal" band ends so it can apply a graduated
+        # penalty instead (see scoring/scorer.py). Only a business beyond
+        # the HARD ceiling below — genuinely enterprise-scale, not a normal
+        # SMB with an unusually large following — is rejected outright.
+        hard_max_ig = self.config.hard_max_ig_followers
+        hard_max_rev = self.config.hard_max_reviews
 
         # ── TRACE: every business that enters the pipeline is counted as
         # "discovered" exactly once, here, regardless of what happens next.
@@ -286,9 +294,12 @@ class EnrichmentPipeline:
             log.info(f"[trace] {name!r} ↓ REJECTED — cannabis business (keyword match)")
             return None
 
-        if raw.reviews > max_rev:
-            self._stats.skip(f"reviews_>{max_rev}")
-            log.info(f"[trace] {name!r} ↓ REJECTED — review count {raw.reviews} exceeds max_reviews={max_rev}")
+        if raw.reviews > hard_max_rev:
+            self._stats.skip(f"reviews_>{hard_max_rev}_hard_cap")
+            log.info(
+                f"[trace] {name!r} ↓ REJECTED — review count {raw.reviews} exceeds "
+                f"hard_max_reviews={hard_max_rev} (obviously overgrown/enterprise scale)"
+            )
             return None
 
         if raw.closed:
@@ -363,11 +374,17 @@ class EnrichmentPipeline:
         )
 
         # ── Post-enrichment IG follower filter ────────────────────────────────
-        if lead.ig_followers is not None and lead.ig_followers > max_ig:
-            self._stats.skip(f"ig_followers_>{max_ig}")
+        # RELIABILITY FIX: an account slightly above max_ig (the "ideal"
+        # sweet spot) used to be discarded outright here. It now only gets
+        # rejected once it's past hard_max_ig — genuinely too big to be a
+        # realistic SMB prospect; anything between max_ig and hard_max_ig
+        # flows through to scoring, where ig_follower_score() penalizes it
+        # proportionally instead of throwing the lead away.
+        if lead.ig_followers is not None and lead.ig_followers > hard_max_ig:
+            self._stats.skip(f"ig_followers_>{hard_max_ig}_hard_cap")
             log.info(
                 f"[trace] {name!r} ↓ REJECTED — ig_followers={lead.ig_followers} "
-                f"exceeds max_ig_followers={max_ig}"
+                f"exceeds hard_max_ig_followers={hard_max_ig} (obviously overgrown/enterprise scale)"
             )
             return None
 

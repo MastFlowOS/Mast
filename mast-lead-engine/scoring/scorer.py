@@ -228,7 +228,13 @@ def ig_follower_score(biz: dict) -> int:
         return 25
     if followers <= IG_GROWING_MAX:
         return 15
-    return 5  # above the standard cap but sometimes let through
+    # RELIABILITY FIX: accounts above the "growing" band used to be
+    # rejected outright by pipeline.py's old hard cap at this same number.
+    # They're not auto-discarded anymore — this modest, neutral-ish +5
+    # keeps them competitive without pretending they're as ideal a fit as
+    # the sweet-spot band above. Only past hard_max_ig_followers (pipeline.py)
+    # does an account get rejected, for being genuinely too large for SMB outreach.
+    return 5
 
 
 def social_presence_score(biz: dict) -> int:
@@ -275,10 +281,16 @@ def review_score(biz: dict) -> int:
     """0–15. Points for review count and rating."""
     score = 0
 
-    # Count (log-scaled, capped at 500)
-    count = min(500, parse_review_count(biz.get("reviews")))
+    # Count (log-scaled, capped at 2,500 — RELIABILITY FIX: this was
+    # previously capped at 500, which is also where pipeline.py used to
+    # hard-reject, so a business above 500 reviews never even got here.
+    # Now that businesses with up to a few thousand reviews are allowed
+    # through (see pipeline.py's hard_max_reviews), the cap is raised to
+    # match so a legitimately well-reviewed SMB still earns credit here
+    # instead of being scored as if it had exactly 500.
+    count = min(2500, parse_review_count(biz.get("reviews")))
     if count > 0:
-        log_score = math.log10(count + 1) / math.log10(501)  # 0..1
+        log_score = math.log10(count + 1) / math.log10(2501)  # 0..1
         score += int(round(log_score * 8))  # 0..8 pts
 
     # Rating
@@ -381,13 +393,18 @@ def branding_score(biz: dict) -> int:
     elif 0 < rating < 3.5:
         score -= 15
 
-    # Review volume
+    # Review volume — RELIABILITY FIX: the "still great" band now extends
+    # to 2,500 (previously 500), matching pipeline.py's soft threshold; a
+    # business with ~800-2,500 reviews is still a genuinely strong SMB
+    # opportunity, not something to penalize. Only past 2,500 — approaching
+    # the hard_max_reviews reject ceiling — does volume start working
+    # against the score, and only mildly.
     reviews = parse_review_count(biz.get("reviews"))
-    if 30 <= reviews <= 500:
+    if 30 <= reviews <= 2500:
         score += 15
     elif 10 <= reviews < 30:
         score += 7
-    elif reviews > 500:
+    elif reviews > 2500:
         score -= 5
 
     # Premium niche

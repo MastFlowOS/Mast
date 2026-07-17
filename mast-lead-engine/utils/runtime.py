@@ -355,9 +355,24 @@ class ScraperConfig:
     skip_ddg: bool = bool(os.environ.get("SKIP_DDG", ""))
     skip_ig: bool = bool(os.environ.get("SKIP_IG", ""))
 
-    # Filtering
+    # Filtering — RELIABILITY FIX: these used to be hard cutoffs in
+    # scraper/pipeline.py (anything above them was rejected outright before
+    # ever reaching scoring). That threw away plenty of genuinely strong SMB
+    # prospects — a bakery with 900 Google reviews or a boutique with 6,000
+    # IG followers is still a great outreach target, just not the "ideal"
+    # band. These two now only feed scoring/scorer.py's graduated penalty
+    # bands (see review_score/ig_follower_score) instead of causing a reject.
+    # Only HARD_MAX_REVIEWS / HARD_MAX_IG_FOLLOWERS below cause an outright
+    # rejection now, reserved for businesses at genuinely enterprise scale.
     max_ig_followers: int = int(os.environ.get("MAX_IG_FOLLOWERS", "5000"))
-    max_reviews: int = int(os.environ.get("MAX_REVIEWS", "500"))
+    max_reviews: int = int(os.environ.get("MAX_REVIEWS", "2500"))
+
+    # Hard rejection thresholds — a business beyond these is treated as
+    # "obviously overgrown" (enterprise scale, not an SMB), the only case
+    # (alongside chains/cannabis) where discovery should reject outright
+    # rather than let scoring apply a penalty.
+    hard_max_ig_followers: int = int(os.environ.get("HARD_MAX_IG_FOLLOWERS", "50000"))
+    hard_max_reviews: int = int(os.environ.get("HARD_MAX_REVIEWS", "5000"))
 
     # Site crawl
     site_contact_page_budget: int = 4   # reduced to 2 in fast mode

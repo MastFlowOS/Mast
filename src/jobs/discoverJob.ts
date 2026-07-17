@@ -122,6 +122,19 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
   let newForUser = 0;
   let sawLimitReached = false;
 
+  // ── Instrumentation: every engine-yielded lead is counted exactly once
+  // here, plus a tally of exactly why it didn't make it to delivery, so a
+  // "N discovered, 0 delivered" report can be traced to a precise stage
+  // instead of just "filtered." ──────────────────────────────────────────
+  let engineYielded = 0;
+  const rejectionCounts: Record<string, number> = {};
+  let alreadyOwnedByUser = 0;
+  let insertedCount = 0;
+
+  const recordRejection = (reason: string) => {
+    rejectionCounts[reason] = (rejectionCounts[reason] || 0) + 1;
+  };
+
   const abortController = new AbortController();
 
   outer: for (const singleNiche of niches) {
@@ -159,17 +172,34 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
           abortController.signal,
           (info) => {
             citySearchExhausted = info.exhausted;
+            console.log(
+              `[discoverJob] [trace] engine onDone for ${city}/${country.code} — ` +
+                `delivered=${info.delivered} requested=${info.requested} exhausted=${info.exhausted}`,
+            );
           },
         )) {
+          engineYielded += 1;
+          const leadName = JSON.stringify(lead.name);
+          console.log(`[discoverJob] [trace] ${leadName} \u2193 received from engine (city=${city})`);
+
           if (!channelsSatisfied(lead, payload.channels)) {
+            recordRejection(`failed channel requirement (needed ${JSON.stringify(payload.channels)})`);
+            console.log(
+              `[discoverJob] [trace] ${leadName} \u2193 REJECTED — failed channel filter ` +
+                `(requested=${JSON.stringify(payload.channels)} ` +
+                `has={email:${!!lead.email},phone:${!!lead.phone},instagram:${!!lead.instagram},website:${!!lead.website}})`,
+            );
             continue; // doesn't satisfy every requested channel — not counted, keep streaming
           }
+          console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED channel filter`);
 
           const validation = validateLead(lead);
           if (!validation.valid) {
-            console.log(`[discoverJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
+            recordRejection(`validation failed: ${validation.reason}`);
+            console.log(`[discoverJob] [trace] ${leadName} \u2193 REJECTED — validation failed reason=${validation.reason}`);
             continue;
           }
+          console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED validation`);
 
           const result = await deliverLead(
             lead,
@@ -183,6 +213,21 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
             },
             payload.region,
           );
+
+          if (result.limitReached) {
+            recordRejection("daily/monthly plan limit reached");
+            console.log(
+              `[discoverJob] [trace] ${leadName} \u2193 REJECTED — plan limit reached ` +
+                `(dailyLimit=${payload.dailyLimit} monthlyLimit=${payload.monthlyLimit})`,
+            );
+          } else if (!result.wasNewForUser) {
+            alreadyOwnedByUser += 1;
+            recordRejection("duplicate (already delivered to this user)");
+            console.log(`[discoverJob] [trace] ${leadName} \u2193 REJECTED — duplicate, user already has businessId=${result.businessId}`);
+          } else {
+            insertedCount += 1;
+            console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED delivery — inserted businessId=${result.businessId}`);
+          }
 
           if (result.wasNewForUser) {
             delivered += 1;
@@ -206,7 +251,7 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
 
         if (citySearchExhausted) {
           // Advances to this country's next city; only drops the whole
-          // country once every one of its cities is exhausted.
+          // country once every one of its cities has been exhausted.
           rotation.markCurrentSearchExhausted(country);
         }
       }
@@ -225,4 +270,32 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
       `requested=${payload.quantity} delivered=${delivered} newForUser=${newForUser} ` +
       `exhaustedEverySearchVariation=${exhaustedEverySearchVariation}`,
   );
+
+  // ── Final rejection summary — in the requested shape:
+  //      N discovered
+  //      X rejected because <reason>
+  //      1 duplicate
+  //      1 inserted
+  const summaryLines = [`${engineYielded} discovered (received from engine)`];
+  for (const [reason, count] of Object.entries(rejectionCounts).sort((a, b) => b[1] - a[1])) {
+    summaryLines.push(`${count} rejected because ${reason}`);
+  }
+  summaryLines.push(`${insertedCount} inserted`);
+  const accountedFor = Object.values(rejectionCounts).reduce((a, b) => a + b, 0) + insertedCount;
+  if (accountedFor !== engineYielded) {
+    summaryLines.push(
+      `⚠️  UNACCOUNTED: ${engineYielded} received from engine but only ${accountedFor} ` +
+        `accounted for — ${engineYielded - accountedFor} lead(s) vanished from the ` +
+        `discoverJob loop without hitting a logged exit point (check for an ` +
+        `unlogged \`continue\`/\`break\` or a thrown exception mid-loop).`,
+    );
+  }
+  console.log(`[discoverJob] rejection summary:\n${summaryLines.join("\n")}`);
+  if (alreadyOwnedByUser > 0) {
+    console.log(
+      `[discoverJob] note: ${alreadyOwnedByUser} lead(s) were rejected as "duplicate" because this exact ` +
+        `business was already in this user's CRM (leads table) from a previous run — this is expected on ` +
+        `repeat runs against the same user/region/niche, not a bug by itself.`,
+    );
+  }
 }

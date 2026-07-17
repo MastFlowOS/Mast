@@ -127,16 +127,40 @@ async def run_query(
                 if delivered >= max_results:
                     break
 
-                lead = await pipeline.process(
-                    raw_place,
-                    require_viability=require_viability,
-                    max_ig_followers=max_ig_followers,
-                    max_reviews=max_reviews,
-                )
+                try:
+                    lead = await pipeline.process(
+                        raw_place,
+                        require_viability=require_viability,
+                        max_ig_followers=max_ig_followers,
+                        max_reviews=max_reviews,
+                    )
+                except Exception as exc:
+                    # ROOT CAUSE hardening: pipeline.process() previously had
+                    # no error isolation at this call site — an unhandled
+                    # exception on ANY single business (e.g. a malformed
+                    # RawPlace field, a scoring edge case) propagated all the
+                    # way out of run_query(), killing the whole subprocess
+                    # before the `__done__` sentinel was ever written. Node's
+                    # pythonBridge then saw a non-zero exit with zero leads
+                    # delivered — indistinguishable from "everything was
+                    # legitimately rejected." One bad business must never be
+                    # able to take down an entire run.
+                    stats.errors += 1
+                    log.error(
+                        f"[trace] {raw_place.name!r} ↓ REJECTED — unhandled "
+                        f"exception in pipeline.process(): {exc!r}",
+                        exc_info=True,
+                    )
+                    continue
                 if not lead:
                     continue
                 if lead.score < min_score:
                     stats.skip(f"score_<_{min_score}")
+                    log.info(
+                        f"[trace] {lead.name!r} ↓ REJECTED — score={lead.score} "
+                        f"below min_score={min_score} (post-pipeline gate, applied here "
+                        f"in run_query rather than pipeline.process)"
+                    )
                     continue
 
                 delivered += 1
@@ -152,6 +176,9 @@ async def run_query(
     finally:
         store.close()
         log.info(f"[service] done — delivered={delivered} {stats.summary()}")
+        log.info(
+            "[service] rejection summary:\n" + stats.rejection_summary()
+        )
 
 
 async def _main_cli() -> None:

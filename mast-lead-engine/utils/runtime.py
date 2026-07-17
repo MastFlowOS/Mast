@@ -381,6 +381,10 @@ class RunStats:
     duplicates: int = 0
     errors: int = 0
     from_pool: int = 0
+    # Total raw places that entered EnrichmentPipeline.process() — i.e. every
+    # business the Maps scraper actually yielded, regardless of what happened
+    # to it afterward. This is the denominator for the rejection summary.
+    discovered: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
 
     def skip(self, reason: str) -> None:
@@ -395,4 +399,37 @@ class RunStats:
         ]
         for reason, count in sorted(self.skipped.items(), key=lambda x: -x[1]):
             lines.append(f"   ⛔ {reason:<20}: {count}")
+        return "\n".join(lines)
+
+    def rejection_summary(self) -> str:
+        """Plain-English breakdown in the exact shape requested for
+        debugging "N discovered, 0 delivered" style reports:
+
+            20 discovered
+            18 rejected because missing required email
+            1 duplicate
+            1 inserted
+        """
+        lines = [f"{self.discovered} discovered"]
+        for reason, count in sorted(self.skipped.items(), key=lambda x: -x[1]):
+            lines.append(f"{count} rejected because {reason}")
+        if self.duplicates:
+            lines.append(f"{self.duplicates} duplicate" + ("s" if self.duplicates != 1 else ""))
+        if self.errors:
+            lines.append(f"{self.errors} error" + ("s" if self.errors != 1 else ""))
+        lines.append(f"{self.collected} inserted")
+
+        accounted_for = (
+            sum(self.skipped.values()) + self.duplicates + self.errors + self.collected
+        )
+        if accounted_for != self.discovered:
+            lines.append(
+                f"⚠️  UNACCOUNTED: {self.discovered} discovered but only "
+                f"{accounted_for} accounted for across skip/dup/error/insert "
+                f"buckets — {self.discovered - accounted_for} business(es) "
+                f"vanished from the pipeline without hitting a logged exit "
+                f"point. This means a stage is returning/raising without "
+                f"recording a reason — check for a bare `except` or an early "
+                f"`return None` that isn't wrapped in self._stats.skip()."
+            )
         return "\n".join(lines)

@@ -267,30 +267,43 @@ class EnrichmentPipeline:
         max_ig = max_ig_followers or self.config.max_ig_followers
         max_rev = max_reviews or self.config.max_reviews
 
+        # ── TRACE: every business that enters the pipeline is counted as
+        # "discovered" exactly once, here, regardless of what happens next.
+        # This is the number the final rejection summary is built against.
+        self._stats.discovered += 1
+        name = raw.name or "<unnamed>"
+        log.info(f"[trace] {name!r} ↓ discovered (yielded from Maps)")
+
         # ── Pre-flight filters (fast checks before any network I/O) ──────────
 
         if is_chain(raw.name):
             self._stats.skip("chain_business")
+            log.info(f"[trace] {name!r} ↓ REJECTED — chain business (keyword match)")
             return None
 
         if is_cannabis(raw_dict):
             self._stats.skip("cannabis_business")
+            log.info(f"[trace] {name!r} ↓ REJECTED — cannabis business (keyword match)")
             return None
 
         if raw.reviews > max_rev:
             self._stats.skip(f"reviews_>{max_rev}")
+            log.info(f"[trace] {name!r} ↓ REJECTED — review count {raw.reviews} exceeds max_reviews={max_rev}")
             return None
 
         if raw.closed:
             self._stats.skip("permanently_closed")
+            log.info(f"[trace] {name!r} ↓ REJECTED — marked permanently closed on Maps")
             return None
 
         # ── Dedup check (fast, in-memory) ────────────────────────────────────
         is_dup, keys, matched = self._store.is_duplicate(raw_dict)
         if is_dup:
             self._stats.duplicates += 1
-            log.debug(f"[pipeline] DUP {raw.name!r} — matched {matched}")
+            log.info(f"[trace] {name!r} ↓ REJECTED — duplicate (matched existing fingerprint {matched!r})")
             return None
+
+        log.info(f"[trace] {name!r} ↓ PASSED pre-flight + duplicate check — entering enrichment")
 
         # ── Layer 2 + 3: Website crawl + IG intel (concurrent) ───────────────
         site_data: dict = {}
@@ -340,9 +353,22 @@ class EnrichmentPipeline:
         # ── Merge all data into a Lead ─────────────────────────────────────────
         lead = self._merge(raw, site_data, ig_data_from_map, ig_data_from_site)
 
+        log.info(
+            f"[trace] {name!r} ↓ PASSED enrichment "
+            f"(email={'✓' if lead.email else '✗'} phone={'✓' if lead.phone else '✗'} "
+            f"website={'✓' if lead.website else '✗'} "
+            f"website_unreachable={site_data.get('reachable') is False} "
+            f"instagram={'✓' if lead.instagram else '✗'} "
+            f"ig_followers={lead.ig_followers})"
+        )
+
         # ── Post-enrichment IG follower filter ────────────────────────────────
         if lead.ig_followers is not None and lead.ig_followers > max_ig:
             self._stats.skip(f"ig_followers_>{max_ig}")
+            log.info(
+                f"[trace] {name!r} ↓ REJECTED — ig_followers={lead.ig_followers} "
+                f"exceeds max_ig_followers={max_ig}"
+            )
             return None
 
         # ── Additional IG-based dedup (now that we have the IG handle) ────────
@@ -351,10 +377,17 @@ class EnrichmentPipeline:
             is_dup2, _, matched2 = self._store.is_duplicate(lead.to_dict())
             if is_dup2:
                 self._stats.duplicates += 1
-                log.debug(f"[pipeline] DUP (post-IG) {lead.name!r} — matched {matched2}")
+                log.info(
+                    f"[trace] {name!r} ↓ REJECTED — duplicate after enrichment "
+                    f"(matched existing fingerprint {matched2!r} via Instagram handle)"
+                )
                 return None
 
-        # ── Outreach viability gate ───────────────────────────────────────────
+        log.info(f"[trace] {name!r} ↓ PASSED duplicate check")
+
+        # ── Outreach viability gate (a.k.a. "validation" / channel-coverage
+        # requirement — must have >= min_channels of {phone,email,website,ig},
+        # and (per config) a digital presence channel) ───────────────────────
         if require_viability:
             ok, reason = passes_outreach_viability(
                 lead.to_dict(),
@@ -364,13 +397,27 @@ class EnrichmentPipeline:
             )
             if not ok:
                 self._stats.skip(f"viability:{reason}")
+                channels_present = {
+                    "phone": bool((lead.phone or "").strip()),
+                    "email": bool((lead.email or "").strip()),
+                    "website": bool((lead.website or "").strip()),
+                    "instagram": bool((lead.instagram or "").strip()),
+                }
+                log.info(
+                    f"[trace] {name!r} ↓ REJECTED — validation/viability failed "
+                    f"reason={reason!r} channels_present={channels_present}"
+                )
                 return None
+
+        log.info(f"[trace] {name!r} ↓ PASSED validation (outreach viability)")
 
         # ── Scoring ───────────────────────────────────────────────────────────
         lead.score = calculate_lead_score(lead.to_dict())
         lead.quality = lead_quality(lead.score)
         lead.tier = score_tier(lead.score)
         lead.action = recommended_action(lead.quality)
+
+        log.info(f"[trace] {name!r} ↓ PASSED scoring — score={lead.score} tier={lead.tier}")
 
         # ── Persist to store ──────────────────────────────────────────────────
         self._store.add(
@@ -390,6 +437,7 @@ class EnrichmentPipeline:
             f"ig_followers={lead.ig_followers} | "
             f"email={'✓' if lead.email else '✗'}"
         )
+        log.info(f"[trace] {name!r} ↓ PASSED delivery — persisted to store, yielded to caller")
 
         return lead
 

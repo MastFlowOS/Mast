@@ -3,6 +3,9 @@ import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { handleDiscoverJob } from "../jobs/discoverJob.js";
 import { handlePoolExpandJob } from "../jobs/poolExpandJob.js";
 import { handleVerificationJob } from "../jobs/verificationJob.js";
+import { handleDiscoveryPlanJob, handleDiscoveryTask } from "../jobs/discoveryPlanJob.js";
+import { handleBusinessProcessingJob } from "../jobs/businessProcessingJob.js";
+import { env } from "../config/env.js";
 
 process.on("uncaughtException", (err) => {
   console.error("[worker] uncaughtException", { message: err?.message, stack: err?.stack, err });
@@ -26,6 +29,21 @@ type DiscoverJobPayload = {
 
 async function main() {
   const boss = await getBoss();
+
+  await boss.work(QUEUES.discoveryPlan, async ([job]) => {
+    await runJob(job.id, null, () => handleDiscoveryPlanJob(job.data));
+  });
+
+  await boss.work(QUEUES.discoveryTask, { teamSize: env.DISCOVERY_TASK_CONCURRENCY }, async ([job]) => {
+    await runJob(job.id, null, () => handleDiscoveryTask(job.data));
+  });
+
+  await boss.work(QUEUES.businessEnrich, { teamSize: env.ENRICHMENT_TASK_CONCURRENCY }, async ([job]) => {
+    await runJob(job.id, null, () => handleBusinessProcessingJob(job.data));
+  });
+  await boss.work(QUEUES.businessScore, { teamSize: env.ENRICHMENT_TASK_CONCURRENCY }, async ([job]) => {
+    await runJob(job.id, null, () => handleBusinessProcessingJob(job.data));
+  });
 
   // discover.live is the only queued discovery path as of Phase 3 — Instant
   // Discovery (Starter/Pro/Premium) is a synchronous pool lookup in the

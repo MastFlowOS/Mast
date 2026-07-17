@@ -1,7 +1,5 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import type { EngineLead } from "./pythonBridge.js";
-import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
-import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { applyRediscoverySuccess, CONFIDENCE_DEFAULT, VERIFICATION_INTERVAL_MS } from "../scoring/confidenceModel.js";
 import { buildFieldTrust } from "../scoring/fieldTrust.js";
 import type { Json } from "../types/database.types.js";
@@ -22,6 +20,7 @@ export type DeliveryContext = {
    */
   dailyLimit?: number;
   monthlyLimit?: number;
+  discoveryPlanId?: string;
 };
 
 export type DeliveryResult = {
@@ -135,8 +134,6 @@ export async function upsertBusinessFromEngineLead(lead: EngineLead, region: str
       })
       .eq("id", existing.id);
 
-    await computeAndStoreOpportunityScores(existing.id as string);
-    await computeAndStoreBusinessHealth(existing.id as string);
     return existing.id as string;
   }
 
@@ -182,18 +179,6 @@ export async function upsertBusinessFromEngineLead(lead: EngineLead, region: str
     .single();
 
   if (error) throw error;
-
-  // Phase 6: score this business for all 12 professions right away — the
-  // very first time a business is discovered, not just on some later
-  // verification pass. `instant_pool_ranked` reads this table via
-  // pool_lookup() (migrations/003_pool_lookup.sql), so a business is
-  // ranking-eligible the moment it enters the pool.
-  await computeAndStoreOpportunityScores(inserted.id as string);
-
-  // Priority 7: Business Health Score, computed alongside (but stored
-  // separately from) the Opportunity Score — see business_health_scores'
-  // table comment for why the two are kept independent.
-  await computeAndStoreBusinessHealth(inserted.id as string);
 
   return inserted.id as string;
 }
@@ -271,6 +256,17 @@ export async function insertLeadForUser(
     return { businessId: business.id, wasNewForUser: false };
   }
 
+  // The request cap must be atomic too: many independent city workers can
+  // discover at once, but together they cannot exceed the requested count.
+  let planSlotReserved = false;
+  if (ctx.discoveryPlanId) {
+    const { data: claimed, error: claimError } = await (supabaseAdmin as any)
+      .rpc("claim_discovery_delivery", { p_plan_id: ctx.discoveryPlanId });
+    if (claimError) throw claimError;
+    if (!claimed) return { businessId: business.id, wasNewForUser: false, limitReached: true };
+    planSlotReserved = true;
+  }
+
   const { data: reservation, error: reserveError } = await supabaseAdmin
     .rpc("try_increment_lead_usage", {
       p_user_id: ctx.userId,
@@ -281,6 +277,7 @@ export async function insertLeadForUser(
     .single();
   if (reserveError) throw reserveError;
   if (!(reservation as { allowed: boolean }).allowed) {
+    if (planSlotReserved) await (supabaseAdmin as any).rpc("release_discovery_delivery", { p_plan_id: ctx.discoveryPlanId });
     return { businessId: business.id, wasNewForUser: false, limitReached: true };
   }
 
@@ -299,6 +296,7 @@ export async function insertLeadForUser(
       p_monthly_limit: ctx.monthlyLimit,
       p_count: -1,
     });
+    if (planSlotReserved) await (supabaseAdmin as any).rpc("release_discovery_delivery", { p_plan_id: ctx.discoveryPlanId });
     throw error;
   }
 
@@ -314,6 +312,7 @@ export async function insertLeadForUser(
       p_monthly_limit: ctx.monthlyLimit,
       p_count: -1,
     });
+    if (planSlotReserved) await (supabaseAdmin as any).rpc("release_discovery_delivery", { p_plan_id: ctx.discoveryPlanId });
     return { businessId: business.id, wasNewForUser: false };
   }
 
@@ -352,13 +351,26 @@ export async function insertLeadForUser(
  * received this exact business (enforced by the DB-level unique index from
  * migration 001, not just this check — this is belt-and-suspenders against
  * races between concurrent deliveries).
+ *
+ * `businessId`, if provided, is used as-is instead of re-upserting the lead
+ * into `businesses`. Audit Broken #4 fix: a caller that already resolved
+ * the business earlier in the same request (e.g. handleDiscoveryTask,
+ * which upserts up front so it has an id to enqueue enrichment/scoring
+ * against before the delivery decision is even made) used to have this
+ * function upsert the SAME lead again unconditionally. For a
+ * freshly-inserted business, that second upsert's findExistingBusiness()
+ * would find the row the first upsert just created and take the "already
+ * exists" branch — applying a +confidence "rediscovery" bump meant for a
+ * business turning up again in a later, independent search, on every
+ * single freshly-discovered business, plus one wasted DB round-trip per
+ * delivered lead.
  */
-export async function deliverLead(lead: EngineLead, ctx: DeliveryContext, region: string): Promise<DeliveryResult> {
-  const businessId = await upsertBusinessFromEngineLead(lead, region);
+export async function deliverLead(lead: EngineLead, ctx: DeliveryContext, region: string, businessId?: string): Promise<DeliveryResult> {
+  const resolvedBusinessId = businessId ?? (await upsertBusinessFromEngineLead(lead, region));
 
   return insertLeadForUser(
     {
-      id: businessId,
+      id: resolvedBusinessId,
       name: lead.name,
       niche: lead.niche || null,
       address: lead.address || null,

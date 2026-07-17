@@ -57,6 +57,43 @@ function digitsOnly(v: string): string {
   return v.replace(/\D/g, "");
 }
 
+/**
+ * Per-field checks, factored out of validateLead() so callers that need to
+ * validate ONE newly-observed field in isolation (e.g. enrichBusiness()
+ * re-validating a just-crawled email/phone — see audit Broken #3) can drop
+ * just that field on failure instead of failing an entire lead/business
+ * that's otherwise fine. validateLead() below is just these applied
+ * together, plus the whole-lead requirements (name, "has any channel").
+ */
+export function isValidEmail(value: string | null | undefined): boolean {
+  const email = (value || "").trim().toLowerCase();
+  if (!email) return false;
+  if (!EMAIL_RE.test(email)) return false;
+  const [local, domain] = email.split("@");
+  if (PLACEHOLDER_EMAIL_LOCAL_PARTS.has(local) || PLACEHOLDER_EMAIL_DOMAINS.has(domain)) return false;
+  return true;
+}
+
+export function isValidPhone(value: string | null | undefined): boolean {
+  const phone = (value || "").trim();
+  if (!phone) return false;
+  const digits = digitsOnly(phone);
+  if (digits.length < 7 || digits.length > 15 || PLACEHOLDER_PHONE_RE.test(digits)) return false;
+  return true;
+}
+
+export function isValidWebsite(value: string | null | undefined): boolean {
+  const website = (value || "").trim();
+  if (!website) return false;
+  return /^https?:\/\/[^\s]+\.[^\s]{2,}/i.test(website);
+}
+
+export function isValidInstagram(value: string | null | undefined): boolean {
+  const instagram = (value || "").trim();
+  if (!instagram) return false;
+  return /^https?:\/\/(www\.)?instagram\.com\/[A-Za-z0-9_.]+\/?$/i.test(instagram);
+}
+
 export function validateLead(lead: LeadValidationCandidate): LeadValidationResult {
   if (!lead.name || !lead.name.trim()) {
     return { valid: false, reason: "missing_name" };
@@ -74,20 +111,17 @@ export function validateLead(lead: LeadValidationCandidate): LeadValidationResul
   }
 
   const phone = (lead.phone || "").trim();
-  if (phone) {
-    const digits = digitsOnly(phone);
-    if (digits.length < 7 || digits.length > 15 || PLACEHOLDER_PHONE_RE.test(digits)) {
-      return { valid: false, reason: "invalid_phone_format" };
-    }
+  if (phone && !isValidPhone(phone)) {
+    return { valid: false, reason: "invalid_phone_format" };
   }
 
   const website = (lead.website || "").trim();
-  if (website && !/^https?:\/\/[^\s]+\.[^\s]{2,}/i.test(website)) {
+  if (website && !isValidWebsite(website)) {
     return { valid: false, reason: "invalid_website_format" };
   }
 
   const instagram = (lead.instagram || "").trim();
-  if (instagram && !/^https?:\/\/(www\.)?instagram\.com\/[A-Za-z0-9_.]+\/?$/i.test(instagram)) {
+  if (instagram && !isValidInstagram(instagram)) {
     return { valid: false, reason: "invalid_instagram_format" };
   }
 

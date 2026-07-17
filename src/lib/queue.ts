@@ -39,9 +39,15 @@ dns.setDefaultResultOrder("ipv4first");
  * (pool.expand) for the part that's explicitly allowed to happen later.
  */
 export const QUEUES = {
+  /** Durable planner + independently claimable country/city work units. */
+  discoveryPlan: "discovery.plan",
+  discoveryTask: "discovery.task",
+  /** Legacy queue retained only so already-enqueued jobs can drain safely. */
   discoverLive: "discover.live",
   poolExpand: "pool.expand",
   poolVerify: "pool.verify",
+  businessEnrich: "business.enrich",
+  businessScore: "business.score",
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];

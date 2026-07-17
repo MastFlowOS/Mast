@@ -31,6 +31,11 @@ const EnvSchema = z.object({
   // never calls it directly.
   SCRAPER_ENGINE_PATH: z.string().default("../mast-lead-engine"),
 
+  // Worker-local concurrency. Horizontal scale is achieved by adding worker
+  // services; these caps protect Maps and the browser in each service.
+  DISCOVERY_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
+  ENRICHMENT_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(8),
+
   // PHASE 8 — AI Opportunity Intelligence (Executive Briefings, Weekly
   // Intelligence, Opportunity Insights, Pipeline Coaching). Optional: if
   // unset, /v1/intelligence's AI-backed endpoints return 503 rather than

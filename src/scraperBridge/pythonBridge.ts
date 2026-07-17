@@ -80,6 +80,7 @@ export type EngineQueryParams = {
   skip_ig?: boolean;
   skip_site_crawl?: boolean;
   require_viability?: boolean;
+  discovery_only?: boolean;
   db_path?: string;
 };
 

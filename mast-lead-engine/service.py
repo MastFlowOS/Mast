@@ -65,6 +65,7 @@ async def run_query(
     skip_ig: bool = False,
     skip_site_crawl: bool = False,
     require_viability: bool = True,
+    discovery_only: bool = False,
     db_path: str = "data/leads.db",
 ) -> AsyncIterator[dict[str, Any]]:
     """
@@ -126,6 +127,18 @@ async def run_query(
             ):
                 if delivered >= max_results:
                     break
+
+                # Low-latency stage: emit independently observed Maps data
+                # now; durable worker queues perform slow enrichment later.
+                if discovery_only:
+                    raw_dict = raw_place.to_dict()
+                    if raw_place.closed or is_chain(raw_place.name) or is_cannabis(raw_dict):
+                        continue
+                    raw_dict["fingerprints"] = sorted(fingerprints_for(raw_dict))
+                    raw_dict["is_disqualified"] = False
+                    delivered += 1
+                    yield raw_dict
+                    continue
 
                 try:
                     lead = await pipeline.process(

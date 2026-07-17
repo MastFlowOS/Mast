@@ -6,6 +6,7 @@ import { getPlan } from "../../config/plans.js";
 import { getBoss, QUEUES } from "../../lib/queue.js";
 import { lookupAndDeliverFromPool } from "../../lib/poolLookup.js";
 import { professionSlugForLabel } from "../../lib/professions.js";
+import { enqueueDiscoveryPlan } from "../../discovery/planner.js";
 
 export const discoverRouter = Router();
 
@@ -125,8 +126,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
     if (jobError) throw jobError;
 
     if (plan.discoveryMode === "live") {
-      const boss = await getBoss();
-      await boss.send(QUEUES.discoverLive, {
+      const planId = await enqueueDiscoveryPlan({
         scrapeJobId: job.id,
         userId,
         region: body.region,
@@ -141,6 +141,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
 
       return res.status(202).json({
         jobId: job.id,
+        planId,
         mode: plan.discoveryMode,
         status: "queued",
         requested: quantity,

@@ -4,10 +4,11 @@ import { runEngineVerify } from "../scraperBridge/pythonBridge.js";
 import { isValidEmail, isValidPhone } from "../lib/leadValidation.js";
 import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
+import { toJson, isJsonObject } from "../lib/json.js";
+import type { Json } from "../types/database.types.js";
 
 export type ProcessingKind = "enrich" | "score";
 export type BusinessProcessingPayload = { taskId: string };
-const db = supabaseAdmin as any;
 
 /**
  * Finds (or creates) the durable business_processing_tasks row for this
@@ -30,12 +31,12 @@ const db = supabaseAdmin as any;
  * messages for the same row.
  */
 async function claimOrCreateProcessingTask(businessId: string, kind: ProcessingKind): Promise<{ id: string } | null> {
-  const { data: existing, error: fetchError } = await db.from("business_processing_tasks")
+  const { data: existing, error: fetchError } = await supabaseAdmin.from("business_processing_tasks")
     .select("id, status").eq("business_id", businessId).eq("kind", kind).maybeSingle();
   if (fetchError) throw fetchError;
 
   if (!existing) {
-    const { data: inserted, error: insertError } = await db.from("business_processing_tasks")
+    const { data: inserted, error: insertError } = await supabaseAdmin.from("business_processing_tasks")
       .insert({ business_id: businessId, kind }).select("id").maybeSingle();
     if (insertError) {
       if (insertError.code === "23505") {
@@ -53,7 +54,7 @@ async function claimOrCreateProcessingTask(businessId: string, kind: ProcessingK
 
   // "completed" or "failed" — reopen instead of leaving it permanently
   // satisfied by whatever finished it last time.
-  const { data: reopened, error: updateError } = await db.from("business_processing_tasks")
+  const { data: reopened, error: updateError } = await supabaseAdmin.from("business_processing_tasks")
     .update({ status: "queued", error: null, completed_at: null })
     .eq("id", existing.id).eq("status", existing.status)
     .select("id").maybeSingle();
@@ -72,9 +73,9 @@ export async function enqueueBusinessProcessing(businessId: string, kind: Proces
 }
 
 export async function handleBusinessProcessingJob(payload: BusinessProcessingPayload): Promise<void> {
-  const { data: task, error } = await db.from("business_processing_tasks").select("*").eq("id", payload.taskId).single();
+  const { data: task, error } = await supabaseAdmin.from("business_processing_tasks").select("*").eq("id", payload.taskId).single();
   if (error) throw error;
-  const { data: claimed } = await db.from("business_processing_tasks")
+  const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")
     .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), error: null })
     .eq("id", task.id).eq("status", "queued").select("id").maybeSingle();
   if (!claimed) return;
@@ -85,11 +86,11 @@ export async function handleBusinessProcessingJob(payload: BusinessProcessingPay
       await computeAndStoreOpportunityScores(task.business_id);
       await computeAndStoreBusinessHealth(task.business_id);
     }
-    await db.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", task.id);
+    await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", task.id);
   } catch (err) {
     // Resetting to queued lets pg-boss retry the same wake-up and leaves a
     // durable, inspectable record for a dispatcher if the process dies.
-    await db.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err) }).eq("id", task.id);
+    await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err) }).eq("id", task.id);
     throw err;
   }
 }
@@ -114,21 +115,21 @@ const ENRICH_WAIT_TIMEOUT_MS = 30000;
  * the same website/Instagram profile.
  */
 export async function ensureEnriched(businessId: string): Promise<void> {
-  const { data: task, error } = await db.from("business_processing_tasks")
+  const { data: task, error } = await supabaseAdmin.from("business_processing_tasks")
     .select("id, status, attempts").eq("business_id", businessId).eq("kind", "enrich").maybeSingle();
   if (error) throw error;
   if (!task || task.status === "completed") return; // nothing pending, or already done
 
-  const { data: claimed } = await db.from("business_processing_tasks")
+  const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")
     .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), error: null })
     .eq("id", task.id).eq("status", "queued").select("id, attempts").maybeSingle();
 
   if (claimed) {
     try {
       await enrichBusiness(businessId);
-      await db.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", claimed.id);
+      await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", claimed.id);
     } catch (err) {
-      await db.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err) }).eq("id", claimed.id);
+      await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err) }).eq("id", claimed.id);
       throw err;
     }
     return;
@@ -140,7 +141,7 @@ export async function ensureEnriched(businessId: string): Promise<void> {
   const deadline = Date.now() + ENRICH_WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, ENRICH_WAIT_INTERVAL_MS));
-    const { data: current } = await db.from("business_processing_tasks").select("status").eq("id", task.id).maybeSingle();
+    const { data: current } = await supabaseAdmin.from("business_processing_tasks").select("status").eq("id", task.id).maybeSingle();
     if (!current || current.status === "completed") return;
     if (current.status === "queued") {
       // Whoever held the claim reset it (failed) — take another shot for
@@ -182,16 +183,27 @@ async function enrichBusiness(businessId: string): Promise<void> {
   const siteEmails = (site.emails ?? []).map((entry) => entry.email).filter((email) => isValidEmail(email));
   const sitePhones = (site.phones ?? []).filter((phone) => isValidPhone(phone));
 
-  const existingEmails = Array.isArray(business.emails) ? business.emails.map((entry: any) => typeof entry === "string" ? entry : entry.email) : [];
-  const existingPhones = Array.isArray(business.phones) ? business.phones : [];
-  const emails = [...new Set([...existingEmails, siteEmail, ...siteEmails].filter(Boolean))];
-  const phones = [...new Set([...existingPhones, sitePhone, ...sitePhones].filter(Boolean))];
+  // `emails`/`phones` are stored either as bare strings or (older rows) as
+  // `{ email, role }`-shaped objects — pull just the string out of either
+  // shape rather than assuming one.
+  const existingEmails: string[] = Array.isArray(business.emails)
+    ? business.emails.map(extractStoredEmail).filter((email): email is string => typeof email === "string")
+    : [];
+  const existingPhones: string[] = Array.isArray(business.phones)
+    ? business.phones.filter((phone): phone is string => typeof phone === "string")
+    : [];
+  const emails: string[] = Array.from(
+    new Set([...existingEmails, siteEmail, ...siteEmails].filter((email): email is string => typeof email === "string")),
+  );
+  const phones: string[] = Array.from(
+    new Set([...existingPhones, sitePhone, ...sitePhones].filter((phone): phone is string => typeof phone === "string")),
+  );
 
-  const provenance = { ...(business.field_provenance as Record<string, unknown> ?? {}) };
+  const provenance: Record<string, Json | undefined> = isJsonObject(business.field_provenance) ? { ...business.field_provenance } : {};
   for (const [field, source] of Object.entries(site.field_sources ?? {})) {
     // Don't attribute provenance for a value we just dropped as invalid.
     if ((field === "email" && !siteEmail) || (field === "phone" && !sitePhone)) continue;
-    provenance[field] = source;
+    provenance[field] = toJson(source);
   }
 
   const { error: updateError } = await supabaseAdmin.from("businesses").update({
@@ -205,12 +217,22 @@ async function enrichBusiness(businessId: string): Promise<void> {
     field_provenance: provenance,
     ssl_valid: site.ssl_valid ?? undefined,
     load_time_ms: site.load_time_ms ?? undefined,
-    seo: site.seo ?? undefined,
-    blog: site.blog ?? undefined,
-    signals: { tech_stack: site.tech_stack ?? {}, ig_followers: social.followers ?? null, ig_last_post_days: social.last_post_days ?? null },
+    seo: site.seo ? toJson(site.seo) : undefined,
+    blog: site.blog ? toJson(site.blog) : undefined,
+    signals: toJson({ tech_stack: site.tech_stack ?? {}, ig_followers: social.followers ?? null, ig_last_post_days: social.last_post_days ?? null }),
     last_verified_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }).eq("id", businessId);
   if (updateError) throw updateError;
   await enqueueBusinessProcessing(businessId, "score");
+}
+
+/** `business.emails`/`business.phones` rows may be bare strings or `{
+ * email, role }`-shaped objects (see EngineLead["emails"] in
+ * pythonBridge.ts) — this pulls the string out of either shape, or returns
+ * `undefined` for anything else so the caller's `.filter()` can drop it. */
+function extractStoredEmail(entry: Json): string | undefined {
+  if (typeof entry === "string") return entry;
+  if (isJsonObject(entry) && typeof entry.email === "string") return entry.email;
+  return undefined;
 }

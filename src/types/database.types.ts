@@ -10,9 +10,10 @@
  *
  * Coverage note: `professions`, `businesses`, `business_opportunity_scores`,
  * `business_opportunity_insights`, `business_health_scores`,
- * `ai_intelligence`, `scrape_jobs`, and `lead_activities` are fully and
- * unambiguously defined by `create table` statements in the migrations
- * above — those Row/Insert/Update shapes here are authoritative.
+ * `ai_intelligence`, `scrape_jobs`, `lead_activities`, and
+ * `business_processing_tasks` are fully and unambiguously defined by
+ * `create table` statements in the migrations above — those Row/Insert/
+ * Update shapes here are authoritative.
  *
  * `profiles` and `leads` are the exception: per migrations/011's own root
  * cause note, both tables predate every migration in this repo (restored
@@ -380,6 +381,50 @@ export type Database = {
           body?: string | null;
           metadata?: Json | null;
           created_at?: string;
+        };
+        Relationships: [];
+      };
+
+      /**
+       * Durable enrich/score wake-up ledger — see migrations/015 and
+       * src/jobs/businessProcessingJob.ts. `kind`/`status` are narrowed to
+       * their actual check-constraint values rather than left as bare
+       * `string` so a typo'd status string errors at compile time instead
+       * of silently never matching in a `.eq("status", ...)` filter.
+       */
+      business_processing_tasks: {
+        Row: {
+          id: string;
+          business_id: string;
+          kind: "enrich" | "score";
+          status: "queued" | "running" | "completed" | "failed";
+          attempts: number;
+          error: string | null;
+          created_at: string;
+          started_at: string | null;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          business_id: string;
+          kind: "enrich" | "score";
+          status?: "queued" | "running" | "completed" | "failed";
+          attempts?: number;
+          error?: string | null;
+          created_at?: string;
+          started_at?: string | null;
+          completed_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          business_id?: string;
+          kind?: "enrich" | "score";
+          status?: "queued" | "running" | "completed" | "failed";
+          attempts?: number;
+          error?: string | null;
+          created_at?: string;
+          started_at?: string | null;
+          completed_at?: string | null;
         };
         Relationships: [];
       };

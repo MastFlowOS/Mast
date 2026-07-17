@@ -25,6 +25,7 @@
     "src/server/routes/intelligence.ts",
     "src/lib/queue.ts",
     "src/lib/supabaseAdmin.ts",
+    "src/lib/json.ts",
     "src/lib/poolLookup.ts",
     "src/lib/aiAccess.ts",
     "src/lib/ai.ts",

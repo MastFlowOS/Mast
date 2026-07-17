@@ -1,10 +1,11 @@
+import type { Job } from "pg-boss";
 import { getBoss, QUEUES } from "../lib/queue.js";
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
-import { handleDiscoverJob } from "../jobs/discoverJob.js";
-import { handlePoolExpandJob } from "../jobs/poolExpandJob.js";
-import { handleVerificationJob } from "../jobs/verificationJob.js";
-import { handleDiscoveryPlanJob, handleDiscoveryTask } from "../jobs/discoveryPlanJob.js";
-import { handleBusinessProcessingJob } from "../jobs/businessProcessingJob.js";
+import { handleDiscoverJob, type DiscoverJobPayload } from "../jobs/discoverJob.js";
+import { handlePoolExpandJob, type PoolExpandJobPayload } from "../jobs/poolExpandJob.js";
+import { handleVerificationJob, type VerificationJobPayload } from "../jobs/verificationJob.js";
+import { handleDiscoveryPlanJob, handleDiscoveryTask, type DiscoveryPlanPayload, type DiscoveryTaskPayload } from "../jobs/discoveryPlanJob.js";
+import { handleBusinessProcessingJob, type BusinessProcessingPayload } from "../jobs/businessProcessingJob.js";
 import { env } from "../config/env.js";
 
 process.on("uncaughtException", (err) => {
@@ -14,35 +15,36 @@ process.on("unhandledRejection", (reason) => {
   console.error("[worker] unhandledRejection", { reason });
 });
 
-type DiscoverJobPayload = {
-  scrapeJobId: string;
-  userId: string;
-  region: string;
-  niche: string;
-  channels: string[];
-  currencies?: string[];
-  professionSlug: string | null;
-  quantity: number;
-  dailyLimit: number;
-  monthlyLimit: number;
-};
+/**
+ * pg-boss v10 removed `teamSize`/`teamConcurrency`/`teamRefill` from
+ * `work()` (see https://github.com/timgit/pg-boss/releases/tag/10.0.0) —
+ * concurrency is no longer a polling-level option. `batchSize` now only
+ * controls how many jobs are fetched per poll; the fetched batch still has
+ * to be processed by the handler itself to run concurrently. This helper
+ * fetches up to `concurrency` jobs at a time and runs all of them in
+ * parallel via `Promise.all`, which is the closest v10-native equivalent to
+ * the old `teamSize` behaviour for these queues.
+ */
+async function processBatchConcurrently<T>(jobs: Job<T>[], handler: (job: Job<T>) => Promise<void>): Promise<void> {
+  await Promise.all(jobs.map((job) => handler(job)));
+}
 
 async function main() {
   const boss = await getBoss();
 
-  await boss.work(QUEUES.discoveryPlan, async ([job]) => {
+  await boss.work<DiscoveryPlanPayload>(QUEUES.discoveryPlan, async ([job]) => {
     await runJob(job.id, null, () => handleDiscoveryPlanJob(job.data));
   });
 
-  await boss.work(QUEUES.discoveryTask, { teamSize: env.DISCOVERY_TASK_CONCURRENCY }, async ([job]) => {
-    await runJob(job.id, null, () => handleDiscoveryTask(job.data));
+  await boss.work<DiscoveryTaskPayload>(QUEUES.discoveryTask, { batchSize: env.DISCOVERY_TASK_CONCURRENCY }, async (jobs) => {
+    await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleDiscoveryTask(job.data)));
   });
 
-  await boss.work(QUEUES.businessEnrich, { teamSize: env.ENRICHMENT_TASK_CONCURRENCY }, async ([job]) => {
-    await runJob(job.id, null, () => handleBusinessProcessingJob(job.data));
+  await boss.work<BusinessProcessingPayload>(QUEUES.businessEnrich, { batchSize: env.ENRICHMENT_TASK_CONCURRENCY }, async (jobs) => {
+    await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
   });
-  await boss.work(QUEUES.businessScore, { teamSize: env.ENRICHMENT_TASK_CONCURRENCY }, async ([job]) => {
-    await runJob(job.id, null, () => handleBusinessProcessingJob(job.data));
+  await boss.work<BusinessProcessingPayload>(QUEUES.businessScore, { batchSize: env.ENRICHMENT_TASK_CONCURRENCY }, async (jobs) => {
+    await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
   });
 
   // discover.live is the only queued discovery path as of Phase 3 — Instant
@@ -53,12 +55,12 @@ async function main() {
     await runJob(job.id, job.data.scrapeJobId, () => handleDiscoverJob(job.data));
   });
 
-  await boss.work(QUEUES.poolExpand, async ([job]) => {
-    await runJob(job.id, null, () => handlePoolExpandJob(job.data as Parameters<typeof handlePoolExpandJob>[0]));
+  await boss.work<PoolExpandJobPayload>(QUEUES.poolExpand, async ([job]) => {
+    await runJob(job.id, null, () => handlePoolExpandJob(job.data));
   });
 
-  await boss.work(QUEUES.poolVerify, async ([job]) => {
-    await runJob(job.id, null, () => handleVerificationJob(job.data as Parameters<typeof handleVerificationJob>[0]));
+  await boss.work<VerificationJobPayload>(QUEUES.poolVerify, async ([job]) => {
+    await runJob(job.id, null, () => handleVerificationJob(job.data));
   });
 
   // Recurring verification, per the doc's "approximately every 14 days"

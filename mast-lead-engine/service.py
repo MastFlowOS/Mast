@@ -46,6 +46,7 @@ from enrichment.ig_intel import IGIntelligence
 from scoring.scorer import is_cannabis, is_chain
 from storage.dedup import LeadStore, fingerprints_for
 from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
+from utils.lifecycle_tracker import log_milestone
 
 log = get_logger("service")
 
@@ -90,6 +91,7 @@ async def run_query(
     store = LeadStore(db_path)
 
     delivered = 0
+    log_milestone("Before run_query discovery starts")
     try:
         async with MapsScraper(config, proxy_manager, stats) as scraper:
             pipeline = EnrichmentPipeline(config=config, browser=scraper.browser, store=store, stats=stats)
@@ -188,6 +190,7 @@ async def run_query(
                 yield lead_dict
     finally:
         store.close()
+        log_milestone("After run_query cleanup (including browser closing)")
         log.info(f"[service] done — delivered={delivered} {stats.summary()}")
         log.info(
             "[service] rejection summary:\n" + stats.rejection_summary()

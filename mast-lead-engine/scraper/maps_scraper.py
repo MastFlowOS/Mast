@@ -59,6 +59,8 @@ from utils.runtime import (
     ProxyManager,
     retry,
 )
+from utils.lifecycle_tracker import install_tracker, track_browser_created, log_milestone
+install_tracker()
 
 log = get_logger("maps")
 
@@ -659,6 +661,7 @@ class MapsScraper:
             args=launch_args,
             ignore_default_args=["--enable-automation"],
         )
+        track_browser_created()
         return self
 
     async def __aexit__(self, *_) -> None:
@@ -906,6 +909,7 @@ class MapsScraper:
                     await ctx.close()
                 except Exception:
                     pass
+                log_milestone(f"After search attempt cleanup (attempt {attempt})")
                 if not crashed and proxy:
                     self._proxy_manager.report_success(proxy)
 

@@ -121,6 +121,24 @@ export type EngineVerifyResult = {
   };
 };
 
+const PYTHON_CMD = process.platform === "win32" ? "python" : "python3";
+
+function killProcessTree(child: ReturnType<typeof spawn>) {
+  if (child.pid === undefined) return;
+  console.log(`[scraper-bridge] Killing process tree for child PID: ${child.pid}`);
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/F", "/T", "/PID", child.pid.toString()]);
+  } else {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch (err) {
+      try {
+        child.kill("SIGKILL");
+      } catch (e) {}
+    }
+  }
+}
+
 /**
  * One-shot (non-streaming) call to `python service.py verify` — re-checks a
  * single already-known business's website/instagram directly, no Maps
@@ -130,30 +148,42 @@ export type EngineVerifyResult = {
 export async function runEngineVerify(params: EngineVerifyParams, signal?: AbortSignal): Promise<EngineVerifyResult> {
   const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
 
-  const child = spawn("python3", ["service.py", "verify"], {
+  const child = spawn(PYTHON_CMD, ["service.py", "verify"], {
     cwd: enginePath,
     stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
   });
 
-  signal?.addEventListener("abort", () => child.kill("SIGTERM"));
+  const onAbort = () => {
+    console.log(`[scraper-bridge:verify] Abort signal triggered for PID: ${child.pid}`);
+    killProcessTree(child);
+  };
+  signal?.addEventListener("abort", onAbort);
 
-  child.stdin.write(JSON.stringify(params));
-  child.stdin.end();
+  try {
+    child.stdin.write(JSON.stringify(params));
+    child.stdin.end();
 
-  let stdout = "";
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk.toString();
-  });
-  child.stderr.on("data", (chunk) => {
-    console.debug(`[scraper-bridge:verify] ${chunk.toString().trimEnd()}`);
-  });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      console.debug(`[scraper-bridge:verify] ${chunk.toString().trimEnd()}`);
+    });
 
-  const exitCode: number = await new Promise((resolve) => child.on("close", resolve));
-  if (exitCode !== 0) {
-    throw new Error(`verify subprocess exited with code ${exitCode}`);
+    const exitCode: number = await new Promise((resolve) => child.on("close", resolve));
+    if (exitCode !== 0) {
+      throw new Error(`verify subprocess exited with code ${exitCode}`);
+    }
+
+    return JSON.parse(stdout) as EngineVerifyResult;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (child.exitCode === null && child.signalCode === null) {
+      killProcessTree(child);
+    }
   }
-
-  return JSON.parse(stdout) as EngineVerifyResult;
 }
 
 export type EngineDoneInfo = {
@@ -183,12 +213,17 @@ export async function* runEngineQuery(
 ): AsyncGenerator<EngineLead> {
   const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
 
-  const child = spawn("python3", ["service.py"], {
+  const child = spawn(PYTHON_CMD, ["service.py"], {
     cwd: enginePath,
     stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
   });
 
-  signal?.addEventListener("abort", () => child.kill("SIGTERM"));
+  const onAbort = () => {
+    console.log(`[scraper-bridge] Abort signal triggered for PID: ${child.pid}`);
+    killProcessTree(child);
+  };
+  signal?.addEventListener("abort", onAbort);
 
   child.stdin.write(JSON.stringify(params));
   child.stdin.end();
@@ -238,6 +273,11 @@ export async function* runEngineQuery(
     throw err;
   } finally {
     rl.close();
+    signal?.removeEventListener("abort", onAbort);
+    if (child.exitCode === null && child.signalCode === null) {
+      console.log(`[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid}`);
+      killProcessTree(child);
+    }
   }
 
   const exitCode: number = await new Promise((resolve) => child.on("close", resolve));

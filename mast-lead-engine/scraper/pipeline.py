@@ -69,6 +69,7 @@ from utils.parsing import (
     domain_of,
 )
 from utils.runtime import get_logger, ScraperConfig, RunStats
+from utils.perf import NullProfiler
 
 log = get_logger("pipeline")
 
@@ -238,12 +239,14 @@ class EnrichmentPipeline:
         browser,
         store: LeadStore | None = None,
         stats: RunStats | None = None,
+        profiler=None,
     ) -> None:
         self.config = config
-        self._site_crawler = SiteCrawler(config, browser)
-        self._ig_intel = IGIntelligence(config, browser)
+        self._site_crawler = SiteCrawler(config, browser, profiler=profiler)
+        self._ig_intel = IGIntelligence(config, browser, profiler=profiler)
         self._store = store or LeadStore()
         self._stats = stats or RunStats()
+        self._profiler = profiler or NullProfiler()
 
     async def process(
         self,
@@ -282,36 +285,51 @@ class EnrichmentPipeline:
         name = raw.name or "<unnamed>"
         log.info(f"[trace] {name!r} ↓ discovered (yielded from Maps)")
 
+        # Phase 2: begin per-business timing
+        self._profiler.begin_business(name)
+
         # ── Pre-flight filters (fast checks before any network I/O) ──────────
 
-        if is_chain(raw.name):
-            self._stats.skip("chain_business")
-            log.info(f"[trace] {name!r} ↓ REJECTED — chain business (keyword match)")
-            return None
+        with self._profiler.timer("preflight"):
+            if is_chain(raw.name):
+                self._stats.skip("chain_business")
+                log.info(f"[trace] {name!r} ↓ REJECTED — chain business (keyword match)")
+                self._profiler.record_rejection("chain_business", self._profiler.elapsed_since_business_start_ms())
+                self._profiler.end_business("rejected:chain_business")
+                return None
 
-        if is_cannabis(raw_dict):
-            self._stats.skip("cannabis_business")
-            log.info(f"[trace] {name!r} ↓ REJECTED — cannabis business (keyword match)")
-            return None
+            if is_cannabis(raw_dict):
+                self._stats.skip("cannabis_business")
+                log.info(f"[trace] {name!r} ↓ REJECTED — cannabis business (keyword match)")
+                self._profiler.record_rejection("cannabis_business", self._profiler.elapsed_since_business_start_ms())
+                self._profiler.end_business("rejected:cannabis_business")
+                return None
 
-        if raw.reviews > hard_max_rev:
-            self._stats.skip(f"reviews_>{hard_max_rev}_hard_cap")
-            log.info(
-                f"[trace] {name!r} ↓ REJECTED — review count {raw.reviews} exceeds "
-                f"hard_max_reviews={hard_max_rev} (obviously overgrown/enterprise scale)"
-            )
-            return None
+            if raw.reviews > hard_max_rev:
+                self._stats.skip(f"reviews_>{hard_max_rev}_hard_cap")
+                log.info(
+                    f"[trace] {name!r} ↓ REJECTED — review count {raw.reviews} exceeds "
+                    f"hard_max_reviews={hard_max_rev} (obviously overgrown/enterprise scale)"
+                )
+                self._profiler.record_rejection(f"reviews>{hard_max_rev}_hard_cap", self._profiler.elapsed_since_business_start_ms())
+                self._profiler.end_business(f"rejected:reviews>{hard_max_rev}_hard_cap")
+                return None
 
-        if raw.closed:
-            self._stats.skip("permanently_closed")
-            log.info(f"[trace] {name!r} ↓ REJECTED — marked permanently closed on Maps")
-            return None
+            if raw.closed:
+                self._stats.skip("permanently_closed")
+                log.info(f"[trace] {name!r} ↓ REJECTED — marked permanently closed on Maps")
+                self._profiler.record_rejection("permanently_closed", self._profiler.elapsed_since_business_start_ms())
+                self._profiler.end_business("rejected:permanently_closed")
+                return None
 
         # ── Dedup check (fast, in-memory) ────────────────────────────────────
-        is_dup, keys, matched = self._store.is_duplicate(raw_dict)
+        with self._profiler.timer("dedup"):
+            is_dup, keys, matched = self._store.is_duplicate(raw_dict)
         if is_dup:
             self._stats.duplicates += 1
             log.info(f"[trace] {name!r} ↓ REJECTED — duplicate (matched existing fingerprint {matched!r})")
+            self._profiler.record_rejection("duplicate", self._profiler.elapsed_since_business_start_ms())
+            self._profiler.end_business("rejected:duplicate")
             return None
 
         log.info(f"[trace] {name!r} ↓ PASSED pre-flight + duplicate check — entering enrichment")
@@ -347,7 +365,8 @@ class EnrichmentPipeline:
                 name="ig_fetch_noop",
             ))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        with self._profiler.timer("crawl_and_ig_concurrent"):
+            results = await asyncio.gather(*tasks, return_exceptions=True)
         site_data = results[0] if isinstance(results[0], dict) else {}
         ig_data_from_map = results[1] if isinstance(results[1], dict) else {}
 
@@ -359,10 +378,12 @@ class EnrichmentPipeline:
             and not ig_url_from_maps
             and not self.config.skip_ig
         ):
-            ig_data_from_site = await self._fetch_ig(ig_url_from_site)
+            with self._profiler.timer("ig_fetch_sequential"):
+                ig_data_from_site = await self._fetch_ig(ig_url_from_site)
 
         # ── Merge all data into a Lead ─────────────────────────────────────────
-        lead = self._merge(raw, site_data, ig_data_from_map, ig_data_from_site)
+        with self._profiler.timer("merge"):
+            lead = self._merge(raw, site_data, ig_data_from_map, ig_data_from_site)
 
         log.info(
             f"[trace] {name!r} ↓ PASSED enrichment "
@@ -386,6 +407,8 @@ class EnrichmentPipeline:
                 f"[trace] {name!r} ↓ REJECTED — ig_followers={lead.ig_followers} "
                 f"exceeds hard_max_ig_followers={hard_max_ig} (obviously overgrown/enterprise scale)"
             )
+            self._profiler.record_rejection(f"ig_followers>{hard_max_ig}_hard_cap", self._profiler.elapsed_since_business_start_ms())
+            self._profiler.end_business(f"rejected:ig_followers>{hard_max_ig}_hard_cap")
             return None
 
         # ── Additional IG-based dedup (now that we have the IG handle) ────────
@@ -398,6 +421,8 @@ class EnrichmentPipeline:
                     f"[trace] {name!r} ↓ REJECTED — duplicate after enrichment "
                     f"(matched existing fingerprint {matched2!r} via Instagram handle)"
                 )
+                self._profiler.record_rejection("duplicate_post_enrichment", self._profiler.elapsed_since_business_start_ms())
+                self._profiler.end_business("rejected:duplicate_post_enrichment")
                 return None
 
         log.info(f"[trace] {name!r} ↓ PASSED duplicate check")
@@ -406,12 +431,13 @@ class EnrichmentPipeline:
         # requirement — must have >= min_channels of {phone,email,website,ig},
         # and (per config) a digital presence channel) ───────────────────────
         if require_viability:
-            ok, reason = passes_outreach_viability(
-                lead.to_dict(),
-                min_channels=2,
-                require_direct_contact=False,   # allow IG-only
-                require_digital_presence=True,
-            )
+            with self._profiler.timer("viability"):
+                ok, reason = passes_outreach_viability(
+                    lead.to_dict(),
+                    min_channels=2,
+                    require_direct_contact=False,   # allow IG-only
+                    require_digital_presence=True,
+                )
             if not ok:
                 self._stats.skip(f"viability:{reason}")
                 channels_present = {
@@ -424,27 +450,31 @@ class EnrichmentPipeline:
                     f"[trace] {name!r} ↓ REJECTED — validation/viability failed "
                     f"reason={reason!r} channels_present={channels_present}"
                 )
+                self._profiler.record_rejection(f"viability:{reason}", self._profiler.elapsed_since_business_start_ms())
+                self._profiler.end_business(f"rejected:viability:{reason}")
                 return None
 
         log.info(f"[trace] {name!r} ↓ PASSED validation (outreach viability)")
 
         # ── Scoring ───────────────────────────────────────────────────────────
-        lead.score = calculate_lead_score(lead.to_dict())
-        lead.quality = lead_quality(lead.score)
-        lead.tier = score_tier(lead.score)
-        lead.action = recommended_action(lead.quality)
+        with self._profiler.timer("scoring"):
+            lead.score = calculate_lead_score(lead.to_dict())
+            lead.quality = lead_quality(lead.score)
+            lead.tier = score_tier(lead.score)
+            lead.action = recommended_action(lead.quality)
 
         log.info(f"[trace] {name!r} ↓ PASSED scoring — score={lead.score} tier={lead.tier}")
 
         # ── Persist to store ──────────────────────────────────────────────────
-        self._store.add(
-            lead.to_dict(),
-            keys=keys,
-            score=lead.score,
-            quality=lead.quality,
-            niche=lead.niche,
-            region=lead.region,
-        )
+        with self._profiler.timer("db_write"):
+            self._store.add(
+                lead.to_dict(),
+                keys=keys,
+                score=lead.score,
+                quality=lead.quality,
+                niche=lead.niche,
+                region=lead.region,
+            )
         self._stats.collected += 1
 
         log.info(
@@ -455,6 +485,9 @@ class EnrichmentPipeline:
             f"email={'✓' if lead.email else '✗'}"
         )
         log.info(f"[trace] {name!r} ↓ PASSED delivery — persisted to store, yielded to caller")
+
+        # Phase 2: close the business timing record as delivered
+        self._profiler.end_business("delivered")
 
         return lead
 
@@ -643,7 +676,8 @@ class EnrichmentPipeline:
     async def _crawl_site(self, url: str) -> dict:
         """Site crawl with error isolation."""
         try:
-            return await self._site_crawler.crawl(url)
+            with self._profiler.timer("site_crawl"):
+                return await self._site_crawler.crawl(url)
         except Exception as exc:
             log.debug(f"[pipeline] site crawl error: {exc}")
             return {}
@@ -651,7 +685,8 @@ class EnrichmentPipeline:
     async def _fetch_ig(self, ig_url: str) -> dict:
         """IG fetch with error isolation."""
         try:
-            return await self._ig_intel.fetch_profile(ig_url)
+            with self._profiler.timer("ig_fetch"):
+                return await self._ig_intel.fetch_profile(ig_url)
         except Exception as exc:
             log.debug(f"[pipeline] IG fetch error: {exc}")
             return {}

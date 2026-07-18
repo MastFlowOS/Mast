@@ -6,6 +6,7 @@ import { deliverLead, upsertBusinessFromEngineLead } from "../scraperBridge/deli
 import { materializeDiscoveryPlan, type DiscoveryPlanRequest } from "../discovery/planner.js";
 import { enqueueBusinessProcessing, ensureEnriched } from "./businessProcessingJob.js";
 import { env } from "../config/env.js";
+import { JobProfiler } from "../lib/perf.js";
 
 const db = supabaseAdmin as any;
 
@@ -65,6 +66,19 @@ function validateDiscoveryCandidate(lead: EngineLead): { valid: true } | { valid
 }
 
 export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promise<void> {
+  // Phase 2: job-level profiler
+  const profiler = new JobProfiler();
+  // Queue wait = time from when pg-boss created the job to now (worker pickup)
+  // pg-boss v10 stores this as `createdon` (lowercase, Date object)
+  const jobCreatedOn: Date | undefined = (payload as any).createdon ?? (payload as any).createdOn;
+  const queueWaitMs = jobCreatedOn instanceof Date
+    ? Date.now() - jobCreatedOn.getTime()
+    : undefined;
+  if (queueWaitMs !== undefined) {
+    profiler.recordRaw("queue_wait", queueWaitMs);
+  }
+  profiler.mark("worker_pickup");
+
   const { data: task, error: taskError } = await db.from("discovery_tasks").select("*").eq("id", payload.taskId).single();
   if (taskError) throw taskError;
 
@@ -93,8 +107,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   if (!claimed) return; // another worker beat us to the claim
 
   // ── Cancellation check (pre-flight) ────────────────────────────────────
-  const { data: planCheck } = await db.from("discovery_plans")
-    .select("requested_count, delivered_count, status").eq("id", payload.planId).maybeSingle();
+  let planCheck: any;
+  {
+    const t = profiler.timer("plan_cancellation_check");
+    const { data } = await db.from("discovery_plans")
+      .select("requested_count, delivered_count, status").eq("id", payload.planId).maybeSingle();
+    t.end();
+    planCheck = data;
+  }
   if (!planCheck || planCheck.status === "cancelled") {
     await recordTaskOutcome(task, { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: false, status: "completed", startedAt: Date.now(), completionReason: "cancelled" });
     return; // do NOT call completePlanIfDrained — cancellation is already terminal
@@ -116,8 +136,11 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   let exhausted = false;
   const startedAt = Date.now();
   let lastHeartbeat = Date.now();
+  // Phase 2: capture perf from Python __done__ sentinel
+  let pythonPerfData: Record<string, unknown> | undefined;
 
   try {
+    const pythonTimer = profiler.timer("python_subprocess_total");
     for await (const lead of runEngineQuery({
       query: task.niche,
       city: task.city,
@@ -128,7 +151,12 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       discovery_only: true,
       require_viability: false,
       db_path: `data/discovery-${payload.taskId}.db`,
-    }, undefined, (done) => { exhausted = done.exhausted; })) {
+    }, undefined, (done) => {
+      exhausted = done.exhausted;
+      // Phase 2: capture Python perf from __done__ sentinel
+      if (done.perf) pythonPerfData = done.perf;
+      pythonTimer.end();
+    })) {
 
       // ── Heartbeat pulse ──────────────────────────────────────────────────
       if (Date.now() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
@@ -137,8 +165,10 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       }
 
       // ── Mid-loop cancellation check ─────────────────────────────────────
+      const tMid = profiler.timer("mid_loop_cancel_check");
       const { data: midCheck } = await db.from("discovery_plans")
         .select("status, delivered_count, requested_count").eq("id", payload.planId).maybeSingle();
+      tMid.end();
       if (!midCheck || midCheck.status === "cancelled") {
         break; // Python subprocess will be GC'd; SIGTERM not needed for discovery_only
       }
@@ -149,8 +179,12 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       if (!validation.valid) { rejected += 1; continue; }
 
       // Persist and schedule slow work first.
+      const tUpsert = profiler.timer("business_upsert");
       const businessId = await upsertBusinessFromEngineLead(lead, payload.request.region);
+      tUpsert.end();
+      const tEnqueue = profiler.timer("enqueue_enrich");
       await enqueueBusinessProcessing(businessId, "enrich");
+      tEnqueue.end();
       // NOTE: "score" is deliberately NOT enqueued here — enrichBusiness()
       // enqueues it once enrichment finishes (see businessProcessingJob.ts).
 
@@ -168,7 +202,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         // (the async worker still finishes enriching it), we just skip
         // this lead's channel gate for now and move on.
         try {
+          const tEnsure = profiler.timer("ensure_enriched");
           await ensureEnriched(businessId);
+          tEnsure.end();
         } catch (enrichErr) {
           console.warn(`[discoveryTask] ensureEnriched failed for businessId=${businessId} — skipping channel gate`, enrichErr);
           rejected += 1;
@@ -179,6 +215,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         if (!enriched || !channelsSatisfied(enriched, requestedChannels)) { rejected += 1; continue; }
       }
 
+      const tDeliver = profiler.timer("deliver_lead");
       const delivery = await deliverLead(lead, {
         userId: payload.request.userId,
         professionSlug: payload.request.professionSlug,
@@ -188,9 +225,11 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         monthlyLimit: payload.request.monthlyLimit,
         discoveryPlanId: payload.planId,
       }, payload.request.region, businessId);
+      tDeliver.end();
 
       if (delivery.limitReached) break;
       if (delivery.wasNewForUser) {
+        profiler.mark("first_lead_delivered");
         accepted += 1;
       } else {
         duplicates += 1;
@@ -238,6 +277,19 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       await completePlanIfDrained(payload.planId);
     }
     throw error; // let pg-boss apply its own retry/backoff while attempts remain
+  } finally {
+    // Phase 2: attach Python perf and print the TS-side report
+    if (pythonPerfData) profiler.attachPythonPerf(pythonPerfData);
+    profiler.printReport({
+      query: task?.niche ?? "",
+      city: task?.city ?? "",
+      delivered: accepted,
+      requested: task?.candidate_budget ?? 0,
+      queueWaitMs: queueWaitMs,
+    });
+    if (pythonPerfData) {
+      console.debug(`[discoveryTask] Python perf summary attached — run_total_ms=${(pythonPerfData as any)?.run_total_ms ?? "n/a"}`);
+    }
   }
 }
 

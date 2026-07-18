@@ -191,6 +191,18 @@ export type EngineDoneInfo = {
   requested: number;
   /** true when the engine's own search space ran out before `requested` was reached */
   exhausted: boolean;
+  /** Phase 2: structured performance report from the Python profiler */
+  perf?: Record<string, unknown>;
+};
+
+/** Phase 2: timing probes captured during a runEngineQuery() call. */
+export type EngineBridgeTimings = {
+  /** ms from spawn() call to child process being forked */
+  spawnMs: number;
+  /** ms from spawn() to first stdout line received */
+  firstLineMs: number | null;
+  /** ms from spawn() to first non-__done__ lead line */
+  firstLeadMs: number | null;
 };
 
 /**
@@ -213,11 +225,19 @@ export async function* runEngineQuery(
 ): AsyncGenerator<EngineLead> {
   const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
 
+  // Phase 2: spawn timing
+  const _t0 = process.hrtime.bigint();
+  const hrElapsedMs = () => Number(process.hrtime.bigint() - _t0) / 1e6;
+
   const child = spawn(PYTHON_CMD, ["service.py"], {
     cwd: enginePath,
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
+  const spawnMs = hrElapsedMs();
+
+  let firstLineMs: number | null = null;
+  let firstLeadMs: number | null = null;
 
   const onAbort = () => {
     console.log(`[scraper-bridge] Abort signal triggered for PID: ${child.pid}`);
@@ -257,14 +277,20 @@ export async function* runEngineQuery(
       }
 
       if (parsed.__done__) {
-        console.log(`[scraper-bridge] engine reported done, delivered=${parsed.delivered} exhausted=${parsed.exhausted}`);
+        const perfPayload = parsed.__perf__ as Record<string, unknown> | undefined;
+        console.log(`[scraper-bridge] engine done — delivered=${parsed.delivered} exhausted=${parsed.exhausted} spawnMs=${spawnMs.toFixed(0)} firstLineMs=${firstLineMs?.toFixed(0) ?? "n/a"} firstLeadMs=${firstLeadMs?.toFixed(0) ?? "n/a"}`);
         onDone?.({
           delivered: Number(parsed.delivered ?? 0),
           requested: Number(parsed.requested ?? 0),
           exhausted: Boolean(parsed.exhausted),
+          perf: perfPayload,
         });
         continue;
       }
+
+      // Phase 2: record first-line and first-lead timestamps
+      if (firstLineMs === null) firstLineMs = hrElapsedMs();
+      if (firstLeadMs === null) firstLeadMs = hrElapsedMs();
 
       yield parsed as EngineLead;
     }

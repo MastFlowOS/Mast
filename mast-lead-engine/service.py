@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from typing import Any, AsyncIterator
 
 from scraper.maps_scraper import MapsScraper
@@ -47,8 +48,14 @@ from scoring.scorer import is_cannabis, is_chain
 from storage.dedup import LeadStore, fingerprints_for
 from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
 from utils.lifecycle_tracker import log_milestone
+from utils.perf import RunProfiler, NullProfiler
 
 log = get_logger("service")
+
+# Phase 2: module-level slot so _main_cli can read the profiler's summary
+# after run_query's finally block has populated it.  This avoids changing
+# run_query's public async-generator signature.
+_last_perf_summary: dict = {}
 
 
 async def run_query(
@@ -90,11 +97,21 @@ async def run_query(
     proxy_manager = ProxyManager()
     store = LeadStore(db_path)
 
+    # Phase 2: create profiler for this run
+    profiler = RunProfiler()
+
     delivered = 0
+    _last_lead_time: float | None = None   # for inter-lead gap tracking
     log_milestone("Before run_query discovery starts")
     try:
-        async with MapsScraper(config, proxy_manager, stats) as scraper:
-            pipeline = EnrichmentPipeline(config=config, browser=scraper.browser, store=store, stats=stats)
+        async with MapsScraper(config, proxy_manager, stats, profiler=profiler) as scraper:
+            pipeline = EnrichmentPipeline(
+                config=config,
+                browser=scraper.browser,
+                store=store,
+                stats=stats,
+                profiler=profiler,
+            )
 
             # ROOT CAUSE fix ("requested quantity is not honored"): this used
             # to ask MapsScraper for only `max_results * 3` raw places, on
@@ -176,7 +193,20 @@ async def run_query(
                         f"below min_score={min_score} (post-pipeline gate, applied here "
                         f"in run_query rather than pipeline.process)"
                     )
+                    profiler.record_rejection(
+                        reason=f"score_<_{min_score}",
+                        elapsed_ms=profiler.elapsed_since_business_start_ms(),
+                    )
                     continue
+
+                # ── Phase 2: track inter-lead gap and first opportunity ───────
+                _now = time.perf_counter()
+                if _last_lead_time is not None:
+                    profiler._stages["inter_lead_gap"].record(
+                        (_now - _last_lead_time) * 1000.0
+                    )
+                _last_lead_time = _now
+                profiler.mark_first_opportunity()  # no-op after first call
 
                 delivered += 1
                 lead_dict = lead.to_dict()
@@ -195,7 +225,22 @@ async def run_query(
         log.info(
             "[service] rejection summary:\n" + stats.rejection_summary()
         )
+        # Phase 2: stash profiler summary so _main_cli can embed it in
+        # the __done__ sentinel without changing run_query's public API.
+        global _last_perf_summary
+        _last_perf_summary = profiler.summary()
+        profiler.print_report(
+            query=query,
+            city=city,
+            delivered=delivered,
+            requested=max_results,
+        )
 
+
+async def _main_cli() -> None:
+    raw_args = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
+    params = json.loads(raw_args)
+    requested = params.get("max_results", 60)
 
 async def _main_cli() -> None:
     raw_args = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
@@ -213,12 +258,16 @@ async def _main_cli() -> None:
     # this is a genuine shortfall for this query, not an artificial stop.
     # `exhausted=False` means we stopped because we delivered everything
     # that was asked for; there may well be more out there.
+    #
+    # Phase 2: __perf__ carries the structured performance report so the
+    # TS bridge can log it server-side without any separate file.
     sys.stdout.write(json.dumps({
         "__done__": True,
         "delivered": delivered,
         "requested": requested,
         "exhausted": delivered < requested,
-    }) + "\n")
+        "__perf__": _last_perf_summary,
+    }, default=str) + "\n")
     sys.stdout.flush()
 
 

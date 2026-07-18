@@ -40,6 +40,7 @@ from utils.parsing import (
     clean_url,
 )
 from utils.runtime import RateLimiter, get_logger, ScraperConfig
+from utils.perf import NullProfiler
 
 log = get_logger("site_crawler")
 
@@ -276,9 +277,10 @@ def detect_tech_stack(html: str, headers: dict | None = None) -> dict:
 class SiteCrawler:
     """Crawls a business website to extract enrichment data."""
 
-    def __init__(self, config: ScraperConfig, browser) -> None:
+    def __init__(self, config: ScraperConfig, browser, profiler=None) -> None:
         self.config = config
         self._browser = browser
+        self._profiler = profiler or NullProfiler()
         self._limiter = RateLimiter(
             requests_per_minute=config.site_rpm,
             jitter_pct=15,
@@ -346,18 +348,20 @@ class SiteCrawler:
             await self._limiter.acquire("site")
             started_at = time.perf_counter()
             try:
-                response = await page.goto(
-                    url,
-                    wait_until="domcontentloaded",
-                    timeout=self.config.site_timeout_ms,
-                )
+                with self._profiler.timer("site_homepage_load"):
+                    response = await page.goto(
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout=self.config.site_timeout_ms,
+                    )
                 # I3 fix: page-load timing, reusing the goto() the crawler
                 # already performs — zero extra requests. "Slow site" is a
                 # literal Web Developer opportunity example in the brief.
                 result["load_time_ms"] = int((time.perf_counter() - started_at) * 1000)
                 headers = dict(response.headers) if response else {}
                 result["reachable"] = True
-                result["ssl_valid"] = await self._check_ssl(page, response, url)
+                with self._profiler.timer("site_ssl_check"):
+                    result["ssl_valid"] = await self._check_ssl(page, response, url)
             except PlaywrightTimeoutError:
                 log.debug(f"[site] timeout: {url}")
                 result["reachable"] = False
@@ -442,11 +446,12 @@ class SiteCrawler:
                     break
                 await self._limiter.acquire("site_sub")
                 try:
-                    await page.goto(
-                        candidate,
-                        wait_until="domcontentloaded",
-                        timeout=12_000,
-                    )
+                    with self._profiler.timer("site_subpage_load"):
+                        await page.goto(
+                            candidate,
+                            wait_until="domcontentloaded",
+                            timeout=12_000,
+                        )
                     sub_html = await page.content()
                     self._extract_into(
                         sub_html, result,

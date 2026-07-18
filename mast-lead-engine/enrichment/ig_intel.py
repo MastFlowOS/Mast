@@ -43,6 +43,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from utils.parsing import parse_count, extract_emails, extract_phones
 from utils.runtime import RateLimiter, get_logger, ScraperConfig, random_ua
+from utils.perf import NullProfiler
 
 log = get_logger("ig_intel")
 
@@ -309,9 +310,10 @@ class IGIntelligence:
     context and applies its own anti-detection measures per request.
     """
 
-    def __init__(self, config: ScraperConfig, browser) -> None:
+    def __init__(self, config: ScraperConfig, browser, profiler=None) -> None:
         self.config = config
         self._browser = browser
+        self._profiler = profiler or NullProfiler()
         self._limiter = RateLimiter(
             requests_per_minute=config.ig_rpm,
             jitter_pct=25,
@@ -335,12 +337,14 @@ class IGIntelligence:
 
         for i in range(self.config.ig_retries):
             strategy = strategies[min(i, len(strategies) - 1)]
-            await self._limiter.acquire("ig_profile")
-            await asyncio.sleep(
-                random.uniform(self.config.ig_delay_min, self.config.ig_delay_max)
-            )
+            with self._profiler.timer("ig_ratelimit_wait"):
+                await self._limiter.acquire("ig_profile")
+                await asyncio.sleep(
+                    random.uniform(self.config.ig_delay_min, self.config.ig_delay_max)
+                )
             try:
-                result = await self._fetch_single(handle, strategy=strategy)
+                with self._profiler.timer("ig_page_load_and_parse"):
+                    result = await self._fetch_single(handle, strategy=strategy)
                 attempts.append(result)
                 # If we have followers + some intel, stop retrying
                 if result.get("followers") is not None and (
@@ -421,8 +425,9 @@ class IGIntelligence:
 
         try:
             try:
-                await page.goto(url, wait_until="domcontentloaded",
-                                timeout=self.config.ig_timeout_ms)
+                with self._profiler.timer("ig_page_load"):
+                    await page.goto(url, wait_until="domcontentloaded",
+                                    timeout=self.config.ig_timeout_ms)
             except PlaywrightTimeoutError:
                 log.debug(f"[ig] timeout loading {handle}")
                 return result

@@ -60,6 +60,7 @@ from utils.runtime import (
     retry,
 )
 from utils.lifecycle_tracker import install_tracker, track_browser_created, log_milestone
+from utils.perf import NullProfiler
 install_tracker()
 
 log = get_logger("maps")
@@ -625,10 +626,12 @@ class MapsScraper:
         config: ScraperConfig,
         proxy_manager: ProxyManager | None = None,
         stats: RunStats | None = None,
+        profiler=None,
     ) -> None:
         self.config = config
         self._proxy_manager = proxy_manager or ProxyManager()
         self._stats = stats or RunStats()
+        self._profiler = profiler or NullProfiler()
         self._limiter = RateLimiter(
             requests_per_minute=config.maps_rpm,
             burst=3,
@@ -656,11 +659,14 @@ class MapsScraper:
             "--disable-infobars",
             "--window-size=1920,1080",
         ]
-        self._browser = await self._playwright.chromium.launch(
-            headless=self.config.headless,
-            args=launch_args,
-            ignore_default_args=["--enable-automation"],
-        )
+        # Phase 2: time browser startup (chromium.launch is the most expensive
+        # single synchronous operation in the whole Python subprocess)
+        with self._profiler.timer("browser_startup"):
+            self._browser = await self._playwright.chromium.launch(
+                headless=self.config.headless,
+                args=launch_args,
+                ignore_default_args=["--enable-automation"],
+            )
         track_browser_created()
         return self
 
@@ -743,11 +749,13 @@ class MapsScraper:
             try:
                 await self._limiter.acquire("maps_search")
                 try:
-                    await page.goto(search_url, wait_until="networkidle",
-                                    timeout=self.config.maps_timeout_ms)
+                    with self._profiler.timer("maps_initial_load"):
+                        await page.goto(search_url, wait_until="networkidle",
+                                        timeout=self.config.maps_timeout_ms)
                 except PlaywrightTimeoutError:
-                    await page.goto(search_url, wait_until="domcontentloaded",
-                                    timeout=self.config.maps_timeout_ms)
+                    with self._profiler.timer("maps_initial_load"):
+                        await page.goto(search_url, wait_until="domcontentloaded",
+                                        timeout=self.config.maps_timeout_ms)
 
                 # Wait for results to appear
                 panel_sel = None
@@ -828,15 +836,16 @@ class MapsScraper:
                         await self._limiter.acquire("maps_place")
 
                         try:
-                            place = await _extract_place_data(
-                                page,
-                                config=self.config,
-                                query=full_query,
-                                niche=niche,
-                                region=region,
-                                city=city,
-                                country=country,
-                            )
+                            with self._profiler.timer("maps_place_extraction"):
+                                place = await _extract_place_data(
+                                    page,
+                                    config=self.config,
+                                    query=full_query,
+                                    niche=niche,
+                                    region=region,
+                                    city=city,
+                                    country=country,
+                                )
                         except Exception as exc:
                             log.debug(f"[maps] extraction error: {exc}")
                             self._stats.errors += 1
@@ -872,7 +881,8 @@ class MapsScraper:
                         pass
 
                     # Scroll the results panel
-                    await _human_scroll(page, panel_sel, config=self.config)
+                    with self._profiler.timer("maps_scroll_round"):
+                        await _human_scroll(page, panel_sel, config=self.config)
                     await asyncio.sleep(
                         random.uniform(
                             self.config.scroll_delay_ms / 1500,

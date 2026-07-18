@@ -136,20 +136,17 @@ async def run_query(
             # reachable before when the artificial 3x cap won first.
             raw_supply_cap = max(max_results * 20, 200)
 
-            async for raw_place in scraper.search(
-                query=query,
-                city=city,
-                country=country,
-                niche=niche,
-                region=region,
-                max_results=raw_supply_cap,
-            ):
-                if delivered >= max_results:
-                    break
-
-                # Low-latency stage: emit independently observed Maps data
-                # now; durable worker queues perform slow enrichment later.
-                if discovery_only:
+            if discovery_only:
+                async for raw_place in scraper.search(
+                    query=query,
+                    city=city,
+                    country=country,
+                    niche=niche,
+                    region=region,
+                    max_results=raw_supply_cap,
+                ):
+                    if delivered >= max_results:
+                        break
                     raw_dict = raw_place.to_dict()
                     if raw_place.closed or is_chain(raw_place.name) or is_cannabis(raw_dict):
                         continue
@@ -157,67 +154,117 @@ async def run_query(
                     raw_dict["is_disqualified"] = False
                     delivered += 1
                     yield raw_dict
-                    continue
+            else:
+                # Bounded queue for backpressure: at most 10 items can wait in the queue
+                enrich_queue = asyncio.Queue(maxsize=10)
+                results_queue = asyncio.Queue()
+                shared_state = {"delivered": 0}
+                discovery_done = asyncio.Event()
+
+                async def discovery_worker():
+                    try:
+                        async for raw_place in scraper.search(
+                            query=query,
+                            city=city,
+                            country=country,
+                            niche=niche,
+                            region=region,
+                            max_results=raw_supply_cap,
+                        ):
+                            if shared_state["delivered"] >= max_results:
+                                break
+                            # put() blocks automatically if queue is full (backpressure)
+                            await enrich_queue.put(raw_place)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as exc:
+                        log.error(f"[discovery] error in maps search: {exc!r}", exc_info=True)
+                    finally:
+                        discovery_done.set()
+                        # Signal consumer that producer is done
+                        await enrich_queue.put(None)
+
+                async def enrichment_worker():
+                    try:
+                        while True:
+                            raw_place = await enrich_queue.get()
+                            if raw_place is None:
+                                break
+
+                            # Double check if we already have enough before starting slow process
+                            if shared_state["delivered"] >= max_results:
+                                continue
+
+                            try:
+                                lead = await pipeline.process(
+                                    raw_place,
+                                    require_viability=require_viability,
+                                    max_ig_followers=max_ig_followers,
+                                    max_reviews=max_reviews,
+                                )
+                            except Exception as exc:
+                                stats.errors += 1
+                                log.error(
+                                    f"[trace] {raw_place.name!r} ↓ REJECTED — unhandled "
+                                    f"exception in pipeline.process(): {exc!r}",
+                                    exc_info=True,
+                                )
+                                continue
+
+                            if not lead:
+                                continue
+
+                            if lead.score < min_score:
+                                stats.skip(f"score_<_{min_score}")
+                                log.info(
+                                    f"[trace] {lead.name!r} ↓ REJECTED — score={lead.score} "
+                                    f"below min_score={min_score} (post-pipeline gate, applied here "
+                                    f"in run_query rather than pipeline.process)"
+                                )
+                                profiler.record_rejection(
+                                    reason=f"score_<_{min_score}",
+                                    elapsed_ms=profiler.elapsed_since_business_start_ms(),
+                                )
+                                continue
+
+                            lead_dict = lead.to_dict()
+                            lead_dict["fingerprints"] = sorted(fingerprints_for(lead_dict))
+                            lead_dict["is_disqualified"] = bool(is_chain(lead_dict.get("name"))) or bool(is_cannabis(lead_dict))
+                            await results_queue.put(lead_dict)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as exc:
+                        log.error(f"[enrichment] error in worker: {exc!r}", exc_info=True)
+                    finally:
+                        await results_queue.put(None)
+
+                # Start the background tasks
+                discovery_task = asyncio.create_task(discovery_worker())
+                enrichment_task = asyncio.create_task(enrichment_worker())
 
                 try:
-                    lead = await pipeline.process(
-                        raw_place,
-                        require_viability=require_viability,
-                        max_ig_followers=max_ig_followers,
-                        max_reviews=max_reviews,
-                    )
-                except Exception as exc:
-                    # ROOT CAUSE hardening: pipeline.process() previously had
-                    # no error isolation at this call site — an unhandled
-                    # exception on ANY single business (e.g. a malformed
-                    # RawPlace field, a scoring edge case) propagated all the
-                    # way out of run_query(), killing the whole subprocess
-                    # before the `__done__` sentinel was ever written. Node's
-                    # pythonBridge then saw a non-zero exit with zero leads
-                    # delivered — indistinguishable from "everything was
-                    # legitimately rejected." One bad business must never be
-                    # able to take down an entire run.
-                    stats.errors += 1
-                    log.error(
-                        f"[trace] {raw_place.name!r} ↓ REJECTED — unhandled "
-                        f"exception in pipeline.process(): {exc!r}",
-                        exc_info=True,
-                    )
-                    continue
-                if not lead:
-                    continue
-                if lead.score < min_score:
-                    stats.skip(f"score_<_{min_score}")
-                    log.info(
-                        f"[trace] {lead.name!r} ↓ REJECTED — score={lead.score} "
-                        f"below min_score={min_score} (post-pipeline gate, applied here "
-                        f"in run_query rather than pipeline.process)"
-                    )
-                    profiler.record_rejection(
-                        reason=f"score_<_{min_score}",
-                        elapsed_ms=profiler.elapsed_since_business_start_ms(),
-                    )
-                    continue
+                    while shared_state["delivered"] < max_results:
+                        lead_dict = await results_queue.get()
+                        if lead_dict is None:
+                            # Sentinel indicating enrichment is done
+                            break
 
-                # ── Phase 2: track inter-lead gap and first opportunity ───────
-                _now = time.perf_counter()
-                if _last_lead_time is not None:
-                    profiler._stages["inter_lead_gap"].record(
-                        (_now - _last_lead_time) * 1000.0
-                    )
-                _last_lead_time = _now
-                profiler.mark_first_opportunity()  # no-op after first call
+                        # ── Phase 2: track inter-lead gap and first opportunity ───────
+                        _now = time.perf_counter()
+                        if _last_lead_time is not None:
+                            profiler._stages["inter_lead_gap"].record(
+                                (_now - _last_lead_time) * 1000.0
+                            )
+                        _last_lead_time = _now
+                        profiler.mark_first_opportunity()  # no-op after first call
 
-                delivered += 1
-                lead_dict = lead.to_dict()
-                lead_dict["fingerprints"] = sorted(fingerprints_for(lead_dict))
-                # Phase 6: the Opportunity Score (computed backend-side, in
-                # TypeScript) needs to hard-disqualify chains/cannabis the
-                # same way calculate_lead_score already does internally.
-                # Reusing these functions directly avoids re-implementing
-                # scorer.py's keyword lists as a second copy in Node.
-                lead_dict["is_disqualified"] = bool(is_chain(lead_dict.get("name"))) or bool(is_cannabis(lead_dict))
-                yield lead_dict
+                        shared_state["delivered"] += 1
+                        delivered = shared_state["delivered"]
+                        yield lead_dict
+                finally:
+                    discovery_task.cancel()
+                    enrichment_task.cancel()
+                    await asyncio.gather(discovery_task, enrichment_task, return_exceptions=True)
     finally:
         store.close()
         log_milestone("After run_query cleanup (including browser closing)")

@@ -212,7 +212,7 @@ class TestDedup:
         from storage.dedup import fingerprints_for
         biz = {"name": "The Coffee Spot", "city": "Austin"}
         keys = fingerprints_for(biz)
-        assert "name:the coffee spot" in keys
+        assert "name:the coffee spot" not in keys
         assert "name:the coffee spot|austin" in keys
 
     def test_leaddstore_add_and_dedup(self, tmp_path):

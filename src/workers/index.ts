@@ -90,31 +90,50 @@ async function main() {
     await runJob(job.id, null, () => handleVerificationJob(job.data));
   });
 
-  // Recurring verification, per the doc's "approximately every 14 days"
-  // pool-freshness requirement. Schedule expression is UTC cron; pg-boss
-  // dedupes by key so re-running `npm run start:worker` doesn't create
-  // duplicate schedules.
-  await boss.schedule(QUEUES.poolVerify, "0 3 * * *", { batchSize: 200 });
+  // ── Scheduler initialization (guarded) ──────────────────────────────────
+  // Wrap scheduler initialization in its own guarded block so that if it
+  // fails, the worker still starts and processes discovery/enrichment jobs.
+  try {
+    // Recurring verification, per the doc's "approximately every 14 days"
+    // pool-freshness requirement. Schedule expression is UTC cron; pg-boss
+    // dedupes by key so re-running `npm run start:worker` doesn't create
+    // duplicate schedules.
+    await boss.schedule(QUEUES.poolVerify, "0 3 * * *", { batchSize: 200 });
+  } catch (err) {
+    console.error("[worker] Optional scheduler failed to schedule poolVerify (non-fatal):", err);
+  }
 
-  // ── Phase 5 Refinement 2: Priority aging ──────────────────────────────────
-  // Raises the priority of discovery tasks that have been waiting longer than
-  // 10 minutes toward their tier\u2019s ceiling band, preventing starvation of lower
-  // tiers when a higher tier has sustained throughput.  Aging is capped at the
-  // tier ceiling so a free-tier task can never reach a pro/premium priority.
-  //
-  // Each tier\u2019s ceiling is stored in PLANS.priorityBand.ceiling (plans.ts).
-  // The UPDATE is intentionally broad: it applies to any queued task older
-  // than the threshold regardless of which worker picks it up, so multiple
-  // worker replicas don\u2019t double-apply the boost (the LEAST clamp is idempotent).
-  //
-  // Schedule: every 5 minutes, matching the refinement doc\u2019s recommendation.
-  await boss.schedule("priority-aging", "*/5 * * * *", {});
+  try {
+    // ── Phase 5 Refinement 2: Priority aging ──────────────────────────────────
+    // Raises the priority of discovery tasks that have been waiting longer than
+    // 10 minutes toward their tier’s ceiling band, preventing starvation of lower
+    // tiers when a higher tier has sustained throughput.  Aging is capped at the
+    // tier ceiling so a free-tier task can never reach a pro/premium priority.
+    //
+    // Each tier’s ceiling is stored in PLANS.priorityBand.ceiling (plans.ts).
+    // The UPDATE is intentionally broad: it applies to any queued task older
+    // than the threshold regardless of which worker picks it up, so multiple
+    // worker replicas don’t double-apply the boost (the LEAST clamp is idempotent).
+    //
+    // Schedule: every 5 minutes, matching the refinement doc’s recommendation.
+    await boss.schedule("priority-aging", "*/5 * * * *", {});
+  } catch (err) {
+    console.error("[worker] Optional scheduler failed to schedule priority-aging (non-fatal):", err);
+  }
+
+  // Work on priority aging queue. Errors are caught inside the handler so they
+  // never crash the worker process.
   await boss.work("priority-aging", async () => {
-    await supabaseAdmin.rpc("age_discovery_task_priorities" as any, {
-      p_aging_threshold_minutes: 10,
-      p_boost_per_interval: 1,
-    } as any);
+    try {
+      await supabaseAdmin.rpc("age_discovery_task_priorities" as any, {
+        p_aging_threshold_minutes: 10,
+        p_boost_per_interval: 1,
+      } as any);
+    } catch (err) {
+      console.error("[worker] Background priority-aging database call failed (non-fatal):", err);
+    }
   });
+
 
   console.log(`[worker] subscribed to all queues — effectiveConcurrency=${browserCapacity.effectiveConcurrency} configured=${browserCapacity.configuredConcurrency} freeMb=${browserCapacity.freeMemoryMb}`);
 }

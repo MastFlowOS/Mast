@@ -48,7 +48,9 @@ export const QUEUES = {
   poolVerify: "pool.verify",
   businessEnrich: "business.enrich",
   businessScore: "business.score",
+  priorityAging: "priority-aging",
 } as const;
+
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 

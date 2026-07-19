@@ -1,12 +1,16 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { getBoss, QUEUES } from "../lib/queue.js";
 import { runEngineVerify } from "../scraperBridge/pythonBridge.js";
-import { isValidEmail, isValidPhone } from "../lib/leadValidation.js";
+import { isValidEmail, isValidPhone, validateLead } from "../lib/leadValidation.js";
 import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
 import { toJson, isJsonObject } from "../lib/json.js";
 import type { Json } from "../types/database.types.js";
 import { env } from "../config/env.js";
+import { aiEnabled, generateJSON, AI_MODEL } from "../lib/ai.js";
+import { computeOpportunityScores, type ScorableBusiness } from "../scoring/opportunityScore.js";
+import { explainOpportunity } from "../scoring/explainOpportunity.js";
+import { type ProfessionSlug, PROFESSION_SLUGS } from "../scoring/professionWeights.js";
 
 export type ProcessingKind = "enrich" | "score";
 export type BusinessProcessingPayload = { taskId: string };
@@ -127,10 +131,10 @@ export async function handleBusinessProcessingJob(payload: BusinessProcessingPay
   }, 15_000);
 
   try {
-    if (task.kind === "enrich") await enrichBusiness(task.business_id);
-    else {
-      await computeAndStoreOpportunityScores(task.business_id);
-      await computeAndStoreBusinessHealth(task.business_id);
+    if (task.kind === "enrich") {
+      await enrichBusiness(task.business_id);
+    } else {
+      await scoreBusiness(task.business_id);
     }
     clearInterval(heartbeatInterval);
     await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString(), last_heartbeat_at: null }).eq("id", task.id);
@@ -147,20 +151,7 @@ const ENRICH_WAIT_INTERVAL_MS = 1000;
 const ENRICH_WAIT_TIMEOUT_MS = 30000;
 
 /**
- * Synchronously ensures a business has been through enrichment. For most
- * callers enrichment can stay purely background (the `business.enrich`
- * queue above). But handleDiscoveryTask (see audit Broken #1) needs to see
- * crawled email/instagram data BEFORE deciding whether a lead satisfies a
- * user's requested channels, and can't wait for an arbitrary future queue
- * cycle to make that call.
- *
- * This coordinates with the async worker via the exact same durable
- * business_processing_tasks row and claim (`status = "queued" ->
- * "running"`) used by handleBusinessProcessingJob, so the crawl only ever
- * runs once — whichever side (this inline call, the queued worker, or
- * another concurrent lead for the same business) claims the row first does
- * the work; everyone else waits for/reads the result instead of re-crawling
- * the same website/Instagram profile.
+ * Synchronously ensures a business has been through enrichment (website crawl/email extraction).
  */
 export async function ensureEnriched(businessId: string): Promise<void> {
   const { data: task, error } = await supabaseAdmin.from("business_processing_tasks")
@@ -183,57 +174,72 @@ export async function ensureEnriched(businessId: string): Promise<void> {
     return;
   }
 
-  // Someone else already owns this task (the queue worker beat us to the
-  // claim, or another concurrent lead for the same business) — wait for
-  // them rather than racing a second crawl.
+  // Someone else already owns this task — wait for them rather than racing.
   const deadline = Date.now() + ENRICH_WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, ENRICH_WAIT_INTERVAL_MS));
     const { data: current } = await supabaseAdmin.from("business_processing_tasks").select("status").eq("id", task.id).maybeSingle();
     if (!current || current.status === "completed") return;
     if (current.status === "queued") {
-      // Whoever held the claim reset it (failed) — take another shot for
-      // the remainder of our budget.
       return ensureEnriched(businessId);
     }
   }
-  // Timed out still "running" — give up waiting rather than blocking a
-  // whole discovery task indefinitely on one slow crawl. The caller's
-  // post-enrichment channel check will correctly treat still-missing
-  // fields as not-yet-satisfied (fail closed), and the business itself
-  // isn't lost — the async worker will still finish enriching it in the
-  // background for future deliveries/pool use.
+}
+
+/**
+ * Synchronously ensures a business has been through the intelligence pass (Instagram crawl/AI caching).
+ */
+export async function ensureIntelligence(businessId: string): Promise<void> {
+  const { data: task, error } = await supabaseAdmin.from("business_processing_tasks")
+    .select("id, status, attempts").eq("business_id", businessId).eq("kind", "score").maybeSingle();
+  if (error) throw error;
+  if (!task || task.status === "completed") return; // nothing pending, or already done
+
+  const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")
+    .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), error: null })
+    .eq("id", task.id).eq("status", "queued").select("id, attempts").maybeSingle();
+
+  if (claimed) {
+    try {
+      await scoreBusiness(businessId);
+      await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", claimed.id);
+    } catch (err) {
+      await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err) }).eq("id", claimed.id);
+      throw err;
+    }
+    return;
+  }
+
+  // Someone else already owns this task — wait for them rather than racing.
+  const deadline = Date.now() + ENRICH_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, ENRICH_WAIT_INTERVAL_MS));
+    const { data: current } = await supabaseAdmin.from("business_processing_tasks").select("status").eq("id", task.id).maybeSingle();
+    if (!current || current.status === "completed") return;
+    if (current.status === "queued") {
+      return ensureIntelligence(businessId);
+    }
+  }
 }
 
 async function enrichBusiness(businessId: string): Promise<void> {
   const { data: business, error } = await supabaseAdmin.from("businesses")
-    .select("email, phone, website, instagram, emails, phones, field_provenance")
+    .select("name, email, phone, website, instagram, emails, phones, field_provenance")
     .eq("id", businessId).single();
   if (error) throw error;
-  if (!business.website && !business.instagram) {
-    await enqueueBusinessProcessing(businessId, "score");
-    return;
+
+  let site: any = {};
+  if (business.website) {
+    const result = await runEngineVerify({ website: business.website });
+    site = result.website_data ?? {};
   }
 
-  const result = await runEngineVerify({ website: business.website ?? "", instagram: business.instagram ?? "" });
-  const site = result.website_data ?? {};
-  const social = result.instagram_data ?? {};
-
-  // Audit Broken #3 fix: the crawl found this data, but nothing checked it
-  // for the same format/placeholder problems leadValidation.ts already
-  // guards against at discovery time — a malformed or placeholder
-  // email/phone left in a template (e.g. test@example.com) could reach a
-  // delivered lead un-vetted. Drop just the offending value rather than
-  // failing the whole business: the crawl may still have found a good
-  // website/other channel worth keeping.
+  // Audit Broken #3 fix
   const siteEmail = isValidEmail(site.email) ? site.email : undefined;
   const sitePhone = isValidPhone(site.phone) ? site.phone : undefined;
-  const siteEmails = (site.emails ?? []).map((entry) => entry.email).filter((email) => isValidEmail(email));
-  const sitePhones = (site.phones ?? []).filter((phone) => isValidPhone(phone));
+  const siteEmails = (site.emails ?? []).map((entry: any) => entry.email).filter((email: any) => isValidEmail(email));
+  const sitePhones = (site.phones ?? []).filter((phone: any) => isValidPhone(phone));
 
-  // `emails`/`phones` are stored either as bare strings or (older rows) as
-  // `{ email, role }`-shaped objects — pull just the string out of either
-  // shape rather than assuming one.
   const existingEmails: string[] = Array.isArray(business.emails)
     ? business.emails.map(extractStoredEmail).filter((email): email is string => typeof email === "string")
     : [];
@@ -249,11 +255,11 @@ async function enrichBusiness(businessId: string): Promise<void> {
 
   const provenance: Record<string, Json | undefined> = isJsonObject(business.field_provenance) ? { ...business.field_provenance } : {};
   for (const [field, source] of Object.entries(site.field_sources ?? {})) {
-    // Don't attribute provenance for a value we just dropped as invalid.
     if ((field === "email" && !siteEmail) || (field === "phone" && !sitePhone)) continue;
     provenance[field] = toJson(source);
   }
 
+  // Update business with website data
   const { error: updateError } = await supabaseAdmin.from("businesses").update({
     email: siteEmail || undefined,
     phone: sitePhone || undefined,
@@ -267,12 +273,140 @@ async function enrichBusiness(businessId: string): Promise<void> {
     load_time_ms: site.load_time_ms ?? undefined,
     seo: site.seo ? toJson(site.seo) : undefined,
     blog: site.blog ? toJson(site.blog) : undefined,
-    signals: toJson({ tech_stack: site.tech_stack ?? {}, ig_followers: social.followers ?? null, ig_last_post_days: social.last_post_days ?? null }),
+    signals: toJson({ tech_stack: site.tech_stack ?? {} }), // only tech stack from site enrichment
     last_verified_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }).eq("id", businessId);
   if (updateError) throw updateError;
+
+  // Validation
+  const validation = validateLead({
+    name: business.name,
+    email: siteEmail || business.email,
+    phone: sitePhone || business.phone,
+    website: business.website,
+    instagram: site.instagram || business.instagram,
+  });
+  if (!validation.valid) {
+    console.log(`[enrichBusiness] businessId=${businessId} failed validation: ${validation.reason} — dropping`);
+    return;
+  }
+
+  // Scoring
+  await computeAndStoreOpportunityScores(businessId);
+  await computeAndStoreBusinessHealth(businessId);
+
+  // Push to intelligence queue
   await enqueueBusinessProcessing(businessId, "score");
+}
+
+async function scoreBusiness(businessId: string): Promise<void> {
+  const { data: business, error } = await supabaseAdmin.from("businesses")
+    .select("name, website, instagram, email, phone, emails, phones, field_provenance, signals")
+    .eq("id", businessId).single();
+  if (error) throw error;
+
+  let social: any = {};
+  if (business.instagram) {
+    const result = await runEngineVerify({ instagram: business.instagram });
+    social = result.instagram_data ?? {};
+  }
+
+  // Remaining enrichment: update business with Instagram data
+  const currentSignals = isJsonObject(business.signals) ? { ...business.signals } : {};
+  const updatedSignals = {
+    ...currentSignals,
+    ig_followers: social.followers ?? null,
+    ig_last_post_days: social.last_post_days ?? null,
+    ig_activity: social.activity ?? null,
+    ig_legitimacy: social.legitimacy_score ?? null,
+  };
+
+  const { error: updateError } = await supabaseAdmin.from("businesses").update({
+    signals: toJson(updatedSignals),
+    updated_at: new Date().toISOString(),
+  }).eq("id", businessId);
+  if (updateError) throw updateError;
+
+  // Final scoring & health
+  await computeAndStoreOpportunityScores(businessId);
+  await computeAndStoreBusinessHealth(businessId);
+
+  // AI intelligence: pre-generate opportunity insights if AI is enabled
+  if (aiEnabled()) {
+    try {
+      await generateBackgroundOpportunityInsights(businessId);
+    } catch (aiErr) {
+      console.warn(`[scoreBusiness] AI opportunity insight pre-generation failed for businessId=${businessId}`, aiErr);
+    }
+  }
+}
+
+async function generateBackgroundOpportunityInsights(businessId: string): Promise<void> {
+  const { data: topScore, error: scoreErr } = await supabaseAdmin
+    .from("business_opportunity_scores")
+    .select("profession_slug, opportunity_score")
+    .eq("business_id", businessId)
+    .order("opportunity_score", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (scoreErr || !topScore || topScore.opportunity_score < 50) {
+    return;
+  }
+
+  // Narrow the DB string to the branded ProfessionSlug type so TypeScript can
+  // index the scores map safely. Unknown values are silently skipped — this is
+  // a best-effort background cache fill, not a hard requirement.
+  const slugRaw = topScore.profession_slug as string;
+  if (!(PROFESSION_SLUGS as readonly string[]).includes(slugRaw)) return;
+  const professionSlug = slugRaw as ProfessionSlug;
+
+  const { data: business, error: bizError } = await supabaseAdmin
+    .from("businesses")
+    .select("name, niche, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
+    .eq("id", businessId)
+    .single();
+  if (bizError) throw bizError;
+
+  const scores = computeOpportunityScores(business as ScorableBusiness);
+  const result = scores[professionSlug];
+  const explanation = explainOpportunity(business as ScorableBusiness, result, professionSlug);
+
+  const insight = await generateJSON<{ headline: string; talkingPoints: string[]; openingLine: string }>({
+    system:
+      "You are MAST's Opportunity Intelligence assistant, helping a freelancer understand why a business " +
+      "was surfaced as a sales opportunity. You are given real, already-computed facts — do not invent " +
+      "anything not present in the input. Respond with ONLY a JSON object: " +
+      '{"headline": string (<=12 words, why this is a good opportunity), ' +
+      '"talkingPoints": string[] (2-4 short, concrete, non-generic points a freelancer could raise), ' +
+      '"openingLine": string (one natural first-contact message opener, no greeting/signature, <=2 sentences)}. ' +
+      "Keep tone professional and specific, never salesy or exaggerated.",
+    user: JSON.stringify({
+      businessName: business.name,
+      niche: business.niche,
+      profession: professionSlug,
+      opportunityScore: result.score,
+      reasons: explanation.reasons,
+      summary: explanation.summary,
+    }),
+    maxTokens: 512,
+  });
+
+  const row = {
+    business_id: businessId,
+    profession_slug: professionSlug,
+    headline: typeof insight.headline === "string" ? insight.headline : `A fresh opportunity: ${business.name}`,
+    talking_points: Array.isArray(insight.talkingPoints) ? insight.talkingPoints : [],
+    opening_line: typeof insight.openingLine === "string" ? insight.openingLine : "Hi — I came across your business and had a few ideas.",
+    score_snapshot: result.score,
+    model: AI_MODEL,
+    generated_at: new Date().toISOString(),
+  };
+
+  await supabaseAdmin
+    .from("business_opportunity_insights")
+    .upsert(row, { onConflict: "business_id,profession_slug" });
 }
 
 /** `business.emails`/`business.phones` rows may be bare strings or `{

@@ -11,7 +11,7 @@ import { useAccount, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-ma
 import { DevPlanSwitcher } from "@/components/mast/DevPlanSwitcher";
 import {
   Crosshair, Search, Kanban, Bell, Settings, LogOut, X,
-  CheckCircle2, ArrowUpCircle, Network, Upload, CreditCard, Zap,
+  CheckCircle2, ArrowUpCircle, Network, Upload, CreditCard, Zap, Bug,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -293,6 +293,42 @@ function DashboardLayout() {
                 </Fragment>
               );
             })}
+
+            {/* ── Engineering ops nav item — only visible to engineers/admins ── */}
+            {(user.internalRole === "engineer" || user.internalRole === "admin") && (() => {
+              const opsTo = "/dashboard/ops";
+              const opsActive = pathname.startsWith(opsTo);
+              return (
+                <>
+                  <div
+                    className="h-px bg-amber-500/20 shrink-0"
+                    style={{ height: '1px', marginTop: '9px', marginBottom: '9px' }}
+                  />
+                  <Link
+                    to={opsTo}
+                    ref={(el: HTMLAnchorElement | null) => {
+                      if (el) itemRefs.current.set(opsTo, el);
+                      else itemRefs.current.delete(opsTo);
+                    }}
+                    className={cn(
+                      "relative z-10 flex items-center gap-3 px-3 py-2 rounded-lg",
+                      "text-sm font-medium transition-colors duration-150",
+                      opsActive
+                        ? "text-amber-400"
+                        : "text-amber-600/60 hover:text-amber-400",
+                    )}
+                    style={{ height: `${ITEM_H}px` }}
+                  >
+                    <Bug className={cn(
+                      "size-4 shrink-0 transition-colors",
+                      opsActive ? "text-amber-400" : "text-amber-600/60",
+                    )} />
+                    Ops
+                    <span className="ml-auto text-[9px] font-bold tracking-wider uppercase text-amber-600/60 border border-amber-600/30 rounded px-1">eng</span>
+                  </Link>
+                </>
+              );
+            })()}
           </div>
         </nav>
 

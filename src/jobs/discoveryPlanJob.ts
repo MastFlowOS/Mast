@@ -3,13 +3,20 @@ import { channelsSatisfied } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
 import { deliverLead, upsertBusinessFromEngineLead } from "../scraperBridge/deliverLead.js";
 import { materializeDiscoveryPlan, type DiscoveryPlanRequest } from "../discovery/planner.js";
-import { enqueueBusinessProcessing, ensureEnriched } from "./businessProcessingJob.js";
+import { enqueueBusinessProcessing, ensureEnriched, ensureIntelligence } from "./businessProcessingJob.js";
 import { env } from "../config/env.js";
 import { JobProfiler } from "../lib/perf.js";
 import { getProvider, getGenerator } from "../discovery/providerRegistry.js";
 import { getPlan, getPlanConcurrency } from "../config/plans.js";
 import type { PlanId } from "../config/plans.js";
 import type { EngineLead } from "../scraperBridge/pythonBridge.js";
+import {
+  initJobMetrics,
+  finalizeJobMetrics,
+  recordTimeToFirstLead,
+  incrementDiscoveryMetrics,
+  incrementFailureMetrics,
+} from "../lib/observability.js";
 
 
 const db = supabaseAdmin as any;
@@ -56,6 +63,26 @@ function heartbeat(taskId: string): void {
 export async function handleDiscoveryPlanJob(payload: DiscoveryPlanPayload): Promise<void> {
   await db.from("discovery_plans").update({ status: "planning" }).eq("id", payload.planId).eq("status", "queued");
   await materializeDiscoveryPlan(payload.planId, payload);
+
+  // Phase 7: Initialize the job metrics row when the plan officially begins.
+  // Best-effort — never blocks plan execution.
+  try {
+    const { data: plan } = await db
+      .from("discovery_plans")
+      .select("scrape_job_id, user_id, requested_count")
+      .eq("id", payload.planId)
+      .maybeSingle();
+    if (plan) {
+      initJobMetrics({
+        planId: payload.planId,
+        scrapeJobId: plan.scrape_job_id,
+        userId: plan.user_id,
+        requestedCount: plan.requested_count,
+      });
+    }
+  } catch {
+    // Non-fatal.
+  }
 }
 
 /** Baseline gate used before a lead is visible.  It intentionally relies only
@@ -252,8 +279,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           const tEnsure = profiler.timer("ensure_enriched");
           await ensureEnriched(businessId);
           tEnsure.end();
+
+          if (requestedChannels.includes("instagram")) {
+            const tIntel = profiler.timer("ensure_intelligence");
+            await ensureIntelligence(businessId);
+            tIntel.end();
+          }
         } catch (enrichErr) {
-          console.warn(`[discoveryTask] ensureEnriched failed for businessId=${businessId} — skipping channel gate`, enrichErr);
+          console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence failed for businessId=${businessId} — skipping channel gate`, enrichErr);
           rejected += 1;
           continue;
         }
@@ -277,6 +310,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       if (delivery.limitReached) break;
       if (delivery.wasNewForUser) {
         profiler.mark("first_lead_delivered");
+        // Phase 7: record time-to-first-lead (idempotent — COALESCE guard in DB).
+        const elapsedMs = Date.now() - startedAt;
+        recordTimeToFirstLead(payload.planId, elapsedMs);
         accepted += 1;
       } else {
         duplicates += 1;
@@ -302,6 +338,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           : "limit_reached";
 
     await recordTaskOutcome(task, { discovered, accepted, rejected, duplicates, exhausted, status: "completed", startedAt, completionReason });
+
+    // Phase 7: accumulate discovery metrics for this task into the plan's metrics row.
+    incrementDiscoveryMetrics(payload.planId, {
+      businessesDiscovered: discovered,
+      duplicateCount: duplicates,
+      searchExhaustionReason: exhausted ? completionReason : undefined,
+    });
+
     await completePlanIfDrained(payload.planId);
   } catch (error) {
     // RELIABILITY FIX: a recoverable failure (browser/page crash, nav
@@ -325,6 +369,15 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       startedAt,
       completionReason: willRetry ? "retrying" : "failed",
     });
+
+    // Phase 7: track browser crashes and navigation timeouts from error messages.
+    const errMsg = error instanceof Error ? error.message : String(error);
+    if (/crash|target closed|oom/i.test(errMsg)) {
+      incrementFailureMetrics(payload.planId, { browserCrashes: 1 });
+    } else if (/timeout|timed out/i.test(errMsg)) {
+      incrementFailureMetrics(payload.planId, { navigationTimeouts: 1 });
+    }
+
     if (!willRetry) {
       // No further pg-boss retry is coming for this task — the plan must
       // still be allowed to conclude instead of hanging on this one city.
@@ -448,6 +501,13 @@ async function completePlanIfDrained(planId: string) {
     completed_at: new Date().toISOString(),
     job_summary: buildJobSummary(plan, completionReason),
   }).eq("id", plan.scrape_job_id);
+
+  // Phase 7: finalize the job metrics row now that the plan has concluded.
+  finalizeJobMetrics({
+    planId,
+    deliveredCount: plan.delivered_count,
+    completionStatus: planFinalStatus as "completed" | "completed_partial",
+  });
 }
 
 function buildJobSummary(plan: any, completionReason: string) {

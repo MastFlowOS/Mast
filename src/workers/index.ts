@@ -8,6 +8,7 @@ import { handleDiscoveryPlanJob, handleDiscoveryTask, type DiscoveryPlanPayload,
 import { handleBusinessProcessingJob, type BusinessProcessingPayload } from "../jobs/businessProcessingJob.js";
 import { env } from "../config/env.js";
 import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance } from "../lib/workerCapacity.js";
+import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
 
 // Ensure the provider registry is initialised at startup so any
 // getProvider() call in handleDiscoveryTask has the implementations loaded.
@@ -70,7 +71,7 @@ async function main() {
   await boss.work<BusinessProcessingPayload>(QUEUES.businessEnrich, { batchSize: env.ENRICHMENT_TASK_CONCURRENCY }, async (jobs) => {
     await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
   });
-  await boss.work<BusinessProcessingPayload>(QUEUES.businessScore, { batchSize: env.ENRICHMENT_TASK_CONCURRENCY }, async (jobs) => {
+  await boss.work<BusinessProcessingPayload>(QUEUES.businessScore, { batchSize: env.INTELLIGENCE_TASK_CONCURRENCY }, async (jobs) => {
     await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
   });
 
@@ -134,6 +135,19 @@ async function main() {
     }
   });
 
+  // ── Phase 7: Observability snapshot (every 1 minute) ─────────────────────
+  // Captures a time-series snapshot of active workers, queue depths, and
+  // browser metrics into lead_engine_snapshots for the ops dashboard.
+  try {
+    await boss.schedule("metrics-snapshot", "*/1 * * * *", {});
+  } catch (err) {
+    console.error("[worker] Optional scheduler failed to schedule metrics-snapshot (non-fatal):", err);
+  }
+
+  await boss.work("metrics-snapshot", async () => {
+    // captureSystemSnapshot is itself non-throwing; any error is caught inside.
+    await captureSystemSnapshot(workerMetrics);
+  });
 
   console.log(`[worker] subscribed to all queues — effectiveConcurrency=${browserCapacity.effectiveConcurrency} configured=${browserCapacity.configuredConcurrency} freeMb=${browserCapacity.freeMemoryMb}`);
 }

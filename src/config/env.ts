@@ -37,6 +37,7 @@ const EnvSchema = z.object({
   // services; these caps protect Maps and the browser in each service.
   DISCOVERY_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
   ENRICHMENT_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(8),
+  INTELLIGENCE_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(8),
 
   // Stale-task timeouts (milliseconds). A discovery_task or
   // business_processing_task that has been in 'running' state for longer

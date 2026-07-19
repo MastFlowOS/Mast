@@ -27,6 +27,7 @@
 import os from "node:os";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 import { env } from "../config/env.js";
+import { workerMetrics } from "./observability.js";
 
 export type WorkerPoolType = "browser" | "light_compute" | "ai";
 
@@ -124,22 +125,29 @@ export async function registerWorkerInstance(
 }
 
 /**
- * Updates the heartbeat timestamp and current free memory for this worker.
- * Called every 30 seconds by workers/index.ts so the ops dashboard has a live
- * view of actual capacity (not just what was measured at startup).
+ * Updates the heartbeat timestamp, current free memory, and live browser
+ * metrics for this worker.  Called every 30 seconds by workers/index.ts so
+ * the ops dashboard has a live view of actual capacity (not just what was
+ * measured at startup).
  *
- * FUTURE OPTIMIZATION: use this heartbeat to also check current freemem and
- * signal to the job handler that concurrency should be reduced if memory is
- * now below the safe threshold (mid-run dynamic adjustment).
+ * Phase 7: also syncs in-memory workerMetrics (browser launches, crashes,
+ * subprocess restarts, active browsers) into the worker_instances row so
+ * every worker's live state is visible in the ops dashboard.
  */
-export async function heartbeatWorkerInstance(workerId: string): Promise<void> {
+export async function heartbeatWorkerInstance(workerId: string, activeTasks?: number): Promise<void> {
   try {
     const freeMb = Math.round(os.freemem() / 1024 / 1024);
     await supabaseAdmin.from("worker_instances" as any).update({
       last_heartbeat_at: new Date().toISOString(),
       free_memory_mb: freeMb,
+      // Phase 7 observability: sync in-process metrics counters.
+      active_tasks: activeTasks ?? 0,
+      browser_launches: workerMetrics.browserLaunches,
+      active_browsers: workerMetrics.activeBrowsers,
+      browser_crashes: workerMetrics.browserCrashes,
+      python_subprocess_restarts: workerMetrics.subprocessRestarts,
     }).eq("id", workerId);
   } catch {
-    // Heartbeat failures are silent \u2014 a single missed heartbeat is harmless.
+    // Heartbeat failures are silent — a single missed heartbeat is harmless.
   }
 }

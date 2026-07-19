@@ -83,6 +83,8 @@ export type AuthUser = {
   workspaceStatus?: string;
   /** True once the user has completed the "Personalize Your Workspace" onboarding flow. */
   onboardingCompleted: boolean;
+  /** Internal engineering role for ops dashboard access. Never set for regular users. */
+  internalRole?: "engineer" | "admin" | "support" | null;
 };
 
 export type Account = {
@@ -701,6 +703,8 @@ export async function getMe() {
     pendingPlanChange: (activeProfile?.pending_plan_change as PlanId) || null,
     workspaceStatus: (activeProfile?.settings as Record<string, any>)?.workspaceStatus || "active",
     onboardingCompleted: (activeProfile?.settings as Record<string, any>)?.onboardingCompleted === "true",
+    // Phase 7: expose internal_role for ops dashboard gating (null for all regular users).
+    internalRole: (activeProfile?.internal_role as AuthUser["internalRole"]) ?? null,
   };
   return { user };
 }
@@ -1742,4 +1746,140 @@ function dbRowToFollowup(row: Record<string, unknown>): Followup {
     createdAt: row.created_at as string,
     updatedAt: (row.updated_at as string) ?? row.created_at as string,
   };
+}
+
+// ─── Phase 7 — Observability / Ops Dashboard ─────────────────────────────────
+
+export type OpsStats = {
+  overview: {
+    jobs_today: number;
+    avg_runtime_ms: number;
+    avg_time_to_first_lead_ms: number;
+    leads_per_minute: number;
+  };
+  worker_utilization: {
+    active_workers: number;
+    total_concurrency_cap: number;
+    total_free_memory_mb: number;
+    browser_pool: Array<{
+      id: string;
+      pool_type: string;
+      effective_concurrency: number;
+      configured_concurrency: number;
+      free_memory_mb: number;
+      cpu_count: number;
+      active_tasks: number;
+      browser_launches: number;
+      active_browsers: number;
+      active_contexts: number;
+      active_pages: number;
+      browser_crashes: number;
+      python_subprocess_restarts: number;
+      tasks_completed: number;
+      tasks_failed: number;
+      seconds_since_heartbeat: number;
+    }>;
+  };
+  queues: Array<{ name: string; state: string; count: number }>;
+  failures: {
+    browser_crashes: number;
+    navigation_timeouts: number;
+    unreachable_websites: number;
+    instagram_unavailables: number;
+    validation_failures: number;
+    user_cancellations: number;
+    failed_jobs_count: number;
+    cancelled_jobs_count: number;
+  };
+  performance: Array<{
+    timestamp: string;
+    active_workers: number;
+    idle_workers: number;
+    queue_depth_discovery: number;
+    queue_depth_enrich: number;
+    queue_depth_score: number;
+    avg_wait_time_task_ms: number;
+    avg_wait_time_enrich_ms: number;
+    avg_wait_time_score_ms: number;
+    browser_launches: number;
+    active_browsers: number;
+    browser_crashes: number;
+    python_subprocess_restarts: number;
+    avg_free_memory_mb: number;
+  }>;
+  live: {
+    running_jobs: Array<{
+      id: string;
+      niche: string;
+      region: string;
+      requested_count: number;
+      delivered_count: number;
+      status: string;
+      started_at: string;
+      elapsed_seconds: number;
+      user_email: string;
+    }>;
+    running_tasks: Array<{
+      id: string;
+      plan_id: string;
+      niche: string;
+      country_code: string;
+      city: string;
+      source: string;
+      status: string;
+      attempts: number;
+      discovered_count: number;
+      accepted_count: number;
+      elapsed_seconds: number;
+    }>;
+    running_processing_tasks: Array<{
+      id: string;
+      business_id: string;
+      kind: string;
+      status: string;
+      attempts: number;
+      business_name: string;
+      elapsed_seconds: number;
+    }>;
+  };
+};
+
+export type OpsHistoryEntry = {
+  id: string;
+  scrape_job_id: string;
+  user_id: string;
+  started_at: string;
+  completed_at: string | null;
+  runtime_ms: number | null;
+  time_to_first_lead_ms: number | null;
+  requested_count: number;
+  delivered_count: number;
+  completion_status: string;
+  businesses_discovered: number;
+  maps_scroll_rounds: number;
+  duplicate_count: number;
+  search_exhaustion_reason: string | null;
+  website_success_count: number;
+  website_failure_count: number;
+  email_extraction_success_count: number;
+  phone_extraction_success_count: number;
+  instagram_success_count: number;
+  instagram_failure_count: number;
+  ai_insight_generation_count: number;
+  browser_crashes: number;
+  navigation_timeouts: number;
+  unreachable_websites: number;
+  instagram_unavailables: number;
+  validation_failures: number;
+  user_cancellations: number;
+};
+
+/** Fetches the live ops stats payload from the internal observability API. */
+export async function getOpsStats(rangeHours = 24): Promise<OpsStats> {
+  return backendFetch<OpsStats>(`/v1/observability/stats?range_hours=${rangeHours}`);
+}
+
+/** Fetches historical job metrics for graphs. */
+export async function getOpsHistory(rangeHours = 24, limit = 100): Promise<OpsHistoryEntry[]> {
+  return backendFetch<OpsHistoryEntry[]>(`/v1/observability/history?range_hours=${rangeHours}&limit=${limit}`);
 }

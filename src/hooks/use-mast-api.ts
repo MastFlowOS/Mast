@@ -45,6 +45,8 @@ import {
   enableWorkspace,
   deleteWorkspace,
   testSmtpConnection,
+  getOpsStats,
+  getOpsHistory,
   type AuthUser,
   type CreateLeadBody,
   type Followup,
@@ -62,6 +64,8 @@ import {
   type ExecutiveBriefing,
   type WeeklyIntelligence,
   type PipelineCoaching,
+  type OpsStats,
+  type OpsHistoryEntry,
 } from "@/lib/api";
 import { appendActivityToNotes, buildActivitiesFromLead, normalizeActivitiesPayload, type WorkspaceActivityInput } from "@/lib/lead-workspace";
 
@@ -87,6 +91,9 @@ export const queryKeys = {
   executiveBriefing: ["mast", "intelligence", "briefing"] as const,
   weeklyIntelligence: ["mast", "intelligence", "weekly"] as const,
   pipelineCoaching: ["mast", "intelligence", "coaching"] as const,
+  // Phase 7 — Observability
+  opsStats: (rangeHours: number) => ["mast", "ops", "stats", rangeHours] as const,
+  opsHistory: (rangeHours: number) => ["mast", "ops", "history", rangeHours] as const,
 };
 
 export function useMe() {
@@ -736,5 +743,36 @@ export function usePipelineCoaching(enabled = true) {
     enabled,
     retry: false,
     staleTime: 5 * 60_000,
+  });
+}
+
+// ─── Phase 7 — Observability / Ops Dashboard ────────────────────────────────
+
+/**
+ * Live ops stats with auto-refresh every 15 seconds.
+ * Only succeeds if the authenticated user has internal_role = 'engineer' or 'admin'.
+ */
+export function useOpsStats(rangeHours = 24, enabled = true) {
+  return useQuery<OpsStats>({
+    queryKey: queryKeys.opsStats(rangeHours),
+    queryFn: () => getOpsStats(rangeHours),
+    enabled,
+    retry: false,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  });
+}
+
+/**
+ * Historical job metrics for graphing.
+ * Only succeeds if the authenticated user has internal_role = 'engineer' or 'admin'.
+ */
+export function useOpsHistory(rangeHours = 24, enabled = true) {
+  return useQuery<OpsHistoryEntry[]>({
+    queryKey: queryKeys.opsHistory(rangeHours),
+    queryFn: () => getOpsHistory(rangeHours, 200),
+    enabled,
+    retry: false,
+    staleTime: 30_000,
   });
 }

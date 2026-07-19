@@ -6,6 +6,7 @@ import { healthRouter } from "./server/routes/health.js";
 import { accountRouter } from "./server/routes/account.js";
 import { discoverRouter } from "./server/routes/discover.js";
 import { intelligenceRouter } from "./server/routes/intelligence.js";
+import { observabilityRouter } from "./server/routes/observability.js";
 
 // Catch anything that escapes Express entirely (e.g. an unawaited promise
 // rejection deep in pg-boss/Supabase client internals) — without these,
@@ -33,6 +34,7 @@ app.use("/health", healthRouter);
 app.use("/v1/account", accountRouter);
 app.use("/v1/discover", discoverRouter);
 app.use("/v1/intelligence", intelligenceRouter);
+app.use("/v1/observability", observabilityRouter);
 
 /**
  * Serializes an unknown thrown value into a plain object with every field

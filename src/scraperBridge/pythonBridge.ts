@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { env } from "../config/env.js";
+import { workerMetrics } from "../lib/observability.js";
 
 export type EngineLead = {
   name: string;
@@ -236,6 +237,10 @@ export async function* runEngineQuery(
   });
   const spawnMs = hrElapsedMs();
 
+  // Phase 7 observability: track active subprocess count (best-effort, non-blocking).
+  workerMetrics.browserLaunches += 1;
+  workerMetrics.activeBrowsers += 1;
+
   let firstLineMs: number | null = null;
   let firstLeadMs: number | null = null;
 
@@ -252,7 +257,12 @@ export async function* runEngineQuery(
     // The engine logs verbosely to stderr via its own logger (get_logger) —
     // surface it as debug output rather than treating it as failure; only
     // a non-zero exit code is treated as an actual error, below.
-    console.debug(`[scraper-bridge] ${chunk.toString().trimEnd()}`);
+    const line = chunk.toString();
+    console.debug(`[scraper-bridge] ${line.trimEnd()}`);
+    // Phase 7: detect crash patterns in stderr output (best-effort).
+    if (/crash|chromium|oom|killed|sigkill|playwright.*error/i.test(line)) {
+      workerMetrics.browserCrashes += 1;
+    }
   });
 
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -316,6 +326,13 @@ export async function* runEngineQuery(
   const [exitCode, closeSignal]: [number, NodeJS.Signals | null] = await new Promise((resolve) =>
     child.on("close", (code, signal) => resolve([code as unknown as number, signal])),
   );
+
+  // Phase 7 observability: decrement active browsers counter on exit.
+  workerMetrics.activeBrowsers = Math.max(0, workerMetrics.activeBrowsers - 1);
+  if (exitCode !== 0 && exitCode !== null) {
+    workerMetrics.subprocessRestarts += 1;
+  }
+
   console.log(
     `[scraper-bridge] process exited — PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}, sawDone=${sawDone}`,
   );

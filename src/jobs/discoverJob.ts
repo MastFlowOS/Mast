@@ -109,6 +109,19 @@ export type DiscoverJobPayload = {
  *     an entire country from the rotation the way one crash used to end
  *     the whole run.
  */
+// CONSUMER-POLICY FIX: a spawned discovery subprocess is a long-lived
+// streaming producer, not a disposable one-shot worker — killing it the
+// instant CountryRotation.chunkSize()'s *fairness* share (often just 1) is
+// reached was thrashing Playwright restarts on every single lead. This
+// floor decouples "how many leads is this city fairly owed this round"
+// (still `chunk`, used for diversity accounting) from "how many leads must
+// actually drain from this one process before we're allowed to rotate away"
+// (`Math.max(chunk, STREAM_BATCH_FLOOR)`, capped by what's still remaining
+// overall). Legitimate stop conditions — quantity/shortfall satisfied,
+// cancellation, plan limit, engine-reported exhaustion — are untouched and
+// still take effect immediately.
+const STREAM_BATCH_FLOOR = 5;
+
 export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<void> {
   const niches = splitNicheQuery(payload.niche);
   const countries = resolveCountriesForSelection(payload.region, { currencies: payload.currencies });
@@ -157,10 +170,14 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
         if (delivered >= payload.quantity) break;
 
         const remaining = payload.quantity - delivered;
-        const chunk = rotation.chunkSize(remaining);
+        const chunk = rotation.chunkSize(remaining); // fairness share — diversity accounting only
+        // Streaming target for THIS spawned process: at least the fairness
+        // share, but never so small that we pay a full browser startup for
+        // a single lead — and never more than what's still actually needed.
+        const streamTarget = Math.min(remaining, Math.max(chunk, STREAM_BATCH_FLOOR));
         // Same over-ask rationale as before: channel filtering/validation
         // below discards a fraction of what streams back.
-        const askFor = Math.max(chunk * 4, chunk);
+        const askFor = Math.max(streamTarget * 4, streamTarget);
 
         let citySearchExhausted = false;
         let deliveredThisChunk = 0;
@@ -264,8 +281,8 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
             break outer;
           }
 
-          if (delivered >= payload.quantity || deliveredThisChunk >= chunk) {
-            break; // this country's chunk (or the whole request) is satisfied — move on
+          if (delivered >= payload.quantity || deliveredThisChunk >= streamTarget) {
+            break; // this process has delivered its streaming batch (or the whole request is done) — move on
           }
         }
 

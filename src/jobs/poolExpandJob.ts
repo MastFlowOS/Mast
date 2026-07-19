@@ -70,6 +70,13 @@ export type PoolExpandJobPayload = {
  * business can realistically pay in that currency. `payload.region` is
  * still passed through to deliverLead/pool storage unchanged.
  */
+// CONSUMER-POLICY FIX: see matching comment in discoverJob.ts. Same thrash —
+// killing the subprocess the instant the raw fairness `chunk` was reached
+// (often 1) — happens here via the identical chunk-consumption pattern, so
+// it gets the identical fix: a streaming batch floor decoupled from the
+// per-round fairness accounting.
+const STREAM_BATCH_FLOOR = 5;
+
 export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promise<void> {
   const { followUp } = payload;
   const niches = splitNicheQuery(payload.niche);
@@ -120,8 +127,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           const remaining = stillNeededNow();
           if (remaining <= 0) break;
 
-          const chunk = rotation.chunkSize(remaining);
-          const askFor = Math.max(chunk * 4, target);
+          const chunk = rotation.chunkSize(remaining); // fairness share — diversity accounting only
+          // Streaming target for THIS spawned process — see discoverJob.ts.
+          const streamTarget = Math.min(remaining, Math.max(chunk, STREAM_BATCH_FLOOR));
+          const askFor = Math.max(streamTarget * 4, target);
 
           let citySearchExhausted = false;
           let deliveredThisChunk = 0;
@@ -197,8 +206,8 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               break outer;
             }
 
-            if (deliveredThisChunk >= chunk) {
-              break; // this country's chunk is satisfied for this round — move on
+            if (deliveredThisChunk >= streamTarget) {
+              break; // this process has delivered its streaming batch for this round — move on
             }
           }
 

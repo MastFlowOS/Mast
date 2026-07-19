@@ -396,6 +396,97 @@ async def _human_scroll(page: Page, panel_selector: str, *, config: ScraperConfi
         pass
 
 
+_PLACE_CID_RE = re.compile(r"0x[0-9a-fA-F]+:0x[0-9a-fA-F]+")
+_PLACE_GID_RE = re.compile(r"/g/([A-Za-z0-9_-]+)")
+
+# Controls that return from a place's detail pane to the results feed.
+# Maps' markup for this isn't stable, so several are tried in order.
+_BACK_BUTTON_SELECTORS = [
+    "button[aria-label='Back']",
+    "button[jsaction*='pane.backButton.click']",
+    "button.hYBOP",
+    "span.google-symbols.mL3xi",
+]
+
+
+def _place_identity_from_href(href: str) -> str:
+    """Extract a stable place identity from a Maps href.
+
+    A place's href embeds its actual CID — a hex pair like
+    '0x4876...:0x89ab...' — inside the `data=` segment. That CID is
+    stable for a given place, but everything else about the href (the
+    display-name slug, the lat/lng camera position, `entry=`/tracking
+    params) varies depending on *where* the link was captured from: a
+    card in the results feed vs. a self-referential link inside that
+    same place's own detail pane. Deduping on the raw href (or a
+    `?`-stripped prefix of it) treats the same physical place as "new"
+    every time it shows up with a differently-formatted href — this is
+    what let the same business get yielded repeatedly. Falls back to the
+    short `/g/<id>` id, then the bare href, if no CID is present.
+    """
+    if not href:
+        return ""
+    m = _PLACE_CID_RE.search(href)
+    if m:
+        return m.group(0)
+    m = _PLACE_GID_RE.search(href)
+    if m:
+        return f"g/{m.group(1)}"
+    return href.split("?")[0]
+
+
+def _place_identity_from_data(place: "RawPlace") -> str:
+    """Second-layer identity key built from extracted place data.
+
+    Independent of href formatting entirely — belt-and-braces guard so
+    that even if two different hrefs (or an href we couldn't extract a
+    CID from) both resolve to a place we've already extracted, we still
+    won't yield it twice.
+    """
+    return f"{place.name.strip().lower()}|{place.address.strip().lower()}"
+
+
+async def _return_to_results(page: Page, panel_selector: str, *, config: ScraperConfig) -> bool:
+    """Navigate from a place's detail pane back to the results feed.
+
+    Clicking a listing card swaps the results feed out for that place's
+    detail pane *in place* — there's no page navigation to undo, only a
+    UI "back" control. Without explicitly clicking it, the scraper is
+    left looking at the detail pane: the next round's anchor scan and
+    the next scroll both silently operate on that pane instead of the
+    results list, which is the root cause of the same business getting
+    re-yielded (a self-referential or differently-formatted link on the
+    detail pane looks "new" under href-based dedup) and of scrolling
+    becoming a no-op (the feed panel `_human_scroll` looks for isn't
+    there anymore).
+    """
+    if await page.query_selector(panel_selector):
+        return True  # already on the results list
+
+    for sel in _BACK_BUTTON_SELECTORS:
+        try:
+            btn = await page.query_selector(sel)
+            if not btn:
+                continue
+            await btn.click(timeout=3000)
+        except Exception:
+            continue
+
+        try:
+            await page.wait_for_selector(panel_selector, timeout=config.scroll_settle_timeout_ms)
+            return True
+        except PlaywrightTimeoutError:
+            continue
+
+    # Last resort: browser-level back navigation.
+    try:
+        await page.go_back(timeout=config.scroll_settle_timeout_ms)
+        await page.wait_for_selector(panel_selector, timeout=config.scroll_settle_timeout_ms)
+        return True
+    except Exception:
+        return False
+
+
 async def _human_click(page: Page, element) -> None:
     """Click with a short hover pause to mimic human behavior."""
     try:
@@ -768,7 +859,8 @@ class MapsScraper:
         proxy = await self._proxy_manager.next() if self._proxy_manager else None
 
         yielded = 0
-        seen_hrefs: set[str] = set()
+        seen_hrefs: set[str] = set()      # place-identity keys derived from hrefs seen in the feed
+        seen_place_keys: set[str] = set() # name+address keys of places already yielded (2nd guard)
         # Rounds actually scrolled so far, summed ACROSS every attempt —
         # this is what a post-crash rebuild fast-forwards through, and it
         # also caps total work across all retries so a search that keeps
@@ -833,24 +925,50 @@ class MapsScraper:
                     rounds_this_attempt += 1
                     total_scroll_rounds += 1
 
-                    # Collect all visible listing anchors
-                    listing_anchors = await page.query_selector_all(
+                    # Collect listing anchors — scoped to the results feed
+                    # panel itself, never the whole page. Clicking a card
+                    # swaps the feed out for that place's detail pane *in
+                    # the same DOM area*; a page-wide query would happily
+                    # keep matching anchors inside that detail pane (e.g.
+                    # a self-referential link) and mistake them for fresh
+                    # results, which is how the same business kept getting
+                    # yielded. If the feed isn't present, try to recover
+                    # before giving up on this round.
+                    panel = await page.query_selector(panel_sel)
+                    if panel is None:
+                        if not await _return_to_results(page, panel_sel, config=self.config):
+                            log.debug("[maps] lost the results feed and couldn't recover — ending round")
+                            break
+                        panel = await page.query_selector(panel_sel)
+                    if panel is None:
+                        break
+
+                    listing_anchors = await panel.query_selector_all(
                         "a[href*='/maps/place/']"
                     )
 
-                    # Deduplicate
+                    # Deduplicate on a stable place identity (CID / g-id
+                    # extracted from the href) rather than the raw href
+                    # string — the same place can appear with differently
+                    # formatted hrefs depending on where in the DOM it was
+                    # found (list card vs. detail-pane self-link).
                     new_anchors = []
                     for a in listing_anchors:
                         try:
                             href = await a.get_attribute("href") or ""
-                            href_key = href.split("?")[0]
-                            if href_key not in seen_hrefs and "/maps/place/" in href_key:
-                                seen_hrefs.add(href_key)
+                            if "/maps/place/" not in href:
+                                continue
+                            place_key = _place_identity_from_href(href)
+                            if place_key and place_key not in seen_hrefs:
+                                seen_hrefs.add(place_key)
                                 new_anchors.append(a)
                         except Exception:
                             continue
 
+                    panel_lost = False
                     for anchor in new_anchors:
+                        if panel_lost:
+                            break
                         if yielded >= max_results:
                             return
 
@@ -859,53 +977,76 @@ class MapsScraper:
                         except Exception:
                             continue
 
-                        # Wait for place panel to open
                         try:
-                            await page.wait_for_selector(
-                                _PLACE_NAME_SELECTORS[0],
-                                timeout=self.config.place_timeout_ms,
-                            )
-                        except PlaywrightTimeoutError:
+                            # Wait for place panel to open
                             try:
-                                await page.wait_for_selector("h1", timeout=5000)
+                                await page.wait_for_selector(
+                                    _PLACE_NAME_SELECTORS[0],
+                                    timeout=self.config.place_timeout_ms,
+                                )
                             except PlaywrightTimeoutError:
+                                try:
+                                    await page.wait_for_selector("h1", timeout=5000)
+                                except PlaywrightTimeoutError:
+                                    continue
+
+                            await self._limiter.acquire("maps_place")
+
+                            try:
+                                with self._profiler.timer("maps_place_extraction"):
+                                    place = await _extract_place_data(
+                                        page,
+                                        config=self.config,
+                                        query=full_query,
+                                        niche=niche,
+                                        region=region,
+                                        city=city,
+                                        country=country,
+                                    )
+                            except Exception as exc:
+                                log.debug(f"[maps] extraction error: {exc}")
+                                self._stats.errors += 1
                                 continue
 
-                        await self._limiter.acquire("maps_place")
+                            if not place:
+                                continue
 
-                        try:
-                            with self._profiler.timer("maps_place_extraction"):
-                                place = await _extract_place_data(
-                                    page,
-                                    config=self.config,
-                                    query=full_query,
-                                    niche=niche,
-                                    region=region,
-                                    city=city,
-                                    country=country,
+                            # Skip permanently closed
+                            if place.closed:
+                                self._stats.skip("permanently_closed")
+                                continue
+
+                            # Second-layer identity guard, independent of
+                            # href formatting entirely (see docstring on
+                            # _place_identity_from_data).
+                            place_key = _place_identity_from_data(place)
+                            if place_key in seen_place_keys:
+                                log.debug(
+                                    f"[maps] skipping duplicate place "
+                                    f"(identity match): {place.name!r}"
                                 )
-                        except Exception as exc:
-                            log.debug(f"[maps] extraction error: {exc}")
-                            self._stats.errors += 1
-                            continue
+                                continue
+                            seen_place_keys.add(place_key)
 
-                        if not place:
-                            continue
+                            log.debug(
+                                f"[maps] ✓ {place.name!r} | "
+                                f"reviews={place.reviews} | "
+                                f"rating={place.rating} | "
+                                f"website={place.website[:40]!r}"
+                            )
 
-                        # Skip permanently closed
-                        if place.closed:
-                            self._stats.skip("permanently_closed")
-                            continue
-
-                        log.debug(
-                            f"[maps] ✓ {place.name!r} | "
-                            f"reviews={place.reviews} | "
-                            f"rating={place.rating} | "
-                            f"website={place.website[:40]!r}"
-                        )
-
-                        yield place
-                        yielded += 1
+                            yield place
+                            yielded += 1
+                        finally:
+                            # Clicking a card left us on this place's
+                            # detail pane. Return to the results list
+                            # before evaluating the next anchor — this is
+                            # the actual fix for the same business getting
+                            # yielded repeatedly (see _return_to_results).
+                            if not await _return_to_results(
+                                page, panel_sel, config=self.config
+                            ):
+                                panel_lost = True
 
                     # Check for end of results
                     try:

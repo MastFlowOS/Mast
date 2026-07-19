@@ -7,6 +7,11 @@ import { handleVerificationJob, type VerificationJobPayload } from "../jobs/veri
 import { handleDiscoveryPlanJob, handleDiscoveryTask, type DiscoveryPlanPayload, type DiscoveryTaskPayload } from "../jobs/discoveryPlanJob.js";
 import { handleBusinessProcessingJob, type BusinessProcessingPayload } from "../jobs/businessProcessingJob.js";
 import { env } from "../config/env.js";
+import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance } from "../lib/workerCapacity.js";
+
+// Ensure the provider registry is initialised at startup so any
+// getProvider() call in handleDiscoveryTask has the implementations loaded.
+import "../discovery/providerRegistry.js";
 
 process.on("uncaughtException", (err) => {
   console.error("[worker] uncaughtException", { message: err?.message, stack: err?.stack, err });
@@ -32,11 +37,33 @@ async function processBatchConcurrently<T>(jobs: Job<T>[], handler: (job: Job<T>
 async function main() {
   const boss = await getBoss();
 
+  // ── Phase 5 Refinement 4: Capacity measurement ───────────────────────────
+  // Measure available browser capacity from OS free memory at startup so the
+  // worker never fetches more concurrent jobs than it has RAM for.  The
+  // effective concurrency is min(configured, measured) and is used for the
+  // batchSize on browser-backed queues.
+  const browserCapacity = measureBrowserCapacity(env.DISCOVERY_TASK_CONCURRENCY);
+  await registerWorkerInstance(browserCapacity, "browser");
+
+  // Heartbeat the worker_instances row every 30 seconds so the ops dashboard
+  // has a live view of actual capacity across the fleet.
+  const workerHeartbeatInterval = setInterval(
+    () => heartbeatWorkerInstance(browserCapacity.workerId),
+    30_000,
+  );
+
+  // Clean up the heartbeat interval if the process exits gracefully.
+  process.on("SIGTERM", () => clearInterval(workerHeartbeatInterval));
+  process.on("SIGINT",  () => clearInterval(workerHeartbeatInterval));
+
   await boss.work<DiscoveryPlanPayload>(QUEUES.discoveryPlan, async ([job]) => {
     await runJob(job.id, null, () => handleDiscoveryPlanJob(job.data));
   });
 
-  await boss.work<DiscoveryTaskPayload>(QUEUES.discoveryTask, { batchSize: env.DISCOVERY_TASK_CONCURRENCY }, async (jobs) => {
+  // Use effectiveConcurrency (memory-bounded) instead of the raw configured
+  // value so the worker can't be scheduled into OOM by raising the env var
+  // on a container that can't support the higher concurrency.
+  await boss.work<DiscoveryTaskPayload>(QUEUES.discoveryTask, { batchSize: browserCapacity.effectiveConcurrency }, async (jobs) => {
     await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleDiscoveryTask(job.data)));
   });
 
@@ -69,7 +96,27 @@ async function main() {
   // duplicate schedules.
   await boss.schedule(QUEUES.poolVerify, "0 3 * * *", { batchSize: 200 });
 
-  console.log("[worker] subscribed to all queues, waiting for jobs...");
+  // ── Phase 5 Refinement 2: Priority aging ──────────────────────────────────
+  // Raises the priority of discovery tasks that have been waiting longer than
+  // 10 minutes toward their tier\u2019s ceiling band, preventing starvation of lower
+  // tiers when a higher tier has sustained throughput.  Aging is capped at the
+  // tier ceiling so a free-tier task can never reach a pro/premium priority.
+  //
+  // Each tier\u2019s ceiling is stored in PLANS.priorityBand.ceiling (plans.ts).
+  // The UPDATE is intentionally broad: it applies to any queued task older
+  // than the threshold regardless of which worker picks it up, so multiple
+  // worker replicas don\u2019t double-apply the boost (the LEAST clamp is idempotent).
+  //
+  // Schedule: every 5 minutes, matching the refinement doc\u2019s recommendation.
+  await boss.schedule("priority-aging", "*/5 * * * *", {});
+  await boss.work("priority-aging", async () => {
+    await supabaseAdmin.rpc("age_discovery_task_priorities" as any, {
+      p_aging_threshold_minutes: 10,
+      p_boost_per_interval: 1,
+    } as any);
+  });
+
+  console.log(`[worker] subscribed to all queues — effectiveConcurrency=${browserCapacity.effectiveConcurrency} configured=${browserCapacity.configuredConcurrency} freeMb=${browserCapacity.freeMemoryMb}`);
 }
 
 async function runJob(bossJobId: string, scrapeJobId: string | null, fn: () => Promise<void>) {

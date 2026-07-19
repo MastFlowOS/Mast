@@ -2,10 +2,13 @@ import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { getBoss, QUEUES } from "../lib/queue.js";
 import { resolveCountriesForSelection } from "../lib/geo/regions.js";
 import { splitNicheQuery } from "../lib/niches.js";
+import { getPlan } from "../config/plans.js";
+
 
 export type DiscoveryPlanRequest = {
   scrapeJobId: string;
   userId: string;
+  planId?: string;       // resolved plan tier id (e.g. "pro") — optional, used for priority banding
   region: string;
   niche: string;
   channels: string[];
@@ -15,6 +18,7 @@ export type DiscoveryPlanRequest = {
   dailyLimit: number;
   monthlyLimit: number;
 };
+
 
 type LocationStat = { country_code: string; city: string; accepted_count: number; searches: number; last_searched_at: string | null };
 
@@ -83,15 +87,36 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
 
   const taskCount = targets.length * niches.length;
   const candidateBudget = Math.max(20, Math.ceil((request.quantity * 4) / Math.max(taskCount, 1)));
-  const rows = niches.flatMap((niche) => targets.map(({ country, city }, priority) => ({
-    plan_id: planId,
-    niche,
-    country_code: country.code,
-    country_name: country.name,
-    city,
-    candidate_budget: candidateBudget,
-    priority: taskCount - priority,
-  })));
+
+  // Scale intra-plan yield-based rank into the plan tier’s priority band so
+  // cross-tier ordering (premium > pro > starter > free) and within-tier
+  // ordering (high-yield cities first) compose without collision.
+  // request.planId is the billing plan tier id ("free"|"starter"|"pro"|"premium").
+  const tierConfig = getPlan(request.planId ?? null);
+  const { base: bandBase, ceiling: bandCeiling } = tierConfig.priorityBand;
+  const bandWidth = bandCeiling - bandBase; // e.g. 9 for a 10-point band
+
+  const rows = niches.flatMap((niche) =>
+    targets.map(({ country, city }, rankIndex) => {
+      // rankIndex 0 = highest yield city (should get highest priority within band)
+      // Scale: best city → bandCeiling, worst city → bandBase
+      const intraRank = taskCount > 1
+        ? Math.round(bandBase + bandWidth * (1 - rankIndex / (taskCount - 1)))
+        : bandCeiling;
+      const priority = Math.max(bandBase, Math.min(bandCeiling, intraRank));
+
+      return {
+        plan_id: planId,
+        user_id: request.userId,   // denormalised for the concurrency-cap claim index
+        niche,
+        country_code: country.code,
+        country_name: country.name,
+        city,
+        candidate_budget: candidateBudget,
+        priority,
+      };
+    }),
+  );
 
   const { error } = await db.from("discovery_tasks").upsert(rows, { onConflict: "plan_id,niche,country_code,city,source", ignoreDuplicates: true });
   if (error) throw error;

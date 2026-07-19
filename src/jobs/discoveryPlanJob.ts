@@ -1,12 +1,16 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
-import { runEngineQuery, type EngineLead } from "../scraperBridge/pythonBridge.js";
 import { deliverLead, upsertBusinessFromEngineLead } from "../scraperBridge/deliverLead.js";
 import { materializeDiscoveryPlan, type DiscoveryPlanRequest } from "../discovery/planner.js";
 import { enqueueBusinessProcessing, ensureEnriched } from "./businessProcessingJob.js";
 import { env } from "../config/env.js";
 import { JobProfiler } from "../lib/perf.js";
+import { getProvider, getGenerator } from "../discovery/providerRegistry.js";
+import { getPlan, getPlanConcurrency } from "../config/plans.js";
+import type { PlanId } from "../config/plans.js";
+import type { EngineLead } from "../scraperBridge/pythonBridge.js";
+
 
 const db = supabaseAdmin as any;
 
@@ -98,6 +102,31 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     return;
   }
 
+  // ── Concurrency-cap pre-check (before claiming) ────────────────────────
+  // Check the user's running task count against their plan cap BEFORE marking
+  // the task as running.  If already at cap, skip this task and let pg-boss
+  // re-deliver it on the next polling cycle (another user's tasks will be
+  // served in the meantime — this is the primary fairness enforcement).
+  const userId = task.user_id as string | null;
+  const planTierId = (task as any).plan_tier_id as string | null;
+  const concurrencyCap = getPlanConcurrency(
+    (planTierId as PlanId) ?? "free",
+    env.PLAN_CONCURRENCY_OVERRIDES,
+  );
+
+  if (userId) {
+    const { count: runningCount } = await (db
+      .from("discovery_tasks")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .eq("status", "running") as any);
+
+    if ((runningCount ?? 0) >= concurrencyCap) {
+      // User is at cap — skip without claiming.  pg-boss will re-deliver.
+      return;
+    }
+  }
+
   const currentAttempt = (task.attempts ?? 0) + 1;
   const { data: claimed } = await db.from("discovery_tasks")
     .update({ status: "running", attempts: currentAttempt, started_at: new Date().toISOString(), last_heartbeat_at: new Date().toISOString(), error: null })
@@ -106,7 +135,6 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     .select("id").maybeSingle();
   if (!claimed) return; // another worker beat us to the claim
 
-  // ── Cancellation check (pre-flight) ────────────────────────────────────
   let planCheck: any;
   {
     const t = profiler.timer("plan_cancellation_check");
@@ -141,22 +169,41 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
   try {
     const pythonTimer = profiler.timer("python_subprocess_total");
-    for await (const lead of runEngineQuery({
-      query: task.niche,
-      city: task.city,
-      country: task.country_code,
+
+    // ── Provider registry routing (Phase 5 Refinement 3) ─────────────────
+    // Route through the provider registry instead of calling runEngineQuery
+    // directly.  The Google Maps provider wraps runEngineQuery unchanged;
+    // future providers plug in here with zero changes to this task handler.
+    const sourceId = task.source ?? "google_maps";
+    const provider = getProvider(sourceId);
+    const generator = getGenerator(sourceId);
+    const searchTarget = {
       niche: task.niche,
+      city: task.city,
+      countryCode: task.country_code,
       region: payload.request.region,
-      max_results: task.candidate_budget,
-      discovery_only: true,
-      require_viability: false,
-      db_path: `data/discovery-${payload.taskId}.db`,
-    }, undefined, (done) => {
-      exhausted = done.exhausted;
-      // Phase 2: capture Python perf from __done__ sentinel
-      if (done.perf) pythonPerfData = done.perf;
-      pythonTimer.end();
-    })) {
+    };
+    const searchQueries = generator.generate(searchTarget);
+
+    // Outer loop: one iteration per SearchQuery (most providers produce one;
+    // multi-query providers like future Yelp may produce several per niche).
+    for (const searchQuery of searchQueries) {
+      for await (const lead of provider.search(
+        searchQuery,
+        searchTarget,
+        {
+          maxResults: task.candidate_budget,
+          candidateBudget: task.candidate_budget,
+          discoveryOnly: true,
+          taskDbPath: `data/discovery-${payload.taskId}.db`,
+        },
+        undefined,
+        (done) => {
+          exhausted = done.exhausted;
+          if (done.perf) pythonPerfData = done.perf;
+          pythonTimer.end();
+        },
+      )) {
 
       // ── Heartbeat pulse ──────────────────────────────────────────────────
       if (Date.now() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
@@ -234,7 +281,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       } else {
         duplicates += 1;
       }
-    }
+    } // end inner lead loop
+
+      // Break outer search-query loop if plan is satisfied or cancelled
+      const { data: afterQuery } = await db.from("discovery_plans")
+        .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
+      if (!afterQuery || afterQuery.status === "cancelled") break;
+      if (afterQuery.delivered_count >= afterQuery.requested_count) break;
+    } // end outer search-query loop
 
     // Determine completion reason for metrics.
     const { data: finalPlan } = await db.from("discovery_plans")

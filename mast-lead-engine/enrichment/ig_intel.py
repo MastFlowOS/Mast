@@ -337,11 +337,22 @@ class IGIntelligence:
 
         for i in range(self.config.ig_retries):
             strategy = strategies[min(i, len(strategies) - 1)]
+            # PHASE 4 FIX (perf): this used to call self._limiter.acquire()
+            # *and then* sleep an extra random.uniform(ig_delay_min,
+            # ig_delay_max) on top of it. RateLimiter is already constructed
+            # below with min_delay_ms=ig_delay_min*1000 and jitter_pct=25, so
+            # every acquire() already enforces a human-like, jittered gap
+            # using these exact same config values — the extra sleep was a
+            # second, independent application of the same anti-detection
+            # knob, stacked on every single attempt with no gating logic of
+            # its own (it didn't even consult the token bucket). Net effect
+            # was to roughly double IG wait time and to defeat the limiter's
+            # `burst` allowance (burst-available requests still ate a full
+            # multi-second sleep). Removing it leaves anti-detection pacing
+            # entirely in the hands of the rate limiter, which is preserved
+            # unchanged (same rpm, same jitter source, same delay floor).
             with self._profiler.timer("ig_ratelimit_wait"):
                 await self._limiter.acquire("ig_profile")
-                await asyncio.sleep(
-                    random.uniform(self.config.ig_delay_min, self.config.ig_delay_max)
-                )
             try:
                 with self._profiler.timer("ig_page_load_and_parse"):
                     result = await self._fetch_single(handle, strategy=strategy)

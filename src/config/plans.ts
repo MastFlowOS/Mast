@@ -9,6 +9,15 @@
  * sync manually until this becomes a shared package (flagged since Phase 1,
  * still not done — noted again here since Phase 5 made the gap concrete:
  * channel/region gating existed ONLY client-side through Phase 4).
+ *
+ * Phase 5 additions (Refinements 1 & 2):
+ *  - `workerConcurrency` — max browser-backed tasks in `running` state per
+ *    user at once.  Primary fairness enforcement for the discovery and
+ *    enrichment worker pools.  Runtime override via PLAN_CONCURRENCY_OVERRIDES.
+ *  - `priorityBand` — `{ base, ceiling }` integers defining the pg-boss
+ *    priority band for this tier.  Tasks are scheduled inside [base, ceiling];
+ *    a priority-aging job raises stale tasks toward the ceiling to prevent
+ *    within-tier starvation without crossing into a higher tier's band.
  */
 
 export type PlanId = "free" | "starter" | "pro" | "premium";
@@ -41,6 +50,28 @@ export type PlanConfig = {
   };
   /** Mirrors permissions.ts "regionalSearch" — false means localSearch only. */
   regionalSearch: boolean;
+
+  /**
+   * Maximum number of browser-backed tasks (discovery.task, enrich.website,
+   * enrich.instagram) that can be in `running` state simultaneously for a
+   * single user on this plan.  This is the primary fairness enforcement
+   * mechanism — a plan can never hold more browser slots than this value,
+   * regardless of how many tasks it has queued.  Override at runtime via
+   * the PLAN_CONCURRENCY_OVERRIDES env var (JSON blob) so ops can tune
+   * under load without a deploy.  Use getPlanConcurrency() to resolve
+   * the effective value (env override takes precedence over this field).
+   */
+  workerConcurrency: number;
+
+  /**
+   * pg-boss priority band for this tier.  `base` is the minimum priority
+   * a newly-dispatched task receives; `ceiling` is the maximum that the
+   * priority-aging job can raise a stale task to.  The intra-plan
+   * yield-based rank (computed in planner.ts) is scaled to fit within
+   * [base, ceiling] so cross-plan and cross-tier ordering compose
+   * correctly without collision.
+   */
+  priorityBand: { base: number; ceiling: number };
 };
 
 export const PLANS: Record<PlanId, PlanConfig> = {
@@ -54,6 +85,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     aiAccess: "limited",
     channels: { email: true, phone: true, instagram: false, website: false },
     regionalSearch: false,
+    workerConcurrency: 2,
+    priorityBand: { base: 0, ceiling: 9 },
   },
   starter: {
     id: "starter",
@@ -65,6 +98,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     aiAccess: "limited",
     channels: { email: true, phone: true, instagram: true, website: false },
     regionalSearch: true,
+    workerConcurrency: 4,
+    priorityBand: { base: 10, ceiling: 19 },
   },
   pro: {
     id: "pro",
@@ -76,6 +111,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     aiAccess: "standard",
     channels: { email: true, phone: true, instagram: true, website: true },
     regionalSearch: true,
+    workerConcurrency: 8,
+    priorityBand: { base: 20, ceiling: 29 },
   },
   premium: {
     id: "premium",
@@ -87,9 +124,25 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     aiAccess: "full",
     channels: { email: true, phone: true, instagram: true, website: true },
     regionalSearch: true,
+    workerConcurrency: 16,
+    priorityBand: { base: 30, ceiling: 39 },
   },
 };
 
 export function getPlan(planId: string | null | undefined): PlanConfig {
   return PLANS[(planId as PlanId) ?? "free"] ?? PLANS.free;
+}
+
+/**
+ * Returns the effective worker concurrency cap for a plan, respecting the
+ * PLAN_CONCURRENCY_OVERRIDES env var.  Import from here instead of reading
+ * plan.workerConcurrency directly so that the runtime override is always
+ * applied without callers having to know the resolution order.
+ *
+ * PLAN_CONCURRENCY_OVERRIDES is parsed and cached by env.ts at startup.
+ * A bad JSON value or unknown plan key causes a startup validation failure,
+ * not a silent runtime error.
+ */
+export function getPlanConcurrency(planId: PlanId, overrides: Partial<Record<PlanId, number>> = {}): number {
+  return overrides[planId] ?? getPlan(planId).workerConcurrency;
 }

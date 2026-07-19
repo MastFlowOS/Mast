@@ -1,5 +1,7 @@
 import "dotenv/config";
 import { z } from "zod";
+import type { PlanId } from "../config/plans.js";
+
 
 const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
@@ -46,6 +48,58 @@ const EnvSchema = z.object({
   //   STALE_BUSINESS_TASK_TIMEOUT_MS : business_processing_tasks (default 5 min)
   STALE_TASK_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(8 * 60 * 1000),
   STALE_BUSINESS_TASK_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(5 * 60 * 1000),
+
+  // PHASE 5 — Configurable plan concurrency limits (Refinement 1).
+  // JSON blob mapping PlanId → max browser-backed running tasks for that plan.
+  // Takes precedence over the workerConcurrency defaults in config/plans.ts.
+  // Changed at runtime (Railway env var) without a deploy; validated at startup.
+  //
+  // Example: PLAN_CONCURRENCY_OVERRIDES={"premium":12,"pro":6}
+  // Invalid JSON or unknown plan keys cause the worker to exit with a clear
+  // error rather than silently using wrong values.
+  PLAN_CONCURRENCY_OVERRIDES: z
+    .string()
+    .optional()
+    .transform((s, ctx) => {
+      if (!s) return {} as Partial<Record<PlanId, number>>;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(s);
+      } catch {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "PLAN_CONCURRENCY_OVERRIDES is not valid JSON" });
+        return z.NEVER;
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "PLAN_CONCURRENCY_OVERRIDES must be a JSON object" });
+        return z.NEVER;
+      }
+      const valid: Partial<Record<PlanId, number>> = {};
+      const validPlanIds = new Set<string>(["free", "starter", "pro", "premium"]);
+      for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!validPlanIds.has(key)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: `PLAN_CONCURRENCY_OVERRIDES: unknown plan id "${key}"` });
+          return z.NEVER;
+        }
+        if (typeof val !== "number" || !Number.isInteger(val) || val < 1) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: `PLAN_CONCURRENCY_OVERRIDES["${key}"] must be a positive integer` });
+          return z.NEVER;
+        }
+        valid[key as PlanId] = val;
+      }
+      return valid;
+    })
+    .default("{}"),
+
+  // PHASE 5 — Worker capacity advertisement (Refinement 4).
+  // Conservative estimate of peak memory consumed by a single Playwright/
+  // Chromium browser process with one page open.  Adjust when deploying to
+  // a different container size to avoid OOM.  Combined with free memory at
+  // startup to derive the effective worker concurrency ceiling.
+  BROWSER_MEMORY_ESTIMATE_MB: z.coerce.number().int().min(50).default(350),
+
+  // Memory to reserve for the Node process itself plus OS overhead, so the
+  // capacity calculator doesn't allocate every last MB to browser slots.
+  WORKER_MEMORY_RESERVE_MB: z.coerce.number().int().min(64).default(256),
 
   // PHASE 8 — AI Opportunity Intelligence (Executive Briefings, Weekly
   // Intelligence, Opportunity Insights, Pipeline Coaching). Optional: if

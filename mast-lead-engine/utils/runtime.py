@@ -336,6 +336,11 @@ class ScraperConfig:
     scroll_max_rounds: int = int(os.environ.get("SCROLL_ROUNDS", "15"))
     scroll_delay_ms: int = int(os.environ.get("SCROLL_DELAY_MS", "1500"))
     feed_wait_ms: int = int(os.environ.get("FEED_WAIT_MS", "15000"))
+    # Phase 6 opt #1: bound on the event-driven "wait for new cards" poll in
+    # _human_scroll. This replaces the old fixed ~5.6s blind sleep per round
+    # with "wait only until new cards appear, capped at this timeout" — so
+    # it's a ceiling, not a target duration like scroll_delay_ms was.
+    scroll_settle_timeout_ms: int = int(os.environ.get("SCROLL_SETTLE_TIMEOUT_MS", "2500"))
 
     # Crash recovery — ROOT CAUSE FIX: a renderer crash ("Target crashed",
     # typically an OOM kill on memory-constrained hosts like Railway) used

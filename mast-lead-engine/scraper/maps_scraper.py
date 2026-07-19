@@ -337,23 +337,61 @@ async def _new_stealth_context(browser: Browser, proxy: str | None = None) -> Br
 
 
 async def _human_scroll(page: Page, panel_selector: str, *, config: ScraperConfig) -> None:
-    """Scroll the results panel with human-like speed and pauses."""
+    """Scroll the results panel, then wait event-driven for new cards to
+    appear instead of blindly sleeping for a fixed window.
+
+    Phase 6 opt #1: the previous version slept a fixed ~1.25-2.5s after each
+    of 3 sub-scrolls (~5.6s/round average) regardless of whether the DOM
+    actually changed. This version scrolls, then polls for the visible
+    listing-anchor count to increase, bounded by
+    `config.scroll_settle_timeout_ms` so a round with no new content (e.g.
+    end of results) still moves on quickly instead of waiting the full
+    window. A small amount of randomized pacing is preserved between
+    sub-scrolls and after settling — anti-detection intent unchanged,
+    just no longer the dominant cost.
+    """
     try:
         panel = await page.query_selector(panel_selector)
         if not panel:
             return
+
+        # Baseline anchor count, used as the "new content arrived" signal.
+        try:
+            before_count = await page.eval_on_selector_all(
+                "a[href*='/maps/place/']", "els => els.length"
+            )
+        except Exception:
+            before_count = 0
+
         # Variable scroll amounts (humans don't scroll exactly the same each time)
         for _ in range(3):
             amount = random.randint(280, 480)
             await panel.evaluate(
                 f"el => el.scrollBy({{ top: {amount}, behavior: 'smooth' }})"
             )
-            await asyncio.sleep(
-                random.uniform(
-                    config.scroll_delay_ms / 1200,
-                    config.scroll_delay_ms / 600,
-                )
+            # Short randomized pacing between sub-scrolls — anti-detection
+            # only, not meant to be the mechanism that waits for content.
+            await asyncio.sleep(random.uniform(0.12, 0.28))
+
+        # Event-driven wait: poll for new listing anchors rather than
+        # blindly sleeping for a fixed window. Bounded by a short timeout
+        # so we still make forward progress when no new cards are
+        # forthcoming (e.g. near end of results) or rendering is slow.
+        try:
+            await page.wait_for_function(
+                "(before) => document.querySelectorAll(\"a[href*='/maps/place/']\").length > before",
+                arg=before_count,
+                timeout=config.scroll_settle_timeout_ms,
+                polling=100,
             )
+        except PlaywrightTimeoutError:
+            pass  # no new cards within the budget — caller proceeds anyway
+
+        # Brief randomized settle pause: lets freshly-rendered cards finish
+        # in-flight layout/paint, and keeps cadence irregular rather than
+        # metronomic. Much shorter than the old fixed sleep — this is
+        # pacing, not the wait mechanism.
+        await asyncio.sleep(random.uniform(0.1, 0.3))
     except Exception:
         pass
 
@@ -880,15 +918,15 @@ class MapsScraper:
                     except Exception:
                         pass
 
-                    # Scroll the results panel
+                    # Scroll the results panel. Phase 6 opt #1: pacing and
+                    # the "wait for new content" logic now live inside
+                    # _human_scroll (event-driven, bounded), so there's no
+                    # separate fixed sleep here anymore — it was redundant
+                    # with the inner wait and wasn't even captured by this
+                    # timer, making the true scroll cost look smaller than
+                    # it actually was.
                     with self._profiler.timer("maps_scroll_round"):
                         await _human_scroll(page, panel_sel, config=self.config)
-                    await asyncio.sleep(
-                        random.uniform(
-                            self.config.scroll_delay_ms / 1500,
-                            self.config.scroll_delay_ms / 750,
-                        )
-                    )
 
                 # Finished this attempt's scroll budget without crashing —
                 # max_results reached, the per-attempt or cross-attempt

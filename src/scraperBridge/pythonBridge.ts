@@ -258,12 +258,18 @@ export async function* runEngineQuery(
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
 
   let readError: unknown = null;
+  // Observability only: tracks whether the __done__ sentinel was ever seen,
+  // so we can explicitly flag the "process exited but __done__ never arrived"
+  // case distinctly from a normal, sentinel-confirmed completion.
+  let sawDone = false;
 
   const lineIterator = (async function* () {
     for await (const line of rl) {
       if (!line.trim()) continue;
       yield line;
     }
+    // rl's for-await loop only ends when child.stdout itself closes.
+    console.log(`[scraper-bridge] stdout closed (PID: ${child.pid}, sawDone=${sawDone})`);
   })();
 
   try {
@@ -277,8 +283,9 @@ export async function* runEngineQuery(
       }
 
       if (parsed.__done__) {
+        sawDone = true;
         const perfPayload = parsed.__perf__ as Record<string, unknown> | undefined;
-        console.log(`[scraper-bridge] engine done — delivered=${parsed.delivered} exhausted=${parsed.exhausted} spawnMs=${spawnMs.toFixed(0)} firstLineMs=${firstLineMs?.toFixed(0) ?? "n/a"} firstLeadMs=${firstLeadMs?.toFixed(0) ?? "n/a"}`);
+        console.log(`[scraper-bridge] received __done__ — delivered=${parsed.delivered} exhausted=${parsed.exhausted} spawnMs=${spawnMs.toFixed(0)} firstLineMs=${firstLineMs?.toFixed(0) ?? "n/a"} firstLeadMs=${firstLeadMs?.toFixed(0) ?? "n/a"}`);
         onDone?.({
           delivered: Number(parsed.delivered ?? 0),
           requested: Number(parsed.requested ?? 0),
@@ -306,7 +313,20 @@ export async function* runEngineQuery(
     }
   }
 
-  const exitCode: number = await new Promise((resolve) => child.on("close", resolve));
+  const [exitCode, closeSignal]: [number, NodeJS.Signals | null] = await new Promise((resolve) =>
+    child.on("close", (code, signal) => resolve([code as unknown as number, signal])),
+  );
+  console.log(
+    `[scraper-bridge] process exited — PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}, sawDone=${sawDone}`,
+  );
+  if (!sawDone) {
+    // Explicit flag for the exact gap this audit called out: the process
+    // ended (for whatever reason) without ever emitting the __done__
+    // sentinel — this is observability only, no behavior change below.
+    console.warn(
+      `[scraper-bridge] __done__ was NEVER received before process exit (PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}) — stream ended without engine confirmation`,
+    );
+  }
   if (exitCode !== 0 && !readError) {
     throw new Error(`scraper engine exited with code ${exitCode}`);
   }

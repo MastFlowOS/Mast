@@ -162,39 +162,78 @@ async def run_query(
                 discovery_done = asyncio.Event()
 
                 async def discovery_worker():
+                    log.info("[discovery] worker started")
                     try:
-                        async for raw_place in scraper.search(
+                        search_iter = scraper.search(
                             query=query,
                             city=city,
                             country=country,
                             niche=niche,
                             region=region,
                             max_results=raw_supply_cap,
-                        ):
+                        ).__aiter__()
+                        while True:
+                            log.info("[discovery] waiting for scraper — awaiting next Maps business...")
+                            try:
+                                raw_place = await search_iter.__anext__()
+                            except StopAsyncIteration:
+                                log.info("[discovery] scraper exhausted — no more Maps businesses")
+                                break
+                            log.info(f"[discovery] scraper yielded business: {raw_place.name!r}")
                             if shared_state["delivered"] >= max_results:
+                                log.info(
+                                    "[discovery] requested quantity already reached "
+                                    f"(delivered={shared_state['delivered']}, max_results={max_results}) — stopping"
+                                )
                                 break
                             # put() blocks automatically if queue is full (backpressure)
+                            log.info(
+                                f"[discovery] enqueue -> enrich_queue: {raw_place.name!r} "
+                                f"(queue size before put={enrich_queue.qsize()})"
+                            )
                             await enrich_queue.put(raw_place)
+                            log.info(
+                                f"[discovery] enqueued: {raw_place.name!r} "
+                                f"(queue size after put={enrich_queue.qsize()})"
+                            )
                     except asyncio.CancelledError:
+                        log.info("[discovery] worker cancelled")
                         pass
                     except Exception as exc:
                         log.error(f"[discovery] error in maps search: {exc!r}", exc_info=True)
                     finally:
                         discovery_done.set()
                         # Signal consumer that producer is done
+                        log.info("[discovery] enqueue -> enrich_queue: None (completion sentinel)")
                         await enrich_queue.put(None)
+                        log.info("[discovery] worker exiting")
 
                 async def enrichment_worker():
+                    log.info("[enrichment] worker started")
                     try:
                         while True:
+                            log.info(
+                                f"[enrichment] waiting for enrichment work — awaiting enrich_queue.get() "
+                                f"(queue size before get={enrich_queue.qsize()})"
+                            )
                             raw_place = await enrich_queue.get()
                             if raw_place is None:
+                                log.info("[enrichment] dequeue <- enrich_queue: None (completion sentinel)")
                                 break
+                            log.info(
+                                f"[enrichment] dequeue <- enrich_queue: {raw_place.name!r} "
+                                f"(queue size after get={enrich_queue.qsize()})"
+                            )
 
                             # Double check if we already have enough before starting slow process
                             if shared_state["delivered"] >= max_results:
+                                log.info(
+                                    f"[enrichment] skipping {raw_place.name!r} — requested quantity "
+                                    f"already reached (delivered={shared_state['delivered']}, max_results={max_results})"
+                                )
                                 continue
 
+                            log.info(f"[enrichment] processing business — Starting pipeline: {raw_place.name!r}")
                             try:
                                 lead = await pipeline.process(
                                     raw_place,
@@ -204,14 +243,17 @@ async def run_query(
                                 )
                             except Exception as exc:
                                 stats.errors += 1
+                                log.info(f"[enrichment] Pipeline finished (exception): {raw_place.name!r}")
                                 log.error(
                                     f"[trace] {raw_place.name!r} ↓ REJECTED — unhandled "
                                     f"exception in pipeline.process(): {exc!r}",
                                     exc_info=True,
                                 )
                                 continue
+                            log.info(f"[enrichment] Pipeline finished: {raw_place.name!r}")
 
                             if not lead:
+                                log.info(f"[enrichment] business rejected: {raw_place.name!r} (pipeline returned no lead)")
                                 continue
 
                             if lead.score < min_score:
@@ -221,6 +263,7 @@ async def run_query(
                                     f"below min_score={min_score} (post-pipeline gate, applied here "
                                     f"in run_query rather than pipeline.process)"
                                 )
+                                log.info(f"[enrichment] business rejected: {lead.name!r} (score below min_score)")
                                 profiler.record_rejection(
                                     reason=f"score_<_{min_score}",
                                     elapsed_ms=profiler.elapsed_since_business_start_ms(),
@@ -230,24 +273,44 @@ async def run_query(
                             lead_dict = lead.to_dict()
                             lead_dict["fingerprints"] = sorted(fingerprints_for(lead_dict))
                             lead_dict["is_disqualified"] = bool(is_chain(lead_dict.get("name"))) or bool(is_cannabis(lead_dict))
+                            log.info(
+                                f"[enrichment] enrichment complete — enqueue -> results_queue: {lead.name!r} "
+                                f"(queue size before put={results_queue.qsize()})"
+                            )
                             await results_queue.put(lead_dict)
+                            log.info(f"[enrichment] business delivered to results_queue: {lead.name!r}")
                     except asyncio.CancelledError:
+                        log.info("[enrichment] worker cancelled")
                         pass
                     except Exception as exc:
                         log.error(f"[enrichment] error in worker: {exc!r}", exc_info=True)
                     finally:
+                        log.info("[enrichment] enqueue -> results_queue: None (completion sentinel)")
                         await results_queue.put(None)
+                        log.info("[enrichment] worker exiting")
 
                 # Start the background tasks
                 discovery_task = asyncio.create_task(discovery_worker())
+                log.info("[run_query] discovery task started")
                 enrichment_task = asyncio.create_task(enrichment_worker())
+                log.info("[run_query] enrichment task started")
 
                 try:
                     while shared_state["delivered"] < max_results:
+                        log.info(
+                            f"[run_query] waiting for results — awaiting results_queue.get() "
+                            f"(delivered={shared_state['delivered']}/{max_results}, "
+                            f"queue size={results_queue.qsize()})"
+                        )
                         lead_dict = await results_queue.get()
                         if lead_dict is None:
                             # Sentinel indicating enrichment is done
+                            log.info("[run_query] exhaustion reached — received None sentinel from results_queue")
                             break
+                        log.info(
+                            f"[run_query] result received: {lead_dict.get('name')!r} "
+                            f"(delivered so far={shared_state['delivered']})"
+                        )
 
                         # ── Phase 2: track inter-lead gap and first opportunity ───────
                         _now = time.perf_counter()
@@ -260,12 +323,20 @@ async def run_query(
 
                         shared_state["delivered"] += 1
                         delivered = shared_state["delivered"]
+                        if shared_state["delivered"] >= max_results:
+                            log.info(
+                                f"[run_query] requested quantity reached — delivered={shared_state['delivered']} "
+                                f"max_results={max_results}"
+                            )
                         yield lead_dict
                 finally:
+                    log.info("[run_query] entering cleanup — cancelling discovery/enrichment tasks")
                     discovery_task.cancel()
                     enrichment_task.cancel()
                     await asyncio.gather(discovery_task, enrichment_task, return_exceptions=True)
+                    log.info("[run_query] cleanup finished — discovery/enrichment tasks resolved")
     finally:
+        log.info("[run_query] entering outer cleanup (store close, browser shutdown, profiler report)")
         store.close()
         log_milestone("After run_query cleanup (including browser closing)")
         log.info(f"[service] done — delivered={delivered} {stats.summary()}")
@@ -282,6 +353,7 @@ async def run_query(
             delivered=delivered,
             requested=max_results,
         )
+        log.info("[run_query] outer cleanup finished")
 
 
 async def _main_cli() -> None:
@@ -295,10 +367,12 @@ async def _main_cli() -> None:
     requested = params.get("max_results", 60)
 
     delivered = 0
+    log.info("[main_cli] entering run_query async for loop")
     async for lead_dict in run_query(**params):
         delivered += 1
         sys.stdout.write(json.dumps(lead_dict, default=str) + "\n")
         sys.stdout.flush()
+    log.info(f"[main_cli] run_query async for loop ended normally (delivered={delivered}) — about to write __done__")
 
     # `exhausted=True` means this query's own search space ran out (Maps
     # end-of-results / scroll cap) before `requested` was reached — i.e.
@@ -316,6 +390,7 @@ async def _main_cli() -> None:
         "__perf__": _last_perf_summary,
     }, default=str) + "\n")
     sys.stdout.flush()
+    log.info(f"[main_cli] __done__ sentinel written (delivered={delivered}, requested={requested})")
 
 
 async def verify_business(*, website: str = "", instagram: str = "", headless: bool = True) -> dict:

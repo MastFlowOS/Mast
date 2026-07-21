@@ -105,7 +105,7 @@ def norm_maps_link(value: str | None) -> str:
     place_id = norm_maps_place_id(value)
     if place_id:
         return f"place:{place_id.lower()}"
-    if not value:
+    if not value or "/maps/search/" in value:
         return ""
     return value.strip().split("?", 1)[0].rstrip("/").lower()
 

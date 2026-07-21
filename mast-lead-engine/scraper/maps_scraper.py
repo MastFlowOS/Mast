@@ -154,7 +154,6 @@ _PLACE_NAME_SELECTORS = [
     "h1.DUwDvf",
     "h1.fontHeadlineLarge",
     "h1[data-item-id]",
-    "h1",
 ]
 
 _PHONE_SELECTORS = [
@@ -923,7 +922,10 @@ class MapsScraper:
         gets double-counted. Only after `config.max_crash_retries`
         consecutive crashes does the search finally give up.
         """
-        full_query = f"{query} in {city}"
+        if city and city.lower() not in query.lower():
+            full_query = f"{query} in {city}"
+        else:
+            full_query = query
         search_url = (
             "https://www.google.com/maps/search/"
             + quote_plus(full_query)
@@ -1040,20 +1042,26 @@ class MapsScraper:
                                 continue
                             place_key = _place_identity_from_href(href)
                             if place_key and place_key not in seen_hrefs:
-                                seen_hrefs.add(place_key)
-                                new_anchors.append(a)
+                                new_anchors.append((place_key, a))
                         except Exception:
                             continue
 
                     panel_lost = False
-                    for anchor in new_anchors:
+                    for place_key, anchor in new_anchors:
                         if panel_lost:
                             break
                         if yielded >= max_results:
                             return
 
+                        if place_key in seen_hrefs:
+                            continue
+
                         try:
                             with self._profiler.timer("place_click"):
+                                try:
+                                    await anchor.scroll_into_view_if_needed(timeout=2000)
+                                except Exception:
+                                    pass
                                 await _human_click(page, anchor)
                         except Exception:
                             continue
@@ -1071,9 +1079,15 @@ class MapsScraper:
                                         timeout=self.config.place_timeout_ms,
                                     )
                                 except PlaywrightTimeoutError:
-                                    try:
-                                        await page.wait_for_selector("h1", timeout=5000)
-                                    except PlaywrightTimeoutError:
+                                    found_panel = False
+                                    for sel in _PLACE_NAME_SELECTORS[1:]:
+                                        try:
+                                            await page.wait_for_selector(sel, timeout=2000)
+                                            found_panel = True
+                                            break
+                                        except PlaywrightTimeoutError:
+                                            continue
+                                    if not found_panel:
                                         continue
 
                             # Phase 2A / audit §3.1 + §3.3: the rate-limiter
@@ -1110,8 +1124,13 @@ class MapsScraper:
                                 self._stats.errors += 1
                                 continue
 
-                            if not place:
+                            if not place or not place.name:
                                 continue
+
+                            if place.name.lower() in {"results", "search results", "النتائج"}:
+                                continue
+
+                            seen_hrefs.add(place_key)
 
                             # Skip permanently closed
                             if place.closed:
@@ -1128,10 +1147,10 @@ class MapsScraper:
                             # href formatting entirely (see docstring on
                             # _place_identity_from_data).
                             with self._profiler.timer("duplicate_detection"):
-                                place_key = _place_identity_from_data(place)
-                                is_dup = place_key in seen_place_keys
+                                place_key_data = _place_identity_from_data(place)
+                                is_dup = place_key_data in seen_place_keys
                                 if not is_dup:
-                                    seen_place_keys.add(place_key)
+                                    seen_place_keys.add(place_key_data)
 
                             if is_dup:
                                 log.debug(

@@ -249,13 +249,24 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       if (midCheck.delivered_count >= midCheck.requested_count) break;
 
       discovered += 1;
+      const pid = lead._pipeline_id ?? `local:${discovered}`;
+      console.log(`PIPELINE ${pid}`);
+      console.log(`DISCOVERED name=${JSON.stringify(lead.name)}`);
+
       const validation = validateDiscoveryCandidate(lead);
-      if (!validation.valid) { rejected += 1; continue; }
+      if (!validation.valid) {
+        rejected += 1;
+        console.log(`PIPELINE ${pid}`);
+        console.log(`EXITED HERE`);
+        console.log(`reason=validateDiscoveryCandidate:${validation.reason}`);
+        continue;
+      }
 
       // Persist and schedule slow work first.
       const tUpsert = profiler.timer("business_upsert");
       const businessId = await upsertBusinessFromEngineLead(lead, payload.request.region);
       tUpsert.end();
+      console.log(`BUSINESS_UPSERTED businessId=${businessId}`);
       const tEnqueue = profiler.timer("enqueue_enrich");
       await enqueueBusinessProcessing(businessId, "enrich");
       tEnqueue.end();
@@ -268,17 +279,26 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       const mapsCheckableChannels = requestedChannels.filter((c) => c === "phone" || c === "website");
       const needsEnrichmentToDecide = requestedChannels.some((c) => c === "email" || c === "instagram");
 
-      if (!channelsSatisfied(lead, mapsCheckableChannels)) { rejected += 1; continue; }
+      if (!channelsSatisfied(lead, mapsCheckableChannels)) {
+        rejected += 1;
+        console.log(`PIPELINE ${pid}`);
+        console.log(`EXITED HERE`);
+        console.log(`reason=maps_channel_gate:requested=${JSON.stringify(mapsCheckableChannels)},phone=${JSON.stringify(lead.phone)},website=${JSON.stringify(lead.website)}`);
+        continue;
+      }
 
       if (needsEnrichmentToDecide) {
         // Guard ensureEnriched so a single slow/failing website crawl does
         // NOT crash the entire city/niche task — the business is not lost
         // (the async worker still finishes enriching it), we just skip
         // this lead's channel gate for now and move on.
+        const tEnsureStart = Date.now();
+        console.log(`ENSURE_ENRICHED_START`);
         try {
           const tEnsure = profiler.timer("ensure_enriched");
           await ensureEnriched(businessId);
           tEnsure.end();
+          console.log(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms`);
 
           if (requestedChannels.includes("instagram")) {
             const tIntel = profiler.timer("ensure_intelligence");
@@ -286,15 +306,30 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
             tIntel.end();
           }
         } catch (enrichErr) {
+          const message = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
           console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence failed for businessId=${businessId} — skipping channel gate`, enrichErr);
           rejected += 1;
+          console.log(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms (threw)`);
+          console.log(`PIPELINE ${pid}`);
+          console.log(`EXITED HERE`);
+          console.log(`reason=ensureEnriched_threw:businessId=${businessId},error=${JSON.stringify(message)}`);
           continue;
         }
         const { data: enriched } = await db.from("businesses")
           .select("email, phone, instagram, website").eq("id", businessId).maybeSingle();
-        if (!enriched || !channelsSatisfied(enriched, requestedChannels)) { rejected += 1; continue; }
+        const satisfied = Boolean(enriched) && channelsSatisfied(enriched, requestedChannels);
+        console.log(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
+        console.log(`CHANNELS_SATISFIED=${satisfied}`);
+        if (!satisfied) {
+          rejected += 1;
+          console.log(`PIPELINE ${pid}`);
+          console.log(`EXITED HERE`);
+          console.log(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},row=${JSON.stringify(enriched)}`);
+          continue;
+        }
       }
 
+      console.log(`DELIVER_LEAD_START`);
       const tDeliver = profiler.timer("deliver_lead");
       const delivery = await deliverLead(lead, {
         userId: payload.request.userId,
@@ -306,17 +341,40 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         discoveryPlanId: payload.planId,
       }, payload.request.region, businessId);
       tDeliver.end();
+      console.log(`DELIVER_LEAD_END result=${JSON.stringify(delivery)}`);
 
-      if (delivery.limitReached) break;
-      if (delivery.wasNewForUser) {
-        profiler.mark("first_lead_delivered");
-        // Phase 7: record time-to-first-lead (idempotent — COALESCE guard in DB).
-        const elapsedMs = Date.now() - startedAt;
-        recordTimeToFirstLead(payload.planId, elapsedMs);
-        accepted += 1;
-      } else {
-        duplicates += 1;
+      // NOTE: insertLeadForUser() runs INSIDE deliverLead() (deliverLead.ts,
+      // not instrumented per scope) — there is no separate timestamp
+      // available from this file alone. INSERT_LEAD_START is logged
+      // immediately after DELIVER_LEAD_END resolves, which is the earliest
+      // point this file can observe it.
+      if (delivery.limitReached) {
+        console.log(`PIPELINE ${pid}`);
+        console.log(`EXITED HERE`);
+        console.log(`reason=plan_limit_reached:no leads row inserted,delivery=${JSON.stringify(delivery)}`);
+        break;
       }
+      if (!delivery.wasNewForUser) {
+        console.log(`PIPELINE ${pid}`);
+        console.log(`EXITED HERE`);
+        console.log(`reason=duplicate_already_owned_by_user:businessId=${businessId},no new leads row inserted`);
+        duplicates += 1;
+        continue;
+      }
+
+      console.log(`INSERT_LEAD_START`);
+      // insertLeadForUser() (deliverLead.ts) already ran by this point as
+      // part of the deliverLead() call above; DeliveryResult does not
+      // expose leads.id, so it cannot be printed here without modifying
+      // deliverLead.ts, which is out of scope for this instrumentation pass.
+      console.log(`INSERT_LEAD_END leadId=<unavailable from discoveryPlanJob.ts — DeliveryResult has no leads.id field>`);
+
+      profiler.mark("first_lead_delivered");
+      // Phase 7: record time-to-first-lead (idempotent — COALESCE guard in DB).
+      const elapsedMs = Date.now() - startedAt;
+      recordTimeToFirstLead(payload.planId, elapsedMs);
+      accepted += 1;
+      console.log(`FINISHED`);
     } // end inner lead loop
 
       // Break outer search-query loop if plan is satisfied or cancelled

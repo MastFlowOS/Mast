@@ -14,9 +14,13 @@
 
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.js";
+import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 
 export const observabilityRouter = Router();
+
+// Internal engineer/admin dashboard reads — generous limit.
+const readLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
 
 const db = supabaseAdmin as any;
 
@@ -58,7 +62,7 @@ async function requireEngineer(req: any, res: any, next: any) {
  * Query params:
  *  - `range_hours` (optional, default 24): Historical window for analytics.
  */
-observabilityRouter.get("/stats", requireAuth, requireEngineer, async (req, res, next) => {
+observabilityRouter.get("/stats", requireAuth, readLimiter, requireEngineer, async (req, res, next) => {
   try {
     const rangeHours = Math.max(1, Math.min(720, parseInt(String(req.query.range_hours ?? "24"), 10) || 24));
 
@@ -85,7 +89,7 @@ observabilityRouter.get("/stats", requireAuth, requireEngineer, async (req, res,
  *  - `range_hours` (optional, default 24)
  *  - `limit` (optional, default 100)
  */
-observabilityRouter.get("/history", requireAuth, requireEngineer, async (req, res, next) => {
+observabilityRouter.get("/history", requireAuth, readLimiter, requireEngineer, async (req, res, next) => {
   try {
     const rangeHours = Math.max(1, Math.min(720, parseInt(String(req.query.range_hours ?? "24"), 10) || 24));
     const limit = Math.max(1, Math.min(500, parseInt(String(req.query.limit ?? "100"), 10) || 100));

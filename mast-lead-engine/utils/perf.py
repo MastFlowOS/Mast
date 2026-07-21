@@ -200,6 +200,20 @@ class RunProfiler:
         if "first_opportunity" not in self._marks:
             self._marks["first_opportunity"] = time.perf_counter()
 
+    def mark_first_discovered_business(self) -> None:
+        """Phase 2A: first raw place successfully extracted from Maps
+        (before dedup/filtering). No-op after the first call."""
+        if "first_discovered_business" not in self._marks:
+            self._marks["first_discovered_business"] = time.perf_counter()
+
+    def mark_first_yielded_business(self) -> None:
+        """Phase 2A: first raw place actually yielded out of
+        MapsScraper.search() (i.e. survived dedup) — distinct from
+        first_discovered_business, which fires even for a place that turns
+        out to be a duplicate. No-op after the first call."""
+        if "first_yielded_business" not in self._marks:
+            self._marks["first_yielded_business"] = time.perf_counter()
+
     def begin_business(self, name: str) -> None:
         """Start timing a new business being processed by the pipeline."""
         self._current_business = BusinessTiming(name=name)
@@ -258,6 +272,62 @@ class RunProfiler:
         run_min = self._total_run_ms / 60_000.0
         return (self._delivered / run_min) if run_min > 0 else 0.0
 
+    # ── Phase 2A: Discovery utilization metrics ─────────────────────────────
+    #
+    # "Browser-bound" stages are ones where a real CDP round trip / page
+    # render is happening. Everything else discovery-side (rate-limiter
+    # waits, the place-settle wait, queue backpressure) is the browser
+    # sitting idle while Python waits on something else — which is exactly
+    # the distinction Phase 1A's audit needed but the profiler couldn't
+    # previously show, since the rate-limiter wait wasn't timed at all and
+    # the settle sleep was folded into the extraction timer (see audit §3.3).
+    _BROWSER_BOUND_STAGES = frozenset({
+        "playwright_startup", "browser_startup", "context_creation",
+        "page_creation", "maps_initial_load", "scroll_movement",
+        "scroll_wait", "place_click", "place_panel_wait",
+        "maps_place_extraction",
+    })
+    _DISCOVERY_BLOCKED_STAGES = frozenset({
+        "rate_limit_wait_search", "rate_limit_wait_place", "place_settle",
+        "queue_wait_put",
+    })
+
+    def _discovery_span_ms(self) -> float | None:
+        """Wall-clock span of the discovery worker, if marked. Falls back
+        to the whole run span (over-counts if enrichment ran concurrently
+        in the same profiler, so callers should prefer the marks when
+        available)."""
+        start = self._marks.get("discovery_worker_start")
+        end = self._marks.get("discovery_worker_end") or time.perf_counter()
+        if start is not None:
+            return (end - start) * 1000.0
+        return self._total_run_ms
+
+    @property
+    def _browser_utilization_pct(self) -> float | None:
+        span = self._discovery_span_ms()
+        if not span or span <= 0:
+            return None
+        busy = sum(
+            t.total_ms for name, t in self._stages.items()
+            if name in self._BROWSER_BOUND_STAGES
+        )
+        return round(min(100.0, busy / span * 100.0), 1)
+
+    @property
+    def _discovery_worker_utilization_pct(self) -> float | None:
+        """Fraction of the discovery worker's own wall-clock time that was
+        NOT spent blocked on downstream backpressure (enrich_queue.put()).
+        Low values confirm the audit's §3.5 hypothesis that discovery is
+        capped by a slower downstream consumer, independent of how fast
+        discovery itself becomes."""
+        span = self._discovery_span_ms()
+        if not span or span <= 0:
+            return None
+        blocked = self._stages.get("queue_wait_put")
+        blocked_ms = blocked.total_ms if blocked else 0.0
+        return round(min(100.0, max(0.0, (1 - blocked_ms / span) * 100.0)), 1)
+
     def _rejection_breakdown(self) -> list[dict]:
         """Aggregate rejections by reason, include avg enrichment time wasted."""
         by_reason: dict[str, list[float]] = defaultdict(list)
@@ -293,11 +363,20 @@ class RunProfiler:
             s["pct_of_runtime"] = round(s["total_ms"] / total_ms * 100, 1) if total_ms > 0 else 0
             stages_dict[name] = s
 
+        first_disc = self._marks.get("first_discovered_business")
+        first_yield = self._marks.get("first_yielded_business")
+
         return {
             "run_total_ms": round(total_ms, 1),
             "time_to_first_opportunity_ms": (
                 round(self._time_to_first_opportunity_ms, 1)
                 if self._time_to_first_opportunity_ms is not None else None
+            ),
+            "time_to_first_discovered_business_ms": (
+                round((first_disc - self._run_start) * 1000, 1) if first_disc else None
+            ),
+            "time_to_first_yielded_business_ms": (
+                round((first_yield - self._run_start) * 1000, 1) if first_yield else None
             ),
             "businesses_discovered": self._discovered,
             "leads_delivered": self._delivered,
@@ -307,6 +386,8 @@ class RunProfiler:
                 round(inter_lead_gaps.stats()["avg_ms"], 1)
                 if inter_lead_gaps and inter_lead_gaps.count > 0 else None
             ),
+            "browser_utilization_pct": self._browser_utilization_pct,
+            "discovery_worker_utilization_pct": self._discovery_worker_utilization_pct,
             "stages": stages_dict,
             "rejection_breakdown": self._rejection_breakdown(),
             "resources": {
@@ -462,6 +543,8 @@ class NullProfiler:
 
     def mark(self, event: str) -> None: pass  # noqa: ARG002
     def mark_first_opportunity(self) -> None: pass
+    def mark_first_discovered_business(self) -> None: pass
+    def mark_first_yielded_business(self) -> None: pass
     def begin_business(self, name: str) -> None: pass  # noqa: ARG002
     def end_business(self, outcome: str) -> None: pass  # noqa: ARG002
     def record_rejection(self, reason: str, elapsed_ms: float) -> None: pass  # noqa: ARG002

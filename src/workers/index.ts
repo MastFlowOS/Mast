@@ -53,9 +53,55 @@ async function main() {
     30_000,
   );
 
-  // Clean up the heartbeat interval if the process exits gracefully.
-  process.on("SIGTERM", () => clearInterval(workerHeartbeatInterval));
-  process.on("SIGINT",  () => clearInterval(workerHeartbeatInterval));
+  // ── Graceful shutdown ─────────────────────────────────────────────────
+  // Railway sends SIGTERM (SIGINT for local Ctrl+C) before killing the
+  // container. Without a handler, the process dies immediately and can cut
+  // off an in-flight pg-boss job mid-discovery/enrichment/intelligence,
+  // leaving it stuck "running" until stale-detection eventually reclaims it.
+  //
+  // boss.stop({ graceful: true }) is pg-boss's own documented shutdown
+  // sequence: it stops polling for new jobs immediately, then waits (up to
+  // `timeout`) for whatever this process already has in flight ("wip") to
+  // finish before closing its DB connections — exactly "stop accepting new
+  // work, let in-flight jobs finish, bounded timeout" with no changes to
+  // worker lifecycle/queue/retry semantics required here.
+  //
+  // A second, slightly longer, hard `process.exit` timer is kept as a
+  // backstop in case shutdown hangs for a reason outside pg-boss's own
+  // timeout (e.g. a stuck Supabase call in a handler's finally block) —
+  // Railway will SIGKILL shortly after SIGTERM regardless, so exiting
+  // ourselves first guarantees a clean(er) log line instead of a bare kill.
+  const GRACEFUL_STOP_TIMEOUT_MS = 25_000;
+  const FORCE_EXIT_TIMEOUT_MS = 28_000;
+  let shuttingDown = false;
+
+  async function shutdown(signal: NodeJS.Signals) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[worker] received ${signal}, starting graceful shutdown (timeout=${GRACEFUL_STOP_TIMEOUT_MS}ms)`);
+
+    clearInterval(workerHeartbeatInterval);
+
+    const forceExitTimer = setTimeout(() => {
+      console.error(`[worker] graceful shutdown exceeded ${FORCE_EXIT_TIMEOUT_MS}ms — forcing exit`);
+      process.exit(1);
+    }, FORCE_EXIT_TIMEOUT_MS);
+    forceExitTimer.unref();
+
+    try {
+      await boss.stop({ graceful: true, timeout: GRACEFUL_STOP_TIMEOUT_MS });
+      console.log("[worker] pg-boss stopped cleanly — exiting");
+      clearTimeout(forceExitTimer);
+      process.exit(0);
+    } catch (err) {
+      console.error("[worker] error during graceful shutdown", err);
+      clearTimeout(forceExitTimer);
+      process.exit(1);
+    }
+  }
+
+  process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
+  process.on("SIGINT",  () => { void shutdown("SIGINT"); });
 
   await boss.work<DiscoveryPlanPayload>(QUEUES.discoveryPlan, async ([job]) => {
     await runJob(job.id, null, () => handleDiscoveryPlanJob(job.data));

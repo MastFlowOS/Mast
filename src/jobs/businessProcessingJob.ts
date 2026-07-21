@@ -160,15 +160,15 @@ export async function ensureEnriched(businessId: string): Promise<void> {
   if (!task || task.status === "completed") return; // nothing pending, or already done
 
   const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")
-    .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), error: null })
+    .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), last_heartbeat_at: new Date().toISOString(), error: null })
     .eq("id", task.id).eq("status", "queued").select("id, attempts").maybeSingle();
 
   if (claimed) {
     try {
       await enrichBusiness(businessId);
-      await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", claimed.id);
+      await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString(), last_heartbeat_at: null }).eq("id", claimed.id);
     } catch (err) {
-      await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err) }).eq("id", claimed.id);
+      await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err), last_heartbeat_at: null }).eq("id", claimed.id);
       throw err;
     }
     return;
@@ -196,15 +196,15 @@ export async function ensureIntelligence(businessId: string): Promise<void> {
   if (!task || task.status === "completed") return; // nothing pending, or already done
 
   const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")
-    .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), error: null })
+    .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), last_heartbeat_at: new Date().toISOString(), error: null })
     .eq("id", task.id).eq("status", "queued").select("id, attempts").maybeSingle();
 
   if (claimed) {
     try {
       await scoreBusiness(businessId);
-      await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", claimed.id);
+      await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString(), last_heartbeat_at: null }).eq("id", claimed.id);
     } catch (err) {
-      await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err) }).eq("id", claimed.id);
+      await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err), last_heartbeat_at: null }).eq("id", claimed.id);
       throw err;
     }
     return;

@@ -336,7 +336,9 @@ async def _new_stealth_context(browser: Browser, proxy: str | None = None) -> Br
     return ctx
 
 
-async def _human_scroll(page: Page, panel_selector: str, *, config: ScraperConfig) -> None:
+async def _human_scroll(
+    page: Page, panel_selector: str, *, config: ScraperConfig, profiler=None,
+) -> None:
     """Scroll the results panel, then wait event-driven for new cards to
     appear instead of blindly sleeping for a fixed window.
 
@@ -349,7 +351,14 @@ async def _human_scroll(page: Page, panel_selector: str, *, config: ScraperConfi
     window. A small amount of randomized pacing is preserved between
     sub-scrolls and after settling — anti-detection intent unchanged,
     just no longer the dominant cost.
+
+    Phase 2A: the actual scroll movement and the event-driven wait are now
+    timed as two separate stages (`scroll_movement` / `scroll_wait`)
+    instead of one combined `maps_scroll_round`, so the audit's question
+    "is scrolling still expensive, and if so which half" is answerable
+    from real data rather than reasoned about.
     """
+    profiler = profiler or NullProfiler()
     try:
         panel = await page.query_selector(panel_selector)
         if not panel:
@@ -363,35 +372,37 @@ async def _human_scroll(page: Page, panel_selector: str, *, config: ScraperConfi
         except Exception:
             before_count = 0
 
-        # Variable scroll amounts (humans don't scroll exactly the same each time)
-        for _ in range(3):
-            amount = random.randint(280, 480)
-            await panel.evaluate(
-                f"el => el.scrollBy({{ top: {amount}, behavior: 'smooth' }})"
-            )
-            # Short randomized pacing between sub-scrolls — anti-detection
-            # only, not meant to be the mechanism that waits for content.
-            await asyncio.sleep(random.uniform(0.12, 0.28))
+        with profiler.timer("scroll_movement"):
+            # Variable scroll amounts (humans don't scroll exactly the same each time)
+            for _ in range(3):
+                amount = random.randint(280, 480)
+                await panel.evaluate(
+                    f"el => el.scrollBy({{ top: {amount}, behavior: 'smooth' }})"
+                )
+                # Short randomized pacing between sub-scrolls — anti-detection
+                # only, not meant to be the mechanism that waits for content.
+                await asyncio.sleep(random.uniform(0.12, 0.28))
 
-        # Event-driven wait: poll for new listing anchors rather than
-        # blindly sleeping for a fixed window. Bounded by a short timeout
-        # so we still make forward progress when no new cards are
-        # forthcoming (e.g. near end of results) or rendering is slow.
-        try:
-            await page.wait_for_function(
-                "(before) => document.querySelectorAll(\"a[href*='/maps/place/']\").length > before",
-                arg=before_count,
-                timeout=config.scroll_settle_timeout_ms,
-                polling=100,
-            )
-        except PlaywrightTimeoutError:
-            pass  # no new cards within the budget — caller proceeds anyway
+        with profiler.timer("scroll_wait"):
+            # Event-driven wait: poll for new listing anchors rather than
+            # blindly sleeping for a fixed window. Bounded by a short timeout
+            # so we still make forward progress when no new cards are
+            # forthcoming (e.g. near end of results) or rendering is slow.
+            try:
+                await page.wait_for_function(
+                    "(before) => document.querySelectorAll(\"a[href*='/maps/place/']\").length > before",
+                    arg=before_count,
+                    timeout=config.scroll_settle_timeout_ms,
+                    polling=100,
+                )
+            except PlaywrightTimeoutError:
+                pass  # no new cards within the budget — caller proceeds anyway
 
-        # Brief randomized settle pause: lets freshly-rendered cards finish
-        # in-flight layout/paint, and keeps cadence irregular rather than
-        # metronomic. Much shorter than the old fixed sleep — this is
-        # pacing, not the wait mechanism.
-        await asyncio.sleep(random.uniform(0.1, 0.3))
+            # Brief randomized settle pause: lets freshly-rendered cards finish
+            # in-flight layout/paint, and keeps cadence irregular rather than
+            # metronomic. Much shorter than the old fixed sleep — this is
+            # pacing, not the wait mechanism.
+            await asyncio.sleep(random.uniform(0.1, 0.3))
     except Exception:
         pass
 
@@ -505,6 +516,50 @@ async def _human_click(page: Page, element) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 # Place data extractor
 # ──────────────────────────────────────────────────────────────────────────────
+
+async def _wait_for_place_settle(page: Page, *, config: ScraperConfig) -> None:
+    """Event-driven place-panel settle wait (Phase 2A opt, audit §3.2).
+
+    The previous version did an unconditional `asyncio.sleep(place_settle_ms
+    / 1000)` (1000ms by default) before every single extraction, regardless
+    of whether the panel had actually finished rendering — stacked on top
+    of the `wait_for_selector` for the name `<h1>` that already runs before
+    this is called. Instrumentation (`place_settle` stage, rate_limit_wait_*
+    stages) confirmed this was pure dead time on top of an already-adequate
+    wait.
+
+    This replaces it with a bounded poll for a second field (address,
+    rating, or category — whichever renders first) to appear, following the
+    exact pattern already proven for scroll pacing (`_human_scroll`, Phase
+    6). `config.place_settle_ms` remains the ceiling passed as the timeout,
+    so the worst case is identical to the old behavior — nothing regresses
+    — while the common case (second field already rendered by the time we
+    get here) now resolves in well under 1000ms.
+    """
+    try:
+        await page.wait_for_function(
+            """() => {
+                const sels = [
+                    "[data-item-id='address'] .fontBodyMedium",
+                    "button[data-item-id='address'] .rogA2c",
+                    "div.F7nice span[aria-hidden='true']",
+                    "button.DkEaL",
+                ];
+                return sels.some(s => document.querySelector(s));
+            }""",
+            timeout=config.place_settle_ms,
+            polling=50,
+        )
+    except PlaywrightTimeoutError:
+        pass  # ceiling reached — proceed anyway, same as the old fixed sleep would have
+    except Exception:
+        pass
+    # Short fixed pacing after the settle signal: lets freshly-rendered
+    # fields finish in-flight layout/paint and keeps click-to-extract
+    # cadence irregular (anti-detection) rather than metronomic — same
+    # intent as the old fixed sleep, just far shorter than its 1000ms.
+    await asyncio.sleep(random.uniform(0.1, 0.25))
+
 
 async def _try_selectors(page: Page, selectors: list[str]) -> str:
     """Try each selector in order, returning first non-empty text."""
@@ -631,11 +686,15 @@ async def _extract_place_data(
     city: str = "",
     country: str = "",
 ) -> RawPlace | None:
-    """Extract all structured data from the currently open place panel."""
+    """Extract all structured data from the currently open place panel.
 
-    # Wait for the place panel to settle
-    await asyncio.sleep(config.place_settle_ms / 1000)
-
+    Phase 2A: the place-settle wait used to live here as an unconditional
+    sleep, which meant the profiler's `maps_place_extraction` timer (wrapped
+    around this whole function by the caller) always included it, hiding
+    the real extraction cost (audit §3.3). It's now the caller's
+    responsibility to settle (via `_wait_for_place_settle`, timed as its
+    own `place_settle` stage) before calling this function.
+    """
     place = RawPlace(query=query, niche=niche, region=region, city=city, country=country)
 
     # Name
@@ -771,7 +830,12 @@ class MapsScraper:
         self._browser: Browser | None = None
 
     async def __aenter__(self) -> "MapsScraper":
-        self._playwright = await async_playwright().start()
+        # Phase 2A: separate the Playwright driver spawn from the Chromium
+        # launch below — these were previously untimed/combined, and the
+        # audit's §3.6 recommendation was specifically to measure this
+        # split before deciding anything about browser lifecycle reuse.
+        with self._profiler.timer("playwright_startup"):
+            self._playwright = await async_playwright().start()
         launch_args = [
             "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
@@ -800,10 +864,21 @@ class MapsScraper:
         return self
 
     async def __aexit__(self, *_) -> None:
+        # Each cleanup step must run independently of the others' outcome.
+        # If browser.close() throws (e.g. the Chromium process already
+        # crashed/died), playwright.stop() must still execute — otherwise
+        # the Playwright driver process is never torn down and leaks for
+        # the lifetime of the container.
         if self._browser:
-            await self._browser.close()
+            try:
+                await self._browser.close()
+            except Exception as exc:
+                log.warning(f"[maps] browser.close() failed during cleanup: {exc}")
         if self._playwright:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception as exc:
+                log.warning(f"[maps] playwright.stop() failed during cleanup: {exc}")
 
     @property
     def browser(self) -> Browser:
@@ -872,12 +947,15 @@ class MapsScraper:
 
         while attempt < max_attempts:
             attempt += 1
-            ctx = await _new_stealth_context(self.browser, proxy=proxy)
-            page = await ctx.new_page()
+            with self._profiler.timer("context_creation"):
+                ctx = await _new_stealth_context(self.browser, proxy=proxy)
+            with self._profiler.timer("page_creation"):
+                page = await ctx.new_page()
             crashed = False
 
             try:
-                await self._limiter.acquire("maps_search")
+                with self._profiler.timer("rate_limit_wait_search"):
+                    await self._limiter.acquire("maps_search")
                 try:
                     with self._profiler.timer("maps_initial_load"):
                         await page.goto(search_url, wait_until="networkidle",
@@ -912,7 +990,9 @@ class MapsScraper:
                     # re-encountered along the way, so overshooting or
                     # undershooting slightly is harmless.
                     for _ in range(total_scroll_rounds):
-                        await _human_scroll(page, panel_sel, config=self.config)
+                        await _human_scroll(
+                            page, panel_sel, config=self.config, profiler=self._profiler,
+                        )
                         await asyncio.sleep(0.15)
 
                 rounds_this_attempt = 0
@@ -973,24 +1053,46 @@ class MapsScraper:
                             return
 
                         try:
-                            await _human_click(page, anchor)
+                            with self._profiler.timer("place_click"):
+                                await _human_click(page, anchor)
                         except Exception:
                             continue
 
                         try:
-                            # Wait for place panel to open
-                            try:
-                                await page.wait_for_selector(
-                                    _PLACE_NAME_SELECTORS[0],
-                                    timeout=self.config.place_timeout_ms,
-                                )
-                            except PlaywrightTimeoutError:
+                            # Wait for place panel to open. Phase 2A: timed
+                            # separately from the click itself, so "place
+                            # opening" (click + panel wait) is visible as
+                            # two distinct numbers rather than folded into
+                            # whatever the caller happened to wrap.
+                            with self._profiler.timer("place_panel_wait"):
                                 try:
-                                    await page.wait_for_selector("h1", timeout=5000)
+                                    await page.wait_for_selector(
+                                        _PLACE_NAME_SELECTORS[0],
+                                        timeout=self.config.place_timeout_ms,
+                                    )
                                 except PlaywrightTimeoutError:
-                                    continue
+                                    try:
+                                        await page.wait_for_selector("h1", timeout=5000)
+                                    except PlaywrightTimeoutError:
+                                        continue
 
-                            await self._limiter.acquire("maps_place")
+                            # Phase 2A / audit §3.1 + §3.3: the rate-limiter
+                            # wait was previously invisible to the profiler
+                            # entirely (it ran before any timer started).
+                            # It's the single highest-estimated bottleneck
+                            # in the Phase 1A audit — now it's measured
+                            # directly instead of reasoned about.
+                            with self._profiler.timer("rate_limit_wait_place"):
+                                await self._limiter.acquire("maps_place")
+
+                            # Phase 2A / audit §3.2 + §3.3: the settle wait
+                            # used to be an unconditional sleep folded
+                            # inside `maps_place_extraction`'s timer. It's
+                            # now its own stage, and event-driven (see
+                            # _wait_for_place_settle) instead of a blind
+                            # fixed sleep — same ceiling, no regression.
+                            with self._profiler.timer("place_settle"):
+                                await _wait_for_place_settle(page, config=self.config)
 
                             try:
                                 with self._profiler.timer("maps_place_extraction"):
@@ -1016,17 +1118,27 @@ class MapsScraper:
                                 self._stats.skip("permanently_closed")
                                 continue
 
+                            # Phase 2A: first successfully-extracted raw
+                            # place, before dedup — distinct from "first
+                            # yielded" below, which only fires once a place
+                            # has also survived the identity guard.
+                            self._profiler.mark_first_discovered_business()
+
                             # Second-layer identity guard, independent of
                             # href formatting entirely (see docstring on
                             # _place_identity_from_data).
-                            place_key = _place_identity_from_data(place)
-                            if place_key in seen_place_keys:
+                            with self._profiler.timer("duplicate_detection"):
+                                place_key = _place_identity_from_data(place)
+                                is_dup = place_key in seen_place_keys
+                                if not is_dup:
+                                    seen_place_keys.add(place_key)
+
+                            if is_dup:
                                 log.debug(
                                     f"[maps] skipping duplicate place "
                                     f"(identity match): {place.name!r}"
                                 )
                                 continue
-                            seen_place_keys.add(place_key)
 
                             log.debug(
                                 f"[maps] ✓ {place.name!r} | "
@@ -1035,6 +1147,7 @@ class MapsScraper:
                                 f"website={place.website[:40]!r}"
                             )
 
+                            self._profiler.mark_first_yielded_business()
                             yield place
                             yielded += 1
                         finally:
@@ -1060,14 +1173,16 @@ class MapsScraper:
                         pass
 
                     # Scroll the results panel. Phase 6 opt #1: pacing and
-                    # the "wait for new content" logic now live inside
-                    # _human_scroll (event-driven, bounded), so there's no
-                    # separate fixed sleep here anymore — it was redundant
-                    # with the inner wait and wasn't even captured by this
-                    # timer, making the true scroll cost look smaller than
-                    # it actually was.
-                    with self._profiler.timer("maps_scroll_round"):
-                        await _human_scroll(page, panel_sel, config=self.config)
+                    # the "wait for new content" logic live inside
+                    # _human_scroll (event-driven, bounded). Phase 2A:
+                    # _human_scroll now times its own "scroll_movement" vs
+                    # "scroll_wait" sub-stages internally (see its
+                    # docstring), so there's no outer wrapper here anymore
+                    # — the old combined `maps_scroll_round` timer hid which
+                    # half of scrolling was actually expensive.
+                    await _human_scroll(
+                        page, panel_sel, config=self.config, profiler=self._profiler,
+                    )
 
                 # Finished this attempt's scroll budget without crashing —
                 # max_results reached, the per-attempt or cross-attempt
@@ -1125,6 +1240,14 @@ class MapsScraper:
             except PlaywrightTimeoutError:
                 pass
 
+            # Phase 2A note: the settle wait moved out of _extract_place_data
+            # and into callers (see that function's docstring). This is an
+            # out-of-Discovery-scope caller (pool refreshes, not the
+            # search() path), so it isn't given its own profiler stage here
+            # — but it must still settle before extracting to avoid a
+            # regression versus the previous behavior.
+            await _wait_for_place_settle(page, config=self.config)
+
             return await _extract_place_data(
                 page,
                 config=self.config,
@@ -1137,5 +1260,15 @@ class MapsScraper:
             log.debug(f"[maps] direct URL error: {exc}")
             return None
         finally:
-            await page.close()
-            await ctx.close()
+            # Same independent-cleanup pattern as search()'s finally block:
+            # a failing page.close() must not prevent ctx.close() from
+            # running, or the context (and its underlying browser
+            # resources) leaks.
+            try:
+                await page.close()
+            except Exception:
+                pass
+            try:
+                await ctx.close()
+            except Exception:
+                pass

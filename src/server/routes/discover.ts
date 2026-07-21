@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.js";
+import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan } from "../../config/plans.js";
 import { getBoss, QUEUES } from "../../lib/queue.js";
@@ -9,6 +10,17 @@ import { professionSlugForLabel } from "../../lib/professions.js";
 import { enqueueDiscoveryPlan } from "../../discovery/planner.js";
 
 export const discoverRouter = Router();
+
+// Discovery queues real background scraping work (and, on the "live" plan
+// path, dispatches directly into pg-boss) — 5/min is well above what a
+// legitimate user needs (this is a "kick off and check back" action, not
+// something clicked repeatedly) but tight enough to stop a client from
+// queuing dozens of jobs before the credit check downstream even matters.
+const discoverLimiter = createRateLimiter({ windowMs: 60_000, max: 5 });
+
+// Cancelling a job is an authenticated write but doesn't trigger new work —
+// 20/min comfortably covers normal UI interaction.
+const cancelLimiter = createRateLimiter({ windowMs: 60_000, max: 20 });
 
 const DiscoverRequestSchema = z.object({
   quantity: z.number().int().positive(),
@@ -46,7 +58,7 @@ const DiscoverRequestSchema = z.object({
  *    restrictions are now enforced here too, not just client-side (a gap
  *    flagged, not fixed, in Phase 4).
  */
-discoverRouter.post("/", requireAuth, async (req, res, next) => {
+discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const body = DiscoverRequestSchema.parse(req.body);
@@ -231,7 +243,7 @@ discoverRouter.post("/", requireAuth, async (req, res, next) => {
  * the owning user may cancel their own job, and only if the job is still
  * in a non-terminal state.
  */
-discoverRouter.post("/:jobId/cancel", requireAuth, async (req, res, next) => {
+discoverRouter.post("/:jobId/cancel", requireAuth, cancelLimiter, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const { jobId } = req.params;

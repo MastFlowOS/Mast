@@ -95,7 +95,18 @@ class RateLimiter:
 
     async def _jitter_sleep(self, base_wait: float) -> None:
         jitter = base_wait * random.uniform(-self.jitter_pct, self.jitter_pct)
-        delay = max(self.min_delay, base_wait + jitter)
+        if base_wait <= 0:
+            # Phase 2A / audit §3.1, Quick Win 3: when a burst token was
+            # already available (base_wait == 0), min_delay must NOT apply.
+            # That floor exists to pace genuine waits; applying it here was
+            # an unconditional 800ms tax on every burst-available acquire,
+            # confirmed by instrumentation (see rate_limit_wait_* stages)
+            # to be a meaningful chunk of "rate limiter" time that bought
+            # nothing — jitter is 0 when base_wait is 0, so this previously
+            # always resolved to exactly min_delay, never anything less.
+            delay = max(0.0, jitter)
+        else:
+            delay = max(self.min_delay, base_wait + jitter)
         if delay > 0:
             await asyncio.sleep(delay)
 

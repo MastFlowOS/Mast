@@ -188,7 +188,7 @@ class LeadStore:
     For multi-process use, WAL journal mode prevents writer starvation.
     """
 
-    def __init__(self, db_path: str | Path = DEFAULT_DB) -> None:
+    def __init__(self, db_path: str | Path = DEFAULT_DB, *, profiler=None) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -196,7 +196,16 @@ class LeadStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA cache_size=-32000")  # 32MB page cache
         self._bootstrap()
-        self._cache: set[str] = self._load_cache()
+        # Phase 2A (audit §3.7): this full-table fingerprint scan runs once
+        # per process start with no prior visibility into its cost. Timed
+        # here (optional profiler — defaults to doing nothing so existing
+        # callers that don't pass one are unaffected) so it shows up in
+        # __perf__ instead of silently growing with the total lead pool.
+        if profiler is not None:
+            with profiler.timer("leadstore_cache_load"):
+                self._cache: set[str] = self._load_cache()
+        else:
+            self._cache: set[str] = self._load_cache()
 
     def _bootstrap(self) -> None:
         self._conn.executescript("""

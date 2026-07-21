@@ -1,9 +1,11 @@
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.js";
+import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan, type PlanId } from "../../config/plans.js";
 import { canUseAiFeature } from "../../lib/aiAccess.js";
 import { aiEnabled, generateJSON, AI_MODEL } from "../../lib/ai.js";
+import { singleFlight } from "../../lib/singleFlight.js";
 import { buildPipelineSnapshot } from "../../lib/intelligenceContext.js";
 import { computeOpportunityScores, type ScorableBusiness } from "../../scoring/opportunityScore.js";
 import { explainOpportunity } from "../../scoring/explainOpportunity.js";
@@ -11,6 +13,16 @@ import { type ProfessionSlug } from "../../scoring/professionWeights.js";
 import { professionSlugForLabel } from "../../lib/professions.js";
 
 export const intelligenceRouter = Router();
+
+// explain/trust are local reads (already-computed scores, or a straight
+// Supabase select) with no external calls — generous limit.
+const readLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
+
+// opportunities/briefing/weekly/coaching call out to an external AI
+// provider on a cache miss — daily/weekly caching keeps steady-state cost
+// low, but the limiter still bounds how fast a client can force
+// cache-miss generations. 5/min matches the cost profile of discovery.
+const aiGenerationLimiter = createRateLimiter({ windowMs: 60_000, max: 5 });
 
 // ─── AI response contract enforcement ──────────────────────────────────────
 // generateJSON() only guarantees the model's reply parses as JSON — it does
@@ -69,7 +81,7 @@ function isoWeekKey(d: Date): string {
  * same way Phase 6 already scores businesses, not a new model). Requires
  * the lead to belong to the requesting user.
  */
-intelligenceRouter.get("/explain/:leadId", requireAuth, async (req, res, next) => {
+intelligenceRouter.get("/explain/:leadId", requireAuth, readLimiter, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const leadId = Number(req.params.leadId);
@@ -120,7 +132,7 @@ intelligenceRouter.get("/explain/:leadId", requireAuth, async (req, res, next) =
  * own independent number — never blended into the Opportunity Score (see
  * businessHealth.ts's doc comment for why the two are kept apart).
  */
-intelligenceRouter.get("/trust/:leadId", requireAuth, async (req, res, next) => {
+intelligenceRouter.get("/trust/:leadId", requireAuth, readLimiter, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const leadId = Number(req.params.leadId);
@@ -179,7 +191,7 @@ intelligenceRouter.get("/trust/:leadId", requireAuth, async (req, res, next) => 
  * cache doesn't exist yet, so this never gets more expensive than the size
  * of the pool.
  */
-intelligenceRouter.get("/opportunities/:businessId", requireAuth, async (req, res, next) => {
+intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLimiter, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const { plan, professionSlug } = await resolveUserPlanAndProfession(userId);
@@ -223,41 +235,47 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, async (req, re
       return res.json({ ...cached, explanation, cached: true });
     }
 
-    const insight = await generateJSON<{ headline: string; talkingPoints: string[]; openingLine: string }>({
-      system:
-        "You are MAST's Opportunity Intelligence assistant, helping a freelancer understand why a business " +
-        "was surfaced as a sales opportunity. You are given real, already-computed facts — do not invent " +
-        "anything not present in the input. Respond with ONLY a JSON object: " +
-        '{"headline": string (<=12 words, why this is a good opportunity), ' +
-        '"talkingPoints": string[] (2-4 short, concrete, non-generic points a freelancer could raise), ' +
-        '"openingLine": string (one natural first-contact message opener, no greeting/signature, <=2 sentences)}. ' +
-        "Keep tone professional and specific, never salesy or exaggerated.",
-      user: JSON.stringify({
-        businessName: business.name,
-        niche: business.niche,
-        profession: professionSlug,
-        opportunityScore: result.score,
-        reasons: explanation.reasons,
-        summary: explanation.summary,
-      }),
-      maxTokens: 512,
+    // Sprint 3: coalesce concurrent cache-miss generations for the same
+    // (business, profession) — see lib/singleFlight.ts.
+    const row = await singleFlight(`opportunities:${businessId}:${professionSlug}`, async () => {
+      const insight = await generateJSON<{ headline: string; talkingPoints: string[]; openingLine: string }>({
+        system:
+          "You are MAST's Opportunity Intelligence assistant, helping a freelancer understand why a business " +
+          "was surfaced as a sales opportunity. You are given real, already-computed facts — do not invent " +
+          "anything not present in the input. Respond with ONLY a JSON object: " +
+          '{"headline": string (<=12 words, why this is a good opportunity), ' +
+          '"talkingPoints": string[] (2-4 short, concrete, non-generic points a freelancer could raise), ' +
+          '"openingLine": string (one natural first-contact message opener, no greeting/signature, <=2 sentences)}. ' +
+          "Keep tone professional and specific, never salesy or exaggerated.",
+        user: JSON.stringify({
+          businessName: business.name,
+          niche: business.niche,
+          profession: professionSlug,
+          opportunityScore: result.score,
+          reasons: explanation.reasons,
+          summary: explanation.summary,
+        }),
+        maxTokens: 512,
+      });
+
+      const nextRow = {
+        business_id: businessId,
+        profession_slug: professionSlug,
+        headline: asString(insight.headline, business.name ? `A fresh opportunity: ${business.name}` : "A fresh opportunity"),
+        talking_points: asStringArray(insight.talkingPoints),
+        opening_line: asString(insight.openingLine, "Hi — I came across your business and had a few ideas that could help."),
+        score_snapshot: result.score,
+        model: AI_MODEL,
+        generated_at: new Date().toISOString(),
+      };
+
+      const { error: upsertError } = await supabaseAdmin
+        .from("business_opportunity_insights")
+        .upsert(nextRow, { onConflict: "business_id,profession_slug" });
+      if (upsertError) throw upsertError;
+
+      return nextRow;
     });
-
-    const row = {
-      business_id: businessId,
-      profession_slug: professionSlug,
-      headline: asString(insight.headline, business.name ? `A fresh opportunity: ${business.name}` : "A fresh opportunity"),
-      talking_points: asStringArray(insight.talkingPoints),
-      opening_line: asString(insight.openingLine, "Hi — I came across your business and had a few ideas that could help."),
-      score_snapshot: result.score,
-      model: AI_MODEL,
-      generated_at: new Date().toISOString(),
-    };
-
-    const { error: upsertError } = await supabaseAdmin
-      .from("business_opportunity_insights")
-      .upsert(row, { onConflict: "business_id,profession_slug" });
-    if (upsertError) throw upsertError;
 
     res.json({
       headline: row.headline,
@@ -280,7 +298,7 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, async (req, re
  * "Today's Briefing" reads as a considered snapshot taken at the start of
  * the day, not something that reshuffles on every dashboard visit.
  */
-intelligenceRouter.get("/briefing", requireAuth, async (req, res, next) => {
+intelligenceRouter.get("/briefing", requireAuth, aiGenerationLimiter, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const { plan } = await resolveUserPlanAndProfession(userId);
@@ -307,35 +325,41 @@ intelligenceRouter.get("/briefing", requireAuth, async (req, res, next) => {
 
     const snapshot = await buildPipelineSnapshot(userId);
 
-    const briefing = await generateJSON<{ summary: string; priorities: string[]; tone: "brand" | "warning" | "success" }>({
-      system:
-        "You are MAST's Opportunity Intelligence assistant, writing a short daily executive briefing for a " +
-        "freelancer's sales pipeline. You are given real, already-computed pipeline stats — do not invent " +
-        "numbers or businesses not present in the input. Respond with ONLY a JSON object: " +
-        '{"summary": string (2-3 sentences, plain language, no greeting), ' +
-        '"priorities": string[] (1-4 concrete next actions, most important first), ' +
-        '"tone": "brand" | "warning" | "success" (warning if things are stalling/overdue, success if strong momentum, brand otherwise)}.',
-      user: JSON.stringify(snapshot),
-      maxTokens: 512,
+    // Sprint 3: coalesce concurrent cache-miss generations for the same
+    // (user, day) — see lib/singleFlight.ts.
+    const { briefing, generatedAt } = await singleFlight(`briefing:${userId}:${periodKey}`, async () => {
+      const nextBriefing = await generateJSON<{ summary: string; priorities: string[]; tone: "brand" | "warning" | "success" }>({
+        system:
+          "You are MAST's Opportunity Intelligence assistant, writing a short daily executive briefing for a " +
+          "freelancer's sales pipeline. You are given real, already-computed pipeline stats — do not invent " +
+          "numbers or businesses not present in the input. Respond with ONLY a JSON object: " +
+          '{"summary": string (2-3 sentences, plain language, no greeting), ' +
+          '"priorities": string[] (1-4 concrete next actions, most important first), ' +
+          '"tone": "brand" | "warning" | "success" (warning if things are stalling/overdue, success if strong momentum, brand otherwise)}.',
+        user: JSON.stringify(snapshot),
+        maxTokens: 512,
+      });
+
+      nextBriefing.summary = asString(nextBriefing.summary, "Here's where your pipeline stands today.");
+      nextBriefing.priorities = asStringArray(nextBriefing.priorities);
+      nextBriefing.tone = asEnum(nextBriefing.tone, ["brand", "warning", "success"] as const, "brand");
+
+      const nextGeneratedAt = new Date().toISOString();
+      const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
+        {
+          user_id: userId,
+          kind: "executive_briefing",
+          period_key: periodKey,
+          content: nextBriefing,
+          model: AI_MODEL,
+          generated_at: nextGeneratedAt,
+        },
+        { onConflict: "user_id,kind,period_key" },
+      );
+      if (upsertError) throw upsertError;
+
+      return { briefing: nextBriefing, generatedAt: nextGeneratedAt };
     });
-
-    briefing.summary = asString(briefing.summary, "Here's where your pipeline stands today.");
-    briefing.priorities = asStringArray(briefing.priorities);
-    briefing.tone = asEnum(briefing.tone, ["brand", "warning", "success"] as const, "brand");
-
-    const generatedAt = new Date().toISOString();
-    const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
-      {
-        user_id: userId,
-        kind: "executive_briefing",
-        period_key: periodKey,
-        content: briefing,
-        model: AI_MODEL,
-        generated_at: generatedAt,
-      },
-      { onConflict: "user_id,kind,period_key" },
-    );
-    if (upsertError) throw upsertError;
 
     res.json({ ...briefing, generatedAt, cached: false });
   } catch (err) {
@@ -349,7 +373,7 @@ intelligenceRouter.get("/briefing", requireAuth, async (req, res, next) => {
  * Weekly Intelligence (Premium): a reflective 7-day performance review.
  * Cached once per user per ISO week.
  */
-intelligenceRouter.get("/weekly", requireAuth, async (req, res, next) => {
+intelligenceRouter.get("/weekly", requireAuth, aiGenerationLimiter, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const { plan } = await resolveUserPlanAndProfession(userId);
@@ -377,35 +401,41 @@ intelligenceRouter.get("/weekly", requireAuth, async (req, res, next) => {
     const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
     const snapshot = await buildPipelineSnapshot(userId, sevenDaysAgo);
 
-    const weekly = await generateJSON<{ reflection: string; wins: string[]; focusForNextWeek: string[] }>({
-      system:
-        "You are MAST's Opportunity Intelligence assistant, writing a reflective weekly review of a " +
-        "freelancer's last 7 days of sales activity. You are given real, already-computed stats for that " +
-        "window — do not invent numbers or businesses not present in the input. Respond with ONLY a JSON " +
-        'object: {"reflection": string (2-4 sentences, honest and specific, not generic praise), ' +
-        '"wins": string[] (0-3 genuine positives, empty array if none), ' +
-        '"focusForNextWeek": string[] (1-3 concrete goals for next week)}.',
-      user: JSON.stringify(snapshot),
-      maxTokens: 640,
+    // Sprint 3: coalesce concurrent cache-miss generations for the same
+    // (user, week) — see lib/singleFlight.ts.
+    const { weekly, generatedAt } = await singleFlight(`weekly:${userId}:${periodKey}`, async () => {
+      const nextWeekly = await generateJSON<{ reflection: string; wins: string[]; focusForNextWeek: string[] }>({
+        system:
+          "You are MAST's Opportunity Intelligence assistant, writing a reflective weekly review of a " +
+          "freelancer's last 7 days of sales activity. You are given real, already-computed stats for that " +
+          "window — do not invent numbers or businesses not present in the input. Respond with ONLY a JSON " +
+          'object: {"reflection": string (2-4 sentences, honest and specific, not generic praise), ' +
+          '"wins": string[] (0-3 genuine positives, empty array if none), ' +
+          '"focusForNextWeek": string[] (1-3 concrete goals for next week)}.',
+        user: JSON.stringify(snapshot),
+        maxTokens: 640,
+      });
+
+      nextWeekly.reflection = asString(nextWeekly.reflection, "Here's a look back at your last 7 days.");
+      nextWeekly.wins = asStringArray(nextWeekly.wins);
+      nextWeekly.focusForNextWeek = asStringArray(nextWeekly.focusForNextWeek);
+
+      const nextGeneratedAt = new Date().toISOString();
+      const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
+        {
+          user_id: userId,
+          kind: "weekly_intelligence",
+          period_key: periodKey,
+          content: nextWeekly,
+          model: AI_MODEL,
+          generated_at: nextGeneratedAt,
+        },
+        { onConflict: "user_id,kind,period_key" },
+      );
+      if (upsertError) throw upsertError;
+
+      return { weekly: nextWeekly, generatedAt: nextGeneratedAt };
     });
-
-    weekly.reflection = asString(weekly.reflection, "Here's a look back at your last 7 days.");
-    weekly.wins = asStringArray(weekly.wins);
-    weekly.focusForNextWeek = asStringArray(weekly.focusForNextWeek);
-
-    const generatedAt = new Date().toISOString();
-    const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
-      {
-        user_id: userId,
-        kind: "weekly_intelligence",
-        period_key: periodKey,
-        content: weekly,
-        model: AI_MODEL,
-        generated_at: generatedAt,
-      },
-      { onConflict: "user_id,kind,period_key" },
-    );
-    if (upsertError) throw upsertError;
 
     res.json({ ...weekly, generatedAt, cached: false });
   } catch (err) {
@@ -419,7 +449,7 @@ intelligenceRouter.get("/weekly", requireAuth, async (req, res, next) => {
  * AI Pipeline Coaching (Pro+): alerts on stalled deals and suggested next
  * moves. Cached once per user per UTC day, same rationale as /briefing.
  */
-intelligenceRouter.get("/coaching", requireAuth, async (req, res, next) => {
+intelligenceRouter.get("/coaching", requireAuth, aiGenerationLimiter, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const { plan } = await resolveUserPlanAndProfession(userId);
@@ -456,32 +486,38 @@ intelligenceRouter.get("/coaching", requireAuth, async (req, res, next) => {
       return res.json({ ...content, generatedAt, cached: false });
     }
 
-    const coaching = await generateJSON<{ alerts: Array<{ businessName: string; message: string; suggestedAction: string }> }>({
-      system:
-        "You are MAST's Opportunity Intelligence assistant, coaching a freelancer on stalled deals in their " +
-        "sales pipeline. You are given real, already-computed stalled-deal data — do not invent businesses " +
-        'or facts not present in the input. Respond with ONLY a JSON object: {"alerts": [{"businessName": ' +
-        'string, "message": string (why this deal is at risk, 1 sentence), "suggestedAction": string ' +
-        "(1 concrete next step)}]} — one alert per stalled deal given, same order.",
-      user: JSON.stringify({ stalledDeals: snapshot.stalledDeals }),
-      maxTokens: 640,
+    // Sprint 3: coalesce concurrent cache-miss generations for the same
+    // (user, day) — see lib/singleFlight.ts.
+    const { content, generatedAt } = await singleFlight(`coaching:${userId}:${periodKey}`, async () => {
+      const coaching = await generateJSON<{ alerts: Array<{ businessName: string; message: string; suggestedAction: string }> }>({
+        system:
+          "You are MAST's Opportunity Intelligence assistant, coaching a freelancer on stalled deals in their " +
+          "sales pipeline. You are given real, already-computed stalled-deal data — do not invent businesses " +
+          'or facts not present in the input. Respond with ONLY a JSON object: {"alerts": [{"businessName": ' +
+          'string, "message": string (why this deal is at risk, 1 sentence), "suggestedAction": string ' +
+          "(1 concrete next step)}]} — one alert per stalled deal given, same order.",
+        user: JSON.stringify({ stalledDeals: snapshot.stalledDeals }),
+        maxTokens: 640,
+      });
+
+      const alerts = (Array.isArray(coaching.alerts) ? coaching.alerts : [])
+        .filter((alert): alert is { businessName: string; message: string; suggestedAction: string } => !!alert)
+        .map((alert) => ({
+          businessName: asString(alert.businessName, "A business in your pipeline"),
+          message: asString(alert.message, "This deal has been stalled and may need a follow-up."),
+          suggestedAction: asString(alert.suggestedAction, "Send a follow-up message."),
+        }));
+
+      const nextContent = { alerts, allClear: alerts.length === 0 };
+      const nextGeneratedAt = new Date().toISOString();
+      const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
+        { user_id: userId, kind: "pipeline_coaching", period_key: periodKey, content: nextContent, model: AI_MODEL, generated_at: nextGeneratedAt },
+        { onConflict: "user_id,kind,period_key" },
+      );
+      if (upsertError) throw upsertError;
+
+      return { content: nextContent, generatedAt: nextGeneratedAt };
     });
-
-    const alerts = (Array.isArray(coaching.alerts) ? coaching.alerts : [])
-      .filter((alert): alert is { businessName: string; message: string; suggestedAction: string } => !!alert)
-      .map((alert) => ({
-        businessName: asString(alert.businessName, "A business in your pipeline"),
-        message: asString(alert.message, "This deal has been stalled and may need a follow-up."),
-        suggestedAction: asString(alert.suggestedAction, "Send a follow-up message."),
-      }));
-
-    const content = { alerts, allClear: alerts.length === 0 };
-    const generatedAt = new Date().toISOString();
-    const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
-      { user_id: userId, kind: "pipeline_coaching", period_key: periodKey, content, model: AI_MODEL, generated_at: generatedAt },
-      { onConflict: "user_id,kind,period_key" },
-    );
-    if (upsertError) throw upsertError;
 
     res.json({ ...content, generatedAt, cached: false });
   } catch (err) {

@@ -34,6 +34,17 @@ argv and writes params to stdin.
 
 from __future__ import annotations
 
+import time as _time
+# Phase 2A instrumentation: approximates the "Python imports" stage the
+# audit asked for — the delta between this line (as early as the module
+# can record a timestamp) and the point right after every project import
+# below finishes. This does NOT capture interpreter startup itself (process
+# spawn -> first bytecode of this file), which can only be measured from
+# outside the process (e.g. at the Node bridge's spawn() call) — that
+# boundary is out of scope for this phase (no TS changes), so it's reported
+# as unmeasured rather than guessed at.
+_IMPORTS_START_TS = _time.perf_counter()
+
 import asyncio
 import json
 import sys
@@ -49,6 +60,9 @@ from storage.dedup import LeadStore, fingerprints_for
 from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
 from utils.lifecycle_tracker import log_milestone
 from utils.perf import RunProfiler, NullProfiler
+
+_IMPORTS_DONE_TS = _time.perf_counter()
+_IMPORTS_ELAPSED_MS = (_IMPORTS_DONE_TS - _IMPORTS_START_TS) * 1000.0
 
 log = get_logger("service")
 
@@ -95,10 +109,13 @@ async def run_query(
     )
     stats = RunStats()
     proxy_manager = ProxyManager()
-    store = LeadStore(db_path)
 
-    # Phase 2: create profiler for this run
+    # Phase 2: create profiler for this run. Created before LeadStore
+    # (Phase 2A reorder) so the fingerprint cache load (audit §3.7) can be
+    # timed instead of running invisibly before any timer exists.
     profiler = RunProfiler()
+    profiler.mark("python_imports_done")  # see _IMPORTS_ELAPSED_MS below
+    store = LeadStore(db_path, profiler=profiler)
 
     delivered = 0
     _last_lead_time: float | None = None   # for inter-lead gap tracking
@@ -163,6 +180,7 @@ async def run_query(
 
                 async def discovery_worker():
                     log.info("[discovery] worker started")
+                    profiler.mark("discovery_worker_start")
                     try:
                         search_iter = scraper.search(
                             query=query,
@@ -186,12 +204,17 @@ async def run_query(
                                     f"(delivered={shared_state['delivered']}, max_results={max_results}) — stopping"
                                 )
                                 break
-                            # put() blocks automatically if queue is full (backpressure)
+                            # put() blocks automatically if queue is full
+                            # (backpressure). Phase 2A / audit §3.5: timed
+                            # so the "is discovery capped by a slower
+                            # downstream consumer" hypothesis is measured
+                            # rather than just flagged.
                             log.info(
                                 f"[discovery] enqueue -> enrich_queue: {raw_place.name!r} "
                                 f"(queue size before put={enrich_queue.qsize()})"
                             )
-                            await enrich_queue.put(raw_place)
+                            with profiler.timer("queue_wait_put"):
+                                await enrich_queue.put(raw_place)
                             log.info(
                                 f"[discovery] enqueued: {raw_place.name!r} "
                                 f"(queue size after put={enrich_queue.qsize()})"
@@ -203,6 +226,7 @@ async def run_query(
                         log.error(f"[discovery] error in maps search: {exc!r}", exc_info=True)
                     finally:
                         discovery_done.set()
+                        profiler.mark("discovery_worker_end")
                         # Signal consumer that producer is done
                         log.info("[discovery] enqueue -> enrich_queue: None (completion sentinel)")
                         await enrich_queue.put(None)
@@ -210,13 +234,15 @@ async def run_query(
 
                 async def enrichment_worker():
                     log.info("[enrichment] worker started")
+                    profiler.mark("enrichment_worker_start")
                     try:
                         while True:
                             log.info(
                                 f"[enrichment] waiting for enrichment work — awaiting enrich_queue.get() "
                                 f"(queue size before get={enrich_queue.qsize()})"
                             )
-                            raw_place = await enrich_queue.get()
+                            with profiler.timer("queue_wait_get"):
+                                raw_place = await enrich_queue.get()
                             if raw_place is None:
                                 log.info("[enrichment] dequeue <- enrich_queue: None (completion sentinel)")
                                 break
@@ -285,6 +311,7 @@ async def run_query(
                     except Exception as exc:
                         log.error(f"[enrichment] error in worker: {exc!r}", exc_info=True)
                     finally:
+                        profiler.mark("enrichment_worker_end")
                         log.info("[enrichment] enqueue -> results_queue: None (completion sentinel)")
                         await results_queue.put(None)
                         log.info("[enrichment] worker exiting")
@@ -347,6 +374,11 @@ async def run_query(
         # the __done__ sentinel without changing run_query's public API.
         global _last_perf_summary
         _last_perf_summary = profiler.summary()
+        # Phase 2A: attach the module-level import timing captured once at
+        # process start. Not per-run (imports only happen once per Python
+        # process, not once per run_query() call), but embedding it here
+        # means every run's __perf__ output carries it for visibility.
+        _last_perf_summary["python_imports_ms"] = round(_IMPORTS_ELAPSED_MS, 1)
         profiler.print_report(
             query=query,
             city=city,
@@ -442,7 +474,16 @@ async def verify_business(*, website: str = "", instagram: str = "", headless: b
 
             if result["website_ok"]:
                 crawler = SiteCrawler(config, browser)
-                result["website_data"] = await crawler.crawl(website)
+                try:
+                    result["website_data"] = await crawler.crawl(website)
+                except Exception as e:
+                    # The reachability probe above already succeeded (the
+                    # page loaded), so website_ok stays True — this is an
+                    # extraction failure, not a dead site. Website crawling
+                    # and Instagram intelligence are independent
+                    # responsibilities; a crash here must not prevent the
+                    # Instagram check below from running.
+                    log.debug(f"[verify] website crawl failed after reachability check succeeded: {website} ({e})")
 
         if instagram:
             ig = IGIntelligence(config, browser)

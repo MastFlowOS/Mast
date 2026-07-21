@@ -81,6 +81,47 @@ app.use((err: unknown, req: express.Request, res: express.Response, _next: expre
   res.status(500).json({ code: "internal_error", message });
 });
 
-app.listen(env.PORT, () => {
+const server = app.listen(env.PORT, () => {
   console.log(`[gateway] listening on :${env.PORT} (${env.NODE_ENV})`);
 });
+
+// ── Graceful shutdown ───────────────────────────────────────────────────
+// Railway sends SIGTERM (SIGINT for local Ctrl+C) before killing the
+// container. Without a handler, in-flight HTTP requests (e.g. a
+// discover.ts pool lookup mid-response) are cut off immediately instead of
+// being allowed to finish.
+//
+// http.Server#close() is Node's own graceful-stop primitive: it stops
+// accepting new connections right away but lets already-open requests
+// complete on their own; the close() callback only fires once every
+// in-flight connection has ended. That's bounded here by a hard timeout so
+// a slow/stuck request can't hang shutdown forever — Railway will SIGKILL
+// shortly after SIGTERM regardless, so this just makes sure we exit
+// intentionally first.
+const GRACEFUL_STOP_TIMEOUT_MS = 25_000;
+let shuttingDown = false;
+
+function shutdown(signal: NodeJS.Signals) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[gateway] received ${signal}, starting graceful shutdown (timeout=${GRACEFUL_STOP_TIMEOUT_MS}ms)`);
+
+  const forceExitTimer = setTimeout(() => {
+    console.error(`[gateway] graceful shutdown exceeded ${GRACEFUL_STOP_TIMEOUT_MS}ms — forcing exit`);
+    process.exit(1);
+  }, GRACEFUL_STOP_TIMEOUT_MS);
+  forceExitTimer.unref();
+
+  server.close((err) => {
+    clearTimeout(forceExitTimer);
+    if (err) {
+      console.error("[gateway] error during graceful shutdown", err);
+      process.exit(1);
+    }
+    console.log("[gateway] all connections closed — exiting");
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

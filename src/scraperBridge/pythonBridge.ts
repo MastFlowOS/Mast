@@ -140,6 +140,53 @@ function killProcessTree(child: ReturnType<typeof spawn>) {
   }
 }
 
+/** Grace period given to the child after SIGTERM before we escalate to
+ * SIGKILL — long enough for run_query()'s cleanup (browser shutdown,
+ * profiler report) to finish; short enough not to noticeably delay the
+ * next spawn. */
+const GRACEFUL_SHUTDOWN_MS = 3000;
+
+/**
+ * BUG FIX (missing profiler report): like killProcessTree, but gives the
+ * child a chance to shut down on its own first. This matters specifically
+ * for the "consumer stopped iterating early" case in runEngineQuery's
+ * cleanup below — that path fires on nearly every successful run (callers
+ * deliberately ask the engine for more leads than they need and break out
+ * once satisfied), so the engine isn't misbehaving there, it's still
+ * mid-cleanup. An immediate SIGKILL never gave it a chance to reach
+ * run_query()'s `finally` in Python (store close, profiler report,
+ * __done__ sentinel) — service.py now installs a SIGTERM handler that
+ * cancels the run gracefully so that cleanup can still complete. Genuine
+ * failure/abort paths (user cancellation, stuck subprocess) keep using the
+ * immediate killProcessTree above, unchanged.
+ */
+async function gracefulKillProcessTree(child: ReturnType<typeof spawn>, graceMs = GRACEFUL_SHUTDOWN_MS) {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform === "win32") {
+    // No SIGTERM-equivalent process-tree signal on Windows.
+    killProcessTree(child);
+    return;
+  }
+
+  const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch (err) {
+    killProcessTree(child);
+    return;
+  }
+
+  const timedOut = await Promise.race([
+    exited.then(() => false),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(true), graceMs)),
+  ]);
+
+  if (timedOut && child.exitCode === null && child.signalCode === null) {
+    console.log(`[scraper-bridge] PID ${child.pid} did not exit within ${graceMs}ms of SIGTERM — sending SIGKILL`);
+    killProcessTree(child);
+  }
+}
+
 /**
  * One-shot (non-streaming) call to `python service.py verify` — re-checks a
  * single already-known business's website/instagram directly, no Maps
@@ -319,7 +366,7 @@ export async function* runEngineQuery(
     signal?.removeEventListener("abort", onAbort);
     if (child.exitCode === null && child.signalCode === null) {
       console.log(`[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid}`);
-      killProcessTree(child);
+      await gracefulKillProcessTree(child);
     }
   }
 

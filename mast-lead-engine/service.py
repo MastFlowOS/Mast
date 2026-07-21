@@ -47,6 +47,7 @@ _IMPORTS_START_TS = _time.perf_counter()
 
 import asyncio
 import json
+import signal
 import sys
 import time
 from typing import Any, AsyncIterator
@@ -505,8 +506,53 @@ async def _verify_cli() -> None:
     sys.stdout.flush()
 
 
+async def _run_with_graceful_shutdown(coro_fn) -> None:
+    """
+    BUG FIX (missing profiler report): the Node bridge (pythonBridge.ts /
+    runEngineQuery) deliberately asks this process for more leads than it
+    needs (`askFor`) and breaks out of its consuming loop as soon as its own
+    target is met — that is the NORMAL way almost every run ends, not an
+    error case. When it stops consuming early, its cleanup path now sends
+    SIGTERM (see pythonBridge.ts gracefulKillProcessTree), falling back to
+    SIGKILL only if this process doesn't exit on its own within a grace
+    period.
+
+    Without a handler, SIGTERM's default OS action terminates the
+    interpreter immediately — same as SIGKILL — so run_query()'s outer
+    `finally` (store.close(), profiler.print_report(), the __done__
+    sentinel) never runs. That's the actual root cause of the missing
+    profiler report: it's not that print_report() has a bug, it's that the
+    process is being killed before Python ever gets to run it.
+
+    The fix here just cancels the running task on SIGTERM instead of doing
+    nothing: cancellation raises CancelledError at the task's current await
+    point, which unwinds the stack through run_query()'s existing
+    try/finally chain exactly like any other exception — so its cleanup
+    (including the profiler report) still runs before the process exits.
+    """
+    task = asyncio.ensure_future(coro_fn())
+
+    def _on_sigterm() -> None:
+        log.warning(
+            "[service] received SIGTERM — cancelling run for graceful "
+            "shutdown so cleanup (profiler report) can still finish"
+        )
+        task.cancel()
+
+    if sys.platform != "win32":
+        # add_signal_handler needs a running loop and isn't supported on
+        # Windows' default event loop; on Windows the process falls back to
+        # the pre-existing (immediate) shutdown behavior.
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, _on_sigterm)
+
+    try:
+        await task
+    except asyncio.CancelledError:
+        log.info("[service] exited after graceful SIGTERM shutdown")
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "verify":
-        asyncio.run(_verify_cli())
+        asyncio.run(_run_with_graceful_shutdown(_verify_cli))
     else:
-        asyncio.run(_main_cli())
+        asyncio.run(_run_with_graceful_shutdown(_main_cli))

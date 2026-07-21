@@ -70,6 +70,7 @@ from utils.parsing import (
 )
 from utils.runtime import get_logger, ScraperConfig, RunStats
 from utils.perf import NullProfiler
+from utils.pipeline_trace import PipelineTracer
 
 log = get_logger("pipeline")
 
@@ -158,6 +159,14 @@ class Lead:
     # the check).
     website_is_weak: bool = False
 
+    # ── Phase S1 — pipeline accounting (tracing only) ─────────────────────
+    # Temporary identifier minted by PipelineTracer the moment MapsScraper
+    # yielded this business. Travels with the lead across the process
+    # boundary (in to_dict()'s output) purely so the Node side can continue
+    # the same trace — it is never treated as a real business field and is
+    # never used for dedup, scoring, or any other decision.
+    pipeline_id: str = ""
+
     # ── Scoring (applied after all enrichment) ────────────────────────────────
     score: int = 0
     quality: str = "COLD"
@@ -215,6 +224,7 @@ class Lead:
             "load_time_ms": self.load_time_ms,
             "field_provenance": self.field_provenance,
             "website_is_weak": self.website_is_weak,
+            "_pipeline_id": self.pipeline_id,
             "score": self.score,
             "quality": self.quality,
             "tier": self.tier,
@@ -240,6 +250,7 @@ class EnrichmentPipeline:
         store: LeadStore | None = None,
         stats: RunStats | None = None,
         profiler=None,
+        tracer: PipelineTracer | None = None,
     ) -> None:
         self.config = config
         self._site_crawler = SiteCrawler(config, browser, profiler=profiler)
@@ -247,6 +258,12 @@ class EnrichmentPipeline:
         self._store = store or LeadStore()
         self._stats = stats or RunStats()
         self._profiler = profiler or NullProfiler()
+        # Phase S1: falls back to a fresh, private tracer if the caller
+        # doesn't supply one (e.g. main.py's CLI path) so process() never
+        # has to special-case "no tracer" — it just won't be shared with
+        # anything outside this pipeline instance, which is fine since
+        # nothing else needs it in that case.
+        self._tracer = tracer or PipelineTracer()
 
     async def process(
         self,
@@ -285,6 +302,17 @@ class EnrichmentPipeline:
         name = raw.name or "<unnamed>"
         log.info(f"[trace] {name!r} ↓ discovered (yielded from Maps)")
 
+        # Phase S1: pick up the pipeline id minted at discovery time (set by
+        # service.py's discovery_worker, immediately after MapsScraper
+        # yielded this business). Callers that don't pre-mint one (e.g.
+        # main.py's simpler CLI loop) get one minted here instead, so
+        # process() always has an id to trace against either way.
+        pid = raw.extra.get("_pipeline_id")
+        if not pid:
+            pid = self._tracer.discover(name)
+            raw.extra["_pipeline_id"] = pid
+        self._tracer.transition(pid, "ENRICHMENT_STARTED")
+
         # Phase 2: begin per-business timing
         self._profiler.begin_business(name)
 
@@ -296,6 +324,7 @@ class EnrichmentPipeline:
                 log.info(f"[trace] {name!r} ↓ REJECTED — chain business (keyword match)")
                 self._profiler.record_rejection("chain_business", self._profiler.elapsed_since_business_start_ms())
                 self._profiler.end_business("rejected:chain_business")
+                self._tracer.reject(pid, "chain_business")
                 return None
 
             if is_cannabis(raw_dict):
@@ -303,6 +332,7 @@ class EnrichmentPipeline:
                 log.info(f"[trace] {name!r} ↓ REJECTED — cannabis business (keyword match)")
                 self._profiler.record_rejection("cannabis_business", self._profiler.elapsed_since_business_start_ms())
                 self._profiler.end_business("rejected:cannabis_business")
+                self._tracer.reject(pid, "cannabis_business")
                 return None
 
             if raw.reviews > hard_max_rev:
@@ -313,6 +343,7 @@ class EnrichmentPipeline:
                 )
                 self._profiler.record_rejection(f"reviews>{hard_max_rev}_hard_cap", self._profiler.elapsed_since_business_start_ms())
                 self._profiler.end_business(f"rejected:reviews>{hard_max_rev}_hard_cap")
+                self._tracer.reject(pid, f"reviews>{hard_max_rev}_hard_cap")
                 return None
 
             if raw.closed:
@@ -320,6 +351,7 @@ class EnrichmentPipeline:
                 log.info(f"[trace] {name!r} ↓ REJECTED — marked permanently closed on Maps")
                 self._profiler.record_rejection("permanently_closed", self._profiler.elapsed_since_business_start_ms())
                 self._profiler.end_business("rejected:permanently_closed")
+                self._tracer.reject(pid, "permanently_closed")
                 return None
 
         # ── Dedup check (fast, in-memory) ────────────────────────────────────
@@ -330,6 +362,7 @@ class EnrichmentPipeline:
             log.info(f"[trace] {name!r} ↓ REJECTED — duplicate (matched existing fingerprint {matched!r})")
             self._profiler.record_rejection("duplicate", self._profiler.elapsed_since_business_start_ms())
             self._profiler.end_business("rejected:duplicate")
+            self._tracer.reject(pid, "duplicate")
             return None
 
         log.info(f"[trace] {name!r} ↓ PASSED pre-flight + duplicate check — entering enrichment")
@@ -384,6 +417,8 @@ class EnrichmentPipeline:
         # ── Merge all data into a Lead ─────────────────────────────────────────
         with self._profiler.timer("merge"):
             lead = self._merge(raw, site_data, ig_data_from_map, ig_data_from_site)
+        lead.pipeline_id = pid
+        self._tracer.transition(pid, "ENRICHMENT_COMPLETED")
 
         log.info(
             f"[trace] {name!r} ↓ PASSED enrichment "
@@ -409,6 +444,7 @@ class EnrichmentPipeline:
             )
             self._profiler.record_rejection(f"ig_followers>{hard_max_ig}_hard_cap", self._profiler.elapsed_since_business_start_ms())
             self._profiler.end_business(f"rejected:ig_followers>{hard_max_ig}_hard_cap")
+            self._tracer.reject(pid, f"ig_followers>{hard_max_ig}_hard_cap")
             return None
 
         # ── Additional IG-based dedup (now that we have the IG handle) ────────
@@ -423,6 +459,7 @@ class EnrichmentPipeline:
                 )
                 self._profiler.record_rejection("duplicate_post_enrichment", self._profiler.elapsed_since_business_start_ms())
                 self._profiler.end_business("rejected:duplicate_post_enrichment")
+                self._tracer.reject(pid, "duplicate_post_enrichment")
                 return None
 
         log.info(f"[trace] {name!r} ↓ PASSED duplicate check")
@@ -452,6 +489,7 @@ class EnrichmentPipeline:
                 )
                 self._profiler.record_rejection(f"viability:{reason}", self._profiler.elapsed_since_business_start_ms())
                 self._profiler.end_business(f"rejected:viability:{reason}")
+                self._tracer.reject(pid, f"viability:{reason}")
                 return None
 
         log.info(f"[trace] {name!r} ↓ PASSED validation (outreach viability)")

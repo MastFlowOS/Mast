@@ -1,11 +1,12 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { runEngineQuery } from "../scraperBridge/pythonBridge.js";
-import { deliverLead } from "../scraperBridge/deliverLead.js";
+import { deliverLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
 import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
 import type { CountryInfo } from "../lib/geo/countries.js";
+import { PipelineTracer } from "../lib/pipelineTrace.js";
 
 export type DiscoverJobPayload = {
   scrapeJobId: string;
@@ -127,6 +128,16 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
   const countries = resolveCountriesForSelection(payload.region, { currencies: payload.currencies });
   const jobStartedAt = Date.now();
 
+  // Phase S1: one PipelineTracer per job run — lives entirely in memory for
+  // the lifetime of this call, discarded when it returns. Wrapping
+  // everything below in try/finally guarantees tracer.reconcile() prints
+  // no matter how this function ends: normal completion, cancellation,
+  // plan-limit abort, search exhaustion, or an uncaught exception
+  // propagating out (in which case the exception still propagates exactly
+  // as before — this only adds a diagnostic print before it does).
+  const tracer = new PipelineTracer();
+  try {
+
   if (countries.length === 0) {
     console.error(`[discoverJob] no countries resolved for region=${JSON.stringify(payload.region)} — nothing to search`);
     await supabaseAdmin.from("scrape_jobs").update({
@@ -175,8 +186,11 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
         // share, but never so small that we pay a full browser startup for
         // a single lead — and never more than what's still actually needed.
         const streamTarget = Math.min(remaining, Math.max(chunk, STREAM_BATCH_FLOOR));
-        // Same over-ask rationale as before: channel filtering/validation
-        // below discards a fraction of what streams back.
+        // Over-ask so channel filtering/validation losses don't stop the
+        // stream short of `remaining`. askFor is the raw SCAN BUDGET for
+        // the Python subprocess; it is intentionally larger than remaining.
+        // Python terminates naturally once it has delivered `remaining`
+        // qualified leads (via the separate deliver_target param below).
         const askFor = Math.max(streamTarget * 4, streamTarget);
 
         let citySearchExhausted = false;
@@ -189,7 +203,8 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
             country: country.code,
             niche: singleNiche,
             region: payload.region,
-            max_results: askFor,
+            max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
+            deliver_target: remaining,  // qualified-lead target — Python stops here naturally
             db_path: `data/leads-${payload.userId}.db`,
           },
           abortController.signal,
@@ -203,86 +218,124 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
         )) {
           engineYielded += 1;
           const leadName = JSON.stringify(lead.name);
+          const pid = tracer.receive(lead._pipeline_id, lead.name);
           console.log(`[discoverJob] [trace] ${leadName} \u2193 received from engine (city=${city})`);
 
-          if (!channelsSatisfied(lead, payload.channels)) {
-            recordRejection(`failed channel requirement (needed ${JSON.stringify(payload.channels)})`);
-            console.log(
-              `[discoverJob] [trace] ${leadName} \u2193 REJECTED — failed channel filter ` +
-                `(requested=${JSON.stringify(payload.channels)} ` +
-                `has={email:${!!lead.email},phone:${!!lead.phone},instagram:${!!lead.instagram},website:${!!lead.website}})`,
-            );
-            continue; // doesn't satisfy every requested channel — not counted, keep streaming
-          }
-          console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED channel filter`);
+          try {
+            if (!channelsSatisfied(lead, payload.channels)) {
+              recordRejection(`failed channel requirement (needed ${JSON.stringify(payload.channels)})`);
+              tracer.reject(pid, `channel_filter:${JSON.stringify(payload.channels)}`);
+              console.log(
+                `[discoverJob] [trace] ${leadName} \u2193 REJECTED — failed channel filter ` +
+                  `(requested=${JSON.stringify(payload.channels)} ` +
+                  `has={email:${!!lead.email},phone:${!!lead.phone},instagram:${!!lead.instagram},website:${!!lead.website}})`,
+              );
+              continue; // doesn't satisfy every requested channel — not counted, keep streaming
+            }
+            console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED channel filter`);
 
-          const validation = validateLead(lead);
-          if (!validation.valid) {
-            recordRejection(`validation failed: ${validation.reason}`);
-            console.log(`[discoverJob] [trace] ${leadName} \u2193 REJECTED — validation failed reason=${validation.reason}`);
-            continue;
-          }
-          console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED validation`);
+            const validation = validateLead(lead);
+            if (!validation.valid) {
+              recordRejection(`validation failed: ${validation.reason}`);
+              tracer.reject(pid, `validation:${validation.reason}`);
+              console.log(`[discoverJob] [trace] ${leadName} \u2193 REJECTED — validation failed reason=${validation.reason}`);
+              continue;
+            }
+            console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED validation`);
 
-          const result = await deliverLead(
-            lead,
-            {
-              userId: payload.userId,
-              professionSlug: payload.professionSlug,
-              discoveryMode: "live",
-              scrapeJobId: payload.scrapeJobId,
-              dailyLimit: payload.dailyLimit,
-              monthlyLimit: payload.monthlyLimit,
-            },
-            payload.region,
-          );
+            tracer.transition(pid, "DATABASE_INSERT_STARTED");
+            let result: DeliveryResult;
+            try {
+              result = await deliverLead(
+                lead,
+                {
+                  userId: payload.userId,
+                  professionSlug: payload.professionSlug,
+                  discoveryMode: "live",
+                  scrapeJobId: payload.scrapeJobId,
+                  dailyLimit: payload.dailyLimit,
+                  monthlyLimit: payload.monthlyLimit,
+                },
+                payload.region,
+              );
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              tracer.fail(pid, `deliverLead threw: ${message}`);
+              console.error(`[discoverJob] [trace] ${leadName} \u2193 FAILED — deliverLead threw: ${message}`);
+              throw err; // preserve existing behavior exactly — propagate, job still fails as before
+            } finally {
+              // Phase S1: by the time this finally runs, this pipeline id's
+              // fate for the database-insert stage is already settled —
+              // either FAILED (catch above, about to rethrow) or `result`
+              // was assigned and the classification below records REJECTED
+              // or DELIVERED. deliverLead() can never leave it open.
+            }
 
-          if (result.limitReached) {
-            recordRejection("daily/monthly plan limit reached");
-            console.log(
-              `[discoverJob] [trace] ${leadName} \u2193 REJECTED — plan limit reached ` +
-                `(dailyLimit=${payload.dailyLimit} monthlyLimit=${payload.monthlyLimit})`,
-            );
-          } else if (!result.wasNewForUser) {
-            alreadyOwnedByUser += 1;
-            recordRejection("duplicate (already delivered to this user)");
-            console.log(`[discoverJob] [trace] ${leadName} \u2193 REJECTED — duplicate, user already has businessId=${result.businessId}`);
-          } else {
-            insertedCount += 1;
-            console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED delivery — inserted businessId=${result.businessId}`);
-          }
+            if (result.limitReached) {
+              recordRejection("daily/monthly plan limit reached");
+              tracer.reject(pid, "plan_limit_reached");
+              console.log(
+                `[discoverJob] [trace] ${leadName} \u2193 REJECTED — plan limit reached ` +
+                  `(dailyLimit=${payload.dailyLimit} monthlyLimit=${payload.monthlyLimit})`,
+              );
+            } else if (!result.wasNewForUser) {
+              alreadyOwnedByUser += 1;
+              recordRejection("duplicate (already delivered to this user)");
+              tracer.reject(pid, "duplicate_already_owned_by_user");
+              console.log(`[discoverJob] [trace] ${leadName} \u2193 REJECTED — duplicate, user already has businessId=${result.businessId}`);
+            } else {
+              insertedCount += 1;
+              tracer.transition(pid, "DATABASE_INSERTED");
+              tracer.deliver(pid);
+              console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED delivery — inserted businessId=${result.businessId}`);
+            }
 
-          if (result.wasNewForUser) {
-            delivered += 1;
-            newForUser += 1;
-            deliveredThisChunk += 1;
-          }
+            if (result.wasNewForUser) {
+              delivered += 1;
+              newForUser += 1;
+              deliveredThisChunk += 1;
+            }
 
-          // ── Per-lead cancellation check ────────────────────────────────────
-          // The user may have cancelled mid-run; abort cleanly without marking
-          // the job failed — it simply stops delivering and closes as cancelled.
-          const { data: jobRow } = await supabaseAdmin.from("scrape_jobs")
-            .select("status").eq("id", payload.scrapeJobId).maybeSingle();
-          if (jobRow?.status === "cancelled") {
-            console.log(`[discoverJob] user=${payload.userId} cancelled mid-run — aborting`);
-            abortController.abort();
-            break outer;
-          }
+            // ── Per-lead cancellation check ────────────────────────────────────
+            // The user may have cancelled mid-run; abort cleanly without marking
+            // the job failed — it simply stops delivering and closes as cancelled.
+            const { data: jobRow } = await supabaseAdmin.from("scrape_jobs")
+              .select("status").eq("id", payload.scrapeJobId).maybeSingle();
+            if (jobRow?.status === "cancelled") {
+              console.log(`[discoverJob] user=${payload.userId} cancelled mid-run — aborting`);
+              abortController.abort();
+              break outer;
+            }
 
-          await supabaseAdmin.from("scrape_jobs")
-            .update({ results_count: newForUser, status: "streaming" })
-            .eq("id", payload.scrapeJobId)
-            .not("status", "eq", "cancelled");
+            await supabaseAdmin.from("scrape_jobs")
+              .update({ results_count: newForUser, status: "streaming" })
+              .eq("id", payload.scrapeJobId)
+              .not("status", "eq", "cancelled");
 
-          if (result.limitReached) {
-            console.log(`[discoverJob] user=${payload.userId} hit their plan limit mid-run — stopping early`);
-            sawLimitReached = true;
-            abortController.abort();
-            break outer;
-          }
+            if (result.limitReached) {
+              console.log(`[discoverJob] user=${payload.userId} hit their plan limit mid-run — stopping early`);
+              sawLimitReached = true;
+              abortController.abort();
+              break outer;
+            }
 
-          if (delivered >= payload.quantity || deliveredThisChunk >= streamTarget) {
-            break; // this process has delivered its streaming batch (or the whole request is done) — move on
+            if (delivered >= payload.quantity || deliveredThisChunk >= streamTarget) {
+              break; // this process has delivered its streaming batch (or the whole request is done) — move on
+            }
+          } catch (err) {
+            // Phase S1 safety net: catches anything NOT already handled above
+            // (e.g. channelsSatisfied()/validateLead() throwing unexpectedly,
+            // or the scrape_jobs status read/update failing) so this
+            // pipeline id is never left open even for a genuinely
+            // unforeseen error. If deliverLead's own catch above already
+            // closed it out as FAILED, tracer.fail() here is a safe no-op
+            // (see PipelineTracer._close — first outcome wins, logged, not
+            // silently overwritten). Does not change what happens to the
+            // job: same exception, same propagation, same eventual
+            // 'failed' scrape_jobs status via runJob().
+            const message = err instanceof Error ? err.message : String(err);
+            tracer.fail(pid, `unhandled error while processing lead: ${message}`);
+            throw err;
           }
         }
 
@@ -373,5 +426,16 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
         `business was already in this user's CRM (leads table) from a previous run — this is expected on ` +
         `repeat runs against the same user/region/niche, not a bug by itself.`,
     );
+  }
+  } finally {
+    // Phase S1: runs on every exit from this function — normal completion,
+    // the early "no countries" return, a cancellation/limit-reached abort,
+    // search exhaustion, or an uncaught exception propagating out. Sweep
+    // first so any business still mid-flight at that moment (e.g. one
+    // whose deliverLead() call was in progress when a sibling lead's
+    // cancellation check fired `break outer`) gets an explicit terminal
+    // outcome instead of silently falling out of the report.
+    tracer.sweepIncomplete("job_ended_before_business_finished");
+    console.log(`[discoverJob] pipeline reconciliation:\n${tracer.reconcile()}`);
   }
 }

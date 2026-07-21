@@ -1,11 +1,12 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { runEngineQuery } from "../scraperBridge/pythonBridge.js";
-import { deliverLead } from "../scraperBridge/deliverLead.js";
+import { deliverLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
 import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
 import type { CountryInfo } from "../lib/geo/countries.js";
+import { PipelineTracer } from "../lib/pipelineTrace.js";
 
 export type PoolExpandFollowUp = {
   userId: string;
@@ -83,37 +84,48 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   const countries = resolveCountriesForSelection(payload.region, { currencies: payload.currencies });
   const jobStartedAt = Date.now();
 
+  // Phase S1: one PipelineTracer per job run — lives entirely in memory for
+  // the lifetime of this call, discarded when it returns. The try/finally
+  // below (which now wraps the entire function body, not just the main
+  // search loop) guarantees tracer.reconcile() prints no matter how this
+  // function ends: normal completion, the early "no countries" return,
+  // cancellation, plan-limit abort, search exhaustion, or an uncaught
+  // exception propagating out (which still propagates exactly as before —
+  // this only adds a diagnostic print, and for followUp runs the existing
+  // "mark scrape_jobs failed" behavior in the catch below, before it does).
+  const tracer = new PipelineTracer();
+
   let delivered = 0; // total businesses newly added to the pool (all niches)
   let newForUser = 0; // of those, how many were credited/delivered to followUp.userId
 
-  if (followUp) {
-    await supabaseAdmin.from("scrape_jobs")
-      .update({ status: "streaming" })
-      .eq("id", followUp.scrapeJobId)
-      .not("status", "eq", "cancelled");
-  }
-
-  if (countries.length === 0) {
-    console.error(`[poolExpandJob] no countries resolved for region=${JSON.stringify(payload.region)} — nothing to search`);
-    if (followUp) {
-      await supabaseAdmin.from("scrape_jobs").update({
-        status: "completed_partial",
-        completed_at: new Date().toISOString(),
-        job_summary: { requested: payload.shortfall, delivered: 0, shortfall: payload.shortfall, completion_reason: "no_countries", runtime_ms: 0 },
-      }).eq("id", followUp.scrapeJobId);
-    }
-    return;
-  }
-
-  const abortController = new AbortController();
-  // The target this run is actually trying to satisfy: for a followUp,
-  // that's "give this user `shortfall` more NEW deliveries"; for a bare
-  // pool-growth run (no followUp), it's "add `shortfall` more businesses
-  // to the pool" — there's no per-user channel filter to apply in that
-  // case, so every delivered (deduped) business counts.
-  const target = payload.shortfall;
-
   try {
+    if (followUp) {
+      await supabaseAdmin.from("scrape_jobs")
+        .update({ status: "streaming" })
+        .eq("id", followUp.scrapeJobId)
+        .not("status", "eq", "cancelled");
+    }
+
+    if (countries.length === 0) {
+      console.error(`[poolExpandJob] no countries resolved for region=${JSON.stringify(payload.region)} — nothing to search`);
+      if (followUp) {
+        await supabaseAdmin.from("scrape_jobs").update({
+          status: "completed_partial",
+          completed_at: new Date().toISOString(),
+          job_summary: { requested: payload.shortfall, delivered: 0, shortfall: payload.shortfall, completion_reason: "no_countries", runtime_ms: 0 },
+        }).eq("id", followUp.scrapeJobId);
+      }
+      return;
+    }
+
+    const abortController = new AbortController();
+    // The target this run is actually trying to satisfy: for a followUp,
+    // that's "give this user `shortfall` more NEW deliveries"; for a bare
+    // pool-growth run (no followUp), it's "add `shortfall` more businesses
+    // to the pool" — there's no per-user channel filter to apply in that
+    // case, so every delivered (deduped) business counts.
+    const target = payload.shortfall;
+
     const stillNeededNow = () => (followUp ? payload.shortfall - newForUser : payload.shortfall - delivered);
 
     outer: for (const singleNiche of niches) {
@@ -142,7 +154,8 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               country: country.code,
               niche: singleNiche,
               region: payload.region,
-              max_results: askFor,
+              max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
+              deliver_target: remaining,  // qualified-lead target — Python stops here naturally
               db_path: `data/leads-pool-expand.db`,
             },
             abortController.signal,
@@ -150,64 +163,108 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               citySearchExhausted = info.exhausted;
             },
           )) {
-            if (followUp && !channelsSatisfied(lead, followUp.channels)) {
-              continue; // doesn't satisfy every requested channel for the waiting user — not counted
-            }
+            const pid = tracer.receive(lead._pipeline_id, lead.name);
 
-            const validation = validateLead(lead);
-            if (!validation.valid) {
-              console.log(`[poolExpandJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
-              continue;
-            }
+            try {
+              if (followUp && !channelsSatisfied(lead, followUp.channels)) {
+                tracer.reject(pid, `channel_filter:${JSON.stringify(followUp.channels)}`);
+                continue; // doesn't satisfy every requested channel for the waiting user — not counted
+              }
 
-            const result = await deliverLead(
-              lead,
-              {
-                userId: followUp?.userId ?? null,
-                professionSlug: followUp?.professionSlug ?? null,
-                discoveryMode: followUp?.rank ? "instant_pool_ranked" : "instant_pool",
-                scrapeJobId: followUp?.scrapeJobId ?? "",
-                dailyLimit: followUp?.dailyLimit,
-                monthlyLimit: followUp?.monthlyLimit,
-              },
-              payload.region,
-            );
+              const validation = validateLead(lead);
+              if (!validation.valid) {
+                console.log(`[poolExpandJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
+                tracer.reject(pid, `validation:${validation.reason}`);
+                continue;
+              }
 
-            delivered += 1;
-            deliveredThisChunk += 1;
-            if (result.wasNewForUser) newForUser += 1;
+              tracer.transition(pid, "DATABASE_INSERT_STARTED");
+              let result: DeliveryResult;
+              try {
+                result = await deliverLead(
+                  lead,
+                  {
+                    userId: followUp?.userId ?? null,
+                    professionSlug: followUp?.professionSlug ?? null,
+                    discoveryMode: followUp?.rank ? "instant_pool_ranked" : "instant_pool",
+                    scrapeJobId: followUp?.scrapeJobId ?? "",
+                    dailyLimit: followUp?.dailyLimit,
+                    monthlyLimit: followUp?.monthlyLimit,
+                  },
+                  payload.region,
+                );
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                tracer.fail(pid, `deliverLead threw: ${message}`);
+                console.error(`[poolExpandJob] [trace] ${JSON.stringify(lead.name)} \u2193 FAILED — deliverLead threw: ${message}`);
+                throw err; // preserve existing behavior exactly — propagate, job still fails as before
+              } finally {
+                // Phase S1: by the time this finally runs, this pipeline id's
+                // fate for the database-insert stage is already settled —
+                // either FAILED (catch above, about to rethrow) or `result`
+                // was assigned and is delivered below. deliverLead() can
+                // never leave it open.
+              }
 
-            if (followUp) {
-              // Guard: if the job was cancelled while we were running, stop.
-              const { data: jobStatus } = await supabaseAdmin.from("scrape_jobs")
-                .select("status").eq("id", followUp.scrapeJobId).maybeSingle();
-              if (jobStatus?.status === "cancelled") {
+              // This file's own semantics (unchanged): a business is
+              // considered added to the pool the moment deliverLead()
+              // resolves without throwing, regardless of whether THIS
+              // followUp user specifically got a new CRM row for it — so
+              // that is exactly what DELIVERED tracks here too.
+              tracer.transition(pid, "DATABASE_INSERTED");
+              tracer.deliver(pid);
+
+              delivered += 1;
+              deliveredThisChunk += 1;
+              if (result.wasNewForUser) newForUser += 1;
+
+              if (followUp) {
+                // Guard: if the job was cancelled while we were running, stop.
+                const { data: jobStatus } = await supabaseAdmin.from("scrape_jobs")
+                  .select("status").eq("id", followUp.scrapeJobId).maybeSingle();
+                if (jobStatus?.status === "cancelled") {
+                  abortController.abort();
+                  break outer;
+                }
+
+                await supabaseAdmin.from("scrape_jobs")
+                  .update({ results_count: newForUser })
+                  .eq("id", followUp.scrapeJobId)
+                  .not("status", "eq", "cancelled");
+
+                if (result.limitReached) {
+                  console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
+                  abortController.abort();
+                  break outer;
+                }
+
+                if (newForUser >= payload.shortfall) {
+                  abortController.abort();
+                  break outer;
+                }
+              } else if (delivered >= payload.shortfall) {
                 abortController.abort();
                 break outer;
               }
 
-              await supabaseAdmin.from("scrape_jobs")
-                .update({ results_count: newForUser })
-                .eq("id", followUp.scrapeJobId)
-                .not("status", "eq", "cancelled");
-
-              if (result.limitReached) {
-                console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
-                abortController.abort();
-                break outer;
+              if (deliveredThisChunk >= streamTarget) {
+                break; // this process has delivered its streaming batch for this round — move on
               }
-
-              if (newForUser >= payload.shortfall) {
-                abortController.abort();
-                break outer;
-              }
-            } else if (delivered >= payload.shortfall) {
-              abortController.abort();
-              break outer;
-            }
-
-            if (deliveredThisChunk >= streamTarget) {
-              break; // this process has delivered its streaming batch for this round — move on
+            } catch (err) {
+              // Phase S1 safety net: catches anything NOT already handled
+              // above (e.g. channelsSatisfied()/validateLead() throwing
+              // unexpectedly, or the scrape_jobs status read/update
+              // failing) so this pipeline id is never left open even for a
+              // genuinely unforeseen error. If deliverLead's own catch
+              // above already closed it out as FAILED, tracer.fail() here
+              // is a safe no-op (first outcome wins, logged, not silently
+              // overwritten). Does not change what happens to the job: the
+              // existing outer catch (below, at the function level) still
+              // marks a followUp job 'failed' and rethrows exactly as
+              // before.
+              const message = err instanceof Error ? err.message : String(err);
+              tracer.fail(pid, `unhandled error while processing lead: ${message}`);
+              throw err;
             }
           }
 
@@ -260,6 +317,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         .not("status", "eq", "cancelled"); // preserve cancellation even on error
     }
     throw err;
+  } finally {
+    // Phase S1: runs on every exit from this function — normal completion,
+    // the early "no countries" return, a cancellation/limit-reached abort,
+    // search exhaustion, or an uncaught exception propagating out (the
+    // catch above still runs first and still rethrows, unchanged — this
+    // only adds a diagnostic print before it does). Sweep first so any
+    // business still mid-flight at that exact moment gets an explicit
+    // terminal outcome instead of silently falling out of the report.
+    tracer.sweepIncomplete("job_ended_before_business_finished");
+    console.log(`[poolExpandJob] pipeline reconciliation:\n${tracer.reconcile()}`);
   }
 
   console.log(

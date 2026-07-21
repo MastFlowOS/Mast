@@ -61,6 +61,7 @@ from storage.dedup import LeadStore, fingerprints_for
 from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
 from utils.lifecycle_tracker import log_milestone
 from utils.perf import RunProfiler, NullProfiler
+from utils.pipeline_trace import PipelineTracer
 
 _IMPORTS_DONE_TS = _time.perf_counter()
 _IMPORTS_ELAPSED_MS = (_IMPORTS_DONE_TS - _IMPORTS_START_TS) * 1000.0
@@ -81,6 +82,7 @@ async def run_query(
     niche: str = "",
     region: str = "",
     max_results: int = 60,
+    deliver_target: int | None = None,
     max_ig_followers: int = 5000,
     max_reviews: int = 500,
     min_score: int = 0,
@@ -118,6 +120,18 @@ async def run_query(
     profiler.mark("python_imports_done")  # see _IMPORTS_ELAPSED_MS below
     store = LeadStore(db_path, profiler=profiler)
 
+    # Phase S1: one PipelineTracer per run_query() call — lives entirely in
+    # memory for the duration of this single engine run, discarded when
+    # this generator returns. See utils/pipeline_trace.py.
+    tracer = PipelineTracer()
+
+    # _deliver_target is the number of qualified leads to yield before
+    # declaring ourselves done.  It is always <= max_results (the raw
+    # scan budget given to MapsScraper.search).  When the caller passes
+    # deliver_target explicitly, we stop at that number; otherwise we
+    # fall back to max_results for backward compatibility.
+    _deliver_target: int = deliver_target if deliver_target is not None else max_results
+
     delivered = 0
     _last_lead_time: float | None = None   # for inter-lead gap tracking
     log_milestone("Before run_query discovery starts")
@@ -129,6 +143,7 @@ async def run_query(
                 store=store,
                 stats=stats,
                 profiler=profiler,
+                tracer=tracer,
             )
 
             # ROOT CAUSE fix ("requested quantity is not honored"): this used
@@ -161,16 +176,25 @@ async def run_query(
                     country=country,
                     niche=niche,
                     region=region,
-                    max_results=raw_supply_cap,
+                    max_results=raw_supply_cap,  # scan budget — intentionally large
                 ):
-                    if delivered >= max_results:
+                    # Phase S1: this branch never calls EnrichmentPipeline.process()
+                    # (which is where discovery/rejection used to get counted), so
+                    # every business must be minted + closed out here instead.
+                    pid = tracer.discover(raw_place.name or "<unnamed>")
+                    if delivered >= _deliver_target:  # qualified-lead target
+                        tracer.reject(pid, "target_reached_before_yield")
                         break
                     raw_dict = raw_place.to_dict()
                     if raw_place.closed or is_chain(raw_place.name) or is_cannabis(raw_dict):
+                        tracer.reject(pid, "closed_or_chain_or_cannabis")
                         continue
                     raw_dict["fingerprints"] = sorted(fingerprints_for(raw_dict))
                     raw_dict["is_disqualified"] = False
+                    raw_dict["_pipeline_id"] = pid
                     delivered += 1
+                    tracer.transition(pid, "YIELDED_TO_NODE")
+                    tracer.deliver(pid)
                     yield raw_dict
             else:
                 # Bounded queue for backpressure: at most 10 items can wait in the queue
@@ -199,11 +223,21 @@ async def run_query(
                                 log.info("[discovery] scraper exhausted — no more Maps businesses")
                                 break
                             log.info(f"[discovery] scraper yielded business: {raw_place.name!r}")
-                            if shared_state["delivered"] >= max_results:
+                            # Phase S1: mint the pipeline id right here — this is
+                            # literally "immediately after MapsScraper yields a
+                            # business" for the production (non discovery_only)
+                            # path. Every branch below this point, including the
+                            # "already have enough" discard, now closes out this
+                            # id with a terminal outcome instead of just `break`ing
+                            # or `continue`ing the business out of existence.
+                            pid = tracer.discover(raw_place.name or "<unnamed>")
+                            raw_place.extra["_pipeline_id"] = pid
+                            if shared_state["delivered"] >= _deliver_target:
                                 log.info(
                                     "[discovery] requested quantity already reached "
-                                    f"(delivered={shared_state['delivered']}, max_results={max_results}) — stopping"
+                                    f"(delivered={shared_state['delivered']}, deliver_target={_deliver_target}) — stopping"
                                 )
+                                tracer.reject(pid, "target_reached_before_enqueue")
                                 break
                             # put() blocks automatically if queue is full
                             # (backpressure). Phase 2A / audit §3.5: timed
@@ -214,6 +248,7 @@ async def run_query(
                                 f"[discovery] enqueue -> enrich_queue: {raw_place.name!r} "
                                 f"(queue size before put={enrich_queue.qsize()})"
                             )
+                            tracer.transition(pid, "QUEUED_FOR_ENRICHMENT")
                             with profiler.timer("queue_wait_put"):
                                 await enrich_queue.put(raw_place)
                             log.info(
@@ -251,13 +286,18 @@ async def run_query(
                                 f"[enrichment] dequeue <- enrich_queue: {raw_place.name!r} "
                                 f"(queue size after get={enrich_queue.qsize()})"
                             )
+                            # Phase S1: this is the same id minted by discovery_worker
+                            # when this business was first yielded by MapsScraper —
+                            # it travelled here on raw_place.extra.
+                            pid = raw_place.extra.get("_pipeline_id")
 
                             # Double check if we already have enough before starting slow process
-                            if shared_state["delivered"] >= max_results:
+                            if shared_state["delivered"] >= _deliver_target:
                                 log.info(
                                     f"[enrichment] skipping {raw_place.name!r} — requested quantity "
-                                    f"already reached (delivered={shared_state['delivered']}, max_results={max_results})"
+                                    f"already reached (delivered={shared_state['delivered']}, deliver_target={_deliver_target})"
                                 )
+                                tracer.reject(pid, "target_reached_before_processing")
                                 continue
 
                             log.info(f"[enrichment] processing business — Starting pipeline: {raw_place.name!r}")
@@ -276,10 +316,17 @@ async def run_query(
                                     f"exception in pipeline.process(): {exc!r}",
                                     exc_info=True,
                                 )
+                                # FAILED, not REJECTED: this is an unexpected error, not
+                                # a business-rule decision — pipeline.process() itself
+                                # never got the chance to record any outcome for this id.
+                                tracer.fail(pid, f"unhandled exception in pipeline.process(): {exc!r}")
                                 continue
                             log.info(f"[enrichment] Pipeline finished: {raw_place.name!r}")
 
                             if not lead:
+                                # pipeline.process() already recorded a REJECTED outcome
+                                # (with the precise reason) for every one of its own
+                                # `return None` exits — nothing further to close here.
                                 log.info(f"[enrichment] business rejected: {raw_place.name!r} (pipeline returned no lead)")
                                 continue
 
@@ -295,6 +342,7 @@ async def run_query(
                                     reason=f"score_<_{min_score}",
                                     elapsed_ms=profiler.elapsed_since_business_start_ms(),
                                 )
+                                tracer.reject(pid, f"score_<_{min_score}")
                                 continue
 
                             lead_dict = lead.to_dict()
@@ -304,6 +352,7 @@ async def run_query(
                                 f"[enrichment] enrichment complete — enqueue -> results_queue: {lead.name!r} "
                                 f"(queue size before put={results_queue.qsize()})"
                             )
+                            tracer.transition(pid, "RESULTS_QUEUE")
                             await results_queue.put(lead_dict)
                             log.info(f"[enrichment] business delivered to results_queue: {lead.name!r}")
                     except asyncio.CancelledError:
@@ -324,10 +373,10 @@ async def run_query(
                 log.info("[run_query] enrichment task started")
 
                 try:
-                    while shared_state["delivered"] < max_results:
+                    while shared_state["delivered"] < _deliver_target:
                         log.info(
                             f"[run_query] waiting for results — awaiting results_queue.get() "
-                            f"(delivered={shared_state['delivered']}/{max_results}, "
+                            f"(delivered={shared_state['delivered']}/{_deliver_target}, "
                             f"queue size={results_queue.qsize()})"
                         )
                         lead_dict = await results_queue.get()
@@ -351,11 +400,18 @@ async def run_query(
 
                         shared_state["delivered"] += 1
                         delivered = shared_state["delivered"]
-                        if shared_state["delivered"] >= max_results:
+                        if shared_state["delivered"] >= _deliver_target:
                             log.info(
                                 f"[run_query] requested quantity reached — delivered={shared_state['delivered']} "
-                                f"max_results={max_results}"
+                                f"deliver_target={_deliver_target}"
                             )
+                        # Phase S1: this is the true terminal point for THIS process's
+                        # half of the pipeline — the lead is about to cross the
+                        # process boundary (stdout -> pythonBridge.ts). Everything
+                        # after this is Node's responsibility to trace.
+                        _pid = lead_dict.get("_pipeline_id")
+                        tracer.transition(_pid, "YIELDED_TO_NODE")
+                        tracer.deliver(_pid)
                         yield lead_dict
                 finally:
                     log.info("[run_query] entering cleanup — cancelling discovery/enrichment tasks")
@@ -363,6 +419,14 @@ async def run_query(
                     enrichment_task.cancel()
                     await asyncio.gather(discovery_task, enrichment_task, return_exceptions=True)
                     log.info("[run_query] cleanup finished — discovery/enrichment tasks resolved")
+                    # Phase S1: cancelling the two workers is a legitimate,
+                    # intentional stop (target reached, caller aborted, etc.) —
+                    # but any business still mid-flight inside enrich_queue,
+                    # results_queue, or a cancelled pipeline.process() call at
+                    # that exact moment would otherwise be left with no
+                    # terminal outcome at all. Sweep those explicitly instead
+                    # of letting them show up as unexplained "Missing".
+                    tracer.sweep_incomplete("run_ended_before_business_finished (cancelled/aborted)")
     finally:
         log.info("[run_query] entering outer cleanup (store close, browser shutdown, profiler report)")
         store.close()
@@ -371,6 +435,12 @@ async def run_query(
         log.info(
             "[service] rejection summary:\n" + stats.rejection_summary()
         )
+        # Phase S1: any business not already swept above (e.g. the
+        # discovery_only branch, which has no worker-cancellation step) is
+        # closed out here too, then the full reconciliation — counts plus
+        # any invariant violation — is logged as the last thing this run does.
+        tracer.sweep_incomplete("run_ended_before_business_finished")
+        log.info("[pipeline] reconciliation:\n" + tracer.reconcile())
         # Phase 2: stash profiler summary so _main_cli can embed it in
         # the __done__ sentinel without changing run_query's public API.
         global _last_perf_summary
@@ -384,7 +454,7 @@ async def run_query(
             query=query,
             city=city,
             delivered=delivered,
-            requested=max_results,
+            requested=_deliver_target,  # report the user-facing target, not the scan budget
         )
         log.info("[run_query] outer cleanup finished")
 
@@ -392,12 +462,12 @@ async def run_query(
 async def _main_cli() -> None:
     raw_args = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
     params = json.loads(raw_args)
-    requested = params.get("max_results", 60)
-
-async def _main_cli() -> None:
-    raw_args = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
-    params = json.loads(raw_args)
-    requested = params.get("max_results", 60)
+    # deliver_target is the user-facing qualified-lead count (what the user
+    # actually requested).  max_results is the raw scan budget (how many
+    # Maps places may be scanned to find enough qualified leads after
+    # filtering).  The __done__ sentinel reports `requested=deliver_target`
+    # so the Node bridge's onDone callback sees the true count.
+    requested = params.get("deliver_target") or params.get("max_results", 60)
 
     delivered = 0
     log.info("[main_cli] entering run_query async for loop")

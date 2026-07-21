@@ -100,7 +100,15 @@ async function findExistingBusiness(fingerprints: string[]) {
   return data;
 }
 
-export async function upsertBusinessFromEngineLead(lead: EngineLead, region: string) {
+/**
+ * Phase S1 — pure observability hook. Fires right after the corresponding
+ * database write actually succeeds; never changes what gets written or
+ * whether it's written. Callers that don't care (existing call sites) just
+ * omit it — see src/lib/pipelineTrace.ts for what consumes this.
+ */
+export type DeliveryStage = "BUSINESS_UPSERTED" | "LEAD_INSERTED";
+
+export async function upsertBusinessFromEngineLead(lead: EngineLead, region: string, onStage?: (stage: DeliveryStage) => void) {
   const existing = await findExistingBusiness(lead.fingerprints);
 
   if (existing) {
@@ -134,6 +142,7 @@ export async function upsertBusinessFromEngineLead(lead: EngineLead, region: str
       })
       .eq("id", existing.id);
 
+    onStage?.("BUSINESS_UPSERTED");
     return existing.id as string;
   }
 
@@ -180,6 +189,7 @@ export async function upsertBusinessFromEngineLead(lead: EngineLead, region: str
 
   if (error) throw error;
 
+  onStage?.("BUSINESS_UPSERTED");
   return inserted.id as string;
 }
 
@@ -234,6 +244,7 @@ export async function insertLeadForUser(
   business: PoolBusiness,
   ctx: DeliveryContext,
   extra?: { igFollowers?: string | null; igBio?: string | null; igLastPost?: string | null },
+  onStage?: (stage: DeliveryStage) => void,
 ): Promise<DeliveryResult> {
   if (!ctx.userId) {
     return { businessId: business.id, wasNewForUser: false };
@@ -341,6 +352,7 @@ export async function insertLeadForUser(
     console.error("[deliverLead] failed to seed lead_activities:", activityError.message);
   }
 
+  onStage?.("LEAD_INSERTED");
   return { businessId: business.id, wasNewForUser };
 }
 
@@ -365,8 +377,14 @@ export async function insertLeadForUser(
  * single freshly-discovered business, plus one wasted DB round-trip per
  * delivered lead.
  */
-export async function deliverLead(lead: EngineLead, ctx: DeliveryContext, region: string, businessId?: string): Promise<DeliveryResult> {
-  const resolvedBusinessId = businessId ?? (await upsertBusinessFromEngineLead(lead, region));
+export async function deliverLead(
+  lead: EngineLead,
+  ctx: DeliveryContext,
+  region: string,
+  businessId?: string,
+  onStage?: (stage: DeliveryStage) => void,
+): Promise<DeliveryResult> {
+  const resolvedBusinessId = businessId ?? (await upsertBusinessFromEngineLead(lead, region, onStage));
 
   return insertLeadForUser(
     {
@@ -386,5 +404,6 @@ export async function deliverLead(lead: EngineLead, ctx: DeliveryContext, region
       igBio: lead.ig_bio || null,
       igLastPost: lead.ig_last_post_days != null ? `${lead.ig_last_post_days}d ago` : null,
     },
+    onStage,
   );
 }

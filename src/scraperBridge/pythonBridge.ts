@@ -63,6 +63,15 @@ export type EngineLead = {
   field_provenance?: Record<string, { value: unknown; source: string; method: string }>;
   /** O2 fix — single source of truth for "weak/templated site", computed once by the engine */
   website_is_weak?: boolean;
+  /**
+   * Phase S1 — tracing-only identifier minted by the engine's PipelineTracer
+   * the instant MapsScraper yielded this business (see
+   * mast-lead-engine/utils/pipeline_trace.py). Lets a single business be
+   * traced end-to-end by grepping this id across both the Python engine's
+   * logs and this worker's logs. NOT a business field — never persisted to
+   * a real column, never used for dedup/scoring/any decision.
+   */
+  _pipeline_id?: string;
 
   [key: string]: unknown;
 };
@@ -73,7 +82,21 @@ export type EngineQueryParams = {
   country?: string;
   niche?: string;
   region?: string;
+  /**
+   * Raw scan budget: how many raw Maps places the Python subprocess may
+   * scan before stopping.  Intentionally larger than `deliver_target` to
+   * compensate for enrichment/filter/dedup losses.  Passed to
+   * MapsScraper.search() as its `max_results` cap.
+   */
   max_results?: number;
+  /**
+   * Qualified-lead delivery target: how many enriched, filtered leads the
+   * subprocess should deliver before it terminates naturally.  When
+   * omitted, Python falls back to `max_results` for backward compatibility.
+   * Separating this from `max_results` lets Node pass a generous scan
+   * budget while Python still stops at the right count.
+   */
+  deliver_target?: number;
   max_ig_followers?: number;
   max_reviews?: number;
   min_score?: number;
@@ -335,7 +358,17 @@ export async function* runEngineQuery(
       try {
         parsed = JSON.parse(line);
       } catch (err) {
-        console.error(`[scraper-bridge] non-JSON line from engine, skipping: ${line.slice(0, 200)}`);
+        // Phase S1: this is a genuine gap this phase cannot fully close —
+        // if the engine ever emits an unparseable line for a real lead
+        // (encoding issue, truncated write), that business disappears here,
+        // before any job-level tracer (discoverJob.ts / poolExpandJob.ts)
+        // ever gets a chance to call tracer.receive() for it. Best-effort
+        // pull its pipeline id out of the raw text so the loss is at least
+        // attributable to a specific business instead of anonymous.
+        const idMatch = line.match(/"_pipeline_id"\s*:\s*"(#\d+)"/);
+        console.error(
+          `[scraper-bridge] non-JSON line from engine, skipping${idMatch ? ` (pipeline id ${idMatch[1]} — LOST BEFORE REACHING JOB-LEVEL TRACER)` : ""}: ${line.slice(0, 200)}`,
+        );
         continue;
       }
 

@@ -988,14 +988,74 @@ class MapsScraper:
                         f"{yielded} place(s) already yielded"
                     )
                     # Fast-forward back toward roughly where the crashed
-                    # attempt left off. seen_hrefs dedupes anything
-                    # re-encountered along the way, so overshooting or
-                    # undershooting slightly is harmless.
-                    for _ in range(total_scroll_rounds):
+                    # attempt left off.
+                    #
+                    # ROOT CAUSE FIX (blind overshoot / Bug B): this used to
+                    # unconditionally replay `total_scroll_rounds` scrolls
+                    # with no check in between, on the theory that
+                    # "overshooting is harmless because seen_hrefs dedupes
+                    # it." That's true for re-encountering already-seen
+                    # businesses, but it is NOT harmless in general: because
+                    # per-round throughput can be much lower than one round
+                    # of *actual* content (see Bug A above), replaying the
+                    # same round count blind can scroll straight past
+                    # businesses that were never seen in the first place,
+                    # landing on — or past — Google's genuine end-of-list
+                    # state before the real collection loop ever gets a
+                    # chance to look. Now we validate after every single
+                    # replay scroll and stop the moment either condition is
+                    # true, instead of always doing the full replay count.
+                    for replay_round in range(total_scroll_rounds):
                         await _human_scroll(
                             page, panel_sel, config=self.config, profiler=self._profiler,
                         )
                         await asyncio.sleep(0.15)
+
+                        # Stop the instant unseen content is back in view —
+                        # that's what fast-forwarding was trying to reach.
+                        # Continuing to scroll blindly past this point is
+                        # exactly what let unseen businesses get skipped.
+                        replay_panel = await page.query_selector(panel_sel)
+                        found_unseen = False
+                        if replay_panel is not None:
+                            replay_anchors = await replay_panel.query_selector_all(
+                                "a[href*='/maps/place/']"
+                            )
+                            for a in replay_anchors:
+                                try:
+                                    href = await a.get_attribute("href") or ""
+                                    if "/maps/place/" not in href:
+                                        continue
+                                    if _place_identity_from_href(href) not in seen_hrefs:
+                                        found_unseen = True
+                                        break
+                                except Exception:
+                                    continue
+
+                        if found_unseen:
+                            log.debug(
+                                f"[maps] recovery: unseen anchors visible "
+                                f"after {replay_round + 1} replay scroll(s) "
+                                f"— stopping fast-forward"
+                            )
+                            break
+
+                        # Stop if we've reached the genuine end of the list
+                        # — further blind scrolling can't surface anything
+                        # new, so there's no reason to keep going.
+                        try:
+                            replay_body_text = await page.evaluate(
+                                "() => document.body?.innerText || ''"
+                            )
+                            if any(eol in replay_body_text for eol in _EOL_TEXTS):
+                                log.debug(
+                                    f"[maps] recovery: reached end of "
+                                    f"results during fast-forward after "
+                                    f"{replay_round + 1} replay scroll(s)"
+                                )
+                                break
+                        except Exception:
+                            pass
 
                 rounds_this_attempt = 0
 
@@ -1007,54 +1067,94 @@ class MapsScraper:
                     rounds_this_attempt += 1
                     total_scroll_rounds += 1
 
-                    # Collect listing anchors — scoped to the results feed
-                    # panel itself, never the whole page. Clicking a card
-                    # swaps the feed out for that place's detail pane *in
-                    # the same DOM area*; a page-wide query would happily
-                    # keep matching anchors inside that detail pane (e.g.
-                    # a self-referential link) and mistake them for fresh
-                    # results, which is how the same business kept getting
-                    # yielded. If the feed isn't present, try to recover
-                    # before giving up on this round.
-                    panel = await page.query_selector(panel_sel)
-                    if panel is None:
-                        if not await _return_to_results(page, panel_sel, config=self.config):
-                            log.debug("[maps] lost the results feed and couldn't recover — ending round")
-                            break
-                        panel = await page.query_selector(panel_sel)
-                    if panel is None:
-                        break
-
-                    listing_anchors = await panel.query_selector_all(
-                        "a[href*='/maps/place/']"
-                    )
-
-                    # Deduplicate on a stable place identity (CID / g-id
-                    # extracted from the href) rather than the raw href
-                    # string — the same place can appear with differently
-                    # formatted hrefs depending on where in the DOM it was
-                    # found (list card vs. detail-pane self-link).
-                    new_anchors = []
-                    for a in listing_anchors:
-                        try:
-                            href = await a.get_attribute("href") or ""
-                            if "/maps/place/" not in href:
-                                continue
-                            place_key = _place_identity_from_href(href)
-                            if place_key and place_key not in seen_hrefs:
-                                new_anchors.append((place_key, a))
-                        except Exception:
-                            continue
-
+                    # Process every currently-unseen anchor, one at a time,
+                    # re-querying fresh ElementHandles from the live DOM
+                    # before *each* click instead of processing a batch
+                    # captured once at the top of the round.
+                    #
+                    # ROOT CAUSE FIX (stale anchor handles / Bug A): clicking
+                    # a listing card swaps the results feed out for that
+                    # place's detail pane *in the same DOM area*, and
+                    # returning via _return_to_results swaps it back in —
+                    # both are DOM replacements, not in-place mutations. Any
+                    # ElementHandle captured before that swap (e.g. anchor
+                    # #2, #3, ... in a batch collected once for the whole
+                    # round) is left pointing at a detached node. Clicking a
+                    # detached handle throws, and the old code swallowed
+                    # that silently (`except Exception: continue`) with no
+                    # logging — so every anchor after the first in a round
+                    # was quietly dropped without ever being marked "seen",
+                    # capping real throughput at ~1 new business per round
+                    # regardless of how many were actually visible. Re-
+                    # querying immediately before every click guarantees the
+                    # handle we act on reflects the DOM as it exists *right
+                    # now*, not as it existed at the top of the round.
                     panel_lost = False
-                    for place_key, anchor in new_anchors:
-                        if panel_lost:
-                            break
+                    failed_this_round: set[str] = set()
+
+                    while not panel_lost:
                         if yielded >= max_results:
                             return
 
-                        if place_key in seen_hrefs:
-                            continue
+                        # Scoped to the results feed panel itself, never the
+                        # whole page — a page-wide query would happily match
+                        # anchors inside a place's detail pane too (e.g. a
+                        # self-referential link) and mistake them for fresh
+                        # results. If the feed isn't present, try to recover
+                        # before giving up on this round.
+                        panel = await page.query_selector(panel_sel)
+                        if panel is None:
+                            if not await _return_to_results(
+                                page, panel_sel, config=self.config
+                            ):
+                                log.debug(
+                                    "[maps] lost the results feed and "
+                                    "couldn't recover — ending round"
+                                )
+                                panel_lost = True
+                                break
+                            panel = await page.query_selector(panel_sel)
+                            if panel is None:
+                                panel_lost = True
+                                break
+
+                        listing_anchors = await panel.query_selector_all(
+                            "a[href*='/maps/place/']"
+                        )
+
+                        # Deduplicate on a stable place identity (CID / g-id
+                        # extracted from the href) rather than the raw href
+                        # string — the same place can appear with
+                        # differently formatted hrefs depending on where in
+                        # the DOM it was found (list card vs. detail-pane
+                        # self-link). Anchors that already failed this round
+                        # are skipped here too, so we don't retry the exact
+                        # same detached/broken handle in a tight loop —
+                        # they remain eligible again on the next round once
+                        # we've scrolled and the DOM has moved on.
+                        place_key = None
+                        anchor = None
+                        for a in listing_anchors:
+                            try:
+                                href = await a.get_attribute("href") or ""
+                                if "/maps/place/" not in href:
+                                    continue
+                                candidate_key = _place_identity_from_href(href)
+                                if (
+                                    candidate_key
+                                    and candidate_key not in seen_hrefs
+                                    and candidate_key not in failed_this_round
+                                ):
+                                    place_key, anchor = candidate_key, a
+                                    break
+                            except Exception:
+                                continue
+
+                        if anchor is None:
+                            # Nothing unseen (and not already given up on)
+                            # currently visible — done processing this
+                            # round; fall through to the EOL check / scroll.
+                            break
 
                         try:
                             with self._profiler.timer("place_click"):
@@ -1063,7 +1163,18 @@ class MapsScraper:
                                 except Exception:
                                     pass
                                 await _human_click(page, anchor)
-                        except Exception:
+                        except Exception as exc:
+                            # The anchor detached between being selected
+                            # above and being clicked here (or was already
+                            # stale despite the fresh query). Logged at INFO
+                            # specifically so this is visible/verifiable —
+                            # it used to be swallowed with no trace at all.
+                            log.info(
+                                f"[maps] anchor detached/stale before click, "
+                                f"skipping (will retry next round) — "
+                                f"place_key={place_key!r}: {exc}"
+                            )
+                            failed_this_round.add(place_key)
                             continue
 
                         try:

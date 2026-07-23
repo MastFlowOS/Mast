@@ -489,6 +489,41 @@ export function subscribeToDiscoverJob(
 ): () => void {
   if (!supabase) return () => {};
 
+  // AUDIT FIX (Finding 2 — Realtime subscription race causing leads to
+  // never appear): discover.ts awaits the plan job's enqueue (which can
+  // already be dispatching discovery.task jobs / inserting `leads` rows)
+  // BEFORE returning 202. The caller only calls subscribeToDiscoverJob()
+  // after that HTTP response resolves — and `.subscribe()` below is
+  // fire-and-forget with no confirmation callback the old code waited on.
+  // `postgres_changes` genuinely does not replay pre-subscription events,
+  // so any row inserted/updated in that window was silently lost — a
+  // structural race that exists on EVERY request, not a rare one.
+  //
+  // Fix: once the channel actually reports SUBSCRIBED, do a one-time
+  // reconciliation fetch of `leads` and `scrape_jobs` for this job id and
+  // replay anything that arrived before we were listening. The caller
+  // already dedupes leads by `lead.id` (see dashboard.leads.tsx's
+  // seenLeadIdsRef), so replaying already-seen leads here is harmless.
+  let reconciled = false;
+  const reconcile = async () => {
+    if (reconciled) return;
+    reconciled = true;
+    try {
+      const [{ data: missedLeads }, { data: jobRow }] = await Promise.all([
+        supabase!.from("leads").select("*").eq("scrape_job_id", jobId).order("created_at", { ascending: true }),
+        supabase!.from("scrape_jobs").select("status, results_count").eq("id", jobId).maybeSingle(),
+      ]);
+      for (const row of missedLeads ?? []) {
+        handlers.onLead(dbRowToLead(row as Record<string, unknown>));
+      }
+      if (jobRow) {
+        handlers.onStatusChange(jobRow.status as DiscoverJobStatus, jobRow.results_count ?? 0);
+      }
+    } catch (err) {
+      console.warn("[subscribeToDiscoverJob] reconciliation fetch failed (non-fatal):", err);
+    }
+  };
+
   const channel = supabase
     .channel(`discover-job-${jobId}`)
     .on(
@@ -504,7 +539,11 @@ export function subscribeToDiscoverJob(
         handlers.onStatusChange(row.status as DiscoverJobStatus, row.results_count ?? 0);
       },
     )
-    .subscribe();
+    .subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        void reconcile();
+      }
+    });
 
   return () => {
     supabase?.removeChannel(channel);

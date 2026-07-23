@@ -151,6 +151,25 @@ const ENRICH_WAIT_INTERVAL_MS = 1000;
 const ENRICH_WAIT_TIMEOUT_MS = 30000;
 
 /**
+ * AUDIT FIX (Finding 4/5 — unbounded ensureEnriched self-claim stall):
+ * enrichBusiness() spawns a Python subprocess via runEngineVerify() and
+ * previously awaited it with no timeout and no AbortSignal at all. The
+ * "wait for someone else" branch below already has a 30s deadline
+ * (ENRICH_WAIT_TIMEOUT_MS), but the "I claim it myself and run it inline"
+ * branch — the more common case, since ensureEnriched() is called almost
+ * immediately after enqueueBusinessProcessing() fires off the async
+ * business.enrich worker, typically before that worker has even polled and
+ * claimed the row — had no bound whatsoever. Because this runs inside
+ * handleDiscoveryTask's per-lead loop before the next heartbeat() call, a
+ * single hung/slow website crawl here could silently stall the heartbeat
+ * clock and eat most or all of pg-boss's own default job expire_in window
+ * (15 minutes, confirmed against the installed pg-boss@10.1.5 source).
+ * This timeout bounds that inline call the same way the "wait" branch is
+ * already bounded.
+ */
+const ENRICH_SELF_CLAIM_TIMEOUT_MS = 30000;
+
+/**
  * Synchronously ensures a business has been through enrichment (website crawl/email extraction).
  */
 export async function ensureEnriched(businessId: string): Promise<void> {
@@ -164,12 +183,26 @@ export async function ensureEnriched(businessId: string): Promise<void> {
     .eq("id", task.id).eq("status", "queued").select("id, attempts").maybeSingle();
 
   if (claimed) {
+    // AUDIT FIX (Finding 4/5): bound this inline call so it can't stall the
+    // caller (handleDiscoveryTask's per-lead loop) indefinitely — see
+    // ENRICH_SELF_CLAIM_TIMEOUT_MS above.
+    const timeoutController = new AbortController();
+    const timeoutHandle = setTimeout(() => timeoutController.abort(), ENRICH_SELF_CLAIM_TIMEOUT_MS);
     try {
-      await enrichBusiness(businessId);
+      await enrichBusiness(businessId, timeoutController.signal);
       await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString(), last_heartbeat_at: null }).eq("id", claimed.id);
     } catch (err) {
-      await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: err instanceof Error ? err.message : String(err), last_heartbeat_at: null }).eq("id", claimed.id);
-      throw err;
+      const timedOut = timeoutController.signal.aborted;
+      const message = timedOut
+        ? `ensureEnriched self-claim timed out after ${ENRICH_SELF_CLAIM_TIMEOUT_MS}ms`
+        : err instanceof Error ? err.message : String(err);
+      await supabaseAdmin.from("business_processing_tasks").update({ status: "queued", error: message, last_heartbeat_at: null }).eq("id", claimed.id);
+      if (!timedOut) throw err;
+      // Timed out: leave the task "queued" for the async business.enrich
+      // worker to pick up and finish (it has no timeout of its own, but it
+      // no longer risks stalling this discovery task's heartbeat).
+    } finally {
+      clearTimeout(timeoutHandle);
     }
     return;
   }
@@ -222,7 +255,7 @@ export async function ensureIntelligence(businessId: string): Promise<void> {
   }
 }
 
-async function enrichBusiness(businessId: string): Promise<void> {
+async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise<void> {
   const { data: business, error } = await supabaseAdmin.from("businesses")
     .select("name, email, phone, website, instagram, emails, phones, field_provenance")
     .eq("id", businessId).single();
@@ -230,7 +263,7 @@ async function enrichBusiness(businessId: string): Promise<void> {
 
   let site: any = {};
   if (business.website) {
-    const result = await runEngineVerify({ website: business.website });
+    const result = await runEngineVerify({ website: business.website }, signal);
     site = result.website_data ?? {};
   }
 

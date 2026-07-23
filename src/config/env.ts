@@ -49,6 +49,12 @@ const EnvSchema = z.object({
   //   STALE_BUSINESS_TASK_TIMEOUT_MS : business_processing_tasks (default 5 min)
   STALE_TASK_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(8 * 60 * 1000),
   STALE_BUSINESS_TASK_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(5 * 60 * 1000),
+  //   STALE_SCRAPE_JOB_TIMEOUT_MS    : scrape_jobs stuck 'streaming' (default 10 min)
+  // AUDIT FIX (Verification Report, Finding 6): poolExpandJob had no
+  // heartbeat/stale-reclaim mechanism at all — see migrations/020 and
+  // jobs/staleScrapeJobSweep.ts. Longer than STALE_TASK_TIMEOUT_MS since a
+  // poolExpand run can legitimately span multiple niches/countries/rounds.
+  STALE_SCRAPE_JOB_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(10 * 60 * 1000),
 
   // PHASE 5 — Configurable plan concurrency limits (Refinement 1).
   // JSON blob mapping PlanId → max browser-backed running tasks for that plan.

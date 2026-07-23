@@ -6,6 +6,7 @@ import { handlePoolExpandJob, type PoolExpandJobPayload } from "../jobs/poolExpa
 import { handleVerificationJob, type VerificationJobPayload } from "../jobs/verificationJob.js";
 import { handleDiscoveryPlanJob, handleDiscoveryTask, type DiscoveryPlanPayload, type DiscoveryTaskPayload } from "../jobs/discoveryPlanJob.js";
 import { handleBusinessProcessingJob, type BusinessProcessingPayload } from "../jobs/businessProcessingJob.js";
+import { sweepStaleScrapeJobs } from "../jobs/staleScrapeJobSweep.js";
 import { env } from "../config/env.js";
 import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance } from "../lib/workerCapacity.js";
 import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
@@ -14,11 +15,23 @@ import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
 // getProvider() call in handleDiscoveryTask has the implementations loaded.
 import "../discovery/providerRegistry.js";
 
+// AUDIT FIX (Verification Report, Finding 4/5, mechanism R-2): these
+// handlers previously only console.error'd and never called process.exit().
+// railway.worker.json's `restartPolicyType: "ON_FAILURE"` can only fire on
+// process EXIT — a wedged-but-still-running process is invisible to it.
+// That meant a task already claimed (`status:"running"`) would just sit
+// until STALE_TASK_TIMEOUT_MS (8 min default) elapsed, with nothing
+// actually restarting the process in the meantime. Logging and then
+// exiting lets Railway restart the worker promptly instead of leaving a
+// zombie process holding claimed work. A short setTimeout gives the log
+// line a chance to flush before the process dies.
 process.on("uncaughtException", (err) => {
-  console.error("[worker] uncaughtException", { message: err?.message, stack: err?.stack, err });
+  console.error("[worker] uncaughtException — exiting so the process supervisor can restart us", { message: err?.message, stack: err?.stack, err });
+  setTimeout(() => process.exit(1), 250);
 });
 process.on("unhandledRejection", (reason) => {
-  console.error("[worker] unhandledRejection", { reason });
+  console.error("[worker] unhandledRejection — exiting so the process supervisor can restart us", { reason });
+  setTimeout(() => process.exit(1), 250);
 });
 
 /**
@@ -193,6 +206,25 @@ async function main() {
   await boss.work("metrics-snapshot", async () => {
     // captureSystemSnapshot is itself non-throwing; any error is caught inside.
     await captureSystemSnapshot(workerMetrics);
+  });
+
+  // ── AUDIT FIX (Finding 6): stale 'streaming' scrape_jobs sweep ──────────
+  // poolExpandJob has no serializable resume point mid-run, so a crashed
+  // invocation's row can only be reclaimed, not resumed — see
+  // jobs/staleScrapeJobSweep.ts for the full rationale. Every 5 minutes,
+  // matching priority-aging's cadence above.
+  try {
+    await boss.schedule("stale-scrape-job-sweep", "*/5 * * * *", {});
+  } catch (err) {
+    console.error("[worker] Optional scheduler failed to schedule stale-scrape-job-sweep (non-fatal):", err);
+  }
+
+  await boss.work("stale-scrape-job-sweep", async () => {
+    try {
+      await sweepStaleScrapeJobs();
+    } catch (err) {
+      console.error("[worker] Background stale-scrape-job-sweep failed (non-fatal):", err);
+    }
   });
 
   console.log(`[worker] subscribed to all queues — effectiveConcurrency=${browserCapacity.effectiveConcurrency} configured=${browserCapacity.configuredConcurrency} freeMb=${browserCapacity.freeMemoryMb}`);

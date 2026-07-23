@@ -1,8 +1,9 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
+import { getBoss, QUEUES } from "../lib/queue.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
 import { deliverLead, upsertBusinessFromEngineLead } from "../scraperBridge/deliverLead.js";
-import { materializeDiscoveryPlan, type DiscoveryPlanRequest } from "../discovery/planner.js";
+import { materializeDiscoveryPlan, DISCOVERY_TASK_RETRY_OPTIONS, type DiscoveryPlanRequest } from "../discovery/planner.js";
 import { enqueueBusinessProcessing, ensureEnriched, ensureIntelligence } from "./businessProcessingJob.js";
 import { env } from "../config/env.js";
 import { JobProfiler } from "../lib/perf.js";
@@ -39,6 +40,16 @@ export type DiscoveryTaskPayload = { taskId: string; planId: string; request: Di
  * can no longer hang an entire discovery request indefinitely.
  */
 const DISCOVERY_TASK_MAX_ATTEMPTS = 9;
+
+/**
+ * AUDIT FIX (Finding 3 — concurrency-skip permanently completing pg-boss
+ * jobs): how long to wait before re-checking a task that was skipped
+ * because its user was already at their concurrency cap. Short enough that
+ * a freed-up slot is picked up promptly; long enough not to hammer the
+ * `discovery_tasks` running-count query every polling cycle for a user who
+ * is legitimately still at cap.
+ */
+const CONCURRENCY_RECHECK_DELAY_SECONDS = 5;
 
 /**
  * Heartbeat interval (ms). Workers pulse this on every iteration of the
@@ -131,9 +142,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
   // ── Concurrency-cap pre-check (before claiming) ────────────────────────
   // Check the user's running task count against their plan cap BEFORE marking
-  // the task as running.  If already at cap, skip this task and let pg-boss
-  // re-deliver it on the next polling cycle (another user's tasks will be
-  // served in the meantime — this is the primary fairness enforcement).
+  // the task as running.  If already at cap, skip this task (another user's
+  // tasks will be served in the meantime — this is the primary fairness
+  // enforcement) and explicitly schedule a fresh check shortly after.
   const userId = task.user_id as string | null;
   const planTierId = (task as any).plan_tier_id as string | null;
   const concurrencyCap = getPlanConcurrency(
@@ -149,7 +160,26 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       .eq("status", "running") as any);
 
     if ((runningCount ?? 0) >= concurrencyCap) {
-      // User is at cap — skip without claiming.  pg-boss will re-deliver.
+      // AUDIT FIX (Finding 3): pg-boss v10 unconditionally marks a job
+      // complete whenever its handler resolves without throwing (confirmed
+      // directly against the installed pg-boss@10.1.5 source — there is no
+      // "resolved but please redeliver" branch). The old comment here
+      // ("pg-boss will re-deliver") described behavior pg-boss v10 does not
+      // have: a bare `return` permanently completed THIS pg-boss job while
+      // the `discovery_tasks` row itself was left "queued" — orphaned, since
+      // dispatchQueuedDiscoveryTasks() runs exactly once per plan and no
+      // other code path will ever send a job for this row again. That
+      // orphaned "queued" row then satisfies completePlanIfDrained()'s
+      // in-flight check forever, so the plan (and its scrape_job) could
+      // never reach a terminal state. Explicitly schedule a fresh
+      // discovery.task job for this same row instead of relying on a
+      // redelivery that will never happen.
+      const boss = await getBoss();
+      await boss.send(
+        QUEUES.discoveryTask,
+        { taskId: payload.taskId, planId: payload.planId, request: payload.request },
+        { ...DISCOVERY_TASK_RETRY_OPTIONS, startAfter: CONCURRENCY_RECHECK_DELAY_SECONDS },
+      );
       return;
     }
   }

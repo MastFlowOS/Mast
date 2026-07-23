@@ -96,14 +96,59 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   const tracer = new PipelineTracer();
 
   let delivered = 0; // total businesses newly added to the pool (all niches)
+  // `newForUser` stays RELATIVE to this invocation — it's compared against
+  // `payload.shortfall` below (stillNeededNow / the >= payload.shortfall
+  // checks) and reported as this run's own contribution in job_summary, so
+  // it must keep starting at 0 each call.
   let newForUser = 0; // of those, how many were credited/delivered to followUp.userId
+  // AUDIT FIX (Finding 1/7 — results_count overwriting): `scrape_jobs.results_count`
+  // is written as an ABSOLUTE value below (`results_count: resultsCountBase +
+  // newForUser`), never as an increment. The old code wrote `results_count:
+  // newForUser` directly, which regressed the visible total on ANY second
+  // write to this counter — not just a pg-boss retry (a second, independent
+  // execution of this whole function), but also the very FIRST invocation,
+  // whenever discover.ts's synchronous Instant-Discovery pool lookup had
+  // already written `results_count: delivered.length` (e.g. 5) before this
+  // background followUp run's first delivery overwrote it with a smaller
+  // number (e.g. 1). Seeding `resultsCountBase` from the row's pre-existing
+  // count and adding `newForUser` to it on every write fixes both paths.
+  let resultsCountBase = 0;
+
+  // AUDIT FIX (Finding 6 — jobs permanently remaining in STREAMING): this
+  // function previously had no heartbeat, no stale-task table, and no
+  // timeout wrapping its search loop — a crashed/hung invocation left
+  // `scrape_jobs.status = 'streaming'` with no code path anywhere that
+  // would ever revisit it (confirmed directly against production: 12/34
+  // instant_pool_ranked rows stuck this way). Pulsing `last_heartbeat_at`
+  // here — the same pattern discovery_tasks/business_processing_tasks
+  // already use — lets a scheduled sweep (jobs/staleScrapeJobSweep.ts)
+  // distinguish a live-but-slow run from a genuinely crashed one and
+  // reclaim the row into a terminal state instead of leaving it stranded.
+  let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
   try {
     if (followUp) {
+      const { data: existingJob } = await supabaseAdmin.from("scrape_jobs")
+        .select("results_count")
+        .eq("id", followUp.scrapeJobId)
+        .maybeSingle();
+      resultsCountBase = existingJob?.results_count ?? 0;
+
       await supabaseAdmin.from("scrape_jobs")
-        .update({ status: "streaming" })
+        .update({ status: "streaming", last_heartbeat_at: new Date().toISOString() })
         .eq("id", followUp.scrapeJobId)
         .not("status", "eq", "cancelled");
+
+      heartbeatInterval = setInterval(() => {
+        supabaseAdmin.from("scrape_jobs")
+          .update({ last_heartbeat_at: new Date().toISOString() })
+          .eq("id", followUp.scrapeJobId)
+          .eq("status", "streaming")
+          .then(
+            () => {/* intentionally fire-and-forget */},
+            (err: unknown) => console.warn("[poolExpandJob] heartbeat failed", err),
+          );
+      }, 15_000);
     }
 
     if (countries.length === 0) {
@@ -228,7 +273,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 }
 
                 await supabaseAdmin.from("scrape_jobs")
-                  .update({ results_count: newForUser })
+                  .update({ results_count: resultsCountBase + newForUser })
                   .eq("id", followUp.scrapeJobId)
                   .not("status", "eq", "cancelled");
 
@@ -318,6 +363,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     }
     throw err;
   } finally {
+    // AUDIT FIX (Finding 6): stop pulsing the heartbeat on every exit path —
+    // normal completion, the early "no countries" return, a cancellation,
+    // search exhaustion, or an uncaught exception (the catch above still
+    // runs first and still rethrows, unchanged).
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
     // Phase S1: runs on every exit from this function — normal completion,
     // the early "no countries" return, a cancellation/limit-reached abort,
     // search exhaustion, or an uncaught exception propagating out (the

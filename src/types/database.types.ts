@@ -315,6 +315,11 @@ export type Database = {
           started_at: string | null;
           completed_at: string | null;
           job_summary: Json | null;
+          // AUDIT FIX (Verification Report, Finding 6): heartbeat pulsed by
+          // poolExpandJob while status='streaming'; read by
+          // jobs/staleScrapeJobSweep.ts to reclaim crashed runs. See
+          // migrations/020_scrape_jobs_heartbeat.sql.
+          last_heartbeat_at: string | null;
         };
         Insert: {
           id?: string;
@@ -328,6 +333,7 @@ export type Database = {
           started_at?: string | null;
           completed_at?: string | null;
           job_summary?: Json | null;
+          last_heartbeat_at?: string | null;
         };
         Update: {
           id?: string;
@@ -341,6 +347,7 @@ export type Database = {
           started_at?: string | null;
           completed_at?: string | null;
           job_summary?: Json | null;
+          last_heartbeat_at?: string | null;
         };
         Relationships: [];
       };

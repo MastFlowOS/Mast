@@ -24,8 +24,8 @@ export async function computeAndStoreOpportunityScores(businessId: string): Prom
 
   // Engine 2.0 computes all profession scores.
   const engineResult = await runEngineScore({
-    id: businessId,
     ...business,
+    id: businessId,
     // Flatten signals for the engine's flat-dict intake format
     ...(business.signals != null && typeof business.signals === "object" ? business.signals : {}),
   });

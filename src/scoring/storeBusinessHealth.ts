@@ -22,8 +22,8 @@ export async function computeAndStoreBusinessHealth(businessId: string): Promise
 
   // Engine 2.0 computes both the universal breakdown and the health score.
   const engineResult = await runEngineScore({
-    id: businessId,
     ...business,
+    id: businessId,
     // Flatten signals for the engine's flat-dict intake format
     ...(business.signals != null && typeof business.signals === "object" ? business.signals : {}),
   });

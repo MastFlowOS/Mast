@@ -113,8 +113,8 @@ intelligenceRouter.get("/explain/:leadId", requireAuth, readLimiter, async (req,
 
     // Engine 2.0 owns all scoring and explanation logic.
     const engineResult = await runEngineScore({
-      id: lead.business_id,
       ...business,
+      id: lead.business_id,
       ...(business.signals != null && typeof business.signals === "object" ? business.signals as Record<string, unknown> : {}),
     });
 
@@ -226,8 +226,8 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
 
     // Engine 2.0 owns all scoring and explanation logic.
     const engineResult = await runEngineScore({
-      id: businessId,
       ...business,
+      id: businessId,
       ...(business.signals != null && typeof business.signals === "object" ? business.signals as Record<string, unknown> : {}),
     });
 

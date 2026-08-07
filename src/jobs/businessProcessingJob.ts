@@ -423,8 +423,8 @@ async function generateBackgroundOpportunityInsights(businessId: string): Promis
 
   // Engine 2.0 computes all scores and explanations — no TS reimplementation.
   const engineResult = await runEngineScore({
-    id: businessId,
     ...business,
+    id: businessId,
     ...(business.signals != null && typeof business.signals === "object" ? business.signals as Record<string, unknown> : {}),
   });
 

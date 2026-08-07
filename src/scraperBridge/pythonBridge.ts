@@ -114,6 +114,63 @@ export type EngineVerifyParams = {
   headless?: boolean;
 };
 
+/**
+ * Milestone 2 (pg-boss business-processing integration): input to
+ * `service.py enrich`, Engine 2.0's WebsiteWorker/InstagramWorker/
+ * ContactWorker/MergeWorker running against one already-known business.
+ * Same permissive convention as EngineVerifyParams — website/instagram
+ * are independently optional; whichever is present gets processed.
+ */
+export type EngineEnrichParams = {
+  name?: string;
+  website?: string;
+  instagram?: string;
+  address?: string;
+  city?: string;
+  country?: string;
+  category?: string;
+  phone?: string;
+};
+
+/**
+ * Mirrors engine_enrichment_bridge.py's `_enriched_to_dict()` return shape
+ * field-for-field. Fields Engine 2.0 does not produce yet (seo, blog,
+ * signals.tech_stack, on-page social-link discovery — see that module's
+ * own docstring) are deliberately absent from this type, not typed as
+ * `| null`, so a caller can't accidentally treat "not covered by Engine
+ * 2.0 yet" the same as "checked, found nothing".
+ */
+export type EngineEnrichResult = {
+  website_reachable: boolean | null;
+  ssl_valid: boolean | null;
+  load_time_ms: number | null;
+  final_url: string | null;
+  http_status: number | null;
+  title: string | null;
+  meta_description: string | null;
+  detected_platform: string | null;
+  contact_page: string | null;
+  email: string | null;
+  emails: string[];
+  phone: string | null;
+  phones: string[];
+  contact_form_url: string | null;
+  whatsapp_link: string | null;
+  messenger_link: string | null;
+  telegram_link: string | null;
+  linkedin: string | null;
+  instagram_reachable: boolean | null;
+  instagram_username: string | null;
+  instagram_followers: number | null;
+  instagram_following: number | null;
+  instagram_posts: number | null;
+  instagram_verified: boolean | null;
+  instagram_account_type: string | null;
+  instagram_bio: string | null;
+  instagram_external_website: string | null;
+  instagram_last_post_date: string | null;
+};
+
 export type EngineVerifyResult = {
   website_ok: boolean | null;
   website_data: {
@@ -249,6 +306,54 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
     }
 
     return JSON.parse(stdout) as EngineVerifyResult;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (child.exitCode === null && child.signalCode === null) {
+      killProcessTree(child);
+    }
+  }
+}
+
+/**
+ * Milestone 2 (pg-boss business-processing integration): spawns
+ * `service.py enrich`, Engine 2.0's canonical replacement for the
+ * SiteCrawler/IGIntelligence extraction runEngineVerify() above drives.
+ * Same spawn/pipe/kill lifecycle as runEngineVerify — only the CLI mode
+ * argument and result type differ.
+ */
+export async function runEngineEnrich(params: EngineEnrichParams, signal?: AbortSignal): Promise<EngineEnrichResult> {
+  const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
+
+  const child = spawn(PYTHON_CMD, ["service.py", "enrich"], {
+    cwd: enginePath,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+  });
+
+  const onAbort = () => {
+    console.log(`[scraper-bridge:enrich] Abort signal triggered for PID: ${child.pid}`);
+    killProcessTree(child);
+  };
+  signal?.addEventListener("abort", onAbort);
+
+  try {
+    child.stdin.write(JSON.stringify(params));
+    child.stdin.end();
+
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      console.debug(`[scraper-bridge:enrich] ${chunk.toString().trimEnd()}`);
+    });
+
+    const exitCode: number = await new Promise((resolve) => child.on("close", resolve));
+    if (exitCode !== 0) {
+      throw new Error(`enrich subprocess exited with code ${exitCode}`);
+    }
+
+    return JSON.parse(stdout) as EngineEnrichResult;
   } finally {
     signal?.removeEventListener("abort", onAbort);
     if (child.exitCode === null && child.signalCode === null) {
@@ -427,4 +532,339 @@ export async function* runEngineQuery(
   if (exitCode !== 0 && !readError) {
     throw new Error(`scraper engine exited with code ${exitCode}`);
   }
+}
+/**
+ * Engine 2.0 Scoring result — profession-level opportunity scores and
+ * business health metric computed by OpportunityScoringService +
+ * ScoringWorker._business_health_component.
+ */
+export type EngineScoreResult = {
+  business_id: string;
+  is_disqualified: boolean;
+  health_score: number;
+  universal_breakdown: Record<string, number>;
+  profession_scores: Record<
+    string,
+    { score: number; breakdown: Record<string, number>; summary: string; reasons: string[] }
+  >;
+};
+
+/**
+ * Engine 2.0 Qualification result — canonical rule evaluation for a single
+ * Opportunity produced by OpportunityQualificationService.
+ */
+export type EngineQualifyResult = {
+  opportunity_id: string;
+  status: "QUALIFIED" | "NOT_QUALIFIED";
+  qualified: boolean;
+  passed_rule_ids: string[];
+  failed_rule_ids: string[];
+};
+
+/**
+ * Engine 2.0 Prioritization result — continuous priority score for a single
+ * Opportunity produced by OpportunityPrioritizationService, combining its
+ * Qualification and Scoring evaluations with a recency-decay policy.
+ */
+export type EnginePrioritizeResult = {
+  opportunity_id: string;
+  priority_score: number;
+  score_contribution: number;
+  recency_contribution: number;
+  is_eligible: boolean;
+  qualification_status: "QUALIFIED" | "NOT_QUALIFIED";
+  overall_score: number;
+};
+
+/**
+ * Interaction record passed to runEngineCRM's payload.
+ */
+export type CRMInteractionRecord = {
+  timestamp_iso: string;
+  interaction_type: string;
+  outcome_type?: string;
+  is_opt_out?: boolean;
+  is_conversion?: boolean;
+  is_positive?: boolean;
+};
+
+/**
+ * Engine 2.0 CRM Intelligence result — relationship lifecycle stage, health,
+ * and contact guardrail decision produced by CRMIntelligenceService.
+ */
+export type EngineCRMResult = {
+  stage: "UNTOUCHED" | "IN_ATTEMPT" | "ENGAGED" | "NURTURING" | "CONVERTED" | "DORMANT" | "OPTED_OUT";
+  health: "PRISTINE" | "RESPONSIVE" | "COOLING_OFF" | "FATIGUED" | "TERMINATED";
+  guardrail: "ALLOWED" | "BLOCKED_COOLING_OFF" | "BLOCKED_FREQUENCY_CAP" | "BLOCKED_OPT_OUT" | "BLOCKED_CONVERTED";
+  total_attempts: number;
+  attempts_in_window: number;
+  days_since_last_interaction: number | null;
+  reason: string;
+};
+
+/**
+ * Engine 2.0 Analytics result — pipeline funnel conversion rates computed
+ * from raw snapshot counters supplied by Node.
+ */
+export type EngineAnalyticsResult = {
+  total_discovered: number;
+  total_qualified: number;
+  total_contacted: number;
+  total_won: number;
+  qualification_rate_pct: number;
+  contact_rate_pct: number;
+  win_rate_pct: number;
+  end_to_end_rate_pct: number;
+};
+
+/**
+ * Engine 2.0 AI Coach context — structured intelligence payload that Node
+ * transports verbatim to Claude/OpenAI. Engine reasons; Node transports.
+ */
+export type EngineAICoachResult = {
+  business_context: Record<string, unknown>;
+  scoring_context: Record<string, unknown>;
+  relationship_context: EngineCRMResult | Record<string, unknown>;
+  analytics_context: EngineAnalyticsResult | Record<string, unknown>;
+  stalled_deals: unknown[];
+};
+
+/**
+ * Generic helper: spawns `python service.py <mode>`, writes JSON payload to
+ * stdin, collects stdout, parses and returns the result. Identical lifecycle
+ * to runEngineVerify / runEngineEnrich.
+ */
+async function runEngineRPC<T>(mode: string, payload: unknown, signal?: AbortSignal): Promise<T> {
+  const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
+
+  const child = spawn(PYTHON_CMD, ["service.py", mode], {
+    cwd: enginePath,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+  });
+
+  const onAbort = () => {
+    console.log(`[scraper-bridge:${mode}] Abort signal triggered for PID: ${child.pid}`);
+    killProcessTree(child);
+  };
+  signal?.addEventListener("abort", onAbort);
+
+  try {
+    child.stdin.write(JSON.stringify(payload));
+    child.stdin.end();
+
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      console.debug(`[scraper-bridge:${mode}] ${chunk.toString().trimEnd()}`);
+    });
+
+    const exitCode: number = await new Promise((resolve) => child.on("close", resolve));
+    if (exitCode !== 0) {
+      throw new Error(`Engine 2.0 '${mode}' subprocess exited with code ${exitCode}. stdout: ${stdout.slice(0, 500)}`);
+    }
+
+    return JSON.parse(stdout) as T;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (child.exitCode === null && child.signalCode === null) {
+      killProcessTree(child);
+    }
+  }
+}
+
+/**
+ * Delegates business scoring to Engine 2.0 (`service.py score`).
+ * Computes profession opportunity scores + business health metric.
+ * Node callers must NOT reimplement this logic.
+ */
+export async function runEngineScore(
+  businessData: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<EngineScoreResult> {
+  return runEngineRPC<EngineScoreResult>("score", businessData, signal);
+}
+
+/**
+ * Delegates opportunity qualification to Engine 2.0 (`service.py qualify`).
+ * Evaluates the canonical qualification rules for a single Opportunity.
+ * Node callers must NOT reimplement this logic.
+ */
+export async function runEngineQualify(
+  opportunityData: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<EngineQualifyResult> {
+  return runEngineRPC<EngineQualifyResult>("qualify", opportunityData, signal);
+}
+
+/**
+ * Delegates opportunity prioritization to Engine 2.0 (`service.py prioritize`).
+ * Evaluates Qualification + Scoring internally, then computes a continuous
+ * priority score via OpportunityPrioritizationService. Node callers must NOT
+ * reimplement this logic.
+ */
+export async function runEnginePrioritize(
+  opportunityData: Record<string, unknown>,
+  policy?: {
+    strategy?: "SCORE_DOMINANT" | "BALANCED" | "RECENCY_DOMINANT" | "CUSTOM_WEIGHTED";
+    evaluation_at?: string;
+    score_weight?: number;
+    recency_weight?: number;
+    recency_half_life_days?: number;
+    require_qualification?: boolean;
+  },
+  signal?: AbortSignal,
+): Promise<EnginePrioritizeResult> {
+  const payload = policy ? { ...opportunityData, policy } : opportunityData;
+  return runEngineRPC<EnginePrioritizeResult>("prioritize", payload, signal);
+}
+
+/**
+ * Delegates CRM relationship evaluation to Engine 2.0 (`service.py crm`).
+ * Computes relationship stage, health, and contact guardrail decision.
+ * Node callers must NOT reimplement this logic.
+ */
+export async function runEngineCRM(
+  payload: {
+    workspace_id: string;
+    business_id: string;
+    current_timestamp_iso?: string;
+    interaction_history?: CRMInteractionRecord[];
+    policy?: {
+      max_attempts_per_window?: number;
+      window_days?: number;
+      cooling_off_days?: number;
+      dormancy_days?: number;
+    };
+  },
+  signal?: AbortSignal,
+): Promise<EngineCRMResult> {
+  return runEngineRPC<EngineCRMResult>("crm", payload, signal);
+}
+
+/**
+ * Delegates pipeline analytics computation to Engine 2.0 (`service.py analytics`).
+ * Returns funnel conversion rates from raw pipeline snapshot counters.
+ * Node callers must NOT reimplement this logic.
+ */
+export async function runEngineAnalytics(
+  snapshot: {
+    total_discovered?: number;
+    total_qualified?: number;
+    total_contacted?: number;
+    total_won?: number;
+  },
+  signal?: AbortSignal,
+): Promise<EngineAnalyticsResult> {
+  return runEngineRPC<EngineAnalyticsResult>("analytics", snapshot, signal);
+}
+
+/**
+ * Delegates AI coach context assembly to Engine 2.0 (`service.py ai_coach`).
+ * Returns a structured intelligence payload that Node transports verbatim to
+ * Claude/OpenAI — Engine reasons, Node transports.
+ */
+export async function runEngineAICoach(
+  payload: {
+    business?: Record<string, unknown>;
+    crm?: Record<string, unknown>;
+    snapshot?: Record<string, unknown>;
+    stalledDeals?: unknown[];
+  },
+  signal?: AbortSignal,
+): Promise<EngineAICoachResult> {
+  return runEngineRPC<EngineAICoachResult>("ai_coach", payload, signal);
+}
+
+/**
+ * Engine 2.0 Workflow lifecycle status — mirrors workflow.models.WorkflowStatus.
+ */
+export type EngineWorkflowStatus =
+  | "UNSTARTED"
+  | "QUEUED"
+  | "IN_PROGRESS"
+  | "PAUSED"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED";
+
+/**
+ * Engine 2.0 Workflow transition trigger — mirrors workflow.models.WorkflowEventType.
+ */
+export type EngineWorkflowEventType =
+  | "INITIALIZE"
+  | "QUEUE"
+  | "START_EXECUTION"
+  | "PAUSE"
+  | "RESUME"
+  | "FAIL"
+  | "RETRY"
+  | "COMPLETE"
+  | "CANCEL";
+
+export type EngineWorkflowState = {
+  mission_id: string;
+  opportunity_id: string;
+  business_id: string;
+  status: EngineWorkflowStatus;
+};
+
+/**
+ * Result of `service.py workflow` with action="initialize" — the initial
+ * UNSTARTED WorkflowState derived from a Mission.
+ */
+export type EngineWorkflowInitializeResult = {
+  action: "initialize";
+  state: EngineWorkflowState;
+};
+
+/**
+ * Result of `service.py workflow` with action="transition" (the default) —
+ * the outcome of evaluating a single (WorkflowState, WorkflowEvent) pair.
+ */
+export type EngineWorkflowTransitionResult = {
+  action: "transition";
+  success: boolean;
+  previous_state: EngineWorkflowState;
+  new_state: EngineWorkflowState;
+  error_message: string | null;
+};
+
+export type EngineWorkflowResult = EngineWorkflowInitializeResult | EngineWorkflowTransitionResult;
+
+/**
+ * Delegates Workflow Engine initialization to Engine 2.0
+ * (`service.py workflow`, action="initialize"). Builds a Mission from
+ * `mission` and returns its initial UNSTARTED WorkflowState. Node callers
+ * must NOT reimplement this logic.
+ */
+export async function runEngineWorkflowInitialize(
+  mission: { opportunity_id: string; business_id: string; mission_type: string },
+  signal?: AbortSignal,
+): Promise<EngineWorkflowInitializeResult> {
+  return runEngineRPC<EngineWorkflowInitializeResult>(
+    "workflow",
+    { action: "initialize", mission },
+    signal,
+  );
+}
+
+/**
+ * Delegates a Workflow Engine state transition to Engine 2.0
+ * (`service.py workflow`, action="transition" — the on-demand "Workflow
+ * Transition" step of the intelligence chain). Node callers must NOT
+ * reimplement this logic.
+ */
+export async function runEngineWorkflowTransition(
+  state: EngineWorkflowState,
+  event: { event_type: EngineWorkflowEventType; timestamp_iso?: string; reason?: string },
+  signal?: AbortSignal,
+): Promise<EngineWorkflowTransitionResult> {
+  return runEngineRPC<EngineWorkflowTransitionResult>(
+    "workflow",
+    { action: "transition", state, event },
+    signal,
+  );
 }

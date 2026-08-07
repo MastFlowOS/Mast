@@ -42,33 +42,27 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from utils.parsing import parse_review_count, is_weak_site, domain_of
+from utils.parsing import (
+    parse_review_count,
+    is_weak_site,
+    domain_of,
+    CHAIN_KEYWORDS,
+    CANNABIS_KEYWORDS,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Classifier data
+#
+# CHAIN_KEYWORDS / CANNABIS_KEYWORDS now live in utils.parsing — the
+# single canonical source also used by workers/scoring_worker.py's
+# ScoringWorker, so chain/cannabis detection can't drift between the
+# two scoring paths. Re-exported here (via the import above) since
+# scoring/scorer.py's public API historically exposed these names too
+# (see tests/test_part1.py and providers/google_maps_provider.py's
+# docstring, which both reference `scoring.scorer.is_cannabis` /
+# `is_chain`).
 # ──────────────────────────────────────────────────────────────────────────────
-
-CHAIN_KEYWORDS = (
-    "starbucks", "mcdonald", "burger king", "kfc", "subway",
-    "taco bell", "pizza hut", "domino", "dunkin", "tim hortons",
-    "costa coffee", "wendy", "chipotle", "panera", "walmart",
-    "7-eleven", "circle k", "shell", "exxon", "carrefour", "tesco",
-    "ikea", "sephora", "h&m", "zara", "uniqlo", "nike", "adidas",
-    "pret a manger", "five guys", "popeyes", "chili's", "applebee",
-    "olive garden", "ihop", "denny", "chick-fil-a", "shake shack",
-    "krispy kreme", "baskin", "cinnabon", "auntie anne",
-    "gloria jean", "coffee bean", "lavazza", "illy caffe",
-    "paul bakery", "greggs", "le pain quotidien", "mcdonalds",
-    "pizzahut", "pizzaexpress", "nandos", "wagamama",
-)
-
-CANNABIS_KEYWORDS = (
-    "cannabis", "marijuana", "weed dispensary", "dispensary",
-    "coffeeshop", "cannabis café", "cannabis cafe", "cannabis coffee",
-    "hash bar", "hash café", "420 café", "420 cafe", "hemp café",
-    "cbd café", "cbd cafe", "cbd shop",
-)
 
 PREMIUM_NICHES = (
     "café", "cafe", "coffee", "espresso", "roastery", "roaster",

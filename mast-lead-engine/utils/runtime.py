@@ -371,9 +371,10 @@ class ScraperConfig:
     skip_ddg: bool = bool(os.environ.get("SKIP_DDG", ""))
     skip_ig: bool = bool(os.environ.get("SKIP_IG", ""))
 
-    # Filtering — RELIABILITY FIX: these used to be hard cutoffs in
-    # scraper/pipeline.py (anything above them was rejected outright before
-    # ever reaching scoring). That threw away plenty of genuinely strong SMB
+    # Filtering — RELIABILITY FIX: these used to be hard cutoffs in the old
+    # V1 EnrichmentPipeline (formerly scraper/pipeline.py, since removed —
+    # anything above them was rejected outright before ever reaching
+    # scoring). That threw away plenty of genuinely strong SMB
     # prospects — a bakery with 900 Google reviews or a boutique with 6,000
     # IG followers is still a great outreach target, just not the "ideal"
     # band. These two now only feed scoring/scorer.py's graduated penalty

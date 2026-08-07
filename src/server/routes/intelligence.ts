@@ -7,8 +7,7 @@ import { canUseAiFeature } from "../../lib/aiAccess.js";
 import { aiEnabled, generateJSON, AI_MODEL } from "../../lib/ai.js";
 import { singleFlight } from "../../lib/singleFlight.js";
 import { buildPipelineSnapshot } from "../../lib/intelligenceContext.js";
-import { computeOpportunityScores, type ScorableBusiness } from "../../scoring/opportunityScore.js";
-import { explainOpportunity } from "../../scoring/explainOpportunity.js";
+import { runEngineScore } from "../../scraperBridge/pythonBridge.js";
 import { type ProfessionSlug } from "../../scoring/professionWeights.js";
 import { professionSlugForLabel } from "../../lib/professions.js";
 
@@ -107,14 +106,25 @@ intelligenceRouter.get("/explain/:leadId", requireAuth, readLimiter, async (req,
 
     const { data: business, error: bizError } = await supabaseAdmin
       .from("businesses")
-      .select("website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
+      .select("id, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
       .eq("id", lead.business_id)
       .single();
     if (bizError) throw bizError;
 
-    const scores = computeOpportunityScores(business as ScorableBusiness);
-    const result = scores[professionSlug];
-    const explanation = explainOpportunity(business as ScorableBusiness, result, professionSlug);
+    // Engine 2.0 owns all scoring and explanation logic.
+    const engineResult = await runEngineScore({
+      id: lead.business_id,
+      ...business,
+      ...(business.signals != null && typeof business.signals === "object" ? business.signals as Record<string, unknown> : {}),
+    });
+
+    const ps = engineResult.profession_scores?.[professionSlug];
+    const explanation = {
+      score: ps?.score ?? 0,
+      summary: ps?.summary ?? "",
+      reasons: ps?.reasons ?? [],
+      breakdown: ps?.breakdown ?? engineResult.universal_breakdown ?? {},
+    };
 
     res.json(explanation);
   } catch (err) {
@@ -209,14 +219,26 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
     const businessId = req.params.businessId;
     const { data: business, error: bizError } = await supabaseAdmin
       .from("businesses")
-      .select("name, niche, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
+      .select("id, name, niche, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
       .eq("id", businessId)
       .single();
     if (bizError) throw bizError;
 
-    const scores = computeOpportunityScores(business as ScorableBusiness);
-    const result = scores[professionSlug];
-    const explanation = explainOpportunity(business as ScorableBusiness, result, professionSlug);
+    // Engine 2.0 owns all scoring and explanation logic.
+    const engineResult = await runEngineScore({
+      id: businessId,
+      ...business,
+      ...(business.signals != null && typeof business.signals === "object" ? business.signals as Record<string, unknown> : {}),
+    });
+
+    const ps = engineResult.profession_scores?.[professionSlug];
+    const result = { score: ps?.score ?? 0, breakdown: ps?.breakdown ?? engineResult.universal_breakdown ?? {} };
+    const explanation = {
+      score: result.score,
+      summary: ps?.summary ?? "",
+      reasons: ps?.reasons ?? [],
+      breakdown: result.breakdown,
+    };
 
     const { data: cached, error: cacheError } = await supabaseAdmin
       .from("business_opportunity_insights")

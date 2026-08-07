@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { getBoss, QUEUES } from "../lib/queue.js";
-import { runEngineVerify } from "../scraperBridge/pythonBridge.js";
+import { runEngineVerify, runEngineEnrich, runEngineScore } from "../scraperBridge/pythonBridge.js";
 import { isValidEmail, isValidPhone, validateLead } from "../lib/leadValidation.js";
 import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
@@ -8,9 +8,7 @@ import { toJson, isJsonObject } from "../lib/json.js";
 import type { Json } from "../types/database.types.js";
 import { env } from "../config/env.js";
 import { aiEnabled, generateJSON, AI_MODEL } from "../lib/ai.js";
-import { computeOpportunityScores, type ScorableBusiness } from "../scoring/opportunityScore.js";
-import { explainOpportunity } from "../scoring/explainOpportunity.js";
-import { type ProfessionSlug, PROFESSION_SLUGS } from "../scoring/professionWeights.js";
+import { PROFESSION_SLUGS } from "../scoring/professionWeights.js";
 
 export type ProcessingKind = "enrich" | "score";
 export type BusinessProcessingPayload = { taskId: string };
@@ -261,16 +259,19 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
     .eq("id", businessId).single();
   if (error) throw error;
 
+  // Milestone 2: Engine 2.0's WebsiteWorker/ContactWorker/MergeWorker
+  // replace the V1 SiteCrawler path runEngineVerify() used to drive here.
+  // See engine_enrichment_bridge.py's module docstring for exactly which
+  // `businesses` columns this can and cannot populate.
   let site: any = {};
   if (business.website) {
-    const result = await runEngineVerify({ website: business.website }, signal);
-    site = result.website_data ?? {};
+    site = await runEngineEnrich({ website: business.website }, signal);
   }
 
   // Audit Broken #3 fix
   const siteEmail = isValidEmail(site.email) ? site.email : undefined;
   const sitePhone = isValidPhone(site.phone) ? site.phone : undefined;
-  const siteEmails = (site.emails ?? []).map((entry: any) => entry.email).filter((email: any) => isValidEmail(email));
+  const siteEmails = (site.emails ?? []).filter((email: any) => isValidEmail(email));
   const sitePhones = (site.phones ?? []).filter((phone: any) => isValidPhone(phone));
 
   const existingEmails: string[] = Array.isArray(business.emails)
@@ -286,27 +287,35 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
     new Set([...existingPhones, sitePhone, ...sitePhones].filter((phone): phone is string => typeof phone === "string")),
   );
 
+  // Milestone 2: Engine 2.0's ContactWorker/WebsiteWorker report objective
+  // extraction facts only (see WebsiteIntel/ContactIntel's own contract
+  // docstrings) — there is no per-field source/confidence tag like V1's
+  // field_sources to fold in here, so field_provenance is carried forward
+  // unchanged rather than guessed at.
   const provenance: Record<string, Json | undefined> = isJsonObject(business.field_provenance) ? { ...business.field_provenance } : {};
-  for (const [field, source] of Object.entries(site.field_sources ?? {})) {
-    if ((field === "email" && !siteEmail) || (field === "phone" && !sitePhone)) continue;
-    provenance[field] = toJson(source);
-  }
 
-  // Update business with website data
+  // Update business with website data.
+  // NOTE on fields intentionally left `undefined` (not overwritten) below:
+  // `instagram`/`facebook` here mean "a social link found ON the
+  // business's own website" — no Engine 2.0 contract field covers on-page
+  // social-link discovery (InstagramIntel describes a profile you already
+  // know the URL of; ContactIntel only carries linkedin_url among social
+  // links). `seo`/`blog` and `signals.tech_stack`'s prior shape likewise
+  // have no Engine 2.0 source yet. All are flagged gaps, not silent data
+  // loss — see engine_enrichment_bridge.py's module docstring — and
+  // leaving them `undefined` means Supabase leaves whatever was last
+  // stored untouched, same as it already does for any other field a given
+  // enrichment pass doesn't return.
   const { error: updateError } = await supabaseAdmin.from("businesses").update({
     email: siteEmail || undefined,
     phone: sitePhone || undefined,
-    instagram: site.instagram || undefined,
-    facebook: site.facebook || undefined,
     linkedin: site.linkedin || undefined,
     emails,
     phones,
     field_provenance: provenance,
     ssl_valid: site.ssl_valid ?? undefined,
     load_time_ms: site.load_time_ms ?? undefined,
-    seo: site.seo ? toJson(site.seo) : undefined,
-    blog: site.blog ? toJson(site.blog) : undefined,
-    signals: toJson({ tech_stack: site.tech_stack ?? {} }), // only tech stack from site enrichment
+    signals: site.detected_platform ? toJson({ tech_stack: { detected_platform: site.detected_platform } }) : undefined,
     last_verified_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }).eq("id", businessId);
@@ -339,20 +348,33 @@ async function scoreBusiness(businessId: string): Promise<void> {
     .eq("id", businessId).single();
   if (error) throw error;
 
+  // Milestone 2: Engine 2.0's InstagramWorker replaces the V1
+  // IGIntelligence path runEngineVerify() used to drive here.
   let social: any = {};
   if (business.instagram) {
-    const result = await runEngineVerify({ instagram: business.instagram });
-    social = result.instagram_data ?? {};
+    social = await runEngineEnrich({ instagram: business.instagram });
   }
+
+  // instagram_last_post_date -> ig_last_post_days is a plain date-math
+  // unit conversion (today - last_post_date), not an estimate — InstagramIntel
+  // gives the raw date because Engine 2.0's InstagramWorker deliberately
+  // never computes derived metrics itself (see InstagramIntel's own Phase
+  // 5.5 docstring). ig_activity / ig_legitimacy have no Engine 2.0 source
+  // at all — legitimacy specifically is exactly the kind of invented/
+  // estimated score InstagramIntel's docstring excludes on principle — so
+  // both are left out of updatedSignals below (flagged gap, not
+  // fabricated) rather than defaulted to null and silently overwriting
+  // whatever a prior pass may have stored.
+  const igLastPostDays = social.instagram_last_post_date
+    ? Math.floor((Date.now() - new Date(social.instagram_last_post_date).getTime()) / 86_400_000)
+    : undefined;
 
   // Remaining enrichment: update business with Instagram data
   const currentSignals = isJsonObject(business.signals) ? { ...business.signals } : {};
   const updatedSignals = {
     ...currentSignals,
-    ig_followers: social.followers ?? null,
-    ig_last_post_days: social.last_post_days ?? null,
-    ig_activity: social.activity ?? null,
-    ig_legitimacy: social.legitimacy_score ?? null,
+    ig_followers: social.instagram_followers ?? currentSignals.ig_followers ?? null,
+    ig_last_post_days: igLastPostDays ?? currentSignals.ig_last_post_days ?? null,
   };
 
   const { error: updateError } = await supabaseAdmin.from("businesses").update({
@@ -388,23 +410,26 @@ async function generateBackgroundOpportunityInsights(businessId: string): Promis
     return;
   }
 
-  // Narrow the DB string to the branded ProfessionSlug type so TypeScript can
-  // index the scores map safely. Unknown values are silently skipped — this is
-  // a best-effort background cache fill, not a hard requirement.
   const slugRaw = topScore.profession_slug as string;
   if (!(PROFESSION_SLUGS as readonly string[]).includes(slugRaw)) return;
-  const professionSlug = slugRaw as ProfessionSlug;
+  const professionSlug = slugRaw;
 
   const { data: business, error: bizError } = await supabaseAdmin
     .from("businesses")
-    .select("name, niche, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
+    .select("id, name, niche, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
     .eq("id", businessId)
     .single();
   if (bizError) throw bizError;
 
-  const scores = computeOpportunityScores(business as ScorableBusiness);
-  const result = scores[professionSlug];
-  const explanation = explainOpportunity(business as ScorableBusiness, result, professionSlug);
+  // Engine 2.0 computes all scores and explanations — no TS reimplementation.
+  const engineResult = await runEngineScore({
+    id: businessId,
+    ...business,
+    ...(business.signals != null && typeof business.signals === "object" ? business.signals as Record<string, unknown> : {}),
+  });
+
+  const ps = engineResult.profession_scores?.[professionSlug];
+  if (!ps || ps.score < 50) return;
 
   const insight = await generateJSON<{ headline: string; talkingPoints: string[]; openingLine: string }>({
     system:
@@ -419,9 +444,9 @@ async function generateBackgroundOpportunityInsights(businessId: string): Promis
       businessName: business.name,
       niche: business.niche,
       profession: professionSlug,
-      opportunityScore: result.score,
-      reasons: explanation.reasons,
-      summary: explanation.summary,
+      opportunityScore: ps.score,
+      reasons: ps.reasons,
+      summary: ps.summary,
     }),
     maxTokens: 512,
   });
@@ -432,7 +457,7 @@ async function generateBackgroundOpportunityInsights(businessId: string): Promis
     headline: typeof insight.headline === "string" ? insight.headline : `A fresh opportunity: ${business.name}`,
     talking_points: Array.isArray(insight.talkingPoints) ? insight.talkingPoints : [],
     opening_line: typeof insight.openingLine === "string" ? insight.openingLine : "Hi — I came across your business and had a few ideas.",
-    score_snapshot: result.score,
+    score_snapshot: ps.score,
     model: AI_MODEL,
     generated_at: new Date().toISOString(),
   };

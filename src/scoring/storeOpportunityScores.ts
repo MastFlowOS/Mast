@@ -1,38 +1,48 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
-import { computeOpportunityScores, type ScorableBusiness } from "./opportunityScore.js";
+import { runEngineScore } from "../scraperBridge/pythonBridge.js";
 import { PROFESSION_SLUGS } from "./professionWeights.js";
 
 /**
- * Computes the Opportunity Score for all 12 professions for one business
- * and upserts them into `business_opportunity_scores` — the table
- * `pool_lookup()` (migrations/003_pool_lookup.sql) already joins against
- * for `instant_pool_ranked`. No SQL changes were needed for ranking to
- * start working; it was always reading this table, which Phase 6 is the
- * first phase to actually populate.
+ * Computes the Opportunity Score for all profession slugs for one business
+ * via Engine 2.0 (`service.py score`) and upserts them into
+ * `business_opportunity_scores`.
  *
- * Scored once per (business, profession) pair, NOT per user — the same
- * cached score is reused by every freelancer sharing a profession, per the
- * doc's Global Lead Pool design.
+ * Engine 2.0 is the single canonical owner of all scoring logic.
+ * Node's only role here is: fetch → delegate to Python → persist.
+ * The TypeScript `computeOpportunityScores` function is no longer called
+ * from this path.
  */
 export async function computeAndStoreOpportunityScores(businessId: string): Promise<void> {
   const { data: business, error } = await supabaseAdmin
     .from("businesses")
     .select(
-      "website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
+      "id, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
     )
     .eq("id", businessId)
     .single();
   if (error) throw error;
 
-  const scores = computeOpportunityScores(business as ScorableBusiness);
+  // Engine 2.0 computes all profession scores.
+  const engineResult = await runEngineScore({
+    id: businessId,
+    ...business,
+    // Flatten signals for the engine's flat-dict intake format
+    ...(business.signals != null && typeof business.signals === "object" ? business.signals : {}),
+  });
 
-  const rows = PROFESSION_SLUGS.map((slug) => ({
-    business_id: businessId,
-    profession_slug: slug,
-    opportunity_score: scores[slug].score,
-    score_breakdown: scores[slug].breakdown,
-    computed_at: new Date().toISOString(),
-  }));
+  // Map Engine 2.0's profession_scores map to DB rows for all canonical slugs.
+  // Engine 2.0 produces scores for all PROFESSION_SLUGS; any missing slug
+  // defaults to 0 so the upsert never leaves gaps.
+  const rows = PROFESSION_SLUGS.map((slug) => {
+    const ps = engineResult.profession_scores?.[slug];
+    return {
+      business_id: businessId,
+      profession_slug: slug,
+      opportunity_score: ps?.score ?? 0,
+      score_breakdown: ps?.breakdown ?? engineResult.universal_breakdown ?? {},
+      computed_at: new Date().toISOString(),
+    };
+  });
 
   const { error: upsertError } = await supabaseAdmin
     .from("business_opportunity_scores")

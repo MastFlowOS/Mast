@@ -1,0 +1,1237 @@
+"""
+MAST Engine V2 — Execution Driver
+====================================
+
+Source: Phase 6.7 implementation prompt ("Execution Driver
+Implementation"). Runtime Integration sequence item 5/6 boundary:
+`engine/runtime.py` (item 3) already implements `EngineRuntime.
+execute_stage()` — exactly one stage cycle — and its own Status
+section says so explicitly: "Nothing yet constructs an EngineRuntime
+for a real session or drives it in a loop." `engine/coordinator.py`
+(item 4) already implements the composition root
+(`build_runtime_context()` / `build_fan_in_runtime()` /
+`get_engine_runtime()` / `get_fan_in_runtime()`), but its own
+`start_discovery()` docstring says just as explicitly: "It does not
+execute a single stage cycle itself -- driving `EngineRuntime.
+execute_stage()` in a loop remains unimplemented." This file is that
+missing loop.
+
+Architecture review (performed before writing this file, per the same
+discipline `engine/fan_in_runtime.py` used)
+--------------------------------------------------------------------
+1. New component, or a method bolted onto EngineRuntime /
+   EngineCoordinator?
+   New component. `engine/runtime.py`'s own module docstring closes
+   its scope at "exactly one stage cycle" and lists, as something it
+   deliberately does NOT do, calling `heartbeat()`/`shutdown()` or
+   deciding scheduling cadence ("a caller/timer concern"). Adding a
+   `while True` loop inside `EngineRuntime` would contradict that
+   file's own documented boundary. `EngineCoordinator` already has a
+   documented, closed scope too (session lifecycle + composition
+   root); its own module docstring's TODO list still names
+   `allocate_workers`/`monitor_queues`/`resume_failed_work` as
+   *placeholders*, not "the execution loop" — nothing there claims
+   coordinator-owned scheduling either. A sibling module, the same
+   shape `FanInRuntime` already took relative to `EngineRuntime`, is
+   the only reading consistent with all three files.
+
+2. Where does it live?
+   `engine/`, alongside `runtime.py`, `runtime_context.py`,
+   `coordinator.py`, and `fan_in_runtime.py` — same package as every
+   other per-session runtime-shaped component.
+
+3. Who owns its lifetime?
+   Whatever caller constructs it (a future `service.py` cutover, a
+   test, this milestone's own validation script). Not
+   `EngineCoordinator` — unlike `EngineRuntime`/`FanInRuntime`,
+   `ExecutionDriver` is not per-session bookkeeping the coordinator
+   must hand back out via a `get_*` accessor; it is an active thread
+   a caller starts and stops directly, the same way nothing in this
+   codebase makes `EngineCoordinator` responsible for joining threads.
+   Wiring it into `EngineCoordinator.start_discovery()` is left to the
+   future `service.py` cutover (Runtime Integration item 6), per that
+   method's own docstring boundary quoted above — not invented here.
+
+4. How does it reach `EngineRuntime.execute_stage()`?
+   By calling it directly, once per `StageConfig`, once per pass. No
+   new method is added to `EngineRuntime`; this file only calls the
+   public `execute_stage()` it already exposes.
+
+5. How does it interact with `FanInRuntime`?
+   Indirectly, the same way `EngineRuntime` does (see
+   `fan_in_runtime.py` review point 5): this file does not call
+   `FanInRuntime` itself. It builds the `StageConfig.build_downstream`
+   closures that call `FanInRuntime.record_*_result()` /
+   `register_business()`, and `FanInRuntime`'s own `_maybe_release()`
+   performs the one `Queue.enqueue()` into the Merge queue when AD-042
+   is satisfied. `ExecutionDriver` then drives `EngineRuntime.
+   execute_stage()` for the Merge `StageConfig` against that same
+   queue, on its own schedule, exactly like every other stage.
+
+6. A pipeline-shape fact this file must resolve, not invent
+   -----------------------------------------------------------------
+   `engine/fan_in_runtime.py`'s own review (point 5) describes
+   Website/Instagram/Contact as symmetric: all three take a
+   BusinessCandidate and become "terminal, from EngineRuntime's point
+   of view" (`output_queue_id=None`). That description does not match
+   this codebase's actual `ContactWorker`, whose own module docstring
+   and `process()` signature are unambiguous:
+   `ContactWorker(BaseWorker[WebsiteIntel, ContactIntel])` —
+   ContactWorker's input is WebsiteIntel (the pages WebsiteWorker
+   already located), never a BusinessCandidate. This is a real,
+   inspectable fact about already-implemented code, not a contradiction
+   between two architecture documents — `engine/coordinator.py`'s own
+   `build_runtime_context()` docstring already flags that "how...
+   Website + Instagram + Contact intel... are correlated... is a
+   pipeline-shape / business-logic decision" left entirely to
+   whichever caller assembles real `StageConfig`s. This file is that
+   caller, so resolving it here (Website's `StageConfig` both records
+   its fan-in result *and* forwards the same `WebsiteIntel` on to a
+   Contact-input queue, via one `build_downstream` closure returning a
+   non-`None` value) is exactly the delegated decision, not a
+   redesign of `EngineRuntime`, `FanInRuntime`, or `ContactWorker`.
+   Instagram and Contact remain terminal from `EngineRuntime`'s point
+   of view exactly as `fan_in_runtime.py` describes; only Website
+   additionally feeds a real downstream queue, because only Contact's
+   already-implemented input type requires it.
+
+No ownership conflict found once the ContactWorker input-type fact
+above is accounted for. Proceeding.
+
+Responsibility
+--------------
+Two pieces, kept in one file because the second exists only to
+produce the first's constructor arguments (see review point 6):
+
+    `ExecutionDriver` — owns:
+        - repeatedly executing stage cycles (calls
+          `EngineRuntime.execute_stage()` once per `StageConfig`,
+          every pass)
+        - scheduling (a background thread looping over every
+          `StageConfig` it was given; idle back-off when a full pass
+          finds no work; producer stages, per `StageConfig.
+          input_queue_id is None`, run at most once per driver
+          lifetime — see "Producer stages run once" below)
+        - starting execution (`start()`)
+        - stopping execution (`stop()` — graceful: signals the loop,
+          optionally joins the thread; never kills mid-`execute_stage`
+          call)
+        - nothing else: no worker/queue/session construction, no
+          retry-execution, no health monitoring — none of those are
+          `execute_stage()`'s job either, and this file does not grow
+          scope `EngineRuntime` itself was explicitly told not to have.
+
+    `build_seven_stage_pipeline()` — the composition-root function
+        that gives `ExecutionDriver` something real to drive: builds
+        the `QueueDefinition`s and `StageBlueprint`s for
+        `EngineCoordinator.build_runtime_context()`, then — once that
+        RuntimeContext and this session's `FanInRuntime` both exist —
+        assembles the seven `StageConfig`s (`engine/runtime.py`),
+        including the `DiscoveryExecution`/`on_candidate` closure
+        `workers/discovery_worker.py`'s own "Ownership of on_candidate"
+        section names "Engine Runtime" (this composition layer) as
+        responsible for building. This is pipeline-shape data, not
+        pipeline-shape *logic* baked into `EngineRuntime`,
+        `EngineCoordinator`, or any Worker — every one of those stays
+        unmodified.
+
+Producer stages run once
+-------------------------
+`StageConfig.input_queue_id is None` marks a producer (today: only
+Discovery — see `engine/runtime.py`'s own module docstring, "Why one
+generic implementation, not six"). `DiscoveryWorker.process()` drives
+its provider to full exhaustion inside one call
+(`workers/discovery_worker.py`, "Revision history, v3"); calling
+`execute_stage()` for that `StageConfig` a second time would start a
+second, independent discovery run against whatever `request` object
+`produce_worker_input` was closed over — duplicating every business
+the first run already streamed. Nothing in `engine/runtime.py` or
+`workers/discovery_worker.py` limits a producer to running once; this
+file adds that as scheduling policy, not a change to either. Once a
+producer `StageConfig` has produced one `ran=True` `StageOutcome`,
+`ExecutionDriver` never calls `execute_stage()` for it again for the
+lifetime of that driver instance. A future milestone wanting a
+producer that legitimately runs more than once per driver (e.g. a
+polling discovery source) is free to construct `ExecutionDriver`
+directly with `run_producers_once=False`; this file does not decide
+that milestone's shape, only defaults to the behavior correct for the
+one producer that exists today.
+
+What this file deliberately does NOT do
+------------------------------------------
+    - does not modify `engine/runtime.py`, `engine/runtime_context.py`,
+      `engine/fan_in_runtime.py`, `engine/coordinator.py`, any Worker,
+      any Queue, or `service.py` (all unmodified by this change)
+    - does not construct a RuntimeContext, WorkerRegistry, WorkerPool,
+      WorkerAllocator, or QueueManager itself — `build_seven_stage_
+      pipeline()` calls `EngineCoordinator.build_runtime_context()`
+      for that, exactly as `start_discovery()` already does
+    - does not implement retry *execution*, health monitoring, or
+      session-status transitions — none of those are this milestone's
+      scope either (see `engine/runtime.py` / `engine/coordinator.py`
+      own TODOs, unchanged)
+    - does not enforce `DiscoveryWorker.timeout_seconds()` or any other
+      worker's declared timeout — declared-but-unenforced timeouts are
+      an existing, explicitly flagged gap across this codebase
+      (`workers/discovery_worker.py` "Timeout (unchanged ambiguity)"),
+      not something this scheduling loop invents an enforcement
+      mechanism for
+
+Thread safety
+-------------
+One `threading.Event` (`_stop_event`) signals shutdown; one
+`threading.Lock` (`_lifecycle_lock`) guards `start()`/`stop()` against
+being called concurrently with each other. The loop itself runs on a
+single background thread — `execute_stage()` calls are never made
+concurrently by this file, so nothing here contends with
+`EngineRuntime`'s own "no lock held across more than one call" design
+(its module docstring). Two threads calling `execute_stage()` for two
+different `ExecutionDriver`s (two different sessions) already don't
+contend, per that same design; this file adds no new shared state
+between driver instances.
+
+Post-audit correction (Item 4 — found via execution, not the earlier
+static review)
+--------------------------------------------------------------------
+The prior audit (static review) found three implementation defects,
+all fixed above. Actually *running* the validation script surfaced a
+fourth, more serious defect the static review missed entirely:
+`engine/runtime.py`'s own `_handle_success()` only calls a stage's
+`build_downstream()` when `stage.output_queue_id is not None`.
+Instagram and Contact were originally wired with `output_queue_id=
+None` (they have nothing further to forward — see review point 6
+above), which meant `_instagram_downstream`/`_contact_downstream` —
+whose entire job is calling `fan_in.record_instagram_result()` /
+`record_contact_result()` — were **never invoked at all**, for any
+candidate, ever. `FanInRuntime`'s completion check (AD-042) therefore
+could never be satisfied, and Merge could never fire. This was not a
+contradiction in `EngineRuntime` (its gate is intentional and
+documented); it was this file's own incorrect assumption that
+`build_downstream` runs unconditionally.
+
+Fix: Instagram and Contact are now wired with a real, non-`None`
+`output_queue_id` pointing at `fan_in_sink` — a queue no `StageConfig`
+ever lists as its `input_queue_id`, so nothing ever dequeues from it.
+Both stages' `build_downstream` closures are otherwise unchanged and
+still return `None`, so `_handle_success`'s `if payload is not None`
+check means nothing is ever actually enqueued into `fan_in_sink` — it
+exists purely to make the `output_queue_id is not None` check pass so
+`build_downstream`'s side effect (the `record_*_result` call) runs at
+all. This is a composition-root-only change: one additional
+`QueueDefinition`, one additional `PipelineQueueIds` field, and two
+`StageConfig.output_queue_id`/`output_stage` values, all inside
+`build_seven_stage_pipeline()`. `EngineRuntime`, `FanInRuntime`,
+`RuntimeContext`, and every Worker remain untouched.
+
+Status
+------
+Phase 6.7. Implements `ExecutionDriver` and
+`build_seven_stage_pipeline()` only. `service.py` is not modified —
+routing real discovery requests through this driver instead of
+service.py's current inline orchestration remains the Runtime
+Integration sequence's own item 6 ("service.py cutover"), explicitly
+not this milestone (Phase 1.5 Migration Rule #1 — never replace
+something that hasn't already been rebuilt).
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import threading
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Sequence
+
+from engine.contracts import (
+    BusinessCandidate,
+    EnrichedBusiness,
+    QualificationResult,
+    QualifiedOpportunity,
+    WebsiteIntel,
+)
+from engine.coordinator import EngineCoordinator, StageBlueprint
+from engine.fan_in_runtime import FanInRuntime
+from engine.runtime import EngineRuntime, StageConfig, StageOutcome
+from queues.queue_definition import QueueDefinition
+from queues.retry_policy import RetryPolicy
+from workers.base_worker import BaseWorker
+from workers.contact_worker import ContactWorker
+from workers.discovery_worker import DiscoveryExecution, DiscoveryWorker
+from workers.instagram_worker import InstagramWorker
+from workers.merge_worker import MergeWorker
+from workers.qualification_worker import QualificationWorker
+from workers.scoring_worker import ScoringWorker
+from workers.storage_worker import StorageWorker
+
+# -- Batch intelligence chain (Part 3, MAST Lead Engine 2.0 continuation) --
+# The domain-layer subsystems Prioritization/Ranking/Mission Generation/
+# Workflow Initialization consume, per engine/adapters.py's own docstring.
+# Imported here (the pipeline's composition root) rather than in
+# engine/coordinator.py, which stays a pure session-lifecycle/registry
+# owner per its own module docstring ("the Engine ... does NOT ... store
+# opportunities").
+from engine import adapters as engine_adapters
+from mission_generation.service import MissionGenerationService
+from opportunity_prioritization.models import PrioritizationPolicy, PrioritizationStrategy
+from opportunity_prioritization.service import OpportunityPrioritizationService
+from opportunity_ranking.service import OpportunityRankingService
+from workflow.service import WorkflowEngineService
+from workers.website_worker import WebsiteWorker
+from workers.worker_capability import WorkerCapability
+from workers.worker_definition import WorkerDefinition
+from utils.runtime import get_logger
+
+log = get_logger("engine.execution_driver")
+
+__all__ = [
+    "ExecutionDriverError",
+    "ExecutionDriver",
+    "PipelineQueueIds",
+    "build_seven_stage_pipeline",
+]
+
+
+class ExecutionDriverError(RuntimeError):
+    """
+    Raised for ExecutionDriver lifecycle misuse (double-start,
+    stop-before-start) or for a fatal error surfaced from the drive
+    loop (an `EngineRuntimeError` propagated out of `execute_stage()`,
+    i.e. a RuntimeContext/StageConfig consistency bug — never raised
+    for an ordinary worker `process()` failure, which `execute_stage()`
+    already converts into a `StageOutcome(success=False, ...)` and
+    which this driver treats as a normal, loggable cycle, not an
+    error).
+    """
+
+
+class ExecutionDriver:
+    """
+    Repeatedly drives one session's `EngineRuntime.execute_stage()`
+    across every `StageConfig` it is given, on a background thread,
+    until stopped. See module docstring for full scope.
+    """
+
+    def __init__(
+        self,
+        engine_runtime: EngineRuntime,
+        stages: Sequence[StageConfig],
+        *,
+        run_producers_once: bool = True,
+        active_poll_seconds: float = 0.0,
+        idle_poll_seconds: float = 0.25,
+        on_stage_outcome: Optional[Callable[[StageOutcome], None]] = None,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        engine_runtime:
+            An already-constructed `EngineRuntime` (`engine/runtime.py`)
+            for one session — this class never constructs one itself,
+            mirroring `EngineRuntime`'s own "never constructs a
+            RuntimeContext" stance one layer up. Typically
+            `EngineCoordinator.get_engine_runtime(session_id)`.
+        stages:
+            The ordered `StageConfig`s to drive, once built. Order is
+            the pass order every cycle (Discovery first is
+            conventional but not required — `execute_stage()` for any
+            transformer stage is simply a no-op, `ran=False`, if its
+            input queue is empty).
+        run_producers_once:
+            See module docstring, "Producer stages run once". Default
+            `True` matches the one producer this codebase has today
+            (Discovery).
+        active_poll_seconds:
+            Sleep between passes when the previous pass had at least
+            one stage with `ran=True`. Default `0.0` — keep draining
+            while there is evidence of work, without a busy-loop
+            (still an ordinary Python loop iteration, not a spin on a
+            CPU-bound check).
+        idle_poll_seconds:
+            Sleep between passes when the previous pass produced
+            `ran=False` for every stage (every queue empty, every
+            producer already exhausted) — avoids busy-polling empty
+            queues.
+        on_stage_outcome:
+            Optional observer called with every `StageOutcome` this
+            driver produces, in-line on the driver's own thread (e.g.
+            for a caller that wants to log/count executed stages, or
+            for this milestone's own validation script). Never called
+            concurrently with itself, since there is only one drive
+            thread.
+        """
+        if not stages:
+            raise ValueError("ExecutionDriver requires at least one StageConfig")
+        self._runtime = engine_runtime
+        self._stages: List[StageConfig] = list(stages)
+        self._run_producers_once = run_producers_once
+        self._active_poll_seconds = active_poll_seconds
+        self._idle_poll_seconds = idle_poll_seconds
+        self._on_stage_outcome = on_stage_outcome
+
+        self._producer_names = {
+            s.name for s in self._stages if s.input_queue_id is None
+        }
+        self._producers_done: set = set()
+
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._lifecycle_lock = threading.Lock()
+        self.last_error: Optional[BaseException] = None
+
+    # -- lifecycle -------------------------------------------------------
+
+    def start(self) -> None:
+        """
+        Start the background drive thread. Raises ExecutionDriverError
+        if already running. Non-blocking: returns as soon as the
+        thread is launched, not once any stage has executed.
+        """
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise ExecutionDriverError(
+                    "ExecutionDriver.start() called while already running"
+                )
+            self._stop_event.clear()
+            self.last_error = None
+            self._thread = threading.Thread(
+                target=self._run_loop,
+                name="mast-execution-driver",
+                daemon=True,
+            )
+            self._thread.start()
+            log.info(
+                "ExecutionDriver started stages=%d producers=%s",
+                len(self._stages), sorted(self._producer_names),
+            )
+
+    def stop(self, *, wait: bool = True, timeout: Optional[float] = None) -> None:
+        """
+        Signal the drive loop to stop after its current
+        `execute_stage()` call (if any) returns, and, if `wait` is
+        True, join the background thread (with `timeout`, forwarded
+        to `Thread.join()` unchanged — `None` waits indefinitely).
+        Safe to call whether or not the driver was ever started, and
+        safe to call more than once. Never interrupts an in-flight
+        `execute_stage()` call — this is graceful shutdown: a worker
+        that is mid-`process()` when `stop()` is called still runs
+        `_handle_success`/`_handle_failure` and is released normally
+        before the loop notices the stop signal and exits.
+
+        Safe to call from inside an `on_stage_outcome` callback (i.e.
+        from the drive thread itself, mid-pass) even with `wait=True`:
+        `Thread.join()` on the thread's own current thread would
+        otherwise raise `RuntimeError` ("cannot join current thread").
+        This method detects that case and skips the join instead of
+        propagating that error — the stop signal is set either way,
+        so the loop still exits on its own once this call stack
+        returns control to it; the caller just does not block waiting
+        for a join that could never legally happen.
+        """
+        self._stop_event.set()
+        thread = self._thread
+        if wait and thread is not None:
+            if thread is threading.current_thread():
+                log.warning(
+                    "ExecutionDriver.stop(wait=True) called from its own "
+                    "drive thread (e.g. from an on_stage_outcome callback) "
+                    "-- cannot join the current thread; stop signal is "
+                    "set and the loop will exit once this call stack "
+                    "returns, but stop() is not blocking for it."
+                )
+            else:
+                thread.join(timeout=timeout)
+
+    def is_running(self) -> bool:
+        """True while the background drive thread is alive."""
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
+    def run_once(self) -> List[StageOutcome]:
+        """
+        Synchronously run exactly one pass over every stage (skipping
+        any producer already exhausted) and return every
+        `StageOutcome` produced, in stage order. Does not touch the
+        background thread or `_stop_event` — intended for tests and
+        for a caller that wants deterministic, single-threaded control
+        instead of `start()`/`stop()`. Safe to call whether or not the
+        background thread is also running, though doing both at once
+        would let two callers drive `execute_stage()` concurrently,
+        which this class does not itself guard against (see module
+        docstring, "Thread safety" — the guarantee is one drive thread
+        *per ExecutionDriver instance calling _run_loop*, not a lock
+        around `execute_stage()` itself).
+        """
+        outcomes = []
+        for stage in self._stages:
+            if (
+                self._run_producers_once
+                and stage.name in self._producer_names
+                and stage.name in self._producers_done
+            ):
+                continue
+            outcome = self._execute_one(stage)
+            if outcome is None:
+                break
+            outcomes.append(outcome)
+            if (
+                outcome.ran
+                and self._run_producers_once
+                and stage.name in self._producer_names
+            ):
+                self._producers_done.add(stage.name)
+        return outcomes
+
+    # -- internal ----------------------------------------------------------
+
+    def _run_loop(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                any_ran = False
+                for stage in self._stages:
+                    if self._stop_event.is_set():
+                        break
+                    if (
+                        self._run_producers_once
+                        and stage.name in self._producer_names
+                        and stage.name in self._producers_done
+                    ):
+                        continue
+                    outcome = self._execute_one(stage)
+                    if outcome is None:
+                        # Fatal error already recorded in self.last_error;
+                        # stop this driver rather than spin on the same
+                        # structural problem forever.
+                        return
+                    if outcome.ran:
+                        any_ran = True
+                        if self._run_producers_once and stage.name in self._producer_names:
+                            self._producers_done.add(stage.name)
+
+                if self._stop_event.is_set():
+                    return
+                delay = (
+                    self._active_poll_seconds if any_ran else self._idle_poll_seconds
+                )
+                if delay > 0:
+                    self._stop_event.wait(delay)
+        finally:
+            log.info("ExecutionDriver loop exiting")
+
+    def _execute_one(self, stage: StageConfig) -> Optional[StageOutcome]:
+        """
+        Run one `execute_stage()` call, translating a fatal
+        `EngineRuntimeError` (or any other exception `execute_stage()`
+        propagates outside its own worker-failure handling — see that
+        method's own docstring) into a recorded `self.last_error` and
+        a stopped loop, rather than letting it crash the background
+        thread silently or spin forever on the same misconfiguration.
+        An ordinary worker failure never reaches this except block —
+        `execute_stage()` already converts that into a returned
+        `StageOutcome(success=False, ...)`.
+        """
+        try:
+            outcome = self._runtime.execute_stage(stage)
+        except Exception as exc:  # noqa: BLE001 - fatal, not a worker failure
+            self.last_error = exc
+            self._stop_event.set()
+            log.error(
+                "ExecutionDriver: fatal error executing stage=%s: %s",
+                stage.name, exc,
+            )
+            return None
+        if self._on_stage_outcome is not None:
+            self._on_stage_outcome(outcome)
+        return outcome
+
+
+# ===========================================================================
+# Composition root: assembling the seven-stage pipeline
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class PipelineQueueIds:
+    """
+    The queue_id strings `build_seven_stage_pipeline()` wires the
+    seven stages together with. Returned alongside the `StageConfig`
+    list purely for observability/tests (e.g. asserting a queue drains
+    by id) — nothing about `ExecutionDriver` or `EngineRuntime` reads
+    this dataclass itself.
+
+    `fan_in_sink` (Item 4, see module docstring "Item 4" section
+    below): a queue nothing ever dequeues from -- no `StageConfig`
+    lists it as an `input_queue_id`. Its only purpose is giving
+    Instagram and Contact a non-`None` `output_queue_id`, because
+    `engine/runtime.py`'s own `_handle_success()` only calls a stage's
+    `build_downstream()` at all when `stage.output_queue_id is not
+    None`. Both stages' `build_downstream` closures already return
+    `None`, so nothing is ever actually enqueued into it -- it stays
+    permanently empty; it exists purely to make that `is not None`
+    check pass so `build_downstream`'s *side effect*
+    (`fan_in.record_instagram_result` / `record_contact_result`) runs
+    at all.
+    """
+
+    website_in: str
+    instagram_in: str
+    contact_in: str
+    merge_in: str
+    qualification_in: str
+    storage_in: str
+    fan_in_sink: str
+
+
+class _EnrichedBusinessStash:
+    """
+    Composition-root-only bookkeeping, not a new engine/ subsystem:
+    holds the `EnrichedBusiness` MergeWorker just produced for a
+    `pipeline_id`, so Qualification's own `build_downstream` closure
+    (below) can compose `QualifiedOpportunity` from it once
+    QualificationWorker returns. This exists for the same reason
+    `FanInRuntime` exists — StageConfig is strictly one-input/one-
+    output, so combining "this cycle's QualificationResult" with "the
+    EnrichedBusiness from an earlier cycle" needs somewhere to live
+    that isn't `EngineRuntime` (whose own docstring already forbids it
+    holding cross-call state) or `StageConfig` (frozen, one shot).
+    Guarded by one lock, mirroring `FanInRuntime`'s own single-lock
+    design for its correlation table.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._by_pipeline_id: Dict[str, EnrichedBusiness] = {}
+
+    def put(self, enriched: EnrichedBusiness) -> None:
+        with self._lock:
+            self._by_pipeline_id[enriched.pipeline_id] = enriched
+
+    def pop(self, pipeline_id: str) -> Optional[EnrichedBusiness]:
+        with self._lock:
+            return self._by_pipeline_id.pop(pipeline_id, None)
+
+
+class _QualificationInFlight:
+    """
+    Composition-root-only bookkeeping, added specifically to close the
+    `_EnrichedBusinessStash` leak an earlier audit found: if a
+    qualification_in QueueItem is ever dead-lettered, `StageOutcome`
+    carries that item's `queue_item_id` but never its `pipeline_id`
+    (see `engine/runtime.py`'s `StageOutcome` — `pipeline_id` is a
+    local inside `execute_stage()`/`_handle_failure()`, never
+    returned), so the dead-letter path has no way to know which
+    `_EnrichedBusinessStash` entry to remove without this. This class
+    remembers `queue_item_id -> pipeline_id` for exactly as long as
+    one qualification attempt is outstanding — recorded by the
+    qualification stage's `build_worker_input` (called on every
+    attempt, including retries, before `process()` runs), and removed
+    the moment that `queue_item_id` reaches either terminal outcome
+    (`success` or `dead_lettered` — see `_on_qualification_outcome`
+    below). Deliberately not merged into `_EnrichedBusinessStash`
+    itself (that class's existing `put`/`pop`-by-`pipeline_id` shape
+    is left unchanged) — this is a second, narrower table for a
+    second, narrower purpose: recovering a `pipeline_id` from a
+    `queue_item_id` when nothing else in this cycle's `StageOutcome`
+    can. Same single-lock discipline as `_EnrichedBusinessStash` and
+    `FanInRuntime`.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pipeline_id_by_item: Dict[str, str] = {}
+
+    def record(self, queue_item_id: str, pipeline_id: str) -> None:
+        with self._lock:
+            self._pipeline_id_by_item[queue_item_id] = pipeline_id
+
+    def pop(self, queue_item_id: str) -> Optional[str]:
+        with self._lock:
+            return self._pipeline_id_by_item.pop(queue_item_id, None)
+
+
+def build_seven_stage_pipeline(
+    coordinator: EngineCoordinator,
+    session_id: str,
+    *,
+    discovery_provider: Any,
+    discovery_request: Any,
+    storage_backend: Any,
+    niche: Optional[str] = None,
+    required_categories: Optional[frozenset] = None,
+    website_worker_factory: Optional[Callable[[], BaseWorker]] = None,
+    instagram_worker_factory: Optional[Callable[[], BaseWorker]] = None,
+    contact_worker_factory: Optional[Callable[[], BaseWorker]] = None,
+    merge_worker_factory: Optional[Callable[[], BaseWorker]] = None,
+    qualification_worker_factory: Optional[Callable[[], BaseWorker]] = None,
+    scoring_worker_factory: Optional[Callable[[], BaseWorker]] = None,
+    storage_worker_factory: Optional[Callable[[], BaseWorker]] = None,
+    instance_counts: Optional[Dict[str, int]] = None,
+) -> "tuple[List[StageConfig], PipelineQueueIds, FanInRuntime, Callable[[StageOutcome], None]]":
+    """
+    Composition root wiring every already-implemented worker
+    (DiscoveryWorker, WebsiteWorker, InstagramWorker, ContactWorker,
+    MergeWorker, QualificationWorker, StorageWorker) into one runnable
+    seven-stage `StageConfig` list, via `EngineCoordinator`'s existing
+    `build_runtime_context()` / `build_fan_in_runtime()` /
+    `get_engine_runtime()` (unmodified). Must be called after
+    `coordinator.create_session(...)` and `coordinator.start_session(
+    session_id)` — mirrors `start_discovery()`'s own precondition,
+    since `build_runtime_context()` requires a STARTING session.
+
+    Queue graph (see module docstring, review point 6, for why Website
+    is not terminal from EngineRuntime's point of view the way
+    Instagram/Contact are; see "Item 4" for why Instagram/Contact are
+    routed to fan_in_sink rather than truly having output_queue_id=None):
+
+        Discovery --(on_candidate)--> website_in
+                  \\-(on_candidate)--> instagram_in
+                  \\-(register_business)--> FanInRuntime accumulator
+
+        website_in    -> WebsiteWorker    -> [record_website_result,
+                                               forward WebsiteIntel]
+                                                      |
+                                                      v
+        contact_in    -> ContactWorker    -> record_contact_result -> fan_in_sink (never dequeued)
+        instagram_in  -> InstagramWorker  -> record_instagram_result -> fan_in_sink (never dequeued)
+
+        FanInRuntime, once all three branches are terminal (AD-042),
+        enqueues one MergeInput into:
+
+        merge_in         -> MergeWorker         -> EnrichedBusiness
+                                                    (stashed + forwarded)
+        qualification_in -> QualificationWorker -> QualifiedOpportunity
+                                                    (only if qualified;
+                                                    ScoringWorker is
+                                                    invoked directly,
+                                                    not via a queue --
+                                                    see "Scoring" note
+                                                    above
+                                                    _qualification_downstream)
+        storage_in        -> StorageWorker      -> StoredOpportunity
+                                                    (terminal)
+
+    Returns
+    -------
+    A 4-tuple: the ordered `StageConfig` list (Discovery first, then
+    Website/Instagram/Contact, then Merge/Qualification/Storage —
+    ready to pass straight to `ExecutionDriver`), the `PipelineQueueIds`
+    naming every queue created, the session's `FanInRuntime` (for a
+    caller/test that wants to inspect `pending_count()`/`is_closed()`
+    directly), and a cleanup callback the caller should pass as
+    `ExecutionDriver(..., on_stage_outcome=<that callback>)`. That
+    callback's only job is guaranteeing every `_EnrichedBusinessStash`
+    entry this pipeline stashes is eventually removed -- on a
+    successful Qualification cycle (already handled by
+    `_qualification_downstream` below) as well as on a dead-lettered
+    one (which `_qualification_downstream` is never called for at
+    all, since `build_downstream` only runs on the success path -- see
+    `_on_qualification_outcome`). A caller that also wants its own
+    `on_stage_outcome` observer can chain both, e.g.
+    `lambda o: (cleanup(o), my_observer(o))`; `ExecutionDriver` itself
+    still accepts exactly one such callback, unchanged.
+    """
+    instance_counts = dict(instance_counts or {})
+
+    def _count(worker_type: str) -> int:
+        return instance_counts.get(worker_type, 1)
+
+    queue_ids = PipelineQueueIds(
+        website_in="website_in",
+        instagram_in="instagram_in",
+        contact_in="contact_in",
+        merge_in="merge_in",
+        qualification_in="qualification_in",
+        storage_in="storage_in",
+        fan_in_sink="fan_in_sink",
+    )
+
+    # A short, real RetryPolicy (rather than none at all) so a failing
+    # cycle gets one retry before dead-letter, matching AD-042's own
+    # completion policy expecting a real terminal outcome per branch
+    # eventually, not "no retry_policy means dead-letter on the very
+    # first failure" for every queue by default.
+    default_retry_policy = RetryPolicy(
+        max_attempts=2, retry_delay_seconds=0.0, strategy="immediate"
+    )
+
+    queue_definitions = [
+        QueueDefinition(
+            queue_id=queue_ids.website_in,
+            queue_name="Website Input",
+            stage="website",
+            retry_policy=default_retry_policy,
+        ),
+        QueueDefinition(
+            queue_id=queue_ids.instagram_in,
+            queue_name="Instagram Input",
+            stage="instagram",
+            retry_policy=default_retry_policy,
+        ),
+        QueueDefinition(
+            queue_id=queue_ids.contact_in,
+            queue_name="Contact Input",
+            stage="contact",
+            retry_policy=default_retry_policy,
+        ),
+        QueueDefinition(
+            queue_id=queue_ids.merge_in,
+            queue_name="Merge Input",
+            stage="merge",
+            retry_policy=default_retry_policy,
+        ),
+        QueueDefinition(
+            queue_id=queue_ids.qualification_in,
+            queue_name="Qualification Input",
+            stage="qualification",
+            retry_policy=default_retry_policy,
+        ),
+        QueueDefinition(
+            queue_id=queue_ids.storage_in,
+            queue_name="Storage Input",
+            stage="storage",
+            retry_policy=default_retry_policy,
+        ),
+        QueueDefinition(
+            queue_id=queue_ids.fan_in_sink,
+            queue_name="Fan-In Sink (never dequeued)",
+            stage="fan_in_sink",
+            retry_policy=default_retry_policy,
+        ),
+    ]
+
+    def _definition(definition_id: str, worker_type: str) -> WorkerDefinition:
+        return WorkerDefinition(
+            definition_id=definition_id,
+            worker_type=worker_type,
+            capabilities=(WorkerCapability(name=worker_type),),
+        )
+
+    stage_blueprints = [
+        StageBlueprint(
+            definition=_definition("discovery-v1", "discovery"),
+            worker_factory=lambda: DiscoveryWorker(provider=discovery_provider),
+            instance_count=_count("discovery"),
+        ),
+        StageBlueprint(
+            definition=_definition("website-v1", "website"),
+            worker_factory=website_worker_factory or (lambda: WebsiteWorker()),
+            instance_count=_count("website"),
+        ),
+        StageBlueprint(
+            definition=_definition("instagram-v1", "instagram"),
+            worker_factory=instagram_worker_factory or (lambda: InstagramWorker()),
+            instance_count=_count("instagram"),
+        ),
+        StageBlueprint(
+            definition=_definition("contact-v1", "contact"),
+            worker_factory=contact_worker_factory or (lambda: ContactWorker()),
+            instance_count=_count("contact"),
+        ),
+        StageBlueprint(
+            definition=_definition("merge-v1", "merge"),
+            worker_factory=merge_worker_factory or (lambda: MergeWorker()),
+            instance_count=_count("merge"),
+        ),
+        StageBlueprint(
+            definition=_definition("qualification-v1", "qualification"),
+            worker_factory=qualification_worker_factory
+            or (
+                lambda: QualificationWorker(
+                    niche=niche, required_categories=required_categories
+                )
+            ),
+            instance_count=_count("qualification"),
+        ),
+        StageBlueprint(
+            definition=_definition("storage-v1", "storage"),
+            worker_factory=storage_worker_factory
+            or (lambda: StorageWorker(backend=storage_backend)),
+            instance_count=_count("storage"),
+        ),
+    ]
+
+    coordinator.build_runtime_context(
+        session_id, stages=stage_blueprints, queue_definitions=queue_definitions
+    )
+    fan_in = coordinator.build_fan_in_runtime(
+        session_id, merge_queue_id=queue_ids.merge_in, merge_output_stage="merge"
+    )
+    engine_runtime = coordinator.get_engine_runtime(session_id)
+    ctx = coordinator.get_session(session_id)
+    queue_manager = ctx.runtime.queue_manager
+    website_queue = queue_manager.get_queue(queue_ids.website_in)
+    instagram_queue = queue_manager.get_queue(queue_ids.instagram_in)
+
+    stash = _EnrichedBusinessStash()
+    qualification_in_flight = _QualificationInFlight()
+
+    # -- Discovery: producer, per StageConfig's own contract -------------
+
+    def _on_candidate(candidate: BusinessCandidate) -> None:
+        """
+        See workers/discovery_worker.py's own "Ownership of
+        on_candidate" section, which names this composition layer as
+        the one responsible for this closure. Seeds the FanInRuntime
+        accumulator (needed for MergeInput.business, per AD-042 §6's
+        "correlation key" requirement) and fans the candidate out to
+        both branch-input queues that take a BusinessCandidate
+        directly. Contact's queue is deliberately not fed here — its
+        input is WebsiteIntel, populated once WebsiteWorker's own
+        `build_downstream` (below) forwards its output, per module
+        docstring review point 6.
+        """
+        fan_in.register_business(candidate)
+        website_queue.enqueue(
+            pipeline_id=candidate.pipeline_id, stage="website", payload=candidate
+        )
+        instagram_queue.enqueue(
+            pipeline_id=candidate.pipeline_id, stage="instagram", payload=candidate
+        )
+
+    discovery_stage = StageConfig(
+        name="discovery",
+        definition_id="discovery-v1",
+        input_queue_id=None,
+        output_queue_id=None,
+        produce_worker_input=lambda: DiscoveryExecution(
+            request=discovery_request, on_candidate=_on_candidate
+        ),
+        build_downstream=lambda _count: None,
+    )
+
+    # -- Website: records its own branch result AND forwards WebsiteIntel
+    #    on to Contact's input queue (module docstring review point 6).
+
+    def _website_downstream(intel: WebsiteIntel) -> Optional[WebsiteIntel]:
+        fan_in.record_website_result(intel.pipeline_id, intel)
+        return intel
+
+    website_stage = StageConfig(
+        name="website",
+        definition_id="website-v1",
+        input_queue_id=queue_ids.website_in,
+        output_queue_id=queue_ids.contact_in,
+        output_stage="contact",
+        build_downstream=_website_downstream,
+    )
+
+    # -- Instagram: reports its own branch result to FanInRuntime, then
+    #    forwards nothing meaningful (see Item 4 fix note below).
+
+    def _instagram_downstream(intel) -> None:
+        fan_in.record_instagram_result(intel.pipeline_id, intel)
+        return None
+
+    instagram_stage = StageConfig(
+        name="instagram",
+        definition_id="instagram-v1",
+        input_queue_id=queue_ids.instagram_in,
+        # Item 4 fix: this MUST be non-None. engine/runtime.py's own
+        # _handle_success() only calls build_downstream() at all when
+        # output_queue_id is not None -- with output_queue_id=None,
+        # _instagram_downstream (and therefore record_instagram_result)
+        # was silently never invoked for any candidate, ever. Routed to
+        # fan_in_sink, a queue nothing ever dequeues from; since
+        # _instagram_downstream still returns None, nothing is actually
+        # enqueued into it -- this exists only to satisfy that check.
+        output_queue_id=queue_ids.fan_in_sink,
+        output_stage="fan_in_sink",
+        build_downstream=_instagram_downstream,
+    )
+
+    # -- Contact: same shape and same Item 4 fix as Instagram.
+
+    def _contact_downstream(intel) -> None:
+        fan_in.record_contact_result(intel.pipeline_id, intel)
+        return None
+
+    contact_stage = StageConfig(
+        name="contact",
+        definition_id="contact-v1",
+        input_queue_id=queue_ids.contact_in,
+        # Item 4 fix: see instagram_stage's comment above -- identical
+        # reasoning and identical fix.
+        output_queue_id=queue_ids.fan_in_sink,
+        output_stage="fan_in_sink",
+        build_downstream=_contact_downstream,
+    )
+
+    # -- Merge: fed by FanInRuntime's own enqueue() (not by this
+    #    StageConfig's output_queue_id — nothing upstream of Merge
+    #    enqueues into merge_in directly). Stashes the EnrichedBusiness
+    #    Qualification will need, then forwards it unchanged.
+
+    def _merge_downstream(enriched: EnrichedBusiness) -> EnrichedBusiness:
+        stash.put(enriched)
+        return enriched
+
+    merge_stage = StageConfig(
+        name="merge",
+        definition_id="merge-v1",
+        input_queue_id=queue_ids.merge_in,
+        output_queue_id=queue_ids.qualification_in,
+        output_stage="qualification",
+        build_downstream=_merge_downstream,
+    )
+
+    # -- Scoring: NOT a StageConfig/queue -- there is no scoring_in
+    #    queue and no ScoringWorker WorkerDefinition anywhere in this
+    #    pipeline (deliberately -- adding one would turn this into an
+    #    eight-stage pipeline, which was explicitly not authorized).
+    #    ScoringWorker is stateless and pure (no I/O, no queue import --
+    #    see its own module docstring), so one shared instance is
+    #    invoked as a plain function call from the existing
+    #    QualifiedOpportunity composition point below
+    #    (`_qualification_downstream`), the same place `score` was
+    #    already a named field being populated (previously hardcoded to
+    #    None -- see that function for what changed).
+    _scoring_worker = (scoring_worker_factory or (lambda: ScoringWorker()))()
+
+    # -- Qualification: composes QualifiedOpportunity from this cycle's
+    #    QualificationResult plus the EnrichedBusiness Merge stashed for
+    #    the same pipeline_id, and (per the composition-point review
+    #    above) this cycle's OpportunityScore, computed synchronously
+    #    from the same stashed EnrichedBusiness via ScoringWorker. A
+    #    rejected result is not forwarded to Storage at all --
+    #    QualificationResult's own docstring already calls a rejected
+    #    result "effectively terminal for that pipeline"; StorageWorker
+    #    is never given a QualifiedOpportunity to persist for one, and
+    #    ScoringWorker is correspondingly never invoked for one either
+    #    (no point scoring an opportunity that will never be stored).
+
+    def _qualification_worker_input(item: Any) -> EnrichedBusiness:
+        # Recorded on every attempt (including a retried one), before
+        # process() runs -- so a dead-lettered attempt's StageOutcome
+        # (which carries queue_item_id but never pipeline_id; see
+        # _QualificationInFlight's own docstring) can still be traced
+        # back to the right stash entry by _on_qualification_outcome
+        # below. Otherwise identical to StageConfig.build_worker_input's
+        # own default (`item.payload`) -- no other behavior added.
+        qualification_in_flight.record(item.queue_item_id, item.pipeline_id)
+        return item.payload
+
+    def _qualification_downstream(
+        result: QualificationResult,
+    ) -> Optional[QualifiedOpportunity]:
+        enriched = stash.pop(result.pipeline_id)
+        if enriched is None:
+            log.warning(
+                "qualification: no stashed EnrichedBusiness for "
+                "pipeline_id=%s; dropping (cannot build QualifiedOpportunity "
+                "without it)",
+                result.pipeline_id,
+            )
+            return None
+        if not result.qualified:
+            log.info(
+                "qualification: pipeline_id=%s rejected (%s); not "
+                "forwarded to Storage",
+                result.pipeline_id, ", ".join(result.reasons) or "no reason given",
+            )
+            return None
+        business_session_id = (
+            enriched.business.session_id if enriched.business is not None else session_id
+        )
+        score = _scoring_worker.process(enriched)
+        qualified_opportunity = QualifiedOpportunity(
+            pipeline_id=result.pipeline_id,
+            session_id=business_session_id,
+            business=enriched,
+            qualification=result,
+            score=score,
+        )
+
+        # -- Prioritization: NOT a StageConfig/queue, for the identical
+        #    reason Scoring (above) is not one -- adding one would turn
+        #    this into an eight/nine-stage pipeline, which was
+        #    explicitly not authorized. OpportunityPrioritizationService
+        #    is stateless and pure, so it is invoked as a plain function
+        #    call from this same composition point, the same way Scoring
+        #    already is. Unlike Scoring, its inputs live in the domain
+        #    layer (opportunities.Opportunity /
+        #    opportunity_qualification.OpportunityQualification /
+        #    opportunity_scoring.OpportunityScore), not the production
+        #    layer -- engine/adapters.py bridges that gap. Per that
+        #    module's own contract, any of the three adapters may
+        #    legitimately return None (no fabricated data); when that
+        #    happens this opportunity is silently excluded from the
+        #    batch intelligence chain (Prioritization/Ranking/Mission
+        #    Generation/Workflow Initialization) but is still returned
+        #    below unchanged, so Storage persists it exactly as before --
+        #    this integration adds a side channel, it does not gate the
+        #    existing Storage path.
+        domain_opportunity = engine_adapters.to_domain_opportunity(qualified_opportunity)
+        domain_qualification = engine_adapters.to_domain_qualification(qualified_opportunity)
+        domain_score = engine_adapters.to_domain_score(qualified_opportunity)
+        if domain_opportunity is not None and domain_qualification is not None and domain_score is not None:
+            policy = PrioritizationPolicy(
+                strategy=PrioritizationStrategy.BALANCED,
+                evaluation_at=_dt.datetime.now(_dt.timezone.utc),
+            )
+            priority = OpportunityPrioritizationService.evaluate_priority(
+                domain_opportunity, domain_qualification, domain_score, policy
+            )
+            coordinator.record_prioritized_opportunity(
+                session_id,
+                (domain_opportunity, domain_qualification, domain_score, priority),
+            )
+        else:
+            log.info(
+                "prioritization: pipeline_id=%s could not be adapted to the "
+                "Engine 2.0 domain layer; excluded from the batch "
+                "intelligence chain (Storage is unaffected)",
+                result.pipeline_id,
+            )
+
+        return qualified_opportunity
+
+    def _on_qualification_outcome(outcome: StageOutcome) -> None:
+        """
+        Guarantees every `_EnrichedBusinessStash` entry this pipeline
+        creates is eventually removed, regardless of whether
+        Qualification succeeds or permanently fails. `build_downstream`
+        (above) already removes the stash entry on success; that
+        function is simply never called for a dead-lettered attempt
+        (`EngineRuntime._handle_success` -- the only caller of
+        `build_downstream` -- is only reached on the success path), so
+        this is the only place that can close the leak an earlier
+        audit found: a dead-lettered qualification_in item whose
+        stashed EnrichedBusiness would otherwise never be popped.
+
+        Intended to be passed as `ExecutionDriver(...,
+        on_stage_outcome=...)` -- this is that existing, unmodified
+        extension point; nothing new was added to ExecutionDriver
+        itself to support this.
+        """
+        if outcome.stage_name != "qualification" or outcome.queue_item_id is None:
+            return
+        if not (outcome.success or outcome.dead_lettered):
+            # Neither terminal outcome yet (an ordinary attempt
+            # recorded for a possible future retry) -- the tracking
+            # entry must stay so a later dead-lettered attempt can
+            # still be traced back to its pipeline_id.
+            return
+        pipeline_id = qualification_in_flight.pop(outcome.queue_item_id)
+        if outcome.dead_lettered and pipeline_id is not None:
+            if stash.pop(pipeline_id) is not None:
+                log.info(
+                    "qualification: pipeline_id=%s permanently "
+                    "dead-lettered (queue_item_id=%s); discarding its "
+                    "stashed EnrichedBusiness",
+                    pipeline_id, outcome.queue_item_id,
+                )
+
+    qualification_stage = StageConfig(
+        name="qualification",
+        definition_id="qualification-v1",
+        input_queue_id=queue_ids.qualification_in,
+        output_queue_id=queue_ids.storage_in,
+        output_stage="storage",
+        build_worker_input=_qualification_worker_input,
+        build_downstream=_qualification_downstream,
+    )
+
+    # -- Storage: terminal.
+
+    storage_stage = StageConfig(
+        name="storage",
+        definition_id="storage-v1",
+        input_queue_id=queue_ids.storage_in,
+        output_queue_id=None,
+    )
+
+    stages = [
+        discovery_stage,
+        website_stage,
+        instagram_stage,
+        contact_stage,
+        merge_stage,
+        qualification_stage,
+        storage_stage,
+    ]
+
+    log.info(
+        "build_seven_stage_pipeline: session=%s stages=%d queues=%d",
+        session_id, len(stages), len(queue_definitions),
+    )
+    return stages, queue_ids, fan_in, _on_qualification_outcome
+
+
+def run_batch_intelligence(coordinator: EngineCoordinator, session_id: str) -> Dict[str, Any]:
+    """
+    Session-scoped completion of the batch intelligence chain: Ranking ->
+    Mission Generation -> Workflow Initialization (Part 3, MAST Lead
+    Engine 2.0 continuation).
+
+    Must be called AFTER coordinator.finish_session(session_id) (or
+    cancel_session/fail_session -- ranking whatever a session actually
+    accumulated before early termination is still a legitimate ranking of
+    that cohort, not a redesign of when Ranking runs). Drains this
+    session's accumulated cohort (per-opportunity Prioritization results
+    recorded by `_qualification_downstream` during the run, via
+    `coordinator.record_prioritized_opportunity`) with
+    `coordinator.pop_batch_cohort()`, then:
+
+      1. Ranking -- OpportunityRankingService.rank_opportunities() over
+         the ENTIRE cohort's OpportunityPriority values. Session-scoped,
+         never opportunity-scoped, per the locked architecture ("Ranking
+         compares the entire discovery cohort").
+      2. Mission Generation -- MissionGenerationService.generate_missions()
+         for every ranked opportunity whose OpportunityPriority.is_eligible
+         is True. is_eligible is a value the domain layer already computed
+         during Prioritization (not a new rule invented here); Ranking
+         itself does not filter on it (pure sort -- see
+         OpportunityRankingService's own module docstring), so this
+         wiring layer honors the flag before generating missions,
+         rather than generating outreach missions for opportunities
+         Prioritization already marked ineligible.
+      3. Workflow Initialization -- WorkflowEngineService.initialize_workflow()
+         for every generated Mission.
+
+    Returns a dict of the three output tuples and stores it via
+    coordinator.set_batch_result() for later on-demand retrieval (e.g. by
+    the `workflow` CLI mode's "transition" action, or a future API route).
+    Never raises for an empty/fully-ineligible cohort (returns empty
+    tuples); only propagates a domain service's own exception, since that
+    indicates a genuine integration defect (e.g. a lineage mismatch)
+    rather than "nothing to rank this time."
+    """
+    cohort = coordinator.pop_batch_cohort(session_id)
+
+    priorities = [record[3] for record in cohort]
+    opportunities_by_id = {record[0].opportunity_id: record[0] for record in cohort}
+
+    ranked = OpportunityRankingService.rank_opportunities(priorities)
+
+    eligible_by_id = {p.opportunity_id: p.is_eligible for p in priorities}
+    mission_pairs = [
+        (ranked_opp, opportunities_by_id[ranked_opp.opportunity_id])
+        for ranked_opp in ranked
+        if eligible_by_id.get(ranked_opp.opportunity_id, False)
+    ]
+    missions = MissionGenerationService.generate_missions(mission_pairs)
+
+    workflow_states = tuple(
+        WorkflowEngineService.initialize_workflow(mission) for mission in missions
+    )
+
+    result: Dict[str, Any] = {
+        # Part 4 (Persistence Integration milestone) addition: the
+        # cohort's own Prioritization output was already computed above
+        # (`priorities`, drained from the cohort tuples) but was never
+        # surfaced in this dict before -- only consumed internally to
+        # build `ranked`. Storage needs it too (opportunity_priorities
+        # is one of the five tables the persistence milestone
+        # introduces), so it is added here, additively -- every key
+        # that existed before is unchanged.
+        "priorities": tuple(priorities),
+        "ranked_opportunities": ranked,
+        "missions": missions,
+        "workflow_states": workflow_states,
+    }
+    coordinator.set_batch_result(session_id, result)
+
+    log.info(
+        "run_batch_intelligence: session=%s cohort=%d ranked=%d "
+        "eligible_missions=%d workflow_states=%d",
+        session_id, len(cohort), len(ranked), len(missions), len(workflow_states),
+    )
+    return result

@@ -373,6 +373,44 @@ _WEAK_SITE_DOMAINS = frozenset({
 })
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Business classification keyword lists
+#
+# Canonical source for chain/cannabis detection. Both scoring/scorer.py
+# (V1's is_chain/is_cannabis) and workers/scoring_worker.py (V2's
+# ScoringWorker._is_chain/_is_cannabis) evaluate the exact same
+# real-world fact — "is this business a chain" / "is this a cannabis
+# business" — and previously did so against two independently
+# maintained but byte-identical copies of these tuples. Consolidated
+# here (2.0 Scoring Reconciliation, Milestone 3B-3) so a future edit to
+# either list can't silently drift between V1 and V2. The two modules
+# still expose their own is_chain/is_cannabis wrappers, since they take
+# different argument shapes (a raw dict in V1, discrete name/category
+# strings in V2) — only the underlying keyword data is shared.
+# ──────────────────────────────────────────────────────────────────────────────
+
+CHAIN_KEYWORDS = (
+    "starbucks", "mcdonald", "burger king", "kfc", "subway",
+    "taco bell", "pizza hut", "domino", "dunkin", "tim hortons",
+    "costa coffee", "wendy", "chipotle", "panera", "walmart",
+    "7-eleven", "circle k", "shell", "exxon", "carrefour", "tesco",
+    "ikea", "sephora", "h&m", "zara", "uniqlo", "nike", "adidas",
+    "pret a manger", "five guys", "popeyes", "chili's", "applebee",
+    "olive garden", "ihop", "denny", "chick-fil-a", "shake shack",
+    "krispy kreme", "baskin", "cinnabon", "auntie anne",
+    "gloria jean", "coffee bean", "lavazza", "illy caffe",
+    "paul bakery", "greggs", "le pain quotidien", "mcdonalds",
+    "pizzahut", "pizzaexpress", "nandos", "wagamama",
+)
+
+CANNABIS_KEYWORDS = (
+    "cannabis", "marijuana", "weed dispensary", "dispensary",
+    "coffeeshop", "cannabis café", "cannabis cafe", "cannabis coffee",
+    "hash bar", "hash café", "420 café", "420 cafe", "hemp café",
+    "cbd café", "cbd cafe", "cbd shop",
+)
+
+
 def clean_url(url: str) -> str:
     """Strip tracking params, normalize scheme, remove trailing slash."""
     if not url:

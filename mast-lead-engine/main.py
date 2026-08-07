@@ -28,16 +28,10 @@ import asyncio
 import sys
 from pathlib import Path
 
-from scraper.maps_scraper import MapsScraper
-from scraper.pipeline import EnrichmentPipeline
+from service import run_query
 from storage.dedup import LeadStore
 from utils.output import CSVWriter, JSONLWriter, SheetsWriter
-from utils.runtime import (
-    ProxyManager,
-    RunStats,
-    ScraperConfig,
-    get_logger,
-)
+from utils.runtime import get_logger
 
 log = get_logger("main")
 
@@ -115,38 +109,28 @@ def build_parser() -> argparse.ArgumentParser:
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def run(args: argparse.Namespace) -> int:
-    """Main async runner. Returns exit code."""
+    """
+    Main async runner. Returns exit code.
 
-    # Build config
-    config = ScraperConfig(
-        fast=args.fast,
-        headless=not args.headful,
-        skip_ig=args.no_ig,
-        skip_site_crawl=args.no_site,
-        max_ig_followers=args.max_ig_followers,
-        max_reviews=args.max_reviews,
-    )
-    if args.maps_rpm:
-        config.maps_rpm = args.maps_rpm
-    if args.ig_rpm:
-        config.ig_rpm = args.ig_rpm
-
-    stats = RunStats()
-    proxy_manager = ProxyManager()
-    store = LeadStore(args.db)
-
+    Engine 2.0 cutover: this no longer drives MapsScraper /
+    EnrichmentPipeline itself — that was a second, inline copy of the
+    exact orchestration service.run_query() already implements (now via
+    EngineCoordinator / build_seven_stage_pipeline / ExecutionDriver).
+    main.py's own job stays what it always was: CLI parsing, dedup-db
+    reset, and file output — so it now simply calls run_query() as a
+    library and hands each lead dict to the configured writers, per the
+    "treat service.py as the composition root, don't duplicate
+    orchestration" migration rule.
+    """
     if args.no_history:
         log.warning("[main] --no-history: wiping dedup database")
+        store = LeadStore(args.db)
         store.reset()
+        store.close()
 
     log.info(
         f"[main] starting — query={args.query!r} city={args.city!r} "
         f"country={args.country} max={args.max_results}"
-    )
-    log.info(
-        f"[main] config — fast={config.fast} skip_ig={config.skip_ig} "
-        f"skip_site={config.skip_site_crawl} max_ig={config.max_ig_followers} "
-        f"max_reviews={config.max_reviews}"
     )
 
     # Output writers
@@ -163,53 +147,36 @@ async def run(args: argparse.Namespace) -> int:
     delivered = 0
 
     try:
-        async with MapsScraper(config, proxy_manager, stats) as scraper:
-            pipeline = EnrichmentPipeline(
-                config=config,
-                browser=scraper.browser,
-                store=store,
-                stats=stats,
+        async for lead_dict in run_query(
+            query=args.query,
+            city=args.city,
+            country=args.country,
+            niche=args.niche,
+            region=args.region,
+            max_results=args.max_results,
+            max_ig_followers=args.max_ig_followers,
+            max_reviews=args.max_reviews,
+            min_score=args.min_score,
+            fast=args.fast,
+            skip_ig=args.no_ig,
+            skip_site_crawl=args.no_site,
+            require_viability=not args.no_viability_gate,
+            db_path=args.db,
+        ):
+            for writer in writers:
+                writer.write(lead_dict)
+
+            delivered += 1
+
+            # Inline progress report
+            print(
+                f"  [{delivered:3d}] "
+                f"{lead_dict.get('name') or '<unnamed>':<30} | "
+                f"score={lead_dict.get('score') or 0:3.0f} ({lead_dict.get('tier') or '-':<6}) | "
+                f"ig={lead_dict.get('ig_followers') or '-':<7} | "
+                f"email={'✓' if lead_dict.get('email') else '✗'}  "
+                f"phone={'✓' if lead_dict.get('phone') else '✗'}"
             )
-
-            async for raw_place in scraper.search(
-                query=args.query,
-                city=args.city,
-                country=args.country,
-                niche=args.niche,
-                region=args.region,
-                max_results=args.max_results * 3,  # over-fetch to account for filters
-            ):
-                if delivered >= args.max_results:
-                    break
-
-                lead = await pipeline.process(
-                    raw_place,
-                    require_viability=not args.no_viability_gate,
-                    max_ig_followers=args.max_ig_followers,
-                    max_reviews=args.max_reviews,
-                )
-
-                if not lead:
-                    continue
-
-                if lead.score < args.min_score:
-                    stats.skip(f"score_<_{args.min_score}")
-                    continue
-
-                for writer in writers:
-                    writer.write(lead.to_dict())
-
-                delivered += 1
-
-                # Inline progress report
-                print(
-                    f"  [{delivered:3d}] "
-                    f"{lead.name:<30} | "
-                    f"score={lead.score:3d} ({lead.tier:<6}) | "
-                    f"ig={lead.ig_followers or '-':<7} | "
-                    f"email={'✓' if lead.email else '✗'}  "
-                    f"phone={'✓' if lead.phone else '✗'}"
-                )
 
     except KeyboardInterrupt:
         log.warning("[main] interrupted by user")
@@ -222,11 +189,9 @@ async def run(args: argparse.Namespace) -> int:
                 writer.close()
             except Exception:
                 pass
-        store.close()
 
     # Summary
     print("\n" + "─" * 60)
-    print(stats.summary())
     print(f"  Delivered to output : {delivered}")
     if writers and hasattr(writers[0], "path"):
         print(f"  Output file         : {writers[0].path}")
@@ -247,6 +212,19 @@ def main() -> None:
     if args.max_results < 1:
         print("Error: --max must be >= 1", file=sys.stderr)
         sys.exit(1)
+
+    # Engine 2.0: GoogleMapsProvider (providers/google_maps_provider.py)
+    # constructs its own ScraperConfig(headless=True) internally and does
+    # not accept maps_rpm/ig_rpm overrides — these three CLI flags have no
+    # effect on the production (run_query) path anymore. Flagged here
+    # rather than silently dropped; see the migration review for why.
+    if args.headful or args.maps_rpm or args.ig_rpm:
+        print(
+            "Warning: --headful/--maps-rpm/--ig-rpm have no effect under "
+            "Engine 2.0 (GoogleMapsProvider owns its own scraper config); "
+            "ignoring.",
+            file=sys.stderr,
+        )
 
     exit_code = asyncio.run(run(args))
     sys.exit(exit_code)

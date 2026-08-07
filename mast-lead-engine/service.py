@@ -34,6 +34,25 @@ argv and writes params to stdin.
 
 from __future__ import annotations
 
+import sys as _sys
+
+# Milestone 2 (Engine 2.0 Enrichment Bridge): the `enrich` CLI mode's
+# entire contract, like `verify`'s before it, is "stdout is exactly one
+# JSON line" for pythonBridge.ts to JSON.parse() directly. utils/runtime.py
+# — imported transitively by every project import below — configures
+# `logging.basicConfig(stream=sys.stdout, ...)` at IMPORT TIME, so
+# redirecting sys.stdout has to happen here, before that import runs, to
+# have any effect; doing it inside _enrich_cli() (after imports already
+# completed) is too late. `_REAL_STDOUT` is where _enrich_cli() writes its
+# actual JSON result once everything else has finished logging to the now-
+# redirected sys.stdout. Search/verify mode (no "enrich" argv) are
+# unaffected — this only swaps sys.stdout under `enrich`.
+_REAL_STDOUT = _sys.stdout
+_JSON_CLI_MODES = ("enrich", "score", "qualify", "prioritize", "workflow", "crm", "analytics", "ai_coach", "mission_intelligence", "feedback")
+if len(_sys.argv) > 1 and _sys.argv[1] in _JSON_CLI_MODES:
+    _sys.stdout = _sys.stderr
+
+
 import time as _time
 # Phase 2A instrumentation: approximates the "Python imports" stage the
 # audit asked for — the delta between this line (as early as the module
@@ -47,13 +66,14 @@ _IMPORTS_START_TS = _time.perf_counter()
 
 import asyncio
 import json
+import queue as thread_queue
 import signal
 import sys
+import threading
 import time
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Optional
 
 from scraper.maps_scraper import MapsScraper
-from scraper.pipeline import EnrichmentPipeline
 from enrichment.site_crawler import SiteCrawler
 from enrichment.ig_intel import IGIntelligence
 from scoring.scorer import is_cannabis, is_chain
@@ -63,15 +83,175 @@ from utils.lifecycle_tracker import log_milestone
 from utils.perf import RunProfiler, NullProfiler
 from utils.pipeline_trace import PipelineTracer
 
+# Engine 2.0 — production entrypoint now drives discovery / enrichment /
+# qualification / storage through the real seven-stage runtime instead of
+# the old V1 EnrichmentPipeline (formerly scraper/pipeline.py, removed —
+# it had no remaining importers). See the migration notes above
+# run_query() for exactly what replaced what.
+from engine.coordinator import EngineCoordinator
+from engine.contracts import QualifiedOpportunity, StoredOpportunity
+from engine.execution_driver import ExecutionDriver, build_seven_stage_pipeline, run_batch_intelligence
+from providers.google_maps_provider import GoogleMapsProvider, GoogleMapsDiscoveryRequest
+from storage_backends.supabase_backend import SupabaseStorageBackend
+from storage_backends.batch_intelligence_backend import SupabaseBatchIntelligenceBackend
+
+# Milestone 2 (pg-boss business-processing integration) — Engine 2.0's
+# canonical Website/Instagram/Contact/Merge workers, wired to replace the
+# V1 SiteCrawler/IGIntelligence path verify_business() below still serves
+# to the (separate, out-of-scope-for-this-milestone) periodic verification
+# job. See engine_enrichment_bridge.py's own module docstring for exactly
+# what is and is not covered.
+from engine_enrichment_bridge import enrich_business as _engine_enrich_business
+
+from opportunity_scoring.service import OpportunityScoringService
+from opportunity_qualification.service import OpportunityQualificationService
+from crm_intelligence.service import CRMIntelligenceService
+from crm_intelligence.models import (
+    RelationshipEvaluationRequest as CRMRelationshipRequest,
+    InteractionRecord as CRMInteractionRecord,
+    ContactPolicy as CRMContactPolicy,
+)
+from workers.scoring_worker import ScoringWorker
+
+
 _IMPORTS_DONE_TS = _time.perf_counter()
 _IMPORTS_ELAPSED_MS = (_IMPORTS_DONE_TS - _IMPORTS_START_TS) * 1000.0
 
 log = get_logger("service")
 
+# Engine 2.0 cutover: this module-level EngineCoordinator is now the real
+# entry point run_query() drives every session through (create_session ->
+# start_session -> build_seven_stage_pipeline -> mark_running ->
+# ExecutionDriver.run_once() loop). One coordinator per process is
+# correct here because the Node bridge spawns one `python service.py`
+# subprocess per query (see module docstring) — sessions from different
+# queries never collide because each run_query() call mints its own
+# session_id.
+engine_coordinator = EngineCoordinator()
+
 # Phase 2: module-level slot so _main_cli can read the profiler's summary
 # after run_query's finally block has populated it.  This avoids changing
 # run_query's public async-generator signature.
 _last_perf_summary: dict = {}
+
+_SENTINEL = object()
+
+
+def _build_storage_backend() -> SupabaseStorageBackend:
+    """
+    Engine 2.0 composition-root wiring for the Storage stage.
+    SupabaseStorageBackend (storage_backends/supabase_backend.py) is the
+    one concrete `_StoragePersistenceProtocol` implementation that exists
+    today; it reads SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY from the
+    environment by default (see its own constructor docstring) — no new
+    env var names invented here.
+    """
+    return SupabaseStorageBackend()
+
+
+def _build_batch_intelligence_backend() -> SupabaseBatchIntelligenceBackend:
+    """
+    Composition-root wiring for the Persistence Integration milestone's
+    batch intelligence backend (storage_backends/batch_intelligence_backend.py).
+    Identical env-var convention to `_build_storage_backend()` above —
+    SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY, no new names invented.
+    """
+    return SupabaseBatchIntelligenceBackend()
+
+
+class _StreamingStorageBackend:
+    """
+    Composition-root-only wrapper around the real
+    `_StoragePersistenceProtocol` backend. StorageWorker (unmodified)
+    only ever sees this wrapper's `persist()` — it has no idea a
+    generator on the other side of a thread boundary is waiting for its
+    result. This is the seam that lets run_query() stream a lead the
+    moment it's actually persisted, without StorageWorker/ExecutionDriver
+    knowing anything about asyncio, queues, or the Node bridge.
+    """
+
+    def __init__(self, inner: SupabaseStorageBackend, on_persisted) -> None:
+        self._inner = inner
+        self._on_persisted = on_persisted
+
+    def persist(self, opportunity: QualifiedOpportunity) -> StoredOpportunity:
+        stored = self._inner.persist(opportunity)
+        self._on_persisted(opportunity, stored)
+        return stored
+
+
+def _candidate_dict(candidate) -> dict:
+    """BusinessCandidate -> plain dict, field-for-field, no new facts."""
+    return {
+        "pipeline_id": candidate.pipeline_id,
+        "provider": candidate.provider,
+        "maps_link": candidate.maps_url,
+        "name": candidate.name,
+        "category": candidate.category,
+        "address": candidate.address,
+        "city": candidate.city,
+        "country": candidate.country,
+        "website": candidate.website,
+        "phone": candidate.phone,
+        "rating": candidate.rating,
+        "review_count": candidate.review_count,
+        "discovered_at": candidate.discovered_at,
+    }
+
+
+def _opportunity_to_lead_dict(
+    opportunity: QualifiedOpportunity, stored: StoredOpportunity
+) -> dict[str, Any]:
+    """
+    QualifiedOpportunity + StoredOpportunity -> the flat lead dict shape
+    run_query() has always yielded, keeping the Node bridge's existing
+    field names wherever an Engine 2.0 contract has an equivalent field
+    (name/website/phone/rating/etc.), and adding the new engine's own
+    identifiers (opportunity_id, pipeline_id, session_id) alongside them.
+    """
+    enriched = opportunity.business
+    candidate = enriched.business if enriched else None
+    website_intel = enriched.website_intel if enriched else None
+    instagram_intel = enriched.instagram_intel if enriched else None
+    contact_intel = enriched.contact_intel if enriched else None
+    qualification = opportunity.qualification
+    score = opportunity.score
+
+    emails = list(contact_intel.emails) if contact_intel and contact_intel.emails else []
+    phones = list(contact_intel.phones) if contact_intel and contact_intel.phones else []
+
+    lead_dict: dict[str, Any] = {
+        "pipeline_id": opportunity.pipeline_id,
+        "session_id": opportunity.session_id,
+        "opportunity_id": stored.opportunity_id,
+        "stored_at": stored.created_at,
+        "name": candidate.name if candidate else None,
+        "category": candidate.category if candidate else None,
+        "address": candidate.address if candidate else None,
+        "city": candidate.city if candidate else None,
+        "country": candidate.country if candidate else None,
+        "website": candidate.website if candidate else None,
+        "maps_link": candidate.maps_url if candidate else None,
+        "rating": candidate.rating if candidate else None,
+        "review_count": candidate.review_count if candidate else None,
+        "phone": (candidate.phone if candidate else None) or (phones[0] if phones else None),
+        "phones": phones,
+        "email": emails[0] if emails else None,
+        "emails": emails,
+        "website_reachable": website_intel.website_reachable if website_intel else None,
+        "instagram": instagram_intel.profile_url if instagram_intel else None,
+        "ig_username": instagram_intel.username if instagram_intel else None,
+        "ig_followers": instagram_intel.followers if instagram_intel else None,
+        "ig_verified": instagram_intel.verified if instagram_intel else None,
+        "score": score.opportunity_score if score else None,
+        "tier": score.tier if score else None,
+        "business_health_score": score.business_health_score if score else None,
+        "qualified": qualification.qualified if qualification else None,
+        "reasons": list(qualification.reasons) if qualification else [],
+        "business_problems": list(qualification.business_problems) if qualification else [],
+        "needed_services": list(qualification.needed_services) if qualification else [],
+    }
+    return lead_dict
 
 
 async def run_query(
@@ -94,24 +274,73 @@ async def run_query(
     db_path: str = "data/leads.db",
 ) -> AsyncIterator[dict[str, Any]]:
     """
-    Async generator wrapping the exact same orchestration as main.py's
-    `run()` — MapsScraper -> EnrichmentPipeline.process() per place -> score
-    filter — minus file writers and CLI-only concerns. Yields one lead dict
-    at a time (with a `fingerprints` list attached, from the engine's own
-    dedup.fingerprints_for, so the caller can dedup against the Global Lead
-    Pool using the same normalization the engine already uses internally —
-    no dedup logic is reimplemented on the caller's side).
+    Async generator now driven by Engine 2.0 instead of the V1
+    MapsScraper -> EnrichmentPipeline asyncio-queue pipeline:
+
+        discovery_only=True:
+            GoogleMapsProvider.discover() (Engine 2.0's
+            DiscoveryProviderInterface implementation, replacing this
+            branch's former direct MapsScraper.search() call) streamed
+            through a background thread, chain/cannabis-filtered and
+            fingerprinted here exactly as before (see
+            providers/google_maps_provider.py's own docstring, Ambiguity
+            1/2, for why that filtering stays a caller/service.py
+            responsibility rather than moving into the provider).
+
+        discovery_only=False (production search):
+            EngineCoordinator.create_session() -> start_session() ->
+            build_seven_stage_pipeline() -> mark_running() assembles the
+            full Discovery -> Website/Instagram/Contact -> Merge ->
+            Qualification -> (Scoring, called synchronously) -> Storage
+            graph (engine/execution_driver.py, unmodified). This
+            generator then drives ExecutionDriver.run_once() itself, one
+            pass at a time, off the event loop thread
+            (asyncio.to_thread), and streams a lead dict the moment
+            StorageWorker actually persists a QualifiedOpportunity (via
+            _StreamingStorageBackend below) — the same "stream as it
+            clears the pipeline" contract this generator has always had.
+
+    Still yields one lead dict at a time, with `fingerprints` /
+    `is_disqualified` attached the same way as before (LeadStore /
+    fingerprints_for are V1 dedup-cache modules that Engine 2.0's
+    StorageWorker deliberately does not replace — see
+    workers/storage_worker.py / providers/google_maps_provider.py, both
+    explicit that deduplication is not this milestone's job — so
+    service.py, as composition root, keeps applying it exactly as
+    before).
+
+    Known, intentional behavior changes from V1 (not bugs — see the
+    accompanying migration review):
+      * `fast`, `skip_ig`, `skip_site_crawl`, `max_ig_followers`,
+        `max_reviews`, `require_viability` have no Engine 2.0 equivalent
+        yet (WebsiteWorker/InstagramWorker/ContactWorker always run;
+        QualificationWorker's only configuration is `niche` /
+        `required_categories`). They are still accepted here so
+        existing callers don't break, but are currently no-ops for the
+        production (non discovery_only) path.
+      * Discovery no longer overlaps with enrichment the way the V1
+        asyncio-task pipeline did: DiscoveryWorker.process() (Engine
+        2.0, unmodified) drives its provider to exhaustion inside one
+        synchronous call, by design (see workers/discovery_worker.py)
+        — enrichment of already-discovered candidates proceeds once
+        that call returns, not concurrently with it.
     """
-    config = ScraperConfig(
-        fast=fast,
-        headless=True,
-        skip_ig=skip_ig,
-        skip_site_crawl=skip_site_crawl,
-        max_ig_followers=max_ig_followers,
-        max_reviews=max_reviews,
-    )
+    _legacy_knobs_ignored = {
+        k: v for k, v in {
+            "fast": fast, "skip_ig": skip_ig, "skip_site_crawl": skip_site_crawl,
+            "max_ig_followers": max_ig_followers if max_ig_followers != 5000 else None,
+            "max_reviews": max_reviews if max_reviews != 500 else None,
+            "require_viability": require_viability if require_viability is not True else None,
+        }.items() if v
+    }
+    if _legacy_knobs_ignored and not discovery_only:
+        log.warning(
+            "[run_query] legacy knobs %s have no Engine 2.0 equivalent yet "
+            "and are currently no-ops for the production pipeline",
+            sorted(_legacy_knobs_ignored),
+        )
+
     stats = RunStats()
-    proxy_manager = ProxyManager()
 
     # Phase 2: create profiler for this run. Created before LeadStore
     # (Phase 2A reorder) so the fingerprint cache load (audit §3.7) can be
@@ -127,67 +356,59 @@ async def run_query(
 
     # _deliver_target is the number of qualified leads to yield before
     # declaring ourselves done.  It is always <= max_results (the raw
-    # scan budget given to MapsScraper.search).  When the caller passes
-    # deliver_target explicitly, we stop at that number; otherwise we
-    # fall back to max_results for backward compatibility.
+    # scan budget given to the discovery provider).  When the caller
+    # passes deliver_target explicitly, we stop at that number;
+    # otherwise we fall back to max_results for backward compatibility.
     _deliver_target: int = deliver_target if deliver_target is not None else max_results
 
     delivered = 0
     _last_lead_time: float | None = None   # for inter-lead gap tracking
     log_milestone("Before run_query discovery starts")
+
+    # See run() in main.py / the ROOT CAUSE note this replaces: request a
+    # generous raw-supply ceiling rather than a guessed pass-rate multiple,
+    # so genuine exhaustion (no more matching businesses) is what actually
+    # stops discovery, not an artificial cap.
+    raw_supply_cap = max(max_results * 20, 200)
+
+    session_id: Optional[str] = None
+    driver: Optional[ExecutionDriver] = None
     try:
-        async with MapsScraper(config, proxy_manager, stats, profiler=profiler) as scraper:
-            pipeline = EnrichmentPipeline(
-                config=config,
-                browser=scraper.browser,
-                store=store,
-                stats=stats,
-                profiler=profiler,
-                tracer=tracer,
+        if discovery_only:
+            provider = GoogleMapsProvider()
+            request = GoogleMapsDiscoveryRequest(
+                session_id=str(_time.time_ns()),  # no session/pipeline is created in this mode
+                query=query, city=city, country=country,
+                niche=niche, region=region, max_results=raw_supply_cap,
             )
+            result_q: "thread_queue.Queue" = thread_queue.Queue(maxsize=10)
 
-            # ROOT CAUSE fix ("requested quantity is not honored"): this used
-            # to ask MapsScraper for only `max_results * 3` raw places, on
-            # the assumption that ~1/3 of raw Maps listings survive
-            # enrichment + the outreach-viability gate. In production that
-            # pass rate is routinely much lower (strict min_channels=2 gate,
-            # dedup, chain/cannabis/review filters), so the raw generator
-            # would exhaust itself — and the `async for` loop below would
-            # simply end — long before `delivered` reached `max_results`,
-            # even though Google Maps still had plenty more *unseen*
-            # listings for this query. The caller then saw "10 requested, 3
-            # delivered, done" and had no way to tell that from genuine
-            # exhaustion.
-            #
-            # The fix: stop tying the raw-supply cap to a guessed pass rate.
-            # Request a generous ceiling instead, so MapsScraper.search()'s
-            # OWN exhaustion signals — the "end of results" sentinel or
-            # scroll_max_rounds — are what actually decide "no more matching
-            # businesses", while this loop's `delivered >= max_results`
-            # check is what decides "requested quantity reached". Whichever
-            # condition is true first is correct; neither was reliably
-            # reachable before when the artificial 3x cap won first.
-            raw_supply_cap = max(max_results * 20, 200)
+            def _discover_worker() -> None:
+                try:
+                    for candidate in provider.discover(request):
+                        result_q.put(candidate)
+                except BaseException as exc:  # noqa: BLE001 - forwarded below
+                    result_q.put(exc)
+                finally:
+                    result_q.put(_SENTINEL)
 
-            if discovery_only:
-                async for raw_place in scraper.search(
-                    query=query,
-                    city=city,
-                    country=country,
-                    niche=niche,
-                    region=region,
-                    max_results=raw_supply_cap,  # scan budget — intentionally large
-                ):
-                    # Phase S1: this branch never calls EnrichmentPipeline.process()
-                    # (which is where discovery/rejection used to get counted), so
-                    # every business must be minted + closed out here instead.
-                    pid = tracer.discover(raw_place.name or "<unnamed>")
-                    if delivered >= _deliver_target:  # qualified-lead target
-                        tracer.reject(pid, "target_reached_before_yield")
+            thread = threading.Thread(
+                target=_discover_worker, name="mast-discovery-only", daemon=True
+            )
+            thread.start()
+            try:
+                while delivered < _deliver_target:
+                    item = await asyncio.to_thread(result_q.get)
+                    if item is _SENTINEL:
+                        log.info("[run_query] discovery_only: provider exhausted")
                         break
-                    raw_dict = raw_place.to_dict()
-                    if raw_place.closed or is_chain(raw_place.name) or is_cannabis(raw_dict):
-                        tracer.reject(pid, "closed_or_chain_or_cannabis")
+                    if isinstance(item, BaseException):
+                        raise item
+                    candidate = item
+                    pid = tracer.discover(candidate.name or "<unnamed>")
+                    raw_dict = _candidate_dict(candidate)
+                    if is_chain(candidate.name) or is_cannabis(raw_dict):
+                        tracer.reject(pid, "chain_or_cannabis")
                         continue
                     raw_dict["fingerprints"] = sorted(fingerprints_for(raw_dict))
                     raw_dict["is_disqualified"] = False
@@ -196,249 +417,237 @@ async def run_query(
                     tracer.transition(pid, "YIELDED_TO_NODE")
                     tracer.deliver(pid)
                     yield raw_dict
-            else:
-                # Bounded queue for backpressure: at most 10 items can wait in the queue
-                enrich_queue = asyncio.Queue(maxsize=10)
-                results_queue = asyncio.Queue()
-                shared_state = {"delivered": 0}
-                discovery_done = asyncio.Event()
-
-                async def discovery_worker():
-                    log.info("[discovery] worker started")
-                    profiler.mark("discovery_worker_start")
-                    try:
-                        search_iter = scraper.search(
-                            query=query,
-                            city=city,
-                            country=country,
-                            niche=niche,
-                            region=region,
-                            max_results=raw_supply_cap,
-                        ).__aiter__()
-                        while True:
-                            log.info("[discovery] waiting for scraper — awaiting next Maps business...")
-                            try:
-                                raw_place = await search_iter.__anext__()
-                            except StopAsyncIteration:
-                                log.info("[discovery] scraper exhausted — no more Maps businesses")
-                                break
-                            log.info(f"[discovery] scraper yielded business: {raw_place.name!r}")
-                            # Phase S1: mint the pipeline id right here — this is
-                            # literally "immediately after MapsScraper yields a
-                            # business" for the production (non discovery_only)
-                            # path. Every branch below this point, including the
-                            # "already have enough" discard, now closes out this
-                            # id with a terminal outcome instead of just `break`ing
-                            # or `continue`ing the business out of existence.
-                            pid = tracer.discover(raw_place.name or "<unnamed>")
-                            raw_place.extra["_pipeline_id"] = pid
-                            if shared_state["delivered"] >= _deliver_target:
-                                log.info(
-                                    "[discovery] requested quantity already reached "
-                                    f"(delivered={shared_state['delivered']}, deliver_target={_deliver_target}) — stopping"
-                                )
-                                tracer.reject(pid, "target_reached_before_enqueue")
-                                break
-                            # put() blocks automatically if queue is full
-                            # (backpressure). Phase 2A / audit §3.5: timed
-                            # so the "is discovery capped by a slower
-                            # downstream consumer" hypothesis is measured
-                            # rather than just flagged.
-                            log.info(
-                                f"[discovery] enqueue -> enrich_queue: {raw_place.name!r} "
-                                f"(queue size before put={enrich_queue.qsize()})"
-                            )
-                            tracer.transition(pid, "QUEUED_FOR_ENRICHMENT")
-                            with profiler.timer("queue_wait_put"):
-                                await enrich_queue.put(raw_place)
-                            log.info(
-                                f"[discovery] enqueued: {raw_place.name!r} "
-                                f"(queue size after put={enrich_queue.qsize()})"
-                            )
-                    except asyncio.CancelledError:
-                        log.info("[discovery] worker cancelled")
-                        pass
-                    except Exception as exc:
-                        log.error(f"[discovery] error in maps search: {exc!r}", exc_info=True)
-                    finally:
-                        discovery_done.set()
-                        profiler.mark("discovery_worker_end")
-                        # Signal consumer that producer is done
-                        log.info("[discovery] enqueue -> enrich_queue: None (completion sentinel)")
-                        await enrich_queue.put(None)
-                        log.info("[discovery] worker exiting")
-
-                async def enrichment_worker():
-                    log.info("[enrichment] worker started")
-                    profiler.mark("enrichment_worker_start")
-                    try:
-                        while True:
-                            log.info(
-                                f"[enrichment] waiting for enrichment work — awaiting enrich_queue.get() "
-                                f"(queue size before get={enrich_queue.qsize()})"
-                            )
-                            with profiler.timer("queue_wait_get"):
-                                raw_place = await enrich_queue.get()
-                            if raw_place is None:
-                                log.info("[enrichment] dequeue <- enrich_queue: None (completion sentinel)")
-                                break
-                            log.info(
-                                f"[enrichment] dequeue <- enrich_queue: {raw_place.name!r} "
-                                f"(queue size after get={enrich_queue.qsize()})"
-                            )
-                            # Phase S1: this is the same id minted by discovery_worker
-                            # when this business was first yielded by MapsScraper —
-                            # it travelled here on raw_place.extra.
-                            pid = raw_place.extra.get("_pipeline_id")
-
-                            # Double check if we already have enough before starting slow process
-                            if shared_state["delivered"] >= _deliver_target:
-                                log.info(
-                                    f"[enrichment] skipping {raw_place.name!r} — requested quantity "
-                                    f"already reached (delivered={shared_state['delivered']}, deliver_target={_deliver_target})"
-                                )
-                                tracer.reject(pid, "target_reached_before_processing")
-                                continue
-
-                            log.info(f"[enrichment] processing business — Starting pipeline: {raw_place.name!r}")
-                            try:
-                                lead = await pipeline.process(
-                                    raw_place,
-                                    require_viability=require_viability,
-                                    max_ig_followers=max_ig_followers,
-                                    max_reviews=max_reviews,
-                                )
-                            except Exception as exc:
-                                stats.errors += 1
-                                log.info(f"[enrichment] Pipeline finished (exception): {raw_place.name!r}")
-                                log.error(
-                                    f"[trace] {raw_place.name!r} ↓ REJECTED — unhandled "
-                                    f"exception in pipeline.process(): {exc!r}",
-                                    exc_info=True,
-                                )
-                                # FAILED, not REJECTED: this is an unexpected error, not
-                                # a business-rule decision — pipeline.process() itself
-                                # never got the chance to record any outcome for this id.
-                                tracer.fail(pid, f"unhandled exception in pipeline.process(): {exc!r}")
-                                continue
-                            log.info(f"[enrichment] Pipeline finished: {raw_place.name!r}")
-
-                            if not lead:
-                                # pipeline.process() already recorded a REJECTED outcome
-                                # (with the precise reason) for every one of its own
-                                # `return None` exits — nothing further to close here.
-                                log.info(f"[enrichment] business rejected: {raw_place.name!r} (pipeline returned no lead)")
-                                continue
-
-                            if lead.score < min_score:
-                                stats.skip(f"score_<_{min_score}")
-                                log.info(
-                                    f"[trace] {lead.name!r} ↓ REJECTED — score={lead.score} "
-                                    f"below min_score={min_score} (post-pipeline gate, applied here "
-                                    f"in run_query rather than pipeline.process)"
-                                )
-                                log.info(f"[enrichment] business rejected: {lead.name!r} (score below min_score)")
-                                profiler.record_rejection(
-                                    reason=f"score_<_{min_score}",
-                                    elapsed_ms=profiler.elapsed_since_business_start_ms(),
-                                )
-                                tracer.reject(pid, f"score_<_{min_score}")
-                                continue
-
-                            lead_dict = lead.to_dict()
-                            lead_dict["fingerprints"] = sorted(fingerprints_for(lead_dict))
-                            lead_dict["is_disqualified"] = bool(is_chain(lead_dict.get("name"))) or bool(is_cannabis(lead_dict))
-                            log.info(
-                                f"[enrichment] enrichment complete — enqueue -> results_queue: {lead.name!r} "
-                                f"(queue size before put={results_queue.qsize()})"
-                            )
-                            tracer.transition(pid, "RESULTS_QUEUE")
-                            await results_queue.put(lead_dict)
-                            log.info(f"[enrichment] business delivered to results_queue: {lead.name!r}")
-                    except asyncio.CancelledError:
-                        log.info("[enrichment] worker cancelled")
-                        pass
-                    except Exception as exc:
-                        log.error(f"[enrichment] error in worker: {exc!r}", exc_info=True)
-                    finally:
-                        profiler.mark("enrichment_worker_end")
-                        log.info("[enrichment] enqueue -> results_queue: None (completion sentinel)")
-                        await results_queue.put(None)
-                        log.info("[enrichment] worker exiting")
-
-                # Start the background tasks
-                discovery_task = asyncio.create_task(discovery_worker())
-                log.info("[run_query] discovery task started")
-                enrichment_task = asyncio.create_task(enrichment_worker())
-                log.info("[run_query] enrichment task started")
-
+            finally:
+                # Best-effort: nothing to cancel (provider.discover() runs on
+                # a daemon thread with its own private event loop — see
+                # GoogleMapsProvider's own docstring, Ambiguity 4), but drain
+                # the sentinel so the thread is never left blocked on a full
+                # queue if we broke out early.
                 try:
-                    while shared_state["delivered"] < _deliver_target:
-                        log.info(
-                            f"[run_query] waiting for results — awaiting results_queue.get() "
-                            f"(delivered={shared_state['delivered']}/{_deliver_target}, "
-                            f"queue size={results_queue.qsize()})"
-                        )
-                        lead_dict = await results_queue.get()
-                        if lead_dict is None:
-                            # Sentinel indicating enrichment is done
-                            log.info("[run_query] exhaustion reached — received None sentinel from results_queue")
+                    while thread.is_alive():
+                        try:
+                            result_q.get_nowait()
+                        except thread_queue.Empty:
                             break
-                        log.info(
-                            f"[run_query] result received: {lead_dict.get('name')!r} "
-                            f"(delivered so far={shared_state['delivered']})"
-                        )
+                except Exception:
+                    pass
+                tracer.sweep_incomplete("run_ended_before_business_finished (discovery_only)")
+        else:
+            ctx = engine_coordinator.create_session(
+                user_id="service.run_query",
+                provider="google_maps",
+                niche=niche or None,
+                country=country or None,
+                city=city or None,
+                requested_count=_deliver_target,
+            )
+            session_id = ctx.session.id
+            engine_coordinator.start_session(session_id)
 
-                        # ── Phase 2: track inter-lead gap and first opportunity ───────
+            discovery_request = GoogleMapsDiscoveryRequest(
+                session_id=session_id, query=query, city=city, country=country,
+                niche=niche, region=region, max_results=raw_supply_cap,
+            )
+
+            result_q: "thread_queue.Queue" = thread_queue.Queue()
+
+            def _on_persisted(opportunity: QualifiedOpportunity, stored: StoredOpportunity) -> None:
+                result_q.put((opportunity, stored))
+
+            streaming_backend = _StreamingStorageBackend(_build_storage_backend(), _on_persisted)
+
+            stages, queue_ids, fan_in, cleanup_cb = build_seven_stage_pipeline(
+                engine_coordinator, session_id,
+                discovery_provider=GoogleMapsProvider(),
+                discovery_request=discovery_request,
+                storage_backend=streaming_backend,
+                niche=niche or None,
+            )
+            engine_coordinator.mark_running(session_id)
+            engine_runtime = engine_coordinator.get_engine_runtime(session_id)
+
+            driver = ExecutionDriver(
+                engine_runtime, stages, on_stage_outcome=cleanup_cb, run_producers_once=True,
+            )
+
+            all_input_queue_ids = [
+                queue_ids.website_in, queue_ids.instagram_in, queue_ids.contact_in,
+                queue_ids.merge_in, queue_ids.qualification_in, queue_ids.storage_in,
+            ]
+            queue_manager = ctx.runtime.queue_manager
+
+            def _fully_drained() -> bool:
+                if fan_in.pending_count() != 0:
+                    return False
+                return all(queue_manager.get_queue(qid).is_empty() for qid in all_input_queue_ids)
+
+            profiler.mark("discovery_worker_start")
+            try:
+                idle_passes = 0
+                while delivered < _deliver_target:
+                    outcomes = await asyncio.to_thread(driver.run_once)
+                    if driver.last_error is not None:
+                        raise driver.last_error
+                    any_ran = any(o.ran for o in outcomes)
+
+                    drained_any = False
+                    while True:
+                        try:
+                            opportunity, stored = result_q.get_nowait()
+                        except thread_queue.Empty:
+                            break
+                        drained_any = True
+                        engine_pid = opportunity.pipeline_id
+
+                        lead_dict = _opportunity_to_lead_dict(opportunity, stored)
+                        lead_dict["fingerprints"] = sorted(fingerprints_for(lead_dict))
+                        lead_dict["is_disqualified"] = (
+                            bool(is_chain(lead_dict.get("name")))
+                            or bool(is_cannabis(lead_dict))
+                        )
+                        lead_dict["_pipeline_id"] = engine_pid
+
+                        # PipelineTracer mints its own id via discover() — it
+                        # does not accept a caller-supplied one (see
+                        # utils/pipeline_trace.py). Under Engine 2.0,
+                        # discovery/enrichment/qualification all happen
+                        # inside the pipeline before service.py ever sees a
+                        # business, so this is the first point in this
+                        # branch a pipeline_id becomes observable here;
+                        # tracer.discover() is called right here rather than
+                        # at actual discovery time. Businesses Qualification
+                        # rejects are therefore not tracked by this tracer at
+                        # all (they never reach result_q) — that rejection
+                        # is still fully visible in the engine's own
+                        # mast.engine.execution_driver log line, just not in
+                        # this report.
+                        pid = tracer.discover(lead_dict.get("name") or "<unnamed>")
+                        tracer.transition(pid, "RESULTS_QUEUE")
+
+                        score_value = lead_dict.get("score") or 0
+                        if score_value < min_score:
+                            stats.skip(f"score_<_{min_score}")
+                            profiler.record_rejection(
+                                reason=f"score_<_{min_score}",
+                                elapsed_ms=profiler.elapsed_since_business_start_ms(),
+                            )
+                            tracer.reject(pid, f"score_<_{min_score}")
+                            continue
+
                         _now = time.perf_counter()
                         if _last_lead_time is not None:
                             profiler._stages["inter_lead_gap"].record(
                                 (_now - _last_lead_time) * 1000.0
                             )
                         _last_lead_time = _now
-                        profiler.mark_first_opportunity()  # no-op after first call
+                        profiler.mark_first_opportunity()
 
-                        shared_state["delivered"] += 1
-                        delivered = shared_state["delivered"]
-                        if shared_state["delivered"] >= _deliver_target:
-                            log.info(
-                                f"[run_query] requested quantity reached — delivered={shared_state['delivered']} "
-                                f"deliver_target={_deliver_target}"
-                            )
-                        # Phase S1: this is the true terminal point for THIS process's
-                        # half of the pipeline — the lead is about to cross the
-                        # process boundary (stdout -> pythonBridge.ts). Everything
-                        # after this is Node's responsibility to trace.
-                        _pid = lead_dict.get("_pipeline_id")
-                        tracer.transition(_pid, "YIELDED_TO_NODE")
-                        tracer.deliver(_pid)
+                        delivered += 1
+                        tracer.transition(pid, "YIELDED_TO_NODE")
+                        tracer.deliver(pid)
                         yield lead_dict
-                finally:
-                    log.info("[run_query] entering cleanup — cancelling discovery/enrichment tasks")
-                    discovery_task.cancel()
-                    enrichment_task.cancel()
-                    await asyncio.gather(discovery_task, enrichment_task, return_exceptions=True)
-                    log.info("[run_query] cleanup finished — discovery/enrichment tasks resolved")
-                    # Phase S1: cancelling the two workers is a legitimate,
-                    # intentional stop (target reached, caller aborted, etc.) —
-                    # but any business still mid-flight inside enrich_queue,
-                    # results_queue, or a cancelled pipeline.process() call at
-                    # that exact moment would otherwise be left with no
-                    # terminal outcome at all. Sweep those explicitly instead
-                    # of letting them show up as unexplained "Missing".
-                    tracer.sweep_incomplete("run_ended_before_business_finished (cancelled/aborted)")
+                        if delivered >= _deliver_target:
+                            break
+
+                    if delivered >= _deliver_target:
+                        log.info(
+                            "[run_query] requested quantity reached — delivered=%d deliver_target=%d",
+                            delivered, _deliver_target,
+                        )
+                        break
+
+                    if not any_ran and not drained_any:
+                        idle_passes += 1
+                        if _fully_drained():
+                            log.info(
+                                "[run_query] pipeline fully drained — exhausted before "
+                                "reaching deliver_target (delivered=%d/%d)",
+                                delivered, _deliver_target,
+                            )
+                            break
+                    else:
+                        idle_passes = 0
+            finally:
+                if driver is not None:
+                    await asyncio.to_thread(driver.stop)
+                tracer.sweep_incomplete("run_ended_before_business_finished (cancelled/aborted)")
     finally:
-        log.info("[run_query] entering outer cleanup (store close, browser shutdown, profiler report)")
+        log.info("[run_query] entering outer cleanup (store close, profiler report)")
         store.close()
-        log_milestone("After run_query cleanup (including browser closing)")
+        if session_id is not None:
+            try:
+                if delivered >= _deliver_target:
+                    engine_coordinator.finish_session(session_id)
+                else:
+                    engine_coordinator.cancel_session(session_id)
+                # Part 3 (batch intelligence chain): Ranking is
+                # session-scoped and must wait until the discovery
+                # session completes (locked architecture) -- finish_session
+                # / cancel_session above IS that completion signal, the
+                # same existing lifecycle hook the rest of this cleanup
+                # block already reuses. A batch-intelligence failure must
+                # never mask that the session itself already reached a
+                # terminal state, so it is logged, not re-raised.
+                try:
+                    batch_result = run_batch_intelligence(engine_coordinator, session_id)
+                    log.info(
+                        "[run_query] batch intelligence chain: session=%s "
+                        "ranked=%d missions=%d workflow_states=%d",
+                        session_id,
+                        len(batch_result["ranked_opportunities"]),
+                        len(batch_result["missions"]),
+                        len(batch_result["workflow_states"]),
+                    )
+                    # Persistence Integration milestone, Part 4: persist
+                    # the batch result ONLY after run_batch_intelligence()
+                    # above has already returned successfully -- this line
+                    # is unreachable if that call raised, so a partially-
+                    # computed intelligence chain is never persisted. A
+                    # persistence failure itself must not mask that the
+                    # session and its (in-memory) batch result already
+                    # completed, so it is logged, not re-raised -- the
+                    # same posture the batch-intelligence try/except above
+                    # already takes toward run_batch_intelligence() itself.
+                    try:
+                        batch_backend = _build_batch_intelligence_backend()
+                        batch_backend.persist_batch_result(
+                            session_id,
+                            priorities=batch_result["priorities"],
+                            ranked_opportunities=batch_result["ranked_opportunities"],
+                            missions=batch_result["missions"],
+                            workflow_states=batch_result["workflow_states"],
+                        )
+                        log.info(
+                            "[run_query] batch intelligence persisted: session=%s "
+                            "priorities=%d ranked=%d missions=%d workflow_states=%d",
+                            session_id,
+                            len(batch_result["priorities"]),
+                            len(batch_result["ranked_opportunities"]),
+                            len(batch_result["missions"]),
+                            len(batch_result["workflow_states"]),
+                        )
+                    except Exception:
+                        log.warning(
+                            "[run_query] batch intelligence persistence failed "
+                            "for session=%s (in-memory batch result is still "
+                            "available via engine_coordinator.get_batch_result)",
+                            session_id, exc_info=True,
+                        )
+                except Exception:
+                    log.warning(
+                        "[run_query] batch intelligence chain failed for session=%s",
+                        session_id, exc_info=True,
+                    )
+            except Exception:
+                log.debug("[run_query] session %s already terminal", session_id, exc_info=True)
+        log_milestone("After run_query cleanup")
         log.info(f"[service] done — delivered={delivered} {stats.summary()}")
         log.info(
             "[service] rejection summary:\n" + stats.rejection_summary()
         )
-        # Phase S1: any business not already swept above (e.g. the
-        # discovery_only branch, which has no worker-cancellation step) is
-        # closed out here too, then the full reconciliation — counts plus
-        # any invariant violation — is logged as the last thing this run does.
+        # Phase S1: any business not already swept above is closed out here
+        # too, then the full reconciliation — counts plus any invariant
+        # violation — is logged as the last thing this run does.
         tracer.sweep_incomplete("run_ended_before_business_finished")
         log.info("[pipeline] reconciliation:\n" + tracer.reconcile())
         # Phase 2: stash profiler summary so _main_cli can embed it in
@@ -576,6 +785,32 @@ async def _verify_cli() -> None:
     sys.stdout.flush()
 
 
+async def enrich_business_v2(payload: dict) -> dict:
+    """
+    Milestone 2 entrypoint: runs Engine 2.0's WebsiteWorker /
+    InstagramWorker / ContactWorker / MergeWorker for one already-known
+    business (businessProcessingJob.ts's enrichBusiness()/scoreBusiness(),
+    via runEngineEnrich() in pythonBridge.ts). Async only for calling-
+    convention symmetry with verify_business() and run_query() — every
+    Engine 2.0 worker this delegates to is itself synchronous (see
+    engine_enrichment_bridge.py).
+    """
+    return _engine_enrich_business(payload)
+
+
+async def _enrich_cli() -> None:
+    # See the _REAL_STDOUT / sys.stdout swap at the top of this module for
+    # why the result is written there rather than to `sys.stdout` directly
+    # (sys.stdout has been redirected to stderr for this mode, so logging
+    # from here on doesn't corrupt the one JSON line pythonBridge.ts's
+    # runEngineEnrich() expects on real stdout).
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await enrich_business_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
 async def _run_with_graceful_shutdown(coro_fn) -> None:
     """
     BUG FIX (missing profiler report): the Node bridge (pythonBridge.ts /
@@ -621,8 +856,747 @@ async def _run_with_graceful_shutdown(coro_fn) -> None:
         log.info("[service] exited after graceful SIGTERM shutdown")
 
 
+async def score_business_v2(payload: dict) -> dict:
+    """
+    Evaluates Engine 2.0 Opportunity Scoring for a business payload, including universal breakdown,
+    profession scores for all canonical professions, and business health score.
+    """
+    biz_id = str(payload.get("id") or payload.get("business_id") or "biz_unknown")
+    biz_data = payload.get("business") if isinstance(payload.get("business"), dict) else payload
+
+    scoring_service = OpportunityScoringService()
+    res = scoring_service.evaluate_business_professions(biz_data, business_id=biz_id)
+
+    health_score = ScoringWorker._business_health_component(
+        type("TempBiz", (), {
+            "rating": biz_data.get("reviews_rating") or biz_data.get("rating"),
+            "review_count": biz_data.get("reviews_count") or biz_data.get("reviews"),
+            "website": biz_data.get("website"),
+        })(),
+        type("TempWebsite", (), {
+            "website_reachable": bool(biz_data.get("website")),
+            "https": str(biz_data.get("website") or "").startswith("https://"),
+        })(),
+        type("TempIG", (), {
+            "profile_reachable": bool(biz_data.get("instagram")),
+            "last_post_date": None,
+        })()
+    )
+
+    return {
+        "business_id": res.business_id,
+        "is_disqualified": res.is_disqualified,
+        "universal_breakdown": res.universal_breakdown.to_dict(),
+        "health_score": health_score,
+        "profession_scores": {
+            s.profession_slug: {
+                "score": s.score,
+                "breakdown": s.breakdown.to_dict(),
+                "summary": s.summary,
+                "reasons": list(s.reasons),
+            }
+            for s in res.profession_scores
+        }
+    }
+
+
+async def _score_cli() -> None:
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await score_business_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
+def _opportunity_from_payload(raw_opp: dict):
+    """
+    Shared Opportunity construction used by qualify, prioritize (and any
+    future CLI mode that needs a canonical Opportunity). Factored out of
+    qualify_business_v2 so prioritize_opportunity_v2 builds the identical
+    Opportunity instead of duplicating the parsing/coercion logic.
+    """
+    import datetime as _dt
+    from opportunities import Opportunity
+
+    discovered_raw = raw_opp.get("discovered_at")
+    if isinstance(discovered_raw, str):
+        try:
+            discovered_at = _dt.datetime.fromisoformat(discovered_raw.replace("Z", "+00:00"))
+        except ValueError:
+            discovered_at = _dt.datetime.now(_dt.timezone.utc)
+    elif isinstance(discovered_raw, (int, float)):
+        discovered_at = _dt.datetime.fromtimestamp(discovered_raw / 1000, tz=_dt.timezone.utc)
+    else:
+        discovered_at = _dt.datetime.now(_dt.timezone.utc)
+
+    return Opportunity(
+        opportunity_id=str(raw_opp.get("opportunity_id") or raw_opp.get("id") or "opp_unknown"),
+        business_id=str(raw_opp.get("business_id") or raw_opp.get("businessId") or "biz_unknown"),
+        niche_id=str(raw_opp.get("niche_id") or raw_opp.get("nicheId") or raw_opp.get("niche") or "unknown"),
+        opportunity_type_id=str(raw_opp.get("opportunity_type_id") or raw_opp.get("type") or "unknown"),
+        discovered_at=discovered_at,
+        supporting_signal_ids=tuple(raw_opp.get("supporting_signal_ids") or []),
+    )
+
+
+async def qualify_business_v2(payload: dict) -> dict:
+    """
+    Evaluates Engine 2.0 Qualification for an opportunity payload.
+
+    Accepts either:
+      - An Opportunity-shaped dict: {opportunity_id, business_id, niche_id,
+        opportunity_type_id, discovered_at?, supporting_signal_ids?}
+      - A top-level payload with an "opportunity" key containing the above.
+
+    Returns the canonical OpportunityQualification result serialised as a plain dict.
+    """
+    raw_opp = payload.get("opportunity") if isinstance(payload.get("opportunity"), dict) else payload
+    opp = _opportunity_from_payload(raw_opp)
+
+    qual_service = OpportunityQualificationService()
+    res = qual_service.evaluate(opp)
+    return {
+        "opportunity_id": res.opportunity_id,
+        "status": res.status.value,
+        "qualified": res.status.value == "QUALIFIED",
+        "passed_rule_ids": list(res.passed_rule_ids),
+        "failed_rule_ids": list(res.failed_rule_ids),
+    }
+
+
+async def _qualify_cli() -> None:
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await qualify_business_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
+async def prioritize_opportunity_v2(payload: dict) -> dict:
+    """
+    Evaluates Engine 2.0 Opportunity Prioritization (Subsystem 12) for a
+    single opportunity payload.
+
+    Mirrors qualify_business_v2 / score_business_v2's payload shape:
+      - An Opportunity-shaped dict, or a top-level payload with an
+        "opportunity" key containing one.
+      - Optional "policy": {strategy?, evaluation_at?, score_weight?,
+        recency_weight?, recency_half_life_days?, require_qualification?}
+
+    Reuses the same Qualification and Scoring evaluations qualify/score
+    already expose, then feeds all three into
+    OpportunityPrioritizationService per the locked batch pipeline order
+    (Qualification -> Scoring -> Prioritization).
+    """
+    import datetime as _dt
+    from opportunity_prioritization.service import OpportunityPrioritizationService
+    from opportunity_prioritization.models import PrioritizationPolicy, PrioritizationStrategy
+
+    raw_opp = payload.get("opportunity") if isinstance(payload.get("opportunity"), dict) else payload
+    opp = _opportunity_from_payload(raw_opp)
+
+    qualification = OpportunityQualificationService().evaluate(opp)
+    score = OpportunityScoringService().evaluate(opp)
+
+    raw_policy = payload.get("policy") or {}
+    strategy_raw = str(raw_policy.get("strategy") or "BALANCED").upper()
+    try:
+        strategy = PrioritizationStrategy(strategy_raw)
+    except ValueError:
+        strategy = PrioritizationStrategy.BALANCED
+
+    eval_at_raw = raw_policy.get("evaluation_at")
+    if isinstance(eval_at_raw, str):
+        try:
+            evaluation_at = _dt.datetime.fromisoformat(eval_at_raw.replace("Z", "+00:00"))
+        except ValueError:
+            evaluation_at = _dt.datetime.now(_dt.timezone.utc)
+    elif isinstance(eval_at_raw, (int, float)):
+        evaluation_at = _dt.datetime.fromtimestamp(eval_at_raw / 1000, tz=_dt.timezone.utc)
+    else:
+        evaluation_at = _dt.datetime.now(_dt.timezone.utc)
+
+    policy_kwargs = dict(
+        strategy=strategy,
+        evaluation_at=evaluation_at,
+        recency_half_life_days=float(raw_policy.get("recency_half_life_days", 30.0)),
+        require_qualification=bool(raw_policy.get("require_qualification", True)),
+    )
+    if strategy == PrioritizationStrategy.CUSTOM_WEIGHTED:
+        policy_kwargs["score_weight"] = raw_policy.get("score_weight")
+        policy_kwargs["recency_weight"] = raw_policy.get("recency_weight")
+
+    policy = PrioritizationPolicy(**policy_kwargs)
+
+    result = OpportunityPrioritizationService.evaluate_priority(opp, qualification, score, policy)
+
+    return {
+        "opportunity_id": result.opportunity_id,
+        "priority_score": result.priority_score,
+        "score_contribution": result.score_contribution,
+        "recency_contribution": result.recency_contribution,
+        "is_eligible": result.is_eligible,
+        "qualification_status": qualification.status.value,
+        "overall_score": score.overall_score,
+    }
+
+
+async def _prioritize_cli() -> None:
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await prioritize_opportunity_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
+async def evaluate_crm_v2(payload: dict) -> dict:
+    """
+    Evaluates Engine 2.0 CRM Intelligence (relationship health, lifecycle stage,
+    contact guardrail). Accepts the Node bridge payload containing:
+      - workspace_id, business_id, current_timestamp_iso (required)
+      - interaction_history: list of {timestamp_iso, interaction_type, outcome_type?,
+        is_opt_out?, is_conversion?, is_positive?}
+      - policy: optional {max_attempts_per_window, window_days, cooling_off_days, dormancy_days}
+    """
+    import datetime as _dt
+    workspace_id = payload.get("workspace_id") or "workspace"
+    business_id = payload.get("business_id") or payload.get("id") or "business"
+    ts = payload.get("current_timestamp_iso") or _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    raw_history = payload.get("interaction_history") or []
+    history = tuple(
+        CRMInteractionRecord(
+            timestamp_iso=r.get("timestamp_iso", ts),
+            interaction_type=r.get("interaction_type", "contact"),
+            outcome_type=r.get("outcome_type", ""),
+            is_opt_out=bool(r.get("is_opt_out", False)),
+            is_conversion=bool(r.get("is_conversion", False)),
+            is_positive=bool(r.get("is_positive", False)),
+        )
+        for r in raw_history
+        if isinstance(r, dict) and r.get("timestamp_iso")
+    )
+
+    raw_policy = payload.get("policy") or {}
+    policy = CRMContactPolicy(
+        max_attempts_per_window=int(raw_policy.get("max_attempts_per_window", 3)),
+        window_days=int(raw_policy.get("window_days", 30)),
+        cooling_off_days=int(raw_policy.get("cooling_off_days", 14)),
+        dormancy_days=int(raw_policy.get("dormancy_days", 60)),
+    )
+
+    req = CRMRelationshipRequest(
+        workspace_id=workspace_id,
+        business_id=business_id,
+        current_timestamp_iso=ts,
+        interaction_history=history,
+        policy=policy,
+    )
+    rel = CRMIntelligenceService.evaluate_relationship(req)
+    return {
+        "stage": rel.stage.value,
+        "health": rel.health.value,
+        "guardrail": rel.guardrail_decision.value,
+        "total_attempts": rel.total_attempts,
+        "attempts_in_window": rel.attempts_in_window,
+        "days_since_last_interaction": rel.days_since_last_interaction,
+        "reason": rel.reason,
+    }
+
+
+async def _crm_cli() -> None:
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await evaluate_crm_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
+def _fetch_batch_intelligence_context(session_id: str):
+    """
+    Persistence Integration milestone, Part 5 (read path): loads this
+    session's persisted priorities/ranks/missions/workflow_states via
+    SupabaseBatchIntelligenceBackend and projects them into an
+    EngineContext (engine_context/service.py's ContextProjectionService
+    -- Subsystem 16, which existed for exactly this purpose but had no
+    caller anywhere in this repo before this milestone) so
+    AnalyticsService.compute_analytics() (analytics/service.py) can
+    consume real persisted state instead of anything being recomputed.
+    Never raises for a session with no persisted rows yet (returns an
+    EngineContext with empty tuples, the same as
+    ContextProjectionService.project()'s own documented behavior for
+    absent inputs) -- callers decide whether an empty context is
+    meaningful for their response.
+    """
+    from engine_context.models import (
+        ContextComponent,
+        ContextProjectionRequest,
+        ContextSubject,
+        ContextSubjectType,
+    )
+    from engine_context.service import ContextProjectionService
+
+    batch_backend = _build_batch_intelligence_backend()
+    priorities = batch_backend.fetch_priorities_for_session(session_id)
+    ranks = batch_backend.fetch_ranked_opportunities(session_id)
+    missions = batch_backend.fetch_missions_for_session(session_id)
+    workflows = batch_backend.fetch_workflow_states_for_session(session_id)
+
+    request = ContextProjectionRequest(
+        subject=ContextSubject(subject_id=session_id, subject_type=ContextSubjectType.WORKSPACE),
+        requested_components=(
+            ContextComponent.PRIORITY,
+            ContextComponent.RANK,
+            ContextComponent.MISSION,
+            ContextComponent.WORKFLOW,
+        ),
+    )
+    return ContextProjectionService.project(
+        request,
+        priorities=priorities,
+        ranks=ranks,
+        missions=missions,
+        workflows=workflows,
+    )
+
+
+def _analytics_report_dict(report) -> dict:
+    import dataclasses
+
+    return dataclasses.asdict(report)
+
+
+async def evaluate_analytics_v2(payload: dict) -> dict:
+    """
+    Returns pipeline analytics from raw pipeline snapshot metrics.
+    The AnalyticsService requires an EngineContext object; for the lightweight
+    Node-bridge use case we compute summary statistics directly from the
+    snapshot fields that Node already has (total_discovered, total_qualified,
+    total_contacted, total_won, stalled_deals_count).
+
+    Persistence Integration milestone, Part 5 addition: when payload
+    also carries "session_id", the response additionally includes
+    "batch_intelligence" -- a real AnalyticsService.compute_analytics()
+    report (analytics/models.AnalyticsReport, Subsystem 18) computed
+    from that session's persisted Prioritization/Ranking/Mission
+    Generation/Workflow Initialization output, loaded via
+    _fetch_batch_intelligence_context() rather than recomputed. This is
+    purely additive: callers that do not pass session_id (every existing
+    caller today) see byte-identical output to before this milestone.
+    """
+    total_discovered = int(payload.get("total_discovered") or 0)
+    total_qualified = int(payload.get("total_qualified") or 0)
+    total_contacted = int(payload.get("total_contacted") or 0)
+    total_won = int(payload.get("total_won") or 0)
+
+    def _rate(num: int, denom: int) -> float:
+        return round(num / denom * 100, 1) if denom > 0 else 0.0
+
+    result = {
+        "total_discovered": total_discovered,
+        "total_qualified": total_qualified,
+        "total_contacted": total_contacted,
+        "total_won": total_won,
+        "qualification_rate_pct": _rate(total_qualified, total_discovered),
+        "contact_rate_pct": _rate(total_contacted, total_qualified),
+        "win_rate_pct": _rate(total_won, total_contacted),
+        "end_to_end_rate_pct": _rate(total_won, total_discovered),
+    }
+
+    session_id = payload.get("session_id")
+    if session_id:
+        from analytics.service import AnalyticsService
+
+        try:
+            context = _fetch_batch_intelligence_context(str(session_id))
+            report = AnalyticsService.compute_analytics(context)
+            result["batch_intelligence"] = _analytics_report_dict(report)
+        except Exception:
+            log.warning(
+                "[evaluate_analytics_v2] failed to load persisted batch "
+                "intelligence for session_id=%s", session_id, exc_info=True,
+            )
+
+    return result
+
+
+async def _analytics_cli() -> None:
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await evaluate_analytics_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
+async def build_ai_coach_context_v2(payload: dict) -> dict:
+    """
+    Engine 2.0 builds the canonical structured intelligence context payload
+    (BusinessContext, ScoringContext, RelationshipContext, AnalyticsContext)
+    that Node transports verbatim to Claude/OpenAI — Engine reasons, Node transports.
+    """
+    biz_data = payload.get("business") or {}
+    crm_data = payload.get("crm") or {}
+    stalled_deals = payload.get("stalledDeals") or []
+    snapshot = payload.get("snapshot") or {}
+
+    # Business scoring context — Engine 2.0 computes all profession scores.
+    scores_res = OpportunityScoringService().evaluate_business_professions(biz_data) if biz_data else None
+
+    # CRM relationship context — synchronous Engine 2.0 evaluation.
+    crm_res: dict = {}
+    if crm_data:
+        crm_res = await evaluate_crm_v2(crm_data)
+
+    # Analytics context — pass through from Node's already-computed snapshot.
+    analytics_res: dict = {}
+    if snapshot:
+        analytics_res = await evaluate_analytics_v2(snapshot)
+
+    result = {
+        "business_context": {
+            "name": biz_data.get("name"),
+            "category": biz_data.get("category") or biz_data.get("niche"),
+            "website": biz_data.get("website"),
+            "rating": biz_data.get("reviews_rating") or biz_data.get("rating"),
+            "reviews_count": biz_data.get("reviews_count") or biz_data.get("reviews"),
+        },
+        "scoring_context": {
+            "is_disqualified": scores_res.is_disqualified if scores_res else False,
+            "universal_breakdown": scores_res.universal_breakdown.to_dict() if scores_res else {},
+            "profession_scores": {
+                s.profession_slug: {"score": s.score, "summary": s.summary, "reasons": list(s.reasons)}
+                for s in scores_res.profession_scores
+            } if scores_res else {},
+        },
+        "relationship_context": crm_res,
+        "analytics_context": analytics_res,
+        "stalled_deals": stalled_deals,
+    }
+
+    # Persistence Integration milestone, Part 5 addition: when payload
+    # carries "opportunity_id", surface that opportunity's persisted
+    # Mission + WorkflowState (Subsystems 14/15, written by
+    # run_batch_intelligence()) as "mission_context" -- read-path-only,
+    # via the same SupabaseBatchIntelligenceBackend every other reader
+    # in this file now uses. Additive: callers that don't pass
+    # opportunity_id (every existing caller today) see byte-identical
+    # output to before this milestone.
+    opportunity_id = payload.get("opportunity_id")
+    if opportunity_id:
+        try:
+            batch_backend = _build_batch_intelligence_backend()
+            mission = batch_backend.fetch_mission(str(opportunity_id))
+            workflow_state = batch_backend.fetch_workflow_state(str(opportunity_id))
+            result["mission_context"] = {
+                "mission": (
+                    {
+                        "opportunity_id": mission.opportunity_id,
+                        "business_id": mission.business_id,
+                        "mission_type": mission.mission_type.value,
+                    }
+                    if mission is not None else None
+                ),
+                "workflow_state": (
+                    _workflow_state_dict(workflow_state)
+                    if workflow_state is not None else None
+                ),
+            }
+        except Exception:
+            log.warning(
+                "[build_ai_coach_context_v2] failed to load persisted "
+                "mission context for opportunity_id=%s", opportunity_id,
+                exc_info=True,
+            )
+
+    return result
+
+
+async def _ai_coach_cli() -> None:
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await build_ai_coach_context_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
+def _workflow_state_dict(state) -> dict:
+    return {
+        "mission_id": state.mission_id,
+        "opportunity_id": state.opportunity_id,
+        "business_id": state.business_id,
+        "status": state.status.value,
+    }
+
+
+async def evaluate_workflow_v2(payload: dict) -> dict:
+    """
+    Evaluates Engine 2.0 Workflow Engine (Subsystem 15) transitions for the
+    Node bridge's on-demand "Workflow Transition" step.
+
+    Two actions, selected by payload["action"] (case-insensitive):
+      - "initialize": builds a Mission from payload["mission"] and returns
+        the initial UNSTARTED WorkflowState via
+        WorkflowEngineService.initialize_workflow(). Used when a workspace
+        needs a WorkflowState for a mission that doesn't have one on
+        record yet.
+      - "transition" (default): evaluates a single (WorkflowState,
+        WorkflowEvent) pair from payload["state"] and payload["event"] via
+        WorkflowEngineService.transition().
+    """
+    import datetime as _dt
+    from mission_generation.models import Mission, MissionType
+    from workflow.service import WorkflowEngineService
+    from workflow.models import WorkflowEvent, WorkflowEventType, WorkflowState, WorkflowStatus
+
+    action = str(payload.get("action") or "").lower()
+    if not action:
+        action = "initialize" if "mission" in payload and "event" not in payload else "transition"
+
+    if action == "initialize":
+        raw_mission = payload.get("mission") if isinstance(payload.get("mission"), dict) else payload
+        mission = Mission(
+            opportunity_id=str(raw_mission.get("opportunity_id") or raw_mission.get("id") or "opp_unknown"),
+            business_id=str(raw_mission.get("business_id") or raw_mission.get("businessId") or "biz_unknown"),
+            mission_type=MissionType(str(raw_mission.get("mission_type") or raw_mission.get("type") or "OUTREACH").upper()),
+        )
+        state = WorkflowEngineService.initialize_workflow(mission)
+        return {"action": "initialize", "state": _workflow_state_dict(state)}
+
+    raw_state = payload.get("state") or payload.get("current_state")
+    if raw_state:
+        current_state = WorkflowState(
+            mission_id=str(raw_state.get("mission_id") or raw_state.get("opportunity_id") or "opp_unknown"),
+            opportunity_id=str(raw_state.get("opportunity_id") or "opp_unknown"),
+            business_id=str(raw_state.get("business_id") or "biz_unknown"),
+            status=WorkflowStatus(str(raw_state.get("status") or "UNSTARTED").upper()),
+        )
+    else:
+        # Persistence Integration milestone, Part 5 (read path): no
+        # inline `state`/`current_state` payload was supplied -- rather
+        # than falling back to a fabricated "opp_unknown" WorkflowState
+        # (the pre-persistence behavior), load the real persisted
+        # WorkflowState for payload["opportunity_id"] via
+        # SupabaseBatchIntelligenceBackend.fetch_workflow_state(),
+        # written by run_batch_intelligence()'s Workflow Initialization
+        # step. This is the on-demand chain consuming persisted state
+        # instead of recomputing/guessing it.
+        opportunity_id = str(
+            payload.get("opportunity_id") or payload.get("id") or ""
+        ).strip()
+        if not opportunity_id:
+            raise ValueError(
+                "evaluate_workflow_v2: 'transition' action requires either "
+                "a 'state'/'current_state' payload or an 'opportunity_id' "
+                "to load a persisted WorkflowState for."
+            )
+        batch_backend = _build_batch_intelligence_backend()
+        current_state = batch_backend.fetch_workflow_state(opportunity_id)
+        if current_state is None:
+            raise ValueError(
+                f"evaluate_workflow_v2: no persisted WorkflowState found for "
+                f"opportunity_id={opportunity_id!r}; Workflow Initialization "
+                f"may not have run for this opportunity yet."
+            )
+
+    raw_event = payload.get("event") or {}
+    event = WorkflowEvent(
+        event_type=WorkflowEventType(str(raw_event.get("event_type") or raw_event.get("type") or "QUEUE").upper()),
+        timestamp_iso=str(raw_event.get("timestamp_iso") or _dt.datetime.now(_dt.timezone.utc).isoformat()),
+        reason=raw_event.get("reason"),
+    )
+
+    result = WorkflowEngineService.transition(current_state, event)
+
+    if result.success:
+        # Persist the advanced state back so the next on-demand
+        # transition (and Mission Intelligence / Analytics / AI Coach
+        # reads) see the new status rather than the stale batch-
+        # initialization one. Never persists a failed transition's
+        # unchanged new_state==previous_state.
+        try:
+            batch_backend = _build_batch_intelligence_backend()
+            batch_backend.update_workflow_state(result.new_state)
+        except Exception:
+            log.warning(
+                "[evaluate_workflow_v2] failed to persist transitioned "
+                "WorkflowState for opportunity_id=%s",
+                result.new_state.opportunity_id, exc_info=True,
+            )
+
+    return {
+        "action": "transition",
+        "success": result.success,
+        "previous_state": _workflow_state_dict(result.previous_state),
+        "new_state": _workflow_state_dict(result.new_state),
+        "error_message": result.error_message,
+    }
+
+
+async def _workflow_cli() -> None:
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await evaluate_workflow_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
+def _mission_progression_dict(evaluation) -> dict:
+    from mission_generation.models import Mission
+
+    def _mission_dict(m: Mission | None) -> dict | None:
+        if m is None:
+            return None
+        return {
+            "opportunity_id": m.opportunity_id,
+            "business_id": m.business_id,
+            "mission_type": m.mission_type.value,
+        }
+
+    return {
+        "current_mission": _mission_dict(evaluation.current_mission),
+        "workflow_state": _workflow_state_dict(evaluation.workflow_state),
+        "next_mission": _mission_dict(evaluation.next_mission),
+        "rule_applied": evaluation.rule_applied.value,
+        "reason": evaluation.reason,
+    }
+
+
+async def evaluate_mission_intelligence_v2(payload: dict) -> dict:
+    """
+    Persistence Integration milestone, Part 5 (read path): Mission
+    Intelligence (Subsystem 22) had no CLI entrypoint anywhere in this
+    file before this milestone -- MissionIntelligenceService.
+    derive_next_mission() (mission_intelligence/service.py) has existed
+    since that subsystem was built but was never wired to anything
+    outside tests/validate_mission_intelligence.py. This is that wiring,
+    and it is read-path-only: it loads the persisted Mission and
+    WorkflowState for payload["opportunity_id"] (written by
+    run_batch_intelligence()'s Mission Generation / Workflow
+    Initialization steps) and the most recent persisted FeedbackRecord
+    for that opportunity, if any -- it does not recompute Prioritization,
+    Ranking, or Mission Generation itself (Part 5's own requirement).
+
+    payload:
+      - opportunity_id (required)
+    """
+    from feedback.models import FeedbackTargetType
+    from mission_intelligence.service import MissionIntelligenceService
+
+    opportunity_id = str(payload.get("opportunity_id") or payload.get("id") or "").strip()
+    if not opportunity_id:
+        raise ValueError(
+            "evaluate_mission_intelligence_v2 requires 'opportunity_id'."
+        )
+
+    batch_backend = _build_batch_intelligence_backend()
+
+    mission = batch_backend.fetch_mission(opportunity_id)
+    if mission is None:
+        raise ValueError(
+            f"evaluate_mission_intelligence_v2: no persisted Mission found "
+            f"for opportunity_id={opportunity_id!r}; Mission Generation may "
+            f"not have run for this opportunity yet."
+        )
+
+    workflow_state = batch_backend.fetch_workflow_state(opportunity_id)
+    if workflow_state is None:
+        raise ValueError(
+            f"evaluate_mission_intelligence_v2: no persisted WorkflowState "
+            f"found for opportunity_id={opportunity_id!r}; Workflow "
+            f"Initialization may not have run for this opportunity yet."
+        )
+
+    feedback_records = batch_backend.fetch_feedback_for_target(
+        FeedbackTargetType.OPPORTUNITY, opportunity_id
+    )
+    latest_feedback = feedback_records[0] if feedback_records else None
+
+    evaluation = MissionIntelligenceService.derive_next_mission(
+        mission, workflow_state, latest_feedback
+    )
+    return _mission_progression_dict(evaluation)
+
+
+async def _mission_intelligence_cli() -> None:
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await evaluate_mission_intelligence_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
+async def capture_feedback_v2(payload: dict) -> dict:
+    """
+    Persistence Integration milestone, Part 4/5 (write path for
+    Feedback): feedback/service.py's FeedbackService.capture_feedback()
+    has existed since Subsystem 19 was built but, like Mission
+    Intelligence, had zero production callers before this milestone
+    (repository audit confirmed only tests/validate_feedback.py
+    exercised it). This CLI mode captures a FeedbackRecord and persists
+    it via SupabaseBatchIntelligenceBackend.persist_feedback() so
+    evaluate_mission_intelligence_v2() above (and any future on-demand
+    reader) can read it back without the caller having to resupply it.
+
+    payload:
+      - target_type (required — 'opportunity' | 'mission' | 'business' | 'provider')
+      - target_id (required)
+      - outcome (required)
+      - notes (optional)
+      - metadata (optional — list of [key, value] pairs)
+    """
+    from feedback.service import FeedbackService
+
+    record = FeedbackService.capture_feedback(
+        target_type=str(payload.get("target_type") or ""),
+        target_id=str(payload.get("target_id") or ""),
+        outcome=str(payload.get("outcome") or ""),
+        notes=payload.get("notes"),
+        metadata=[tuple(pair) for pair in (payload.get("metadata") or [])],
+    )
+
+    batch_backend = _build_batch_intelligence_backend()
+    batch_backend.persist_feedback(record)
+
+    return {
+        "target_type": record.target_type.value,
+        "target_id": record.target_id,
+        "outcome": record.outcome.value,
+        "notes": record.evidence.notes,
+        "metadata": [list(pair) for pair in record.evidence.metadata],
+    }
+
+
+async def _feedback_cli() -> None:
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await capture_feedback_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "verify":
         asyncio.run(_run_with_graceful_shutdown(_verify_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "enrich":
+        asyncio.run(_run_with_graceful_shutdown(_enrich_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "score":
+        asyncio.run(_run_with_graceful_shutdown(_score_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "qualify":
+        asyncio.run(_run_with_graceful_shutdown(_qualify_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "prioritize":
+        asyncio.run(_run_with_graceful_shutdown(_prioritize_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "workflow":
+        asyncio.run(_run_with_graceful_shutdown(_workflow_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "crm":
+        asyncio.run(_run_with_graceful_shutdown(_crm_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "analytics":
+        asyncio.run(_run_with_graceful_shutdown(_analytics_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "ai_coach":
+        asyncio.run(_run_with_graceful_shutdown(_ai_coach_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "mission_intelligence":
+        asyncio.run(_run_with_graceful_shutdown(_mission_intelligence_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "feedback":
+        asyncio.run(_run_with_graceful_shutdown(_feedback_cli))
     else:
         asyncio.run(_run_with_graceful_shutdown(_main_cli))
+

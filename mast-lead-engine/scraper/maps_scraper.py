@@ -406,6 +406,150 @@ async def _human_scroll(
         pass
 
 
+# --- TEMPORARY DIAGNOSTIC (discovery-pipeline audit) ---
+# One-shot deep dump of the resolved results panel: confirms whether the
+# panel_sel we matched actually contains business cards, whether the
+# fallback card-selector candidates find anything ANYWHERE on the page
+# (not just inside `panel`), and whether the scroll container we're
+# about to drive with `_human_scroll` actually moves when scrolled.
+# Answers one question: are cards absent from the DOM, or are they
+# present somewhere we're not looking? Remove once discovery is
+# confirmed healthy again — this does not change selection or scroll
+# behavior, it only reports on it.
+async def _diag_dump_panel_dom(page: Page, panel_sel: str) -> None:
+    try:
+        panel = await page.query_selector(panel_sel)
+        if panel is None:
+            log.warning(
+                f"[maps][diag][dom] panel_sel={panel_sel!r} matched at "
+                f"wait_for_selector time but query_selector can't "
+                f"re-find it now — panel may have already been replaced"
+            )
+            return
+
+        # How many direct children does the resolved panel have, and how
+        # many of those look like they could be card wrappers?
+        child_count = await panel.evaluate("el => el.children.length")
+        child_summary = await panel.evaluate(
+            """el => Array.from(el.children).slice(0, 12).map(c => ({
+                tag: c.tagName,
+                cls: (c.className || '').toString().slice(0, 80),
+                role: c.getAttribute('role'),
+                childCount: c.children.length,
+            }))"""
+        )
+
+        # Anchors *inside the resolved panel* — both all anchors and
+        # place-URL anchors specifically. This is the scope the real
+        # collection loop queries.
+        panel_anchors_all = await panel.query_selector_all("a")
+        panel_anchors_place = await panel.query_selector_all(
+            "a[href*='/maps/place/']"
+        )
+
+        # Same counts, but PAGE-WIDE (ignores panel scope entirely) — if
+        # this is >0 while the panel-scoped count is 0, the cards exist
+        # but `panel` is the wrong container.
+        page_anchors_place = await page.eval_on_selector_all(
+            "a[href*='/maps/place/']", "els => els.length"
+        )
+
+        # Check each candidate from the (currently unused) fallback list,
+        # page-wide, so we know which of them — if any — actually matches
+        # something in the live DOM right now.
+        candidate_counts = {}
+        for sel in _RESULT_ITEM_SELECTORS:
+            try:
+                n = await page.eval_on_selector_all(sel, "els => els.length")
+            except Exception as exc:
+                n = f"error: {exc}"
+            candidate_counts[sel] = n
+
+        # Also check whether div[role='feed'] exists ANYWHERE on the page
+        # even if it wasn't what wait_for_selector landed on first (e.g.
+        # it matched a later/nested element, or exists but was slower to
+        # mount than the 8s panel-selector timeout).
+        feed_role_count = await page.eval_on_selector_all(
+            "div[role='feed']", "els => els.length"
+        )
+
+        # Sample hrefs/text from page-wide place anchors (not panel-
+        # scoped) so we can see what's actually out there regardless of
+        # which container holds it.
+        sample = await page.eval_on_selector_all(
+            "a[href*='/maps/place/']",
+            """els => els.slice(0, 5).map(e => ({
+                href: (e.getAttribute('href') || '').slice(0, 120),
+                text: (e.textContent || '').trim().slice(0, 60),
+            }))""",
+        )
+
+        # Scroll container geometry for the resolved panel, plus a live
+        # test of whether scrolling it actually changes scrollTop.
+        dims_before = await panel.evaluate(
+            """el => ({
+                scrollHeight: el.scrollHeight,
+                clientHeight: el.clientHeight,
+                scrollTop: el.scrollTop,
+            })"""
+        )
+        try:
+            await panel.evaluate("el => el.scrollBy({ top: 400, behavior: 'instant' })")
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
+        dims_after = await panel.evaluate(
+            """el => ({
+                scrollHeight: el.scrollHeight,
+                clientHeight: el.clientHeight,
+                scrollTop: el.scrollTop,
+            })"""
+        )
+        scroll_top_changed = dims_before.get("scrollTop") != dims_after.get("scrollTop")
+
+        # Sanitized shallow DOM sample: tag/class/role only, 2 levels
+        # deep, no text content or attribute values beyond className —
+        # enough to see structure without dumping the whole page.
+        dom_sample = await panel.evaluate(
+            """el => {
+                const describe = (node, depth) => {
+                    if (!node || depth > 2) return null;
+                    return {
+                        tag: node.tagName,
+                        cls: (node.className || '').toString().slice(0, 80),
+                        role: node.getAttribute ? node.getAttribute('role') : null,
+                        children: Array.from(node.children || [])
+                            .slice(0, 6)
+                            .map(c => describe(c, depth + 1))
+                            .filter(Boolean),
+                    };
+                };
+                return describe(el, 0);
+            }"""
+        )
+
+        log.info(
+            f"[maps][diag][dom] panel_sel={panel_sel!r} "
+            f"panel_child_count={child_count} "
+            f"panel_anchors_all={len(panel_anchors_all)} "
+            f"panel_anchors_place={len(panel_anchors_place)} "
+            f"page_anchors_place={page_anchors_place} "
+            f"feed_role_elements_on_page={feed_role_count}"
+        )
+        log.info(f"[maps][diag][dom] panel_children_summary={child_summary}")
+        log.info(f"[maps][diag][dom] candidate_selector_counts={candidate_counts}")
+        log.info(f"[maps][diag][dom] sample_place_anchors={sample}")
+        log.info(
+            f"[maps][diag][dom] scroll_dims_before={dims_before} "
+            f"scroll_dims_after={dims_after} "
+            f"scroll_top_changed={scroll_top_changed}"
+        )
+        log.info(f"[maps][diag][dom] dom_sample={dom_sample}")
+    except Exception as exc:
+        log.info(f"[maps][diag][dom] diagnostic dump failed (non-fatal): {exc}")
+# --- end temporary diagnostic ---
+
+
 _PLACE_CID_RE = re.compile(r"0x[0-9a-fA-F]+:0x[0-9a-fA-F]+")
 _PLACE_GID_RE = re.compile(r"/g/([A-Za-z0-9_-]+)")
 
@@ -1020,6 +1164,13 @@ class MapsScraper:
                     )
                     return
 
+                # --- TEMPORARY DIAGNOSTIC (discovery-pipeline audit) ---
+                # Deep one-shot dump of what's actually inside the
+                # resolved panel, before any scrolling or collection
+                # happens. See _diag_dump_panel_dom docstring.
+                await _diag_dump_panel_dom(page, panel_sel)
+                # --- end temporary diagnostic ---
+
                 if attempt > 1:
                     log.info(
                         f"[maps] recovered from crash for {full_query!r} — "
@@ -1162,9 +1313,21 @@ class MapsScraper:
                         )
 
                         # --- TEMPORARY DIAGNOSTIC (discovery-pipeline audit) ---
+                        # page_anchors_place is the SAME query with no
+                        # panel scope at all. If it diverges from
+                        # cards_in_dom (panel-scoped), the cards exist on
+                        # the page but `panel` (== panel_sel) is not the
+                        # container holding them.
+                        try:
+                            _page_anchors_place = await page.eval_on_selector_all(
+                                "a[href*='/maps/place/']", "els => els.length"
+                            )
+                        except Exception:
+                            _page_anchors_place = "error"
                         log.info(
                             f"[maps][diag] round={rounds_this_attempt} "
                             f"cards_in_dom={len(listing_anchors)} "
+                            f"page_anchors_place={_page_anchors_place} "
                             f"seen_so_far={len(seen_hrefs)} yielded_so_far={yielded}"
                         )
                         # --- end temporary diagnostic ---

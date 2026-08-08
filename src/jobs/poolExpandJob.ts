@@ -206,6 +206,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             abortController.signal,
             (info) => {
               citySearchExhausted = info.exhausted;
+              if (info.success === false) {
+                // See discoverJob.ts's onDone callback for the full
+                // explanation (Part 8 fix) — citySearchExhausted is
+                // guaranteed false here, so markCurrentSearchExhausted
+                // below is correctly skipped on a genuine failure.
+                console.warn(
+                  `[poolExpandJob] engine discovery FAILED for ${city}/${country.code} — ` +
+                    `reason=${info.failureReason} detail=${info.failureDetail ?? "n/a"}`,
+                );
+              }
             },
           )) {
             const pid = tracer.receive(lead._pipeline_id, lead.name);

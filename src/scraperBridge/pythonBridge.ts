@@ -362,11 +362,48 @@ export async function runEngineEnrich(params: EngineEnrichParams, signal?: Abort
   }
 }
 
+/**
+ * Machine-readable discovery-failure reasons — mirrors
+ * `exceptions.DiscoveryFailureReason` (mast-lead-engine/exceptions/__init__.py)
+ * field-for-field. Kept as a string union rather than importing anything
+ * from Python (there's no shared codegen between the two languages here),
+ * so this must be updated by hand if the Python enum's members change.
+ */
+export type EngineDiscoveryFailureReason =
+  | "PANEL_NOT_FOUND"
+  | "CONSENT_REQUIRED"
+  | "BLOCKED"
+  | "CHALLENGE"
+  | "NAVIGATION_TIMEOUT"
+  | "INVALID_RESULTS_PAGE"
+  | "SCRAPER_ERROR";
+
 export type EngineDoneInfo = {
   delivered: number;
   requested: number;
-  /** true when the engine's own search space ran out before `requested` was reached */
+  /**
+   * true when the engine's own search space ran out before `requested` was
+   * reached. ROOT CAUSE FIX (Engine 2.0 Part 8): this is only meaningful
+   * when `success` is also true — a failed discovery attempt (no valid
+   * results panel, a consent/block/challenge interstitial, a navigation
+   * timeout, or an unclassified scraper error) reports `exhausted: false`
+   * unconditionally, since a search that never got far enough to look at
+   * results can't have "run out" of them. Callers MUST check `success`
+   * before trusting `exhausted` — see `failureReason` below.
+   */
   exhausted: boolean;
+  /**
+   * false when this query ended in a discovery failure rather than a
+   * genuine (possibly empty) result set — see `exceptions.DiscoveryFailure`
+   * on the Python side. Defaults to true for backward compatibility with
+   * any engine build that predates this field (absent `success` in the
+   * sentinel is treated as "not a failure", matching pre-fix behavior).
+   */
+  success: boolean;
+  /** Present only when `success` is false. */
+  failureReason?: EngineDiscoveryFailureReason;
+  /** Present only when `success` is false — human-readable detail for logs. */
+  failureDetail?: string;
   /** Phase 2: structured performance report from the Python profiler */
   perf?: Record<string, unknown>;
 };
@@ -425,6 +462,28 @@ export async function* runEngineQuery(
   };
   signal?.addEventListener("abort", onAbort);
 
+  // ROOT CAUSE FIX (Part 9 — bounded subprocess lifecycle): see
+  // SCRAPER_SUBPROCESS_MAX_MS in src/config/env.ts. Without this, a
+  // discovery attempt that hangs inside the Python engine (stuck
+  // navigation, a selector that never resolves, a wedged browser) had no
+  // ceiling of its own — nothing here ever called killProcessTree() for
+  // it short of the caller's own AbortSignal (typically only wired to
+  // user cancellation / quantity-reached, not a timeout) or the much
+  // coarser whole-job stale-task sweep. Graceful (SIGTERM-first) so
+  // run_query()'s own cleanup — browser/context/page close, profiler
+  // report — still gets a chance to run before the hard kill, same as
+  // every other planned shutdown path in this file.
+  let timedOut = false;
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    console.warn(
+      `[scraper-bridge] subprocess exceeded SCRAPER_SUBPROCESS_MAX_MS=` +
+        `${env.SCRAPER_SUBPROCESS_MAX_MS}ms (PID: ${child.pid}) — terminating`,
+    );
+    void gracefulKillProcessTree(child);
+  }, env.SCRAPER_SUBPROCESS_MAX_MS);
+  watchdog.unref?.();
+
   child.stdin.write(JSON.stringify(params));
   child.stdin.end();
 
@@ -480,11 +539,33 @@ export async function* runEngineQuery(
       if (parsed.__done__) {
         sawDone = true;
         const perfPayload = parsed.__perf__ as Record<string, unknown> | undefined;
-        console.log(`[scraper-bridge] received __done__ — delivered=${parsed.delivered} exhausted=${parsed.exhausted} spawnMs=${spawnMs.toFixed(0)} firstLineMs=${firstLineMs?.toFixed(0) ?? "n/a"} firstLeadMs=${firstLeadMs?.toFixed(0) ?? "n/a"}`);
+        // ROOT CAUSE FIX (Part 8): `success` defaults to true when absent
+        // (an engine build without this field never fails this way, same
+        // as before this fix existed) — but when the engine explicitly
+        // reports `success: false`, `exhausted` is never trusted, matching
+        // what service.py's _main_cli now guarantees on its side
+        // (`exhausted` is always written as `false` alongside a failure).
+        const success = parsed.success === undefined ? true : Boolean(parsed.success);
+        const failureReason = success ? undefined : (parsed.failure_reason as EngineDiscoveryFailureReason | undefined);
+        const failureDetail = success ? undefined : (parsed.failure_detail as string | undefined);
+        console.log(
+          `[scraper-bridge] received __done__ — delivered=${parsed.delivered} ` +
+            `exhausted=${parsed.exhausted} success=${success} ` +
+            `${!success ? `failureReason=${failureReason} ` : ""}` +
+            `spawnMs=${spawnMs.toFixed(0)} firstLineMs=${firstLineMs?.toFixed(0) ?? "n/a"} firstLeadMs=${firstLeadMs?.toFixed(0) ?? "n/a"}`,
+        );
+        if (!success) {
+          console.warn(
+            `[scraper-bridge] discovery FAILED (not exhausted) — reason=${failureReason} detail=${failureDetail ?? "n/a"}`,
+          );
+        }
         onDone?.({
           delivered: Number(parsed.delivered ?? 0),
           requested: Number(parsed.requested ?? 0),
-          exhausted: Boolean(parsed.exhausted),
+          exhausted: success ? Boolean(parsed.exhausted) : false,
+          success,
+          failureReason,
+          failureDetail,
           perf: perfPayload,
         });
         continue;
@@ -501,6 +582,7 @@ export async function* runEngineQuery(
     throw err;
   } finally {
     rl.close();
+    clearTimeout(watchdog);
     signal?.removeEventListener("abort", onAbort);
     if (child.exitCode === null && child.signalCode === null) {
       console.log(`[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid}`);
@@ -527,6 +609,16 @@ export async function* runEngineQuery(
     // sentinel — this is observability only, no behavior change below.
     console.warn(
       `[scraper-bridge] __done__ was NEVER received before process exit (PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}) — stream ended without engine confirmation`,
+    );
+  }
+  if (timedOut) {
+    // Meaningful, specific failure status (Part 9) rather than the generic
+    // "exited with code N" below — a watchdog kill has a known, named
+    // cause, not an arbitrary crash, and callers (discoverJob.ts et al.)
+    // should be able to tell "this attempt hung" apart from "the process
+    // crashed" or "Google blocked us" just from the error text.
+    throw new Error(
+      `scraper engine subprocess exceeded SCRAPER_SUBPROCESS_MAX_MS=${env.SCRAPER_SUBPROCESS_MAX_MS}ms and was terminated`,
     );
   }
   if (exitCode !== 0 && !readError) {

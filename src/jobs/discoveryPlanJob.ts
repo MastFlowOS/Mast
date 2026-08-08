@@ -257,6 +257,19 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         undefined,
         (done) => {
           exhausted = done.exhausted;
+          if (done.success === false) {
+            // See discoverJob.ts's onDone callback for the full Part 8
+            // explanation. `exhausted` is guaranteed false in this branch
+            // already; this is log-level visibility only — persisting
+            // `success`/`failureReason` into discovery_tasks itself would
+            // need a schema change (new columns + the `p_exhausted` RPC
+            // below updated to accept them) that's out of scope for this
+            // pass. Flagged here rather than silently applied.
+            console.warn(
+              `[discoveryPlanJob] engine discovery FAILED for task=${payload.taskId} — ` +
+                `reason=${done.failureReason} detail=${done.failureDetail ?? "n/a"}`,
+            );
+          }
           if (done.perf) pythonPerfData = done.perf;
           pythonTimer.end();
         },

@@ -30,8 +30,27 @@ T = TypeVar("T")
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
+# ROOT CAUSE FIX (Engine 2.0 Part 10 — JSONL protocol corruption): this used
+# to stream to sys.stdout, the exact same file descriptor `service.py`'s
+# `_main_cli()` uses to emit the machine-readable JSONL protocol
+# (`{"type": "lead", ...}` / `{"__done__": true, ...}` lines) that the Node
+# scraper bridge (`src/scraperBridge/pythonBridge.ts`) parses one line at a
+# time via `JSON.parse(line)`. Every `log.info(...)` call anywhere in the
+# engine — including ones on hot paths like per-round scroll diagnostics —
+# was therefore interleaved onto the same stream as the protocol itself,
+# which is exactly what produced lines like:
+#     [scraper-bridge] non-JSON line from engine, skipping:
+#     23:06:57 [INFO] mast.engine.coordinator ...
+# The bridge already treats stderr as pure diagnostics (`child.stderr.on(
+# "data", ...)` → `console.debug(...)`, never parsed as protocol) and only
+# a non-zero exit code is treated as failure — so stderr is the correct
+# destination for every human-readable log line, and stdout must carry
+# nothing but protocol JSON. Both service.py's __main__/CLI path and every
+# worker subprocess spawned by pythonBridge.ts import get_logger() from
+# this module, so this one-line change fixes the stream for the entire
+# engine without touching call sites.
 logging.basicConfig(
-    stream=sys.stdout,
+    stream=sys.stderr,
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     datefmt="%H:%M:%S",

@@ -33,6 +33,23 @@ const EnvSchema = z.object({
   // never calls it directly.
   SCRAPER_ENGINE_PATH: z.string().default("../mast-lead-engine"),
 
+  // ROOT CAUSE FIX (Engine 2.0 Part 9 — bounded subprocess lifecycle): the
+  // `python service.py` child spawned per `runEngineQuery()` call
+  // (src/scraperBridge/pythonBridge.ts) previously had no maximum
+  // execution window of its own — only the much coarser, whole-job
+  // STALE_SCRAPE_JOB_TIMEOUT_MS above could ever reclaim a stuck run, and
+  // only after the job's *heartbeat* went stale, not the individual
+  // subprocess. A single discovery attempt hanging (e.g. on a Maps
+  // interstitial that no selector ever resolves) could sit alive for the
+  // shape of "minutes" the audit observed. This is a hard per-subprocess
+  // ceiling enforced by the bridge itself: if exceeded, the subprocess is
+  // torn down (SIGTERM → SIGKILL escalation, same as any other abort) so
+  // the job can move on to the next city/niche instead of stalling.
+  // Comfortably shorter than STALE_SCRAPE_JOB_TIMEOUT_MS so this fires
+  // first for a single stuck discovery attempt, well before the whole job
+  // would otherwise be reclaimed as stale.
+  SCRAPER_SUBPROCESS_MAX_MS: z.coerce.number().int().min(30_000).default(4 * 60 * 1000),
+
   // Worker-local concurrency. Horizontal scale is achieved by adding worker
   // services; these caps protect Maps and the browser in each service.
   DISCOVERY_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),

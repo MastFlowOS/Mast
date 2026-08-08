@@ -73,6 +73,7 @@ import threading
 import time
 from typing import Any, AsyncIterator, Optional
 
+from exceptions import DiscoveryFailure
 from scraper.maps_scraper import MapsScraper
 from enrichment.site_crawler import SiteCrawler
 from enrichment.ig_intel import IGIntelligence
@@ -680,17 +681,46 @@ async def _main_cli() -> None:
 
     delivered = 0
     log.info("[main_cli] entering run_query async for loop")
-    async for lead_dict in run_query(**params):
-        delivered += 1
-        sys.stdout.write(json.dumps(lead_dict, default=str) + "\n")
-        sys.stdout.flush()
-    log.info(f"[main_cli] run_query async for loop ended normally (delivered={delivered}) — about to write __done__")
+    # ROOT CAUSE FIX (Part 8 — false "exhausted" results): a discovery
+    # provider that fails to access/parse results (no valid results panel,
+    # a consent/block/challenge interstitial, a navigation timeout, or an
+    # unclassified scraper error) now raises `DiscoveryFailure` — see
+    # exceptions/__init__.py and scraper/maps_scraper.py — instead of the
+    # old silent `return`. That failure propagates up through
+    # `run_query()`'s async generator unchanged. Catching it specifically
+    # here, instead of letting it crash the subprocess with no `__done__`
+    # sentinel at all, is what lets the __done__ payload carry an explicit
+    # `success: False` + `failure_reason` pair — the Node bridge
+    # (src/scraperBridge/pythonBridge.ts) and its callers
+    # (src/jobs/discoverJob.ts's `citySearchExhausted` handling) key off
+    # `success` to make sure a failure is never treated the same as a
+    # query whose search space genuinely ran out. Any OTHER (unclassified)
+    # exception is intentionally NOT caught here — it propagates, crashes
+    # the subprocess with a non-zero exit code, and is surfaced by the
+    # bridge's existing `exitCode !== 0` handling, exactly as before.
+    failure: DiscoveryFailure | None = None
+    try:
+        async for lead_dict in run_query(**params):
+            delivered += 1
+            sys.stdout.write(json.dumps(lead_dict, default=str) + "\n")
+            sys.stdout.flush()
+        log.info(f"[main_cli] run_query async for loop ended normally (delivered={delivered}) — about to write __done__")
+    except DiscoveryFailure as exc:
+        failure = exc
+        log.error(
+            f"[main_cli] run_query ended with a discovery failure "
+            f"(reason={exc.reason.value}, delivered={delivered} before "
+            f"failure) — about to write __done__ with success=False: {exc.detail}"
+        )
 
     # `exhausted=True` means this query's own search space ran out (Maps
     # end-of-results / scroll cap) before `requested` was reached — i.e.
     # this is a genuine shortfall for this query, not an artificial stop.
-    # `exhausted=False` means we stopped because we delivered everything
-    # that was asked for; there may well be more out there.
+    # `exhausted=False` means either we stopped because we delivered
+    # everything that was asked for (there may well be more out there), OR
+    # the attempt failed (`success=False`) before exhaustion could even be
+    # determined — `exhausted` is meaningless in that case and callers must
+    # check `success` first, never infer failure from `exhausted` alone.
     #
     # Phase 2: __perf__ carries the structured performance report so the
     # TS bridge can log it server-side without any separate file.
@@ -698,11 +728,18 @@ async def _main_cli() -> None:
         "__done__": True,
         "delivered": delivered,
         "requested": requested,
-        "exhausted": delivered < requested,
+        "exhausted": False if failure is not None else delivered < requested,
+        "success": failure is None,
+        "failure_reason": failure.reason.value if failure is not None else None,
+        "failure_detail": failure.detail if failure is not None else None,
         "__perf__": _last_perf_summary,
     }, default=str) + "\n")
     sys.stdout.flush()
-    log.info(f"[main_cli] __done__ sentinel written (delivered={delivered}, requested={requested})")
+    log.info(
+        f"[main_cli] __done__ sentinel written (delivered={delivered}, "
+        f"requested={requested}, success={failure is None}, "
+        f"failure_reason={failure.reason.value if failure else None!r})"
+    )
 
 
 async def verify_business(*, website: str = "", instagram: str = "", headless: bool = True) -> dict:

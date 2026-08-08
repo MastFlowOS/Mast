@@ -210,10 +210,26 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
           abortController.signal,
           (info) => {
             citySearchExhausted = info.exhausted;
-            console.log(
-              `[discoverJob] [trace] engine onDone for ${city}/${country.code} — ` +
-                `delivered=${info.delivered} requested=${info.requested} exhausted=${info.exhausted}`,
-            );
+            if (info.success === false) {
+              // ROOT CAUSE FIX (Part 8): logged distinctly from ordinary
+              // exhaustion so a discovery failure for this city/niche is
+              // visible in job logs rather than silently looking like "no
+              // more results here" — citySearchExhausted is guaranteed
+              // false in this branch (the bridge never trusts `exhausted`
+              // when success is false), so `rotation.markCurrentSearchExhausted`
+              // below is correctly skipped and this city stays eligible
+              // for a future attempt instead of being dropped from rotation.
+              console.warn(
+                `[discoverJob] [trace] engine discovery FAILED for ${city}/${country.code} — ` +
+                  `reason=${info.failureReason} detail=${info.failureDetail ?? "n/a"} ` +
+                  `(delivered=${info.delivered} before failure; NOT marking exhausted)`,
+              );
+            } else {
+              console.log(
+                `[discoverJob] [trace] engine onDone for ${city}/${country.code} — ` +
+                  `delivered=${info.delivered} requested=${info.requested} exhausted=${info.exhausted}`,
+              );
+            }
           },
         )) {
           engineYielded += 1;

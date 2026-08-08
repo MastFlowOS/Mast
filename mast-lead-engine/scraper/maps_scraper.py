@@ -61,6 +61,7 @@ from utils.runtime import (
 )
 from utils.lifecycle_tracker import install_tracker, track_browser_created, log_milestone
 from utils.perf import NullProfiler
+from exceptions import DiscoveryFailure, DiscoveryFailureReason
 install_tracker()
 
 log = get_logger("maps")
@@ -548,6 +549,210 @@ async def _diag_dump_panel_dom(page: Page, panel_sel: str) -> None:
     except Exception as exc:
         log.info(f"[maps][diag][dom] diagnostic dump failed (non-fatal): {exc}")
 # --- end temporary diagnostic ---
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Interstitial / consent / block detection (Part 7 fix)
+#
+# Google can respond to a `page.goto()` with an ordinary HTTP 200 while
+# actually landing the browser on something that is NOT the Maps results
+# page at all — a cookie-consent interstitial, an automated-traffic "sorry"
+# page, or (rarely) some other challenge page. None of these raise a
+# Playwright navigation error, so the old code had no way to distinguish
+# them from a legitimate empty result set; every selector below them would
+# simply time out and the search would report a normal (fake) exhaustion.
+# These helpers turn that ambiguity into an explicit, typed signal.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Buttons for an ORDINARY cookie/consent dialog — a routine, expected UI
+# element with no security purpose, not a challenge to defeat. Clicking one
+# of these is equivalent to what a human visitor does on first visit; it is
+# categorically different from attempting to bypass a CAPTCHA or "sorry"
+# block page, which this scraper never attempts (see _detect_interstitial).
+_CONSENT_ACCEPT_SELECTORS = [
+    "button[aria-label='Accept all']",
+    "button[aria-label='I agree']",
+    "form[action*='consent'] button",
+    "button:has-text('Accept all')",
+    "button:has-text('I agree')",
+]
+
+
+async def _detect_interstitial(page: Page) -> DiscoveryFailureReason | None:
+    """Classify the current page as a known non-Maps interstitial, or None
+    if it looks like an ordinary page (which may or may not turn out to
+    have a valid results panel — that's decided separately, by
+    `_resolve_results_panel`).
+
+    Deliberately URL/title based rather than trying to fingerprint every
+    possible challenge page's DOM — the goal is a cheap, reliable signal
+    for the two shapes of interstitial Google is actually known to use for
+    automated Maps traffic, not a general bot-challenge classifier.
+    """
+    try:
+        url = page.url
+    except Exception:
+        url = ""
+
+    if "consent.google.com" in url or "/consent" in url:
+        return DiscoveryFailureReason.CONSENT_REQUIRED
+    if "sorry.google.com" in url or "/sorry/" in url:
+        return DiscoveryFailureReason.BLOCKED
+
+    # Cheap title/body check for a challenge page that didn't redirect to
+    # one of the hostnames above (Google has used in-place challenge
+    # interstitials on maps.google.com itself in the past).
+    try:
+        title = (await page.title() or "").lower()
+    except Exception:
+        title = ""
+    if "unusual traffic" in title or "captcha" in title:
+        return DiscoveryFailureReason.CHALLENGE
+
+    return None
+
+
+async def _try_dismiss_ordinary_consent(page: Page, *, config: ScraperConfig) -> bool:
+    """Best-effort click of a routine "accept cookies" control.
+
+    This is NOT a bypass mechanism — it only acts when a normal, visible
+    accept-consent button is present, exactly what a human visitor would
+    click. If no such control is found (e.g. an actual CAPTCHA/block page),
+    this returns False immediately and does nothing further; the caller is
+    responsible for reporting an explicit failure rather than attempting to
+    defeat whatever is actually blocking access.
+    """
+    for sel in _CONSENT_ACCEPT_SELECTORS:
+        try:
+            btn = await page.query_selector(sel)
+            if not btn:
+                continue
+            await btn.click(timeout=3000)
+            log.info(f"[maps] dismissed ordinary consent interstitial via {sel!r}")
+            # Give the resulting navigation/re-render a bounded moment to
+            # settle before the caller re-checks page state.
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=config.maps_timeout_ms)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            continue
+    return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Results-panel resolution (Parts 3–4 fix)
+#
+# The scraper's actual collection path scopes every anchor query to
+# whichever element `_PANEL_SELECTORS` resolves to (see the `search()`
+# collection loop below and `_human_scroll`) — so if that element is wrong,
+# every downstream signal (cards_in_dom, scroll movement, EOL detection)
+# is meaningless even though each individual step "succeeds". The old code
+# accepted the FIRST selector in `_PANEL_SELECTORS` to match anything at
+# all via `page.wait_for_selector`, including the generic, reused
+# `div.m6QErb` fallback with no further check that the matched element was
+# actually a results feed. This resolves each candidate with DOM evidence
+# instead of trusting the selector alone.
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def _validate_panel_candidate(
+    page: Page, panel, *, selector: str, strict: bool,
+) -> tuple[bool, str]:
+    """Validate that `panel` (an ElementHandle already matched by
+    `selector`) is plausibly the actual Maps results feed.
+
+    `strict=True` is used for the generic, non-specific fallback selectors
+    (`div.m6QErb` without `[aria-label]`, `div.section-layout-root`) that
+    are known to also match decorative/header/filter containers elsewhere
+    on the page — for those, evidence of place-anchor content is required.
+    `strict=False` is used for selectors that are already reasonably
+    specific to the feed (`div[role='feed']`, `div.m6QErb[aria-label]`),
+    where scrollable-container evidence alone is accepted since role=feed
+    is itself strong evidence of identity.
+
+    Returns (is_valid, evidence) — evidence is a short string logged by
+    the caller so a rejection is traceable to what was actually measured,
+    not just a bare "no" for the diagnostics record.
+    """
+    try:
+        anchor_count = len(await panel.query_selector_all("a[href*='/maps/place/']"))
+    except Exception:
+        anchor_count = 0
+
+    if anchor_count > 0:
+        return True, f"contains {anchor_count} place anchor(s)"
+
+    if strict:
+        # No place anchors yet is not disqualifying on its own — Maps can
+        # render an empty-but-correct feed while the first batch of cards
+        # is still streaming in — but for a generic selector we require at
+        # least scrollable-container evidence before accepting it, so we
+        # don't silently drive a header/filter/decorative node instead.
+        try:
+            dims = await panel.evaluate(
+                "el => ({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, role: el.getAttribute('role') })"
+            )
+        except Exception:
+            return False, "evaluate() failed"
+        is_scrollable = (dims.get("scrollHeight") or 0) > (dims.get("clientHeight") or 0)
+        has_feed_role = dims.get("role") == "feed"
+        if is_scrollable or has_feed_role:
+            return True, f"no anchors yet but scrollable={is_scrollable} role={dims.get('role')!r}"
+        return False, f"no anchors, not scrollable, role={dims.get('role')!r}"
+
+    # Non-strict candidates (role=feed, or m6QErb with an aria-label — both
+    # already reasonably specific to the results feed identity) are
+    # accepted even with zero anchors right now, same reasoning as above.
+    return True, "no anchors yet (non-strict candidate, feed-identity selector)"
+
+
+# Which _PANEL_SELECTORS entries require the stricter (anchor-or-scrollable)
+# check above, vs. which are specific enough on their own that scrollable
+# evidence alone suffices. Index-aligned with _PANEL_SELECTORS.
+_PANEL_SELECTOR_STRICT = {
+    "div[role='feed']": False,
+    "div.m6QErb[aria-label]": False,
+    "div.section-layout-root": True,
+    "div.m6QErb": True,  # the generic, most-reused fallback — see module docs
+}
+
+
+async def _resolve_results_panel(page: Page, *, config: ScraperConfig) -> tuple[str, object]:
+    """Resolve the actual results-feed element, validating each candidate
+    with DOM evidence rather than accepting the first selector match.
+
+    Raises `DiscoveryFailure(PANEL_NOT_FOUND)` if no candidate validates —
+    this is the fix for Part 8: a query that cannot even locate a results
+    container must never fall through to look identical to a query that
+    validly found zero matching businesses.
+    """
+    attempted: list[str] = []
+    for sel in _PANEL_SELECTORS:
+        try:
+            await page.wait_for_selector(sel, timeout=8000)
+        except PlaywrightTimeoutError:
+            attempted.append(f"{sel!r}: not present")
+            continue
+
+        panel = await page.query_selector(sel)
+        if panel is None:
+            attempted.append(f"{sel!r}: matched at wait time, gone by query time")
+            continue
+
+        strict = _PANEL_SELECTOR_STRICT.get(sel, True)
+        is_valid, evidence = await _validate_panel_candidate(page, panel, selector=sel, strict=strict)
+        if is_valid:
+            log.info(f"[maps][diag] result panel validated — selector={sel!r} evidence={evidence}")
+            return sel, panel
+
+        attempted.append(f"{sel!r}: rejected ({evidence})")
+        log.info(f"[maps][diag] panel candidate rejected — selector={sel!r} evidence={evidence}")
+
+    raise DiscoveryFailure(
+        DiscoveryFailureReason.PANEL_NOT_FOUND,
+        f"no candidate in _PANEL_SELECTORS validated as a results feed — {attempted}",
+    )
 
 
 _PLACE_CID_RE = re.compile(r"0x[0-9a-fA-F]+:0x[0-9a-fA-F]+")
@@ -1102,23 +1307,33 @@ class MapsScraper:
             try:
                 with self._profiler.timer("rate_limit_wait_search"):
                     await self._limiter.acquire("maps_search")
+
+                # ROOT CAUSE FIX (Part 6 — navigation): `networkidle` is not
+                # a usable readiness signal for Maps, which is a highly
+                # dynamic SPA that can keep background requests (tiles,
+                # telemetry, prefetch) open indefinitely — the old
+                # networkidle-first attempt was the dominant contributor to
+                # multi-minute searches that eventually produced nothing.
+                # `domcontentloaded` plus an explicit, bounded wait for the
+                # results panel itself (below, via `_resolve_results_panel`)
+                # is what actually determines readiness; a raw navigation
+                # timeout here is reported as a typed failure rather than
+                # silently falling through to "no results".
                 try:
-                    with self._profiler.timer("maps_initial_load"):
-                        await page.goto(search_url, wait_until="networkidle",
-                                        timeout=self.config.maps_timeout_ms)
-                except PlaywrightTimeoutError:
                     with self._profiler.timer("maps_initial_load"):
                         await page.goto(search_url, wait_until="domcontentloaded",
                                         timeout=self.config.maps_timeout_ms)
+                except PlaywrightTimeoutError as exc:
+                    raise DiscoveryFailure(
+                        DiscoveryFailureReason.NAVIGATION_TIMEOUT,
+                        f"page.goto() did not reach domcontentloaded within "
+                        f"{self.config.maps_timeout_ms}ms for {search_url!r}: {exc}",
+                    ) from exc
 
-                # --- TEMPORARY DIAGNOSTIC (discovery-pipeline audit) ---
-                # Confirms (a) the goto() actually landed on Maps rather
-                # than being redirected elsewhere (e.g. a consent/
-                # interstitial page, which is indistinguishable from a
-                # successful goto() since it returns HTTP 200 with no
-                # PlaywrightTimeoutError), and (b) roughly what the page
-                # actually rendered, before we ever try to find a result
-                # panel. Remove once discovery is confirmed healthy again.
+                # --- DIAGNOSTIC: confirms what the browser actually landed
+                # on before any panel/collection logic runs. Kept — bounded,
+                # structured, and this is exactly the evidence PART 14 asks
+                # diagnostics to keep providing. ---
                 try:
                     _landed_url = page.url
                     _title = await page.title()
@@ -1128,41 +1343,37 @@ class MapsScraper:
                         f"requested={search_url!r} landed_on={_landed_url!r} "
                         f"title={_title!r} body_chars={_body_len}"
                     )
-                    if "consent.google.com" in _landed_url or "/consent" in _landed_url:
-                        log.warning(
-                            f"[maps][diag] landed on a Google CONSENT "
-                            f"interstitial instead of Maps results — this "
-                            f"page has no result panel and every selector "
-                            f"below will time out for: {full_query!r}"
-                        )
-                    elif "sorry.google.com" in _landed_url or "/sorry/" in _landed_url:
-                        log.warning(
-                            f"[maps][diag] landed on Google's automated-"
-                            f"traffic / CAPTCHA 'sorry' interstitial "
-                            f"instead of Maps results for: {full_query!r}"
-                        )
                 except Exception as _diag_exc:
                     log.debug(f"[maps][diag] page-load diagnostic failed: {_diag_exc}")
-                # --- end temporary diagnostic ---
 
-                # Wait for results to appear
-                panel_sel = None
-                for sel in _PANEL_SELECTORS:
-                    try:
-                        await page.wait_for_selector(sel, timeout=8000)
-                        panel_sel = sel
-                        log.info(f"[maps][diag] result panel found — selector={sel!r}")
-                        break
-                    except PlaywrightTimeoutError:
-                        log.debug(f"[maps][diag] panel selector missed: {sel!r}")
-                        continue
-
-                if not panel_sel:
-                    log.warning(
-                        f"[maps] no result panel found for: {full_query!r} — "
-                        f"tried selectors={_PANEL_SELECTORS} landed_on={page.url!r}"
+                # ROOT CAUSE FIX (Part 7 — consent/interstitial handling):
+                # a page.goto() that "succeeds" (HTTP 200, no
+                # PlaywrightTimeoutError) can still have landed on a
+                # consent/block/challenge page instead of Maps results —
+                # every one of those has no results panel, so every
+                # selector below would previously time out and the search
+                # would report a normal (fake) exhaustion. Detect and
+                # report explicitly instead. Ordinary consent gets one
+                # legitimate dismiss attempt (a routine "Accept all" click,
+                # not a security bypass); anything else fails immediately —
+                # this scraper does not attempt to defeat blocks/CAPTCHAs.
+                interstitial = await _detect_interstitial(page)
+                if interstitial == DiscoveryFailureReason.CONSENT_REQUIRED:
+                    dismissed = await _try_dismiss_ordinary_consent(page, config=self.config)
+                    interstitial = await _detect_interstitial(page) if dismissed else interstitial
+                if interstitial is not None:
+                    raise DiscoveryFailure(
+                        interstitial,
+                        f"landed on {interstitial.value} instead of Maps results "
+                        f"for {full_query!r} — landed_on={page.url!r}",
                     )
-                    return
+
+                # ROOT CAUSE FIX (Parts 3–4 — panel resolution): validated
+                # against actual DOM evidence rather than accepting the
+                # first selector to match anything at all. Raises
+                # DiscoveryFailure(PANEL_NOT_FOUND) — not a silent `return`
+                # — if nothing validates as a real results feed.
+                panel_sel, _ = await _resolve_results_panel(page, config=self.config)
 
                 # --- TEMPORARY DIAGNOSTIC (discovery-pipeline audit) ---
                 # Deep one-shot dump of what's actually inside the
@@ -1331,6 +1542,36 @@ class MapsScraper:
                             f"seen_so_far={len(seen_hrefs)} yielded_so_far={yielded}"
                         )
                         # --- end temporary diagnostic ---
+
+                        # ROOT CAUSE FIX (Parts 4–5): the resolved panel
+                        # validated at resolution time (see
+                        # `_resolve_results_panel`), but a `div[role='feed']`
+                        # or `div.m6QErb[aria-label]` candidate can validate
+                        # on scrollable-container evidence alone before any
+                        # cards have rendered into it — so a genuine
+                        # container mismatch is still possible to discover
+                        # only once collection actually starts. If the very
+                        # first round scoped to `panel` finds nothing while
+                        # place anchors unambiguously exist elsewhere on the
+                        # page, that is direct DOM evidence `panel_sel` is
+                        # the wrong container — continuing would mean
+                        # scrolling a dead element for up to
+                        # `scroll_max_rounds` rounds while reporting
+                        # cards_in_dom=0 the entire time (the exact failure
+                        # mode Part 5 calls out), so this fails fast with an
+                        # explicit reason instead.
+                        if (
+                            rounds_this_attempt == 1
+                            and len(listing_anchors) == 0
+                            and isinstance(_page_anchors_place, int)
+                            and _page_anchors_place > 0
+                        ):
+                            raise DiscoveryFailure(
+                                DiscoveryFailureReason.PANEL_NOT_FOUND,
+                                f"panel_sel={panel_sel!r} validated but contains "
+                                f"0 place anchors while {_page_anchors_place} exist "
+                                f"page-wide — wrong container resolved for {full_query!r}",
+                            )
 
                         # Deduplicate on a stable place identity (CID / g-id
                         # extracted from the href) rather than the raw href
@@ -1552,8 +1793,37 @@ class MapsScraper:
                 # Finished this attempt's scroll budget without crashing —
                 # max_results reached, the per-attempt or cross-attempt
                 # scroll cap was hit, or EOL already returned above.
-                # Nothing left to retry.
+                # Nothing left to retry. A clean `return` here is correct:
+                # SUCCESS (either TARGET_REACHED or genuine EXHAUSTED — the
+                # caller distinguishes those two from `yielded` vs
+                # `max_results`), never a disguised failure.
                 return
+
+            except DiscoveryFailure as exc:
+                # ROOT CAUSE FIX (Part 8 — false "exhausted" results): a
+                # typed discovery failure (no valid panel, consent/block
+                # interstitial, navigation timeout) is NOT a renderer
+                # crash, but it still gets one retry with a fresh
+                # context/proxy in case it was transient (e.g. a one-off
+                # block on this proxy). What changes from the old behavior
+                # is the LAST attempt: instead of silently `return`-ing
+                # (which is indistinguishable from a query whose results
+                # genuinely ran out), the failure is re-raised so it
+                # propagates all the way to service.py's `__done__`
+                # sentinel as an explicit, machine-readable reason.
+                crashed = True
+                is_last_attempt = attempt >= max_attempts
+                log.error(
+                    f"[maps] discovery failure ({exc.reason.value}) for "
+                    f"{full_query!r} (attempt {attempt}/{max_attempts}, "
+                    f"{yielded} place(s) already yielded): {exc.detail}"
+                )
+                if proxy:
+                    self._proxy_manager.report_failure(proxy)
+                if is_last_attempt:
+                    raise
+                # else: fall through to `finally`, then the `while` loop
+                # retries with a freshly built context/page.
 
             except Exception as exc:
                 crashed = True
@@ -1566,7 +1836,19 @@ class MapsScraper:
                 if proxy:
                     self._proxy_manager.report_failure(proxy)
                 if is_last_attempt:
-                    return
+                    # ROOT CAUSE FIX (Part 8): an unclassified error used to
+                    # `return` silently here too — same problem as above,
+                    # just for errors this module didn't anticipate closely
+                    # enough to raise as a typed DiscoveryFailure itself.
+                    # Wrapping it (instead of a bare `raise`) guarantees
+                    # every exit-by-failure path — known or unknown cause —
+                    # surfaces the same way to callers: a DiscoveryFailure,
+                    # never a clean-looking `return`.
+                    raise DiscoveryFailure(
+                        DiscoveryFailureReason.SCRAPER_ERROR,
+                        f"unclassified error after {max_attempts} attempt(s) "
+                        f"for {full_query!r}: {exc}",
+                    ) from exc
                 # else: fall through to `finally`, then the `while` loop
                 # retries with a freshly built context/page.
             finally:

@@ -967,18 +967,57 @@ class MapsScraper:
                         await page.goto(search_url, wait_until="domcontentloaded",
                                         timeout=self.config.maps_timeout_ms)
 
+                # --- TEMPORARY DIAGNOSTIC (discovery-pipeline audit) ---
+                # Confirms (a) the goto() actually landed on Maps rather
+                # than being redirected elsewhere (e.g. a consent/
+                # interstitial page, which is indistinguishable from a
+                # successful goto() since it returns HTTP 200 with no
+                # PlaywrightTimeoutError), and (b) roughly what the page
+                # actually rendered, before we ever try to find a result
+                # panel. Remove once discovery is confirmed healthy again.
+                try:
+                    _landed_url = page.url
+                    _title = await page.title()
+                    _body_len = len(await page.evaluate("() => document.body?.innerText?.length || 0"))
+                    log.info(
+                        f"[maps][diag] search page loaded — "
+                        f"requested={search_url!r} landed_on={_landed_url!r} "
+                        f"title={_title!r} body_chars={_body_len}"
+                    )
+                    if "consent.google.com" in _landed_url or "/consent" in _landed_url:
+                        log.warning(
+                            f"[maps][diag] landed on a Google CONSENT "
+                            f"interstitial instead of Maps results — this "
+                            f"page has no result panel and every selector "
+                            f"below will time out for: {full_query!r}"
+                        )
+                    elif "sorry.google.com" in _landed_url or "/sorry/" in _landed_url:
+                        log.warning(
+                            f"[maps][diag] landed on Google's automated-"
+                            f"traffic / CAPTCHA 'sorry' interstitial "
+                            f"instead of Maps results for: {full_query!r}"
+                        )
+                except Exception as _diag_exc:
+                    log.debug(f"[maps][diag] page-load diagnostic failed: {_diag_exc}")
+                # --- end temporary diagnostic ---
+
                 # Wait for results to appear
                 panel_sel = None
                 for sel in _PANEL_SELECTORS:
                     try:
                         await page.wait_for_selector(sel, timeout=8000)
                         panel_sel = sel
+                        log.info(f"[maps][diag] result panel found — selector={sel!r}")
                         break
                     except PlaywrightTimeoutError:
+                        log.debug(f"[maps][diag] panel selector missed: {sel!r}")
                         continue
 
                 if not panel_sel:
-                    log.warning(f"[maps] no result panel found for: {full_query!r}")
+                    log.warning(
+                        f"[maps] no result panel found for: {full_query!r} — "
+                        f"tried selectors={_PANEL_SELECTORS} landed_on={page.url!r}"
+                    )
                     return
 
                 if attempt > 1:
@@ -1122,6 +1161,14 @@ class MapsScraper:
                             "a[href*='/maps/place/']"
                         )
 
+                        # --- TEMPORARY DIAGNOSTIC (discovery-pipeline audit) ---
+                        log.info(
+                            f"[maps][diag] round={rounds_this_attempt} "
+                            f"cards_in_dom={len(listing_anchors)} "
+                            f"seen_so_far={len(seen_hrefs)} yielded_so_far={yielded}"
+                        )
+                        # --- end temporary diagnostic ---
+
                         # Deduplicate on a stable place identity (CID / g-id
                         # extracted from the href) rather than the raw href
                         # string — the same place can appear with
@@ -1231,20 +1278,41 @@ class MapsScraper:
                                         country=country,
                                     )
                             except Exception as exc:
+                                log.info(f"[maps][diag] extraction raised, business dropped: {exc}")
                                 log.debug(f"[maps] extraction error: {exc}")
                                 self._stats.errors += 1
                                 continue
 
                             if not place or not place.name:
+                                log.info(
+                                    "[maps][diag] extraction returned no "
+                                    "name — business dropped (card_key="
+                                    f"{place_key!r})"
+                                )
                                 continue
 
+                            log.info(
+                                f"[maps][diag] business parsed — name={place.name!r} "
+                                f"address={place.address!r} rating={place.rating} "
+                                f"reviews={place.reviews}"
+                            )
+
                             if place.name.lower() in {"results", "search results", "النتائج"}:
+                                log.info(
+                                    f"[maps][diag] parsed name matched the "
+                                    f"panel-header exclusion list "
+                                    f"({place.name!r}) — dropped, not a real listing"
+                                )
                                 continue
 
                             seen_hrefs.add(place_key)
 
                             # Skip permanently closed
                             if place.closed:
+                                log.info(
+                                    f"[maps][diag] business dropped — "
+                                    f"marked permanently closed: {place.name!r}"
+                                )
                                 self._stats.skip("permanently_closed")
                                 continue
 
@@ -1277,6 +1345,10 @@ class MapsScraper:
                                 f"website={place.website[:40]!r}"
                             )
 
+                            log.info(
+                                f"[maps][diag] business yielded — "
+                                f"name={place.name!r} yielded_total={yielded + 1}"
+                            )
                             self._profiler.mark_first_yielded_business()
                             yield place
                             yielded += 1

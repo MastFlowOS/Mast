@@ -97,6 +97,20 @@ class DiscoveryFailureReason(str, Enum):
     # into any of the above (Playwright/browser-level error, parser
     # exception with no recoverable path, etc).
     SCRAPER_ERROR = "SCRAPER_ERROR"
+    # LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
+    # the run was deliberately stopped mid-flight by a cooperative shutdown
+    # request (SIGTERM from the Node bridge — watchdog absolute ceiling,
+    # caller abort, or process shutdown) before it finished naturally. This
+    # is NOT a scraper/network/page failure — the scraper may have been
+    # working perfectly — so it gets its own reason rather than being
+    # folded into SCRAPER_ERROR, letting callers (src/jobs/discoverJob.ts)
+    # tell "we asked it to stop" apart from "it broke" in logs/metrics.
+    # Like every other member of this enum, it must NEVER be reported
+    # alongside `exhausted=True` — a cancelled run's search space did not
+    # run out, it was simply asked to stop early. See service.py's
+    # `_main_cli` (`except asyncio.CancelledError`) for where this is
+    # raised.
+    CANCELLED = "CANCELLED"
 
 
 class DiscoveryFailure(Exception):

@@ -204,6 +204,36 @@ export type EngineVerifyResult = {
 
 const PYTHON_CMD = process.platform === "win32" ? "python" : "python3";
 
+/**
+ * LIFECYCLE FIX (race condition — child-process exit has exactly ONE
+ * authoritative listener): a Node `ChildProcess` only ever emits `"close"`
+ * once, and EventEmitter does NOT replay past events to listeners added
+ * after the fact. Previously `gracefulKillProcessTree()` registered its own
+ * `child.once("close", ...)` internally, and `runEngineQuery()` separately
+ * registered a second `child.on("close", ...)` of its own much later (after
+ * the whole read loop — including an `await gracefulKillProcessTree(...)` —
+ * had finished). If `"close"` fired and was consumed by the first listener
+ * before the second one was attached, the second listener would never fire
+ * and `runEngineQuery()`'s generator would hang forever waiting on it.
+ *
+ * The fix: attach exactly one `"close"` listener, synchronously, in the same
+ * tick as `spawn()` — before any `await` gives the event loop a chance to
+ * deliver the event — and hand every other consumer (graceful shutdown, the
+ * generator's own final await) the same resulting promise instead of each
+ * registering its own listener. A child process cannot exit before its own
+ * `spawn()` call returns, so a listener attached in that same synchronous
+ * block is guaranteed to observe the event no matter how it happens
+ * (natural exit, SIGTERM from graceful shutdown, SIGKILL from watchdog
+ * escalation, or an abort signal).
+ */
+export type ChildCloseResult = { code: number | null; signal: NodeJS.Signals | null };
+
+function watchChildClose(child: ReturnType<typeof spawn>): Promise<ChildCloseResult> {
+  return new Promise((resolve) => {
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+}
+
 function killProcessTree(child: ReturnType<typeof spawn>) {
   if (child.pid === undefined) return;
   console.log(`[scraper-bridge] Killing process tree for child PID: ${child.pid}`);
@@ -223,7 +253,14 @@ function killProcessTree(child: ReturnType<typeof spawn>) {
 /** Grace period given to the child after SIGTERM before we escalate to
  * SIGKILL — long enough for run_query()'s cleanup (browser shutdown,
  * profiler report) to finish; short enough not to noticeably delay the
- * next spawn. */
+ * next spawn.
+ *
+ * LIFECYCLE FIX: both call sites in this file now pass
+ * `env.SCRAPER_GRACEFUL_SHUTDOWN_MS` explicitly (raised default: 15s, to
+ * accommodate service.py's own cooperative-shutdown window — see that
+ * env var's comment in src/config/env.ts). This constant now only serves
+ * as the function's fallback default for any future/other caller that
+ * doesn't pass one. */
 const GRACEFUL_SHUTDOWN_MS = 3000;
 
 /**
@@ -239,8 +276,18 @@ const GRACEFUL_SHUTDOWN_MS = 3000;
  * cancels the run gracefully so that cleanup can still complete. Genuine
  * failure/abort paths (user cancellation, stuck subprocess) keep using the
  * immediate killProcessTree above, unchanged.
+ *
+ * LIFECYCLE FIX: no longer registers its own `"close"` listener. Callers
+ * must pass the single shared `watchChildClose()` promise created right
+ * after `spawn()` — see that function's doc comment for why a second,
+ * independently-registered listener on the same child is the root cause of
+ * the exit race this fix closes.
  */
-async function gracefulKillProcessTree(child: ReturnType<typeof spawn>, graceMs = GRACEFUL_SHUTDOWN_MS) {
+async function gracefulKillProcessTree(
+  child: ReturnType<typeof spawn>,
+  closed: Promise<ChildCloseResult>,
+  graceMs = GRACEFUL_SHUTDOWN_MS,
+) {
   if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
   if (process.platform === "win32") {
     // No SIGTERM-equivalent process-tree signal on Windows.
@@ -248,7 +295,6 @@ async function gracefulKillProcessTree(child: ReturnType<typeof spawn>, graceMs 
     return;
   }
 
-  const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
   try {
     process.kill(-child.pid, "SIGTERM");
   } catch (err) {
@@ -257,7 +303,7 @@ async function gracefulKillProcessTree(child: ReturnType<typeof spawn>, graceMs 
   }
 
   const timedOut = await Promise.race([
-    exited.then(() => false),
+    closed.then(() => false),
     new Promise<boolean>((resolve) => setTimeout(() => resolve(true), graceMs)),
   ]);
 
@@ -266,6 +312,15 @@ async function gracefulKillProcessTree(child: ReturnType<typeof spawn>, graceMs 
     killProcessTree(child);
   }
 }
+
+/**
+ * Exposed ONLY so the regression tests in `__tests__/pythonBridge.lifecycle.test.ts`
+ * can exercise the exit-lifecycle primitives directly (spawning small,
+ * fully-controlled child processes) without needing a full Python engine.
+ * Not part of the public bridge API — callers outside this module and its
+ * tests should not depend on it.
+ */
+export const __testing = { watchChildClose, gracefulKillProcessTree, killProcessTree };
 
 /**
  * One-shot (non-streaming) call to `python service.py verify` — re-checks a
@@ -376,7 +431,18 @@ export type EngineDiscoveryFailureReason =
   | "CHALLENGE"
   | "NAVIGATION_TIMEOUT"
   | "INVALID_RESULTS_PAGE"
-  | "SCRAPER_ERROR";
+  | "SCRAPER_ERROR"
+  /**
+   * LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
+   * mirrors the new `DiscoveryFailureReason.CANCELLED` member on the
+   * Python side (mast-lead-engine/exceptions/__init__.py) — a run that
+   * was deliberately stopped mid-flight by a cooperative shutdown request
+   * (watchdog absolute ceiling, caller abort, or process shutdown)
+   * *before* it finished naturally. Not a scraper/network/page failure —
+   * distinguished from SCRAPER_ERROR so callers can tell "we asked it to
+   * stop" apart from "it broke".
+   */
+  | "CANCELLED";
 
 export type EngineDoneInfo = {
   delivered: number;
@@ -400,6 +466,16 @@ export type EngineDoneInfo = {
    * sentinel is treated as "not a failure", matching pre-fix behavior).
    */
   success: boolean;
+  /**
+   * LIFECYCLE FIX: true when this run stopped because `delivered` reached
+   * `requested` with no failure — the "successful target completion"
+   * outcome from the completion-semantics fix, spelled out explicitly by
+   * the engine (service.py's `_main_cli`) rather than re-derived here.
+   * Optional/absent for an engine build that predates this field; such a
+   * build's `delivered >= requested` already implies the same thing when
+   * `success` is true, so no behavior is lost, just the explicit label.
+   */
+  targetReached?: boolean;
   /** Present only when `success` is false. */
   failureReason?: EngineDiscoveryFailureReason;
   /** Present only when `success` is false — human-readable detail for logs. */
@@ -449,6 +525,15 @@ export async function* runEngineQuery(
   });
   const spawnMs = hrElapsedMs();
 
+  // LIFECYCLE FIX: the ONE authoritative listener for this child's exit —
+  // established synchronously, in the same tick as spawn(), before any
+  // `await` below can yield to the event loop. Every other place in this
+  // function that needs to know when the child exited (graceful shutdown's
+  // wait-for-exit, and the final await at the end of this function) reads
+  // from this same promise instead of registering its own `"close"`
+  // listener. See watchChildClose()'s doc comment for the race this closes.
+  const childClosed = watchChildClose(child);
+
   // Phase 7 observability: track active subprocess count (best-effort, non-blocking).
   workerMetrics.browserLaunches += 1;
   workerMetrics.activeBrowsers += 1;
@@ -462,27 +547,50 @@ export async function* runEngineQuery(
   };
   signal?.addEventListener("abort", onAbort);
 
-  // ROOT CAUSE FIX (Part 9 — bounded subprocess lifecycle): see
-  // SCRAPER_SUBPROCESS_MAX_MS in src/config/env.ts. Without this, a
-  // discovery attempt that hangs inside the Python engine (stuck
-  // navigation, a selector that never resolves, a wedged browser) had no
-  // ceiling of its own — nothing here ever called killProcessTree() for
-  // it short of the caller's own AbortSignal (typically only wired to
-  // user cancellation / quantity-reached, not a timeout) or the much
-  // coarser whole-job stale-task sweep. Graceful (SIGTERM-first) so
-  // run_query()'s own cleanup — browser/context/page close, profiler
-  // report — still gets a chance to run before the hard kill, same as
-  // every other planned shutdown path in this file.
+  // LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
+  // see SCRAPER_SUBPROCESS_INACTIVITY_MS / SCRAPER_SUBPROCESS_MAX_MS in
+  // src/config/env.ts for the full rationale. Two independent timers,
+  // both graceful (SIGTERM-first, same as before) so service.py's own
+  // cleanup — browser/context/page close, profiler report, the __done__
+  // sentinel — still gets a chance to run before any hard kill:
+  //
+  //   inactivityTimer — reset every time a genuine protocol line arrives
+  //     (a parsed lead or the __done__ sentinel — see the
+  //     `resetInactivityTimer()` call below, right after a line parses
+  //     successfully). Fires if the subprocess goes quiet at the protocol
+  //     level for too long, regardless of how much stderr chatter it
+  //     produces in the meantime.
+  //   absoluteTimer — never reset. The last-resort ceiling for a process
+  //     that keeps reporting *something* forever without ever actually
+  //     finishing.
+  //
+  // `timedOut`/`timedOutReason` are shared between both so the eventual
+  // error message (if the run never recovers) says which one fired.
   let timedOut = false;
-  const watchdog = setTimeout(() => {
+  let timedOutReason: "inactivity" | "ceiling" | null = null;
+
+  const fireWatchdog = (reason: "inactivity" | "ceiling") => {
+    if (timedOut) return; // already firing/fired — don't double-log or double-kill
     timedOut = true;
-    console.warn(
-      `[scraper-bridge] subprocess exceeded SCRAPER_SUBPROCESS_MAX_MS=` +
-        `${env.SCRAPER_SUBPROCESS_MAX_MS}ms (PID: ${child.pid}) — terminating`,
-    );
-    void gracefulKillProcessTree(child);
-  }, env.SCRAPER_SUBPROCESS_MAX_MS);
-  watchdog.unref?.();
+    timedOutReason = reason;
+    const label =
+      reason === "inactivity"
+        ? `no protocol progress for SCRAPER_SUBPROCESS_INACTIVITY_MS=${env.SCRAPER_SUBPROCESS_INACTIVITY_MS}ms`
+        : `absolute safety ceiling SCRAPER_SUBPROCESS_MAX_MS=${env.SCRAPER_SUBPROCESS_MAX_MS}ms reached`;
+    console.warn(`[scraper-bridge] watchdog firing (${label}) (PID: ${child.pid}) — requesting graceful termination`);
+    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+  };
+
+  let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  const resetInactivityTimer = () => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => fireWatchdog("inactivity"), env.SCRAPER_SUBPROCESS_INACTIVITY_MS);
+    inactivityTimer.unref?.();
+  };
+  resetInactivityTimer(); // starts ticking from spawn — a process that never emits a first line is still caught
+
+  const absoluteTimer = setTimeout(() => fireWatchdog("ceiling"), env.SCRAPER_SUBPROCESS_MAX_MS);
+  absoluteTimer.unref?.();
 
   child.stdin.write(JSON.stringify(params));
   child.stdin.end();
@@ -491,6 +599,9 @@ export async function* runEngineQuery(
     // The engine logs verbosely to stderr via its own logger (get_logger) —
     // surface it as debug output rather than treating it as failure; only
     // a non-zero exit code is treated as an actual error, below.
+    // Deliberately does NOT reset the inactivity timer — see this
+    // function's watchdog comment above: stderr volume is not evidence of
+    // protocol-level forward progress.
     const line = chunk.toString();
     console.debug(`[scraper-bridge] ${line.trimEnd()}`);
     // Phase 7: detect crash patterns in stderr output (best-effort).
@@ -506,6 +617,21 @@ export async function* runEngineQuery(
   // so we can explicitly flag the "process exited but __done__ never arrived"
   // case distinctly from a normal, sentinel-confirmed completion.
   let sawDone = false;
+
+  // LIFECYCLE FIX: delivery accounting at the bridge transport boundary —
+  // see this phase's "ADD DELIVERY ACCOUNTING" requirement.
+  //   bridgeReceived  — every stdout line that parsed as a real lead
+  //                      (i.e. reached this process from Python at all).
+  //   bridgeForwarded — every lead the consumer (the `for await` on the
+  //                      other end of this generator) actually resumed
+  //                      past — i.e. was hand off successfully, not lost
+  //                      to the consumer throwing/breaking mid-yield.
+  // `parsed.delivered` on the __done__ sentinel is Python's own
+  // python_yielded count — logged alongside these at teardown below so a
+  // mismatch anywhere in the chain is visible in one place instead of
+  // requiring cross-referencing separate log lines.
+  let bridgeReceived = 0;
+  let bridgeForwarded = 0;
 
   const lineIterator = (async function* () {
     for await (const line of rl) {
@@ -536,6 +662,12 @@ export async function* runEngineQuery(
         continue;
       }
 
+      // LIFECYCLE FIX: any line that parsed as real protocol JSON — lead
+      // or __done__ — counts as forward progress. Reset the inactivity
+      // timer here, once, ahead of the lead/__done__ branch below, so
+      // both cases benefit identically.
+      resetInactivityTimer();
+
       if (parsed.__done__) {
         sawDone = true;
         const perfPayload = parsed.__perf__ as Record<string, unknown> | undefined;
@@ -548,9 +680,12 @@ export async function* runEngineQuery(
         const success = parsed.success === undefined ? true : Boolean(parsed.success);
         const failureReason = success ? undefined : (parsed.failure_reason as EngineDiscoveryFailureReason | undefined);
         const failureDetail = success ? undefined : (parsed.failure_detail as string | undefined);
+        // LIFECYCLE FIX: additive field — see EngineDoneInfo.targetReached.
+        const targetReached =
+          parsed.target_reached === undefined ? undefined : Boolean(parsed.target_reached);
         console.log(
           `[scraper-bridge] received __done__ — delivered=${parsed.delivered} ` +
-            `exhausted=${parsed.exhausted} success=${success} ` +
+            `exhausted=${parsed.exhausted} success=${success} targetReached=${targetReached ?? "n/a"} ` +
             `${!success ? `failureReason=${failureReason} ` : ""}` +
             `spawnMs=${spawnMs.toFixed(0)} firstLineMs=${firstLineMs?.toFixed(0) ?? "n/a"} firstLeadMs=${firstLeadMs?.toFixed(0) ?? "n/a"}`,
         );
@@ -559,11 +694,29 @@ export async function* runEngineQuery(
             `[scraper-bridge] discovery FAILED (not exhausted) — reason=${failureReason} detail=${failureDetail ?? "n/a"}`,
           );
         }
+        // LIFECYCLE FIX: reconciliation at the bridge transport boundary —
+        // pythonYielded is service.py's own count (what it put on the
+        // wire); bridgeReceived/bridgeForwarded are what THIS process
+        // actually saw/handed off. All three should match on a clean run;
+        // any gap here pinpoints whether loss happened in the pipe
+        // (pythonYielded > bridgeReceived — shouldn't be possible short of
+        // a truncated/non-JSON line, already logged above) or in the
+        // consumer (bridgeReceived > bridgeForwarded — the `for await`
+        // stopped resuming this generator, e.g. `break`/an uncaught throw
+        // downstream).
+        const pythonYielded = Number(parsed.delivered ?? 0);
+        console.log(
+          `[scraper-bridge] delivery accounting — pythonYielded=${pythonYielded} ` +
+            `bridgeReceived=${bridgeReceived} bridgeForwarded=${bridgeForwarded}` +
+            `${bridgeReceived !== pythonYielded ? " ⚠️ pythonYielded/bridgeReceived MISMATCH" : ""}` +
+            `${bridgeForwarded !== bridgeReceived ? " ⚠️ bridgeReceived/bridgeForwarded MISMATCH (consumer stopped early)" : ""}`,
+        );
         onDone?.({
-          delivered: Number(parsed.delivered ?? 0),
+          delivered: pythonYielded,
           requested: Number(parsed.requested ?? 0),
           exhausted: success ? Boolean(parsed.exhausted) : false,
           success,
+          targetReached,
           failureReason,
           failureDetail,
           perf: perfPayload,
@@ -575,24 +728,35 @@ export async function* runEngineQuery(
       if (firstLineMs === null) firstLineMs = hrElapsedMs();
       if (firstLeadMs === null) firstLeadMs = hrElapsedMs();
 
+      bridgeReceived += 1;
       yield parsed as EngineLead;
+      // LIFECYCLE FIX: only counted once control returns here, i.e. the
+      // consumer actually resumed this generator after receiving the
+      // lead — see bridgeReceived/bridgeForwarded's declaration above.
+      bridgeForwarded += 1;
     }
   } catch (err) {
     readError = err;
     throw err;
   } finally {
     rl.close();
-    clearTimeout(watchdog);
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    clearTimeout(absoluteTimer);
     signal?.removeEventListener("abort", onAbort);
     if (child.exitCode === null && child.signalCode === null) {
       console.log(`[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid}`);
-      await gracefulKillProcessTree(child);
+      await gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
     }
   }
 
-  const [exitCode, closeSignal]: [number, NodeJS.Signals | null] = await new Promise((resolve) =>
-    child.on("close", (code, signal) => resolve([code as unknown as number, signal])),
-  );
+  // LIFECYCLE FIX: read from the single shared exit promise created right
+  // after spawn(), rather than registering a fresh `"close"` listener here.
+  // By this point the child may already have closed (e.g. it exited well
+  // before the read loop above finished, or gracefulKillProcessTree() just
+  // resolved a moment ago) — `childClosed` still resolves correctly in
+  // every case because it was attached before the event could possibly
+  // have fired, not after.
+  const { code: exitCode, signal: closeSignal } = await childClosed;
 
   // Phase 7 observability: decrement active browsers counter on exit.
   workerMetrics.activeBrowsers = Math.max(0, workerMetrics.activeBrowsers - 1);
@@ -601,7 +765,8 @@ export async function* runEngineQuery(
   }
 
   console.log(
-    `[scraper-bridge] process exited — PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}, sawDone=${sawDone}`,
+    `[scraper-bridge] process exited — PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}, ` +
+      `sawDone=${sawDone}, timedOut=${timedOut}${timedOutReason ? ` (${timedOutReason})` : ""}`,
   );
   if (!sawDone) {
     // Explicit flag for the exact gap this audit called out: the process
@@ -611,17 +776,29 @@ export async function* runEngineQuery(
       `[scraper-bridge] __done__ was NEVER received before process exit (PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}) — stream ended without engine confirmation`,
     );
   }
-  if (timedOut) {
-    // Meaningful, specific failure status (Part 9) rather than the generic
-    // "exited with code N" below — a watchdog kill has a known, named
-    // cause, not an arbitrary crash, and callers (discoverJob.ts et al.)
-    // should be able to tell "this attempt hung" apart from "the process
-    // crashed" or "Google blocked us" just from the error text.
+  // LIFECYCLE FIX (completion semantics): a watchdog firing no longer
+  // unconditionally throws. If the subprocess still managed to report
+  // __done__ (service.py's own cooperative-shutdown fix — see
+  // COOPERATIVE_SHUTDOWN_GRACE_S there — now makes this the common case
+  // for a watchdog-triggered stop, not the exception), the protocol
+  // already told the caller everything it needs via `onDone` above
+  // (success=false, failureReason="CANCELLED", plus every lead already
+  // yielded through this same generator) — throwing here on top of that
+  // would crash a caller's `for await` loop (e.g. discoverJob.ts) AFTER
+  // it already received a fully consistent, correctly-accounted result,
+  // which is exactly the "invalid" completion-semantics gap this phase
+  // exists to close. Only throw when the protocol genuinely never
+  // completed — i.e. the caller has no other way to learn what happened.
+  if (timedOut && !sawDone) {
+    const label =
+      timedOutReason === "inactivity"
+        ? `inactivity timeout (SCRAPER_SUBPROCESS_INACTIVITY_MS=${env.SCRAPER_SUBPROCESS_INACTIVITY_MS}ms)`
+        : `absolute safety ceiling (SCRAPER_SUBPROCESS_MAX_MS=${env.SCRAPER_SUBPROCESS_MAX_MS}ms)`;
     throw new Error(
-      `scraper engine subprocess exceeded SCRAPER_SUBPROCESS_MAX_MS=${env.SCRAPER_SUBPROCESS_MAX_MS}ms and was terminated`,
+      `scraper engine subprocess exceeded its ${label} and was terminated before it could report completion`,
     );
   }
-  if (exitCode !== 0 && !readError) {
+  if (exitCode !== 0 && !readError && !sawDone) {
     throw new Error(`scraper engine exited with code ${exitCode}`);
   }
 }

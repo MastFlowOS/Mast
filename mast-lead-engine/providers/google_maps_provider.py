@@ -137,14 +137,16 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Iterator, Optional
+from typing import Any, AsyncIterator, Callable, Iterator, Optional
 
 from engine.contracts import BusinessCandidate
 from engine.interfaces import DiscoveryProviderInterface
 from providers.provider_capabilities import ProviderCapabilities
 from providers.provider_metadata import ProviderMetadata
 from scraper.maps_scraper import MapsScraper, RawPlace
-from utils.runtime import ProxyManager, RunStats, ScraperConfig
+from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
+
+log = get_logger("providers.google_maps")
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +176,19 @@ class GoogleMapsDiscoveryRequest:
     niche: str = ""
     region: str = ""
     max_results: int = 60
+    # LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
+    # optional cooperative early-stop check, consulted once per candidate
+    # already streamed out of MapsScraper (see `discover()`/`_discover_async`
+    # below) — never consulted from inside scraper/maps_scraper.py itself,
+    # so this does not touch that module's scrolling/selector/parsing
+    # internals at all. Lets a caller that already has enough (target
+    # reached) or that has been asked to shut down (cooperative SIGTERM
+    # handling — see service.py's `_run_with_graceful_shutdown` /
+    # `run_query`) stop asking this provider for more candidates without
+    # waiting for it to exhaust `max_results`. `None` (the default)
+    # preserves the exact previous behavior — run to exhaustion — for any
+    # caller that doesn't pass one (e.g. existing tests/validate scripts).
+    should_stop: Optional[Callable[[], bool]] = None
 
 
 def _or_none(value: str) -> Optional[str]:
@@ -326,15 +341,49 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
         proxy_manager = ProxyManager()
 
         async with MapsScraper(config, proxy_manager, stats) as scraper:
-            async for place in scraper.search(
+            # LIFECYCLE FIX: hold the generator in a variable (rather than
+            # inlining it into the `async for`) so it can be explicitly
+            # `aclose()`d in `finally` below regardless of whether the loop
+            # runs to natural exhaustion or exits early via the
+            # `should_stop` check — `async for`'s own `break` does NOT
+            # implicitly close the generator it was iterating, and leaving
+            # it un-closed would emit an asyncio "was never awaited"-style
+            # warning at GC time instead of letting MapsScraper's own
+            # generator `finally` blocks run deterministically, right here,
+            # while the surrounding `async with MapsScraper(...)` block
+            # (this method's browser/context/page owner) is still open —
+            # exactly the ordering "playwright resources must not be
+            # closed while active generator code can still execute against
+            # them" requires, just from the opposite direction: the
+            # generator is closed *before* its browser, not after.
+            search_gen = scraper.search(
                 query=request.query,
                 city=request.city,
                 country=request.country,
                 niche=request.niche,
                 region=request.region,
                 max_results=request.max_results,
-            ):
-                yield self._to_business_candidate(place, request.session_id)
+            )
+            try:
+                async for place in search_gen:
+                    yield self._to_business_candidate(place, request.session_id)
+                    # Checked *after* yielding, never before: whatever this
+                    # iteration already retrieved from Maps is always
+                    # propagated to the caller first ("finish current lead
+                    # delivery" — see run_query()'s docstring for the full
+                    # ordering this implements) — only the *next* pull from
+                    # Maps is skipped once should_stop() reports true.
+                    if request.should_stop is not None and request.should_stop():
+                        log.info(
+                            "[google_maps_provider] should_stop reported true "
+                            "after streaming a candidate — stopping further "
+                            "discovery for this request (session=%s) instead "
+                            "of continuing toward max_results=%d",
+                            request.session_id, request.max_results,
+                        )
+                        break
+            finally:
+                await search_gen.aclose()
 
     def _to_business_candidate(
         self, place: RawPlace, session_id: str

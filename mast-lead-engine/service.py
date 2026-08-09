@@ -71,9 +71,9 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Callable, Optional
 
-from exceptions import DiscoveryFailure
+from exceptions import DiscoveryFailure, DiscoveryFailureReason
 from scraper.maps_scraper import MapsScraper
 from enrichment.site_crawler import SiteCrawler
 from enrichment.ig_intel import IGIntelligence
@@ -136,6 +136,51 @@ engine_coordinator = EngineCoordinator()
 _last_perf_summary: dict = {}
 
 _SENTINEL = object()
+
+# LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
+# module-level cooperative shutdown flag, set by _run_with_graceful_
+# shutdown()'s SIGTERM handler and consulted by run_query() at safe
+# checkpoints (between ExecutionDriver.run_once() passes, and once per
+# discovered candidate via GoogleMapsDiscoveryRequest.should_stop) instead
+# of the previous behavior of hard-cancelling the asyncio task.
+#
+# WHY NOT task.cancel(): run_query()'s production path drives
+# ExecutionDriver.run_once() via `asyncio.to_thread(...)`, which runs on a
+# real OS thread. asyncio.Task.cancel() cannot actually interrupt code
+# already executing on that thread — it can only make the *awaiting*
+# coroutine stop waiting for it. The previous implementation did exactly
+# that: cancelling the outer task made `await asyncio.to_thread(...)`
+# raise CancelledError immediately, while the underlying thread (Discovery
+# stage -> GoogleMapsProvider -> MapsScraper, holding an open Playwright
+# browser/context/page) kept running, orphaned, completely detached from
+# the coroutine that was "waiting" for it. The main coroutine would then
+# proceed straight into run_query()'s cleanup (and, if the process didn't
+# exit fast enough, the Node bridge's escalation from SIGTERM to SIGKILL —
+# see src/scraperBridge/pythonBridge.ts's gracefulKillProcessTree) while
+# that orphaned thread was still actively calling into Playwright — the
+# exact "Target page, context or browser has been closed" race reported
+# from the live test.
+#
+# This flag fixes that at the root: nothing here ever force-interrupts
+# in-flight thread work. Instead, discovery is given a cheap, frequent
+# checkpoint (after every candidate it already streamed) to notice a stop
+# request and simply stop asking Maps for more — the current
+# `driver.run_once()` call is then allowed to return *normally*, at which
+# point no thread is touching Playwright anymore and cleanup (including
+# closing the browser) is safe. See `_run_with_graceful_shutdown` below
+# for the (bounded) hard-cancel fallback kept as a last resort for a run
+# that doesn't check this flag often enough to wind down in time.
+_shutdown_event = threading.Event()
+
+# How long _run_with_graceful_shutdown waits for the cooperative shutdown
+# above to finish on its own before escalating to a forced task
+# cancellation (the old, unconditional behavior). Comfortably shorter than
+# the Node bridge's own SIGTERM->SIGKILL grace period
+# (GRACEFUL_SHUTDOWN_MS / SCRAPER_GRACEFUL_SHUTDOWN_MS in
+# pythonBridge.ts — kept above this value there) so Python's own graceful
+# path (which still gets to write __done__ and close resources in order)
+# has a real chance to win the race before Node's hard kill would fire.
+COOPERATIVE_SHUTDOWN_GRACE_S = 12.0
 
 
 def _build_storage_backend() -> SupabaseStorageBackend:
@@ -273,6 +318,14 @@ async def run_query(
     require_viability: bool = True,
     discovery_only: bool = False,
     db_path: str = "data/leads.db",
+    # LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
+    # optional cooperative shutdown flag — see the module-level
+    # `_shutdown_event` docstring above for why this replaced hard task
+    # cancellation. `_main_cli` always passes the module-level event;
+    # `None` (the default) preserves old behavior for any other caller
+    # (library use, tests/validate_service_run_query.py) that doesn't
+    # pass one — such a caller simply never requests early shutdown.
+    shutdown_event: Optional[threading.Event] = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """
     Async generator now driven by Engine 2.0 instead of the V1
@@ -366,6 +419,21 @@ async def run_query(
     _last_lead_time: float | None = None   # for inter-lead gap tracking
     log_milestone("Before run_query discovery starts")
 
+    # LIFECYCLE FIX (target reached / graceful shutdown): a single
+    # cooperative check, shared by both branches below, threaded into
+    # GoogleMapsDiscoveryRequest.should_stop (see providers/
+    # google_maps_provider.py) so discovery stops asking Maps for more raw
+    # candidates the moment either condition is true, instead of always
+    # running to `max_results`/raw_supply_cap. Reads `delivered` and
+    # `shutdown_event` from this closure's enclosing scope live, at call
+    # time — ordinary Python closure semantics, not a snapshot — so it
+    # always reflects the current state even though it's constructed once,
+    # here, before `delivered` has done any of its later `+= 1`s.
+    def _should_stop_discovery() -> bool:
+        return delivered >= _deliver_target or (
+            shutdown_event is not None and shutdown_event.is_set()
+        )
+
     # See run() in main.py / the ROOT CAUSE note this replaces: request a
     # generous raw-supply ceiling rather than a guessed pass-rate multiple,
     # so genuine exhaustion (no more matching businesses) is what actually
@@ -381,6 +449,7 @@ async def run_query(
                 session_id=str(_time.time_ns()),  # no session/pipeline is created in this mode
                 query=query, city=city, country=country,
                 niche=niche, region=region, max_results=raw_supply_cap,
+                should_stop=_should_stop_discovery,
             )
             result_q: "thread_queue.Queue" = thread_queue.Queue(maxsize=10)
 
@@ -399,6 +468,19 @@ async def run_query(
             thread.start()
             try:
                 while delivered < _deliver_target:
+                    # LIFECYCLE FIX: checked *before* the next (blocking)
+                    # queue read, not just relied upon inside the worker
+                    # thread — if shutdown was requested while this
+                    # coroutine was doing something else entirely (e.g.
+                    # between candidates), stop draining immediately
+                    # instead of waiting on one more `result_q.get()`.
+                    if shutdown_event is not None and shutdown_event.is_set():
+                        log.info(
+                            "[run_query] discovery_only: shutdown requested — "
+                            "stopping early (delivered=%d/%d so far)",
+                            delivered, _deliver_target,
+                        )
+                        break
                     item = await asyncio.to_thread(result_q.get)
                     if item is _SENTINEL:
                         log.info("[run_query] discovery_only: provider exhausted")
@@ -448,6 +530,7 @@ async def run_query(
             discovery_request = GoogleMapsDiscoveryRequest(
                 session_id=session_id, query=query, city=city, country=country,
                 niche=niche, region=region, max_results=raw_supply_cap,
+                should_stop=_should_stop_discovery,
             )
 
             result_q: "thread_queue.Queue" = thread_queue.Queue()
@@ -486,6 +569,26 @@ async def run_query(
             try:
                 idle_passes = 0
                 while delivered < _deliver_target:
+                    # LIFECYCLE FIX (graceful shutdown ordering): checked
+                    # *before* starting another driver.run_once() pass, not
+                    # after — this is the safe checkpoint. Whatever pass is
+                    # already in flight when a shutdown is requested is
+                    # never interrupted (see the module-level
+                    # `_shutdown_event` docstring for why forcing that would
+                    # orphan the thread mid-Playwright-use); it's simply the
+                    # LAST pass. Combined with GoogleMapsDiscoveryRequest.
+                    # should_stop (checked once per candidate, inside that
+                    # in-flight pass, whenever Discovery happens to be the
+                    # stage still running), a pass that's mid-discovery when
+                    # shutdown is requested still winds down promptly rather
+                    # than continuing toward raw_supply_cap.
+                    if shutdown_event is not None and shutdown_event.is_set():
+                        log.info(
+                            "[run_query] shutdown requested — not starting "
+                            "another execution pass (delivered=%d/%d so far)",
+                            delivered, _deliver_target,
+                        )
+                        break
                     outcomes = await asyncio.to_thread(driver.run_once)
                     if driver.last_error is not None:
                         raise driver.last_error
@@ -700,7 +803,7 @@ async def _main_cli() -> None:
     # bridge's existing `exitCode !== 0` handling, exactly as before.
     failure: DiscoveryFailure | None = None
     try:
-        async for lead_dict in run_query(**params):
+        async for lead_dict in run_query(**params, shutdown_event=_shutdown_event):
             delivered += 1
             sys.stdout.write(json.dumps(lead_dict, default=str) + "\n")
             sys.stdout.flush()
@@ -712,6 +815,36 @@ async def _main_cli() -> None:
             f"(reason={exc.reason.value}, delivered={delivered} before "
             f"failure) — about to write __done__ with success=False: {exc.detail}"
         )
+    except asyncio.CancelledError:
+        # LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown
+        # phase): this only fires if _run_with_graceful_shutdown's
+        # COOPERATIVE_SHUTDOWN_GRACE_S fallback actually escalated to a
+        # forced task.cancel() — i.e. run_query()'s own cooperative
+        # checkpoints (should_stop / the between-pass shutdown_event check)
+        # didn't finish in time. Before this fix, this exception propagated
+        # straight out of `_main_cli()` uncaught, skipping the __done__
+        # write entirely — that is the direct cause of the reported
+        # "sawDone=false" / "Delivered: 0" outcome, even for a run whose
+        # leads had already been fully qualified/stored (every already-
+        # written stdout line up to this point is real and already reached
+        # Node; only the sentinel was missing). Catching it here, the same
+        # way DiscoveryFailure is caught above, guarantees __done__ is
+        # ALWAYS written — every branch of "python yields a lead -> node
+        # receives it -> ... -> completion reports it correctly" now holds
+        # even on a forced shutdown, not just a clean one. Never reported
+        # as `exhausted=True` — see DiscoveryFailureReason.CANCELLED's own
+        # docstring for why that invariant matters here specifically.
+        failure = DiscoveryFailure(
+            DiscoveryFailureReason.CANCELLED,
+            "graceful shutdown (SIGTERM) requested before this run finished "
+            "naturally, and the cooperative shutdown checkpoints did not "
+            "wind down in time — escalated to a forced cancellation",
+        )
+        log.warning(
+            f"[main_cli] run_query cancelled during shutdown "
+            f"(delivered={delivered} before cancellation) — writing "
+            f"__done__ with success=False, failure_reason=CANCELLED"
+        )
 
     # `exhausted=True` means this query's own search space ran out (Maps
     # end-of-results / scroll cap) before `requested` was reached — i.e.
@@ -722,14 +855,26 @@ async def _main_cli() -> None:
     # determined — `exhausted` is meaningless in that case and callers must
     # check `success` first, never infer failure from `exhausted` alone.
     #
+    # LIFECYCLE FIX: `target_reached` is a new, purely additive field (the
+    # existing `delivered`/`requested`/`exhausted`/`success` fields already
+    # let a caller derive it — `success and delivered >= requested` — so
+    # this changes no existing semantics and no existing caller needs to
+    # change) that spells out the "successful target completion" outcome
+    # from the completion-semantics fix explicitly, rather than leaving
+    # every caller to re-derive it. An engine build predating this field
+    # simply omits it; `EngineDoneInfo` on the Node side treats it as
+    # optional for exactly that reason.
+    #
     # Phase 2: __perf__ carries the structured performance report so the
     # TS bridge can log it server-side without any separate file.
+    target_reached = failure is None and delivered >= requested
     sys.stdout.write(json.dumps({
         "__done__": True,
         "delivered": delivered,
         "requested": requested,
         "exhausted": False if failure is not None else delivered < requested,
         "success": failure is None,
+        "target_reached": target_reached,
         "failure_reason": failure.reason.value if failure is not None else None,
         "failure_detail": failure.detail if failure is not None else None,
         "__perf__": _last_perf_summary,
@@ -737,7 +882,8 @@ async def _main_cli() -> None:
     sys.stdout.flush()
     log.info(
         f"[main_cli] __done__ sentinel written (delivered={delivered}, "
-        f"requested={requested}, success={failure is None}, "
+        f"requested={requested}, target_reached={target_reached}, "
+        f"success={failure is None}, "
         f"failure_reason={failure.reason.value if failure else None!r})"
     )
 
@@ -866,20 +1012,61 @@ async def _run_with_graceful_shutdown(coro_fn) -> None:
     profiler report: it's not that print_report() has a bug, it's that the
     process is being killed before Python ever gets to run it.
 
-    The fix here just cancels the running task on SIGTERM instead of doing
-    nothing: cancellation raises CancelledError at the task's current await
-    point, which unwinds the stack through run_query()'s existing
-    try/finally chain exactly like any other exception — so its cleanup
-    (including the profiler report) still runs before the process exits.
+    LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
+    this used to respond to SIGTERM by calling `task.cancel()`
+    unconditionally. For every OTHER cli mode (verify/enrich/score/...) —
+    short-lived, no background-thread work — that's safe and still exactly
+    what happens below, just after a bounded wait. For the long-running
+    discovery mode (`_main_cli` -> `run_query()`), it was actually the root
+    cause of the reported "Target page, context or browser has been
+    closed" race: `run_query()`'s production path drives
+    `ExecutionDriver.run_once()` via `asyncio.to_thread(...)`, a real OS
+    thread that `task.cancel()` cannot interrupt once it's running —
+    cancelling only makes the *awaiting* coroutine stop waiting for it,
+    orphaning the thread (see the module-level `_shutdown_event` docstring
+    for the full mechanics). The orphaned thread would then keep calling
+    into Playwright while the main coroutine's `finally` blocks (and,
+    eventually, the Node bridge's SIGKILL escalation) tore down the very
+    process the orphaned thread's browser lived in.
+
+    The fix: SIGTERM now sets `_shutdown_event` — a cooperative flag
+    `run_query()` itself checks at safe checkpoints (see its own
+    docstring/comments) — and gives it `COOPERATIVE_SHUTDOWN_GRACE_S`
+    seconds to wind down and finish *on its own* before falling back to
+    the old `task.cancel()` behavior as a last resort. `_main_cli` also
+    now catches the resulting `CancelledError` (if the fallback ever does
+    fire) so `__done__` is still written either way — see `_main_cli`'s
+    own comment for that half of the fix.
     """
     task = asyncio.ensure_future(coro_fn())
+    _shutdown_event.clear()
+    escalate_task: Optional["asyncio.Task[None]"] = None
 
     def _on_sigterm() -> None:
+        nonlocal escalate_task
         log.warning(
-            "[service] received SIGTERM — cancelling run for graceful "
-            "shutdown so cleanup (profiler report) can still finish"
+            "[service] received SIGTERM — requesting cooperative shutdown "
+            "(run_query's own checkpoints get up to "
+            f"{COOPERATIVE_SHUTDOWN_GRACE_S:.0f}s to wind down active work "
+            "and let cleanup — including __done__ — run normally, before "
+            "falling back to a forced cancellation)"
         )
-        task.cancel()
+        _shutdown_event.set()
+
+        async def _escalate_if_still_running() -> None:
+            await asyncio.sleep(COOPERATIVE_SHUTDOWN_GRACE_S)
+            if not task.done():
+                log.warning(
+                    "[service] cooperative shutdown did not finish within "
+                    f"{COOPERATIVE_SHUTDOWN_GRACE_S:.0f}s of SIGTERM — "
+                    "escalating to forced task cancellation (same "
+                    "last-resort behavior this handler always had; may "
+                    "leave a background thread orphaned if one is still "
+                    "running — see _shutdown_event's docstring)"
+                )
+                task.cancel()
+
+        escalate_task = asyncio.ensure_future(_escalate_if_still_running())
 
     if sys.platform != "win32":
         # add_signal_handler needs a running loop and isn't supported on
@@ -890,7 +1077,10 @@ async def _run_with_graceful_shutdown(coro_fn) -> None:
     try:
         await task
     except asyncio.CancelledError:
-        log.info("[service] exited after graceful SIGTERM shutdown")
+        log.info("[service] exited after escalated (forced) SIGTERM shutdown")
+    finally:
+        if escalate_task is not None and not escalate_task.done():
+            escalate_task.cancel()
 
 
 async def score_business_v2(payload: dict) -> dict:

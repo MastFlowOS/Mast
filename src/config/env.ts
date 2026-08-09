@@ -33,22 +33,48 @@ const EnvSchema = z.object({
   // never calls it directly.
   SCRAPER_ENGINE_PATH: z.string().default("../mast-lead-engine"),
 
-  // ROOT CAUSE FIX (Engine 2.0 Part 9 — bounded subprocess lifecycle): the
-  // `python service.py` child spawned per `runEngineQuery()` call
-  // (src/scraperBridge/pythonBridge.ts) previously had no maximum
-  // execution window of its own — only the much coarser, whole-job
-  // STALE_SCRAPE_JOB_TIMEOUT_MS above could ever reclaim a stuck run, and
-  // only after the job's *heartbeat* went stale, not the individual
-  // subprocess. A single discovery attempt hanging (e.g. on a Maps
-  // interstitial that no selector ever resolves) could sit alive for the
-  // shape of "minutes" the audit observed. This is a hard per-subprocess
-  // ceiling enforced by the bridge itself: if exceeded, the subprocess is
-  // torn down (SIGTERM → SIGKILL escalation, same as any other abort) so
-  // the job can move on to the next city/niche instead of stalling.
-  // Comfortably shorter than STALE_SCRAPE_JOB_TIMEOUT_MS so this fires
-  // first for a single stuck discovery attempt, well before the whole job
-  // would otherwise be reclaimed as stale.
-  SCRAPER_SUBPROCESS_MAX_MS: z.coerce.number().int().min(30_000).default(4 * 60 * 1000),
+  // LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase —
+  // supersedes the "ROOT CAUSE FIX (Engine 2.0 Part 9)" note this
+  // replaces): a single fixed wall-clock ceiling was too blunt an
+  // instrument — a live test proved a legitimately-progressing Playwright
+  // discovery run (yielding real leads the whole time) got killed simply
+  // because the clock ran out, not because anything was actually stuck.
+  // The watchdog is now TWO independent timers:
+  //
+  //   SCRAPER_SUBPROCESS_INACTIVITY_MS — resets every time the subprocess
+  //     reports genuine protocol progress (a parsed lead line, or the
+  //     __done__ sentinel — see the `resetInactivityTimer()` call sites in
+  //     runEngineQuery below). If NO progress arrives for this long, the
+  //     subprocess is presumed genuinely stalled and graceful termination
+  //     begins. Deliberately NOT reset by stderr output — the engine logs
+  //     verbosely there for reasons unrelated to forward progress (see
+  //     "Do NOT reset the inactivity timer for every random stderr log
+  //     line" in this phase's spec), so a chatty-but-stuck process must
+  //     still be caught.
+  //
+  //   SCRAPER_SUBPROCESS_MAX_MS — an absolute safety ceiling that never
+  //     resets, for the pathological case of a process that keeps
+  //     reporting *something* forever without ever finishing (a genuine
+  //     runaway). Kept comfortably larger than the inactivity timeout so
+  //     it only fires for a truly wedged/runaway subprocess, not a slow
+  //     but honest one — raised well above the old 4-minute default,
+  //     which was proven too short for real Playwright-driven Maps
+  //     discovery (rate-limited, deliberately human-paced scrolling) plus
+  //     the enrichment pipeline that follows it.
+  SCRAPER_SUBPROCESS_INACTIVITY_MS: z.coerce.number().int().min(10_000).default(90_000),
+  SCRAPER_SUBPROCESS_MAX_MS: z.coerce.number().int().min(30_000).default(20 * 60 * 1000),
+
+  // LIFECYCLE FIX: grace period given to the child after SIGTERM before
+  // escalating to SIGKILL (src/scraperBridge/pythonBridge.ts's
+  // gracefulKillProcessTree). Raised from a flat 3s — service.py's own
+  // cooperative shutdown (COOPERATIVE_SHUTDOWN_GRACE_S there) now gets up
+  // to ~12s to wind down active discovery/enrichment work and still write
+  // the __done__ sentinel before falling back to a forced cancellation;
+  // this must stay comfortably above that so Python's own graceful path
+  // has a real chance to finish first. Deliberately still far shorter
+  // than either watchdog timer above — this only bounds how long we wait
+  // for a process that has ALREADY been asked to stop.
+  SCRAPER_GRACEFUL_SHUTDOWN_MS: z.coerce.number().int().min(1_000).default(15_000),
 
   // Worker-local concurrency. Horizontal scale is achieved by adding worker
   // services; these caps protect Maps and the browser in each service.
@@ -62,16 +88,27 @@ const EnvSchema = z.object({
   // assumed to belong to a crashed worker and may be re-claimed. Set to a
   // value comfortably longer than the expected worst-case single-task
   // runtime so a slow-but-alive worker is not prematurely preempted.
-  //   STALE_TASK_TIMEOUT_MS          : discovery_tasks (default 8 min)
+  //   STALE_TASK_TIMEOUT_MS          : discovery_tasks (default 25 min)
   //   STALE_BUSINESS_TASK_TIMEOUT_MS : business_processing_tasks (default 5 min)
-  STALE_TASK_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(8 * 60 * 1000),
+  // LIFECYCLE FIX: a discovery_task can now legitimately drive a single
+  // runEngineQuery() subprocess for up to SCRAPER_SUBPROCESS_MAX_MS above
+  // (20 min by default) before the bridge's own absolute ceiling would
+  // even consider it wedged — this must stay comfortably above that or a
+  // perfectly healthy, still-progressing subprocess risks being reclaimed
+  // by a second worker out from under the first, mid-run. Raised from 8
+  // min accordingly (was already shorter than the old, since-removed
+  // 4-min-default reasoning implied once multiple retries/backoff are
+  // considered; now explicit).
+  STALE_TASK_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(25 * 60 * 1000),
   STALE_BUSINESS_TASK_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(5 * 60 * 1000),
-  //   STALE_SCRAPE_JOB_TIMEOUT_MS    : scrape_jobs stuck 'streaming' (default 10 min)
+  //   STALE_SCRAPE_JOB_TIMEOUT_MS    : scrape_jobs stuck 'streaming' (default 30 min)
   // AUDIT FIX (Verification Report, Finding 6): poolExpandJob had no
   // heartbeat/stale-reclaim mechanism at all — see migrations/020 and
   // jobs/staleScrapeJobSweep.ts. Longer than STALE_TASK_TIMEOUT_MS since a
   // poolExpand run can legitimately span multiple niches/countries/rounds.
-  STALE_SCRAPE_JOB_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(10 * 60 * 1000),
+  // LIFECYCLE FIX: raised from 10 min to stay above the raised
+  // STALE_TASK_TIMEOUT_MS just above, for the same reason.
+  STALE_SCRAPE_JOB_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(30 * 60 * 1000),
 
   // PHASE 5 — Configurable plan concurrency limits (Refinement 1).
   // JSON blob mapping PlanId → max browser-backed running tasks for that plan.
@@ -133,7 +170,28 @@ const EnvSchema = z.object({
   // are unaffected either way, since they're deterministic, not AI.
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().default("claude-sonnet-4-6"),
-});
+})
+  // LIFECYCLE FIX: enforce the ordering invariant section 7 of this
+  // phase's spec requires ("the hard ceiling must be materially larger
+  // than the inactivity timeout") at config-load time, not just in a
+  // comment — a misconfigured deployment (e.g. someone lowering
+  // SCRAPER_SUBPROCESS_MAX_MS without also lowering the inactivity
+  // timeout) fails loudly at startup instead of silently making the
+  // absolute ceiling fire before the inactivity timeout ever could.
+  .superRefine((val, ctx) => {
+    if (val.SCRAPER_SUBPROCESS_MAX_MS <= val.SCRAPER_SUBPROCESS_INACTIVITY_MS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["SCRAPER_SUBPROCESS_MAX_MS"],
+        message:
+          `SCRAPER_SUBPROCESS_MAX_MS (${val.SCRAPER_SUBPROCESS_MAX_MS}ms) must be ` +
+          `materially larger than SCRAPER_SUBPROCESS_INACTIVITY_MS ` +
+          `(${val.SCRAPER_SUBPROCESS_INACTIVITY_MS}ms) — the absolute safety ceiling ` +
+          `must never fire before the inactivity timeout could have already caught a ` +
+          `genuinely stalled subprocess.`,
+      });
+    }
+  });
 
 export type Env = z.infer<typeof EnvSchema>;
 

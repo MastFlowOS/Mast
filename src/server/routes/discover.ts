@@ -8,6 +8,7 @@ import { getBoss, QUEUES } from "../../lib/queue.js";
 import { lookupAndDeliverFromPool } from "../../lib/poolLookup.js";
 import { professionSlugForLabel } from "../../lib/professions.js";
 import { enqueueDiscoveryPlan } from "../../discovery/planner.js";
+import { terminateRequest } from "../../discovery/requestLifecycle.js";
 
 export const discoverRouter = Router();
 
@@ -238,8 +239,8 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
 /**
  * POST /v1/discover/:jobId/cancel
  *
- * Marks a scrape_job as "cancelled" so that in-flight workers will detect
- * the change on their next per-lead loop iteration and stop cleanly.  Only
+ * Marks the durable plan as terminal first, so every worker polling that
+ * request stops its Python process even if it is between streamed leads. Only
  * the owning user may cancel their own job, and only if the job is still
  * in a non-terminal state.
  */
@@ -265,6 +266,29 @@ discoverRouter.post("/:jobId/cancel", requireAuth, cancelLimiter, async (req, re
         message: `Job is already in terminal state '${job.status}' and cannot be cancelled.`,
         currentStatus: job.status,
       });
+    }
+
+    // Live discovery has a request-level plan.  Its terminal state is the
+    // shared cancellation signal for workers on other processes/hosts.
+    const { data: cancelledPlan, error: planError } = await (supabaseAdmin as any)
+      .from("discovery_plans")
+      .update({ status: "cancelled", terminal_reason: "USER_CANCELLED", completed_at: new Date().toISOString() })
+      .eq("scrape_job_id", jobId)
+      .in("status", ["queued", "planning", "running"])
+      .select("id");
+    if (planError) throw planError;
+
+    for (const plan of (cancelledPlan ?? []) as Array<{ id: string }>) {
+      // Queued pg-boss messages can still wake up, but their durable task is
+      // no longer claimable and the handler's pre-flight check cannot spawn.
+      await (supabaseAdmin as any)
+        .from("discovery_tasks")
+        .update({ status: "cancelled", termination_reason: "USER_CANCELLED", completed_at: new Date().toISOString() })
+        .eq("plan_id", plan.id)
+        .eq("status", "queued");
+      // Same-process workers stop immediately; remote workers see the plan
+      // update through their short lifecycle poll.
+      terminateRequest(plan.id, "USER_CANCELLED");
     }
 
     const { error: updateError } = await supabaseAdmin

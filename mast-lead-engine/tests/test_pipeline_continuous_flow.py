@@ -102,6 +102,79 @@ class StaggeredDiscoveryProvider(DiscoveryProviderInterface):
             yield _candidate(i, request.session_id)
 
 
+class GatedDiscoveryProvider(DiscoveryProviderInterface):
+    """Yields N candidates. For any index named in `gate_before`, blocks
+    immediately before yielding that candidate until the corresponding
+    `threading.Event` is set (bounded by `gate_timeout_s`), instead of
+    relying on a fixed real-time `sleep()` gap.
+
+    Why this exists (forensic finding, see class-level docstrings below):
+    the original tests proved "enrichment starts before discovery
+    finishes candidate N" by racing a real-time sleep gap against real
+    `WebsiteWorker` network I/O (a genuine HTTPS request to
+    https://pypi.org, no connection reuse -- see workers/website_worker.py
+    `process()`, a fresh `build_opener()`/TLS handshake every call). That
+    race is not a defect in the fix under test; it is a defect in the
+    *test's* synchronization strategy. Real HTTPS connection setup is
+    reported to run 400-850ms in the environment where these tests were
+    observed to fail (cold DNS/TLS, no keep-alive) versus a comfortable
+    <150ms in this sandbox -- both are legitimate real-world durations
+    for a fresh HTTPS connection, and no fixed sleep gap is safely ahead
+    of *all* of them without either being needlessly slow or still
+    occasionally losing the race.
+
+    `GatedDiscoveryProvider` replaces the sleep-based race with an
+    explicit happens-before edge: the candidate that would prove
+    "downstream work already happened" is not produced *until* that
+    downstream work is independently observed to have happened (an
+    `on_stage_outcome` callback sets the Event). This is strictly
+    stronger than the timing race it replaces, not weaker: if the
+    producer/transformer decoupling this suite guards ever regresses
+    (Discovery back to blocking the one thread that also drives
+    transformer stages), the gated `discover()` call deadlocks waiting
+    on an Event that can now never be set -- and the bounded
+    `gate_timeout_s` turns that deadlock into a reliable, deterministic
+    test failure (`gate_timed_out[i] is True`) instead of a silent hang
+    or a coin-flip pass depending on network latency that morning.
+    """
+
+    def __init__(
+        self,
+        count: int,
+        *,
+        gate_before: "dict[int, threading.Event] | None" = None,
+        gate_timeout_s: float = WAIT_TIMEOUT_S,
+        gap_s: float = 0.0,
+    ) -> None:
+        self._count = count
+        self._gate_before = gate_before or {}
+        self._gate_timeout_s = gate_timeout_s
+        self._gap_s = gap_s
+        self.yielded_at: dict[int, float] = {}
+        self.gate_timed_out: dict[int, bool] = {}
+        self.discover_call_count = 0
+
+    @property
+    def provider_id(self) -> str:
+        return "gated_test_provider"
+
+    @property
+    def display_name(self) -> str:
+        return "Gated Test Provider (Phase 2B regression tests)"
+
+    def discover(self, request) -> Iterator[BusinessCandidate]:
+        self.discover_call_count += 1
+        for i in range(1, self._count + 1):
+            if i > 1 and self._gap_s:
+                time.sleep(self._gap_s)
+            event = self._gate_before.get(i)
+            if event is not None:
+                signaled = event.wait(timeout=self._gate_timeout_s)
+                self.gate_timed_out[i] = not signaled
+            self.yielded_at[i] = time.perf_counter()
+            yield _candidate(i, request.session_id)
+
+
 class InMemoryStorageBackend:
     def __init__(self) -> None:
         self.persisted: List[QualifiedOpportunity] = []
@@ -142,10 +215,27 @@ def _build_driver(provider: DiscoveryProviderInterface, *, on_stage_outcome):
 
 class TestEnrichmentStartsBeforeDiscoveryFinishes:
     """Test 1 (critical regression test) — candidate 1 must enter
-    enrichment BEFORE candidate 3 is discovered."""
+    enrichment BEFORE candidate 3 is discovered.
+
+    Deterministic rewrite (see `GatedDiscoveryProvider`): candidate 3's
+    yield is gated on an Event that is only set once the first "website"
+    StageOutcome with `ran=True` is observed. This proves the exact same
+    happens-before relationship the original test wanted -- website
+    enrichment for candidate 1 genuinely ran while discovery was still
+    active, i.e. Discovery did not block the transformer loop -- without
+    racing a fixed real-time sleep gap against real, variable-latency
+    HTTPS connection setup in `WebsiteWorker.process()` (see
+    `GatedDiscoveryProvider` docstring for the measured-latency evidence
+    that made the old race flaky, specifically on Windows). If the
+    Phase 2B fix ever regresses (producer stage blocking the one thread
+    that also drives transformer stages), `discover()` deadlocks waiting
+    on the Event and `gate_timed_out[3]` deterministically becomes True
+    after `WAIT_TIMEOUT_S` -- a reliable failure, not a coin flip.
+    """
 
     def test_first_website_outcome_precedes_third_discovery(self):
-        provider = StaggeredDiscoveryProvider(count=3)
+        website_ran_event = threading.Event()
+        provider = GatedDiscoveryProvider(count=3, gate_before={3: website_ran_event})
         outcomes: List[StageOutcome] = []
         outcomes_lock = threading.Lock()
         first_website_ran_at: list[float] = []
@@ -155,12 +245,13 @@ class TestEnrichmentStartsBeforeDiscoveryFinishes:
                 outcomes.append(outcome)
             if outcome.stage_name == "website" and outcome.ran and not first_website_ran_at:
                 first_website_ran_at.append(time.perf_counter())
+                website_ran_event.set()
 
         driver, _backend = _build_driver(provider, on_stage_outcome=_record)
         driver.start()
         try:
             deadline = time.perf_counter() + WAIT_TIMEOUT_S
-            while not first_website_ran_at and time.perf_counter() < deadline:
+            while 3 not in provider.yielded_at and time.perf_counter() < deadline:
                 time.sleep(POLL_S)
         finally:
             driver.stop()
@@ -168,8 +259,20 @@ class TestEnrichmentStartsBeforeDiscoveryFinishes:
         assert first_website_ran_at, (
             "no website StageOutcome was ever recorded — enrichment never ran at all"
         )
-        assert 3 in provider.yielded_at, "discovery never reached candidate 3"
-        assert first_website_ran_at[0] < provider.yielded_at[3], (
+        assert not provider.gate_timed_out.get(3, False), (
+            "REGRESSION: candidate 3's discovery was gated on the first "
+            "website StageOutcome and that gate timed out after "
+            f"{WAIT_TIMEOUT_S}s -- discovery is still blocking enrichment "
+            "(the exact Phase 2B bug): the producer thread never observed "
+            "a completed website stage, so it could not have been running "
+            "concurrently with the transformer loop."
+        )
+        assert 3 in provider.yielded_at, "discovery never reached candidate 3 (gate never released)"
+        # By construction (the gate above), candidate 3 cannot have been
+        # yielded until AFTER the website Event was set -- this is a
+        # happens-before guarantee, not a wall-clock race, but we still
+        # assert the ordering explicitly for readability/documentation.
+        assert first_website_ran_at[0] <= provider.yielded_at[3], (
             "REGRESSION: candidate 1 did not enter enrichment until AFTER "
             "candidate 3 was discovered -- discovery is still blocking "
             "enrichment (the exact Phase 2B bug)."
@@ -181,10 +284,24 @@ class TestEnrichmentStartsBeforeDiscoveryFinishes:
 class TestContinuousFlowDuringDiscovery:
     """Test 2 — discovery of candidate #2 can happen while enrichment of
     candidate #1 is still in flight; the producer is not serially waited
-    on by the transformer-stage loop."""
+    on by the transformer-stage loop.
+
+    Deterministic rewrite (see `GatedDiscoveryProvider`): candidate 2's
+    yield is gated on an Event set by the first non-"discovery"
+    StageOutcome with `ran=True` (i.e. any transformer stage actually
+    executing). This proves transformer work happened while Discovery
+    was still active -- the producer was not serially waited on -- via
+    an explicit happens-before edge instead of racing a fixed real-time
+    sleep gap against real, variable-latency `WebsiteWorker` network I/O
+    (see `GatedDiscoveryProvider` docstring). A regression that makes
+    Discovery block the transformer loop again causes `discover()` to
+    deadlock waiting on the Event, deterministically failing via
+    `gate_timed_out[2]` after `WAIT_TIMEOUT_S`.
+    """
 
     def test_second_candidate_discovered_while_pipeline_actively_running(self):
-        provider = StaggeredDiscoveryProvider(count=3)
+        transformer_ran_event = threading.Event()
+        provider = GatedDiscoveryProvider(count=3, gate_before={2: transformer_ran_event})
         stage_ran_events: List[tuple[str, float]] = []
         lock = threading.Lock()
 
@@ -192,6 +309,8 @@ class TestContinuousFlowDuringDiscovery:
             if outcome.ran:
                 with lock:
                     stage_ran_events.append((outcome.stage_name, time.perf_counter()))
+                if outcome.stage_name != "discovery":
+                    transformer_ran_event.set()
 
         driver, _backend = _build_driver(provider, on_stage_outcome=_record)
         driver.start()
@@ -200,16 +319,24 @@ class TestContinuousFlowDuringDiscovery:
             while 2 not in provider.yielded_at and time.perf_counter() < deadline:
                 time.sleep(POLL_S)
             candidate_2_at = provider.yielded_at.get(2)
-
-            deadline = time.perf_counter() + WAIT_TIMEOUT_S
-            while not any(name != "discovery" for name, _ in stage_ran_events) and time.perf_counter() < deadline:
-                time.sleep(POLL_S)
         finally:
             driver.stop()
 
-        assert candidate_2_at is not None, "discovery never reached candidate 2"
+        assert not provider.gate_timed_out.get(2, False), (
+            "REGRESSION: candidate 2's discovery was gated on some "
+            f"transformer stage actually running and timed out after "
+            f"{WAIT_TIMEOUT_S}s -- no transformer-stage work happened "
+            "while discovery was paused before candidate 2, meaning the "
+            "producer is once again being serially waited on by the "
+            f"transformer loop. stage_ran_events={stage_ran_events!r}"
+        )
+        assert candidate_2_at is not None, "discovery never reached candidate 2 (gate never released)"
+        # By construction (the gate above), candidate 2 cannot have been
+        # yielded until AFTER some transformer stage's Event was set --
+        # this is a happens-before guarantee, not a wall-clock race, but
+        # we still assert the ordering explicitly for readability.
         transformer_events_before_c2 = [
-            (name, ts) for name, ts in stage_ran_events if name != "discovery" and ts < candidate_2_at
+            (name, ts) for name, ts in stage_ran_events if name != "discovery" and ts <= candidate_2_at
         ]
         assert transformer_events_before_c2, (
             "REGRESSION: no transformer-stage work (website/instagram/contact/"

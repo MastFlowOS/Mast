@@ -86,7 +86,11 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
     });
 
   const taskCount = targets.length * niches.length;
-  const candidateBudget = Math.max(20, Math.ceil((request.quantity * 4) / Math.max(taskCount, 1)));
+  // A city gets enough raw scan budget to make a meaningful qualification
+  // decision on that city. Splitting the request-wide budget across every
+  // queued city was the reason a city with a healthy result set could be
+  // abandoned after only a handful of accepted leads.
+  const candidateBudget = Math.max(20, request.quantity * 4);
 
   // Scale intra-plan yield-based rank into the plan tier’s priority band so
   // cross-tier ordering (premium > pro > starter > free) and within-tier
@@ -147,14 +151,21 @@ export const DISCOVERY_TASK_RETRY_OPTIONS = {
 };
 
 export async function dispatchQueuedDiscoveryTasks(planId: string, request: DiscoveryPlanRequest): Promise<void> {
+  const { data: plan } = await db.from("discovery_plans")
+    .select("status, delivered_count, requested_count").eq("id", planId).maybeSingle();
+  if (!plan || plan.status === "cancelled" || plan.status === "completed" || plan.delivered_count >= plan.requested_count) return;
   const { data, error } = await db
     .from("discovery_tasks")
     .select("id")
     .eq("plan_id", planId)
     .eq("status", "queued")
-    .order("priority", { ascending: false });
+    .order("priority", { ascending: false })
+    .limit(1);
   if (error) throw error;
   const boss = await getBoss();
+  // A request intentionally advances one city at a time.  This is request
+  // scheduling, not provider parallelism: a productive city receives its
+  // full bounded scan before another city can steal the request's work.
   for (const task of data ?? []) {
     await boss.send(QUEUES.discoveryTask, { taskId: task.id, planId, request }, DISCOVERY_TASK_RETRY_OPTIONS);
   }

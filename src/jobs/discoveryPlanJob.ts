@@ -3,7 +3,7 @@ import { getBoss, QUEUES } from "../lib/queue.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
 import { deliverLead, upsertBusinessFromEngineLead } from "../scraperBridge/deliverLead.js";
-import { materializeDiscoveryPlan, DISCOVERY_TASK_RETRY_OPTIONS, type DiscoveryPlanRequest } from "../discovery/planner.js";
+import { materializeDiscoveryPlan, dispatchQueuedDiscoveryTasks, DISCOVERY_TASK_RETRY_OPTIONS, type DiscoveryPlanRequest } from "../discovery/planner.js";
 import { enqueueBusinessProcessing, ensureEnriched, ensureIntelligence } from "./businessProcessingJob.js";
 import { env } from "../config/env.js";
 import { JobProfiler } from "../lib/perf.js";
@@ -11,6 +11,8 @@ import { getProvider, getGenerator } from "../discovery/providerRegistry.js";
 import { getPlan, getPlanConcurrency } from "../config/plans.js";
 import type { PlanId } from "../config/plans.js";
 import type { EngineLead } from "../scraperBridge/pythonBridge.js";
+import { registerRequestAbortController, terminateRequest, type RequestTerminalReason } from "../discovery/requestLifecycle.js";
+import { cityTransitionFor } from "../discovery/cityScheduling.js";
 import {
   initJobMetrics,
   finalizeJobMetrics,
@@ -57,6 +59,16 @@ const CONCURRENCY_RECHECK_DELAY_SECONDS = 5;
  * can distinguish a live-but-slow worker from a crashed one.
  */
 const HEARTBEAT_INTERVAL_MS = 15_000;
+const REQUEST_TERMINAL_POLL_MS = 500;
+
+function terminalReasonForPlan(plan: any): RequestTerminalReason | undefined {
+  if (!plan) return "SCRAPER_FAILURE";
+  if (plan.status === "cancelled") return "USER_CANCELLED";
+  if (plan.delivered_count >= plan.requested_count) return "TARGET_REACHED";
+  if (plan.status === "completed_partial") return "EXHAUSTED";
+  if (plan.status === "failed") return "SCRAPER_FAILURE";
+  return undefined;
+}
 
 /**
  * Emits a heartbeat for a discovery task row.  Fire-and-forget — a single
@@ -73,6 +85,8 @@ function heartbeat(taskId: string): void {
 
 export async function handleDiscoveryPlanJob(payload: DiscoveryPlanPayload): Promise<void> {
   await db.from("discovery_plans").update({ status: "planning" }).eq("id", payload.planId).eq("status", "queued");
+  const { data: plan } = await db.from("discovery_plans").select("status").eq("id", payload.planId).maybeSingle();
+  if (!plan || plan.status === "cancelled" || plan.status === "completed") return;
   await materializeDiscoveryPlan(payload.planId, payload);
 
   // Phase 7: Initialize the job metrics row when the plan officially begins.
@@ -200,8 +214,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     t.end();
     planCheck = data;
   }
-  if (!planCheck || planCheck.status === "cancelled") {
-    await recordTaskOutcome(task, { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: false, status: "completed", startedAt: Date.now(), completionReason: "cancelled" });
+  if (!planCheck || terminalReasonForPlan(planCheck)) {
+    await recordTaskOutcome(task, { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: false, status: planCheck?.status === "cancelled" ? "cancelled" : "completed", startedAt: Date.now(), completionReason: planCheck?.status === "cancelled" ? "USER_CANCELLED" : "TARGET_REACHED", terminationReason: terminalReasonForPlan(planCheck) });
     return; // do NOT call completePlanIfDrained — cancellation is already terminal
   }
 
@@ -213,6 +227,23 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     await completePlanIfDrained(payload.planId);
     return;
   }
+
+  // The plan row is the cross-process authority.  This controller is the
+  // local, immediate propagation mechanism: a short poll makes a cancel or
+  // target completion stop a Python process even while it is quiet and has
+  // not yielded another lead yet.
+  const requestAbort = new AbortController();
+  const unregisterRequestAbort = registerRequestAbortController(payload.planId, requestAbort);
+  const observeTerminalPlan = async (): Promise<RequestTerminalReason | undefined> => {
+    const { data } = await db.from("discovery_plans")
+      .select("status, delivered_count, requested_count, terminal_reason")
+      .eq("id", payload.planId).maybeSingle();
+    const reason = terminalReasonForPlan(data);
+    if (reason) terminateRequest(payload.planId, reason);
+    return reason;
+  };
+  const terminalPoll = setInterval(() => { void observeTerminalPlan(); }, REQUEST_TERMINAL_POLL_MS);
+  terminalPoll.unref?.();
 
   let discovered = 0;
   let accepted = 0;
@@ -244,7 +275,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
     // Outer loop: one iteration per SearchQuery (most providers produce one;
     // multi-query providers like future Yelp may produce several per niche).
-    for (const searchQuery of searchQueries) {
+    outer: for (const searchQuery of searchQueries) {
       for await (const lead of provider.search(
         searchQuery,
         searchTarget,
@@ -253,8 +284,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           candidateBudget: task.candidate_budget,
           discoveryOnly: true,
           taskDbPath: `data/discovery-${payload.taskId}.db`,
+          requestId: payload.planId,
         },
-        undefined,
+        requestAbort.signal,
         (done) => {
           exhausted = done.exhausted;
           if (done.success === false) {
@@ -274,6 +306,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           pythonTimer.end();
         },
       )) {
+      if (requestAbort.signal.aborted) break outer;
 
       // ── Heartbeat pulse ──────────────────────────────────────────────────
       if (Date.now() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
@@ -286,10 +319,10 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       const { data: midCheck } = await db.from("discovery_plans")
         .select("status, delivered_count, requested_count").eq("id", payload.planId).maybeSingle();
       tMid.end();
-      if (!midCheck || midCheck.status === "cancelled") {
-        break; // Python subprocess will be GC'd; SIGTERM not needed for discovery_only
+      if (terminalReasonForPlan(midCheck)) {
+        await observeTerminalPlan();
+        break outer;
       }
-      if (midCheck.delivered_count >= midCheck.requested_count) break;
 
       discovered += 1;
       const pid = lead._pipeline_id ?? `local:${discovered}`;
@@ -305,10 +338,13 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         continue;
       }
 
+      if (requestAbort.signal.aborted) break outer;
+
       // Persist and schedule slow work first.
       const tUpsert = profiler.timer("business_upsert");
       const businessId = await upsertBusinessFromEngineLead(lead, payload.request.region);
       tUpsert.end();
+      if (requestAbort.signal.aborted) break outer;
       console.log(`BUSINESS_UPSERTED businessId=${businessId}`);
       const tEnqueue = profiler.timer("enqueue_enrich");
       await enqueueBusinessProcessing(businessId, "enrich");
@@ -372,6 +408,10 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         }
       }
 
+      // Cancellation/target may have landed during an expensive enrichment.
+      // Preserve work already completed, but never start a new acceptance.
+      if (requestAbort.signal.aborted || await observeTerminalPlan()) break outer;
+
       console.log(`DELIVER_LEAD_START`);
       const tDeliver = profiler.timer("deliver_lead");
       const delivery = await deliverLead(lead, {
@@ -395,7 +435,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         console.log(`PIPELINE ${pid}`);
         console.log(`EXITED HERE`);
         console.log(`reason=plan_limit_reached:no leads row inserted,delivery=${JSON.stringify(delivery)}`);
-        break;
+        await observeTerminalPlan();
+        break outer;
       }
       if (!delivery.wasNewForUser) {
         console.log(`PIPELINE ${pid}`);
@@ -418,27 +459,27 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       recordTimeToFirstLead(payload.planId, elapsedMs);
       accepted += 1;
       console.log(`FINISHED`);
+      if (await observeTerminalPlan()) break outer;
     } // end inner lead loop
 
       // Break outer search-query loop if plan is satisfied or cancelled
       const { data: afterQuery } = await db.from("discovery_plans")
         .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
-      if (!afterQuery || afterQuery.status === "cancelled") break;
-      if (afterQuery.delivered_count >= afterQuery.requested_count) break;
+      if (terminalReasonForPlan(afterQuery)) {
+        await observeTerminalPlan();
+        break;
+      }
     } // end outer search-query loop
 
     // Determine completion reason for metrics.
     const { data: finalPlan } = await db.from("discovery_plans")
       .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
-    const completionReason: string = finalPlan?.status === "cancelled"
-      ? "cancelled"
-      : finalPlan?.delivered_count >= finalPlan?.requested_count
-        ? "quantity_reached"
-        : exhausted
-          ? "exhausted"
-          : "limit_reached";
+    const terminalReason = terminalReasonForPlan(finalPlan);
+    const cityReason = terminalReason ?? cityTransitionFor({ candidatesFound: discovered, acceptedLeads: accepted }, exhausted);
+    const completionReason: string = cityReason;
+    console.info(`[discovery-city] CITY_FINISHED city=${task.city} country=${task.country_code} elapsed_ms=${Date.now() - startedAt} candidates_found=${discovered} accepted=${accepted} rejected=${rejected} reason=${cityReason}`);
 
-    await recordTaskOutcome(task, { discovered, accepted, rejected, duplicates, exhausted, status: "completed", startedAt, completionReason });
+    await recordTaskOutcome(task, { discovered, accepted, rejected, duplicates, exhausted, status: terminalReason === "USER_CANCELLED" ? "cancelled" : "completed", startedAt, completionReason, terminationReason: cityReason });
 
     // Phase 7: accumulate discovery metrics for this task into the plan's metrics row.
     incrementDiscoveryMetrics(payload.planId, {
@@ -448,6 +489,10 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     });
 
     await completePlanIfDrained(payload.planId);
+    // Advance only after recording this city's measurable outcome. A
+    // productive city has consumed its full bounded scan; the per-plan
+    // unique task is the request-scoped city memory that prevents repeats.
+    if (!terminalReason) await dispatchQueuedDiscoveryTasks(payload.planId, payload.request);
   } catch (error) {
     // RELIABILITY FIX: a recoverable failure (browser/page crash, nav
     // timeout, rate limit, network blip) should give pg-boss's retry a
@@ -486,6 +531,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     }
     throw error; // let pg-boss apply its own retry/backoff while attempts remain
   } finally {
+    clearInterval(terminalPoll);
+    unregisterRequestAbort();
     // Phase 2: attach Python perf and print the TS-side report
     if (pythonPerfData) profiler.attachPythonPerf(pythonPerfData);
     profiler.printReport({
@@ -513,6 +560,7 @@ async function recordTaskOutcome(
     error?: string;
     startedAt: number;
     completionReason: string;
+    terminationReason?: string;
   },
 ) {
   const runtimeMs = Date.now() - outcome.startedAt;
@@ -524,6 +572,7 @@ async function recordTaskOutcome(
     exhausted: outcome.exhausted,
     runtime_ms: runtimeMs,
     completion_reason: outcome.completionReason,
+    termination_reason: outcome.terminationReason ?? outcome.completionReason,
   };
 
   await db.from("discovery_tasks").update({
@@ -532,8 +581,11 @@ async function recordTaskOutcome(
     accepted_count: outcome.accepted,
     rejected_count: outcome.rejected,
     error: outcome.error ?? null,
+    productive: outcome.accepted > 0,
+    last_attempt_at: new Date().toISOString(),
+    termination_reason: outcome.terminationReason ?? outcome.completionReason,
     task_summary: taskSummary,
-    completed_at: outcome.status === "completed" || outcome.status === "failed" ? new Date().toISOString() : null,
+    completed_at: outcome.status === "completed" || outcome.status === "failed" || outcome.status === "cancelled" ? new Date().toISOString() : null,
     last_heartbeat_at: null, // clear heartbeat so stale-detector ignores finished rows
   }).eq("id", task.id);
 

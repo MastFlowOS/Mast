@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import path from "node:path";
 import { env } from "../config/env.js";
 import { workerMetrics } from "../lib/observability.js";
+import { registerRequestEngineProcess } from "../discovery/requestLifecycle.js";
 
 export type EngineLead = {
   name: string;
@@ -106,6 +107,11 @@ export type EngineQueryParams = {
   require_viability?: boolean;
   discovery_only?: boolean;
   db_path?: string;
+};
+
+export type EngineRunOptions = {
+  /** Durable discovery plan that owns this process, when this is live discovery. */
+  requestId?: string;
 };
 
 export type EngineVerifyParams = {
@@ -238,7 +244,17 @@ function killProcessTree(child: ReturnType<typeof spawn>) {
   if (child.pid === undefined) return;
   console.log(`[scraper-bridge] Killing process tree for child PID: ${child.pid}`);
   if (process.platform === "win32") {
-    spawn("taskkill", ["/F", "/T", "/PID", child.pid.toString()]);
+    // taskkill /T is what tears down Chromium descendants.  Also terminate
+    // the direct child immediately: taskkill is asynchronous and can be
+    // delayed/fail under a constrained service account, while leaving the
+    // Python engine alive would still allow it to emit and accept leads.
+    const killer = spawn("taskkill", ["/F", "/T", "/PID", child.pid.toString()], { stdio: "ignore", windowsHide: true });
+    killer.on("error", (err) => console.warn(`[scraper-bridge] taskkill failed for PID ${child.pid}`, err));
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Already gone is harmless; taskkill remains the tree-level fallback.
+    }
   } else {
     try {
       process.kill(-child.pid, "SIGKILL");
@@ -342,6 +358,7 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
     killProcessTree(child);
   };
   signal?.addEventListener("abort", onAbort);
+  if (signal?.aborted) onAbort();
 
   try {
     child.stdin.write(JSON.stringify(params));
@@ -541,6 +558,7 @@ export async function* runEngineQuery(
   params: EngineQueryParams,
   signal?: AbortSignal,
   onDone?: (info: EngineDoneInfo) => void,
+  options: EngineRunOptions = {},
 ): AsyncGenerator<EngineLead> {
   const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
 
@@ -563,6 +581,18 @@ export async function* runEngineQuery(
   // from this same promise instead of registering its own `"close"`
   // listener. See watchChildClose()'s doc comment for the race this closes.
   const childClosed = watchChildClose(child);
+  let abortRequested = false;
+  // Register synchronously with the request runtime.  A terminal request can
+  // therefore stop every child it owns, rather than only the generator whose
+  // caller happened to observe cancellation first.
+  const unregisterRequestProcess = registerRequestEngineProcess(
+    options.requestId,
+    child,
+    () => {
+      abortRequested = true;
+      void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+    },
+  );
 
   // Phase 7 observability: track active subprocess count (best-effort, non-blocking).
   workerMetrics.browserLaunches += 1;
@@ -572,10 +602,12 @@ export async function* runEngineQuery(
   let firstLeadMs: number | null = null;
 
   const onAbort = () => {
+    abortRequested = true;
     console.log(`[scraper-bridge] Abort signal triggered for PID: ${child.pid}`);
-    killProcessTree(child);
+    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
   };
   signal?.addEventListener("abort", onAbort);
+  if (signal?.aborted) onAbort();
 
   // LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
   // see SCRAPER_SUBPROCESS_INACTIVITY_MS / SCRAPER_SUBPROCESS_MAX_MS in
@@ -799,6 +831,7 @@ export async function* runEngineQuery(
     if (inactivityTimer) clearTimeout(inactivityTimer);
     clearTimeout(absoluteTimer);
     signal?.removeEventListener("abort", onAbort);
+    unregisterRequestProcess();
     if (child.exitCode === null && child.signalCode === null) {
       console.log(`[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid}`);
       await gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
@@ -854,7 +887,7 @@ export async function* runEngineQuery(
       `scraper engine subprocess exceeded its ${label} and was terminated before it could report completion`,
     );
   }
-  if (exitCode !== 0 && !readError && !sawDone) {
+  if (exitCode !== 0 && !readError && !sawDone && !abortRequested) {
     throw new Error(`scraper engine exited with code ${exitCode}`);
   }
 }

@@ -126,8 +126,9 @@ describe("child exit-lifecycle primitives", () => {
     await withTimeout(gracefulKillProcessTree(child, closed, 2000), 3000, "gracefulKillProcessTree (SIGTERM path)");
 
     const result = await withTimeout(closed, 100, "closed after graceful SIGTERM");
-    // Terminated by SIGTERM, not escalated to SIGKILL.
-    assert.equal(result.signal, "SIGTERM");
+    // Windows has no process-group SIGTERM equivalent; its bridge path
+    // performs the documented immediate tree termination instead.
+    assert.equal(result.signal, process.platform === "win32" ? "SIGKILL" : "SIGTERM");
   });
 
   test("3. normal child exit (no shutdown requested at all) — closed promise reports the real exit code", async () => {
@@ -162,7 +163,9 @@ describe("child exit-lifecycle primitives", () => {
     assert.equal(result.signal, "SIGKILL");
     // Escalation should happen roughly at graceMs, not immediately and not
     // after some much longer unrelated delay.
-    assert.ok(elapsed >= graceMs, `expected escalation to wait out the ${graceMs}ms grace period, took ${elapsed}ms`);
+    if (process.platform !== "win32") {
+      assert.ok(elapsed >= graceMs, `expected escalation to wait out the ${graceMs}ms grace period, took ${elapsed}ms`);
+    }
   });
 });
 
@@ -235,7 +238,7 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
     // gracefulKillProcessTree using the shared closed-promise), against a
     // child that goes silent on stdout — the scenario the inactivity
     // watchdog exists to catch.
-    const child = spawn("python3", ["service.py"], {
+    const child = spawn(process.platform === "win32" ? "python" : "python3", ["service.py"], {
       cwd: path.join(FIXTURES_DIR, "slow-inactive-engine"),
       stdio: ["pipe", "pipe", "ignore"],
       detached: true,
@@ -259,7 +262,7 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
     );
 
     const result = await withTimeout(closed, 100, "closed after watchdog shutdown");
-    assert.equal(result.signal, "SIGTERM");
+    assert.equal(result.signal, process.platform === "win32" ? "SIGKILL" : "SIGTERM");
   });
 
   // ---------------------------------------------------------------------
@@ -303,7 +306,7 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
     }
   });
 
-  test("8. watchdog-triggered CANCELLED __done__ is reported as terminationReason=WATCHDOG_TIMEOUT, not a silent success", async () => {
+  test("8. watchdog-triggered CANCELLED __done__ is reported as terminationReason=WATCHDOG_TIMEOUT, not a silent success", { skip: process.platform === "win32" }, async () => {
     const { runEngineQuery } = await import("../pythonBridge.js");
     const originalPath = env.SCRAPER_ENGINE_PATH;
     const originalInactivity = env.SCRAPER_SUBPROCESS_INACTIVITY_MS;
@@ -341,6 +344,40 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
     } finally {
       env.SCRAPER_ENGINE_PATH = originalPath;
       env.SCRAPER_SUBPROCESS_INACTIVITY_MS = originalInactivity;
+    }
+  });
+
+  test("9. request-level cancellation stops every active runEngineQuery child", async () => {
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const lifecycle = await import("../../discovery/requestLifecycle.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    const requestId = "bridge-global-cancel-test";
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "multi-lead-engine");
+    try {
+      const started: Array<Promise<void>> = [];
+      const runs = [0, 1, 2].map((index) => {
+        let firstLead!: () => void;
+        started.push(new Promise<void>((resolve) => { firstLead = resolve; }));
+        return (async () => {
+          for await (const _lead of runEngineQuery(
+            { query: "test", city: `Testville-${index}` },
+            undefined,
+            undefined,
+            { requestId },
+          )) {
+            firstLead();
+          }
+        })();
+      });
+
+      await withTimeout(Promise.all(started), 5000, "all request-owned children started");
+      assert.equal(lifecycle.__testing.activeProcessCount(requestId), 3);
+      lifecycle.terminateRequest(requestId, "USER_CANCELLED");
+      await withTimeout(Promise.all(runs), 5000, "all request-owned children stopped");
+      assert.equal(lifecycle.__testing.activeProcessCount(requestId), 0);
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+      lifecycle.__testing.reset();
     }
   });
 });

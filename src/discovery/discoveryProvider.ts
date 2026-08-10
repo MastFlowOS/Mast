@@ -36,6 +36,8 @@ export type DiscoverySearchOptions = {
   discoveryOnly: boolean;
   /** Unique per-task SQLite path so concurrent tasks don\u2019t share a dedup DB */
   taskDbPath?: string;
+  /** Durable request identity used for global subprocess ownership. */
+  requestId?: string;
 };
 
 export interface DiscoveryProvider {

@@ -1243,6 +1243,7 @@ class MapsScraper:
         niche: str = "",
         region: str = "",
         max_results: int = 60,
+        should_stop: "Callable[[], bool] | None" = None,
     ) -> AsyncIterator[RawPlace]:
         """Search Google Maps and yield RawPlace objects.
 
@@ -1253,6 +1254,21 @@ class MapsScraper:
             niche:       Niche tag from the niche catalog
             region:      Region tag from regional config
             max_results: Stop after yielding this many places
+            should_stop: PHASE 1B (target-reached / graceful-shutdown
+                lifecycle propagation) — optional cooperative check,
+                consulted only at the top of the crash-retry loop below,
+                immediately before a NEW attempt (a fresh browser
+                context/page) would otherwise be started after a crash or
+                a recoverable DiscoveryFailure. Never consulted mid-attempt
+                and never changes anything about scrolling, selectors, or
+                place extraction — this is purely "should a retry begin",
+                not "should this attempt stop". `None` (the default)
+                preserves the exact previous behavior — a caller that
+                doesn't pass one (e.g. verify_business()'s direct probes,
+                existing tests) always gets every configured retry
+                attempt. See providers/google_maps_provider.py's
+                `_discover_async`, which is the one production caller that
+                passes `request.should_stop` through to this parameter.
 
         ROOT CAUSE FIX (memory / crash recovery): a Chromium renderer crash
         ("Target crashed" — typically an OOM kill on a memory-constrained
@@ -1298,6 +1314,24 @@ class MapsScraper:
 
         while attempt < max_attempts:
             attempt += 1
+
+            # PHASE 1B (stop retries): only ever skips a RETRY (attempt 2+)
+            # — the first attempt always runs, exactly as before this
+            # phase. Checked here, before a fresh context/page is even
+            # created for this attempt, so a target-reached/shutdown that
+            # happened while the previous attempt was crashing never pays
+            # for (or waits on) a browser restart it doesn't need. Places
+            # already yielded by a prior attempt are unaffected — they were
+            # already handed to the caller via `yield` before this point
+            # could ever be reached.
+            if attempt > 1 and should_stop is not None and should_stop():
+                log.info(
+                    f"[maps] should_stop reported true before retry attempt "
+                    f"{attempt}/{max_attempts} for {full_query!r} — skipping "
+                    f"the retry ({yielded} place(s) already yielded)"
+                )
+                return
+
             with self._profiler.timer("context_creation"):
                 ctx = await _new_stealth_context(self.browser, proxy=proxy)
             with self._profiler.timer("page_creation"):

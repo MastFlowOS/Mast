@@ -480,6 +480,36 @@ export type EngineDoneInfo = {
   failureReason?: EngineDiscoveryFailureReason;
   /** Present only when `success` is false — human-readable detail for logs. */
   failureDetail?: string;
+  /**
+   * PART D (Phase 2B — watchdog shutdown semantics): a single,
+   * unambiguous termination classification, derived here (Node-side)
+   * from `success`/`targetReached`/`exhausted`/`failureReason` plus this
+   * bridge call's own local watchdog state (`timedOut`/`timedOutReason`)
+   * — state Python has no way to know on its own, since from its side a
+   * watchdog-triggered SIGTERM and any other cooperative-shutdown SIGTERM
+   * are indistinguishable (both just set the same `_shutdown_event`; see
+   * service.py). This does not introduce a second competing status
+   * system — it is computed purely from fields `EngineDoneInfo` already
+   * carries, spelled out explicitly instead of left for every caller to
+   * re-derive:
+   *
+   *   "SUCCESS_TARGET_REACHED" — success && targetReached
+   *   "SUCCESS_EXHAUSTED"      — success && !targetReached (exhausted or not,
+   *                              since "delivered less than requested but no
+   *                              failure" only happens via genuine exhaustion)
+   *   "WATCHDOG_TIMEOUT"       — !success && failureReason === "CANCELLED"
+   *                              && this bridge call's own watchdog fired
+   *   "CANCELLED"              — !success && failureReason === "CANCELLED"
+   *                              && the watchdog did NOT fire (caller abort /
+   *                              external process shutdown instead)
+   *   "FAILURE"                — !success, any other failureReason
+   */
+  terminationReason?:
+    | "SUCCESS_TARGET_REACHED"
+    | "SUCCESS_EXHAUSTED"
+    | "WATCHDOG_TIMEOUT"
+    | "CANCELLED"
+    | "FAILURE";
   /** Phase 2: structured performance report from the Python profiler */
   perf?: Record<string, unknown>;
 };
@@ -668,6 +698,23 @@ export async function* runEngineQuery(
       // both cases benefit identically.
       resetInactivityTimer();
 
+      // PART C (Phase 2B — watchdog progress protocol): a "progress"
+      // line is real protocol-level forward progress too (that's why the
+      // resetInactivityTimer() call above already covers it — nothing
+      // more is needed there), but it is NOT a lead and must never be
+      // yielded to the consumer or counted toward bridgeReceived/
+      // firstLeadMs. This is the smallest possible extension of the
+      // existing JSONL protocol: one more recognized shape on the same
+      // stdout stream, distinguished purely by `type === "progress"`,
+      // stdout/stderr separation unchanged (see service.py's `_on_progress`
+      // for the producing side).
+      if (parsed.type === "progress") {
+        console.debug(
+          `[scraper-bridge] progress stage=${parsed.stage} event=${parsed.event} item=${parsed.item_id ?? "n/a"}`,
+        );
+        continue;
+      }
+
       if (parsed.__done__) {
         sawDone = true;
         const perfPayload = parsed.__perf__ as Record<string, unknown> | undefined;
@@ -711,6 +758,14 @@ export async function* runEngineQuery(
             `${bridgeReceived !== pythonYielded ? " ⚠️ pythonYielded/bridgeReceived MISMATCH" : ""}` +
             `${bridgeForwarded !== bridgeReceived ? " ⚠️ bridgeReceived/bridgeForwarded MISMATCH (consumer stopped early)" : ""}`,
         );
+        // PART D: see EngineDoneInfo.terminationReason's own doc comment
+        // for the full derivation table this mirrors exactly.
+        const terminationReason: EngineDoneInfo["terminationReason"] = success
+          ? (targetReached ? "SUCCESS_TARGET_REACHED" : "SUCCESS_EXHAUSTED")
+          : failureReason === "CANCELLED"
+            ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
+            : "FAILURE";
+        console.log(`[scraper-bridge] terminationReason=${terminationReason}`);
         onDone?.({
           delivered: pythonYielded,
           requested: Number(parsed.requested ?? 0),
@@ -719,6 +774,7 @@ export async function* runEngineQuery(
           targetReached,
           failureReason,
           failureDetail,
+          terminationReason,
           perf: perfPayload,
         });
         continue;

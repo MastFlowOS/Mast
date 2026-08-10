@@ -69,7 +69,13 @@ class _FakeMapsScraper:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self.aexited = True
 
-    async def search(self, *, query, city, country, niche, region, max_results):
+    async def search(self, *, query, city, country, niche, region, max_results, should_stop=None):
+        # PHASE 1B: real MapsScraper.search() now accepts `should_stop` too
+        # (checked only before a crash-retry attempt — see that method's
+        # docstring). This fake never crashes, so it has no retry decision
+        # to make and doesn't need to actually consult the callback; it
+        # only needs to accept the same call shape GoogleMapsProvider now
+        # uses so these existing tests keep exercising the real call site.
         try:
             for i in range(min(self.place_count, max_results)):
                 self.candidates_produced += 1

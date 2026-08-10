@@ -89,6 +89,7 @@ from utils.pipeline_trace import PipelineTracer
 # the old V1 EnrichmentPipeline (formerly scraper/pipeline.py, removed —
 # it had no remaining importers). See the migration notes above
 # run_query() for exactly what replaced what.
+from engine.acceptance import LeadAcceptanceGate
 from engine.coordinator import EngineCoordinator
 from engine.contracts import QualifiedOpportunity, StoredOpportunity
 from engine.execution_driver import ExecutionDriver, build_seven_stage_pipeline, run_batch_intelligence
@@ -415,22 +416,78 @@ async def run_query(
     # otherwise we fall back to max_results for backward compatibility.
     _deliver_target: int = deliver_target if deliver_target is not None else max_results
 
-    delivered = 0
+    # Phase 1A (authoritative target/acceptance state): `gate` is the one
+    # source of truth for requested/accepted/target-reached for this
+    # request — see engine/acceptance.py. It replaces the old bare
+    # `delivered` int, which every stop decision below used to read and
+    # increment directly with no atomicity guarantee at all (safe only
+    # because exactly one coroutine ever touched it). `gate.accepted` is
+    # the drop-in equivalent of the old `delivered` value; nothing else in
+    # this function tracks "how many leads have been accepted" anymore.
+    gate = LeadAcceptanceGate(_deliver_target)
     _last_lead_time: float | None = None   # for inter-lead gap tracking
     log_milestone("Before run_query discovery starts")
+
+    # PART E (Phase 2B — truthful first-lead latency): recorded once each,
+    # the first time they happen, in wall-clock seconds since this
+    # run_query() call started. Previously the only comparable metric was
+    # the bridge's own (Node-side) firstLeadMs, which — per the Phase 2
+    # forensic audit — actually measured "how long until the watchdog
+    # forced a shutdown that then burst-processed one candidate", not a
+    # real first-lead time. These marks are additive; nothing existing is
+    # removed. `_mark()` only ever records the FIRST call for a given
+    # name — later calls are no-ops — so these always reflect the first
+    # occurrence even though multiple candidates/stages produce the same
+    # event repeatedly over the run.
+    _request_started_ts = time.perf_counter()
+    _latency_marks: dict[str, float] = {}
+
+    def _mark(name: str) -> None:
+        if name not in _latency_marks:
+            _latency_marks[name] = time.perf_counter() - _request_started_ts
+
+    def _on_progress(stage: str, event: str, item_id: str | None) -> None:
+        # PART C (Phase 2B — watchdog progress protocol): every one of
+        # these events is written to the SAME stdout the lead dicts and
+        # the __done__ sentinel already use, as its own one-line JSON
+        # object, distinguished by `"type": "progress"` so
+        # pythonBridge.ts can tell it apart from a real lead or the
+        # __done__ sentinel without any ambiguity. This is deliberately
+        # NOT routed through stderr (which the Node bridge already
+        # ignores for watchdog purposes — stderr volume is not evidence
+        # of protocol-level progress) and deliberately does not touch
+        # sys.stdout redirection (that only happens for the separate
+        # `enrich`/`score`/... JSON-CLI modes — see the top of this
+        # file — never for this, the default search/production mode).
+        sys.stdout.write(json.dumps({
+            "type": "progress",
+            "session_id": session_id,
+            "stage": stage,
+            "event": event,
+            "item_id": item_id,
+            "timestamp": time.time(),
+        }, default=str) + "\n")
+        sys.stdout.flush()
+
+        if stage == "discovery" and event == "candidate_discovered":
+            _mark("first_candidate_discovered")
+        elif stage == "discovery" and event == "candidate_queued":
+            _mark("first_candidate_accepted")
+        elif event == "stage_completed" and stage in ("website", "instagram", "contact"):
+            _mark("first_enrichment_completed")
 
     # LIFECYCLE FIX (target reached / graceful shutdown): a single
     # cooperative check, shared by both branches below, threaded into
     # GoogleMapsDiscoveryRequest.should_stop (see providers/
     # google_maps_provider.py) so discovery stops asking Maps for more raw
     # candidates the moment either condition is true, instead of always
-    # running to `max_results`/raw_supply_cap. Reads `delivered` and
+    # running to `max_results`/raw_supply_cap. Reads `gate` and
     # `shutdown_event` from this closure's enclosing scope live, at call
     # time — ordinary Python closure semantics, not a snapshot — so it
     # always reflects the current state even though it's constructed once,
-    # here, before `delivered` has done any of its later `+= 1`s.
+    # here, before `gate` has accepted any leads yet.
     def _should_stop_discovery() -> bool:
-        return delivered >= _deliver_target or (
+        return gate.target_reached or (
             shutdown_event is not None and shutdown_event.is_set()
         )
 
@@ -467,7 +524,7 @@ async def run_query(
             )
             thread.start()
             try:
-                while delivered < _deliver_target:
+                while not gate.target_reached:
                     # LIFECYCLE FIX: checked *before* the next (blocking)
                     # queue read, not just relied upon inside the worker
                     # thread — if shutdown was requested while this
@@ -478,7 +535,7 @@ async def run_query(
                         log.info(
                             "[run_query] discovery_only: shutdown requested — "
                             "stopping early (delivered=%d/%d so far)",
-                            delivered, _deliver_target,
+                            gate.accepted, _deliver_target,
                         )
                         break
                     item = await asyncio.to_thread(result_q.get)
@@ -496,7 +553,16 @@ async def run_query(
                     raw_dict["fingerprints"] = sorted(fingerprints_for(raw_dict))
                     raw_dict["is_disqualified"] = False
                     raw_dict["_pipeline_id"] = pid
-                    delivered += 1
+                    # Phase 1A: the authoritative accept/reject decision.
+                    # Under the current single-consumer architecture this
+                    # can only fail if the target was already reached on a
+                    # prior iteration (the `while not gate.target_reached`
+                    # guard above already covers that) — checked explicitly
+                    # anyway so this remains correct if a second concurrent
+                    # producer is ever added without this loop changing.
+                    if not gate.try_accept_lead():
+                        tracer.reject(pid, "target_already_reached")
+                        break
                     tracer.transition(pid, "YIELDED_TO_NODE")
                     tracer.deliver(pid)
                     yield raw_dict
@@ -546,6 +612,7 @@ async def run_query(
                 discovery_request=discovery_request,
                 storage_backend=streaming_backend,
                 niche=niche or None,
+                on_progress=_on_progress,
             )
             engine_coordinator.mark_running(session_id)
             engine_runtime = engine_coordinator.get_engine_runtime(session_id)
@@ -561,14 +628,35 @@ async def run_query(
             queue_manager = ctx.runtime.queue_manager
 
             def _fully_drained() -> bool:
+                # PART B/D (Phase 2B): with Discovery now running on its
+                # own dedicated thread (engine/execution_driver.py's
+                # producer-thread decoupling), "every input queue is
+                # currently empty" is no longer sufficient evidence of
+                # genuine exhaustion — discovery may simply be between
+                # candidates. `driver.producers_finished()` is checked
+                # first so this can never declare exhaustion while
+                # discovery is still actively running.
+                if driver is not None and not driver.producers_finished():
+                    return False
                 if fan_in.pending_count() != 0:
                     return False
                 return all(queue_manager.get_queue(qid).is_empty() for qid in all_input_queue_ids)
 
             profiler.mark("discovery_worker_start")
+            # PART D (Phase 2B — watchdog shutdown semantics): set when
+            # the loop below breaks specifically because
+            # `shutdown_event` was seen set, as opposed to breaking
+            # because `gate.target_reached` or genuine `_fully_drained()`
+            # exhaustion. Consulted right after the loop (still inside
+            # this `try`, before the shared cleanup `finally`) to decide
+            # whether to raise `DiscoveryFailure(CANCELLED)` — see there
+            # for why a cooperative-shutdown break must never be allowed
+            # to fall through and be reported as an ordinary
+            # `success=True` completion.
+            _stopped_by_shutdown = False
             try:
                 idle_passes = 0
-                while delivered < _deliver_target:
+                while not gate.target_reached:
                     # LIFECYCLE FIX (graceful shutdown ordering): checked
                     # *before* starting another driver.run_once() pass, not
                     # after — this is the safe checkpoint. Whatever pass is
@@ -586,8 +674,9 @@ async def run_query(
                         log.info(
                             "[run_query] shutdown requested — not starting "
                             "another execution pass (delivered=%d/%d so far)",
-                            delivered, _deliver_target,
+                            gate.accepted, _deliver_target,
                         )
+                        _stopped_by_shutdown = True
                         break
                     outcomes = await asyncio.to_thread(driver.run_once)
                     if driver.last_error is not None:
@@ -645,18 +734,30 @@ async def run_query(
                             )
                         _last_lead_time = _now
                         profiler.mark_first_opportunity()
+                        _mark("first_lead_delivered")
 
-                        delivered += 1
+                        # Phase 1A: the authoritative accept/reject
+                        # decision — see LeadAcceptanceGate.try_accept_lead
+                        # docstring. Rejection here (target already reached
+                        # by a lead drained earlier in this same inner
+                        # while-loop) means this opportunity is dropped
+                        # without being yielded, exactly like the old
+                        # `delivered >= _deliver_target` post-yield break
+                        # below used to prevent going one over — the check
+                        # is just moved before the yield instead of after.
+                        if not gate.try_accept_lead():
+                            tracer.reject(pid, "target_already_reached")
+                            break
                         tracer.transition(pid, "YIELDED_TO_NODE")
                         tracer.deliver(pid)
                         yield lead_dict
-                        if delivered >= _deliver_target:
+                        if gate.target_reached:
                             break
 
-                    if delivered >= _deliver_target:
+                    if gate.target_reached:
                         log.info(
                             "[run_query] requested quantity reached — delivered=%d deliver_target=%d",
-                            delivered, _deliver_target,
+                            gate.accepted, _deliver_target,
                         )
                         break
 
@@ -666,11 +767,45 @@ async def run_query(
                             log.info(
                                 "[run_query] pipeline fully drained — exhausted before "
                                 "reaching deliver_target (delivered=%d/%d)",
-                                delivered, _deliver_target,
+                                gate.accepted, _deliver_target,
                             )
                             break
                     else:
                         idle_passes = 0
+
+                # PART D (Phase 2B — watchdog shutdown semantics): a
+                # cooperative-shutdown break (watchdog inactivity/ceiling,
+                # caller abort, or process shutdown — service.py cannot
+                # tell which; only the Node bridge's own local timedOut
+                # state can, and does, see EngineDoneInfo.terminationReason
+                # in pythonBridge.ts) must NEVER be allowed to reach
+                # `_main_cli` as an ordinary loop-exhaustion, which would
+                # be reported as `success=True` — see this file's
+                # `_main_cli` and `exceptions.DiscoveryFailureReason.
+                # CANCELLED` for the existing, established mechanism this
+                # reuses rather than inventing a second status system.
+                # Guarded by `not gate.target_reached` so "target reached
+                # AND shutdown also happened to be requested moments
+                # later" still correctly reports as a target-reached
+                # success (PART F: "Target completion still wins") — that
+                # case already `break`s via the `gate.target_reached`
+                # check above, earlier in the same pass, before this line
+                # is ever reached.
+                if _stopped_by_shutdown and not gate.target_reached:
+                    log.warning(
+                        "[run_query] cooperative shutdown stopped this run "
+                        "before target_reached or genuine exhaustion — "
+                        "raising DiscoveryFailure(CANCELLED) so __done__ "
+                        "reports this accurately instead of as an ordinary "
+                        "success=True completion (delivered=%d/%d)",
+                        gate.accepted, _deliver_target,
+                    )
+                    raise DiscoveryFailure(
+                        DiscoveryFailureReason.CANCELLED,
+                        "cooperative shutdown (watchdog inactivity/ceiling, caller "
+                        "abort, or process shutdown) stopped this run before it "
+                        "reached its target or genuinely exhausted its search space",
+                    )
             finally:
                 if driver is not None:
                     await asyncio.to_thread(driver.stop)
@@ -680,7 +815,7 @@ async def run_query(
         store.close()
         if session_id is not None:
             try:
-                if delivered >= _deliver_target:
+                if gate.target_reached:
                     engine_coordinator.finish_session(session_id)
                 else:
                     engine_coordinator.cancel_session(session_id)
@@ -745,7 +880,11 @@ async def run_query(
             except Exception:
                 log.debug("[run_query] session %s already terminal", session_id, exc_info=True)
         log_milestone("After run_query cleanup")
-        log.info(f"[service] done — delivered={delivered} {stats.summary()}")
+        # Phase 1A: `gate.accepted` is the authoritative count — reading it
+        # here (rather than a separately-tracked local) is what guarantees
+        # this closing log line can never drift from what the gate itself
+        # decided was accepted.
+        log.info(f"[service] done — delivered={gate.accepted} {stats.summary()}")
         log.info(
             "[service] rejection summary:\n" + stats.rejection_summary()
         )
@@ -758,6 +897,19 @@ async def run_query(
         # the __done__ sentinel without changing run_query's public API.
         global _last_perf_summary
         _last_perf_summary = profiler.summary()
+        # PART E (Phase 2B — truthful first-lead latency): additive
+        # sub-report alongside the existing profiler summary (nothing
+        # existing removed/renamed). Values are seconds since this
+        # run_query() call started (`_request_started_ts`), each recorded
+        # once, the first time it happened — see `_mark()`'s own comment
+        # above. A key's absence means that milestone never happened this
+        # run (e.g. no candidates ever discovered), not that it was zero.
+        _last_perf_summary["latency"] = {
+            "time_to_first_candidate_s": _latency_marks.get("first_candidate_discovered"),
+            "time_to_first_accepted_s": _latency_marks.get("first_candidate_accepted"),
+            "time_to_first_enrichment_s": _latency_marks.get("first_enrichment_completed"),
+            "time_to_first_lead_s": _latency_marks.get("first_lead_delivered"),
+        }
         # Phase 2A: attach the module-level import timing captured once at
         # process start. Not per-run (imports only happen once per Python
         # process, not once per run_query() call), but embedding it here
@@ -766,7 +918,7 @@ async def run_query(
         profiler.print_report(
             query=query,
             city=city,
-            delivered=delivered,
+            delivered=gate.accepted,
             requested=_deliver_target,  # report the user-facing target, not the scan budget
         )
         log.info("[run_query] outer cleanup finished")

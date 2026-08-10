@@ -363,6 +363,14 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
                 niche=request.niche,
                 region=request.region,
                 max_results=request.max_results,
+                # PHASE 1B: same predicate already consulted below, after
+                # each yielded candidate — also handed to MapsScraper.search()
+                # itself so a crash-triggered retry (scraper/maps_scraper.py's
+                # own internal recovery loop, untouched otherwise) does not
+                # start a new browser attempt once discovery should already
+                # be winding down. See that method's `should_stop` docstring
+                # for exactly which checkpoint this is.
+                should_stop=request.should_stop,
             )
             try:
                 async for place in search_gen:

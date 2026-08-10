@@ -377,6 +377,40 @@ class ExecutionDriver:
         self._lifecycle_lock = threading.Lock()
         self.last_error: Optional[BaseException] = None
 
+        # PHASE 2B FIX (continuous pipeline flow): a producer stage
+        # (Discovery) is one single, long-running, synchronous
+        # `execute_stage()` call -- `DiscoveryWorker.process()` blocks
+        # until its provider is fully exhausted (workers/discovery_worker.py
+        # "Revision history, v3"). Before this fix, that call was made
+        # inline, in stage order, by the SAME thread that then goes on to
+        # drive every transformer stage (Website/Instagram/Contact/Merge/
+        # Qualification/Storage) -- so the entire first pass (and,
+        # therefore, all downstream progress) blocked for as long as
+        # discovery took to finish. Candidates streamed into website_in /
+        # instagram_in via `on_candidate` during that call, but nothing
+        # dequeued them because the one thread capable of doing so was
+        # still inside `execute_stage(discovery)`.
+        #
+        # Fix: producer stages are launched on their own dedicated
+        # thread(s), started once (mirroring "Producer stages run once"
+        # above) as soon as this driver starts producing passes at all
+        # (`run_once()` or `_run_loop()` — see `_ensure_producers_started`
+        # below). The main pass loop no longer executes producer stages
+        # inline; it skips them (they are neither re-executed nor waited
+        # on) and spends every pass cycling the six transformer stages,
+        # which can now actually dequeue and process candidates the
+        # instant `on_candidate` enqueues them — while discovery is still
+        # running. This changes scheduling only; `EngineRuntime`,
+        # `StageConfig`, every Worker, and every Queue are untouched, and
+        # the underlying components' own "Thread Safety" sections already
+        # document the per-object locking that makes a second concurrent
+        # caller of `execute_stage()` (this producer thread, running
+        # alongside the transformer-stage thread) safe.
+        self._producer_threads: Dict[str, threading.Thread] = {}
+        self._producers_started: set = set()
+        self._producers_finished: set = set()
+        self._producer_lock = threading.Lock()
+
     # -- lifecycle -------------------------------------------------------
 
     def start(self) -> None:
@@ -439,11 +473,116 @@ class ExecutionDriver:
                 )
             else:
                 thread.join(timeout=timeout)
+        # PHASE 2B FIX: producer stage(s) now run on their own thread(s)
+        # (see `_ensure_producers_started`) -- join them too, best-effort,
+        # so a caller that has called stop() can trust the driver is
+        # genuinely quiescent afterwards, not just that the transformer
+        # loop stopped while a producer thread (e.g. Discovery, honoring
+        # its own cooperative `should_stop` checkpoint) is still winding
+        # down. Discovery's own `GoogleMapsDiscoveryRequest.should_stop`
+        # is the actual mechanism that makes it stop promptly -- this
+        # join does not request that itself, it only waits for it.
+        if wait:
+            with self._producer_lock:
+                producer_threads = list(self._producer_threads.values())
+            for producer_thread in producer_threads:
+                if producer_thread is threading.current_thread():
+                    log.warning(
+                        "ExecutionDriver.stop(wait=True) called from its own "
+                        "drive thread (a producer stage's own dedicated "
+                        "thread, e.g. from an on_stage_outcome callback "
+                        "fired for that producer's StageOutcome) -- cannot "
+                        "join the current thread; stop signal is set and "
+                        "that thread will exit once this call stack "
+                        "returns, but stop() is not blocking for it."
+                    )
+                    continue
+                producer_thread.join(timeout=timeout)
 
     def is_running(self) -> bool:
         """True while the background drive thread is alive."""
         thread = self._thread
         return thread is not None and thread.is_alive()
+
+    def _ensure_producers_started(self) -> None:
+        """
+        Idempotently launch one dedicated thread per producer StageConfig
+        (today: only Discovery), the first time this driver is asked to
+        produce any pass at all (from `run_once()` or `_run_loop()`).
+        Safe to call every pass -- after the first call, every producer
+        name is already in `_producers_started` and this is a no-op.
+
+        Only applies when `run_producers_once=True` (the default, and
+        what `build_seven_stage_pipeline`'s production configuration
+        uses). `run_producers_once=False` is a distinct, pre-existing,
+        deliberately-supported mode (re-invoke the producer's
+        `execute_stage()` inline, every pass, forever) that a persistent
+        background thread is fundamentally incompatible with -- so that
+        mode is left entirely untouched, below, in `run_once()` /
+        `_run_loop()`.
+
+        See the constructor's own comment for why this exists: decoupling
+        a producer's one long, blocking `execute_stage()` call from the
+        thread that cycles the transformer stages is the fix that lets
+        candidates flow into enrichment while discovery is still running.
+        """
+        if not self._producer_names or not self._run_producers_once:
+            return
+        with self._producer_lock:
+            to_start = [
+                name for name in self._producer_names
+                if name not in self._producers_started
+            ]
+            for name in to_start:
+                self._producers_started.add(name)
+            stages_to_start = [s for s in self._stages if s.name in to_start]
+        for stage in stages_to_start:
+            thread = threading.Thread(
+                target=self._run_producer_stage,
+                args=(stage,),
+                name=f"mast-execution-driver-producer-{stage.name}",
+                daemon=True,
+            )
+            with self._producer_lock:
+                self._producer_threads[stage.name] = thread
+            thread.start()
+            log.info("ExecutionDriver: producer stage=%s started on its own thread", stage.name)
+
+    def _run_producer_stage(self, stage: StageConfig) -> None:
+        """
+        Thread target: run this producer stage's single, exhausting
+        `execute_stage()` call to completion, exactly once, entirely off
+        the transformer-stage pass loop. Errors are captured the same way
+        `_execute_one()` already captures a fatal error for any other
+        stage (`self.last_error` + `self._stop_event.set()`); an ordinary
+        `StageOutcome(success=False, ...)` (ran=True) still marks the
+        producer done -- it made real progress and drove the provider,
+        even if the underlying worker.process() call itself failed.
+        """
+        try:
+            outcome = self._execute_one(stage)
+            if outcome is not None and outcome.ran:
+                with self._producer_lock:
+                    self._producers_done.add(stage.name)
+        finally:
+            with self._producer_lock:
+                self._producers_finished.add(stage.name)
+            log.info("ExecutionDriver: producer stage=%s finished", stage.name)
+
+    def producers_finished(self) -> bool:
+        """
+        True once every producer stage's dedicated thread has completed
+        (successfully or not). A caller (e.g. service.py's own
+        exhaustion check) MUST consult this before treating "every queue
+        is currently empty" as genuine pipeline exhaustion -- discovery
+        may simply be between candidates, not actually done. False if
+        this driver has no producer stages configured (nothing to wait
+        on) is intentionally not special-cased here: with zero producer
+        stages, `_producer_names` is empty and the set-comparison below
+        is vacuously true, which is the correct answer either way.
+        """
+        with self._producer_lock:
+            return self._producer_names <= self._producers_finished
 
     def run_once(self) -> List[StageOutcome]:
         """
@@ -460,40 +599,38 @@ class ExecutionDriver:
         *per ExecutionDriver instance calling _run_loop*, not a lock
         around `execute_stage()` itself).
         """
+        self._ensure_producers_started()
         outcomes = []
         for stage in self._stages:
-            if (
-                self._run_producers_once
-                and stage.name in self._producer_names
-                and stage.name in self._producers_done
-            ):
+            if self._run_producers_once and stage.name in self._producer_names:
+                # PHASE 2B FIX: producer stages are driven by their own
+                # dedicated thread (`_ensure_producers_started` above),
+                # never inline here -- see the constructor comment for
+                # why. Every pass simply skips them and spends its time
+                # on the transformer stages, which is what lets those
+                # stages actually dequeue candidates while discovery is
+                # still streaming more in.
                 continue
             outcome = self._execute_one(stage)
             if outcome is None:
                 break
             outcomes.append(outcome)
-            if (
-                outcome.ran
-                and self._run_producers_once
-                and stage.name in self._producer_names
-            ):
-                self._producers_done.add(stage.name)
         return outcomes
 
     # -- internal ----------------------------------------------------------
 
     def _run_loop(self) -> None:
+        self._ensure_producers_started()
         try:
             while not self._stop_event.is_set():
                 any_ran = False
                 for stage in self._stages:
                     if self._stop_event.is_set():
                         break
-                    if (
-                        self._run_producers_once
-                        and stage.name in self._producer_names
-                        and stage.name in self._producers_done
-                    ):
+                    if stage.name in self._producer_names and self._run_producers_once:
+                        # PHASE 2B FIX: see run_once()'s identical skip --
+                        # producer stages run on their own thread, never
+                        # inline in this loop.
                         continue
                     outcome = self._execute_one(stage)
                     if outcome is None:
@@ -503,8 +640,6 @@ class ExecutionDriver:
                         return
                     if outcome.ran:
                         any_ran = True
-                        if self._run_producers_once and stage.name in self._producer_names:
-                            self._producers_done.add(stage.name)
 
                 if self._stop_event.is_set():
                     return
@@ -664,6 +799,7 @@ def build_seven_stage_pipeline(
     scoring_worker_factory: Optional[Callable[[], BaseWorker]] = None,
     storage_worker_factory: Optional[Callable[[], BaseWorker]] = None,
     instance_counts: Optional[Dict[str, int]] = None,
+    on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None,
 ) -> "tuple[List[StageConfig], PipelineQueueIds, FanInRuntime, Callable[[StageOutcome], None]]":
     """
     Composition root wiring every already-implemented worker
@@ -863,6 +999,31 @@ def build_seven_stage_pipeline(
     stash = _EnrichedBusinessStash()
     qualification_in_flight = _QualificationInFlight()
 
+    # PART A/C (Phase 2B instrumentation): minimal, additive lifecycle
+    # progress signal. `on_progress`, if supplied, is called with
+    # (stage, event, item_id) for the handful of events cheap to observe
+    # from this composition root without threading a new identifier
+    # through every worker (`item_id` is a pipeline_id where discovery
+    # already has one, otherwise the queue_item_id `StageOutcome` already
+    # carries -- enough to reconstruct per-item timing, per the task's own
+    # "Do NOT spam massive payloads" instruction). Never allowed to raise
+    # into pipeline code -- an observer failing must never affect
+    # discovery/enrichment itself.
+    def _emit(stage: str, event: str, item_id: Optional[str]) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(stage, event, item_id)
+        except Exception:
+            log.debug("on_progress observer raised — ignored", exc_info=True)
+
+    def _emit_stage_outcome(outcome: StageOutcome) -> None:
+        if not outcome.ran:
+            return
+        item_id = outcome.queue_item_id or outcome.worker_id
+        event = "stage_completed" if outcome.success else "stage_failed"
+        _emit(outcome.stage_name, event, item_id)
+
     # -- Discovery: producer, per StageConfig's own contract -------------
 
     def _on_candidate(candidate: BusinessCandidate) -> None:
@@ -878,6 +1039,7 @@ def build_seven_stage_pipeline(
         `build_downstream` (below) forwards its output, per module
         docstring review point 6.
         """
+        _emit("discovery", "candidate_discovered", candidate.pipeline_id)
         fan_in.register_business(candidate)
         website_queue.enqueue(
             pipeline_id=candidate.pipeline_id, stage="website", payload=candidate
@@ -885,6 +1047,7 @@ def build_seven_stage_pipeline(
         instagram_queue.enqueue(
             pipeline_id=candidate.pipeline_id, stage="instagram", payload=candidate
         )
+        _emit("discovery", "candidate_queued", candidate.pipeline_id)
 
     discovery_stage = StageConfig(
         name="discovery",
@@ -1030,6 +1193,7 @@ def build_seven_stage_pipeline(
         business_session_id = (
             enriched.business.session_id if enriched.business is not None else session_id
         )
+        _emit("qualification", "candidate_qualified", result.pipeline_id)
         score = _scoring_worker.process(enriched)
         qualified_opportunity = QualifiedOpportunity(
             pipeline_id=result.pipeline_id,
@@ -1152,7 +1316,17 @@ def build_seven_stage_pipeline(
         "build_seven_stage_pipeline: session=%s stages=%d queues=%d",
         session_id, len(stages), len(queue_definitions),
     )
-    return stages, queue_ids, fan_in, _on_qualification_outcome
+
+    def _combined_on_stage_outcome(outcome: StageOutcome) -> None:
+        # Composition-root-only fan-out to this pipeline's two existing
+        # `on_stage_outcome` consumers: the pre-existing stash-cleanup
+        # callback (unchanged) and this phase's additive progress
+        # instrumentation. `ExecutionDriver` itself still accepts exactly
+        # one such callback -- this is that single callback.
+        _on_qualification_outcome(outcome)
+        _emit_stage_outcome(outcome)
+
+    return stages, queue_ids, fan_in, _combined_on_stage_outcome
 
 
 def run_batch_intelligence(coordinator: EngineCoordinator, session_id: str) -> Dict[str, Any]:

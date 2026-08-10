@@ -261,4 +261,86 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
     const result = await withTimeout(closed, 100, "closed after watchdog shutdown");
     assert.equal(result.signal, "SIGTERM");
   });
+
+  // ---------------------------------------------------------------------
+  // PHASE 2B additions — progress protocol (PART C) and watchdog
+  // termination semantics (PART D), both exercised through the real
+  // runEngineQuery() end-to-end path (not just the primitives above).
+  // ---------------------------------------------------------------------
+
+  test("7. progress lines alone reset the inactivity watchdog — a real lead still arrives instead of a premature SIGTERM", async () => {
+    // Six progress lines, 150ms apart (900ms total), against a 250ms
+    // inactivity threshold: any single gap is well under the threshold,
+    // but the pre-Phase-2B behavior (only a delivered lead or __done__
+    // counted as progress) would let the gap between "process start" and
+    // "first real lead" accumulate past 250ms and get SIGTERM'd before
+    // ever reaching its lead/__done__.
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    const originalInactivity = env.SCRAPER_SUBPROCESS_INACTIVITY_MS;
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "progress-then-lead-engine");
+    env.SCRAPER_SUBPROCESS_INACTIVITY_MS = 250;
+    try {
+      const leads: unknown[] = [];
+      let done: unknown = null;
+      await withTimeout(
+        (async () => {
+          for await (const lead of runEngineQuery({ query: "test", city: "Testville" }, undefined, (info) => {
+            done = info;
+          })) {
+            leads.push(lead);
+          }
+        })(),
+        5000,
+        "runEngineQuery with progress-only inactivity resets",
+      );
+      assert.equal(leads.length, 1, "the real lead must still have arrived — progress lines must not themselves be yielded as leads");
+      assert.ok(done && (done as { success: boolean }).success === true, "must complete successfully — the watchdog must NOT have fired");
+      assert.equal((done as { terminationReason?: string }).terminationReason, "SUCCESS_TARGET_REACHED");
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+      env.SCRAPER_SUBPROCESS_INACTIVITY_MS = originalInactivity;
+    }
+  });
+
+  test("8. watchdog-triggered CANCELLED __done__ is reported as terminationReason=WATCHDOG_TIMEOUT, not a silent success", async () => {
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    const originalInactivity = env.SCRAPER_SUBPROCESS_INACTIVITY_MS;
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "watchdog-cancelled-engine");
+    env.SCRAPER_SUBPROCESS_INACTIVITY_MS = 250;
+    try {
+      const leads: unknown[] = [];
+      let done: unknown = null;
+      await withTimeout(
+        (async () => {
+          for await (const lead of runEngineQuery({ query: "test", city: "Testville" }, undefined, (info) => {
+            done = info;
+          })) {
+            leads.push(lead);
+          }
+        })(),
+        5000,
+        "runEngineQuery watchdog CANCELLED reporting",
+      );
+      assert.equal(leads.length, 0);
+      assert.ok(done, "onDone must have been called");
+      const info = done as {
+        success: boolean;
+        exhausted: boolean;
+        targetReached?: boolean;
+        failureReason?: string;
+        terminationReason?: string;
+      };
+      // ROOT-CAUSE REGRESSION CHECK (PART D): this is exactly the shape
+      // that used to be mis-reported as success=true/exhausted=true.
+      assert.equal(info.success, false);
+      assert.equal(info.exhausted, false);
+      assert.equal(info.failureReason, "CANCELLED");
+      assert.equal(info.terminationReason, "WATCHDOG_TIMEOUT");
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+      env.SCRAPER_SUBPROCESS_INACTIVITY_MS = originalInactivity;
+    }
+  });
 });

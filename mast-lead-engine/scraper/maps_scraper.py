@@ -1244,6 +1244,7 @@ class MapsScraper:
         region: str = "",
         max_results: int = 60,
         should_stop: "Callable[[], bool] | None" = None,
+        on_progress: "Callable[[str, str, str | None], None] | None" = None,
     ) -> AsyncIterator[RawPlace]:
         """Search Google Maps and yield RawPlace objects.
 
@@ -1269,6 +1270,25 @@ class MapsScraper:
                 attempt. See providers/google_maps_provider.py's
                 `_discover_async`, which is the one production caller that
                 passes `request.should_stop` through to this parameter.
+            on_progress: MINIMAL FIX (discovery liveness / watchdog
+                blindness — forensic audit §9). Optional, lightweight
+                liveness heartbeat, called as `on_progress(stage, event,
+                item_id)` — the same three-argument shape service.py's own
+                `_on_progress` already accepts, so it can be passed straight
+                through with no adapter (see
+                providers/google_maps_provider.py's `GoogleMapsDiscoveryRequest
+                .on_progress`). Emitted at most once per attempt for
+                `panel_resolved`, once per scroll round for `round_scanned`
+                (never once per anchor — see the audit's explicit
+                "Do NOT emit one stdout event per anchor" instruction), and
+                once each for `crash_detected` / `crash_recovered`. This is
+                a liveness signal only, entirely independent of candidate
+                production — it never carries a RawPlace/BusinessCandidate
+                and changes nothing about extraction, selectors, scrolling,
+                or dedup. `None` (the default) preserves exact previous
+                behavior (no stdout progress lines from this method) for
+                any caller that doesn't pass one, e.g. verify_business()'s
+                direct probes and every existing test.
 
         ROOT CAUSE FIX (memory / crash recovery): a Chromium renderer crash
         ("Target crashed" — typically an OOM kill on a memory-constrained
@@ -1287,6 +1307,22 @@ class MapsScraper:
         gets double-counted. Only after `config.max_crash_retries`
         consecutive crashes does the search finally give up.
         """
+        # MINIMAL FIX (discovery liveness — forensic audit §9): a small,
+        # local wrapper around `on_progress` so every call site below is a
+        # one-liner and — critically — so an observer failure (or absence)
+        # can never affect discovery itself. Mirrors
+        # execution_driver.py's own `_emit()` wrapper around `on_progress`
+        # (same "never allowed to raise into pipeline code" contract),
+        # kept local here rather than imported since this module has no
+        # existing dependency on engine/.
+        def _emit_progress(event: str, item_id: str | None = None) -> None:
+            if on_progress is None:
+                return
+            try:
+                on_progress("discovery", event, item_id)
+            except Exception:
+                log.debug("on_progress observer raised — ignored", exc_info=True)
+
         if city and city.lower() not in query.lower():
             full_query = f"{query} in {city}"
         else:
@@ -1409,6 +1445,27 @@ class MapsScraper:
                 # — if nothing validates as a real results feed.
                 panel_sel, _ = await _resolve_results_panel(page, config=self.config)
 
+                # MINIMAL FIX (discovery liveness — forensic audit §9):
+                # "Maps results panel resolved" — real, cheap, DOM-backed
+                # evidence the engine is alive and looking at a genuine
+                # results feed, well before any anchor has been clicked or
+                # any candidate extracted. Once per attempt (this line only
+                # runs once per attempt, immediately after
+                # `_resolve_results_panel()` returns successfully).
+                _emit_progress("panel_resolved", str(attempt))
+
+                if attempt > 1:
+                    # MINIMAL FIX (discovery liveness — forensic audit §9):
+                    # a fresh panel resolved successfully on a retry attempt
+                    # means the crash/DiscoveryFailure that triggered this
+                    # attempt has been recovered from — the replacement
+                    # context/page/browser is up and looking at real
+                    # results again. Emitted here (attempt > 1, panel just
+                    # resolved) rather than immediately after context/page
+                    # creation above, so "recovered" means "recovered AND
+                    # confirmed alive", not just "a new page object exists".
+                    _emit_progress("crash_recovered", str(attempt))
+
                 # --- TEMPORARY DIAGNOSTIC (discovery-pipeline audit) ---
                 # Deep one-shot dump of what's actually inside the
                 # resolved panel, before any scrolling or collection
@@ -1502,6 +1559,17 @@ class MapsScraper:
                     rounds_this_attempt += 1
                     total_scroll_rounds += 1
 
+                    # MINIMAL FIX (discovery liveness — forensic audit §9):
+                    # reset once per OUTER round so the inner anchor-processing
+                    # loop below (which re-queries `listing_anchors` fresh
+                    # before every single anchor, not once per round) only
+                    # emits `round_scanned` a single time per round — "Do NOT
+                    # emit one stdout event per anchor" is the audit's
+                    # explicit instruction, and cards_in_dom is identical
+                    # across every re-query within the same round anyway
+                    # until a scroll happens.
+                    _round_scan_emitted = False
+
                     # Process every currently-unseen anchor, one at a time,
                     # re-querying fresh ElementHandles from the live DOM
                     # before *each* click instead of processing a batch
@@ -1576,6 +1644,20 @@ class MapsScraper:
                             f"seen_so_far={len(seen_hrefs)} yielded_so_far={yielded}"
                         )
                         # --- end temporary diagnostic ---
+
+                        # MINIMAL FIX (discovery liveness — forensic audit
+                        # §9): once per round, cheap, DOM-backed evidence
+                        # that real listing cards are present — the exact
+                        # signal that was previously invisible to Node
+                        # between "panel resolved" and "first candidate
+                        # fully extracted" (see §1/§2 of the audit: a round
+                        # with 12 visible cards and 0 yielded produces zero
+                        # stdout bytes today). Guarded by
+                        # `_round_scan_emitted` so this fires once per
+                        # OUTER round, not once per anchor re-query.
+                        if not _round_scan_emitted and len(listing_anchors) > 0:
+                            _emit_progress("round_scanned", str(len(listing_anchors)))
+                            _round_scan_emitted = True
 
                         # ROOT CAUSE FIX (Parts 4–5): the resolved panel
                         # validated at resolution time (see
@@ -1867,6 +1949,15 @@ class MapsScraper:
                     f"error for {full_query!r} (attempt {attempt}/{max_attempts}, "
                     f"{yielded} place(s) already yielded): {exc}"
                 )
+                # MINIMAL FIX (discovery liveness — forensic audit §9): this
+                # is the generic browser/page/context crash branch (e.g.
+                # "Target crashed", "Target page, context or browser has
+                # been closed" — see the audit's §2 evidence) as opposed to
+                # a typed DiscoveryFailure (nav timeout, consent, panel not
+                # found) above. Emitted regardless of whether this is the
+                # last attempt, so Node sees "a crash just happened" even
+                # on the final, unrecoverable attempt.
+                _emit_progress("crash_detected", str(attempt))
                 if proxy:
                     self._proxy_manager.report_failure(proxy)
                 if is_last_attempt:

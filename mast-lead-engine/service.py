@@ -507,6 +507,15 @@ async def run_query(
                 query=query, city=city, country=country,
                 niche=niche, region=region, max_results=raw_supply_cap,
                 should_stop=_should_stop_discovery,
+                # MINIMAL FIX (discovery liveness — forensic audit §9):
+                # `_on_progress` already exists and already writes the
+                # stdout `"type":"progress"` line pythonBridge.ts's
+                # watchdog resets on — this is the discovery_only branch's
+                # own equivalent of the `on_progress=_on_progress` already
+                # passed to `build_seven_stage_pipeline()` in the other
+                # branch below, so both code paths get the same liveness
+                # heartbeat from MapsScraper.search().
+                on_progress=_on_progress,
             )
             result_q: "thread_queue.Queue" = thread_queue.Queue(maxsize=10)
 
@@ -597,6 +606,19 @@ async def run_query(
                 session_id=session_id, query=query, city=city, country=country,
                 niche=niche, region=region, max_results=raw_supply_cap,
                 should_stop=_should_stop_discovery,
+                # MINIMAL FIX (discovery liveness — forensic audit §9):
+                # `on_progress=_on_progress` below (passed to
+                # `build_seven_stage_pipeline()`) only reaches
+                # execution_driver.py's own `_emit()` closure, which is
+                # invoked from `_on_candidate()`/`_emit_stage_outcome()` —
+                # i.e. still only AFTER a candidate exists, exactly the
+                # blind spot this fix closes. Threading the same
+                # `_on_progress` straight onto the request itself is what
+                # lets MapsScraper.search()'s new panel_resolved/
+                # round_scanned/crash_detected/crash_recovered heartbeats
+                # (see scraper/maps_scraper.py) reach stdout at all in this
+                # (non-discovery_only) branch.
+                on_progress=_on_progress,
             )
 
             result_q: "thread_queue.Queue" = thread_queue.Queue()

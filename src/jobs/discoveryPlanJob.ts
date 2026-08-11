@@ -10,7 +10,7 @@ import { JobProfiler } from "../lib/perf.js";
 import { getProvider, getGenerator } from "../discovery/providerRegistry.js";
 import { getPlan, getPlanConcurrency } from "../config/plans.js";
 import type { PlanId } from "../config/plans.js";
-import type { EngineLead } from "../scraperBridge/pythonBridge.js";
+import type { EngineLead, EngineDoneInfo } from "../scraperBridge/pythonBridge.js";
 import { registerRequestAbortController, terminateRequest, type RequestTerminalReason } from "../discovery/requestLifecycle.js";
 import { cityTransitionFor } from "../discovery/cityScheduling.js";
 import {
@@ -60,6 +60,32 @@ const CONCURRENCY_RECHECK_DELAY_SECONDS = 5;
  */
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const REQUEST_TERMINAL_POLL_MS = 500;
+
+/**
+ * MINIMAL FIX (discovery liveness / city failure classification — forensic
+ * audit §9/§10): thrown when the engine's own `runEngineQuery()` call
+ * completed cleanly (reported `__done__`, so no ordinary exception was
+ * ever raised out of `provider.search()`) but its bridge-computed
+ * `terminationReason` was `WATCHDOG_TIMEOUT` or `FAILURE` — i.e. neither a
+ * clean success nor genuine exhaustion. Reusing the existing `catch
+ * (error)` block's already-bounded pg-boss retry (`willRetry =
+ * currentAttempt < DISCOVERY_TASK_MAX_ATTEMPTS`, unchanged) is the
+ * smallest safe way to give this city a bounded retry instead of
+ * recording a normal "completed" outcome and immediately burning its one
+ * scheduling attempt / rotating to the next city — without inventing a
+ * second, parallel retry mechanism or redesigning `dispatchQueuedDiscoveryTasks()`'s
+ * one-city-at-a-time scheduling at all. See `cityScheduling.ts`'s
+ * `cityTransitionFor()` for the classification this reacts to.
+ */
+class EngineTerminationRetryError extends Error {
+  constructor(
+    public readonly reason: "WATCHDOG_TIMEOUT" | "SCRAPER_FAILURE",
+    message: string,
+  ) {
+    super(message);
+    this.name = "EngineTerminationRetryError";
+  }
+}
 
 function terminalReasonForPlan(plan: any): RequestTerminalReason | undefined {
   if (!plan) return "SCRAPER_FAILURE";
@@ -254,6 +280,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   let lastHeartbeat = Date.now();
   // Phase 2: capture perf from Python __done__ sentinel
   let pythonPerfData: Record<string, unknown> | undefined;
+  // MINIMAL FIX (discovery liveness / city failure classification —
+  // forensic audit §9/§10): the bridge's own already-computed termination
+  // classification (see `EngineDoneInfo.terminationReason` in
+  // pythonBridge.ts), captured here so it can be threaded into
+  // `cityTransitionFor()` below instead of being discarded at this
+  // boundary the way it was before this fix (per the audit's §3/§8 — this
+  // is the exact gap it calls out).
+  let engineTerminationReason: EngineDoneInfo["terminationReason"];
 
   try {
     const pythonTimer = profiler.timer("python_subprocess_total");
@@ -289,6 +323,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         requestAbort.signal,
         (done) => {
           exhausted = done.exhausted;
+          engineTerminationReason = done.terminationReason;
           if (done.success === false) {
             // See discoverJob.ts's onDone callback for the full Part 8
             // explanation. `exhausted` is guaranteed false in this branch
@@ -475,7 +510,35 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     const { data: finalPlan } = await db.from("discovery_plans")
       .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
     const terminalReason = terminalReasonForPlan(finalPlan);
-    const cityReason = terminalReason ?? cityTransitionFor({ candidatesFound: discovered, acceptedLeads: accepted }, exhausted);
+    // MINIMAL FIX (discovery liveness / city failure classification —
+    // forensic audit §9/§10): `engineTerminationReason` (captured from the
+    // bridge's onDone callback above) is now threaded into
+    // `cityTransitionFor()` so a watchdog kill or scraper failure is never
+    // silently folded into `CITY_EXHAUSTED`/`CITY_NO_PROGRESS` just
+    // because `exhausted` is `false` on every failed run.
+    const cityReason = terminalReason ?? cityTransitionFor(
+      { candidatesFound: discovered, acceptedLeads: accepted },
+      exhausted,
+      engineTerminationReason,
+    );
+
+    // MINIMAL FIX (discovery liveness / city failure classification —
+    // forensic audit §9/§10): a watchdog timeout or scraper failure is not
+    // genuine exhaustion — it must not consume this city's one scheduling
+    // attempt. Route it through the exact same bounded pg-boss retry the
+    // `catch (error)` block below already applies to a thrown exception
+    // (see `EngineTerminationRetryError`'s own doc comment for why this,
+    // rather than a new retry mechanism, is the minimal safe fix). Plan-
+    // level terminal states (cancelled/target-reached) always win first —
+    // there is nothing to retry once the plan itself is done.
+    if (!terminalReason && (cityReason === "WATCHDOG_TIMEOUT" || cityReason === "SCRAPER_FAILURE")) {
+      throw new EngineTerminationRetryError(
+        cityReason,
+        `engine reported ${cityReason} for city=${task.city} country=${task.country_code} ` +
+          `(discovered=${discovered} accepted=${accepted}) — not genuine exhaustion, retrying same city (bounded)`,
+      );
+    }
+
     const completionReason: string = cityReason;
     console.info(`[discovery-city] CITY_FINISHED city=${task.city} country=${task.country_code} elapsed_ms=${Date.now() - startedAt} candidates_found=${discovered} accepted=${accepted} rejected=${rejected} reason=${cityReason}`);
 

@@ -69,13 +69,20 @@ class _FakeMapsScraper:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self.aexited = True
 
-    async def search(self, *, query, city, country, niche, region, max_results, should_stop=None):
+    async def search(self, *, query, city, country, niche, region, max_results, should_stop=None, on_progress=None):
         # PHASE 1B: real MapsScraper.search() now accepts `should_stop` too
         # (checked only before a crash-retry attempt — see that method's
         # docstring). This fake never crashes, so it has no retry decision
         # to make and doesn't need to actually consult the callback; it
         # only needs to accept the same call shape GoogleMapsProvider now
         # uses so these existing tests keep exercising the real call site.
+        #
+        # MINIMAL FIX (discovery liveness — forensic audit §9): same
+        # reasoning applies to `on_progress` — accepted (so the real call
+        # site's kwarg keeps working) but not exercised, since this fake
+        # never hits a crash/round/panel-resolve event to report. See
+        # tests/test_maps_scraper_progress_events.py for the heartbeat's
+        # actual behavioral coverage.
         try:
             for i in range(min(self.place_count, max_results)):
                 self.candidates_produced += 1

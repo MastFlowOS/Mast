@@ -189,6 +189,17 @@ class GoogleMapsDiscoveryRequest:
     # preserves the exact previous behavior — run to exhaustion — for any
     # caller that doesn't pass one (e.g. existing tests/validate scripts).
     should_stop: Optional[Callable[[], bool]] = None
+    # MINIMAL FIX (discovery liveness / watchdog blindness — forensic audit
+    # §9): threaded through to MapsScraper.search() the exact same way
+    # `should_stop` already is (a plain optional callback, `None` by
+    # default so any caller that doesn't pass one gets identical behavior
+    # to before this fix). Called with `(stage, event, item_id)` — the same
+    # signature service.py's own `_on_progress` already accepts — so a
+    # caller can hand its existing `_on_progress` straight through with no
+    # adapter. This is a liveness/heartbeat signal only ("the engine is
+    # alive and looking at real DOM content"); it never carries a
+    # BusinessCandidate and must never be treated as one.
+    on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None
 
 
 def _or_none(value: str) -> Optional[str]:
@@ -371,6 +382,11 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
                 # be winding down. See that method's `should_stop` docstring
                 # for exactly which checkpoint this is.
                 should_stop=request.should_stop,
+                # MINIMAL FIX (discovery liveness — forensic audit §9):
+                # same pass-through pattern as should_stop immediately
+                # above — see GoogleMapsDiscoveryRequest.on_progress's
+                # docstring.
+                on_progress=request.on_progress,
             )
             try:
                 async for place in search_gen:

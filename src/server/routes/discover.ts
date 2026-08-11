@@ -142,6 +142,17 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
       const planId = await enqueueDiscoveryPlan({
         scrapeJobId: job.id,
         userId,
+        // AUDIT FIX (Phase 3B concurrency audit): this was never passed
+        // before, so every downstream getPlan(request.planId ?? null) /
+        // getPlanConcurrency() call silently fell back to the "free" tier
+        // — both the priority band (materializeDiscoveryPlan) AND, after
+        // this phase's dispatch fix, the per-user worker-concurrency cap
+        // (dispatchQueuedDiscoveryTasks / handleDiscoveryTask) were
+        // computing every user's plan as if they were on "free" (band
+        // 0-9, cap 2) regardless of their actual billing tier. See
+        // planner.ts's plan_tier_id row field for the other half of this
+        // fix.
+        planId: plan.id,
         region: body.region,
         niche: body.niche,
         channels: body.channels,

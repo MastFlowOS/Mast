@@ -300,6 +300,37 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
       assert.equal(leads.length, 1, "the real lead must still have arrived — progress lines must not themselves be yielded as leads");
       assert.ok(done && (done as { success: boolean }).success === true, "must complete successfully — the watchdog must NOT have fired");
       assert.equal((done as { terminationReason?: string }).terminationReason, "SUCCESS_TARGET_REACHED");
+
+      // PHASE 3C-1 STEP 2 (test requirement #1 — timing telemetry appears
+      // correctly): progress lines from this fixture must be captured into
+      // onDone's progressMarks (first occurrence only, ms since spawn),
+      // and bridgeTimings must be populated with real, ordered numbers.
+      const info = done as {
+        progressMarks?: Record<string, number>;
+        bridgeTimings?: { spawnMs: number; firstLineMs: number | null; firstLeadMs: number | null };
+      };
+      assert.ok(info.progressMarks, "progressMarks must be populated");
+      assert.ok(
+        typeof info.progressMarks!["discovery:candidate_discovered"] === "number",
+        "candidate_discovered mark must be captured",
+      );
+      assert.ok(
+        typeof info.progressMarks!["discovery:candidate_queued"] === "number",
+        "candidate_queued mark must be captured",
+      );
+      // candidate_discovered fires before candidate_queued in the fixture.
+      assert.ok(
+        info.progressMarks!["discovery:candidate_discovered"] <= info.progressMarks!["discovery:candidate_queued"],
+        "marks must reflect real emission order",
+      );
+      assert.ok(info.bridgeTimings, "bridgeTimings must be populated");
+      assert.ok(info.bridgeTimings!.spawnMs >= 0);
+      assert.ok(info.bridgeTimings!.firstLineMs !== null);
+      assert.ok(info.bridgeTimings!.firstLeadMs !== null);
+      // The lead arrives only after all six progress lines — first line
+      // received (a progress line) must be strictly earlier than the
+      // first actual lead.
+      assert.ok(info.bridgeTimings!.firstLineMs! <= info.bridgeTimings!.firstLeadMs!);
     } finally {
       env.SCRAPER_ENGINE_PATH = originalPath;
       env.SCRAPER_SUBPROCESS_INACTIVITY_MS = originalInactivity;

@@ -77,3 +77,26 @@ export function cityTransitionFor(
 export function shouldScheduleCity(attempt: Pick<CityAttempt, "attempted">): boolean {
   return !attempt.attempted;
 }
+
+/**
+ * PHASE 3B — bounded discovery concurrency arithmetic.
+ *
+ * Pure arithmetic for how many additional discovery_tasks rows may be
+ * dispatched right now: bounded by both remaining headroom under the
+ * user's plan-tier concurrency cap AND how much queued work actually
+ * exists. Lives here (not in planner.ts) for the exact same reason
+ * `cityTransitionFor`/`shouldScheduleCity` do — this module intentionally
+ * stays independent of any module-load side effects (env.ts's zod-
+ * validated config, the Supabase/pg-boss client singletons planner.ts
+ * pulls in), so it — and its dispatch-bound invariants — can be unit
+ * tested directly with no environment/database required.
+ *
+ * Used by planner.ts's dispatchQueuedDiscoveryTasks() to replace what used
+ * to be an unconditional `.limit(1)` — the root cause of discovery only
+ * ever advancing one city at a time regardless of the worker pool's real
+ * capacity or the plan tier's configured `workerConcurrency`.
+ */
+export function computeDispatchSlots(concurrencyCap: number, runningCount: number, queuedCount: number): number {
+  const available = Math.max(0, concurrencyCap - Math.max(0, runningCount));
+  return Math.max(0, Math.min(available, Math.max(0, queuedCount)));
+}

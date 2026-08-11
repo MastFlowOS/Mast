@@ -529,6 +529,31 @@ export type EngineDoneInfo = {
     | "FAILURE";
   /** Phase 2: structured performance report from the Python profiler */
   perf?: Record<string, unknown>;
+  /**
+   * PHASE 3C-1 STEP 2 — bridge-side transport timings (spawn → first
+   * stdout line → first lead), always populated once `spawn()` has
+   * returned. AUDIT FINDING: this data was already computed in this file
+   * (`spawnMs`/`firstLineMs`/`firstLeadMs`, logged in a single console.log
+   * line at __done__ time) but was never threaded out through `onDone` —
+   * `EngineBridgeTimings` existed as a type with no producer feeding it to
+   * any caller. This closes that gap; nothing above is a new measurement.
+   */
+  bridgeTimings?: EngineBridgeTimings;
+  /**
+   * PHASE 3C-1 STEP 2 — first-occurrence timestamp (ms since spawn) for
+   * every distinct `stage:event` pair reported over the existing
+   * `"type":"progress"` stdout protocol (service.py's `_on_progress` /
+   * MapsScraper's `_emit_progress`) during this run. Covers, when the
+   * engine build emits them: `discovery:maps_navigation_start`,
+   * `discovery:maps_navigation_complete`, `discovery:panel_resolved`,
+   * `discovery:candidate_discovered`, `discovery:candidate_queued`, and
+   * any future progress event — this map is generic over the event name,
+   * not a fixed allowlist, so a new `_emit_progress(...)` call on the
+   * Python side is automatically picked up here with no bridge change.
+   * Previously these lines were only `console.debug`-logged and discarded
+   * — see the loop below where they're received.
+   */
+  progressMarks?: Record<string, number>;
 };
 
 /** Phase 2: timing probes captured during a runEngineQuery() call. */
@@ -694,6 +719,9 @@ export async function* runEngineQuery(
   // requiring cross-referencing separate log lines.
   let bridgeReceived = 0;
   let bridgeForwarded = 0;
+  // PHASE 3C-1 STEP 2: first-occurrence ms-since-spawn per "stage:event"
+  // progress line — see EngineDoneInfo.progressMarks's own doc comment.
+  const progressMarks: Record<string, number> = {};
 
   const lineIterator = (async function* () {
     for await (const line of rl) {
@@ -744,6 +772,14 @@ export async function* runEngineQuery(
         console.debug(
           `[scraper-bridge] progress stage=${parsed.stage} event=${parsed.event} item=${parsed.item_id ?? "n/a"}`,
         );
+        // PHASE 3C-1 STEP 2: record first occurrence only — later repeats
+        // of the same stage:event (e.g. "round_scanned" on every scroll
+        // round) must not overwrite the meaningful first timestamp with a
+        // later one. Deliberately not persisted per-anchor/per-round
+        // beyond this single first-seen ms value, so this cannot grow
+        // into per-anchor log spam (Step 2's own explicit constraint).
+        const key = `${parsed.stage ?? "unknown"}:${parsed.event ?? "unknown"}`;
+        if (!(key in progressMarks)) progressMarks[key] = hrElapsedMs();
         continue;
       }
 
@@ -808,6 +844,8 @@ export async function* runEngineQuery(
           failureDetail,
           terminationReason,
           perf: perfPayload,
+          bridgeTimings: { spawnMs, firstLineMs, firstLeadMs },
+          progressMarks,
         });
         continue;
       }

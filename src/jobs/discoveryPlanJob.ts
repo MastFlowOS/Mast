@@ -232,6 +232,17 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     .select("id").maybeSingle();
   if (!claimed) return; // another worker beat us to the claim
 
+  // PHASE 3B — production observability: makes concurrent city/provider
+  // overlap visible in Railway logs (not inferable from "code uses async"
+  // alone). worker=<short task id> is stable for the lifetime of this
+  // claimed task, so start/finish/cancel lines for the same worker can be
+  // grepped and correlated across a plan's log lines.
+  const workerLabel = payload.taskId.slice(0, 8);
+  console.info(
+    `[discovery] worker=${workerLabel} started plan=${payload.planId} city=${task.city} ` +
+      `country=${task.country_code} niche=${task.niche} source=${task.source ?? "google_maps"}`,
+  );
+
   let planCheck: any;
   {
     const t = profiler.timer("plan_cancellation_check");
@@ -280,6 +291,12 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   let lastHeartbeat = Date.now();
   // Phase 2: capture perf from Python __done__ sentinel
   let pythonPerfData: Record<string, unknown> | undefined;
+  // PHASE 3C-1 STEP 2: bridge transport timings + progress-protocol marks
+  // captured from the same onDone callback — see EngineDoneInfo's own doc
+  // comments (pythonBridge.ts) for what each field means and the audit
+  // finding each one closes.
+  let bridgeTimings: EngineDoneInfo["bridgeTimings"];
+  let progressMarks: EngineDoneInfo["progressMarks"];
   // MINIMAL FIX (discovery liveness / city failure classification —
   // forensic audit §9/§10): the bridge's own already-computed termination
   // classification (see `EngineDoneInfo.terminationReason` in
@@ -338,6 +355,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
             );
           }
           if (done.perf) pythonPerfData = done.perf;
+          bridgeTimings = done.bridgeTimings;
+          progressMarks = done.progressMarks;
           pythonTimer.end();
         },
       )) {
@@ -542,6 +561,38 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     const completionReason: string = cityReason;
     console.info(`[discovery-city] CITY_FINISHED city=${task.city} country=${task.country_code} elapsed_ms=${Date.now() - startedAt} candidates_found=${discovered} accepted=${accepted} rejected=${rejected} reason=${cityReason}`);
 
+    // PHASE 3C-1 STEP 2 — ONE structured timing line per task (not
+    // per-anchor — see this phase's own "do NOT spam logs with per-anchor
+    // timing" constraint). Uses the existing progress/diagnostic
+    // mechanism (console.info, matching every other `[discovery...]`
+    // summary line in this file) rather than a new sink. task_start is
+    // always 0 by construction (every other timestamp here is already
+    // ms-since-spawn/ms-since-task-start); task_end is this task
+    // attempt's own wall-clock runtime. Marks the bridge/engine never
+    // reported (e.g. a run that failed before navigation) are simply
+    // absent, not synthesized.
+    const marks = progressMarks ?? {};
+    console.info(
+      `[discovery-timing] plan=${payload.planId} task=${payload.taskId} city=${task.city} ` +
+        `country=${task.country_code} niche=${task.niche} provider=${task.source ?? "google_maps"} ` +
+        `attempt=${currentAttempt} retry_count=${currentAttempt - 1} candidates_seen=${discovered} ` +
+        `candidates_yielded=${discovered - rejected} accepted=${accepted} terminal_reason=${cityReason} ` +
+        `task_start_ms=0 python_spawn_ms=${bridgeTimings?.spawnMs?.toFixed(0) ?? "n/a"} ` +
+        `first_engine_output_ms=${bridgeTimings?.firstLineMs?.toFixed(0) ?? "n/a"} ` +
+        `maps_navigation_start_ms=${marks["discovery:maps_navigation_start"]?.toFixed(0) ?? "n/a"} ` +
+        `maps_navigation_complete_ms=${marks["discovery:maps_navigation_complete"]?.toFixed(0) ?? "n/a"} ` +
+        `panel_resolved_ms=${marks["discovery:panel_resolved"]?.toFixed(0) ?? "n/a"} ` +
+        `first_candidate_discovered_ms=${marks["discovery:candidate_discovered"]?.toFixed(0) ?? "n/a"} ` +
+        // Node-level acceptance (post validation/channel-gate/deliverLead,
+        // set at the profiler.mark("first_lead_delivered") call above) is
+        // the semantically correct "first candidate ACCEPTED" instant;
+        // the engine's own "candidate_queued" mark (survived Maps-side
+        // dedup, before Node's gates) is a fallback for a run that never
+        // reached an accepted lead, so the row still shows how far it got.
+        `first_candidate_accepted_ms=${profiler.getMarkMs("first_lead_delivered")?.toFixed(0) ?? marks["discovery:candidate_queued"]?.toFixed(0) ?? "n/a"} ` +
+        `task_end_ms=${Date.now() - startedAt}`,
+    );
+
     await recordTaskOutcome(task, { discovered, accepted, rejected, duplicates, exhausted, status: terminalReason === "USER_CANCELLED" ? "cancelled" : "completed", startedAt, completionReason, terminationReason: cityReason });
 
     // Phase 7: accumulate discovery metrics for this task into the plan's metrics row.
@@ -604,6 +655,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       delivered: accepted,
       requested: task?.candidate_budget ?? 0,
       queueWaitMs: queueWaitMs,
+      // PHASE 3C-1 STEP 2 — AUDIT FIX: printReport() has accepted these
+      // three fields since Phase 2, but nothing ever supplied them (see
+      // EngineDoneInfo.bridgeTimings's own doc comment) — they were
+      // computed in pythonBridge.ts and only ever reached a single
+      // console.log line there, never this report.
+      spawnMs: bridgeTimings?.spawnMs,
+      firstLineMs: bridgeTimings?.firstLineMs ?? undefined,
+      firstLeadMs: bridgeTimings?.firstLeadMs ?? undefined,
     });
     if (pythonPerfData) {
       console.debug(`[discoveryTask] Python perf summary attached — run_total_ms=${(pythonPerfData as any)?.run_total_ms ?? "n/a"}`);
@@ -627,6 +686,11 @@ async function recordTaskOutcome(
   },
 ) {
   const runtimeMs = Date.now() - outcome.startedAt;
+  console.info(
+    `[discovery] worker=${String(task.id).slice(0, 8)} finished plan=${task.plan_id} city=${task.city} ` +
+      `status=${outcome.status} reason=${outcome.terminationReason ?? outcome.completionReason} ` +
+      `accepted=${outcome.accepted} runtime_ms=${runtimeMs}`,
+  );
   const taskSummary = {
     discovered: outcome.discovered,
     accepted: outcome.accepted,

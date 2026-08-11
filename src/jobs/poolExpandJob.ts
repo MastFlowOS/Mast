@@ -19,6 +19,41 @@ export type PoolExpandFollowUp = {
   channels: string[];
 };
 
+/**
+ * PHASE 3A FIX: gives this followUp run a durable `discovery_plans` row to
+ * reserve deliveries against, via the SAME `claim_discovery_delivery()`
+ * atomic reservation `discovery.task` (live mode) already uses — see
+ * migrations/023_global_request_lifecycle.sql and
+ * migrations/024_pool_expand_delivery_reservation.sql.
+ *
+ * Without this, `deliverLead()` is called with no `discoveryPlanId`, so
+ * `insertLeadForUser()` skips the reservation entirely and this run's
+ * "have I delivered enough yet" check is nothing but the local `newForUser`
+ * JS variable below — which pg-boss redelivering this same job (its own
+ * fresh worker, its own fresh `newForUser` starting at 0) can race with,
+ * jointly delivering more than `payload.shortfall` actually allows.
+ *
+ * `get_or_create_pool_expand_plan()` is idempotent per `scrapeJobId`: a
+ * redelivered invocation of this same logical job gets back the SAME row
+ * (whatever `delivered_count` the first worker has already claimed), not a
+ * fresh one — so the durable cap holds across both workers, not just
+ * within one.
+ */
+async function getOrCreatePoolExpandPlanId(followUp: PoolExpandFollowUp, payload: PoolExpandJobPayload): Promise<string> {
+  const { data, error } = await (supabaseAdmin as any).rpc("get_or_create_pool_expand_plan", {
+    p_scrape_job_id: followUp.scrapeJobId,
+    p_user_id: followUp.userId,
+    p_niche: payload.niche,
+    p_region: payload.region,
+    p_channels: followUp.channels ?? [],
+    p_currencies: payload.currencies ?? [],
+    p_profession_slug: followUp.professionSlug,
+    p_requested_count: payload.shortfall,
+  });
+  if (error) throw error;
+  return data as string;
+}
+
 export type PoolExpandJobPayload = {
   region: string;
   niche: string;
@@ -70,6 +105,19 @@ export type PoolExpandJobPayload = {
  * `currencies` was provided — narrowed to countries where a discovered
  * business can realistically pay in that currency. `payload.region` is
  * still passed through to deliverLead/pool storage unchanged.
+ *
+ * PHASE 3A FIX (overshoot correctness): a followUp run used to track its
+ * remaining amount ONLY in the local `newForUser` JS variable below,
+ * compared against `payload.shortfall`. Since pg-boss can redeliver this
+ * job after its expiration window, a second worker could start the same
+ * logical work with its own fresh `newForUser` while the first was still
+ * delivering, and the two together could jointly exceed `shortfall`. Every
+ * followUp delivery is now given a `discoveryPlanId` (see
+ * getOrCreatePoolExpandPlanId() below), so it goes through the same
+ * durable, atomically-enforced `claim_discovery_delivery()` reservation
+ * `discovery.task` (live mode) already used — the local counters below
+ * remain as a same-worker fast-path exit, but the actual cap is enforced in
+ * Postgres, not in this function's memory.
  */
 // CONSUMER-POLICY FIX: see matching comment in discoverJob.ts. Same thrash —
 // killing the subprocess the instant the raw fairness `chunk` was reached
@@ -126,8 +174,19 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   // reclaim the row into a terminal state instead of leaving it stranded.
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
+  // PHASE 3A FIX: resolved once per invocation (not per lead) and handed to
+  // every deliverLead() call below via ctx.discoveryPlanId, so this run's
+  // deliveries — and any concurrently-running redelivery of the same
+  // logical job — share one durable, atomically-enforced target instead of
+  // each trusting its own local counter. Stays undefined for bare
+  // pool-growth runs (no followUp) — those have no attached user, so
+  // insertLeadForUser() never reaches the reservation check anyway.
+  let discoveryPlanId: string | undefined;
+
   try {
     if (followUp) {
+      discoveryPlanId = await getOrCreatePoolExpandPlanId(followUp, payload);
+
       const { data: existingJob } = await supabaseAdmin.from("scrape_jobs")
         .select("results_count")
         .eq("id", followUp.scrapeJobId)
@@ -245,6 +304,14 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                     scrapeJobId: followUp?.scrapeJobId ?? "",
                     dailyLimit: followUp?.dailyLimit,
                     monthlyLimit: followUp?.monthlyLimit,
+                    // PHASE 3A FIX: routes this delivery through the same
+                    // atomic claim_discovery_delivery() reservation
+                    // discovery.task (live mode) uses — see
+                    // getOrCreatePoolExpandPlanId() above. undefined for
+                    // bare pool-growth runs (no followUp), matching
+                    // insertLeadForUser()'s existing "no plan id → no
+                    // reservation" behavior.
+                    discoveryPlanId,
                   },
                   payload.region,
                 );

@@ -1389,10 +1389,19 @@ class MapsScraper:
                 # is what actually determines readiness; a raw navigation
                 # timeout here is reported as a typed failure rather than
                 # silently falling through to "no results".
+                # PHASE 3C-1 STEP 2: explicit navigation start/complete
+                # marks on the same progress protocol `panel_resolved`
+                # already uses, so a slow `maps_initial_load` (already
+                # timed by the profiler, but only visible in the Python-
+                # side __perf__ report) is also visible to the Node-side
+                # timing summary this phase adds in pythonBridge.ts /
+                # discoveryPlanJob.ts without needing to parse __perf__.
+                _emit_progress("maps_navigation_start", str(attempt))
                 try:
                     with self._profiler.timer("maps_initial_load"):
                         await page.goto(search_url, wait_until="domcontentloaded",
                                         timeout=self.config.maps_timeout_ms)
+                    _emit_progress("maps_navigation_complete", str(attempt))
                 except PlaywrightTimeoutError as exc:
                     raise DiscoveryFailure(
                         DiscoveryFailureReason.NAVIGATION_TIMEOUT,
@@ -1841,6 +1850,23 @@ class MapsScraper:
                             # yielded" below, which only fires once a place
                             # has also survived the identity guard.
                             self._profiler.mark_first_discovered_business()
+                            # PHASE 3C-1 STEP 2: mirrors the profiler mark
+                            # above onto the same stdout progress protocol
+                            # `panel_resolved`/`round_scanned` already use.
+                            # AUDIT FINDING: service.py's `_on_progress`
+                            # handler has listened for exactly the event
+                            # names "candidate_discovered"/"candidate_queued"
+                            # since before this phase (see its `_mark(...)`
+                            # calls) to populate `time_to_first_candidate_s`
+                            # / `time_to_first_accepted_s` in the __done__
+                            # perf payload — but discovery_only mode's own
+                            # MapsScraper.search() loop (this method) never
+                            # actually emitted either event, so those two
+                            # perf fields were silently always null for
+                            # every real discovery run. This is the minimal
+                            # fix: emit the events the listener already
+                            # expects, nothing new invented on either side.
+                            _emit_progress("candidate_discovered", place_key)
 
                             # Second-layer identity guard, independent of
                             # href formatting entirely (see docstring on
@@ -1870,6 +1896,15 @@ class MapsScraper:
                                 f"name={place.name!r} yielded_total={yielded + 1}"
                             )
                             self._profiler.mark_first_yielded_business()
+                            # PHASE 3C-1 STEP 2 — see the matching
+                            # "candidate_discovered" comment above. This is
+                            # the discovery_only path's own equivalent of
+                            # execution_driver.py's `_emit("discovery",
+                            # "candidate_queued", ...)` (the non-
+                            # discovery_only / production pipeline branch),
+                            # which already worked correctly — only this
+                            # branch was missing the emission.
+                            _emit_progress("candidate_queued", place_key)
                             yield place
                             yielded += 1
                         finally:

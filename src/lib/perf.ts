@@ -88,6 +88,17 @@ export class JobProfiler {
     this.marks.set(event, Date.now() - this.startMs);
   }
 
+  /**
+   * PHASE 3C-1 STEP 2: read back a previously recorded mark (ms since this
+   * profiler was constructed), or `undefined` if it was never hit this
+   * run — lets a caller fold a TS-side mark (e.g. "first_lead_delivered")
+   * into the same structured timing summary line as bridge/engine marks,
+   * without needing to track a second, parallel copy of the timestamp.
+   */
+  getMarkMs(event: string): number | undefined {
+    return this.marks.get(event);
+  }
+
   /** Store the __perf__ payload received from the Python subprocess. */
   attachPythonPerf(perf: Record<string, unknown>): void {
     this.pythonPerf = perf;

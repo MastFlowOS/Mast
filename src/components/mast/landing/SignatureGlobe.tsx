@@ -194,6 +194,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       else if (phase === "focus") glow = p < 0.1 ? p / 0.1 : p > 0.88 ? (1 - p) / 0.12 : 1;
       else if (phase === "release") glow = Math.max(0, 1 - easeInOutCubic(p) * 1.5);
 
+      const sphereR = r * zoom;
+
       // ---- soft atmospheric halo, sits just outside the sphere so the
       // globe reads clearly against the dark backdrop without becoming a
       // glowing sci-fi orb ----

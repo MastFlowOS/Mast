@@ -3,6 +3,7 @@ import type { EngineLead } from "./pythonBridge.js";
 import { applyRediscoverySuccess, CONFIDENCE_DEFAULT, VERIFICATION_INTERVAL_MS } from "../scoring/confidenceModel.js";
 import { buildFieldTrust } from "../scoring/fieldTrust.js";
 import type { Json } from "../types/database.types.js";
+import { buildDedupWasteLogFields, logDedupWasteDecision } from "../lib/dedupWasteAudit.js";
 
 export type DeliveryContext = {
   /** null for background pool.expand jobs that aren't attached to a user */
@@ -108,8 +109,37 @@ async function findExistingBusiness(fingerprints: string[]) {
  */
 export type DeliveryStage = "BUSINESS_UPSERTED" | "LEAD_INSERTED";
 
-export async function upsertBusinessFromEngineLead(lead: EngineLead, region: string, onStage?: (stage: DeliveryStage) => void) {
+export async function upsertBusinessFromEngineLead(
+  lead: EngineLead,
+  region: string,
+  onStage?: (stage: DeliveryStage) => void,
+  /**
+   * Phase 3C-4A — instrumentation only, see src/lib/dedupWasteAudit.ts.
+   * Optional so every existing call site keeps compiling unchanged; when
+   * omitted the log line simply carries scrapeJobId=null.
+   */
+  scrapeJobId?: string | null,
+) {
   const existing = await findExistingBusiness(lead.fingerprints);
+
+  // Phase 3C-4A — pure observability: logs the final duplicate decision
+  // exactly as it already stands. Never moves the check, never changes
+  // acceptance. See src/lib/dedupWasteAudit.ts for field definitions and
+  // the enrichment-completion proxy's known limitation.
+  logDedupWasteDecision(
+    buildDedupWasteLogFields({
+      scrapeJobId,
+      pipelineId: lead._pipeline_id ?? null,
+      fingerprints: lead.fingerprints,
+      existingBusiness: Boolean(existing),
+      website: lead.website,
+      instagram: lead.instagram,
+      email: lead.email,
+      phone: lead.phone,
+      emails: lead.emails,
+      phones: lead.phones,
+    }),
+  );
 
   if (existing) {
     // Phase 7: naturally turning up again in a normal search IS a
@@ -384,7 +414,7 @@ export async function deliverLead(
   businessId?: string,
   onStage?: (stage: DeliveryStage) => void,
 ): Promise<DeliveryResult> {
-  const resolvedBusinessId = businessId ?? (await upsertBusinessFromEngineLead(lead, region, onStage));
+  const resolvedBusinessId = businessId ?? (await upsertBusinessFromEngineLead(lead, region, onStage, ctx.scrapeJobId));
 
   return insertLeadForUser(
     {

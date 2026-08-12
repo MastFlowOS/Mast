@@ -194,15 +194,31 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       else if (phase === "focus") glow = p < 0.1 ? p / 0.1 : p > 0.88 ? (1 - p) / 0.12 : 1;
       else if (phase === "release") glow = Math.max(0, 1 - easeInOutCubic(p) * 1.5);
 
-      // ---- backdrop sphere shading — kept subtle/matte, not a glowing orb ----
-      const sphereR = r * zoom;
+      // ---- soft atmospheric halo, sits just outside the sphere so the
+      // globe reads clearly against the dark backdrop without becoming a
+      // glowing sci-fi orb ----
+      const haloR = sphereR * 1.55;
+      const halo = ctx.createRadialGradient(
+        cx, ecy, sphereR * 0.85,
+        cx, ecy, haloR,
+      );
+      halo.addColorStop(0, "rgba(91, 118, 184, 0.16)");
+      halo.addColorStop(1, "rgba(91, 118, 184, 0)");
+      ctx.beginPath();
+      ctx.arc(cx, ecy, haloR, 0, Math.PI * 2);
+      ctx.fillStyle = halo;
+      ctx.fill();
+
+      // ---- backdrop sphere shading — brighter/deeper so the dotted globe
+      // clearly reads against the near-black page, while staying matte
+      // rather than a glowing orb ----
       const bg = ctx.createRadialGradient(
         cx - sphereR * 0.35, ecy - sphereR * 0.4, sphereR * 0.1,
         cx, ecy, sphereR * 1.05,
       );
-      bg.addColorStop(0, "rgba(58, 68, 116, 0.22)");
-      bg.addColorStop(0.55, "rgba(16, 19, 48, 0.40)");
-      bg.addColorStop(1, "rgba(3, 4, 20, 0.04)");
+      bg.addColorStop(0, "rgba(94, 111, 176, 0.42)");
+      bg.addColorStop(0.55, "rgba(40, 48, 96, 0.55)");
+      bg.addColorStop(1, "rgba(10, 12, 34, 0.18)");
       ctx.beginPath();
       ctx.arc(cx, ecy, sphereR, 0, Math.PI * 2);
       ctx.fillStyle = bg;
@@ -226,7 +242,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         const alpha = Math.max(0, Math.min(1, pr.z)) * 0.65 + 0.05;
         ctx.beginPath();
         ctx.arc(pr.sx, pr.sy, 1.05, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(196, 204, 240, ${alpha * 0.4})`;
+        ctx.fillStyle = `rgba(210, 217, 245, ${alpha * 0.85})`;
         ctx.fill();
       }
 

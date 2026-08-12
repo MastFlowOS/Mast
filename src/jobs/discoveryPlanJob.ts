@@ -396,7 +396,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
       // Persist and schedule slow work first.
       const tUpsert = profiler.timer("business_upsert");
-      const businessId = await upsertBusinessFromEngineLead(lead, payload.request.region);
+      const businessId = await upsertBusinessFromEngineLead(lead, payload.request.region, undefined, payload.request.scrapeJobId);
       tUpsert.end();
       if (requestAbort.signal.aborted) break outer;
       console.log(`BUSINESS_UPSERTED businessId=${businessId}`);

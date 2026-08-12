@@ -84,16 +84,10 @@ function Hero() {
       <div className="relative max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">
-          {/* Pill Badge */}
-          <div className="animate-fade-up inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[var(--landing-blue-tint)] border border-[var(--landing-blue-border)] text-[var(--landing-blue-bright)] text-[10px] font-bold tracking-wider uppercase mb-6 shadow-[0_0_20px_-8px_var(--landing-blue)]">
-            <span className="relative size-1.5 rounded-full bg-[var(--landing-blue-bright)] ping-dot" />
-            The AI Sales Operating System
-          </div>
-
           {/* Heading */}
-          <h1 className="animate-fade-up delay-100 text-[clamp(1.9rem,4.5vw,3.1rem)] font-extrabold text-foreground tracking-tight mb-5 leading-[1.08]">
+          <h1 className="animate-fade-up delay-100 text-[clamp(1.9rem,4.5vw,3.1rem)] font-extrabold text-foreground tracking-tight mb-5 leading-[1.1]">
             Stop switching tabs.<br />
-            Start <span className="font-serif italic font-normal text-brand text-glow-gold">closing</span> deals.
+            Start closing deals.
           </h1>
 
           {/* Subtext */}

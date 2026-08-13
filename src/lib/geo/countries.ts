@@ -35,6 +35,17 @@
  * ("Target crashed"). Each country now lists its 3 largest
  * Maps-searchable cities; CountryRotation cycles through them one at a
  * time before ever marking the whole country exhausted.
+ *
+ * GEOGRAPHIC SCOPE, TERMINOLOGY: `region`/`country` is the user-facing
+ * request scope — continent today (see resolveCountriesForSelection in
+ * ./regions.ts), country in the future. `city` (`majorCities`) is an
+ * INTERNAL discovery work unit only — it is never a product-level
+ * geographic selector, has no request-schema field, and is not something a
+ * caller picks. A single country-scoped request intentionally expands into
+ * multiple internal city discovery_tasks (see planner.ts's
+ * materializeDiscoveryPlan doc comment) that all share one plan-level
+ * target — that fan-out is the intended distribution strategy, not scope
+ * creep.
  */
 
 export type IncomeTier = "high" | "upper_middle" | "lower_middle" | "low";

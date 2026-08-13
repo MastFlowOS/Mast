@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { getBoss, QUEUES } from "../lib/queue.js";
 import { resolveCountriesForSelection } from "../lib/geo/regions.js";
+import type { CountryInfo } from "../lib/geo/countries.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { getPlan, getPlanConcurrency, type PlanId } from "../config/plans.js";
 import { env } from "../config/env.js";
@@ -11,6 +12,13 @@ export type DiscoveryPlanRequest = {
   scrapeJobId: string;
   userId: string;
   planId?: string;       // resolved plan tier id (e.g. "pro") — optional, used for priority banding
+  /**
+   * The user's geographic scope selection — continent today (e.g. "North
+   * America"), country in the future. This is the ONLY geographic input a
+   * caller provides. There is no city-level request field: city is an
+   * internal discovery work unit, never a product-level selector. See
+   * materializeDiscoveryPlan()'s doc comment for the full architecture.
+   */
   region: string;
   niche: string;
   channels: string[];
@@ -142,14 +150,42 @@ export function computeCandidateBudget(quantity: number, cityYield: number | und
 }
 
 /**
- * Expands a plan to separate city work units.  Historical acceptance rate and
- * recency decide city order, with a plan-id tie breaker to keep neighbouring
- * plans geographically distributed instead of repeatedly hammering a capital.
+ * GEOGRAPHIC ARCHITECTURE (see DiscoveryPlanRequest.region doc comment):
+ *
+ *     user's region/country scope
+ *       → resolveCountriesForSelection() picks matching countries
+ *       → EVERY resolved country expands into its internal major-city
+ *         discovery_tasks (New York, Los Angeles, Chicago, ... for the US)
+ *
+ * `city` is NEVER a user-facing request field — it is an internal
+ * discovery work unit that `discovery_tasks` rows represent. A US-scoped
+ * request producing New York + Los Angeles + Chicago tasks under one plan
+ * is the INTENDED distribution strategy, not scope creep: all tasks under
+ * a plan share the same plan-level `requested_count` target
+ * (discovery_plans.requested_count), and multiple cities legitimately
+ * contribute toward it — e.g. New York delivering 8 and Los Angeles
+ * delivering 2 for a requested_count=10 plan correctly reaches 10/10 and
+ * stops every remaining task for that plan (see dispatchQueuedDiscoveryTasks
+ * / claim_discovery_delivery()). There is no per-city sub-target.
+ *
+ * `resolveDiscoveryTargets()` is the pure (DB-free) piece of this
+ * expansion — region → countries → (country, city) work units — kept
+ * separate from materializeDiscoveryPlan() so it's directly unit-testable
+ * (see geographicScope.test.ts).
  */
-export async function materializeDiscoveryPlan(planId: string, request: DiscoveryPlanRequest): Promise<void> {
+export type DiscoveryScopeTarget = { country: CountryInfo; city: string };
+
+export function resolveDiscoveryTargets(
+  request: Pick<DiscoveryPlanRequest, "region" | "currencies">,
+): DiscoveryScopeTarget[] {
   const countries = resolveCountriesForSelection(request.region, { currencies: request.currencies });
+  return countries.flatMap((country) => country.majorCities.map((city) => ({ country, city })));
+}
+
+export async function materializeDiscoveryPlan(planId: string, request: DiscoveryPlanRequest): Promise<void> {
+  const scopeTargets = resolveDiscoveryTargets(request);
   const niches = splitNicheQuery(request.niche);
-  if (!countries.length || !niches.length) throw new Error("Discovery plan has no searchable country or niche");
+  if (!scopeTargets.length || !niches.length) throw new Error("Discovery plan has no searchable country or niche");
 
   const { data: historical } = await db
     .from("discovery_location_stats")
@@ -159,7 +195,7 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
   const stats = new Map<string, LocationStat>();
   for (const row of (historical ?? []) as LocationStat[]) stats.set(`${row.country_code}:${row.city}`, row);
 
-  const targets = countries.flatMap((country) => country.majorCities.map((city) => ({ country, city })))
+  const targets = [...scopeTargets]
     .sort((a, b) => {
       const sa = stats.get(`${a.country.code}:${a.city}`);
       const sb = stats.get(`${b.country.code}:${b.city}`);

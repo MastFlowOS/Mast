@@ -15,6 +15,7 @@ Run: python3 validate_overpass_provider.py
 from __future__ import annotations
 
 import sys
+from urllib.parse import urlencode
 
 from engine.contracts import BusinessCandidate
 from engine.interfaces import DiscoveryProviderInterface
@@ -22,6 +23,7 @@ from providers.overpass_provider import (
     OverpassDiscoveryRequest,
     OverpassProvider,
     _build_ql,
+    _http_post_urllib,
 )
 
 _FAILURES: list[str] = []
@@ -235,6 +237,125 @@ check(
         for marker in ("NICHE_TAG_MAP", "_NICHE_TO_TAG", "niche_to_tag", "TAXONOMY")
     ),
 )
+
+# ---------------------------------------------------------------------------
+# 9. Default HTTP transport (_http_post_urllib) — 406 fix
+#
+# discover() itself is untouched (still builds only
+# {"Content-Type": "application/x-www-form-urlencoded"} and passes it
+# through) — these checks are against the *default transport*
+# specifically, since that's where the explicit Accept/User-Agent
+# headers were added. No real network call is made: urlopen() is
+# monkeypatched to capture the urllib.request.Request object that
+# would have been sent and to hand back a canned response, so this
+# stays consistent with the rest of this suite's "no network access"
+# convention.
+# ---------------------------------------------------------------------------
+import urllib.request as _urllib_request
+from unittest.mock import patch, MagicMock
+
+# overpass_provider.py does `from urllib.request import Request, urlopen`,
+# so the name to patch is providers.overpass_provider.urlopen (the bound
+# reference the module actually calls), not urllib.request.urlopen.
+import providers.overpass_provider as _overpass_module
+
+_captured_requests: list = []
+
+
+class _FakeHTTPResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self) -> "_FakeHTTPResponse":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+
+def _fake_urlopen(request: object, timeout: int | None = None) -> _FakeHTTPResponse:
+    _captured_requests.append(request)
+    return _FakeHTTPResponse(b'{"elements": []}')
+
+
+with patch.object(_overpass_module, "urlopen", side_effect=_fake_urlopen):
+    result = _http_post_urllib(
+        "https://overpass-api.de/api/interpreter",
+        '[out:json][timeout:25];\n(\n  node["amenity"="cafe"];\n);\nout center;',
+        {"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+check("_http_post_urllib made exactly one request", len(_captured_requests) == 1)
+sent_request = _captured_requests[0]
+
+check(
+    "1. request carries an explicit, non-empty User-Agent header",
+    bool(sent_request.get_header("User-agent")),
+)
+check(
+    "1. User-Agent is not urllib's bare default (which triggers the 406)",
+    "python-urllib" not in sent_request.get_header("User-agent", "").lower(),
+)
+check(
+    "2. request carries an explicit Accept header",
+    sent_request.get_header("Accept") == "application/json",
+)
+check(
+    "3. existing Content-Type is preserved unchanged",
+    sent_request.get_header("Content-type") == "application/x-www-form-urlencoded",
+)
+check(
+    "4. POST body/query is byte-for-byte unchanged (still urlencode({'data': query}))",
+    sent_request.data
+    == urlencode(
+        {
+            "data": '[out:json][timeout:25];\n(\n  node["amenity"="cafe"];\n);\nout center;'
+        }
+    ).encode("utf-8"),
+)
+check("4. request method is still POST", sent_request.get_method() == "POST")
+check(
+    "4. request URL/endpoint is unchanged",
+    sent_request.full_url == "https://overpass-api.de/api/interpreter",
+)
+check(
+    "5. response handling unchanged — JSON body still parsed and returned",
+    result == {"elements": []},
+)
+
+
+def _fake_urlopen_406(request: object, timeout: int | None = None) -> None:
+    from urllib.error import HTTPError
+
+    raise HTTPError(request.full_url, 406, "Not Acceptable", {}, None)
+
+
+with patch.object(_overpass_module, "urlopen", side_effect=_fake_urlopen_406):
+    try:
+        _http_post_urllib(
+            "https://overpass-api.de/api/interpreter", "query", {"Content-Type": "x"}
+        )
+        check("5. non-2xx responses still propagate as HTTPError, unchanged", False)
+    except _urllib_request.HTTPError as exc:
+        check(
+            "5. non-2xx responses still propagate as HTTPError, unchanged",
+            exc.code == 406,
+        )
+
+with patch.object(_overpass_module, "urlopen", side_effect=_fake_urlopen):
+    _captured_requests.clear()
+    _http_post_urllib(
+        "https://overpass-api.de/api/interpreter",
+        "q",
+        {"Content-Type": "application/x-www-form-urlencoded", "Accept": "text/plain"},
+    )
+    check(
+        "caller-supplied Accept overrides the transport default when explicitly set",
+        _captured_requests[0].get_header("Accept") == "text/plain",
+    )
 
 print()
 if _FAILURES:

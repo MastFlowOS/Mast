@@ -373,6 +373,27 @@ class OverpassDiscoveryRequest:
             )
 
 
+_DEFAULT_TRANSPORT_HEADERS: dict[str, str] = {
+    # overpass-api.de's current front-end filtering rejects requests
+    # that omit an explicit Accept header and/or arrive with urllib's
+    # own bare default User-Agent ("Python-urllib/3.x") — both read as
+    # "programmatic, non-negotiating client" and are answered with
+    # HTTP 406 Not Acceptable before the query itself is ever
+    # evaluated. Neither header changes the request body, the query,
+    # or the endpoint; they only state, honestly, what this client is
+    # and what response format it wants:
+    #   - Accept: application/json — matches this provider's own
+    #     `[out:json]` query header (see _build_ql) and the response
+    #     shape discover() already parses via json.loads().
+    #   - User-Agent: identifies this codebase's Overpass client by
+    #     name, not a spoofed/borrowed browser string — Overpass's own
+    #     documentation asks API consumers to send a real,
+    #     identifying User-Agent rather than a generic/absent one.
+    "Accept": "application/json",
+    "User-Agent": "mast-lead-engine-overpass-provider/1.0",
+}
+
+
 def _http_post_urllib(url: str, data: str, headers: dict[str, str]) -> dict[str, Any]:
     """
     Default transport: a plain stdlib POST of the Overpass QL query
@@ -382,9 +403,19 @@ def _http_post_urllib(url: str, data: str, headers: dict[str, str]) -> dict[str,
     network failure — propagated unchanged, same "provider failures
     stay isolated to the provider, but are never hidden from the
     caller" rule the other three providers all follow.
+
+    Headers sent are `_DEFAULT_TRANSPORT_HEADERS` (explicit `Accept`
+    and `User-Agent` — see that mapping's own comment for why) merged
+    with `headers` (the caller/discover()-supplied headers, e.g.
+    `Content-Type`), with `headers` taking precedence on any key both
+    define — this changes nothing about what `discover()` already
+    sends (still exactly `Content-Type: application/x-www-form-urlencoded`),
+    it only fills in the two headers neither `discover()` nor any
+    caller has ever set.
     """
+    request_headers = {**_DEFAULT_TRANSPORT_HEADERS, **headers}
     body = urlencode({"data": data}).encode("utf-8")
-    request = Request(url, data=body, headers=headers, method="POST")
+    request = Request(url, data=body, headers=request_headers, method="POST")
     with urlopen(request, timeout=60) as response:
         return json.loads(response.read().decode("utf-8"))
 

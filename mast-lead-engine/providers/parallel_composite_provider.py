@@ -285,7 +285,7 @@ from __future__ import annotations
 import queue
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 from engine.contracts import BusinessCandidate
 from engine.interfaces import DiscoveryProviderInterface
@@ -375,6 +375,7 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
         provider_id: str = "parallel_composite",
         display_name: str = "Parallel Composite",
         continue_on_provider_error: bool = False,
+        on_provider_error: Optional[Callable[[str, BaseException], None]] = None,
     ) -> None:
         """
         `providers` — an arbitrary collection of already-constructed
@@ -393,6 +394,16 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
         handling". Defaults to False (strict propagation, matching
         every existing provider's and CompositeDiscoveryProvider's
         default behaviour exactly).
+
+        `on_provider_error` — optional callback invoked with
+        `(provider_id, exc)` the moment a `_ProviderError` is observed
+        by the consumer loop, in *both* error modes (strict and
+        best-effort) — this is purely an observability hook ("log the
+        provider failure") and never changes which mode is active or
+        which candidates get yielded. `None` (the default) means no
+        callback is invoked. Exceptions raised by the callback itself
+        are not caught — a caller-supplied logger that itself raises
+        is a caller bug, not something this file should hide.
 
         Raises ValueError if `providers` is empty or contains duplicate
         provider_id values — identical validation to
@@ -420,6 +431,7 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
         self._provider_id = provider_id
         self._display_name = display_name
         self._continue_on_provider_error = continue_on_provider_error
+        self._on_provider_error = on_provider_error
 
     @property
     def provider_id(self) -> str:
@@ -468,7 +480,11 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
         providers ahead of that failure in arrival order are yielded
         first. When `continue_on_provider_error=True`, a failing
         provider is dropped and every other provider's candidates
-        continue streaming.
+        continue streaming. In both modes, `on_provider_error` (if
+        given) is invoked with `(provider_id, exc)` the moment the
+        failure is observed, purely for logging/observability — it
+        never changes which candidates are yielded or which mode is
+        active.
 
         Guarantees clean shutdown in every exit path (normal
         exhaustion, propagated error, or early termination by the
@@ -511,6 +527,8 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
                     remaining.discard(item.provider_id)
                 elif isinstance(item, _ProviderError):
                     remaining.discard(item.provider_id)
+                    if self._on_provider_error is not None:
+                        self._on_provider_error(item.provider_id, item.exc)
                     if not self._continue_on_provider_error:
                         raise item.exc
                     # Best-effort mode: this provider's failure is

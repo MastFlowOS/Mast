@@ -233,6 +233,156 @@ class TestProviderFailureIsolation:
         names = {c.name for c in results}
         assert "Good1" in names and "Good2" in names
 
+    def test_on_provider_error_callback_fires_in_best_effort_mode(self):
+        good = _ListProvider("good", [_candidate(name="Good1")])
+        bad = _ListProvider("bad", [_candidate(name="Bad1")], fail_after=0)
+        seen: list[tuple[str, BaseException]] = []
+        composite = ParallelCompositeDiscoveryProvider(
+            [good, bad],
+            continue_on_provider_error=True,
+            on_provider_error=lambda pid, exc: seen.append((pid, exc)),
+        )
+        list(composite.discover(ParallelDiscoveryRequest(requests={"good": None, "bad": None})))
+        assert len(seen) == 1
+        assert seen[0][0] == "bad"
+        assert isinstance(seen[0][1], RuntimeError)
+
+    def test_on_provider_error_callback_fires_in_strict_mode_before_raising(self):
+        bad = _ListProvider("bad", [_candidate(name="Bad1")], fail_after=0)
+        seen: list[str] = []
+        composite = ParallelCompositeDiscoveryProvider(
+            [bad], on_provider_error=lambda pid, exc: seen.append(pid)
+        )
+        with pytest.raises(RuntimeError):
+            list(composite.discover(ParallelDiscoveryRequest(requests={"bad": None})))
+        assert seen == ["bad"]
+
+    def test_strict_mode_still_propagates_by_default(self):
+        # Regression guard: continue_on_provider_error's default (False)
+        # must remain unchanged by this phase.
+        good = _ListProvider("good", [_candidate(name="Good1")])
+        bad = _ListProvider("bad", [_candidate(name="Bad1")], fail_after=0)
+        composite = ParallelCompositeDiscoveryProvider([good, bad])
+        with pytest.raises(RuntimeError):
+            list(
+                composite.discover(
+                    ParallelDiscoveryRequest(requests={"good": None, "bad": None})
+                )
+            )
+
+    def test_healthy_candidates_already_emitted_remain_valid_after_later_failure(self):
+        # Test B: a healthy provider emits candidates *before* another
+        # provider fails; those already-yielded candidates must not be
+        # retracted, and the healthy provider must keep streaming
+        # afterward.
+        started = threading.Event()
+        good = _ListProvider(
+            "good",
+            [_candidate(name=f"Good{i}") for i in range(5)],
+            delay_s=0.02,
+        )
+        bad = _ListProvider("bad", [_candidate(name="Bad1")], fail_after=0)
+        composite = ParallelCompositeDiscoveryProvider(
+            [good, bad], continue_on_provider_error=True
+        )
+
+        results = []
+        for c in composite.discover(
+            ParallelDiscoveryRequest(requests={"good": None, "bad": None})
+        ):
+            results.append(c)
+        names = {c.name for c in results}
+        assert names == {f"Good{i}" for i in range(5)}
+
+    def test_all_providers_failing_yields_nothing_and_raises_nothing(self):
+        # Test C: with continue_on_provider_error=True, if every
+        # provider fails, the composite must degrade to an empty,
+        # cleanly-exhausted stream (existing "no candidates" semantics)
+        # rather than swallowing the failure into a false success or
+        # deadlocking.
+        bad_a = _ListProvider("a", [_candidate(name="A1")], fail_after=0)
+        bad_b = _ListProvider("b", [_candidate(name="B1")], fail_after=0)
+        composite = ParallelCompositeDiscoveryProvider(
+            [bad_a, bad_b], continue_on_provider_error=True
+        )
+        results = list(
+            composite.discover(ParallelDiscoveryRequest(requests={"a": None, "b": None}))
+        )
+        assert results == []
+
+    def test_target_reached_cancels_remaining_after_one_provider_already_failed(self):
+        # Test D: global target enforcement still works correctly when
+        # one provider has already failed and only a healthy provider
+        # remains active.
+        bad = _ListProvider("bad", [_candidate(name="Bad1")], fail_after=0)
+        good = _ListProvider(
+            "good", [_candidate(name=f"G{i}") for i in range(50)], delay_s=0.005
+        )
+        composite = ParallelCompositeDiscoveryProvider(
+            [bad, good], continue_on_provider_error=True
+        )
+        accepted = 0
+        target = 5
+
+        def _should_stop() -> bool:
+            return accepted >= target
+
+        wrapped = TargetAwareDiscoveryProvider(composite, should_stop=_should_stop)
+        results = []
+        for candidate in wrapped.discover(
+            ParallelDiscoveryRequest(requests={"bad": None, "good": None})
+        ):
+            results.append(candidate)
+            accepted += 1
+            if accepted >= target:
+                break
+        assert accepted == target
+        time.sleep(0.2)
+        assert good.finished_at is None
+
+    def test_cancellation_stops_remaining_after_one_provider_already_failed(self):
+        # Test E: user cancellation (should_stop) still stops every
+        # still-running provider even when another provider already
+        # failed earlier.
+        bad = _ListProvider("bad", [_candidate(name="Bad1")], fail_after=0)
+        good = _ListProvider("good", [_candidate(name="G1")], delay_s=0.05)
+        composite = ParallelCompositeDiscoveryProvider(
+            [bad, good], continue_on_provider_error=True
+        )
+        wrapped = TargetAwareDiscoveryProvider(composite, should_stop=lambda: True)
+        results = list(
+            wrapped.discover(ParallelDiscoveryRequest(requests={"bad": None, "good": None}))
+        )
+        assert results == []
+
+    def test_failure_isolation_does_not_bypass_deduplication(self):
+        # Test G: a failing provider running alongside providers that
+        # yield genuine cross-provider duplicates must not let those
+        # duplicates slip past ProviderDeduplicator.
+        joes_a = _candidate(
+            provider="google_maps", name="Joe's Coffee",
+            website="https://joescoffee.example.com", phone="555-0100",
+        )
+        joes_b = _candidate(
+            provider="yelp", name="Joe's Coffee",
+            website="https://joescoffee.example.com", phone="555-0100",
+        )
+        provider_a = _ListProvider("google_maps", [joes_a])
+        provider_b = _ListProvider("yelp", [joes_b])
+        bad = _ListProvider("bad", [_candidate(name="Bad1")], fail_after=0)
+        composite = ParallelCompositeDiscoveryProvider(
+            [provider_a, provider_b, bad], continue_on_provider_error=True
+        )
+        deduped = ProviderDeduplicator(composite)
+        results = list(
+            deduped.discover(
+                ParallelDiscoveryRequest(
+                    requests={"google_maps": None, "yelp": None, "bad": None}
+                )
+            )
+        )
+        assert len(results) == 1
+
 
 # ---------------------------------------------------------------------------
 # Test E — Cross-provider duplicate: one candidate, one accepted
@@ -457,3 +607,68 @@ class TestComposeDiscoveryNoCredentials:
         )
         assert composed.selected_provider_ids == ("google_maps",)
         assert composed.request.city == "Austin"
+
+
+# ---------------------------------------------------------------------------
+# Provider Failure Isolation phase — composition-root wiring.
+#
+# Regression guard for the Railway production bug this phase fixes:
+# Google Maps produced valid candidates, Overpass raised
+# "HTTP Error 406: Not Acceptable", and that single auxiliary-provider
+# failure previously propagated, uncaught, all the way out of
+# `compose_discovery()`'s composed provider — turning a partial success
+# (Google's candidates) into `delivered=0`. These tests confirm the
+# composition root now wires `ParallelCompositeDiscoveryProvider` with
+# `continue_on_provider_error=True` (and a logging hook) whenever more
+# than one provider is selected, instead of asserting on live network
+# behaviour.
+# ---------------------------------------------------------------------------
+class TestComposeDiscoveryFailureIsolationWiring:
+    def test_multi_provider_composition_enables_continue_on_provider_error(
+        self, monkeypatch
+    ):
+        for env_var in (
+            "YELP_API_KEY", "APPLE_MAPS_ACCESS_TOKEN", "FOURSQUARE_API_KEY",
+            "AZURE_MAPS_SUBSCRIPTION_KEY", "CRUNCHBASE_API_KEY", "APOLLO_API_KEY",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+
+        captured: dict[str, Any] = {}
+        import providers.discovery_composition as discovery_composition_module
+
+        real_cls = discovery_composition_module.ParallelCompositeDiscoveryProvider
+
+        class _CapturingParallelComposite(real_cls):
+            def __init__(self, providers, **kwargs):
+                captured.update(kwargs)
+                super().__init__(providers, **kwargs)
+
+        monkeypatch.setattr(
+            discovery_composition_module,
+            "ParallelCompositeDiscoveryProvider",
+            _CapturingParallelComposite,
+        )
+
+        composed = compose_discovery(
+            session_id="s1", query="coffee shop", city="Austin",
+            country="US", niche="coffee_shop", max_results=10,
+        )
+
+        # Two providers selected (google_maps, overpass — see
+        # TestComposeDiscoveryNoCredentials above) so the parallel
+        # composite path, not the single-provider bare path, is taken.
+        assert set(composed.selected_provider_ids) == {"google_maps", "overpass"}
+        assert captured.get("continue_on_provider_error") is True
+        assert callable(captured.get("on_provider_error"))
+
+    def test_log_provider_error_helper_logs_a_warning(self, caplog):
+        import logging
+
+        from providers.discovery_composition import _log_provider_error
+
+        with caplog.at_level(logging.WARNING, logger="providers.discovery_composition"):
+            _log_provider_error("overpass", ValueError("HTTP Error 406: Not Acceptable"))
+        assert any(
+            "overpass" in record.getMessage() and "406" in record.getMessage()
+            for record in caplog.records
+        )

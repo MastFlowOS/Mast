@@ -42,6 +42,27 @@ Pipeline, in order:
        cross-provider dedup + no double-enrichment, all inherited
        unmodified from the existing provider layer — see those
        modules' own docstrings).
+
+       Provider-failure isolation (Provider Failure Isolation phase):
+       when more than one provider is selected, the
+       `ParallelCompositeDiscoveryProvider` here is constructed with
+       `continue_on_provider_error=True` (diverging from that class's
+       own strict `False` default) plus `on_provider_error=
+       _log_provider_error`. This is a deliberate, composition-root-
+       only policy choice, not a change to
+       `ParallelCompositeDiscoveryProvider` itself (still defaults to
+       strict elsewhere): a single auxiliary provider failing (e.g.
+       Overpass returning HTTP 406) is logged and isolated rather than
+       aborting the whole discovery stage, while candidates already
+       produced by every healthy provider (e.g. Google Maps) keep
+       flowing. If every selected provider fails, the composite's
+       queue still empties with no candidates ever yielded — that
+       degrades to `DiscoveryWorker` seeing a normally-exhausted
+       (empty) provider, which is genuine discovery failure/exhaustion
+       surfacing through existing semantics, not hidden. The
+       single-provider case above is unaffected: with nothing to
+       isolate *from*, that provider's own failure still propagates
+       exactly as it always has.
     7. Wrap the result in `TargetAwareDiscoveryProvider` (Step 7 —
        providers/target_aware_provider.py) so target-reached /
        shutdown-requested cancellation reaches every active provider,
@@ -93,6 +114,24 @@ from providers.provider_selection import DEFAULT_ENTITY_TYPES, select_relevant_p
 from providers.target_aware_provider import TargetAwareDiscoveryProvider
 
 log = logging.getLogger(__name__)
+
+
+def _log_provider_error(provider_id: str, exc: BaseException) -> None:
+    """
+    `on_provider_error` callback handed to `ParallelCompositeDiscoveryProvider`
+    (see Composition rule 6, below). Logs the isolated provider failure
+    at composition-root observability granularity — one line per
+    failure, matching the "[provider] ..." log lines already emitted
+    during selection above — and does nothing else: this is a pure
+    observability hook, not a retry/failover mechanism (out of scope,
+    per parallel_composite_provider.py's own module docstring).
+    """
+    log.warning(
+        "[provider] %s failed during discovery, isolated: %s: %s",
+        provider_id,
+        type(exc).__name__,
+        exc,
+    )
 
 
 class NoRelevantProviderError(RuntimeError):
@@ -227,7 +266,11 @@ def compose_discovery(
         composed_provider = instances[0]
     else:
         composed_provider = ProviderDeduplicator(
-            ParallelCompositeDiscoveryProvider(instances)
+            ParallelCompositeDiscoveryProvider(
+                instances,
+                continue_on_provider_error=True,
+                on_provider_error=_log_provider_error,
+            )
         )
     composed_provider = TargetAwareDiscoveryProvider(
         composed_provider, should_stop=should_stop

@@ -8,7 +8,7 @@ import { handleDiscoveryPlanJob, handleDiscoveryTask, type DiscoveryPlanPayload,
 import { handleBusinessProcessingJob, type BusinessProcessingPayload } from "../jobs/businessProcessingJob.js";
 import { sweepStaleScrapeJobs } from "../jobs/staleScrapeJobSweep.js";
 import { env } from "../config/env.js";
-import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance } from "../lib/workerCapacity.js";
+import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance, initBrowserSlotPool } from "../lib/workerCapacity.js";
 import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
 
 // Ensure the provider registry is initialised at startup so any
@@ -58,6 +58,22 @@ async function main() {
   // batchSize on browser-backed queues.
   const browserCapacity = measureBrowserCapacity(env.DISCOVERY_TASK_CONCURRENCY);
   await registerWorkerInstance(browserCapacity, "browser");
+
+  // ── Worker Pools B: nested-concurrency browser slot pool ────────────────
+  // Sized to `browserSlots` (the raw memory-derived ceiling), NOT
+  // `effectiveConcurrency` (which is additionally capped by
+  // DISCOVERY_TASK_CONCURRENCY — a task-count fairness knob, not a memory
+  // fact). Every actual Google browser launch — whether from the legacy
+  // single-search path or from a Google area-pool worker — acquires one
+  // slot from this pool before spawning, so the real ceiling on
+  // concurrently running Chromium processes in this worker is always the
+  // measured memory budget, regardless of how many discovery_tasks or
+  // in-task area workers are trying to run at once.
+  const browserSlotPool = initBrowserSlotPool(browserCapacity.browserSlots);
+  console.log(
+    `[worker] google-area-pool capacity browserSlots=${browserSlotPool.capacity} ` +
+      `configuredGoogleAreaWorkers=${env.GOOGLE_MAPS_AREA_WORKERS}`,
+  );
 
   // Heartbeat the worker_instances row every 30 seconds so the ops dashboard
   // has a live view of actual capacity across the fleet.

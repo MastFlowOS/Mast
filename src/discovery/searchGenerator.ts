@@ -20,6 +20,16 @@ export type SearchTarget = {
   city: string;
   countryCode: string;
   region: string;
+  /**
+   * Optional curated sub-area within `city` (Phase 3C-4C-B geographic
+   * rotation — see src/lib/geo/cityAreas.ts). When present, providers that
+   * support a location qualifier should fold it into the query so repeated
+   * searches progressively cover different parts of the city instead of
+   * repeatedly resolving to the same Maps result cluster. Absent for the
+   * (large majority of) cities with no curated area list — those keep
+   * generating the exact same query they always have.
+   */
+  area?: string;
 };
 
 export type SearchQuery = {

@@ -162,6 +162,24 @@ const EnvSchema = z.object({
   // capacity calculator doesn't allocate every last MB to browser slots.
   WORKER_MEMORY_RESERVE_MB: z.coerce.number().int().min(64).default(256),
 
+  // GOOGLE MAPS AREA WORKER POOL (Worker Pools B) — how many concurrent
+  // Google Maps area workers a SINGLE discovery task may fan out to for a
+  // city that has a curated area list (src/lib/geo/cityAreas.ts). This is
+  // deliberately Google-only and deliberately separate from
+  // DISCOVERY_TASK_CONCURRENCY above, which bounds how many discovery_tasks
+  // this worker process pulls at once — not how many browsers ONE task can
+  // itself spawn.
+  //
+  // Conservative default of 1 (today's behavior — one browser per task,
+  // unchanged) until deliberately raised. The B-0 audit found no existing
+  // evidence in this codebase for a higher safe default, and the capacity
+  // model (workerCapacity.ts's browserSlotPool) is what actually prevents
+  // OOM once this is raised — the config ceiling alone is not a safety
+  // mechanism, just an intent. Bounded at 8 as a sanity ceiling; the real,
+  // memory-aware ceiling is enforced at runtime by browserSlotPool, not by
+  // this max().
+  GOOGLE_MAPS_AREA_WORKERS: z.coerce.number().int().min(1).max(8).default(1),
+
   // PHASE 8 — AI Opportunity Intelligence (Executive Briefings, Weekly
   // Intelligence, Opportunity Insights, Pipeline Coaching). Optional: if
   // unset, /v1/intelligence's AI-backed endpoints return 503 rather than

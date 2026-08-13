@@ -28,6 +28,7 @@ import os from "node:os";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 import { env } from "../config/env.js";
 import { workerMetrics } from "./observability.js";
+export { type BrowserSlotPool, createBrowserSlotPool, initBrowserSlotPool, getBrowserSlotPool, acquireBrowserSlotBlocking, __testing_browserSlotPool as __testing_workerCapacity } from "./browserSlotPool.js";
 
 export type WorkerPoolType = "browser" | "light_compute" | "ai";
 

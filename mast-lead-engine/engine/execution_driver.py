@@ -279,6 +279,13 @@ from workers.website_worker import WebsiteWorker
 from workers.worker_capability import WorkerCapability
 from workers.worker_definition import WorkerDefinition
 from utils.runtime import get_logger
+from storage.early_persistent_dedup import (
+    EarlyDedupDecision,
+    PersistentEarlyDedupChecker,
+    maps_place_id_from_keys,
+    early_fingerprint_keys,
+    log_early_dedup_decision,
+)
 
 log = get_logger("engine.execution_driver")
 
@@ -800,6 +807,20 @@ def build_seven_stage_pipeline(
     storage_worker_factory: Optional[Callable[[], BaseWorker]] = None,
     instance_counts: Optional[Dict[str, int]] = None,
     on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None,
+    # Phase 3C-4B — early persistent dedup, before enrichment. Optional and
+    # constructor-injected (same pattern storage_backend already uses):
+    # omitting it (the default) means every candidate simply falls through
+    # to enrichment exactly as it did before this phase existed — no
+    # caller is forced to configure Supabase access just to keep
+    # compiling/testing. See storage/early_persistent_dedup.py for what
+    # this checks and why it's safe to skip.
+    early_dedup_checker: Optional[PersistentEarlyDedupChecker] = None,
+    # Instrumentation-only, mirrors deliverLead.ts's own optional
+    # scrapeJobId parameter (see that file's upsertBusinessFromEngineLead)
+    # — carried through purely so early-dedup log lines can be correlated
+    # with the final-dedup log lines for the same scrape job. Never used
+    # for any decision.
+    scrape_job_id: Optional[str] = None,
 ) -> "tuple[List[StageConfig], PipelineQueueIds, FanInRuntime, Callable[[StageOutcome], None]]":
     """
     Composition root wiring every already-implemented worker
@@ -1026,6 +1047,34 @@ def build_seven_stage_pipeline(
 
     # -- Discovery: producer, per StageConfig's own contract -------------
 
+    def _early_dedup_decision(candidate: BusinessCandidate) -> EarlyDedupDecision:
+        """
+        Phase 3C-4B Step 1/2 — the earliest safe dedup point: right here,
+        the moment a BusinessCandidate exists and before any enrichment
+        worker has touched it. Uses only the identity fields a
+        BusinessCandidate can actually carry (maps_url, and website/phone
+        when the Maps provider happened to expose them) — see
+        storage/early_persistent_dedup.py for exactly which fingerprint
+        keys that produces and why it's intentionally narrower than the
+        full post-enrichment fingerprint set.
+        """
+        keys = early_fingerprint_keys(
+            maps_url=candidate.maps_url,
+            website=candidate.website,
+            phone=candidate.phone,
+        )
+        checked = early_dedup_checker is not None and bool(keys)
+        is_dup = checked and early_dedup_checker.is_duplicate(keys)
+        return EarlyDedupDecision(
+            pipeline_id=candidate.pipeline_id,
+            session_id=candidate.session_id,
+            scrape_job_id=scrape_job_id,
+            maps_place_id=maps_place_id_from_keys(keys),
+            fingerprint_keys=tuple(sorted(keys)),
+            is_duplicate=is_dup,
+            checked=checked,
+        )
+
     def _on_candidate(candidate: BusinessCandidate) -> None:
         """
         See workers/discovery_worker.py's own "Ownership of
@@ -1038,8 +1087,28 @@ def build_seven_stage_pipeline(
         input is WebsiteIntel, populated once WebsiteWorker's own
         `build_downstream` (below) forwards its output, per module
         docstring review point 6.
+
+        Phase 3C-4B: before any of that, a cheap persistent-dedup check
+        runs (see `_early_dedup_decision` above). A duplicate is neither
+        registered with FanInRuntime nor enqueued into any branch —
+        Website/Instagram/Contact enrichment simply never sees it, and
+        because it's never registered/enqueued/stored, it also never
+        counts toward the caller's requested accepted-lead target (Step
+        6) — discovery just keeps searching for the next candidate. This
+        is a fast-reject optimization only: the final persistent dedup
+        (deliverLead.ts::findExistingBusiness, Node-side, post-enrichment)
+        is completely unmodified and remains authoritative — see Step 4 /
+        module docstring for why a "no early match" here is never treated
+        as "definitely new".
         """
         _emit("discovery", "candidate_discovered", candidate.pipeline_id)
+
+        decision = _early_dedup_decision(candidate)
+        log_early_dedup_decision(decision)
+        if decision.is_duplicate:
+            _emit("discovery", "candidate_early_duplicate", candidate.pipeline_id)
+            return
+
         fan_in.register_business(candidate)
         website_queue.enqueue(
             pipeline_id=candidate.pipeline_id, stage="website", payload=candidate

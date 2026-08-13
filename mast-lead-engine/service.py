@@ -93,7 +93,9 @@ from engine.acceptance import LeadAcceptanceGate
 from engine.coordinator import EngineCoordinator
 from engine.contracts import QualifiedOpportunity, StoredOpportunity
 from engine.execution_driver import ExecutionDriver, build_seven_stage_pipeline, run_batch_intelligence
+from storage.early_persistent_dedup import PersistentEarlyDedupChecker, PersistentEarlyDedupError
 from providers.google_maps_provider import GoogleMapsProvider, GoogleMapsDiscoveryRequest
+from providers.discovery_composition import compose_discovery, NoRelevantProviderError
 from storage_backends.supabase_backend import SupabaseStorageBackend
 from storage_backends.batch_intelligence_backend import SupabaseBatchIntelligenceBackend
 
@@ -194,6 +196,40 @@ def _build_storage_backend() -> SupabaseStorageBackend:
     env var names invented here.
     """
     return SupabaseStorageBackend()
+
+
+#: Phase 3C-4B — cached once per process. `_build_early_dedup_checker()`
+#: is called on every `run_query()` invocation (unlike `_build_storage_backend`,
+#: this one is optional and allowed to fail), so the attempt-and-log-once
+#: behavior lives here rather than being repeated at every call site.
+_early_dedup_checker_cache: "dict[str, Optional[PersistentEarlyDedupChecker]]" = {}
+
+
+def _build_early_dedup_checker() -> Optional[PersistentEarlyDedupChecker]:
+    """
+    Composition-root wiring for Phase 3C-4B's early dedup stage. Same
+    SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY env-var convention as
+    `_build_storage_backend()` above — no new config surface. Unlike
+    Storage, this is optional: a missing/invalid config must never break
+    `run_query()`, since early dedup is a fast-reject optimization, not a
+    required stage (Step 4). Constructed at most once per process and
+    cached (including the "not configured" outcome) so a missing config
+    doesn't get silently re-attempted (and re-logged) on every run_query()
+    call within a long-lived worker process.
+    """
+    if "checker" in _early_dedup_checker_cache:
+        return _early_dedup_checker_cache["checker"]
+    try:
+        checker: Optional[PersistentEarlyDedupChecker] = PersistentEarlyDedupChecker()
+    except PersistentEarlyDedupError:
+        log.info(
+            "[early-dedup] SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not configured — "
+            "early persistent dedup disabled for this process; every candidate "
+            "will still go through the existing final dedup unchanged."
+        )
+        checker = None
+    _early_dedup_checker_cache["checker"] = checker
+    return checker
 
 
 def _build_batch_intelligence_backend() -> SupabaseBatchIntelligenceBackend:
@@ -501,8 +537,19 @@ async def run_query(
     driver: Optional[ExecutionDriver] = None
     try:
         if discovery_only:
-            provider = GoogleMapsProvider()
-            request = GoogleMapsDiscoveryRequest(
+            # PROVIDER PARALLELISM v1: composes every relevant, configured
+            # provider (see providers/discovery_composition.py) instead of
+            # constructing a bare GoogleMapsProvider directly. With no
+            # provider API keys configured in the environment (today's
+            # actual deployment state), this resolves to exactly
+            # {"google_maps"} plus, when a niche keyword matches
+            # provider_request_translation.py's small OSM tag table,
+            # "overpass" — i.e. behavior is unchanged from before this
+            # phase for a deployment with no additional credentials set.
+            # `should_stop`/`on_progress` are threaded through exactly as
+            # they were passed directly to GoogleMapsDiscoveryRequest
+            # before this phase — see DiscoveryQueryContext.
+            composed = compose_discovery(
                 session_id=str(_time.time_ns()),  # no session/pipeline is created in this mode
                 query=query, city=city, country=country,
                 niche=niche, region=region, max_results=raw_supply_cap,
@@ -516,6 +563,12 @@ async def run_query(
                 # branch below, so both code paths get the same liveness
                 # heartbeat from MapsScraper.search().
                 on_progress=_on_progress,
+                google_maps_factory=GoogleMapsProvider,
+            )
+            provider, request = composed.provider, composed.request
+            log.info(
+                "[provider] discovery_only composed providers=%s",
+                composed.selected_provider_ids,
             )
             result_q: "thread_queue.Queue" = thread_queue.Queue(maxsize=10)
 
@@ -602,7 +655,13 @@ async def run_query(
             session_id = ctx.session.id
             engine_coordinator.start_session(session_id)
 
-            discovery_request = GoogleMapsDiscoveryRequest(
+            # PROVIDER PARALLELISM v1: composes every relevant, configured
+            # provider (see providers/discovery_composition.py) instead of
+            # constructing a bare GoogleMapsProvider directly — see the
+            # matching comment in the discovery_only branch above for what
+            # this resolves to with today's actual (no extra API keys)
+            # deployment state.
+            composed = compose_discovery(
                 session_id=session_id, query=query, city=city, country=country,
                 niche=niche, region=region, max_results=raw_supply_cap,
                 should_stop=_should_stop_discovery,
@@ -619,6 +678,13 @@ async def run_query(
                 # (see scraper/maps_scraper.py) reach stdout at all in this
                 # (non-discovery_only) branch.
                 on_progress=_on_progress,
+                google_maps_factory=GoogleMapsProvider,
+            )
+            discovery_provider = composed.provider
+            discovery_request = composed.request
+            log.info(
+                "[provider] session=%s composed providers=%s",
+                session_id, composed.selected_provider_ids,
             )
 
             result_q: "thread_queue.Queue" = thread_queue.Queue()
@@ -630,11 +696,12 @@ async def run_query(
 
             stages, queue_ids, fan_in, cleanup_cb = build_seven_stage_pipeline(
                 engine_coordinator, session_id,
-                discovery_provider=GoogleMapsProvider(),
+                discovery_provider=discovery_provider,
                 discovery_request=discovery_request,
                 storage_backend=streaming_backend,
                 niche=niche or None,
                 on_progress=_on_progress,
+                early_dedup_checker=_build_early_dedup_checker(),
             )
             engine_coordinator.mark_running(session_id)
             engine_runtime = engine_coordinator.get_engine_runtime(session_id)

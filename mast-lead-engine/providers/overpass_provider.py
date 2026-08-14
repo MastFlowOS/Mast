@@ -291,10 +291,14 @@ implemented anywhere in this file.
 from __future__ import annotations
 
 import json
+import logging
+import random
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 
@@ -303,7 +307,16 @@ from engine.interfaces import DiscoveryProviderInterface
 from providers.provider_capabilities import ProviderCapabilities
 from providers.provider_metadata import ProviderMetadata
 
+log = logging.getLogger(__name__)
+
 _DEFAULT_ENDPOINT = "https://overpass-api.de/api/interpreter"
+_DEFAULT_MIRRORS: tuple[str, ...] = (
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.nchc.org.tw/api/interpreter",
+)
+_RETRYABLE_STATUS_CODES: set[int] = {429, 502, 503, 504}
 _VALID_ELEMENT_TYPES = ("node", "way", "relation")
 _ELEMENT_QL_KEYWORD = {"node": "node", "way": "way", "relation": "rel"}
 
@@ -394,30 +407,86 @@ _DEFAULT_TRANSPORT_HEADERS: dict[str, str] = {
 }
 
 
-def _http_post_urllib(url: str, data: str, headers: dict[str, str]) -> dict[str, Any]:
+def _http_post_urllib(
+    url: str,
+    data: str,
+    headers: dict[str, str],
+    timeout: float = 35.0,
+    max_retries_per_endpoint: int = 2,
+    backoff_factor: float = 0.5,
+) -> dict[str, Any]:
     """
-    Default transport: a plain stdlib POST of the Overpass QL query
-    text against the interpreter endpoint. Injected as `http_post` by
-    default; callers may supply their own (see module docstring for
-    why). Raises whatever urllib raises on a non-2xx response or
-    network failure — propagated unchanged, same "provider failures
-    stay isolated to the provider, but are never hidden from the
-    caller" rule the other three providers all follow.
+    Default transport: stdlib POST of the Overpass QL query text against the
+    interpreter endpoint with automatic retries, exponential backoff with jitter,
+    `Retry-After` header handling, and mirror failover.
 
-    Headers sent are `_DEFAULT_TRANSPORT_HEADERS` (explicit `Accept`
-    and `User-Agent` — see that mapping's own comment for why) merged
-    with `headers` (the caller/discover()-supplied headers, e.g.
-    `Content-Type`), with `headers` taking precedence on any key both
-    define — this changes nothing about what `discover()` already
-    sends (still exactly `Content-Type: application/x-www-form-urlencoded`),
-    it only fills in the two headers neither `discover()` nor any
-    caller has ever set.
+    Injected as `http_post` by default; callers/tests may supply their own custom
+    callable (see module docstring for why).
+
+    If the target endpoint experiences transient HTTP errors (429, 502, 503, 504)
+    or network/timeout exceptions, this transport retrying on the primary endpoint
+    and failing over to secondary public Overpass mirrors (`_DEFAULT_MIRRORS`).
     """
     request_headers = {**_DEFAULT_TRANSPORT_HEADERS, **headers}
     body = urlencode({"data": data}).encode("utf-8")
-    request = Request(url, data=body, headers=request_headers, method="POST")
-    with urlopen(request, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8"))
+
+    candidate_urls = [url]
+    for mirror in _DEFAULT_MIRRORS:
+        if mirror not in candidate_urls:
+            candidate_urls.append(mirror)
+
+    last_exception: Optional[BaseException] = None
+
+    for target_url in candidate_urls:
+        for attempt in range(max_retries_per_endpoint):
+            request = Request(target_url, data=body, headers=request_headers, method="POST")
+            try:
+                with urlopen(request, timeout=timeout) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                last_exception = exc
+                if exc.code in _RETRYABLE_STATUS_CODES:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    delay: Optional[float] = None
+                    if retry_after:
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            pass
+                    if delay is None:
+                        delay = (backoff_factor * (2 ** attempt)) + random.uniform(0, 0.25)
+                    log.warning(
+                        "[overpass] HTTP %d from %s (attempt %d/%d). Retrying in %.2fs...",
+                        exc.code,
+                        target_url,
+                        attempt + 1,
+                        max_retries_per_endpoint,
+                        delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    raise
+            except (URLError, TimeoutError, OSError) as exc:
+                last_exception = exc
+                delay = (backoff_factor * (2 ** attempt)) + random.uniform(0, 0.25)
+                log.warning(
+                    "[overpass] Network error (%s) connecting to %s (attempt %d/%d). Retrying in %.2fs...",
+                    exc,
+                    target_url,
+                    attempt + 1,
+                    max_retries_per_endpoint,
+                    delay,
+                )
+                time.sleep(delay)
+
+        log.warning(
+            "[overpass] Exhausted retries for %s. Attempting fallback mirror...",
+            target_url,
+        )
+
+    if last_exception is not None:
+        raise last_exception
+    raise RuntimeError("Overpass query failed with no response or exception recorded.")
 
 
 def _or_none(value: Optional[str]) -> Optional[str]:
@@ -557,7 +626,11 @@ class OverpassProvider(DiscoveryProviderInterface):
         """
         query = _build_ql(request)
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        payload = self._http_post(self._endpoint_url, query, headers)
+        socket_timeout = float(request.timeout_seconds + 10)
+        try:
+            payload = self._http_post(self._endpoint_url, query, headers, timeout=socket_timeout)
+        except TypeError:
+            payload = self._http_post(self._endpoint_url, query, headers)
         elements = payload.get("elements", [])
         for element in elements:
             yield self._to_business_candidate(element, request, request.session_id)

@@ -7,6 +7,7 @@ import { validateLead } from "../lib/leadValidation.js";
 import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
 import type { CountryInfo } from "../lib/geo/countries.js";
 import { PipelineTracer } from "../lib/pipelineTrace.js";
+import { registerRequestAbortController, terminateRequest } from "../discovery/requestLifecycle.js";
 
 export type PoolExpandFollowUp = {
   userId: string;
@@ -223,6 +224,9 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     }
 
     const abortController = new AbortController();
+    const reqId = discoveryPlanId ?? followUp?.scrapeJobId;
+    const unregisterRequestAbort = reqId ? registerRequestAbortController(reqId, abortController) : undefined;
+
     // The target this run is actually trying to satisfy: for a followUp,
     // that's "give this user `shortfall` more NEW deliveries"; for a bare
     // pool-growth run (no followUp), it's "add `shortfall` more businesses
@@ -259,7 +263,6 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               niche: singleNiche,
               region: payload.region,
               max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
-              deliver_target: remaining,  // qualified-lead target — Python stops here naturally
               db_path: `data/leads-pool-expand.db`,
             },
             abortController.signal,
@@ -276,6 +279,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 );
               }
             },
+            { requestId: reqId },
           )) {
             const pid = tracer.receive(lead._pipeline_id, lead.name);
 
@@ -356,15 +360,18 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
 
                 if (result.limitReached) {
                   console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
+                  if (reqId) terminateRequest(reqId, "TARGET_REACHED");
                   abortController.abort();
                   break outer;
                 }
 
                 if (newForUser >= payload.shortfall) {
+                  if (reqId) terminateRequest(reqId, "TARGET_REACHED");
                   abortController.abort();
                   break outer;
                 }
               } else if (delivered >= payload.shortfall) {
+                if (reqId) terminateRequest(reqId, "TARGET_REACHED");
                 abortController.abort();
                 break outer;
               }

@@ -357,6 +357,55 @@ with patch.object(_overpass_module, "urlopen", side_effect=_fake_urlopen):
         _captured_requests[0].get_header("Accept") == "text/plain",
     )
 
+# ---------------------------------------------------------------------------
+# 10. Reliability — HTTP 429 retries and HTTP 504 mirror failover
+# ---------------------------------------------------------------------------
+_retry_attempts: list[str] = []
+
+def _fake_urlopen_429_then_success(request: object, timeout: int | None = None) -> _FakeHTTPResponse:
+    from urllib.error import HTTPError
+    _retry_attempts.append(request.full_url)
+    if len(_retry_attempts) == 1:
+        raise HTTPError(request.full_url, 429, "Too Many Requests", {"Retry-After": "0.01"}, None)
+    return _FakeHTTPResponse(b'{"elements": [{"type": "node", "id": 999}]}')
+
+with patch.object(_overpass_module, "urlopen", side_effect=_fake_urlopen_429_then_success), patch("time.sleep", return_value=None):
+    _retry_attempts.clear()
+    res = _http_post_urllib(
+        "https://overpass-api.de/api/interpreter",
+        "query",
+        {"Content-Type": "application/x-www-form-urlencoded"},
+        backoff_factor=0.001,
+    )
+    check("HTTP 429 retries automatically and succeeds on second attempt", res == {"elements": [{"type": "node", "id": 999}]})
+    check("HTTP 429 retried on primary endpoint first", len(_retry_attempts) == 2 and _retry_attempts[0] == _retry_attempts[1])
+
+
+_mirror_failover_urls: list[str] = []
+
+def _fake_urlopen_504_primary_success_secondary(request: object, timeout: int | None = None) -> _FakeHTTPResponse:
+    from urllib.error import HTTPError
+    _mirror_failover_urls.append(request.full_url)
+    if "overpass-api.de" in request.full_url:
+        raise HTTPError(request.full_url, 504, "Gateway Timeout", {}, None)
+    return _FakeHTTPResponse(b'{"elements": [{"type": "node", "id": 888}]}')
+
+with patch.object(_overpass_module, "urlopen", side_effect=_fake_urlopen_504_primary_success_secondary), patch("time.sleep", return_value=None):
+    _mirror_failover_urls.clear()
+    res = _http_post_urllib(
+        "https://overpass-api.de/api/interpreter",
+        "query",
+        {"Content-Type": "application/x-www-form-urlencoded"},
+        backoff_factor=0.001,
+    )
+    check("HTTP 504 on primary mirror fails over to secondary mirror and succeeds", res == {"elements": [{"type": "node", "id": 888}]})
+    check(
+        "primary mirror was attempted then secondary mirror was called",
+        any("overpass-api.de" in url for url in _mirror_failover_urls)
+        and any("kumi.systems" in url for url in _mirror_failover_urls),
+    )
+
+
 print()
 if _FAILURES:
     print(f"{len(_FAILURES)} check(s) FAILED:")
@@ -366,3 +415,4 @@ if _FAILURES:
 else:
     print("All checks PASSED.")
     sys.exit(0)
+

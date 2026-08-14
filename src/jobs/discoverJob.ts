@@ -7,6 +7,7 @@ import { validateLead } from "../lib/leadValidation.js";
 import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
 import type { CountryInfo } from "../lib/geo/countries.js";
 import { PipelineTracer } from "../lib/pipelineTrace.js";
+import { registerRequestAbortController, terminateRequest } from "../discovery/requestLifecycle.js";
 
 export type DiscoverJobPayload = {
   scrapeJobId: string;
@@ -166,6 +167,7 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
   };
 
   const abortController = new AbortController();
+  const unregisterRequestAbort = registerRequestAbortController(payload.scrapeJobId, abortController);
 
   outer: for (const singleNiche of niches) {
     if (delivered >= payload.quantity) break;
@@ -189,8 +191,6 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
         // Over-ask so channel filtering/validation losses don't stop the
         // stream short of `remaining`. askFor is the raw SCAN BUDGET for
         // the Python subprocess; it is intentionally larger than remaining.
-        // Python terminates naturally once it has delivered `remaining`
-        // qualified leads (via the separate deliver_target param below).
         const askFor = Math.max(streamTarget * 4, streamTarget);
 
         let citySearchExhausted = false;
@@ -204,7 +204,6 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
             niche: singleNiche,
             region: payload.region,
             max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
-            deliver_target: remaining,  // qualified-lead target — Python stops here naturally
             db_path: `data/leads-${payload.userId}.db`,
           },
           abortController.signal,
@@ -231,6 +230,7 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
               );
             }
           },
+          { requestId: payload.scrapeJobId },
         )) {
           engineYielded += 1;
           const leadName = JSON.stringify(lead.name);
@@ -335,8 +335,13 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
               break outer;
             }
 
-            if (delivered >= payload.quantity || deliveredThisChunk >= streamTarget) {
-              break; // this process has delivered its streaming batch (or the whole request is done) — move on
+            if (delivered >= payload.quantity) {
+              terminateRequest(payload.scrapeJobId, "TARGET_REACHED");
+              break outer;
+            }
+
+            if (deliveredThisChunk >= streamTarget) {
+              break; // this process has delivered its streaming batch — move on
             }
           } catch (err) {
             // Phase S1 safety net: catches anything NOT already handled above

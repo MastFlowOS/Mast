@@ -106,6 +106,7 @@ export type EngineQueryParams = {
   skip_site_crawl?: boolean;
   require_viability?: boolean;
   discovery_only?: boolean;
+  required_channels?: string[];
   db_path?: string;
 };
 

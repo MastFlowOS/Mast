@@ -263,6 +263,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               niche: singleNiche,
               region: payload.region,
               max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
+              required_channels: followUp?.channels ?? [],
               db_path: `data/leads-pool-expand.db`,
             },
             abortController.signal,

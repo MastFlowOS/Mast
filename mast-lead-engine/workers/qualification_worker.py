@@ -149,20 +149,17 @@ class QualificationWorker(BaseWorker[EnrichedBusiness, QualificationResult]):
         *,
         niche: Optional[str] = None,
         required_categories: Optional[FrozenSet[str]] = None,
+        required_channels: Optional[Tuple[str, ...] | list[str]] = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         worker_id: Optional[str] = None,
     ) -> None:
         """
         niche:
             Which ruleset this worker instance is configured for.
-            Configuration, not a fact read off any EnrichedBusiness —
-            echoed onto every QualificationResult this instance
-            produces. None means "no niche restriction."
         required_categories:
-            If set, BusinessCandidate.category must be a member of
-            this set or the business is rejected as "unsupported
-            business type" (rule 4). None means "no category
-            restriction" — every category is accepted.
+            If set, BusinessCandidate.category must be a member of this set.
+        required_channels:
+            If set, dynamic channel requirements (e.g. ("email", "phone")).
         """
         super().__init__(
             worker_type=WORKER_TYPE,
@@ -171,6 +168,7 @@ class QualificationWorker(BaseWorker[EnrichedBusiness, QualificationResult]):
         )
         self._niche = niche
         self._required_categories = required_categories
+        self._required_channels = tuple(required_channels) if required_channels else None
         self._timeout = timeout
 
     # -- WorkerInterface -------------------------------------------------
@@ -190,28 +188,66 @@ class QualificationWorker(BaseWorker[EnrichedBusiness, QualificationResult]):
         reasons: list[str] = []
         rejected = False
 
-        # Rule 1 — no website at all.
-        has_website_field = bool(business is not None and business.website)
-        if not has_website_field:
-            reasons.append("missing required website")
-            rejected = True
+        if self._required_channels is not None:
+            # Dynamic Channel Rules
+            for ch in self._required_channels:
+                if ch == "website":
+                    has_website = bool(business and business.website) and (
+                        website_intel is None or website_intel.website_reachable is not False
+                    )
+                    if not has_website:
+                        reasons.append("missing required channel: website")
+                        rejected = True
+                        break
+                elif ch == "phone":
+                    has_phone = bool(
+                        (business and business.phone)
+                        or (contact_intel and contact_intel.phones)
+                    )
+                    if not has_phone:
+                        reasons.append("missing required channel: phone")
+                        rejected = True
+                        break
+                elif ch == "email":
+                    has_email = bool(contact_intel and contact_intel.emails)
+                    if not has_email:
+                        reasons.append("missing required channel: email")
+                        rejected = True
+                        break
+                elif ch == "instagram":
+                    has_ig = bool(
+                        (business and getattr(business, "instagram_url", None))
+                        or (instagram_intel and instagram_intel.profile_reachable is True)
+                        or (contact_intel and getattr(contact_intel, "instagram_url", None))
+                    )
+                    if not has_ig:
+                        reasons.append("missing required channel: instagram")
+                        rejected = True
+                        break
+        else:
+            # Default / Legacy Rules (when no required_channels specified)
+            # Rule 1 — no website at all.
+            has_website_field = bool(business is not None and business.website)
+            if not has_website_field:
+                reasons.append("missing required website")
+                rejected = True
 
-        # Rule 2 — website reachability, only meaningful if a website
-        # was actually inspected.
-        if (
-            not rejected
-            and website_intel is not None
-            and website_intel.website_reachable is False
-        ):
-            reasons.append("website unreachable")
-            rejected = True
+            # Rule 2 — website reachability, only meaningful if a website
+            # was actually inspected.
+            if (
+                not rejected
+                and website_intel is not None
+                and website_intel.website_reachable is False
+            ):
+                reasons.append("website unreachable")
+                rejected = True
 
-        # Rule 3 — no contact method found on any inspected channel.
-        if not rejected and not self._has_any_contact_method(
-            business, instagram_intel, contact_intel
-        ):
-            reasons.append("no contact methods")
-            rejected = True
+            # Rule 3 — no contact method found on any inspected channel.
+            if not rejected and not self._has_any_contact_method(
+                business, instagram_intel, contact_intel
+            ):
+                reasons.append("no contact methods")
+                rejected = True
 
         # Rule 4 — category restriction, only if configured.
         if (

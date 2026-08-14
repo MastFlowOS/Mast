@@ -355,6 +355,7 @@ async def run_query(
     require_viability: bool = True,
     discovery_only: bool = False,
     db_path: str = "data/leads.db",
+    required_channels: Optional[list[str] | tuple[str, ...]] = None,
     # LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
     # optional cooperative shutdown flag — see the module-level
     # `_shutdown_event` docstring above for why this replaced hard task
@@ -702,6 +703,7 @@ async def run_query(
                 niche=niche or None,
                 on_progress=_on_progress,
                 early_dedup_checker=_build_early_dedup_checker(),
+                required_channels=tuple(required_channels) if required_channels else None,
             )
             engine_coordinator.mark_running(session_id)
             engine_runtime = engine_coordinator.get_engine_runtime(session_id)

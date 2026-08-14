@@ -807,20 +807,9 @@ def build_seven_stage_pipeline(
     storage_worker_factory: Optional[Callable[[], BaseWorker]] = None,
     instance_counts: Optional[Dict[str, int]] = None,
     on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None,
-    # Phase 3C-4B — early persistent dedup, before enrichment. Optional and
-    # constructor-injected (same pattern storage_backend already uses):
-    # omitting it (the default) means every candidate simply falls through
-    # to enrichment exactly as it did before this phase existed — no
-    # caller is forced to configure Supabase access just to keep
-    # compiling/testing. See storage/early_persistent_dedup.py for what
-    # this checks and why it's safe to skip.
     early_dedup_checker: Optional[PersistentEarlyDedupChecker] = None,
-    # Instrumentation-only, mirrors deliverLead.ts's own optional
-    # scrapeJobId parameter (see that file's upsertBusinessFromEngineLead)
-    # — carried through purely so early-dedup log lines can be correlated
-    # with the final-dedup log lines for the same scrape job. Never used
-    # for any decision.
     scrape_job_id: Optional[str] = None,
+    required_channels: Optional[Tuple[str, ...] | list[str]] = None,
 ) -> "tuple[List[StageConfig], PipelineQueueIds, FanInRuntime, Callable[[StageOutcome], None]]":
     """
     Composition root wiring every already-implemented worker
@@ -992,7 +981,9 @@ def build_seven_stage_pipeline(
             worker_factory=qualification_worker_factory
             or (
                 lambda: QualificationWorker(
-                    niche=niche, required_categories=required_categories
+                    niche=niche,
+                    required_categories=required_categories,
+                    required_channels=required_channels,
                 )
             ),
             instance_count=_count("qualification"),
@@ -1108,6 +1099,30 @@ def build_seven_stage_pipeline(
         if decision.is_duplicate:
             _emit("discovery", "candidate_early_duplicate", candidate.pipeline_id)
             return
+
+        # GENERIC SAFE CHANNEL PRUNING:
+        # A candidate is pruned early ONLY if it is definitely impossible to satisfy
+        # a required channel based on current evidence (no direct evidence on Maps
+        # AND no website to enable downstream discovery).
+        if required_channels:
+            has_site = bool(candidate.website)
+            for ch in required_channels:
+                if ch == "website" and not has_site:
+                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
+                    log.info("discovery: pipeline_id=%s safe-pruned (missing website for website channel)", candidate.pipeline_id)
+                    return
+                elif ch == "email" and not has_site:
+                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
+                    log.info("discovery: pipeline_id=%s safe-pruned (no website to discover email)", candidate.pipeline_id)
+                    return
+                elif ch == "phone" and not candidate.phone and not has_site:
+                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
+                    log.info("discovery: pipeline_id=%s safe-pruned (no phone on Maps and no website to discover phone)", candidate.pipeline_id)
+                    return
+                elif ch == "instagram" and not getattr(candidate, "instagram_url", None) and not has_site:
+                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
+                    log.info("discovery: pipeline_id=%s safe-pruned (no instagram handle and no website to discover instagram)", candidate.pipeline_id)
+                    return
 
         fan_in.register_business(candidate)
         website_queue.enqueue(

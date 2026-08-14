@@ -204,6 +204,7 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
             niche: singleNiche,
             region: payload.region,
             max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
+            required_channels: payload.channels,
             db_path: `data/leads-${payload.userId}.db`,
           },
           abortController.signal,

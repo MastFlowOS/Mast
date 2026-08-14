@@ -1562,6 +1562,7 @@ class MapsScraper:
 
                 while (
                     yielded < max_results
+                    and not (should_stop is not None and should_stop())
                     and rounds_this_attempt < self.config.scroll_max_rounds
                     and total_scroll_rounds < max_total_rounds
                 ):
@@ -1605,7 +1606,8 @@ class MapsScraper:
                     failed_this_round: set[str] = set()
 
                     while not panel_lost:
-                        if yielded >= max_results:
+                        if yielded >= max_results or (should_stop is not None and should_stop()):
+                            log.info(f"[maps] search loop ending: target reached or stop requested for {full_query!r}")
                             return
 
                         # Scoped to the results feed panel itself, never the

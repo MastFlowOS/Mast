@@ -320,6 +320,25 @@ class FanInRuntime:
 
     # -- correlation inputs ------------------------------------------------
 
+    def prune_business(self, pipeline_id: str, reason: str = "early_pruned") -> None:
+        """
+        Prune a pipeline_id early when a required channel is proven impossible.
+        Removes correlation state, closes the pipeline_id, and ensures no MergeInput
+        is ever emitted for this business.
+        """
+        with self._lock:
+            if pipeline_id in self._closed:
+                return
+            self._pending.pop(pipeline_id, None)
+            self._closed.add(pipeline_id)
+            log.info("fan-in: pipeline_id=%s early-pruned (%s)", pipeline_id, reason)
+
+    def get_business(self, pipeline_id: str) -> Optional[BusinessCandidate]:
+        """Retrieve the registered BusinessCandidate for a pipeline_id if available."""
+        with self._lock:
+            acc = self._pending.get(pipeline_id)
+            return acc.business if acc else None
+
     def register_business(self, business: BusinessCandidate) -> Optional[MergeInput]:
         """
         Seed this pipeline_id's accumulator with the BusinessCandidate

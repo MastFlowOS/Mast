@@ -41,6 +41,12 @@ function removeIfEmpty(requestId: string, runtime: RequestRuntime): void {
   }
 }
 
+export function isRequestActive(requestId: string): boolean {
+  const runtime = runtimes.get(requestId);
+  if (!runtime) return false;
+  return runtime.controllers.size > 0 || runtime.processes.size > 0;
+}
+
 export function registerRequestAbortController(requestId: string, controller: AbortController): () => void {
   const runtime = runtimeFor(requestId);
   runtime.controllers.add(controller);

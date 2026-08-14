@@ -769,7 +769,24 @@ async def run_query(
                         )
                         _stopped_by_shutdown = True
                         break
-                    outcomes = await asyncio.to_thread(driver.run_once)
+                    hb_stop = asyncio.Event()
+                    async def _hb_ticker():
+                        while not hb_stop.is_set():
+                            _on_progress("engine", "heartbeat", None)
+                            try:
+                                await asyncio.sleep(15)
+                            except asyncio.CancelledError:
+                                break
+                    hb_task = asyncio.create_task(_hb_ticker())
+                    try:
+                        outcomes = await asyncio.to_thread(driver.run_once)
+                    finally:
+                        hb_stop.set()
+                        hb_task.cancel()
+                        try:
+                            await hb_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
                     if driver.last_error is not None:
                         raise driver.last_error
                     any_ran = any(o.ran for o in outcomes)

@@ -7,7 +7,7 @@ import { validateLead } from "../lib/leadValidation.js";
 import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
 import type { CountryInfo } from "../lib/geo/countries.js";
 import { PipelineTracer } from "../lib/pipelineTrace.js";
-import { registerRequestAbortController, terminateRequest } from "../discovery/requestLifecycle.js";
+import { registerRequestAbortController, terminateRequest, isRequestActive } from "../discovery/requestLifecycle.js";
 
 export type PoolExpandFollowUp = {
   userId: string;
@@ -129,6 +129,27 @@ const STREAM_BATCH_FLOOR = 5;
 
 export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promise<void> {
   const { followUp } = payload;
+  const reqCheckId = followUp?.scrapeJobId;
+  if (reqCheckId) {
+    // 1. Process-local fast path (protects within same Node worker instance)
+    if (isRequestActive(reqCheckId)) {
+      console.log(`[poolExpandJob] job reqId=${reqCheckId} is already active in this process — skipping duplicate execution`);
+      return;
+    }
+
+    // 2. Durable Postgres claim (row lock + heartbeat staleness across Railway worker containers)
+    try {
+      const { data: claimed, error: claimErr } = await (supabaseAdmin as any).rpc("claim_pool_expand_execution", {
+        p_scrape_job_id: reqCheckId,
+      });
+      if (!claimErr && claimed === false) {
+        console.log(`[poolExpandJob] job reqId=${reqCheckId} is already actively owned by another worker process (or terminal) — skipping duplicate execution`);
+        return;
+      }
+    } catch (err) {
+      console.warn(`[poolExpandJob] claim_pool_expand_execution check failed (proceeding with fallback):`, err);
+    }
+  }
   const niches = splitNicheQuery(payload.niche);
   const countries = resolveCountriesForSelection(payload.region, { currencies: payload.currencies });
   const jobStartedAt = Date.now();
@@ -144,6 +165,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   // "mark scrape_jobs failed" behavior in the catch below, before it does).
   const tracer = new PipelineTracer();
 
+  let userPlanLimitHit = false;
   let delivered = 0; // total businesses newly added to the pool (all niches)
   // `newForUser` stays RELATIVE to this invocation — it's compared against
   // `payload.shortfall` below (stillNeededNow / the >= payload.shortfall
@@ -361,7 +383,8 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
 
                 if (result.limitReached) {
                   console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
-                  if (reqId) terminateRequest(reqId, "TARGET_REACHED");
+                  userPlanLimitHit = true;
+                  if (reqId) terminateRequest(reqId, "EXHAUSTED");
                   abortController.abort();
                   break outer;
                 }
@@ -415,9 +438,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
 
       const completionReason = wasCancelled
         ? "cancelled"
-        : newForUser >= payload.shortfall
-          ? "quantity_reached"
-          : "exhausted";
+        : userPlanLimitHit
+          ? "plan_limit_reached"
+          : newForUser >= payload.shortfall
+            ? "quantity_reached"
+            : "exhausted";
 
       const finalStatus = wasCancelled
         ? "cancelled"

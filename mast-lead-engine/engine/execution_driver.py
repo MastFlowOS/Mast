@@ -1149,6 +1149,17 @@ def build_seven_stage_pipeline(
 
     def _website_downstream(intel: WebsiteIntel) -> Optional[WebsiteIntel]:
         fan_in.record_website_result(intel.pipeline_id, intel)
+        if required_channels:
+            business = fan_in.get_business(intel.pipeline_id)
+            has_maps_email = bool(business and business.email)
+            if "website" in required_channels and intel.website_reachable is False:
+                _emit("website", "candidate_early_channel_pruned", intel.pipeline_id)
+                fan_in.prune_business(intel.pipeline_id, "unreachable_website")
+                return None
+            if "email" in required_channels and intel.website_reachable is False and not has_maps_email:
+                _emit("website", "candidate_early_channel_pruned", intel.pipeline_id)
+                fan_in.prune_business(intel.pipeline_id, "unreachable_website_no_email")
+                return None
         return intel
 
     website_stage = StageConfig(
@@ -1188,6 +1199,21 @@ def build_seven_stage_pipeline(
 
     def _contact_downstream(intel) -> None:
         fan_in.record_contact_result(intel.pipeline_id, intel)
+        if required_channels:
+            business = fan_in.get_business(intel.pipeline_id)
+            has_maps_email = bool(business and business.email)
+            has_contact_email = bool(intel and intel.emails)
+            has_maps_phone = bool(business and business.phone)
+            has_contact_phone = bool(intel and intel.phones)
+
+            if "email" in required_channels and not (has_contact_email or has_maps_email):
+                _emit("contact", "candidate_early_channel_pruned", intel.pipeline_id)
+                fan_in.prune_business(intel.pipeline_id, "missing_required_channel:email")
+                return None
+            if "phone" in required_channels and not (has_contact_phone or has_maps_phone):
+                _emit("contact", "candidate_early_channel_pruned", intel.pipeline_id)
+                fan_in.prune_business(intel.pipeline_id, "missing_required_channel:phone")
+                return None
         return None
 
     contact_stage = StageConfig(

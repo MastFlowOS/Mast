@@ -35,6 +35,7 @@ def _progress(stage, event, item_id=None):
 
 def main():
     sys.stdin.read()
+    _progress("discovery", "maps_navigation_start", None)
     events = [
         ("discovery", "candidate_discovered", "pid-1"),
         ("discovery", "candidate_queued", "pid-1"),

@@ -8,7 +8,7 @@
     "dev:worker": "tsx watch src/workers/index.ts",
     "build": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
-    "test:server": "tsx --test src/scraperBridge/__tests__/pythonBridge.lifecycle.test.ts src/discovery/__tests__/requestLifecycle.test.ts src/discovery/__tests__/poolExpandDeliveryReservation.test.ts src/discovery/__tests__/dispatchConcurrency.test.ts src/discovery/__tests__/discoveryConcurrency.integration.test.ts src/discovery/__tests__/areaRotation.test.ts src/discovery/__tests__/areaRotation.integration.test.ts src/discovery/__tests__/googleAreaPool.test.ts src/discovery/__tests__/candidateBudget.test.ts src/discovery/__tests__/geographicScope.test.ts src/lib/__tests__/browserSlotPool.test.ts",
+    "test:server": "tsx --test src/scraperBridge/__tests__/pythonBridge.lifecycle.test.ts src/discovery/__tests__/requestLifecycle.test.ts src/discovery/__tests__/poolExpandDeliveryReservation.test.ts src/discovery/__tests__/dispatchConcurrency.test.ts src/discovery/__tests__/discoveryConcurrency.integration.test.ts src/discovery/__tests__/areaRotation.test.ts src/discovery/__tests__/areaRotation.integration.test.ts src/discovery/__tests__/googleAreaPool.test.ts src/discovery/__tests__/candidateBudget.test.ts src/discovery/__tests__/geographicScope.test.ts src/lib/__tests__/browserSlotPool.test.ts src/lib/__tests__/discoverJobCompletionRace.test.ts",
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",

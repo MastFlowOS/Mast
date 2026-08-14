@@ -714,55 +714,59 @@ function GetLeads() {
       // Discovery shortfall still being backfilled — either way, watch the
       // SAME job id until it resolves. The UI never needs to know which.
       activeJobIdRef.current = result.jobId;
-      unsubscribeJobRef.current = subscribeToDiscoverJob(result.jobId, {
-        onLead: appendLead,
-        onStatusChange: (status) => {
-          if (status === "completed") {
-            finish(seenLeadIdsRef.current.size);
-          } else if (status === "completed_partial") {
-            // Engine reached genuine exhaustion before hitting the full count.
-            clearInterval(stageInterval);
-            unsubscribeJobRef.current?.();
-            unsubscribeJobRef.current = null;
-            activeJobIdRef.current = null;
-            setIsGenerating(false);
-            setIsCancelling(false);
-            const found = seenLeadIdsRef.current.size;
-            setShowCompletion(true);
-            toast.info(
-              found > 0
-                ? `Found ${found} opportunities — market is thin for this query.`
-                : "Market exhausted. No new opportunities available for this combination.",
-            );
-            queryClient.invalidateQueries({ queryKey: queryKeys.account });
-            queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
-          } else if (status === "cancelled") {
-            clearInterval(stageInterval);
-            unsubscribeJobRef.current?.();
-            unsubscribeJobRef.current = null;
-            activeJobIdRef.current = null;
-            setIsGenerating(false);
-            setIsCancelling(false);
-            const found = seenLeadIdsRef.current.size;
-            if (found > 0) {
+      unsubscribeJobRef.current = subscribeToDiscoverJob(
+        result.jobId,
+        {
+          onLead: appendLead,
+          onStatusChange: (status) => {
+            if (status === "completed") {
+              finish(seenLeadIdsRef.current.size);
+            } else if (status === "completed_partial") {
+              // Engine reached genuine exhaustion before hitting the full count.
+              clearInterval(stageInterval);
+              unsubscribeJobRef.current?.();
+              unsubscribeJobRef.current = null;
+              activeJobIdRef.current = null;
+              setIsGenerating(false);
+              setIsCancelling(false);
+              const found = seenLeadIdsRef.current.size;
               setShowCompletion(true);
-              toast.info(`Search cancelled — ${found} opportunit${found === 1 ? "y" : "ies"} saved.`);
+              toast.info(
+                found > 0
+                  ? `Found ${found} opportunities — market is thin for this query.`
+                  : "Market exhausted. No new opportunities available for this combination.",
+              );
               queryClient.invalidateQueries({ queryKey: queryKeys.account });
               queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
-            } else {
-              toast.info("Search cancelled.");
+            } else if (status === "cancelled") {
+              clearInterval(stageInterval);
+              unsubscribeJobRef.current?.();
+              unsubscribeJobRef.current = null;
+              activeJobIdRef.current = null;
+              setIsGenerating(false);
+              setIsCancelling(false);
+              const found = seenLeadIdsRef.current.size;
+              if (found > 0) {
+                setShowCompletion(true);
+                toast.info(`Search cancelled — ${found} opportunit${found === 1 ? "y" : "ies"} saved.`);
+                queryClient.invalidateQueries({ queryKey: queryKeys.account });
+                queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
+              } else {
+                toast.info("Search cancelled.");
+              }
+            } else if (status === "failed") {
+              clearInterval(stageInterval);
+              unsubscribeJobRef.current?.();
+              unsubscribeJobRef.current = null;
+              activeJobIdRef.current = null;
+              setIsGenerating(false);
+              setIsCancelling(false);
+              toast.error("Discovery engine failed. Please try again.");
             }
-          } else if (status === "failed") {
-            clearInterval(stageInterval);
-            unsubscribeJobRef.current?.();
-            unsubscribeJobRef.current = null;
-            activeJobIdRef.current = null;
-            setIsGenerating(false);
-            setIsCancelling(false);
-            toast.error("Discovery engine failed. Please try again.");
-          }
+          },
         },
-      });
+        { requestedQuantity: quantity },
+      );
 
     } catch (err) {
       clearInterval(stageInterval);

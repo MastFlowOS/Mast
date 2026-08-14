@@ -486,41 +486,98 @@ export function subscribeToDiscoverJob(
     onLead: (lead: Lead) => void;
     onStatusChange: (status: DiscoverJobStatus, resultsCount: number) => void;
   },
+  options?: {
+    requestedQuantity?: number;
+  },
 ): () => void {
   if (!supabase) return () => {};
 
-  // AUDIT FIX (Finding 2 — Realtime subscription race causing leads to
-  // never appear): discover.ts awaits the plan job's enqueue (which can
-  // already be dispatching discovery.task jobs / inserting `leads` rows)
-  // BEFORE returning 202. The caller only calls subscribeToDiscoverJob()
-  // after that HTTP response resolves — and `.subscribe()` below is
-  // fire-and-forget with no confirmation callback the old code waited on.
-  // `postgres_changes` genuinely does not replay pre-subscription events,
-  // so any row inserted/updated in that window was silently lost — a
-  // structural race that exists on EVERY request, not a rare one.
-  //
-  // Fix: once the channel actually reports SUBSCRIBED, do a one-time
-  // reconciliation fetch of `leads` and `scrape_jobs` for this job id and
-  // replay anything that arrived before we were listening. The caller
-  // already dedupes leads by `lead.id` (see dashboard.leads.tsx's
-  // seenLeadIdsRef), so replaying already-seen leads here is harmless.
+  const seenLeadIds = new Set<string>();
+  let terminalStatus: DiscoverJobStatus | null = null;
+  let terminalResultsCount = 0;
+  let requestedQuantity: number | null = options?.requestedQuantity ?? null;
+  let hasEmittedTerminal = false;
   let reconciled = false;
+  let isReconciling = false;
+
+  const checkTerminalEmission = async () => {
+    if (hasEmittedTerminal || !terminalStatus) return;
+
+    if (terminalStatus === "completed") {
+      const target = requestedQuantity ? Math.min(requestedQuantity, terminalResultsCount || requestedQuantity) : terminalResultsCount;
+      if (seenLeadIds.size >= target) {
+        hasEmittedTerminal = true;
+        handlers.onStatusChange("completed", seenLeadIds.size);
+      } else if (!isReconciling) {
+        // Backend marked completed, but frontend lead count < target.
+        // Perform a DB reconciliation fetch to grab any lead committed in DB whose WS event was lost/delayed.
+        await reconcile();
+      }
+    } else if (terminalStatus === "completed_partial" || terminalStatus === "cancelled" || terminalStatus === "failed") {
+      if (!reconciled && !isReconciling) {
+        await reconcile();
+      } else if (!isReconciling) {
+        hasEmittedTerminal = true;
+        handlers.onStatusChange(terminalStatus, Math.max(seenLeadIds.size, terminalResultsCount));
+      }
+    }
+  };
+
+  const processLead = (lead: Lead) => {
+    if (seenLeadIds.has(lead.id)) return;
+    seenLeadIds.add(lead.id);
+    handlers.onLead(lead);
+    void checkTerminalEmission();
+  };
+
   const reconcile = async () => {
-    if (reconciled) return;
-    reconciled = true;
+    if (isReconciling) return;
+    isReconciling = true;
     try {
       const [{ data: missedLeads }, { data: jobRow }] = await Promise.all([
         supabase!.from("leads").select("*").eq("scrape_job_id", jobId).order("created_at", { ascending: true }),
-        supabase!.from("scrape_jobs").select("status, results_count").eq("id", jobId).maybeSingle(),
+        supabase!.from("scrape_jobs").select("status, results_count, query").eq("id", jobId).maybeSingle(),
       ]);
-      for (const row of missedLeads ?? []) {
-        handlers.onLead(dbRowToLead(row as Record<string, unknown>));
+
+      reconciled = true;
+
+      if (jobRow?.query && typeof jobRow.query === "object" && "quantity" in jobRow.query) {
+        const q = Number((jobRow.query as { quantity?: unknown }).quantity);
+        if (!isNaN(q) && q > 0 && requestedQuantity === null) {
+          requestedQuantity = q;
+        }
       }
+
+      for (const row of missedLeads ?? []) {
+        processLead(dbRowToLead(row as Record<string, unknown>));
+      }
+
       if (jobRow) {
-        handlers.onStatusChange(jobRow.status as DiscoverJobStatus, jobRow.results_count ?? 0);
+        const st = jobRow.status as DiscoverJobStatus;
+        const count = jobRow.results_count ?? 0;
+        if (st === "completed" || st === "completed_partial" || st === "cancelled" || st === "failed") {
+          terminalStatus = st;
+          terminalResultsCount = count;
+        } else {
+          handlers.onStatusChange(st, count);
+        }
       }
     } catch (err) {
       console.warn("[subscribeToDiscoverJob] reconciliation fetch failed (non-fatal):", err);
+    } finally {
+      isReconciling = false;
+    }
+
+    void checkTerminalEmission();
+  };
+
+  const handleStatusUpdate = (status: DiscoverJobStatus, count: number) => {
+    if (status === "completed" || status === "completed_partial" || status === "cancelled" || status === "failed") {
+      terminalStatus = status;
+      terminalResultsCount = count;
+      void checkTerminalEmission();
+    } else {
+      handlers.onStatusChange(status, count);
     }
   };
 
@@ -529,14 +586,17 @@ export function subscribeToDiscoverJob(
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "leads", filter: `scrape_job_id=eq.${jobId}` },
-      (payload) => handlers.onLead(dbRowToLead(payload.new as Record<string, unknown>)),
+      (payload) => processLead(dbRowToLead(payload.new as Record<string, unknown>)),
     )
     .on(
       "postgres_changes",
       { event: "UPDATE", schema: "public", table: "scrape_jobs", filter: `id=eq.${jobId}` },
       (payload) => {
-        const row = payload.new as { status: string; results_count: number };
-        handlers.onStatusChange(row.status as DiscoverJobStatus, row.results_count ?? 0);
+        const row = payload.new as { status: string; results_count: number; query?: { quantity?: number } };
+        if (row.query?.quantity && requestedQuantity === null) {
+          requestedQuantity = row.query.quantity;
+        }
+        handleStatusUpdate(row.status as DiscoverJobStatus, row.results_count ?? 0);
       },
     )
     .subscribe((status) => {

@@ -1151,7 +1151,7 @@ def build_seven_stage_pipeline(
         fan_in.record_website_result(intel.pipeline_id, intel)
         if required_channels:
             business = fan_in.get_business(intel.pipeline_id)
-            has_maps_email = bool(business and business.email)
+            has_maps_email = bool(business and getattr(business, "email", None))
             if "website" in required_channels and intel.website_reachable is False:
                 _emit("website", "candidate_early_channel_pruned", intel.pipeline_id)
                 fan_in.prune_business(intel.pipeline_id, "unreachable_website")
@@ -1201,9 +1201,9 @@ def build_seven_stage_pipeline(
         fan_in.record_contact_result(intel.pipeline_id, intel)
         if required_channels:
             business = fan_in.get_business(intel.pipeline_id)
-            has_maps_email = bool(business and business.email)
+            has_maps_email = bool(business and getattr(business, "email", None))
             has_contact_email = bool(intel and intel.emails)
-            has_maps_phone = bool(business and business.phone)
+            has_maps_phone = bool(business and getattr(business, "phone", None))
             has_contact_phone = bool(intel and intel.phones)
 
             if "email" in required_channels and not (has_contact_email or has_maps_email):

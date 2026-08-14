@@ -745,6 +745,18 @@ async def run_query(
             # to fall through and be reported as an ordinary
             # `success=True` completion.
             _stopped_by_shutdown = False
+            hb_stop = asyncio.Event()
+
+            async def _hb_ticker():
+                while not hb_stop.is_set():
+                    try:
+                        await asyncio.sleep(15)
+                    except asyncio.CancelledError:
+                        break
+                    if not hb_stop.is_set():
+                        _on_progress("engine", "heartbeat", None)
+
+            hb_task = asyncio.create_task(_hb_ticker())
             try:
                 idle_passes = 0
                 while not gate.target_reached:
@@ -769,24 +781,9 @@ async def run_query(
                         )
                         _stopped_by_shutdown = True
                         break
-                    hb_stop = asyncio.Event()
-                    async def _hb_ticker():
-                        while not hb_stop.is_set():
-                            _on_progress("engine", "heartbeat", None)
-                            try:
-                                await asyncio.sleep(15)
-                            except asyncio.CancelledError:
-                                break
-                    hb_task = asyncio.create_task(_hb_ticker())
-                    try:
-                        outcomes = await asyncio.to_thread(driver.run_once)
-                    finally:
-                        hb_stop.set()
-                        hb_task.cancel()
-                        try:
-                            await hb_task
-                        except (asyncio.CancelledError, Exception):
-                            pass
+
+                    outcomes = await asyncio.to_thread(driver.run_once)
+                    await asyncio.sleep(0)
                     if driver.last_error is not None:
                         raise driver.last_error
                     any_ran = any(o.ran for o in outcomes)
@@ -867,6 +864,8 @@ async def run_query(
                             "[run_query] requested quantity reached — delivered=%d deliver_target=%d",
                             gate.accepted, _deliver_target,
                         )
+                        if driver is not None:
+                            driver.stop()
                         break
 
                     if not any_ran and not drained_any:
@@ -915,6 +914,12 @@ async def run_query(
                         "reached its target or genuinely exhausted its search space",
                     )
             finally:
+                hb_stop.set()
+                hb_task.cancel()
+                try:
+                    await hb_task
+                except (asyncio.CancelledError, Exception):
+                    pass
                 if driver is not None:
                     await asyncio.to_thread(driver.stop)
                 tracer.sweep_incomplete("run_ended_before_business_finished (cancelled/aborted)")

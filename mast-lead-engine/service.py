@@ -496,15 +496,18 @@ async def run_query(
         # sys.stdout redirection (that only happens for the separate
         # `enrich`/`score`/... JSON-CLI modes — see the top of this
         # file — never for this, the default search/production mode).
-        sys.stdout.write(json.dumps({
-            "type": "progress",
-            "session_id": session_id,
-            "stage": stage,
-            "event": event,
-            "item_id": item_id,
-            "timestamp": time.time(),
-        }, default=str) + "\n")
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(json.dumps({
+                "type": "progress",
+                "session_id": session_id,
+                "stage": stage,
+                "event": event,
+                "item_id": item_id,
+                "timestamp": time.time(),
+            }, default=str) + "\n")
+            sys.stdout.flush()
+        except (BrokenPipeError, IOError, OSError):
+            pass
 
         if stage == "discovery" and event == "candidate_discovered":
             _mark("first_candidate_discovered")
@@ -695,6 +698,14 @@ async def run_query(
 
             streaming_backend = _StreamingStorageBackend(_build_storage_backend(), _on_persisted)
 
+            instance_counts = {
+                "website": 4,
+                "instagram": 2,
+                "contact": 2,
+                "merge": 2,
+                "qualification": 2,
+                "storage": 1,
+            }
             stages, queue_ids, fan_in, cleanup_cb = build_seven_stage_pipeline(
                 engine_coordinator, session_id,
                 discovery_provider=discovery_provider,
@@ -704,6 +715,7 @@ async def run_query(
                 on_progress=_on_progress,
                 early_dedup_checker=_build_early_dedup_checker(),
                 required_channels=tuple(required_channels) if required_channels else None,
+                instance_counts=instance_counts,
             )
             engine_coordinator.mark_running(session_id)
             engine_runtime = engine_coordinator.get_engine_runtime(session_id)
@@ -1070,8 +1082,12 @@ async def _main_cli() -> None:
     try:
         async for lead_dict in run_query(**params, shutdown_event=_shutdown_event):
             delivered += 1
-            sys.stdout.write(json.dumps(lead_dict, default=str) + "\n")
-            sys.stdout.flush()
+            try:
+                sys.stdout.write(json.dumps(lead_dict, default=str) + "\n")
+                sys.stdout.flush()
+            except (BrokenPipeError, IOError, OSError):
+                log.info("[main_cli] stdout pipe closed by consumer (early break / TARGET_REACHED)")
+                break
         log.info(f"[main_cli] run_query async for loop ended normally (delivered={delivered}) — about to write __done__")
     except DiscoveryFailure as exc:
         failure = exc
@@ -1133,24 +1149,27 @@ async def _main_cli() -> None:
     # Phase 2: __perf__ carries the structured performance report so the
     # TS bridge can log it server-side without any separate file.
     target_reached = failure is None and delivered >= requested
-    sys.stdout.write(json.dumps({
-        "__done__": True,
-        "delivered": delivered,
-        "requested": requested,
-        "exhausted": False if failure is not None else delivered < requested,
-        "success": failure is None,
-        "target_reached": target_reached,
-        "failure_reason": failure.reason.value if failure is not None else None,
-        "failure_detail": failure.detail if failure is not None else None,
-        "__perf__": _last_perf_summary,
-    }, default=str) + "\n")
-    sys.stdout.flush()
-    log.info(
-        f"[main_cli] __done__ sentinel written (delivered={delivered}, "
-        f"requested={requested}, target_reached={target_reached}, "
-        f"success={failure is None}, "
-        f"failure_reason={failure.reason.value if failure else None!r})"
-    )
+    try:
+        sys.stdout.write(json.dumps({
+            "__done__": True,
+            "delivered": delivered,
+            "requested": requested,
+            "exhausted": False if failure is not None else delivered < requested,
+            "success": failure is None,
+            "target_reached": target_reached,
+            "failure_reason": failure.reason.value if failure is not None else None,
+            "failure_detail": failure.detail if failure is not None else None,
+            "__perf__": _last_perf_summary,
+        }, default=str) + "\n")
+        sys.stdout.flush()
+        log.info(
+            f"[main_cli] __done__ sentinel written (delivered={delivered}, "
+            f"requested={requested}, target_reached={target_reached}, "
+            f"success={failure is None}, "
+            f"failure_reason={failure.reason.value if failure else None!r})"
+        )
+    except (BrokenPipeError, IOError, OSError):
+        log.info("[main_cli] stdout pipe closed before __done__ could be flushed")
 
 
 async def verify_business(*, website: str = "", instagram: str = "", headless: bool = True) -> dict:

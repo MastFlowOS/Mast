@@ -74,8 +74,54 @@ export type AreaWorkerPoolResult = {
  * what "zero workers" means (googleAreaPool's own runAreaWorkerPool treats
  * it as "nothing started this pass", not an error).
  */
+/**
+ * Worker Pools B Step 2's sizing formula, as a pure function:
+ *
+ *   N = min(configured Google area worker count,
+ *           number of available curated areas,
+ *           safe capacity available to this worker)
+ *
+ * Never negative; a saturated worker (capacitySlots <= 0) correctly
+ * degrades to a pool size of 0 rather than throwing — the caller decides
+ * what "zero workers" means (googleAreaPool's own runAreaWorkerPool treats
+ * it as "nothing started this pass", not an error).
+ */
 export function computeAreaPoolSize(configured: number, availableAreas: number, capacitySlots: number): number {
   return Math.max(0, Math.min(configured, availableAreas, capacitySlots));
+}
+
+/**
+ * Dynamic discovery capacity model (Phase 6 SLA requirement: 5-10 min for 10-100 leads):
+ * Scales safe concurrency with requested lead quantity:
+ *   • <= 10 leads: low concurrency (up to 2 workers)
+ *   • <= 25 leads: moderate concurrency (up to 3 workers)
+ *   • <= 50 leads: higher concurrency (up to 4 workers)
+ *   • > 50 leads : maximum safe concurrency (up to 6-8 workers or configured ceiling)
+ *
+ * Never exceeds available curated areas, measured browser slot capacity, or maxConfigured.
+ */
+export function computeDynamicDiscoveryCapacity(
+  requestedQuantity: number,
+  availableAreas: number,
+  capacitySlots: number,
+  maxConfigured: number = 8,
+): number {
+  if (requestedQuantity <= 0 || availableAreas <= 0 || capacitySlots <= 0 || maxConfigured <= 0) {
+    return 0;
+  }
+
+  let desired: number;
+  if (requestedQuantity <= 10) {
+    desired = Math.min(2, maxConfigured);
+  } else if (requestedQuantity <= 25) {
+    desired = Math.min(3, maxConfigured);
+  } else if (requestedQuantity <= 50) {
+    desired = Math.min(4, maxConfigured);
+  } else {
+    desired = Math.min(8, maxConfigured);
+  }
+
+  return Math.max(0, Math.min(desired, availableAreas, capacitySlots));
 }
 
 export type RunAreaWorkerPoolParams = {
@@ -84,6 +130,8 @@ export type RunAreaWorkerPoolParams = {
   totalCuratedAreas: number;
   /** Non-blocking: current browser-slot capacity snapshot for sizing decisions. */
   availableCapacity: number;
+  /** Optional requested quantity from the parent plan to dynamically size the pool. */
+  requestedQuantity?: number;
   /**
    * Attempts to claim one area not yet used by THIS task instance.
    * Returns `undefined` when no distinct new area remains — i.e. every
@@ -104,9 +152,10 @@ export type RunAreaWorkerPoolParams = {
 };
 
 /**
- * Runs up to `computeAreaPoolSize(...)` concurrent area workers, each
- * looping: claim a distinct area → run it → record its own outcome
- * (via the caller's `runArea`) → claim the next distinct area, until:
+ * Runs up to `computeAreaPoolSize(...)` or `computeDynamicDiscoveryCapacity(...)`
+ * concurrent area workers, each looping: claim a distinct area → run it →
+ * record its own outcome (via the caller's `runArea`) → claim the next
+ * distinct area, until:
  *   • no new distinct area remains (`claimNextArea` returns undefined), or
  *   • `isTerminal()` reports the plan is cancelled or target-reached, or
  *   • no browser slot is available to start the NEXT area (the worker
@@ -123,6 +172,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     configuredWorkers,
     totalCuratedAreas,
     availableCapacity,
+    requestedQuantity,
     claimNextArea,
     runArea,
     tryAcquireSlot,
@@ -130,7 +180,17 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     onEvent,
   } = params;
 
-  const poolSize = computeAreaPoolSize(configuredWorkers, totalCuratedAreas, availableCapacity);
+  const computedWorkers = requestedQuantity !== undefined
+    ? (requestedQuantity <= 10 ? 2 : requestedQuantity <= 25 ? 3 : requestedQuantity <= 50 ? 4 : 8)
+    : configuredWorkers;
+  const poolSize = requestedQuantity !== undefined
+    ? computeDynamicDiscoveryCapacity(requestedQuantity, totalCuratedAreas, availableCapacity, configuredWorkers)
+    : computeAreaPoolSize(configuredWorkers, totalCuratedAreas, availableCapacity);
+
+  console.info(
+    `[discovery-capacity] requested=${requestedQuantity ?? "n/a"} computedWorkers=${computedWorkers} ` +
+      `areas=${totalCuratedAreas} browserSlots=${availableCapacity} finalWorkers=${poolSize}`,
+  );
   onEvent?.({ type: "pool_start", configured: configuredWorkers, availableAreas: totalCuratedAreas, capacity: availableCapacity, poolSize });
 
   const usedAreas = new Set<string>();

@@ -426,6 +426,14 @@ async function runOneAreaAttempt(
     const elapsedMs = Date.now() - startedAt;
     recordTimeToFirstLead(payload.planId, elapsedMs);
     accepted += 1;
+    const elapsedSec = elapsedMs / 1000;
+    const leadsPerMin = elapsedSec > 0 ? ((accepted / elapsedSec) * 60).toFixed(1) : "0.0";
+    const rawPerMin = elapsedSec > 0 ? ((discovered / elapsedSec) * 60).toFixed(1) : "0.0";
+    console.info(
+      `[discovery-sla] plan=${payload.planId} task=${payload.taskId} accepted=${accepted} ` +
+        `target=${payload.request?.quantity ?? "n/a"} discovered=${discovered} rejected=${rejected} duplicates=${duplicates} ` +
+        `elapsed_ms=${elapsedMs} leads_per_min=${leadsPerMin} raw_per_min=${rawPerMin}`,
+    );
     console.log(`FINISHED`);
     if (await observeTerminalPlan()) break outer;
     } // end inner lead loop
@@ -753,6 +761,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
         totalCuratedAreas: curatedAreas.length,
         availableCapacity: browserSlotPool.available(),
+        requestedQuantity: payload.request?.quantity,
         claimNextArea: async (usedAreas) => {
           // Reuse the EXISTING claim_discovery_area() atomic claim — never
           // a second area-claim mechanism (Step 3). Two concurrent workers

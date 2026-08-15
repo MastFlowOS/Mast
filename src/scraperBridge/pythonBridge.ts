@@ -354,6 +354,25 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
     detached: process.platform !== "win32",
   });
 
+  child.on("error", (err) => {
+    console.warn(`[scraper-bridge:verify] child process error (PID: ${child.pid})`, err);
+  });
+  child.stdin.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge:verify] stdin error (PID: ${child.pid})`, err);
+    }
+  });
+  child.stdout.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge:verify] stdout error (PID: ${child.pid})`, err);
+    }
+  });
+  child.stderr.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge:verify] stderr error (PID: ${child.pid})`, err);
+    }
+  });
+
   const onAbort = () => {
     console.log(`[scraper-bridge:verify] Abort signal triggered for PID: ${child.pid}`);
     killProcessTree(child);
@@ -362,8 +381,18 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
   if (signal?.aborted) onAbort();
 
   try {
-    child.stdin.write(JSON.stringify(params));
-    child.stdin.end();
+    try {
+      child.stdin.write(JSON.stringify(params), (err) => {
+        if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
+          console.warn(`[scraper-bridge:verify] stdin write callback error (PID: ${child.pid})`, err);
+        }
+      });
+      child.stdin.end();
+    } catch (writeErr: any) {
+      if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
+        console.warn(`[scraper-bridge:verify] stdin write error (PID: ${child.pid})`, writeErr);
+      }
+    }
 
     let stdout = "";
     child.stdout.on("data", (chunk) => {
@@ -403,6 +432,25 @@ export async function runEngineEnrich(params: EngineEnrichParams, signal?: Abort
     detached: process.platform !== "win32",
   });
 
+  child.on("error", (err) => {
+    console.warn(`[scraper-bridge:enrich] child process error (PID: ${child.pid})`, err);
+  });
+  child.stdin.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge:enrich] stdin error (PID: ${child.pid})`, err);
+    }
+  });
+  child.stdout.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge:enrich] stdout error (PID: ${child.pid})`, err);
+    }
+  });
+  child.stderr.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge:enrich] stderr error (PID: ${child.pid})`, err);
+    }
+  });
+
   const onAbort = () => {
     console.log(`[scraper-bridge:enrich] Abort signal triggered for PID: ${child.pid}`);
     killProcessTree(child);
@@ -410,8 +458,18 @@ export async function runEngineEnrich(params: EngineEnrichParams, signal?: Abort
   signal?.addEventListener("abort", onAbort);
 
   try {
-    child.stdin.write(JSON.stringify(params));
-    child.stdin.end();
+    try {
+      child.stdin.write(JSON.stringify(params), (err) => {
+        if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
+          console.warn(`[scraper-bridge:enrich] stdin write callback error (PID: ${child.pid})`, err);
+        }
+      });
+      child.stdin.end();
+    } catch (writeErr: any) {
+      if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
+        console.warn(`[scraper-bridge:enrich] stdin write error (PID: ${child.pid})`, writeErr);
+      }
+    }
 
     let stdout = "";
     child.stdout.on("data", (chunk) => {
@@ -599,6 +657,25 @@ export async function* runEngineQuery(
   });
   const spawnMs = hrElapsedMs();
 
+  child.on("error", (err) => {
+    console.warn(`[scraper-bridge] child process error (PID: ${child.pid})`, err);
+  });
+  child.stdin.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge] stdin error (PID: ${child.pid})`, err);
+    }
+  });
+  child.stdout.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge] stdout error (PID: ${child.pid})`, err);
+    }
+  });
+  child.stderr.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge] stderr error (PID: ${child.pid})`, err);
+    }
+  });
+
   // LIFECYCLE FIX: the ONE authoritative listener for this child's exit —
   // established synchronously, in the same tick as spawn(), before any
   // `await` below can yield to the event loop. Every other place in this
@@ -680,8 +757,18 @@ export async function* runEngineQuery(
   const absoluteTimer = setTimeout(() => fireWatchdog("ceiling"), env.SCRAPER_SUBPROCESS_MAX_MS);
   absoluteTimer.unref?.();
 
-  child.stdin.write(JSON.stringify(params));
-  child.stdin.end();
+  try {
+    child.stdin.write(JSON.stringify(params), (err) => {
+      if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
+        console.warn(`[scraper-bridge] stdin write callback error (PID: ${child.pid})`, err);
+      }
+    });
+    child.stdin.end();
+  } catch (writeErr: any) {
+    if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge] stdin write error (PID: ${child.pid})`, writeErr);
+    }
+  }
 
   child.stderr.on("data", (chunk) => {
     // The engine logs verbosely to stderr via its own logger (get_logger) —

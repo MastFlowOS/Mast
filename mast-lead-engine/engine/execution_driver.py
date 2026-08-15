@@ -261,6 +261,7 @@ from workers.merge_worker import MergeWorker
 from workers.qualification_worker import QualificationWorker
 from workers.scoring_worker import ScoringWorker
 from workers.storage_worker import StorageWorker
+from utils.parsing import is_valid_email
 
 # -- Batch intelligence chain (Part 3, MAST Lead Engine 2.0 continuation) --
 # The domain-layer subsystems Prioritization/Ranking/Mission Generation/
@@ -1106,14 +1107,15 @@ def build_seven_stage_pipeline(
         # AND no website to enable downstream discovery).
         if required_channels:
             has_site = bool(candidate.website)
+            has_maps_valid_email = bool(candidate.email and is_valid_email(candidate.email))
             for ch in required_channels:
                 if ch == "website" and not has_site:
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
                     log.info("discovery: pipeline_id=%s safe-pruned (missing website for website channel)", candidate.pipeline_id)
                     return
-                elif ch == "email" and not has_site:
+                elif ch == "email" and not has_maps_valid_email and not has_site:
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
-                    log.info("discovery: pipeline_id=%s safe-pruned (no website to discover email)", candidate.pipeline_id)
+                    log.info("discovery: pipeline_id=%s safe-pruned (no valid email on Maps and no website to discover email)", candidate.pipeline_id)
                     return
                 elif ch == "phone" and not candidate.phone and not has_site:
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
@@ -1150,7 +1152,7 @@ def build_seven_stage_pipeline(
     def _website_downstream(intel: WebsiteIntel) -> Optional[WebsiteIntel]:
         if required_channels:
             business = fan_in.get_business(intel.pipeline_id)
-            has_maps_email = bool(business and getattr(business, "email", None))
+            has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
             if "website" in required_channels and intel.website_reachable is False:
                 _emit("website", "candidate_early_channel_pruned", intel.pipeline_id)
                 fan_in.prune_business(intel.pipeline_id, "unreachable_website")
@@ -1202,8 +1204,8 @@ def build_seven_stage_pipeline(
     def _contact_downstream(intel) -> None:
         if required_channels:
             business = fan_in.get_business(intel.pipeline_id)
-            has_maps_email = bool(business and getattr(business, "email", None))
-            has_contact_email = bool(intel and intel.emails)
+            has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
+            has_contact_email = bool(intel and any(is_valid_email(e) for e in (intel.emails or ())))
             has_maps_phone = bool(business and getattr(business, "phone", None))
             has_contact_phone = bool(intel and intel.phones)
 
@@ -1417,7 +1419,7 @@ def build_seven_stage_pipeline(
         if outcome.stage_name == "website":
             if required_channels:
                 business = fan_in.get_business(pipeline_id)
-                has_maps_email = bool(business and getattr(business, "email", None))
+                has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
                 if "website" in required_channels or ("email" in required_channels and not has_maps_email):
                     _emit("website", "candidate_early_channel_pruned", pipeline_id)
                     fan_in.prune_business(pipeline_id, "website_stage_failed")
@@ -1432,7 +1434,7 @@ def build_seven_stage_pipeline(
         elif outcome.stage_name == "contact":
             if required_channels:
                 business = fan_in.get_business(pipeline_id)
-                has_maps_email = bool(business and getattr(business, "email", None))
+                has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
                 has_maps_phone = bool(business and getattr(business, "phone", None))
                 if ("email" in required_channels and not has_maps_email) or ("phone" in required_channels and not has_maps_phone):
                     _emit("contact", "candidate_early_channel_pruned", pipeline_id)

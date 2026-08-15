@@ -22,6 +22,7 @@ from typing import Mapping, Sequence
 
 from business import Business
 from business_identity import BusinessIdentity
+from utils.parsing import is_valid_email
 
 from .models import (
     DEFAULT_MERGE_POLICY,
@@ -270,6 +271,8 @@ class BusinessMergeService:
                 for item in col_val:
                     if item and isinstance(item, str) and item.strip():
                         norm_item = item.strip()
+                        if field_name == "emails" and not is_valid_email(norm_item):
+                            continue
                         if norm_item not in combined:
                             combined.append(norm_item)
                             has_contributed = True

@@ -177,6 +177,7 @@ from typing import Dict, Optional, Tuple
 from urllib.parse import urljoin
 
 from engine.contracts import ContactIntel, WebsiteIntel
+from utils.parsing import is_valid_email
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
 
@@ -341,14 +342,17 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
 
     @staticmethod
     def _extract_emails(html: str) -> Tuple[str, ...]:
+        if not html:
+            return ()
         found: "dict[str, None]" = {}
         for href in _ANCHOR_RE.findall(html):
             if href.lower().startswith(_MAILTO_PREFIX):
                 address = href[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
-                if address:
-                    found.setdefault(address, None)
+                if address and is_valid_email(address):
+                    found.setdefault(address.lower(), None)
         for match in _EMAIL_RE.findall(html):
-            found.setdefault(match, None)
+            if is_valid_email(match):
+                found.setdefault(match.lower(), None)
         return tuple(found)
 
     @staticmethod

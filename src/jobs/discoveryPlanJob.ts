@@ -14,7 +14,7 @@ import type { EngineLead, EngineDoneInfo } from "../scraperBridge/pythonBridge.j
 import { registerRequestAbortController, terminateRequest, type RequestTerminalReason } from "../discovery/requestLifecycle.js";
 import { cityTransitionFor } from "../discovery/cityScheduling.js";
 import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
-import { getAreasForCity } from "../lib/geo/cityAreas.js";
+import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
 import {
@@ -671,19 +671,13 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     const provider = getProvider(sourceId);
     const generator = getGenerator(sourceId);
 
-    // ── Phase 3C-4C-B / Worker Pools B: curated areas for this city ──────
-    const curatedAreas = getAreasForCity(task.country_code, task.city);
+    // ── Phase 3C-4C-B / Worker Pools B: curated/sub areas for this city ──────
+    const curatedAreas = getAreasForCity(task.country_code, task.city) ?? getAreasForCityOrDefault(task.country_code, task.city);
 
-    // Worker Pools B — Google Maps area worker pool. STRICT SCOPE: only
-    // Google Maps, only cities with curated areas, and only when
-    // GOOGLE_MAPS_AREA_WORKERS has been deliberately raised above its
-    // conservative default of 1. At the default, this condition is always
-    // false and every task takes the EXACT SAME single-area code path as
-    // before this phase (Step 1's "safe default must preserve today's
-    // behavior" requirement) — including for Google Maps cities that do
-    // have curated areas, which still claim exactly one area and run
-    // exactly one search, same as always.
-    const useGoogleAreaPool = sourceId === "google_maps" && hasCuratedAreas(curatedAreas);
+    // Worker Pools B — Google Maps area worker pool.
+    // Every Google Maps task runs through the dynamic area worker pool to satisfy
+    // requested quantity with dynamic concurrency (e.g. 2 workers for 10 leads).
+    const useGoogleAreaPool = sourceId === "google_maps" && curatedAreas.length > 0;
 
     const attemptCtx = { db, task, payload, profiler, provider, generator, requestAbort, observeTerminalPlan, startedAt };
 
@@ -695,9 +689,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     let poolResult: AreaWorkerPoolResult | undefined;
 
     if (!useGoogleAreaPool) {
-      // ── Legacy / non-pooled path (unchanged behavior) ───────────────────
-      // Any provider, any city without curated areas, or a Google Maps
-      // city with the default GOOGLE_MAPS_AREA_WORKERS=1.
+      // ── Legacy / non-pooled path (non-Google providers or empty areas) ──
       if (hasCuratedAreas(curatedAreas)) {
         claimedArea = await claimAreaForCity(db, {
           niche: task.niche,
@@ -758,11 +750,15 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       // ── Worker Pools B: Google Maps area worker pool ────────────────────
       const browserSlotPool = getBrowserSlotPool();
 
+      const effectiveRequested = payload.request?.quantity ?? (
+        await db.from("discovery_plans").select("requested_count").eq("id", payload.planId).maybeSingle()
+      ).data?.requested_count;
+
       poolResult = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
         totalCuratedAreas: curatedAreas.length,
         availableCapacity: browserSlotPool.available(),
-        requestedQuantity: payload.request?.quantity,
+        requestedQuantity: effectiveRequested,
         claimNextArea: async (usedAreas) => {
           // Reuse the EXISTING claim_discovery_area() atomic claim — never
           // a second area-claim mechanism (Step 3). Two concurrent workers

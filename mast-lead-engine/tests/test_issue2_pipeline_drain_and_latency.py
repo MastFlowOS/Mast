@@ -117,7 +117,7 @@ def test_failed_enrichment_stages_do_not_hang_fan_in_pending_count():
     # Candidate 3: Website succeeds, Instagram succeeds, Contact succeeds with email
     fan_in.record_website_result("c3", WebsiteIntel(pipeline_id="c3", website_reachable=True))
     fan_in.record_instagram_result("c3", InstagramIntel(pipeline_id="c3", profile_reachable=True))
-    contact_out = stage_map["contact"].build_downstream(ContactIntel(pipeline_id="c3", emails=("c3@example.com",)))
+    contact_out = stage_map["contact"].build_downstream(ContactIntel(pipeline_id="c3", emails=("c3@realbiz.com",)))
     assert not fan_in.is_pruned("c3")
     assert fan_in.pending_count() == 0  # Fully completed and released!
 

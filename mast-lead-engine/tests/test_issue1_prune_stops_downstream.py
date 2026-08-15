@@ -152,7 +152,7 @@ def test_candidate_remains_satisfiable_merge_executes_normally():
     stage_map["instagram"].build_downstream(ig_intel)
 
     # Contact finds valid email
-    contact_intel = ContactIntel(pipeline_id="p3", emails=("owner@example.com",))
+    contact_intel = ContactIntel(pipeline_id="p3", emails=("owner@realbiz.com",))
     stage_map["contact"].build_downstream(contact_intel)
 
     assert not fan_in.is_pruned("p3")

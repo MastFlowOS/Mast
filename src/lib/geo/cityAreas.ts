@@ -43,6 +43,8 @@ const CITY_AREAS: Record<string, string[]> = {
   "FR:Paris": ["Le Marais", "Montmartre", "Saint-Germain-des-Prés", "Belleville", "Bastille"],
 };
 
+export const DEFAULT_SUB_AREAS = ["Downtown", "North", "South", "East", "West", "Central"];
+
 /**
  * Returns this city's curated area list, or `undefined` when none exists.
  * `undefined` (not an empty array) is the deliberate "no curated areas"
@@ -53,3 +55,14 @@ const CITY_AREAS: Record<string, string[]> = {
 export function getAreasForCity(countryCode: string, city: string): string[] | undefined {
   return CITY_AREAS[`${countryCode}:${city}`];
 }
+
+/**
+ * Returns curated areas for the city if available, otherwise returns
+ * standard geographic sub-areas so any Google Maps city task can
+ * participate in the dynamic area worker pool.
+ */
+export function getAreasForCityOrDefault(countryCode: string, city: string): string[] {
+  const curated = getAreasForCity(countryCode, city);
+  return curated && curated.length > 0 ? curated : DEFAULT_SUB_AREAS;
+}
+

@@ -115,7 +115,43 @@ def pick_best_phone(candidates: list[str], country: str = "") -> str:
 # Email
 # ──────────────────────────────────────────────────────────────────────────────
 
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+_SCAN_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+_PLACEHOLDER_EMAIL_LOCAL_PARTS = frozenset({
+    "test",
+    "example",
+    "someone",
+    "user",
+    "youremail",
+    "your-email",
+    "name",
+    "firstname.lastname",
+    "email",
+})
+
+_PLACEHOLDER_EMAIL_DOMAINS = frozenset({
+    "example.com",
+    "example.org",
+    "test.com",
+    "domain.com",
+    "email.com",
+    "yourdomain.com",
+    "placeholder.com",
+    "sentry.io",
+    "wixpress.com",
+    "godaddy.com",
+    "squarespace.com",
+    "shopify.com",
+    "wix.com",
+    "mailchimp.com",
+    "klaviyo.com",
+    "sendgrid.net",
+    "constantcontact.com",
+    "hubspot.com",
+    "amazonaws.com",
+    "cloudflare.com",
+})
 
 _EMAIL_BLOCKLIST_PREFIXES = (
     "noreply@", "no-reply@", "donotreply@", "do-not-reply@",
@@ -126,14 +162,6 @@ _EMAIL_BLOCKLIST_PREFIXES = (
     "demo@", "hostmaster@", "admin@wordpress",
 )
 
-_EMAIL_BLOCKLIST_DOMAINS = (
-    "sentry.io", "wixpress.com", "godaddy.com", "squarespace.com",
-    "shopify.com", "wix.com", "mailchimp.com", "klaviyo.com",
-    "sendgrid.net", "constantcontact.com", "hubspot.com",
-    "example.com", "placeholder.com", "domain.com",
-    "amazonaws.com", "cloudflare.com",
-)
-
 _EMAIL_PRIORITY = (
     "hello@", "hi@", "info@", "contact@", "team@",
     "bookings@", "reservations@", "reserve@", "events@",
@@ -142,18 +170,43 @@ _EMAIL_PRIORITY = (
 )
 
 
+def is_valid_email(value: str | None) -> bool:
+    """Canonical email validation matching Node's leadValidation.ts isValidEmail().
+
+    Rejects missing/blank emails, syntax violations, placeholder local-parts,
+    placeholder domains, and automated system/no-reply prefixes.
+    """
+    if not value:
+        return False
+    email = value.strip().lower()
+    if not email:
+        return False
+    if not _EMAIL_RE.match(email):
+        return False
+    if "@" not in email:
+        return False
+    local, domain = email.split("@", 1)
+    if not local or not domain:
+        return False
+    if len(local) > 50:
+        return False
+    if local in _PLACEHOLDER_EMAIL_LOCAL_PARTS:
+        return False
+    if any(email.startswith(p) for p in _EMAIL_BLOCKLIST_PREFIXES):
+        return False
+    if domain in _PLACEHOLDER_EMAIL_DOMAINS or any(domain == d or domain.endswith("." + d) for d in _PLACEHOLDER_EMAIL_DOMAINS):
+        return False
+    return True
+
+
 def _email_blocked(email: str) -> bool:
-    low = email.lower()
-    if any(low.startswith(p) for p in _EMAIL_BLOCKLIST_PREFIXES):
-        return True
-    domain = low.split("@", 1)[-1]
-    if any(domain == d or domain.endswith("." + d) for d in _EMAIL_BLOCKLIST_DOMAINS):
-        return True
-    return False
+    return not is_valid_email(email)
 
 
 def extract_emails(html: str) -> list[str]:
     """Extract all valid emails from HTML."""
+    if not html:
+        return []
     found: list[str] = []
     seen: set[str] = set()
 
@@ -161,18 +214,19 @@ def extract_emails(html: str) -> list[str]:
     for m in re.findall(r'mailto:([^"\'>\s?&]+)', html, flags=re.I):
         if "@" in m:
             e = urllib.parse.unquote(m).strip().lower()
-            if e not in seen and not _email_blocked(e) and _EMAIL_RE.match(e):
+            if e not in seen and is_valid_email(e):
                 seen.add(e)
                 found.append(e)
 
     # Raw email scan
-    for m in _EMAIL_RE.findall(html):
+    for m in _SCAN_EMAIL_RE.findall(html):
         e = m.lower()
-        if e not in seen and not _email_blocked(e):
+        if e not in seen and is_valid_email(e):
             seen.add(e)
             found.append(e)
 
     return found
+
 
 
 _EMAIL_ROLE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (

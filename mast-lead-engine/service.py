@@ -83,6 +83,7 @@ from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
 from utils.lifecycle_tracker import log_milestone
 from utils.perf import RunProfiler, NullProfiler
 from utils.pipeline_trace import PipelineTracer
+from utils.parsing import is_valid_email
 
 # Engine 2.0 — production entrypoint now drives discovery / enrichment /
 # qualification / storage through the real seven-stage runtime instead of
@@ -300,7 +301,7 @@ def _opportunity_to_lead_dict(
     qualification = opportunity.qualification
     score = opportunity.score
 
-    emails = list(contact_intel.emails) if contact_intel and contact_intel.emails else []
+    emails = [e for e in (contact_intel.emails or ()) if is_valid_email(e)] if contact_intel else []
     phones = list(contact_intel.phones) if contact_intel and contact_intel.phones else []
 
     lead_dict: dict[str, Any] = {
@@ -833,6 +834,11 @@ async def run_query(
                         # this report.
                         pid = tracer.discover(lead_dict.get("name") or "<unnamed>")
                         tracer.transition(pid, "RESULTS_QUEUE")
+
+                        if required_channels and "email" in required_channels and not is_valid_email(lead_dict.get("email")):
+                            stats.skip("invalid_or_placeholder_email")
+                            tracer.reject(pid, "invalid_or_placeholder_email")
+                            continue
 
                         score_value = lead_dict.get("score") or 0
                         if score_value < min_score:

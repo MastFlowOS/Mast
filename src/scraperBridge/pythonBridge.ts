@@ -3,7 +3,10 @@ import { createInterface } from "node:readline";
 import path from "node:path";
 import { env } from "../config/env.js";
 import { workerMetrics } from "../lib/observability.js";
-import { registerRequestEngineProcess } from "../discovery/requestLifecycle.js";
+import {
+  registerRequestEngineProcess,
+  getRequestTerminalReason,
+} from "../discovery/requestLifecycle.js";
 
 export type EngineLead = {
   name: string;
@@ -880,12 +883,32 @@ export async function* runEngineQuery(
         // reports `success: false`, `exhausted` is never trusted, matching
         // what service.py's _main_cli now guarantees on its side
         // (`exhausted` is always written as `false` alongside a failure).
-        const success = parsed.success === undefined ? true : Boolean(parsed.success);
-        const failureReason = success ? undefined : (parsed.failure_reason as EngineDiscoveryFailureReason | undefined);
-        const failureDetail = success ? undefined : (parsed.failure_detail as string | undefined);
+        const rawSuccess = parsed.success === undefined ? true : Boolean(parsed.success);
+        const rawFailureReason = rawSuccess ? undefined : (parsed.failure_reason as EngineDiscoveryFailureReason | undefined);
+        const rawFailureDetail = rawSuccess ? undefined : (parsed.failure_detail as string | undefined);
         // LIFECYCLE FIX: additive field — see EngineDoneInfo.targetReached.
-        const targetReached =
+        const rawTargetReached =
           parsed.target_reached === undefined ? undefined : Boolean(parsed.target_reached);
+
+        const requestTerminalReason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
+        const isParentTargetReached =
+          requestTerminalReason === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED";
+
+        // LIFECYCLE FIX (TARGET_REACHED child-engine status semantics):
+        // When the parent discovery request has already reached its authoritative
+        // target and intentionally terminates the child engine via SIGTERM,
+        // the child cancellation is NOT an engine failure. It must be classified
+        // as a successful target-reached early stop.
+        const isTargetReachedEarlyStop =
+          !timedOut &&
+          isParentTargetReached &&
+          ((!rawSuccess && rawFailureReason === "CANCELLED") || !rawTargetReached);
+
+        const success = isTargetReachedEarlyStop ? true : rawSuccess;
+        const targetReached = isTargetReachedEarlyStop ? true : rawTargetReached;
+        const failureReason = isTargetReachedEarlyStop ? undefined : rawFailureReason;
+        const failureDetail = isTargetReachedEarlyStop ? undefined : rawFailureDetail;
+
         console.log(
           `[scraper-bridge] received __done__ — delivered=${parsed.delivered} ` +
             `exhausted=${parsed.exhausted} success=${success} targetReached=${targetReached ?? "n/a"} ` +
@@ -895,6 +918,10 @@ export async function* runEngineQuery(
         if (!success) {
           console.warn(
             `[scraper-bridge] discovery FAILED (not exhausted) — reason=${failureReason} detail=${failureDetail ?? "n/a"}`,
+          );
+        } else if (isTargetReachedEarlyStop) {
+          console.log(
+            `[scraper-bridge] child engine stopped early: TARGET_REACHED (parent target satisfied)`,
           );
         }
         // LIFECYCLE FIX: reconciliation at the bridge transport boundary —
@@ -925,7 +952,7 @@ export async function* runEngineQuery(
         onDone?.({
           delivered: pythonYielded,
           requested: Number(parsed.requested ?? 0),
-          exhausted: success ? Boolean(parsed.exhausted) : false,
+          exhausted: success ? (isTargetReachedEarlyStop ? false : Boolean(parsed.exhausted)) : false,
           success,
           targetReached,
           failureReason,
@@ -959,62 +986,104 @@ export async function* runEngineQuery(
     signal?.removeEventListener("abort", onAbort);
     unregisterRequestProcess();
     if (child.exitCode === null && child.signalCode === null) {
+      abortRequested = true;
       console.log(`[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid}`);
       await gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
     }
-  }
 
-  // LIFECYCLE FIX: read from the single shared exit promise created right
-  // after spawn(), rather than registering a fresh `"close"` listener here.
-  // By this point the child may already have closed (e.g. it exited well
-  // before the read loop above finished, or gracefulKillProcessTree() just
-  // resolved a moment ago) — `childClosed` still resolves correctly in
-  // every case because it was attached before the event could possibly
-  // have fired, not after.
-  const { code: exitCode, signal: closeSignal } = await childClosed;
+    // LIFECYCLE FIX: read from the single shared exit promise created right
+    // after spawn(), rather than registering a fresh `"close"` listener here.
+    // By this point the child may already have closed (e.g. it exited well
+    // before the read loop above finished, or gracefulKillProcessTree() just
+    // resolved a moment ago) — `childClosed` still resolves correctly in
+    // every case because it was attached before the event could possibly
+    // have fired, not after.
+    const { code: exitCode, signal: closeSignal } = await childClosed;
 
-  // Phase 7 observability: decrement active browsers counter on exit.
-  workerMetrics.activeBrowsers = Math.max(0, workerMetrics.activeBrowsers - 1);
-  if (exitCode !== 0 && exitCode !== null) {
-    workerMetrics.subprocessRestarts += 1;
-  }
+    // Phase 7 observability: decrement active browsers counter on exit.
+    workerMetrics.activeBrowsers = Math.max(0, workerMetrics.activeBrowsers - 1);
+    if (exitCode !== 0 && exitCode !== null) {
+      workerMetrics.subprocessRestarts += 1;
+    }
 
-  console.log(
-    `[scraper-bridge] process exited — PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}, ` +
-      `sawDone=${sawDone}, timedOut=${timedOut}${timedOutReason ? ` (${timedOutReason})` : ""}`,
-  );
-  if (!sawDone) {
-    // Explicit flag for the exact gap this audit called out: the process
-    // ended (for whatever reason) without ever emitting the __done__
-    // sentinel — this is observability only, no behavior change below.
-    console.warn(
-      `[scraper-bridge] __done__ was NEVER received before process exit (PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}) — stream ended without engine confirmation`,
+    console.log(
+      `[scraper-bridge] process exited — PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}, ` +
+        `sawDone=${sawDone}, timedOut=${timedOut}${timedOutReason ? ` (${timedOutReason})` : ""}`,
     );
-  }
-  // LIFECYCLE FIX (completion semantics): a watchdog firing no longer
-  // unconditionally throws. If the subprocess still managed to report
-  // __done__ (service.py's own cooperative-shutdown fix — see
-  // COOPERATIVE_SHUTDOWN_GRACE_S there — now makes this the common case
-  // for a watchdog-triggered stop, not the exception), the protocol
-  // already told the caller everything it needs via `onDone` above
-  // (success=false, failureReason="CANCELLED", plus every lead already
-  // yielded through this same generator) — throwing here on top of that
-  // would crash a caller's `for await` loop (e.g. discoverJob.ts) AFTER
-  // it already received a fully consistent, correctly-accounted result,
-  // which is exactly the "invalid" completion-semantics gap this phase
-  // exists to close. Only throw when the protocol genuinely never
-  // completed — i.e. the caller has no other way to learn what happened.
-  if (timedOut && !sawDone) {
-    const label =
-      timedOutReason === "inactivity"
-        ? `inactivity timeout (SCRAPER_SUBPROCESS_INACTIVITY_MS=${env.SCRAPER_SUBPROCESS_INACTIVITY_MS}ms)`
-        : `absolute safety ceiling (SCRAPER_SUBPROCESS_MAX_MS=${env.SCRAPER_SUBPROCESS_MAX_MS}ms)`;
-    throw new Error(
-      `scraper engine subprocess exceeded its ${label} and was terminated before it could report completion`,
-    );
-  }
-  if (exitCode !== 0 && !readError && !sawDone && !abortRequested) {
-    throw new Error(`scraper engine exited with code ${exitCode}`);
+    if (!sawDone) {
+      // Explicit flag for the exact gap this audit called out: the process
+      // ended (for whatever reason) without ever emitting the __done__
+      // sentinel — synthesize onDone from bridge/request lifecycle state.
+      console.warn(
+        `[scraper-bridge] __done__ was NEVER received before process exit (PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}) — synthesizing onDone from bridge state`,
+      );
+      const requestTerminalReason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
+      const isParentTargetReached =
+        requestTerminalReason === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED";
+      const isUserCancelled =
+        requestTerminalReason === "USER_CANCELLED" || signal?.reason === "USER_CANCELLED" || abortRequested;
+
+      const success = !timedOut && isParentTargetReached;
+      const targetReached = isParentTargetReached;
+      const failureReason: EngineDiscoveryFailureReason | undefined = success
+        ? undefined
+        : (timedOut || isUserCancelled)
+          ? "CANCELLED"
+          : "SCRAPER_ERROR";
+      const failureDetail = success
+        ? undefined
+        : timedOut
+          ? `Process timed out (${timedOutReason}) before reporting __done__`
+          : isUserCancelled
+            ? "Process aborted before reporting __done__"
+            : `Process exited with code ${exitCode} before reporting __done__`;
+      const terminationReason: EngineDoneInfo["terminationReason"] = success
+        ? "SUCCESS_TARGET_REACHED"
+        : failureReason === "CANCELLED"
+          ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
+          : "FAILURE";
+
+      onDone?.({
+        delivered: bridgeForwarded,
+        requested: Number(params.deliver_target ?? params.max_results ?? 0),
+        exhausted: false,
+        success,
+        targetReached,
+        failureReason,
+        failureDetail,
+        terminationReason,
+        bridgeTimings: { spawnMs, firstLineMs, firstLeadMs },
+        progressMarks,
+      });
+    }
+    // LIFECYCLE FIX (completion semantics): a watchdog firing no longer
+    // unconditionally throws. If the subprocess still managed to report
+    // __done__ (service.py's own cooperative-shutdown fix — see
+    // COOPERATIVE_SHUTDOWN_GRACE_S there — now makes this the common case
+    // for a watchdog-triggered stop, not the exception), the protocol
+    // already told the caller everything it needs via `onDone` above
+    // (success=false, failureReason="CANCELLED", plus every lead already
+    // yielded through this same generator) — throwing here on top of that
+    // would crash a caller's `for await` loop (e.g. discoverJob.ts) AFTER
+    // it already received a fully consistent, correctly-accounted result,
+    // which is exactly the "invalid" completion-semantics gap this phase
+    // exists to close. Only throw when the protocol genuinely never
+    // completed — i.e. the caller has no other way to learn what happened.
+    if (timedOut && !sawDone) {
+      const label =
+        timedOutReason === "inactivity"
+          ? `inactivity timeout (SCRAPER_SUBPROCESS_INACTIVITY_MS=${env.SCRAPER_SUBPROCESS_INACTIVITY_MS}ms)`
+          : `absolute safety ceiling (SCRAPER_SUBPROCESS_MAX_MS=${env.SCRAPER_SUBPROCESS_MAX_MS}ms)`;
+      throw new Error(
+        `scraper engine subprocess exceeded its ${label} and was terminated before it could report completion`,
+      );
+    }
+    const requestTerminalReason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
+    const isParentTargetReached =
+      requestTerminalReason === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED";
+    if (exitCode !== 0 && !readError && !sawDone && !abortRequested && !isParentTargetReached) {
+      throw new Error(`scraper engine exited with code ${exitCode}`);
+    }
   }
 }
 /**

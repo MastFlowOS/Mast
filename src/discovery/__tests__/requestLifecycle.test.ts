@@ -120,3 +120,19 @@ test("omitting terminationReason preserves the exact previous two-argument behav
   assert.equal(cityTransitionFor({ candidatesFound: 10, acceptedLeads: 0 }, false), "CITY_NO_PROGRESS");
   assert.equal(cityTransitionFor({ candidatesFound: 10, acceptedLeads: 0 }, true), "CITY_EXHAUSTED");
 });
+
+test("getRequestTerminalReason returns the terminal reason when set and undefined when active", async () => {
+  const { getRequestTerminalReason } = await import("../requestLifecycle.js");
+  __testing.reset();
+  const reqId = "test-terminal-reason-check";
+  const controller = new AbortController();
+  const unregister = registerRequestAbortController(reqId, controller);
+
+  assert.equal(getRequestTerminalReason(reqId), undefined);
+  terminateRequest(reqId, "TARGET_REACHED");
+  assert.equal(getRequestTerminalReason(reqId), "TARGET_REACHED");
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(controller.signal.reason, "TARGET_REACHED");
+  unregister();
+});
+

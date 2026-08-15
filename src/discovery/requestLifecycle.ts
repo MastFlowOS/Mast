@@ -47,6 +47,11 @@ export function isRequestActive(requestId: string): boolean {
   return runtime.controllers.size > 0 || runtime.processes.size > 0;
 }
 
+export function getRequestTerminalReason(requestId: string | undefined): RequestTerminalReason | undefined {
+  if (!requestId) return undefined;
+  return runtimes.get(requestId)?.terminalReason;
+}
+
 export function registerRequestAbortController(requestId: string, controller: AbortController): () => void {
   const runtime = runtimeFor(requestId);
   runtime.controllers.add(controller);

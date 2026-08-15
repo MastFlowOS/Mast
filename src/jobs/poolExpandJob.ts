@@ -372,7 +372,8 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 const { data: jobStatus } = await supabaseAdmin.from("scrape_jobs")
                   .select("status").eq("id", followUp.scrapeJobId).maybeSingle();
                 if (jobStatus?.status === "cancelled") {
-                  abortController.abort();
+                  if (reqId) terminateRequest(reqId, "USER_CANCELLED");
+                  abortController.abort("USER_CANCELLED");
                   break outer;
                 }
 
@@ -385,18 +386,18 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                   console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
                   userPlanLimitHit = true;
                   if (reqId) terminateRequest(reqId, "EXHAUSTED");
-                  abortController.abort();
+                  abortController.abort("EXHAUSTED");
                   break outer;
                 }
 
                 if (newForUser >= payload.shortfall) {
                   if (reqId) terminateRequest(reqId, "TARGET_REACHED");
-                  abortController.abort();
+                  abortController.abort("TARGET_REACHED");
                   break outer;
                 }
               } else if (delivered >= payload.shortfall) {
                 if (reqId) terminateRequest(reqId, "TARGET_REACHED");
-                abortController.abort();
+                abortController.abort("TARGET_REACHED");
                 break outer;
               }
 

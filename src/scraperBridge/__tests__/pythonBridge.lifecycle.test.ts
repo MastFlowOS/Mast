@@ -432,4 +432,134 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
       env.SCRAPER_ENGINE_PATH = originalPath;
     }
   });
+
+  test("11. parent target reached (5/5) with child requested=20 — abort classifies as SUCCESS_TARGET_REACHED, not failure", async () => {
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const lifecycle = await import("../../discovery/requestLifecycle.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    const requestId = "bridge-target-reached-test";
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "target-reached-engine");
+    try {
+      const abortController = new AbortController();
+      let deliveredCount = 0;
+      let doneInfo: any = null;
+      await withTimeout(
+        (async () => {
+          for await (const _lead of runEngineQuery(
+            { query: "test", city: "Testville", max_results: 20 },
+            abortController.signal,
+            (info) => {
+              doneInfo = info;
+            },
+            { requestId },
+          )) {
+            deliveredCount += 1;
+            if (deliveredCount >= 5) {
+              lifecycle.terminateRequest(requestId, "TARGET_REACHED");
+              abortController.abort("TARGET_REACHED");
+              break;
+            }
+          }
+        })(),
+        5000,
+        "runEngineQuery TARGET_REACHED early stop",
+      );
+
+      assert.equal(deliveredCount, 5, "must consume exactly 5 leads");
+      assert.ok(doneInfo !== null, "onDone must be called");
+      assert.equal(doneInfo.success, true, "child final __done__ must NOT report failure when parent target was reached");
+      assert.equal(doneInfo.targetReached, true, "targetReached must be true");
+      assert.equal(doneInfo.failureReason, undefined, "failureReason must be undefined on successful early stop");
+      assert.equal(doneInfo.terminationReason, "SUCCESS_TARGET_REACHED", "terminationReason must be SUCCESS_TARGET_REACHED");
+      assert.equal(doneInfo.exhausted, false, "exhausted must be false");
+      assert.equal(lifecycle.getRequestTerminalReason(requestId), "TARGET_REACHED", "parent request remains TARGET_REACHED");
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+      lifecycle.__testing.reset();
+    }
+  });
+
+  test("12. real user cancellation preserves CANCELLED failure semantics", async () => {
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const lifecycle = await import("../../discovery/requestLifecycle.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    const requestId = "bridge-user-cancel-test";
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "target-reached-engine");
+    try {
+      const abortController = new AbortController();
+      let deliveredCount = 0;
+      let doneInfo: any = null;
+      await withTimeout(
+        (async () => {
+          for await (const _lead of runEngineQuery(
+            { query: "test", city: "Testville", max_results: 20 },
+            abortController.signal,
+            (info) => {
+              doneInfo = info;
+            },
+            { requestId },
+          )) {
+            deliveredCount += 1;
+            if (deliveredCount >= 2) {
+              lifecycle.terminateRequest(requestId, "USER_CANCELLED");
+              abortController.abort("USER_CANCELLED");
+              break;
+            }
+          }
+        })(),
+        5000,
+        "runEngineQuery user cancellation",
+      );
+
+      assert.equal(deliveredCount, 2);
+      assert.ok(doneInfo !== null, "onDone must be called");
+      assert.equal(doneInfo.success, false, "success must be false for user cancellation");
+      assert.equal(doneInfo.failureReason, "CANCELLED", "failureReason must remain CANCELLED");
+      assert.equal(doneInfo.terminationReason, "CANCELLED", "terminationReason must remain CANCELLED");
+      assert.equal(lifecycle.getRequestTerminalReason(requestId), "USER_CANCELLED");
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+      lifecycle.__testing.reset();
+    }
+  });
+
+  test("13. engine emits CANCELLED __done__ when parent TARGET_REACHED — bridge reconciles __done__ to success=true, targetReached=true, terminationReason=SUCCESS_TARGET_REACHED", async () => {
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const lifecycle = await import("../../discovery/requestLifecycle.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    const requestId = "bridge-done-reconciliation-test";
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "cancelled-done-engine");
+    try {
+      let doneInfo: any = null;
+      const leads: unknown[] = [];
+      for await (const lead of runEngineQuery(
+        { query: "test", city: "Testville", max_results: 20 },
+        undefined,
+        (info) => {
+          doneInfo = info;
+        },
+        { requestId },
+      )) {
+        leads.push(lead);
+        if (leads.length === 5) {
+          lifecycle.terminateRequest(requestId, "TARGET_REACHED");
+        }
+      }
+
+      assert.equal(leads.length, 5, "must receive all 5 leads");
+      assert.ok(doneInfo !== null, "onDone must be called");
+      assert.equal(doneInfo.delivered, 5);
+      assert.equal(doneInfo.requested, 20);
+      assert.equal(doneInfo.success, true, "reconciled success must be true");
+      assert.equal(doneInfo.targetReached, true, "reconciled targetReached must be true");
+      assert.equal(doneInfo.failureReason, undefined, "failureReason must be cleared");
+      assert.equal(doneInfo.failureDetail, undefined, "failureDetail must be cleared");
+      assert.equal(doneInfo.terminationReason, "SUCCESS_TARGET_REACHED", "terminationReason must be SUCCESS_TARGET_REACHED");
+      assert.equal(doneInfo.exhausted, false, "exhausted must be false");
+      assert.equal(lifecycle.getRequestTerminalReason(requestId), "TARGET_REACHED");
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+      lifecycle.__testing.reset();
+    }
+  });
 });

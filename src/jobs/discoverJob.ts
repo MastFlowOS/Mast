@@ -320,7 +320,8 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
               .select("status").eq("id", payload.scrapeJobId).maybeSingle();
             if (jobRow?.status === "cancelled") {
               console.log(`[discoverJob] user=${payload.userId} cancelled mid-run — aborting`);
-              abortController.abort();
+              terminateRequest(payload.scrapeJobId, "USER_CANCELLED");
+              abortController.abort("USER_CANCELLED");
               break outer;
             }
 
@@ -332,12 +333,14 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
             if (result.limitReached) {
               console.log(`[discoverJob] user=${payload.userId} hit their plan limit mid-run — stopping early`);
               sawLimitReached = true;
-              abortController.abort();
+              terminateRequest(payload.scrapeJobId, "EXHAUSTED");
+              abortController.abort("EXHAUSTED");
               break outer;
             }
 
             if (delivered >= payload.quantity) {
               terminateRequest(payload.scrapeJobId, "TARGET_REACHED");
+              abortController.abort("TARGET_REACHED");
               break outer;
             }
 

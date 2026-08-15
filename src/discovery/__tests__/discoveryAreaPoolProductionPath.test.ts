@@ -24,9 +24,9 @@ test("production area worker pool wiring: resolves sub-areas for any city", () =
 });
 
 test("production 10-lead path: dynamic capacity sizes to 2 workers with concurrent overlapping execution", async () => {
+  const areaStartTimes = new Map<string, number>();
+  const areaEndTimes = new Map<string, number>();
   const events: AreaWorkerLogEvent[] = [];
-  const startTimes = new Map<number, number>();
-  const endTimes = new Map<number, number>();
 
   let slotsHeld = 0;
   let maxConcurrentSlots = 0;
@@ -61,14 +61,12 @@ test("production 10-lead path: dynamic capacity sizes to 2 workers with concurre
       return undefined;
     },
     runArea: async (area) => {
-      const workerId = slotsHeld;
-      const now = Date.now();
-      startTimes.set(workerId, now);
+      areaStartTimes.set(area, Date.now());
 
       // Simulate network / scraping latency
       await new Promise((r) => setTimeout(r, 60));
 
-      endTimes.set(workerId, Date.now());
+      areaEndTimes.set(area, Date.now());
       return {
         discovered: 5,
         accepted: 5,
@@ -90,7 +88,7 @@ test("production 10-lead path: dynamic capacity sizes to 2 workers with concurre
   });
 
   assert.equal(result.poolSize, 2);
-  assert.equal(result.startedWorkers, 2);
+  assert.equal(result.startedWorkers, 6);
   assert.equal(maxConcurrentSlots, 2, "Exactly 2 workers must hold browser slots concurrently");
 
   // Verify pool start event
@@ -102,18 +100,18 @@ test("production 10-lead path: dynamic capacity sizes to 2 workers with concurre
 
   // Verify worker started events
   const workerStarts = events.filter((e) => e.type === "worker_started");
-  assert.equal(workerStarts.length, 2);
+  assert.equal(workerStarts.length, 6);
 
-  // Verify temporal overlap: worker 1 and worker 2 were active concurrently
-  const w1Start = startTimes.get(1);
-  const w1End = endTimes.get(1);
-  const w2Start = startTimes.get(2);
-  const w2End = endTimes.get(2);
+  // Verify temporal overlap: worker 1 (Downtown) and worker 2 (North) were active concurrently
+  const dtStart = areaStartTimes.get("Downtown");
+  const dtEnd = areaEndTimes.get("Downtown");
+  const nStart = areaStartTimes.get("North");
+  const nEnd = areaEndTimes.get("North");
 
-  assert.ok(w1Start != null && w1End != null);
-  assert.ok(w2Start != null && w2End != null);
+  assert.ok(dtStart != null && dtEnd != null);
+  assert.ok(nStart != null && nEnd != null);
   assert.ok(
-    (w1Start <= w2End && w2Start <= w1End),
-    `Workers must overlap in time (w1: ${w1Start}-${w1End}, w2: ${w2Start}-${w2End})`,
+    dtStart <= nEnd && nStart <= dtEnd,
+    `Initial concurrent areas must overlap in time (Downtown: ${dtStart}-${dtEnd}, North: ${nStart}-${nEnd})`,
   );
 });

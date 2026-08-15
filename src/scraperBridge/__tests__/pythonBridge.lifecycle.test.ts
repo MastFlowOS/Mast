@@ -411,4 +411,25 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
       lifecycle.__testing.reset();
     }
   });
+
+  test("10. engine discovery failure __done__ produces terminationReason=FAILURE, success=false, and never SUCCESS_EXHAUSTED", async () => {
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "failed-engine");
+    try {
+      let doneInfo: any = null;
+      for await (const _lead of runEngineQuery({ query: "test", city: "Testville" }, undefined, (info) => {
+        doneInfo = info;
+      })) {
+        // no leads
+      }
+      assert.ok(doneInfo !== null, "onDone must be called");
+      assert.equal(doneInfo.success, false, "success must be false");
+      assert.equal(doneInfo.exhausted, false, "exhausted must be false on failure");
+      assert.equal(doneInfo.failureReason, "SCRAPER_ERROR");
+      assert.equal(doneInfo.terminationReason, "FAILURE", "terminationReason must be FAILURE, never SUCCESS_EXHAUSTED");
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+    }
+  });
 });

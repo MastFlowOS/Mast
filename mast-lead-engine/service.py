@@ -889,6 +889,8 @@ async def run_query(
                     if not any_ran and not drained_any:
                         idle_passes += 1
                         if _fully_drained():
+                            if driver is not None and driver.last_error is not None:
+                                raise driver.last_error
                             log.info(
                                 "[run_query] pipeline fully drained — exhausted before "
                                 "reaching deliver_target (delivered=%d/%d)",
@@ -1131,6 +1133,15 @@ async def _main_cli() -> None:
             f"[main_cli] run_query cancelled during shutdown "
             f"(delivered={delivered} before cancellation) — writing "
             f"__done__ with success=False, failure_reason=CANCELLED"
+        )
+    except Exception as exc:
+        failure = DiscoveryFailure(
+            DiscoveryFailureReason.SCRAPER_ERROR,
+            f"Unhandled engine failure: {type(exc).__name__}: {exc}",
+        )
+        log.exception(
+            f"[main_cli] run_query crashed with unhandled exception "
+            f"(delivered={delivered} before crash) — writing __done__ with success=False"
         )
 
     # `exhausted=True` means this query's own search space ran out (Maps

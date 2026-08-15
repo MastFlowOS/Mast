@@ -569,9 +569,20 @@ class ExecutionDriver:
         """
         try:
             outcome = self._execute_one(stage)
-            if outcome is not None and outcome.ran:
-                with self._producer_lock:
-                    self._producers_done.add(stage.name)
+            if outcome is not None:
+                if outcome.ran and outcome.success:
+                    with self._producer_lock:
+                        self._producers_done.add(stage.name)
+                elif outcome.ran and not outcome.success:
+                    err_detail = outcome.detail or f"Producer stage {stage.name} failed"
+                    log.error("ExecutionDriver: producer stage=%s failed: %s", stage.name, err_detail)
+                    if self.last_error is None:
+                        from exceptions import DiscoveryFailure, DiscoveryFailureReason
+                        self.last_error = DiscoveryFailure(
+                            DiscoveryFailureReason.SCRAPER_ERROR,
+                            f"Producer stage '{stage.name}' failed: {err_detail}",
+                        )
+                    self._stop_event.set()
         finally:
             with self._producer_lock:
                 self._producers_finished.add(stage.name)
@@ -1107,7 +1118,7 @@ def build_seven_stage_pipeline(
         # AND no website to enable downstream discovery).
         if required_channels:
             has_site = bool(candidate.website)
-            has_maps_valid_email = bool(candidate.email and is_valid_email(candidate.email))
+            has_maps_valid_email = bool(getattr(candidate, "email", None) and is_valid_email(getattr(candidate, "email", None)))
             for ch in required_channels:
                 if ch == "website" and not has_site:
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)

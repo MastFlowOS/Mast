@@ -1148,7 +1148,6 @@ def build_seven_stage_pipeline(
     #    on to Contact's input queue (module docstring review point 6).
 
     def _website_downstream(intel: WebsiteIntel) -> Optional[WebsiteIntel]:
-        fan_in.record_website_result(intel.pipeline_id, intel)
         if required_channels:
             business = fan_in.get_business(intel.pipeline_id)
             has_maps_email = bool(business and getattr(business, "email", None))
@@ -1160,6 +1159,9 @@ def build_seven_stage_pipeline(
                 _emit("website", "candidate_early_channel_pruned", intel.pipeline_id)
                 fan_in.prune_business(intel.pipeline_id, "unreachable_website_no_email")
                 return None
+        fan_in.record_website_result(intel.pipeline_id, intel)
+        if intel.website_reachable is False:
+            return None
         return intel
 
     website_stage = StageConfig(
@@ -1198,7 +1200,6 @@ def build_seven_stage_pipeline(
     # -- Contact: same shape and same Item 4 fix as Instagram.
 
     def _contact_downstream(intel) -> None:
-        fan_in.record_contact_result(intel.pipeline_id, intel)
         if required_channels:
             business = fan_in.get_business(intel.pipeline_id)
             has_maps_email = bool(business and getattr(business, "email", None))
@@ -1214,6 +1215,7 @@ def build_seven_stage_pipeline(
                 _emit("contact", "candidate_early_channel_pruned", intel.pipeline_id)
                 fan_in.prune_business(intel.pipeline_id, "missing_required_channel:phone")
                 return None
+        fan_in.record_contact_result(intel.pipeline_id, intel)
         return None
 
     contact_stage = StageConfig(
@@ -1232,7 +1234,10 @@ def build_seven_stage_pipeline(
     #    enqueues into merge_in directly). Stashes the EnrichedBusiness
     #    Qualification will need, then forwards it unchanged.
 
-    def _merge_downstream(enriched: EnrichedBusiness) -> EnrichedBusiness:
+    def _merge_downstream(enriched: EnrichedBusiness) -> Optional[EnrichedBusiness]:
+        if fan_in.is_pruned(enriched.pipeline_id):
+            log.info("merge: pipeline_id=%s was pruned; dropping downstream", enriched.pipeline_id)
+            return None
         stash.put(enriched)
         return enriched
 
@@ -1284,6 +1289,9 @@ def build_seven_stage_pipeline(
     def _qualification_downstream(
         result: QualificationResult,
     ) -> Optional[QualifiedOpportunity]:
+        if fan_in.is_pruned(result.pipeline_id):
+            log.info("qualification: pipeline_id=%s was pruned; dropping downstream", result.pipeline_id)
+            return None
         enriched = stash.pop(result.pipeline_id)
         if enriched is None:
             log.warning(
@@ -1393,6 +1401,45 @@ def build_seven_stage_pipeline(
                     pipeline_id, outcome.queue_item_id,
                 )
 
+    def _on_enrichment_failure_outcome(outcome: StageOutcome) -> None:
+        """
+        Guarantees failed/dead-lettered enrichment branches (website, instagram, contact)
+        are reported to FanInRuntime so correlation state is not orphaned forever.
+        """
+        if not outcome.ran or outcome.success:
+            return
+        pipeline_id = outcome.pipeline_id
+        if not pipeline_id:
+            return
+        if fan_in.is_closed(pipeline_id) or fan_in.is_pruned(pipeline_id):
+            return
+
+        if outcome.stage_name == "website":
+            if required_channels:
+                business = fan_in.get_business(pipeline_id)
+                has_maps_email = bool(business and getattr(business, "email", None))
+                if "website" in required_channels or ("email" in required_channels and not has_maps_email):
+                    _emit("website", "candidate_early_channel_pruned", pipeline_id)
+                    fan_in.prune_business(pipeline_id, "website_stage_failed")
+                    return
+            fan_in.record_website_dead_letter(pipeline_id)
+        elif outcome.stage_name == "instagram":
+            if required_channels and "instagram" in required_channels:
+                _emit("instagram", "candidate_early_channel_pruned", pipeline_id)
+                fan_in.prune_business(pipeline_id, "instagram_stage_failed")
+                return
+            fan_in.record_instagram_dead_letter(pipeline_id)
+        elif outcome.stage_name == "contact":
+            if required_channels:
+                business = fan_in.get_business(pipeline_id)
+                has_maps_email = bool(business and getattr(business, "email", None))
+                has_maps_phone = bool(business and getattr(business, "phone", None))
+                if ("email" in required_channels and not has_maps_email) or ("phone" in required_channels and not has_maps_phone):
+                    _emit("contact", "candidate_early_channel_pruned", pipeline_id)
+                    fan_in.prune_business(pipeline_id, "contact_stage_failed")
+                    return
+            fan_in.record_contact_dead_letter(pipeline_id)
+
     qualification_stage = StageConfig(
         name="qualification",
         definition_id="qualification-v1",
@@ -1434,6 +1481,7 @@ def build_seven_stage_pipeline(
         # instrumentation. `ExecutionDriver` itself still accepts exactly
         # one such callback -- this is that single callback.
         _on_qualification_outcome(outcome)
+        _on_enrichment_failure_outcome(outcome)
         _emit_stage_outcome(outcome)
 
     return stages, queue_ids, fan_in, _combined_on_stage_outcome

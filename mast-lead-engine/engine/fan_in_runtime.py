@@ -317,21 +317,26 @@ class FanInRuntime:
         self._lock = threading.RLock()
         self._pending: Dict[str, _PipelineAccumulator] = {}
         self._closed: Set[str] = set()
+        self._pruned: Set[str] = set()
 
     # -- correlation inputs ------------------------------------------------
 
     def prune_business(self, pipeline_id: str, reason: str = "early_pruned") -> None:
         """
         Prune a pipeline_id early when a required channel is proven impossible.
-        Removes correlation state, closes the pipeline_id, and ensures no MergeInput
-        is ever emitted for this business.
+        Removes correlation state, tombstones the pipeline_id in _pruned and _closed,
+        and ensures no MergeInput is ever emitted for this business.
         """
         with self._lock:
-            if pipeline_id in self._closed:
-                return
-            self._pending.pop(pipeline_id, None)
+            self._pruned.add(pipeline_id)
             self._closed.add(pipeline_id)
+            self._pending.pop(pipeline_id, None)
             log.info("fan-in: pipeline_id=%s early-pruned (%s)", pipeline_id, reason)
+
+    def is_pruned(self, pipeline_id: str) -> bool:
+        """Whether `pipeline_id` was terminally pruned before completing FanIn."""
+        with self._lock:
+            return pipeline_id in self._pruned
 
     def get_business(self, pipeline_id: str) -> Optional[BusinessCandidate]:
         """Retrieve the registered BusinessCandidate for a pipeline_id if available."""
@@ -355,12 +360,12 @@ class FanInRuntime:
         one that completes the pipeline_id (all three branches were
         already terminal); otherwise None. A duplicate call for a
         pipeline_id that already has a business registered, or one
-        that already closed, is a safe, logged no-op.
+        that already closed or was pruned, is a safe, logged no-op.
         """
         with self._lock:
-            if business.pipeline_id in self._closed:
+            if business.pipeline_id in self._pruned or business.pipeline_id in self._closed:
                 log.warning(
-                    "fan-in: register_business for already-closed "
+                    "fan-in: register_business for already-closed/pruned "
                     "pipeline_id=%s ignored",
                     business.pipeline_id,
                 )
@@ -448,9 +453,9 @@ class FanInRuntime:
         logged no-op (AD-042 §5).
         """
         with self._lock:
-            if pipeline_id in self._closed:
+            if pipeline_id in self._pruned or pipeline_id in self._closed:
                 log.warning(
-                    "fan-in: %s result for already-closed pipeline_id=%s "
+                    "fan-in: %s result for already-closed/pruned pipeline_id=%s "
                     "ignored",
                     field_name,
                     pipeline_id,
@@ -479,6 +484,9 @@ class FanInRuntime:
         safe no-op instead of a second release. Returns the emitted
         MergeInput, or None if `acc` is still incomplete.
         """
+        if acc.pipeline_id in self._pruned:
+            self._pending.pop(acc.pipeline_id, None)
+            return None
         if not acc.is_complete():
             return None
         merge_input = acc.to_merge_input()

@@ -82,10 +82,13 @@ class _CountingFakeProvider:
         limit = self.supply if self.supply is not None else float("inf")
         i = 0
         while i < limit:
+            if request.should_stop is not None and request.should_stop():
+                self.aborted_early = True
+                return
             i += 1
             self.pulled += 1
             yield _candidate(i, request.session_id)
-            time.sleep(0.002)
+            time.sleep(0.01)
             if request.should_stop is not None and request.should_stop():
                 self.aborted_early = True
                 return

@@ -347,6 +347,7 @@ class StageOutcome:
     success: Optional[bool] = None
     worker_id: Optional[str] = None
     queue_item_id: Optional[str] = None
+    pipeline_id: Optional[str] = None
     dead_lettered: bool = False
     detail: Optional[str] = None
 
@@ -492,6 +493,7 @@ class EngineRuntime:
                 allocator=allocator,
                 input_queue=input_queue,
                 queue_item_id=queue_item_id,
+                pipeline_id=pipeline_id,
             )
 
         return self._handle_success(
@@ -543,8 +545,8 @@ class EngineRuntime:
 
         self._release(worker, worker_id, registry, allocator)
         log.info(
-            "stage=%s worker=%s queue_item=%s outcome=success",
-            stage.name, worker_id, queue_item_id,
+            "stage=%s worker=%s queue_item=%s pipeline_id=%s outcome=success",
+            stage.name, worker_id, queue_item_id, pipeline_id,
         )
         return StageOutcome(
             stage_name=stage.name,
@@ -552,6 +554,7 @@ class EngineRuntime:
             success=True,
             worker_id=worker_id,
             queue_item_id=queue_item_id,
+            pipeline_id=pipeline_id,
         )
 
     def _handle_failure(
@@ -565,6 +568,7 @@ class EngineRuntime:
         allocator: Any,
         input_queue: Any,
         queue_item_id: Optional[str],
+        pipeline_id: Optional[str] = None,
     ) -> StageOutcome:
         worker.fail()
         registry.update_state(worker_id, WorkerState.FAILED)
@@ -589,9 +593,9 @@ class EngineRuntime:
 
         self._release(worker, worker_id, registry, allocator)
         log.warning(
-            "stage=%s worker=%s queue_item=%s outcome=failed "
+            "stage=%s worker=%s queue_item=%s pipeline_id=%s outcome=failed "
             "dead_lettered=%s error=%s",
-            stage.name, worker_id, queue_item_id, dead_lettered, exc,
+            stage.name, worker_id, queue_item_id, pipeline_id, dead_lettered, exc,
         )
         return StageOutcome(
             stage_name=stage.name,
@@ -599,6 +603,7 @@ class EngineRuntime:
             success=False,
             worker_id=worker_id,
             queue_item_id=queue_item_id,
+            pipeline_id=pipeline_id,
             dead_lettered=dead_lettered,
             detail=str(exc),
         )

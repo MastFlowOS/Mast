@@ -699,12 +699,12 @@ async def run_query(
             streaming_backend = _StreamingStorageBackend(_build_storage_backend(), _on_persisted)
 
             instance_counts = {
-                "website": 4,
-                "instagram": 2,
-                "contact": 2,
-                "merge": 2,
-                "qualification": 2,
-                "storage": 1,
+                "website": 8,
+                "instagram": 4,
+                "contact": 8,
+                "merge": 4,
+                "qualification": 4,
+                "storage": 2,
             }
             stages, queue_ids, fan_in, cleanup_cb = build_seven_stage_pipeline(
                 engine_coordinator, session_id,

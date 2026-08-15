@@ -178,7 +178,7 @@ const EnvSchema = z.object({
   // mechanism, just an intent. Bounded at 8 as a sanity ceiling; the real,
   // memory-aware ceiling is enforced at runtime by browserSlotPool, not by
   // this max().
-  GOOGLE_MAPS_AREA_WORKERS: z.coerce.number().int().min(1).max(8).default(1),
+  GOOGLE_MAPS_AREA_WORKERS: z.coerce.number().int().min(1).max(8).default(8),
 
   // PHASE 8 — AI Opportunity Intelligence (Executive Briefings, Weekly
   // Intelligence, Opportunity Insights, Pipeline Coaching). Optional: if

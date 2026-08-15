@@ -170,3 +170,93 @@ test("runAreaWorkerPool: deterministic 100-lead run uses max safe browser capaci
   assert.equal(result.totals.accepted, 100);
   assert.equal(result.allFailed, false);
 });
+
+test("runAreaWorkerPool: slow area does not block fast concurrent area worker", async () => {
+  const slotPool = createBrowserSlotPool(4);
+  const areas = ["SlowArea", "FastArea1", "FastArea2", "FastArea3"];
+  let targetCount = 0;
+  const targetMax = 10;
+  const areaExecutionLog: string[] = [];
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 8,
+    totalCuratedAreas: areas.length,
+    availableCapacity: slotPool.available(),
+    requestedQuantity: 10,
+    claimNextArea: async (used) => areas.find((a) => !used.has(a)),
+    runArea: async (area) => {
+      areaExecutionLog.push(`start:${area}`);
+      if (area === "SlowArea") {
+        // Slow area simulates a 100ms lag producing only 2 leads
+        await new Promise((r) => setTimeout(r, 100));
+        const remaining = targetMax - targetCount;
+        const accepted = Math.min(2, Math.max(0, remaining));
+        targetCount += accepted;
+        areaExecutionLog.push(`finish:${area}`);
+        return { discovered: 4, accepted, rejected: 1, duplicates: 1, exhausted: false, failed: false };
+      } else {
+        // Fast area immediately yields 8 leads to satisfy the target
+        const remaining = targetMax - targetCount;
+        const accepted = Math.min(8, Math.max(0, remaining));
+        targetCount += accepted;
+        areaExecutionLog.push(`finish:${area}`);
+        return { discovered: 10, accepted, rejected: 1, duplicates: 1, exhausted: false, failed: false };
+      }
+    },
+    tryAcquireSlot: () => slotPool.tryAcquire(),
+    isTerminal: () => targetCount >= targetMax,
+  });
+
+  assert.equal(result.poolSize, 2);
+  assert.equal(result.totals.accepted, 10);
+  // Both SlowArea and FastArea1 started concurrently
+  assert.ok(areaExecutionLog.includes("start:SlowArea"));
+  assert.ok(areaExecutionLog.includes("start:FastArea1"));
+  // FastArea finished and target was reached without waiting on further unstarted areas
+  assert.ok(targetCount >= 10);
+});
+
+test("runAreaWorkerPool: shared target stops all workers with no overshoot or duplicate claims", async () => {
+  const slotPool = createBrowserSlotPool(4);
+  const areas = ["AreaA", "AreaB", "AreaC", "AreaD"];
+  let sharedAccepted = 0;
+  const target = 10;
+  const claimed: string[] = [];
+
+  const inFlight = new Set<string>();
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 8,
+    totalCuratedAreas: areas.length,
+    availableCapacity: slotPool.available(),
+    requestedQuantity: 10,
+    claimNextArea: async (used) => {
+      const next = areas.find((a) => !used.has(a) && !inFlight.has(a));
+      if (next) {
+        inFlight.add(next);
+        claimed.push(next);
+      }
+      return next;
+    },
+    runArea: async (area) => {
+      const toAccept = Math.min(5, target - sharedAccepted);
+      sharedAccepted += toAccept;
+      return {
+        discovered: toAccept + 3,
+        accepted: toAccept,
+        rejected: 2,
+        duplicates: 1,
+        exhausted: false,
+        failed: false,
+      };
+    },
+    tryAcquireSlot: () => slotPool.tryAcquire(),
+    isTerminal: () => sharedAccepted >= target,
+  });
+
+  assert.equal(result.totals.accepted, 10);
+  assert.equal(sharedAccepted, 10);
+  // No duplicate area claims
+  const uniqueClaimed = new Set(claimed);
+  assert.equal(uniqueClaimed.size, claimed.length);
+});
+

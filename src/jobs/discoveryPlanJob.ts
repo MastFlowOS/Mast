@@ -15,7 +15,7 @@ import { registerRequestAbortController, terminateRequest, type RequestTerminalR
 import { cityTransitionFor } from "../discovery/cityScheduling.js";
 import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { getAreasForCity } from "../lib/geo/cityAreas.js";
-import { runAreaWorkerPool, type AreaWorkerLogEvent } from "../discovery/googleAreaPool.js";
+import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
 import {
   initJobMetrics,
@@ -683,7 +683,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     // behavior" requirement) — including for Google Maps cities that do
     // have curated areas, which still claim exactly one area and run
     // exactly one search, same as always.
-    const useGoogleAreaPool = sourceId === "google_maps" && hasCuratedAreas(curatedAreas) && env.GOOGLE_MAPS_AREA_WORKERS > 1;
+    const useGoogleAreaPool = sourceId === "google_maps" && hasCuratedAreas(curatedAreas);
 
     const attemptCtx = { db, task, payload, profiler, provider, generator, requestAbort, observeTerminalPlan, startedAt };
 
@@ -692,6 +692,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     // doesn't complain about the pool branch's assignment happening inside
     // an async callback closure — always overwritten before use either way.
     let cityReason: string = "";
+    let poolResult: AreaWorkerPoolResult | undefined;
 
     if (!useGoogleAreaPool) {
       // ── Legacy / non-pooled path (unchanged behavior) ───────────────────
@@ -757,7 +758,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       // ── Worker Pools B: Google Maps area worker pool ────────────────────
       const browserSlotPool = getBrowserSlotPool();
 
-      const poolResult = await runAreaWorkerPool({
+      poolResult = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
         totalCuratedAreas: curatedAreas.length,
         availableCapacity: browserSlotPool.available(),
@@ -908,6 +909,16 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         // reached an accepted lead, so the row still shows how far it got.
         `first_candidate_accepted_ms=${profiler.getMarkMs("first_lead_delivered")?.toFixed(0) ?? marks["discovery:candidate_queued"]?.toFixed(0) ?? "n/a"} ` +
         `task_end_ms=${Date.now() - startedAt}`,
+    );
+
+    const totalDurationMs = Date.now() - startedAt;
+    const firstLeadMs = profiler.getMarkMs("first_lead_delivered") ?? "n/a";
+    console.info(
+      `[discovery-summary] plan=${payload.planId} task=${payload.taskId} firstLeadMs=${firstLeadMs} ` +
+        `totalDurationMs=${totalDurationMs} newForUser=${accepted} rawCandidates=${discovered} ` +
+        `duplicates=${duplicates} rejected=${rejected} failed=${poolResult?.allFailed ? 1 : 0} ` +
+        `areasUsed=${poolResult?.areasProcessed.length ?? (claimedArea ? 1 : 0)} ` +
+        `maxConcurrentAreas=${poolResult?.poolSize ?? 1} maxConcurrentBrowsers=${getBrowserSlotPool().capacity}`,
     );
 
     await recordTaskOutcome(task, { discovered, accepted, rejected, duplicates, exhausted, status: terminalReason === "USER_CANCELLED" ? "cancelled" : "completed", startedAt, completionReason, terminationReason: cityReason });

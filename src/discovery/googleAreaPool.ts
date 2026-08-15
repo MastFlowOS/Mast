@@ -247,6 +247,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
 
       usedAreas.add(area);
       startedWorkers += 1;
+      console.info(`[area-worker-start] worker=${slotIndex + 1} area=${area}`);
       onEvent?.({ type: "worker_started", area, slot: slotIndex });
 
       let outcome: AreaRunOutcome;

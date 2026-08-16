@@ -22,6 +22,7 @@ Run: pytest tests/test_run_query_target_reached_lifecycle.py -v
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -229,16 +230,117 @@ class TestShutdownEventAlsoStopsDiscovery:
 
         async def _consume():
             leads = []
-            async for lead in service.run_query(
-                query="coffee", city="New York", deliver_target=1000,
-                discovery_only=True, db_path=str(tmp_path / "leads.db"),
-                shutdown_event=shutdown_event,
-            ):
-                leads.append(lead)
-                if len(leads) == 3:
-                    shutdown_event.set()
+            try:
+                async for lead in service.run_query(
+                    query="coffee", city="New York", deliver_target=1000,
+                    discovery_only=True, db_path=str(tmp_path / "leads.db"),
+                    shutdown_event=shutdown_event,
+                ):
+                    leads.append(lead)
+                    if len(leads) == 3:
+                        shutdown_event.set()
+            except DiscoveryFailure as exc:
+                assert exc.reason == DiscoveryFailureReason.CANCELLED
             return leads
 
         leads = await _consume()
 
         assert len(leads) == 3, "shutdown_event.set() must stop discovery well short of deliver_target=1000"
+
+
+class TestTargetReachedShutdownSemantics:
+    """Cooperative shutdown with TARGET_REACHED signaled by parent must complete as
+    a successful early stop with success=True, target_reached=True, and
+    termination_reason=SUCCESS_TARGET_REACHED."""
+
+    @pytest.mark.asyncio
+    async def test_target_reached_shutdown_produces_success_and_target_reached(self, monkeypatch, tmp_path):
+        import threading
+        import io
+
+        fake_provider = _CountingFakeProvider(supply=None)
+        monkeypatch.setattr(service, "GoogleMapsProvider", lambda: fake_provider)
+
+        shutdown_event = threading.Event()
+        service._set_shutdown_reason("TARGET_REACHED")
+
+        try:
+            leads = []
+            async for lead in service.run_query(
+                query="coffee", city="New York", deliver_target=20,
+                discovery_only=True, db_path=str(tmp_path / "leads.db"),
+                shutdown_event=shutdown_event,
+                shutdown_reason="TARGET_REACHED",
+            ):
+                leads.append(lead)
+                if len(leads) == 5:
+                    shutdown_event.set()
+
+            assert len(leads) == 5
+
+            # Also exercise _main_cli with TARGET_REACHED stop reason
+            service._set_shutdown_reason("TARGET_REACHED")
+            monkeypatch.setattr(sys, "argv", ["service.py", json.dumps({"query": "coffee", "city": "New York", "deliver_target": 20, "discovery_only": True, "db_path": str(tmp_path / "leads2.db")})])
+            out = io.StringIO()
+            monkeypatch.setattr(sys, "stdout", out)
+
+            # Set shutdown event after 5 leads in background
+            def _stop_after_5():
+                while len([line for line in out.getvalue().splitlines() if line.strip() and not line.startswith("{'__done__'")]) < 5:
+                    time.sleep(0.01)
+                service._shutdown_event.set()
+
+            threading.Thread(target=_stop_after_5, daemon=True).start()
+            await service._main_cli()
+
+            lines = [json.loads(l) for l in out.getvalue().splitlines() if l.strip()]
+            done_line = next((l for l in lines if l.get("__done__")), None)
+            assert done_line is not None
+            assert done_line["delivered"] == 5
+            assert done_line["requested"] == 20
+            assert done_line["success"] is True
+            assert done_line["target_reached"] is True
+            assert done_line["termination_reason"] == "SUCCESS_TARGET_REACHED"
+            assert done_line["failure_reason"] is None
+            assert done_line["exhausted"] is False
+        finally:
+            service._set_shutdown_reason(None)
+            service._shutdown_event.clear()
+
+    @pytest.mark.asyncio
+    async def test_user_cancelled_shutdown_produces_cancelled_done(self, monkeypatch, tmp_path):
+        import threading
+        import io
+
+        fake_provider = _CountingFakeProvider(supply=None)
+        monkeypatch.setattr(service, "GoogleMapsProvider", lambda: fake_provider)
+
+        shutdown_event = threading.Event()
+        service._set_shutdown_reason("USER_CANCELLED")
+
+        try:
+            monkeypatch.setattr(sys, "argv", ["service.py", json.dumps({"query": "coffee", "city": "New York", "deliver_target": 20, "discovery_only": True, "db_path": str(tmp_path / "leads3.db")})])
+            out = io.StringIO()
+            monkeypatch.setattr(sys, "stdout", out)
+
+            def _stop_after_2():
+                while len([line for line in out.getvalue().splitlines() if line.strip() and not line.startswith("{'__done__'")]) < 2:
+                    time.sleep(0.01)
+                service._shutdown_event.set()
+
+            threading.Thread(target=_stop_after_2, daemon=True).start()
+            await service._main_cli()
+
+            lines = [json.loads(l) for l in out.getvalue().splitlines() if l.strip()]
+            done_line = next((l for l in lines if l.get("__done__")), None)
+            assert done_line is not None
+            assert done_line["delivered"] == 2
+            assert done_line["requested"] == 20
+            assert done_line["success"] is False
+            assert done_line["target_reached"] is False
+            assert done_line["termination_reason"] == "CANCELLED"
+            assert done_line["failure_reason"] == "CANCELLED"
+        finally:
+            service._set_shutdown_reason(None)
+            service._shutdown_event.clear()
+

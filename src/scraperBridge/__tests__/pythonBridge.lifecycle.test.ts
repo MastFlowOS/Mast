@@ -562,4 +562,44 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
       lifecycle.__testing.reset();
     }
   });
+
+  test("14. child engine receives TARGET_REACHED and directly emits SUCCESS_TARGET_REACHED __done__", async () => {
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const lifecycle = await import("../../discovery/requestLifecycle.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    const requestId = "bridge-direct-target-reached-test";
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "target-reached-engine");
+    try {
+      let doneInfo: any = null;
+      const leads: unknown[] = [];
+      for await (const lead of runEngineQuery(
+        { query: "test", city: "Testville", max_results: 20 },
+        undefined,
+        (info) => {
+          doneInfo = info;
+        },
+        { requestId },
+      )) {
+        leads.push(lead);
+        if (leads.length === 5) {
+          lifecycle.terminateRequest(requestId, "TARGET_REACHED");
+        }
+      }
+
+      assert.equal(leads.length, 5, "must receive all 5 leads");
+      assert.ok(doneInfo !== null, "onDone must be called");
+      assert.equal(doneInfo.delivered, 5);
+      assert.equal(doneInfo.requested, 20);
+      assert.equal(doneInfo.success, true, "success must be true");
+      assert.equal(doneInfo.targetReached, true, "targetReached must be true");
+      assert.equal(doneInfo.failureReason, undefined, "failureReason must be undefined");
+      assert.equal(doneInfo.failureDetail, undefined, "failureDetail must be undefined");
+      assert.equal(doneInfo.terminationReason, "SUCCESS_TARGET_REACHED", "terminationReason must be SUCCESS_TARGET_REACHED");
+      assert.equal(doneInfo.exhausted, false, "exhausted must be false");
+      assert.equal(lifecycle.getRequestTerminalReason(requestId), "TARGET_REACHED");
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+      lifecycle.__testing.reset();
+    }
+  });
 });

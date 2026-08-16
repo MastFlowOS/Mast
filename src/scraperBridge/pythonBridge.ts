@@ -1,11 +1,14 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { env } from "../config/env.js";
 import { workerMetrics } from "../lib/observability.js";
 import {
   registerRequestEngineProcess,
   getRequestTerminalReason,
+  type RequestTerminalReason,
 } from "../discovery/requestLifecycle.js";
 
 export type EngineLead = {
@@ -307,8 +310,17 @@ async function gracefulKillProcessTree(
   child: ReturnType<typeof spawn>,
   closed: Promise<ChildCloseResult>,
   graceMs = GRACEFUL_SHUTDOWN_MS,
+  reason?: string,
 ) {
   if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  if (reason) {
+    try {
+      const stopFile = path.join(os.tmpdir(), `mast_stop_${child.pid}.txt`);
+      fs.writeFileSync(stopFile, reason, "utf8");
+    } catch (err) {
+      console.warn(`[scraper-bridge] failed to write stop file for PID ${child.pid}`, err);
+    }
+  }
   if (process.platform === "win32") {
     // No SIGTERM-equivalent process-tree signal on Windows.
     killProcessTree(child);
@@ -688,15 +700,26 @@ export async function* runEngineQuery(
   // listener. See watchChildClose()'s doc comment for the race this closes.
   const childClosed = watchChildClose(child);
   let abortRequested = false;
+  const getStopReason = (): RequestTerminalReason | "USER_CANCELLED" | undefined => {
+    const requestTerminalReason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
+    if (requestTerminalReason) return requestTerminalReason;
+    if (signal?.reason === "TARGET_REACHED" || signal?.reason === "USER_CANCELLED" || signal?.reason === "WATCHDOG_TIMEOUT") {
+      return signal.reason as RequestTerminalReason;
+    }
+    if (abortRequested) return "USER_CANCELLED";
+    return undefined;
+  };
+
   // Register synchronously with the request runtime.  A terminal request can
   // therefore stop every child it owns, rather than only the generator whose
   // caller happened to observe cancellation first.
   const unregisterRequestProcess = registerRequestEngineProcess(
     options.requestId,
     child,
-    () => {
+    (reason) => {
       abortRequested = true;
-      void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+      const effectiveReason = reason ?? getStopReason();
+      void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, effectiveReason);
     },
   );
 
@@ -709,8 +732,9 @@ export async function* runEngineQuery(
 
   const onAbort = () => {
     abortRequested = true;
-    console.log(`[scraper-bridge] Abort signal triggered for PID: ${child.pid}`);
-    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+    const reason = getStopReason();
+    console.log(`[scraper-bridge] Abort signal triggered for PID: ${child.pid} (reason: ${reason ?? "unknown"})`);
+    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, reason);
   };
   signal?.addEventListener("abort", onAbort);
   if (signal?.aborted) onAbort();
@@ -746,7 +770,7 @@ export async function* runEngineQuery(
         ? `no protocol progress for SCRAPER_SUBPROCESS_INACTIVITY_MS=${env.SCRAPER_SUBPROCESS_INACTIVITY_MS}ms`
         : `absolute safety ceiling SCRAPER_SUBPROCESS_MAX_MS=${env.SCRAPER_SUBPROCESS_MAX_MS}ms reached`;
     console.warn(`[scraper-bridge] watchdog firing (${label}) (PID: ${child.pid}) — requesting graceful termination`);
-    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, "WATCHDOG_TIMEOUT");
   };
 
   let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
@@ -814,6 +838,96 @@ export async function* runEngineQuery(
   // progress line — see EngineDoneInfo.progressMarks's own doc comment.
   const progressMarks: Record<string, number> = {};
 
+  const handleDone = (parsed: Record<string, unknown>) => {
+    sawDone = true;
+    const perfPayload = parsed.__perf__ as Record<string, unknown> | undefined;
+    // ROOT CAUSE FIX (Part 8): `success` defaults to true when absent
+    // (an engine build without this field never fails this way, same
+    // as before this fix existed) — but when the engine explicitly
+    // reports `success: false`, `exhausted` is never trusted, matching
+    // what service.py's _main_cli now guarantees on its side
+    // (`exhausted` is always written as `false` alongside a failure).
+    const rawSuccess = parsed.success === undefined ? true : Boolean(parsed.success);
+    const rawFailureReason = rawSuccess ? undefined : (parsed.failure_reason as EngineDiscoveryFailureReason | undefined);
+    const rawFailureDetail = rawSuccess ? undefined : (parsed.failure_detail as string | undefined);
+    // LIFECYCLE FIX: additive field — see EngineDoneInfo.targetReached.
+    const rawTargetReached =
+      parsed.target_reached === undefined ? undefined : Boolean(parsed.target_reached);
+
+    const requestTerminalReason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
+    const isParentTargetReached =
+      requestTerminalReason === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED";
+
+    // LIFECYCLE FIX (TARGET_REACHED child-engine status semantics):
+    // When the parent discovery request has already reached its authoritative
+    // target and intentionally terminates the child engine via SIGTERM,
+    // the child cancellation is NOT an engine failure. It must be classified
+    // as a successful target-reached early stop.
+    const isTargetReachedEarlyStop =
+      !timedOut &&
+      isParentTargetReached &&
+      ((!rawSuccess && rawFailureReason === "CANCELLED") || !rawTargetReached || parsed.termination_reason === "SUCCESS_TARGET_REACHED");
+
+    const success = isTargetReachedEarlyStop ? true : rawSuccess;
+    const targetReached = isTargetReachedEarlyStop ? true : rawTargetReached;
+    const failureReason = isTargetReachedEarlyStop ? undefined : rawFailureReason;
+    const failureDetail = isTargetReachedEarlyStop ? undefined : rawFailureDetail;
+
+    console.log(
+      `[scraper-bridge] received __done__ — delivered=${parsed.delivered} ` +
+        `exhausted=${parsed.exhausted} success=${success} targetReached=${targetReached ?? "n/a"} ` +
+        `${!success ? `failureReason=${failureReason} ` : ""}` +
+        `spawnMs=${spawnMs.toFixed(0)} firstLineMs=${firstLineMs?.toFixed(0) ?? "n/a"} firstLeadMs=${firstLeadMs?.toFixed(0) ?? "n/a"}`,
+    );
+    if (!success) {
+      console.warn(
+        `[scraper-bridge] discovery FAILED (not exhausted) — reason=${failureReason} detail=${failureDetail ?? "n/a"}`,
+      );
+    } else if (isTargetReachedEarlyStop) {
+      console.log(
+        `[scraper-bridge] child engine stopped early: TARGET_REACHED (parent target satisfied)`,
+      );
+    }
+    // LIFECYCLE FIX: reconciliation at the bridge transport boundary —
+    // pythonYielded is service.py's own count (what it put on the
+    // wire); bridgeReceived/bridgeForwarded are what THIS process
+    // actually saw/handed off. All three should match on a clean run;
+    // any gap here pinpoints whether loss happened in the pipe
+    // (pythonYielded > bridgeReceived — shouldn't be possible short of
+    // a truncated/non-JSON line, already logged above) or in the
+    // consumer (bridgeReceived > bridgeForwarded — the `for await`
+    // stopped resuming this generator, e.g. `break`/an uncaught throw
+    // downstream).
+    const pythonYielded = Number(parsed.delivered ?? 0);
+    console.log(
+      `[scraper-bridge] delivery accounting — pythonYielded=${pythonYielded} ` +
+        `bridgeReceived=${bridgeReceived} bridgeForwarded=${bridgeForwarded}` +
+        `${bridgeReceived !== pythonYielded ? " ⚠️ pythonYielded/bridgeReceived MISMATCH" : ""}` +
+        `${bridgeForwarded !== bridgeReceived ? " ⚠️ bridgeReceived/bridgeForwarded MISMATCH (consumer stopped early)" : ""}`,
+    );
+    // PART D: see EngineDoneInfo.terminationReason's own doc comment
+    // for the full derivation table this mirrors exactly.
+    const terminationReason: EngineDoneInfo["terminationReason"] = success
+      ? (targetReached ? "SUCCESS_TARGET_REACHED" : "SUCCESS_EXHAUSTED")
+      : failureReason === "CANCELLED"
+        ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
+        : "FAILURE";
+    console.log(`[scraper-bridge] terminationReason=${terminationReason}`);
+    onDone?.({
+      delivered: pythonYielded,
+      requested: Number(parsed.requested ?? 0),
+      exhausted: success ? (isTargetReachedEarlyStop ? false : Boolean(parsed.exhausted)) : false,
+      success,
+      targetReached,
+      failureReason,
+      failureDetail,
+      terminationReason,
+      perf: perfPayload,
+      bridgeTimings: { spawnMs, firstLineMs, firstLeadMs },
+      progressMarks,
+    });
+  };
+
   const lineIterator = (async function* () {
     for await (const line of rl) {
       if (!line.trim()) continue;
@@ -875,93 +989,7 @@ export async function* runEngineQuery(
       }
 
       if (parsed.__done__) {
-        sawDone = true;
-        const perfPayload = parsed.__perf__ as Record<string, unknown> | undefined;
-        // ROOT CAUSE FIX (Part 8): `success` defaults to true when absent
-        // (an engine build without this field never fails this way, same
-        // as before this fix existed) — but when the engine explicitly
-        // reports `success: false`, `exhausted` is never trusted, matching
-        // what service.py's _main_cli now guarantees on its side
-        // (`exhausted` is always written as `false` alongside a failure).
-        const rawSuccess = parsed.success === undefined ? true : Boolean(parsed.success);
-        const rawFailureReason = rawSuccess ? undefined : (parsed.failure_reason as EngineDiscoveryFailureReason | undefined);
-        const rawFailureDetail = rawSuccess ? undefined : (parsed.failure_detail as string | undefined);
-        // LIFECYCLE FIX: additive field — see EngineDoneInfo.targetReached.
-        const rawTargetReached =
-          parsed.target_reached === undefined ? undefined : Boolean(parsed.target_reached);
-
-        const requestTerminalReason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
-        const isParentTargetReached =
-          requestTerminalReason === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED";
-
-        // LIFECYCLE FIX (TARGET_REACHED child-engine status semantics):
-        // When the parent discovery request has already reached its authoritative
-        // target and intentionally terminates the child engine via SIGTERM,
-        // the child cancellation is NOT an engine failure. It must be classified
-        // as a successful target-reached early stop.
-        const isTargetReachedEarlyStop =
-          !timedOut &&
-          isParentTargetReached &&
-          ((!rawSuccess && rawFailureReason === "CANCELLED") || !rawTargetReached);
-
-        const success = isTargetReachedEarlyStop ? true : rawSuccess;
-        const targetReached = isTargetReachedEarlyStop ? true : rawTargetReached;
-        const failureReason = isTargetReachedEarlyStop ? undefined : rawFailureReason;
-        const failureDetail = isTargetReachedEarlyStop ? undefined : rawFailureDetail;
-
-        console.log(
-          `[scraper-bridge] received __done__ — delivered=${parsed.delivered} ` +
-            `exhausted=${parsed.exhausted} success=${success} targetReached=${targetReached ?? "n/a"} ` +
-            `${!success ? `failureReason=${failureReason} ` : ""}` +
-            `spawnMs=${spawnMs.toFixed(0)} firstLineMs=${firstLineMs?.toFixed(0) ?? "n/a"} firstLeadMs=${firstLeadMs?.toFixed(0) ?? "n/a"}`,
-        );
-        if (!success) {
-          console.warn(
-            `[scraper-bridge] discovery FAILED (not exhausted) — reason=${failureReason} detail=${failureDetail ?? "n/a"}`,
-          );
-        } else if (isTargetReachedEarlyStop) {
-          console.log(
-            `[scraper-bridge] child engine stopped early: TARGET_REACHED (parent target satisfied)`,
-          );
-        }
-        // LIFECYCLE FIX: reconciliation at the bridge transport boundary —
-        // pythonYielded is service.py's own count (what it put on the
-        // wire); bridgeReceived/bridgeForwarded are what THIS process
-        // actually saw/handed off. All three should match on a clean run;
-        // any gap here pinpoints whether loss happened in the pipe
-        // (pythonYielded > bridgeReceived — shouldn't be possible short of
-        // a truncated/non-JSON line, already logged above) or in the
-        // consumer (bridgeReceived > bridgeForwarded — the `for await`
-        // stopped resuming this generator, e.g. `break`/an uncaught throw
-        // downstream).
-        const pythonYielded = Number(parsed.delivered ?? 0);
-        console.log(
-          `[scraper-bridge] delivery accounting — pythonYielded=${pythonYielded} ` +
-            `bridgeReceived=${bridgeReceived} bridgeForwarded=${bridgeForwarded}` +
-            `${bridgeReceived !== pythonYielded ? " ⚠️ pythonYielded/bridgeReceived MISMATCH" : ""}` +
-            `${bridgeForwarded !== bridgeReceived ? " ⚠️ bridgeReceived/bridgeForwarded MISMATCH (consumer stopped early)" : ""}`,
-        );
-        // PART D: see EngineDoneInfo.terminationReason's own doc comment
-        // for the full derivation table this mirrors exactly.
-        const terminationReason: EngineDoneInfo["terminationReason"] = success
-          ? (targetReached ? "SUCCESS_TARGET_REACHED" : "SUCCESS_EXHAUSTED")
-          : failureReason === "CANCELLED"
-            ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
-            : "FAILURE";
-        console.log(`[scraper-bridge] terminationReason=${terminationReason}`);
-        onDone?.({
-          delivered: pythonYielded,
-          requested: Number(parsed.requested ?? 0),
-          exhausted: success ? (isTargetReachedEarlyStop ? false : Boolean(parsed.exhausted)) : false,
-          success,
-          targetReached,
-          failureReason,
-          failureDetail,
-          terminationReason,
-          perf: perfPayload,
-          bridgeTimings: { spawnMs, firstLineMs, firstLeadMs },
-          progressMarks,
-        });
+        handleDone(parsed);
         continue;
       }
 
@@ -980,16 +1008,63 @@ export async function* runEngineQuery(
     readError = err;
     throw err;
   } finally {
-    rl.close();
     if (inactivityTimer) clearTimeout(inactivityTimer);
     clearTimeout(absoluteTimer);
     signal?.removeEventListener("abort", onAbort);
     unregisterRequestProcess();
-    if (child.exitCode === null && child.signalCode === null) {
+
+    const stopReason = getStopReason();
+
+    if (!sawDone) {
+      if (child.exitCode === null && child.signalCode === null) {
+        abortRequested = true;
+        console.log(`[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid} (reason: ${stopReason ?? "early_break"})`);
+        void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, stopReason);
+      }
+
+      // Keep draining lines from rl until childClosed resolves so __done__ sentinel is captured
+      const drainPromise = (async () => {
+        try {
+          for await (const line of rl) {
+            if (!line.trim()) continue;
+            let parsed: Record<string, unknown>;
+            try {
+              parsed = JSON.parse(line);
+            } catch {
+              continue;
+            }
+            if (parsed.type === "progress") {
+              continue;
+            }
+            if (parsed.__done__) {
+              handleDone(parsed);
+              break;
+            }
+          }
+        } catch {}
+      })();
+
+      await childClosed;
+      await Promise.race([
+        drainPromise,
+        new Promise((resolve) => setTimeout(resolve, 500)),
+      ]);
+    } else if (child.exitCode === null && child.signalCode === null) {
       abortRequested = true;
-      console.log(`[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid}`);
-      await gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+      await gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, stopReason);
+      await childClosed;
+    } else {
+      await childClosed;
     }
+
+    rl.close();
+
+    try {
+      if (child.pid !== undefined) {
+        const stopFile = path.join(os.tmpdir(), `mast_stop_${child.pid}.txt`);
+        if (fs.existsSync(stopFile)) fs.unlinkSync(stopFile);
+      }
+    } catch {}
 
     // LIFECYCLE FIX: read from the single shared exit promise created right
     // after spawn(), rather than registering a fresh `"close"` listener here.

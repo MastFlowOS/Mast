@@ -15,7 +15,7 @@ export type RequestTerminalReason =
 
 type ActiveEngineProcess = {
   child: ChildProcess;
-  stop: () => void;
+  stop: (reason?: RequestTerminalReason) => void;
 };
 
 type RequestRuntime = {
@@ -66,13 +66,13 @@ export function registerRequestAbortController(requestId: string, controller: Ab
 export function registerRequestEngineProcess(
   requestId: string | undefined,
   child: ChildProcess,
-  stop: () => void,
+  stop: (reason?: RequestTerminalReason) => void,
 ): () => void {
   if (!requestId) return () => {};
   const runtime = runtimeFor(requestId);
   const process = { child, stop };
   runtime.processes.add(process);
-  if (runtime.terminalReason) stop();
+  if (runtime.terminalReason) stop(runtime.terminalReason);
   return () => {
     runtime.processes.delete(process);
     removeIfEmpty(requestId, runtime);
@@ -87,7 +87,7 @@ export function terminateRequest(requestId: string, reason: RequestTerminalReaso
   console.info(`[discovery-lifecycle] request=${requestId} terminal=${reason} controllers=${runtime.controllers.size} processes=${runtime.processes.size}`);
   for (const controller of runtime.controllers) controller.abort(reason);
   for (const process of runtime.processes) {
-    if (process.child.exitCode === null && process.child.signalCode === null) process.stop();
+    if (process.child.exitCode === null && process.child.signalCode === null) process.stop(reason);
   }
 }
 

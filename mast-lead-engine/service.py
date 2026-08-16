@@ -66,9 +66,11 @@ _IMPORTS_START_TS = _time.perf_counter()
 
 import asyncio
 import json
+import os
 import queue as thread_queue
 import signal
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, AsyncIterator, Callable, Optional
@@ -175,6 +177,35 @@ _SENTINEL = object()
 # for the (bounded) hard-cancel fallback kept as a last resort for a run
 # that doesn't check this flag often enough to wind down in time.
 _shutdown_event = threading.Event()
+_shutdown_reason: Optional[str] = None
+
+
+def _get_shutdown_reason() -> Optional[str]:
+    """
+    Returns the cooperative shutdown reason if one was signaled by the parent
+    process (via IPC stop-reason file or internal setter).
+    """
+    global _shutdown_reason
+    if _shutdown_reason is not None:
+        return _shutdown_reason
+    stop_file = os.path.join(tempfile.gettempdir(), f"mast_stop_{os.getpid()}.txt")
+    if os.path.exists(stop_file):
+        try:
+            with open(stop_file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    _shutdown_reason = content
+                    return content
+        except Exception:
+            pass
+    return None
+
+
+def _set_shutdown_reason(reason: Optional[str]) -> None:
+    """Explicit setter for in-process lifecycle tests."""
+    global _shutdown_reason
+    _shutdown_reason = reason
+
 
 # How long _run_with_graceful_shutdown waits for the cooperative shutdown
 # above to finish on its own before escalating to a forced task
@@ -365,6 +396,7 @@ async def run_query(
     # (library use, tests/validate_service_run_query.py) that doesn't
     # pass one — such a caller simply never requests early shutdown.
     shutdown_event: Optional[threading.Event] = None,
+    shutdown_reason: Optional[str] = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """
     Async generator now driven by Engine 2.0 instead of the V1
@@ -540,6 +572,7 @@ async def run_query(
 
     session_id: Optional[str] = None
     driver: Optional[ExecutionDriver] = None
+    _stopped_by_shutdown: bool = False
     try:
         if discovery_only:
             # PROVIDER PARALLELISM v1: composes every relevant, configured
@@ -575,7 +608,7 @@ async def run_query(
                 "[provider] discovery_only composed providers=%s",
                 composed.selected_provider_ids,
             )
-            result_q: "thread_queue.Queue" = thread_queue.Queue(maxsize=10)
+            result_q: "thread_queue.Queue" = thread_queue.Queue(maxsize=1)
 
             def _discover_worker() -> None:
                 try:
@@ -599,6 +632,7 @@ async def run_query(
                     # between candidates), stop draining immediately
                     # instead of waiting on one more `result_q.get()`.
                     if shutdown_event is not None and shutdown_event.is_set():
+                        _stopped_by_shutdown = True
                         log.info(
                             "[run_query] discovery_only: shutdown requested — "
                             "stopping early (delivered=%d/%d so far)",
@@ -607,7 +641,11 @@ async def run_query(
                         break
                     item = await asyncio.to_thread(result_q.get)
                     if item is _SENTINEL:
-                        log.info("[run_query] discovery_only: provider exhausted")
+                        if shutdown_event is not None and shutdown_event.is_set():
+                            _stopped_by_shutdown = True
+                            log.info("[run_query] discovery_only: stopped by shutdown before provider exhaustion")
+                        else:
+                            log.info("[run_query] discovery_only: provider exhausted")
                         break
                     if isinstance(item, BaseException):
                         raise item
@@ -648,6 +686,30 @@ async def run_query(
                 except Exception:
                     pass
                 tracer.sweep_incomplete("run_ended_before_business_finished (discovery_only)")
+            if _stopped_by_shutdown and not gate.target_reached:
+                effective_reason = shutdown_reason or _get_shutdown_reason()
+                if effective_reason == "TARGET_REACHED":
+                    log.info(
+                        "[run_query] discovery_only: cooperative shutdown stopped this run due to "
+                        "TARGET_REACHED (parent target satisfied) — completing as "
+                        "successful early stop (delivered=%d/%d)",
+                        gate.accepted, _deliver_target,
+                    )
+                else:
+                    log.warning(
+                        "[run_query] discovery_only: cooperative shutdown stopped this run "
+                        "before target_reached or genuine exhaustion — "
+                        "raising DiscoveryFailure(CANCELLED) so __done__ "
+                        "reports this accurately instead of as an ordinary "
+                        "success=True completion (delivered=%d/%d)",
+                        gate.accepted, _deliver_target,
+                    )
+                    raise DiscoveryFailure(
+                        DiscoveryFailureReason.CANCELLED,
+                        "cooperative shutdown (watchdog inactivity/ceiling, caller "
+                        "abort, or process shutdown) stopped this run before it "
+                        "reached its target or genuinely exhausted its search space",
+                    )
         else:
             ctx = engine_coordinator.create_session(
                 user_id="service.run_query",
@@ -919,20 +981,29 @@ async def run_query(
                 # check above, earlier in the same pass, before this line
                 # is ever reached.
                 if _stopped_by_shutdown and not gate.target_reached:
-                    log.warning(
-                        "[run_query] cooperative shutdown stopped this run "
-                        "before target_reached or genuine exhaustion — "
-                        "raising DiscoveryFailure(CANCELLED) so __done__ "
-                        "reports this accurately instead of as an ordinary "
-                        "success=True completion (delivered=%d/%d)",
-                        gate.accepted, _deliver_target,
-                    )
-                    raise DiscoveryFailure(
-                        DiscoveryFailureReason.CANCELLED,
-                        "cooperative shutdown (watchdog inactivity/ceiling, caller "
-                        "abort, or process shutdown) stopped this run before it "
-                        "reached its target or genuinely exhausted its search space",
-                    )
+                    effective_reason = shutdown_reason or _get_shutdown_reason()
+                    if effective_reason == "TARGET_REACHED":
+                        log.info(
+                            "[run_query] cooperative shutdown stopped this run due to "
+                            "TARGET_REACHED (parent target satisfied) — completing as "
+                            "successful early stop (delivered=%d/%d)",
+                            gate.accepted, _deliver_target,
+                        )
+                    else:
+                        log.warning(
+                            "[run_query] cooperative shutdown stopped this run "
+                            "before target_reached or genuine exhaustion — "
+                            "raising DiscoveryFailure(CANCELLED) so __done__ "
+                            "reports this accurately instead of as an ordinary "
+                            "success=True completion (delivered=%d/%d)",
+                            gate.accepted, _deliver_target,
+                        )
+                        raise DiscoveryFailure(
+                            DiscoveryFailureReason.CANCELLED,
+                            "cooperative shutdown (watchdog inactivity/ceiling, caller "
+                            "abort, or process shutdown) stopped this run before it "
+                            "reached its target or genuinely exhausted its search space",
+                        )
             finally:
                 hb_stop.set()
                 hb_task.cancel()
@@ -1123,17 +1194,25 @@ async def _main_cli() -> None:
         # even on a forced shutdown, not just a clean one. Never reported
         # as `exhausted=True` — see DiscoveryFailureReason.CANCELLED's own
         # docstring for why that invariant matters here specifically.
-        failure = DiscoveryFailure(
-            DiscoveryFailureReason.CANCELLED,
-            "graceful shutdown (SIGTERM) requested before this run finished "
-            "naturally, and the cooperative shutdown checkpoints did not "
-            "wind down in time — escalated to a forced cancellation",
-        )
-        log.warning(
-            f"[main_cli] run_query cancelled during shutdown "
-            f"(delivered={delivered} before cancellation) — writing "
-            f"__done__ with success=False, failure_reason=CANCELLED"
-        )
+        effective_reason = _get_shutdown_reason()
+        if effective_reason == "TARGET_REACHED":
+            log.info(
+                f"[main_cli] run_query cancelled during TARGET_REACHED shutdown "
+                f"(delivered={delivered}) — completing as successful early stop"
+            )
+            failure = None
+        else:
+            failure = DiscoveryFailure(
+                DiscoveryFailureReason.CANCELLED,
+                "graceful shutdown (SIGTERM) requested before this run finished "
+                "naturally, and the cooperative shutdown checkpoints did not "
+                "wind down in time — escalated to a forced cancellation",
+            )
+            log.warning(
+                f"[main_cli] run_query cancelled during shutdown "
+                f"(delivered={delivered} before cancellation) — writing "
+                f"__done__ with success=False, failure_reason=CANCELLED"
+            )
     except Exception as exc:
         failure = DiscoveryFailure(
             DiscoveryFailureReason.SCRAPER_ERROR,
@@ -1153,27 +1232,28 @@ async def _main_cli() -> None:
     # determined — `exhausted` is meaningless in that case and callers must
     # check `success` first, never infer failure from `exhausted` alone.
     #
-    # LIFECYCLE FIX: `target_reached` is a new, purely additive field (the
-    # existing `delivered`/`requested`/`exhausted`/`success` fields already
-    # let a caller derive it — `success and delivered >= requested` — so
-    # this changes no existing semantics and no existing caller needs to
-    # change) that spells out the "successful target completion" outcome
-    # from the completion-semantics fix explicitly, rather than leaving
-    # every caller to re-derive it. An engine build predating this field
-    # simply omits it; `EngineDoneInfo` on the Node side treats it as
-    # optional for exactly that reason.
-    #
-    # Phase 2: __perf__ carries the structured performance report so the
-    # TS bridge can log it server-side without any separate file.
-    target_reached = failure is None and delivered >= requested
+    # LIFECYCLE FIX (TARGET_REACHED semantics): When parent target is reached,
+    # child termination is a SUCCESSFUL EARLY STOP: success=True,
+    # target_reached=True, termination_reason="SUCCESS_TARGET_REACHED".
+    effective_reason = _get_shutdown_reason()
+    is_target_reached_stop = failure is None and (delivered >= requested or effective_reason == "TARGET_REACHED")
+    target_reached = is_target_reached_stop
+    success = failure is None
+    exhausted = False if (failure is not None or target_reached) else delivered < requested
+    termination_reason = (
+        "SUCCESS_TARGET_REACHED" if (success and target_reached)
+        else "SUCCESS_EXHAUSTED" if success
+        else failure.reason.value
+    )
     try:
         sys.stdout.write(json.dumps({
             "__done__": True,
             "delivered": delivered,
             "requested": requested,
-            "exhausted": False if failure is not None else delivered < requested,
-            "success": failure is None,
+            "exhausted": exhausted,
+            "success": success,
             "target_reached": target_reached,
+            "termination_reason": termination_reason,
             "failure_reason": failure.reason.value if failure is not None else None,
             "failure_detail": failure.detail if failure is not None else None,
             "__perf__": _last_perf_summary,
@@ -1182,11 +1262,18 @@ async def _main_cli() -> None:
         log.info(
             f"[main_cli] __done__ sentinel written (delivered={delivered}, "
             f"requested={requested}, target_reached={target_reached}, "
-            f"success={failure is None}, "
+            f"success={success}, termination_reason={termination_reason}, "
             f"failure_reason={failure.reason.value if failure else None!r})"
         )
     except (BrokenPipeError, IOError, OSError):
         log.info("[main_cli] stdout pipe closed before __done__ could be flushed")
+    finally:
+        stop_file = os.path.join(tempfile.gettempdir(), f"mast_stop_{os.getpid()}.txt")
+        if os.path.exists(stop_file):
+            try:
+                os.remove(stop_file)
+            except Exception:
+                pass
 
 
 async def verify_business(*, website: str = "", instagram: str = "", headless: bool = True) -> dict:
@@ -1341,12 +1428,14 @@ async def _run_with_graceful_shutdown(coro_fn) -> None:
     """
     task = asyncio.ensure_future(coro_fn())
     _shutdown_event.clear()
+    _set_shutdown_reason(None)
     escalate_task: Optional["asyncio.Task[None]"] = None
 
     def _on_sigterm() -> None:
         nonlocal escalate_task
+        reason = _get_shutdown_reason()
         log.warning(
-            "[service] received SIGTERM — requesting cooperative shutdown "
+            f"[service] received SIGTERM (reason={reason or 'unspecified'}) — requesting cooperative shutdown "
             "(run_query's own checkpoints get up to "
             f"{COOPERATIVE_SHUTDOWN_GRACE_S:.0f}s to wind down active work "
             "and let cleanup — including __done__ — run normally, before "

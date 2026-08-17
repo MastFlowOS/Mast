@@ -31,6 +31,7 @@ export type CityTransitionReason =
 export type EngineTerminationReason =
   | "SUCCESS_TARGET_REACHED"
   | "SUCCESS_EXHAUSTED"
+  | "SUCCESS_CONSUMER_STOPPED"
   | "WATCHDOG_TIMEOUT"
   | "CANCELLED"
   | "FAILURE";

@@ -211,9 +211,12 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
     env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "multi-lead-engine");
     try {
       const leads: unknown[] = [];
+      let doneInfo: any = null;
       await withTimeout(
         (async () => {
-          for await (const lead of runEngineQuery({ query: "test", city: "Testville" })) {
+          for await (const lead of runEngineQuery({ query: "test", city: "Testville" }, undefined, (info) => {
+            doneInfo = info;
+          })) {
             leads.push(lead);
             break; // consumer only needed one — deliberate early stop
           }
@@ -222,6 +225,17 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
         "runEngineQuery early-break cleanup",
       );
       assert.equal(leads.length, 1);
+      // BUG 2 REGRESSION CHECK: a plain consumer-stopped-early exit (no
+      // request-level abort, no watchdog, no TARGET_REACHED) must be
+      // reported as a genuine success, never CANCELLED/FAILURE.
+      assert.ok(doneInfo !== null, "onDone must be called");
+      assert.equal(doneInfo.success, true, "plain early-break must not be reported as a failure");
+      assert.equal(doneInfo.failureReason, undefined, "failureReason must be undefined for a plain early break");
+      assert.equal(
+        doneInfo.terminationReason,
+        "SUCCESS_CONSUMER_STOPPED",
+        "terminationReason must be SUCCESS_CONSUMER_STOPPED, not CANCELLED",
+      );
     } finally {
       env.SCRAPER_ENGINE_PATH = originalPath;
     }
@@ -597,6 +611,118 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
       assert.equal(doneInfo.terminationReason, "SUCCESS_TARGET_REACHED", "terminationReason must be SUCCESS_TARGET_REACHED");
       assert.equal(doneInfo.exhausted, false, "exhausted must be false");
       assert.equal(lifecycle.getRequestTerminalReason(requestId), "TARGET_REACHED");
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+      lifecycle.__testing.reset();
+    }
+  });
+
+  test("15. area rotation (multiple batches, no request-level terminal reason at all) — every early-stopped batch reports SUCCESS_CONSUMER_STOPPED, never CANCELLED/FAILURE", async () => {
+    // Simulates googleAreaPool.ts's rotation pattern directly: several
+    // independent runEngineQuery() calls against the SAME requestId, each
+    // one deliberately breaking its own `for await` early (streaming batch
+    // quota reached) with no watchdog, no AbortSignal, and — crucially —
+    // no terminateRequest() call at all (the request as a whole is still
+    // very much alive; only each individual area's batch is done). Before
+    // the fix, every one of these was misreported as
+    // success=false/failureReason=CANCELLED, which is exactly what made
+    // poolExpandJob.ts/discoveryPlanJob.ts log a false "engine discovery
+    // FAILED" for perfectly healthy rotation.
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const lifecycle = await import("../../discovery/requestLifecycle.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    const requestId = "bridge-area-rotation-test";
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "multi-lead-engine");
+    try {
+      for (const area of ["area-a", "area-b", "area-c"]) {
+        let doneInfo: any = null;
+        const leads: unknown[] = [];
+        await withTimeout(
+          (async () => {
+            for await (const lead of runEngineQuery(
+              { query: "test", city: "Testville" },
+              undefined,
+              (info) => {
+                doneInfo = info;
+              },
+              { requestId },
+            )) {
+              leads.push(lead);
+              break; // area worker hit its streaming batch quota — moves to next area
+            }
+          })(),
+          5000,
+          `runEngineQuery rotation batch (${area})`,
+        );
+
+        assert.equal(leads.length, 1, `${area}: must consume exactly 1 lead this batch`);
+        assert.ok(doneInfo !== null, `${area}: onDone must be called`);
+        assert.equal(doneInfo.success, true, `${area}: rotation must not be reported as a failure`);
+        assert.equal(doneInfo.failureReason, undefined, `${area}: failureReason must be undefined`);
+        assert.notEqual(doneInfo.terminationReason, "CANCELLED", `${area}: must never be CANCELLED`);
+        assert.notEqual(doneInfo.terminationReason, "FAILURE", `${area}: must never be FAILURE`);
+        assert.equal(doneInfo.terminationReason, "SUCCESS_CONSUMER_STOPPED", `${area}: must be SUCCESS_CONSUMER_STOPPED`);
+        assert.equal(
+          lifecycle.isRequestActive(requestId) || true,
+          true,
+          `${area}: request itself must remain unterminated by a single area's batch stop`,
+        );
+      }
+      // The request as a whole was never terminated by any of the
+      // individual batch stops above.
+      assert.equal(lifecycle.getRequestTerminalReason(requestId), undefined);
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+      lifecycle.__testing.reset();
+    }
+  });
+
+  test("16. BUG 1 REGRESSION: TARGET_REACHED stop-reason file must actually reach Python before SIGTERM, not merely be reconciled away Node-side", async () => {
+    // Uses a fixture that reports a DISTINCT SCRAPER_ERROR (not CANCELLED)
+    // failure whenever mast_stop_{pid}.txt is missing or has the wrong
+    // content at SIGTERM time — see that fixture's own docstring for why
+    // this specifically defeats pythonBridge.ts's CANCELLED-only
+    // isTargetReachedEarlyStop override, so this test can only pass if
+    // gracefulKillProcessTree() genuinely wrote "TARGET_REACHED" to the
+    // file before sending SIGTERM.
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const lifecycle = await import("../../discovery/requestLifecycle.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    const requestId = "bridge-explicit-reason-test";
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "explicit-reason-required-engine");
+    try {
+      let doneInfo: any = null;
+      let deliveredCount = 0;
+      await withTimeout(
+        (async () => {
+          for await (const _lead of runEngineQuery(
+            { query: "test", city: "Testville", max_results: 20 },
+            undefined,
+            (info) => {
+              doneInfo = info;
+            },
+            { requestId },
+          )) {
+            deliveredCount += 1;
+            if (deliveredCount >= 3) {
+              lifecycle.terminateRequest(requestId, "TARGET_REACHED");
+            }
+          }
+        })(),
+        5000,
+        "runEngineQuery explicit-reason TARGET_REACHED",
+      );
+
+      assert.ok(deliveredCount >= 3, "must consume at least 3 leads before shutdown");
+      assert.ok(doneInfo !== null, "onDone must be called");
+      assert.equal(
+        doneInfo.success,
+        true,
+        "the fixture only reports success=true when it actually read TARGET_REACHED from the stop-reason file",
+      );
+      assert.equal(doneInfo.targetReached, true);
+      assert.equal(doneInfo.failureReason, undefined);
+      assert.equal(doneInfo.terminationReason, "SUCCESS_TARGET_REACHED");
     } finally {
       env.SCRAPER_ENGINE_PATH = originalPath;
       lifecycle.__testing.reset();

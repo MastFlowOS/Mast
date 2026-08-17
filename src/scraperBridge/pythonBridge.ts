@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 import { env } from "../config/env.js";
 import { workerMetrics } from "../lib/observability.js";
 import {
@@ -244,6 +246,32 @@ function watchChildClose(child: ReturnType<typeof spawn>): Promise<ChildCloseRes
   });
 }
 
+/**
+ * LIFECYCLE FIX (Bug 1 — the stop-reason file was never written): service.py
+ * already knows how to read a cooperative-shutdown reason from
+ * `mast_stop_{pid}.txt` (see `_get_shutdown_reason()`) and, when it reads
+ * `TARGET_REACHED`, completes gracefully instead of raising
+ * `DiscoveryFailure(CANCELLED)`. Nothing on the Node side ever wrote that
+ * file, so Python always fell back to `reason=None`/`unspecified` and
+ * always took the CANCELLED path internally — masked only when Node's own
+ * `__done__` reconciliation (`isTargetReachedEarlyStop`) happened to still
+ * be listening (see `runEngineQuery`'s in-loop `__done__` handling). This
+ * writes the real reason, best-effort, right before the SIGTERM that asks
+ * the child to stop — mirrors `killProcessTree`'s own best-effort-only
+ * error handling (a failed write must never block termination).
+ */
+function stopReasonFilePath(pid: number): string {
+  return path.join(os.tmpdir(), `mast_stop_${pid}.txt`);
+}
+
+function writeStopReasonFile(pid: number, reason: string) {
+  try {
+    fs.writeFileSync(stopReasonFilePath(pid), reason, "utf-8");
+  } catch (err) {
+    console.warn(`[scraper-bridge] failed to write stop-reason file for PID ${pid} (reason=${reason})`, err);
+  }
+}
+
 function killProcessTree(child: ReturnType<typeof spawn>) {
   if (child.pid === undefined) return;
   console.log(`[scraper-bridge] Killing process tree for child PID: ${child.pid}`);
@@ -302,13 +330,23 @@ const GRACEFUL_SHUTDOWN_MS = 3000;
  * after `spawn()` — see that function's doc comment for why a second,
  * independently-registered listener on the same child is the root cause of
  * the exit race this fix closes.
+ *
+ * LIFECYCLE FIX (Bug 1): accepts an optional cooperative-shutdown `reason`
+ * — when present, written to `mast_stop_{pid}.txt` (see
+ * `writeStopReasonFile`) before the SIGTERM is sent, so service.py can read
+ * it at its own SIGTERM handler / next checkpoint. Every call site in this
+ * file now passes its real reason (`TARGET_REACHED`, `USER_CANCELLED`,
+ * `WATCHDOG_TIMEOUT`, or a descriptive fallback) instead of leaving Python
+ * to fall back to `reason=None`/`unspecified`.
  */
 async function gracefulKillProcessTree(
   child: ReturnType<typeof spawn>,
   closed: Promise<ChildCloseResult>,
   graceMs = GRACEFUL_SHUTDOWN_MS,
+  reason?: string,
 ) {
   if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  if (reason) writeStopReasonFile(child.pid, reason);
   if (process.platform === "win32") {
     // No SIGTERM-equivalent process-tree signal on Windows.
     killProcessTree(child);
@@ -572,20 +610,34 @@ export type EngineDoneInfo = {
    * carries, spelled out explicitly instead of left for every caller to
    * re-derive:
    *
-   *   "SUCCESS_TARGET_REACHED" — success && targetReached
-   *   "SUCCESS_EXHAUSTED"      — success && !targetReached (exhausted or not,
-   *                              since "delivered less than requested but no
-   *                              failure" only happens via genuine exhaustion)
-   *   "WATCHDOG_TIMEOUT"       — !success && failureReason === "CANCELLED"
-   *                              && this bridge call's own watchdog fired
-   *   "CANCELLED"              — !success && failureReason === "CANCELLED"
-   *                              && the watchdog did NOT fire (caller abort /
-   *                              external process shutdown instead)
-   *   "FAILURE"                — !success, any other failureReason
+   *   "SUCCESS_TARGET_REACHED"   — success && targetReached
+   *   "SUCCESS_EXHAUSTED"        — success && !targetReached (exhausted or
+   *                                not, since "delivered less than requested
+   *                                but no failure" only happens via genuine
+   *                                exhaustion)
+   *   "SUCCESS_CONSUMER_STOPPED" — success && the ONLY reason this run ended
+   *                                is that this bridge call's own consumer
+   *                                (the `for await` on the other end of
+   *                                `runEngineQuery`) stopped iterating early
+   *                                — e.g. area rotation hitting its
+   *                                streaming batch quota — with no genuine
+   *                                abort/watchdog/target-reached in play.
+   *                                Distinct from SUCCESS_TARGET_REACHED:
+   *                                the PARENT request's target was not
+   *                                necessarily reached, only THIS call's
+   *                                own batch was satisfied.
+   *   "WATCHDOG_TIMEOUT"         — !success && failureReason === "CANCELLED"
+   *                                && this bridge call's own watchdog fired
+   *   "CANCELLED"                — !success && failureReason === "CANCELLED"
+   *                                && the watchdog did NOT fire (caller
+   *                                abort / external process shutdown
+   *                                instead)
+   *   "FAILURE"                  — !success, any other failureReason
    */
   terminationReason?:
     | "SUCCESS_TARGET_REACHED"
     | "SUCCESS_EXHAUSTED"
+    | "SUCCESS_CONSUMER_STOPPED"
     | "WATCHDOG_TIMEOUT"
     | "CANCELLED"
     | "FAILURE";
@@ -696,7 +748,13 @@ export async function* runEngineQuery(
     child,
     () => {
       abortRequested = true;
-      void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+      // LIFECYCLE FIX (Bug 1): terminateRequest() sets the request's
+      // terminalReason BEFORE invoking this stop callback (see
+      // requestLifecycle.ts), so it's already readable here — thread it
+      // through to Python via the stop-reason file instead of leaving it
+      // unspecified.
+      const reason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
+      void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, reason);
     },
   );
 
@@ -710,7 +768,14 @@ export async function* runEngineQuery(
   const onAbort = () => {
     abortRequested = true;
     console.log(`[scraper-bridge] Abort signal triggered for PID: ${child.pid}`);
-    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+    // LIFECYCLE FIX (Bug 1): prefer the signal's own reason (callers pass
+    // e.g. "TARGET_REACHED"/"USER_CANCELLED" to `abortController.abort(...)`
+    // — see requestLifecycle.ts/discoverJob.ts), falling back to whatever
+    // the request runtime already recorded.
+    const reason =
+      (signal?.reason as string | undefined) ??
+      (options.requestId ? getRequestTerminalReason(options.requestId) : undefined);
+    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, reason);
   };
   signal?.addEventListener("abort", onAbort);
   if (signal?.aborted) onAbort();
@@ -746,7 +811,10 @@ export async function* runEngineQuery(
         ? `no protocol progress for SCRAPER_SUBPROCESS_INACTIVITY_MS=${env.SCRAPER_SUBPROCESS_INACTIVITY_MS}ms`
         : `absolute safety ceiling SCRAPER_SUBPROCESS_MAX_MS=${env.SCRAPER_SUBPROCESS_MAX_MS}ms reached`;
     console.warn(`[scraper-bridge] watchdog firing (${label}) (PID: ${child.pid}) — requesting graceful termination`);
-    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+    // LIFECYCLE FIX (Bug 1): the watchdog is always its own authoritative
+    // reason — thread it through explicitly rather than leaving Python to
+    // fall back to reason=None.
+    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, "WATCHDOG_TIMEOUT");
   };
 
   let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1031,10 +1099,46 @@ export async function* runEngineQuery(
     // removes itself from that runtime's bookkeeping, not after.
     const terminalReasonAtExit = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
     unregisterRequestProcess();
+    // LIFECYCLE FIX (Bug 2 — the real bug behind rotation/false-FAILED):
+    // this cleanup path fires whenever the child is still alive at the
+    // moment this generator itself is torn down. That happens for two
+    // structurally different reasons, and conflating them was the root
+    // cause: a genuine abort (watchdog / terminateRequest / AbortSignal —
+    // all of which already set `abortRequested = true` above, at their own
+    // call sites) OR — far more commonly — the *consumer* of this
+    // generator (the `for await` on the other end) simply stopped
+    // iterating early: a plain `break`, e.g. area rotation hitting its
+    // streaming batch quota, or a caller that asked for more leads than it
+    // ended up needing. That second case is NOT an abort — the engine
+    // isn't misbehaving, it's still mid-stream — and must never be
+    // classified as CANCELLED. `consumerStoppedEarly` is the new, separate
+    // flag for exactly that case; `abortRequested` now means ONLY a
+    // genuine request-level abort, never this generic early-break path.
+    let consumerStoppedEarly = false;
     if (child.exitCode === null && child.signalCode === null) {
-      abortRequested = true;
-      console.log(`[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid}`);
-      await gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS);
+      if (!abortRequested) {
+        consumerStoppedEarly = true;
+      }
+      console.log(
+        `[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid} ` +
+          `(abortRequested=${abortRequested}, consumerStoppedEarly=${consumerStoppedEarly})`,
+      );
+      // LIFECYCLE FIX (Bug 1): thread the real reason through so Python
+      // never logs reason=unspecified. Preference order: an already-known
+      // request-terminal reason (TARGET_REACHED/USER_CANCELLED/etc.) > the
+      // AbortSignal's own reason > the watchdog, if that's what fired > a
+      // descriptive fallback for the plain "consumer moved on" case, purely
+      // for Python-side log clarity — Node does not rely on Python's
+      // response to this specific reason (see the __done__-missing
+      // synthesis below, which this early-stop path structurally always
+      // hits: the child's eventual __done__, sent only after this SIGTERM,
+      // arrives after this generator has already torn down its stdout
+      // reader).
+      const stopReason =
+        terminalReasonAtExit ??
+        (signal?.reason as string | undefined) ??
+        (timedOut ? "WATCHDOG_TIMEOUT" : "CONSUMER_STOPPED");
+      await gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, stopReason);
     }
 
     // LIFECYCLE FIX: read from the single shared exit promise created right
@@ -1065,25 +1169,39 @@ export async function* runEngineQuery(
       );
       const isParentTargetReached =
         terminalReasonAtExit === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED";
-      const isUserCancelled =
+      // LIFECYCLE FIX (Bug 2): a GENUINE user/request-level cancellation —
+      // never conflated with the generic "consumer stopped early" path
+      // below. `abortRequested` here only ever becomes true via a real
+      // abort (terminateRequest's stop callback, the AbortSignal listener,
+      // or the watchdog) — see those call sites above — so it's safe to
+      // trust directly again now that the early-break cleanup path no
+      // longer reuses this same flag.
+      const isRealAbort =
         terminalReasonAtExit === "USER_CANCELLED" || signal?.reason === "USER_CANCELLED" || abortRequested;
 
-      const success = !timedOut && isParentTargetReached;
+      // A plain consumer-stopped-early outcome (area rotation, batch quota
+      // satisfied) is only a genuine SUCCESS when nothing more
+      // authoritative explains the stop — a real abort, the watchdog, or
+      // the parent's target already being reached always takes priority.
+      const isPlainConsumerStop =
+        consumerStoppedEarly && !timedOut && !isParentTargetReached && !isRealAbort;
+
+      const success = !timedOut && (isParentTargetReached || isPlainConsumerStop);
       const targetReached = isParentTargetReached;
       const failureReason: EngineDiscoveryFailureReason | undefined = success
         ? undefined
-        : (timedOut || isUserCancelled)
+        : (timedOut || isRealAbort)
           ? "CANCELLED"
           : "SCRAPER_ERROR";
       const failureDetail = success
         ? undefined
         : timedOut
           ? `Process timed out (${timedOutReason}) before reporting __done__`
-          : isUserCancelled
+          : isRealAbort
             ? "Process aborted before reporting __done__"
             : `Process exited with code ${exitCode} before reporting __done__`;
       const terminationReason: EngineDoneInfo["terminationReason"] = success
-        ? "SUCCESS_TARGET_REACHED"
+        ? (isParentTargetReached ? "SUCCESS_TARGET_REACHED" : "SUCCESS_CONSUMER_STOPPED")
         : failureReason === "CANCELLED"
           ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
           : "FAILURE";
@@ -1125,7 +1243,19 @@ export async function* runEngineQuery(
     }
     const isParentTargetReached =
       terminalReasonAtExit === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED";
-    if (exitCode !== 0 && !readError && !sawDone() && !abortRequested && !isParentTargetReached) {
+    // LIFECYCLE FIX (Bug 2): a plain consumer-stopped-early exit (rotation)
+    // must not throw here either — same reasoning as the `timedOut` guard
+    // above, now also guarded against being masked by an unrelated
+    // non-zero exit code from the SIGTERM/SIGKILL this cleanup path itself
+    // just sent.
+    if (
+      exitCode !== 0 &&
+      !readError &&
+      !sawDone() &&
+      !abortRequested &&
+      !isParentTargetReached &&
+      !consumerStoppedEarly
+    ) {
       throw new Error(`scraper engine exited with code ${exitCode}`);
     }
   }

@@ -195,6 +195,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Set
 
 from engine.contracts import BusinessCandidate, ContactIntel, InstagramIntel, WebsiteIntel
+from engine.prune_reason_taxonomy import classify_prune_reason
 from queues.queue import Queue
 from utils.runtime import get_logger
 from workers.merge_worker import MergeInput
@@ -318,6 +319,14 @@ class FanInRuntime:
         self._pending: Dict[str, _PipelineAccumulator] = {}
         self._closed: Set[str] = set()
         self._pruned: Set[str] = set()
+        # Lead-Yield Waste Fix — observability step (item 6): counts by
+        # canonical category (see engine/prune_reason_taxonomy.py). Purely
+        # additive bookkeeping — never read by any pruning decision, never
+        # affects _pending/_closed/_pruned. Only covers reasons passed to
+        # prune_business() below (website-stage and contact-stage prunes);
+        # see prune_reason_taxonomy.py's module docstring for the explicit
+        # discovery-stage scope limit.
+        self._prune_reason_counts: Dict[str, int] = {}
 
     # -- correlation inputs ------------------------------------------------
 
@@ -331,7 +340,31 @@ class FanInRuntime:
             self._pruned.add(pipeline_id)
             self._closed.add(pipeline_id)
             self._pending.pop(pipeline_id, None)
-            log.info("fan-in: pipeline_id=%s early-pruned (%s)", pipeline_id, reason)
+            # Lead-Yield Waste Fix — observability step (item 6): classify
+            # the already-supplied `reason` into a small canonical taxonomy
+            # and count it. Additive only — does not change what gets
+            # pruned, when, or why; see get_prune_reason_counts() below.
+            category = classify_prune_reason(reason)
+            self._prune_reason_counts[category] = self._prune_reason_counts.get(category, 0) + 1
+            log.info(
+                "fan-in: pipeline_id=%s early-pruned (%s) [category=%s]",
+                pipeline_id,
+                reason,
+                category,
+            )
+
+    def get_prune_reason_counts(self) -> Dict[str, int]:
+        """
+        Lead-Yield Waste Fix — observability step (item 6). Returns a copy
+        of the running counts, keyed by canonical category (see
+        engine/prune_reason_taxonomy.py). Read-only bookkeeping — never
+        consulted by any pruning decision. Covers only prunes that went
+        through prune_business() above (website-stage and contact-stage);
+        see prune_reason_taxonomy.py's module docstring for why the
+        discovery-stage channel prune is out of scope for this method.
+        """
+        with self._lock:
+            return dict(self._prune_reason_counts)
 
     def is_pruned(self, pipeline_id: str) -> bool:
         """Whether `pipeline_id` was terminally pruned before completing FanIn."""

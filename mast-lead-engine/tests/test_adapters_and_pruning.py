@@ -43,6 +43,40 @@ def test_fan_in_prune_business():
     assert fan_in.is_closed("p100")
 
 
+def test_fan_in_prune_reason_counts():
+    """
+    Lead-Yield Waste Fix — observability step (item 6).
+
+    get_prune_reason_counts() must count by canonical category, purely
+    additively, without changing anything prune_business() already does
+    (pending/closed/pruned state — see test_fan_in_prune_business above,
+    unaffected by this).
+    """
+    q_def = QueueDefinition(queue_id="q1", queue_name="merge_in")
+    q = Queue(q_def)
+    fan_in = FanInRuntime(merge_queue=q)
+
+    # No prunes yet — counts start empty, not pre-seeded with zeros.
+    assert fan_in.get_prune_reason_counts() == {}
+
+    fan_in.prune_business("p1", reason="missing_required_channel:email")
+    fan_in.prune_business("p2", reason="missing_required_channel:email")
+    fan_in.prune_business("p3", reason="missing_required_channel:phone")
+    fan_in.prune_business("p4", reason="unreachable_website")
+    fan_in.prune_business("p5", reason="unreachable_website_no_email")
+
+    counts = fan_in.get_prune_reason_counts()
+    assert counts == {
+        "missing_email": 2,
+        "missing_phone": 1,
+        "unreachable_website": 2,
+    }
+
+    # Returned dict is a copy — mutating it must not affect internal state.
+    counts["missing_email"] = 999
+    assert fan_in.get_prune_reason_counts()["missing_email"] == 2
+
+
 def test_adapter_refuses_fabricated_opportunity_type():
     """Verify to_domain_opportunity returns None when needed_services and reasons are empty (no fake value generated)."""
     candidate = BusinessCandidate(

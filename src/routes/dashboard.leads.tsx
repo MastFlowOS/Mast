@@ -41,6 +41,11 @@ import { type FeatureId } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { addNotification } from "@/lib/notifications";
 import {
+  DEFAULT_CHANNELS,
+  channelsForRequest,
+  toggleChannelSelection,
+} from "@/lib/channelSelection";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -425,7 +430,15 @@ function GetLeads() {
 
   // Channels & generation mode
   const [speed, setSpeed] = useState(speeds[0].id);
-  const [channels, setChannels] = useState<ChannelId[]>(["email", "phone"]);
+  // Lead-Yield Waste Fix: DEFAULT_CHANNELS is empty on purpose — see
+  // src/lib/channelSelection.ts's module docstring. The audit found the
+  // previous ["email","phone"] default silently pre-selected the most
+  // expensive AND-combination (64.6% of discovered candidates were pruned
+  // for missing one of those two channels); `canGenerate` below already
+  // requires channels.length > 0, so starting empty simply means the user
+  // must make an explicit choice before launching a session — no channel
+  // requirement is ever silently assumed on their behalf.
+  const [channels, setChannels] = useState<ChannelId[]>(DEFAULT_CHANNELS as ChannelId[]);
 
   // Staged loading & completion states
   const [isGenerating, setIsGenerating] = useState(false);
@@ -579,9 +592,7 @@ function GetLeads() {
       toast.error(`${meta.title} requires the ${meta.requiredPlan.toUpperCase()} plan.`);
       return;
     }
-    setChannels((c) =>
-      c.includes(id) ? c.filter((x) => x !== id) : [...c, id]
-    );
+    setChannels((c) => toggleChannelSelection(c, id));
   };
 
   const filteredNiches = NICHE_CATALOG.filter((n) =>
@@ -603,10 +614,16 @@ function GetLeads() {
   // Niche selection is required — the engine must never receive an empty
   // niche (which used to silently fall back to "General").
   const noNicheSelected = niches.length === 0;
+  // Lead-Yield Waste Fix: named explicitly (rather than left as an
+  // unlabeled part of canGenerate) so the warning block below can tell the
+  // user WHY the button is disabled instead of leaving an empty selection
+  // silently unexplained — see DEFAULT_CHANNELS's docstring for why the
+  // form no longer pre-selects a default combination.
+  const noChannelSelected = channels.length === 0;
   const canGenerate =
     !!account &&
     !noNicheSelected &&
-    channels.length > 0 &&
+    !noChannelSelected &&
     !channelRestricted &&
     !modeRestricted &&
     !exceedsDailyLimit &&
@@ -695,7 +712,11 @@ function GetLeads() {
         region: regions.join(", "),
         niche: niches.join(", "),
         mode: speed as "scrape" | "pool" | "premium",
-        channels,
+        // Pass-through-unchanged contract — see channelsForRequest's
+        // docstring. Whatever the user selected (any AND-combination,
+        // including a single channel) reaches the engine exactly as
+        // selected; no default, dedup, or OR-conversion happens here.
+        channels: channelsForRequest(channels),
         currencies,
       });
 
@@ -1314,6 +1335,17 @@ function GetLeads() {
             subtitle="Select verified contact paths to load into your workspace"
             stagger={3}
           >
+            {/* Lead-Yield Waste Fix: makes the AND semantics visible before
+                the user picks — selecting more than one channel means a
+                lead must have EVERY selected channel, not any one of them,
+                so the tradeoff (fewer, richer leads) is informed rather
+                than silent. Channel matching itself is unchanged — see
+                src/lib/channelFilter.ts. */}
+            <p className="text-[11px] text-muted-foreground -mt-1 mb-3">
+              Selecting more than one channel requires a lead to have{" "}
+              <span className="font-semibold text-foreground">all</span> of them — fewer channels
+              means faster, higher-yield results.
+            </p>
             <div className="space-y-2">
               {channelOptions.map((c) => {
                 const active = channels.includes(c.id);
@@ -1529,15 +1561,22 @@ function GetLeads() {
               {isGenerating ? "Analyzing..." : "Launch Discovery Session"}
 
             </button>
-            {(noNicheSelected || channelRestricted || modeRestricted || exceedsDailyLimit || exceedsMonthlyLimit) && (
+            {(noNicheSelected ||
+              noChannelSelected ||
+              channelRestricted ||
+              modeRestricted ||
+              exceedsDailyLimit ||
+              exceedsMonthlyLimit) && (
               <p className="text-[11px] text-destructive text-center mt-2.5 leading-relaxed">
                 {noNicheSelected
                   ? "Select at least one niche before launching a discovery session."
-                  : exceedsDailyLimit
-                  ? `Daily limit: only ${dailyRemaining} remaining today.`
-                  : exceedsMonthlyLimit
-                  ? `Monthly limit: only ${monthlyRemaining} remaining.`
-                  : "Your plan does not support this channel configuration."}
+                  : noChannelSelected
+                    ? "Select at least one outreach channel before launching a discovery session."
+                    : exceedsDailyLimit
+                      ? `Daily limit: only ${dailyRemaining} remaining today.`
+                      : exceedsMonthlyLimit
+                        ? `Monthly limit: only ${monthlyRemaining} remaining.`
+                        : "Your plan does not support this channel configuration."}
               </p>
             )}
           </div>

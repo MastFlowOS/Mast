@@ -22,14 +22,31 @@ Fingerprint types:
 
 from __future__ import annotations
 
+import contextlib
 import os
+import random
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
 
 from utils.parsing import domain_of, digits_only, norm_text
+
+try:  # POSIX (Railway/Linux/macOS) — the primary deployment target.
+    import fcntl
+
+    _HAVE_FCNTL = True
+except ImportError:  # pragma: no cover - exercised only on Windows.
+    _HAVE_FCNTL = False
+
+try:  # Windows dev boxes.
+    import msvcrt
+
+    _HAVE_MSVCRT = True
+except ImportError:  # pragma: no cover - exercised only on POSIX.
+    _HAVE_MSVCRT = False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -170,6 +187,97 @@ def fingerprints_for(biz: dict) -> set[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Multi-process safety
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# CONCURRENCY FIX (`database is locked` under the area-worker pool): two or
+# more Python engine subprocesses (e.g. two Google Maps area workers spawned
+# concurrently by src/discovery/googleAreaPool.ts for the SAME
+# `data/leads-pool-expand.db`) each construct their own `LeadStore` at
+# process start. `LeadStore.__init__` used to run three operations —
+# switching the file to WAL journal mode, creating the schema
+# (`CREATE TABLE IF NOT EXISTS`), and migrating it (`ALTER TABLE ... ADD
+# COLUMN`) — with no coordination between processes. All three require a
+# brief exclusive lock on the database file:
+#   - `PRAGMA journal_mode=WAL` on a brand-new file has to create the
+#     `-wal`/`-shm` sidecar files, which is itself an exclusive operation.
+#   - `ALTER TABLE` always takes an exclusive lock, however briefly.
+# When two processes hit these at effectively the same instant — the
+# reported failure mode, "two Python engine processes started
+# concurrently" — one of them can lose the race and raise
+# `sqlite3.OperationalError: database is locked` before SQLite's own
+# busy-timeout retry loop even gets a chance to help, because that race is
+# a WAL/DDL race, not an ordinary write-contention race.
+#
+# Fix: serialize exactly this narrow bootstrap window (WAL switch + schema
+# create + migrate) across processes with a real OS-level file lock (POSIX
+# `flock`, or `msvcrt.locking` on Windows) on a small sidecar `.initlock`
+# file next to the database. Whichever process gets there first does the
+# one-time setup while every other process blocks for the (sub-millisecond,
+# after the first run) duration of that setup, then proceeds normally.
+# Steady-state reads/writes after bootstrap are unaffected — WAL already
+# lets readers and a single writer coexist, and `PRAGMA busy_timeout`
+# (also added below) makes ordinary write contention wait-and-retry
+# instead of raising immediately.
+
+
+@contextlib.contextmanager
+def _cross_process_init_lock(db_path: Path):
+    """Serialize schema bootstrap/migration across concurrent processes.
+
+    Best-effort: if neither `fcntl` nor `msvcrt` is available, this is a
+    no-op (single-process-only environments — e.g. a stripped-down
+    interpreter — fall back to whatever behavior existed before this fix
+    rather than failing outright).
+    """
+    lock_path = db_path.parent / f"{db_path.name}.initlock"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+")
+    try:
+        if _HAVE_FCNTL:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        elif _HAVE_MSVCRT:
+            # msvcrt.locking has no blocking mode — poll until acquired.
+            while True:
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.02)
+        yield
+    finally:
+        try:
+            if _HAVE_FCNTL:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            elif _HAVE_MSVCRT:
+                try:
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+        finally:
+            fh.close()
+
+
+def _retry_on_locked(fn, *, attempts: int = 8, base_delay: float = 0.05):
+    """Run `fn()`, retrying with jittered backoff on `database is locked`.
+
+    Defense-in-depth alongside `_cross_process_init_lock` and
+    `PRAGMA busy_timeout`: covers any remaining transient lock contention
+    (e.g. a concurrent writer mid-transaction) without masking a genuine,
+    non-lock `OperationalError`, which is re-raised immediately.
+    """
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == attempts - 1:
+                raise
+            time.sleep(base_delay * (2 ** attempt) + random.uniform(0, base_delay))
+    return fn()  # pragma: no cover - unreachable, loop always returns/raises
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # LeadStore — SQLite-backed persistent dedup database
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -191,11 +299,28 @@ class LeadStore:
     def __init__(self, db_path: str | Path = DEFAULT_DB, *, profiler=None) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA cache_size=-32000")  # 32MB page cache
-        self._bootstrap()
+        # CONCURRENCY FIX: a generous `timeout` (seconds SQLite will wait,
+        # retrying internally, before raising "database is locked" on an
+        # ordinary contended statement) — raised from the sqlite3 default
+        # of 5s to comfortably cover a second/third worker's bootstrap
+        # window. `PRAGMA busy_timeout` below sets the same thing
+        # explicitly so it's visible here rather than implicit in the
+        # connect() call.
+        self._conn = sqlite3.connect(
+            str(self.db_path), check_same_thread=False, timeout=30.0
+        )
+        self._conn.execute("PRAGMA busy_timeout=30000")
+        # CONCURRENCY FIX: the WAL switch + schema bootstrap/migration is
+        # exactly the narrow window where two concurrently-starting
+        # processes can race each other for an exclusive lock (see
+        # `_cross_process_init_lock`'s own doc comment above for why).
+        # Serialize just that window across processes; everything after
+        # it (cache load, reads, writes) runs uncontended as before.
+        with _cross_process_init_lock(self.db_path):
+            _retry_on_locked(lambda: self._conn.execute("PRAGMA journal_mode=WAL"))
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA cache_size=-32000")  # 32MB page cache
+            self._bootstrap()
         # Phase 2A (audit §3.7): this full-table fingerprint scan runs once
         # per process start with no prior visibility into its cost. Timed
         # here (optional profiler — defaults to doing nothing so existing
@@ -208,7 +333,7 @@ class LeadStore:
             self._cache: set[str] = self._load_cache()
 
     def _bootstrap(self) -> None:
-        self._conn.executescript("""
+        _retry_on_locked(lambda: self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS leads (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 name        TEXT,
@@ -232,7 +357,7 @@ class LeadStore:
 
             CREATE INDEX IF NOT EXISTS idx_fp_lead
                 ON fingerprints(lead_id);
-        """)
+        """))
         self._conn.commit()
         self._migrate()
 
@@ -250,9 +375,24 @@ class LeadStore:
         }
         for col, typedef in migrations.items():
             if col not in existing:
-                self._conn.execute(
-                    f"ALTER TABLE leads ADD COLUMN {col} {typedef}"
-                )
+                # `ADD COLUMN IF NOT EXISTS` isn't available on the SQLite
+                # versions this project targets, and the existence check
+                # above already happened before we hold the file lock's
+                # exclusive DDL moment — so also swallow "duplicate column
+                # name" here: under the cross-process init lock this is
+                # unreachable (only one process bootstraps at a time), but
+                # it's a cheap, harmless guard if this method is ever
+                # called outside that lock (e.g. directly by a test).
+                def _add_column(col=col, typedef=typedef):
+                    try:
+                        self._conn.execute(
+                            f"ALTER TABLE leads ADD COLUMN {col} {typedef}"
+                        )
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column name" not in str(exc).lower():
+                            raise
+
+                _retry_on_locked(_add_column)
         self._conn.commit()
 
     def _load_cache(self) -> set[str]:
@@ -283,36 +423,47 @@ class LeadStore:
     ) -> int:
         """Persist a unique business and register all its fingerprints."""
         effective_keys = set(keys) if keys is not None else fingerprints_for(biz)
-        cur = self._conn.execute(
-            """
-            INSERT INTO leads(
-                name, maps_link, website, instagram, email, phone,
-                city, country, score, quality, niche, region
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                biz.get("name", ""),
-                biz.get("maps_link", ""),
-                biz.get("website", ""),
-                biz.get("instagram", ""),
-                biz.get("email", ""),
-                biz.get("phone", ""),
-                biz.get("city", ""),
-                biz.get("country", ""),
-                score,
-                quality,
-                niche,
-                region,
-            ),
-        )
-        lead_id = cur.lastrowid
-        for k in effective_keys:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO fingerprints(key, lead_id) VALUES (?,?)",
-                (k, lead_id),
+
+        def _do_insert():
+            cur = self._conn.execute(
+                """
+                INSERT INTO leads(
+                    name, maps_link, website, instagram, email, phone,
+                    city, country, score, quality, niche, region
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    biz.get("name", ""),
+                    biz.get("maps_link", ""),
+                    biz.get("website", ""),
+                    biz.get("instagram", ""),
+                    biz.get("email", ""),
+                    biz.get("phone", ""),
+                    biz.get("city", ""),
+                    biz.get("country", ""),
+                    score,
+                    quality,
+                    niche,
+                    region,
+                ),
             )
+            lead_id = cur.lastrowid
+            for k in effective_keys:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO fingerprints(key, lead_id) VALUES (?,?)",
+                    (k, lead_id),
+                )
+            self._conn.commit()
+            return lead_id
+
+        # CONCURRENCY FIX: `PRAGMA busy_timeout` already makes SQLite itself
+        # wait-and-retry a contended write internally, but wrap here too as
+        # a defense-in-depth backstop — see `_retry_on_locked`'s doc
+        # comment — so a `database is locked` under real concurrent-worker
+        # load surfaces as a (slower) success, not a crashed worker.
+        lead_id = _retry_on_locked(_do_insert)
+        for k in effective_keys:
             self._cache.add(k)
-        self._conn.commit()
         return lead_id
 
     def register_keys(self, keys: Iterable[str], lead_id: int | None = None) -> None:
@@ -324,22 +475,31 @@ class LeadStore:
             if not row:
                 return
             lead_id = row[0]
+        keys = list(keys)
+
+        def _do_register():
+            for k in keys:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO fingerprints(key, lead_id) VALUES (?,?)",
+                    (k, lead_id),
+                )
+            self._conn.commit()
+
+        _retry_on_locked(_do_register)
         for k in keys:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO fingerprints(key, lead_id) VALUES (?,?)",
-                (k, lead_id),
-            )
             self._cache.add(k)
-        self._conn.commit()
 
     def contains_fingerprint(self, key: str) -> bool:
         return key in self._cache
 
     def reset(self) -> None:
         """Wipe entire database. Only for fresh runs with --no-history."""
-        self._conn.execute("DELETE FROM fingerprints")
-        self._conn.execute("DELETE FROM leads")
-        self._conn.commit()
+        def _do_reset():
+            self._conn.execute("DELETE FROM fingerprints")
+            self._conn.execute("DELETE FROM leads")
+            self._conn.commit()
+
+        _retry_on_locked(_do_reset)
         self._cache.clear()
 
     def close(self) -> None:

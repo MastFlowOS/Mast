@@ -844,11 +844,23 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           };
         },
         tryAcquireSlot: () => browserSlotPool.tryAcquire(),
-        isTerminal: async () => {
-          const { data } = await db.from("discovery_plans")
-            .select("status, delivered_count, requested_count").eq("id", payload.planId).maybeSingle();
-          return Boolean(terminalReasonForPlan(data));
-        },
+        // LIFECYCLE FIX (STOP REASON — FINAL SHUTDOWN LATENCY +
+        // CONSUMER_STOPPED FIX): this used to run its own independent DB
+        // read, decoupled from `observeTerminalPlan()`/`terminateRequest()`
+        // below — it could correctly decide "stop claiming new areas" but
+        // never actually pushed the authoritative reason to any ALREADY-
+        // running sibling area worker. Those siblings only found out via
+        // the separate `terminalPoll` interval (REQUEST_TERMINAL_POLL_MS),
+        // which is what let some of them still observe reason=unspecified
+        // (no stop-reason file yet written) the moment SIGTERM's own
+        // escalation fired ahead of that timer's next tick. Reusing
+        // `observeTerminalPlan()` here means every one of this pool's own
+        // per-iteration terminal checks (checked before EVERY new area
+        // claim — see workerLoop's own comment) ALSO calls
+        // `terminateRequest()` synchronously, so the authoritative reason
+        // and the SIGTERM it triggers reach every currently-registered
+        // child immediately, not just on the next unrelated timer tick.
+        isTerminal: async () => Boolean(await observeTerminalPlan()),
         onEvent: (event) => logAreaPoolEvent(payload, task, event),
       });
 

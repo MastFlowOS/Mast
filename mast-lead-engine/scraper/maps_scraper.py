@@ -287,13 +287,43 @@ class RawPlace:
 
 _BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
 
+# LIFECYCLE FIX (Playwright shutdown noise — FINAL SHUTDOWN LATENCY +
+# CONSUMER_STOPPED FIX): once the page/context this handler is routing
+# for gets torn down — deliberately, as part of an intentional
+# cooperative shutdown (target reached / consumer stopped / SIGTERM) —
+# every in-flight request still races Route.abort()/continue_() against
+# that close and raises "Target page, context or browser has been
+# closed" (or an equivalent Playwright "Connection closed" error).  The
+# request is going nowhere either way in that case; letting it flood
+# Railway's logs at Playwright's own default warning/error level tells
+# an operator nothing they don't already know from the one shutdown log
+# line, so it's swallowed here at debug level instead of surfacing as an
+# "Unhandled error in route handler".
+_SHUTDOWN_NOISE_MARKERS = (
+    "has been closed",
+    "Target closed",
+    "Target crashed",
+    "Connection closed",
+)
+
+
+def _looks_like_shutdown_noise(exc: BaseException) -> bool:
+    text = str(exc)
+    return any(marker in text for marker in _SHUTDOWN_NOISE_MARKERS)
+
 
 async def _block_heavy_resources(ctx: BrowserContext) -> None:
     async def _handle(route):
-        if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
-            await route.abort()
-        else:
-            await route.continue_()
+        try:
+            if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+                await route.abort()
+            else:
+                await route.continue_()
+        except Exception as exc:
+            if _looks_like_shutdown_noise(exc):
+                log.debug(f"[maps] route handler no-op on closed target: {exc}")
+            else:
+                log.warning(f"[maps] route handler error (resource_type={route.request.resource_type}): {exc}")
 
     await ctx.route("**/*", _handle)
 
@@ -1979,6 +2009,30 @@ class MapsScraper:
                 # retries with a freshly built context/page.
 
             except Exception as exc:
+                # LIFECYCLE FIX (fast target cleanup / shutdown noise —
+                # FINAL SHUTDOWN LATENCY + CONSUMER_STOPPED FIX): once a
+                # cooperative stop has been requested, Playwright calls
+                # still in flight on this attempt's page/context routinely
+                # raise a closed-target/connection-closed error the moment
+                # cleanup elsewhere (or the SIGTERM handler) starts tearing
+                # the browser down mid-attempt. That is not a crash — it's
+                # the expected, intentional side effect of shutting down
+                # while a scroll/click/network op was mid-flight. Treating
+                # it as one (logging it fatal, spending a full retry with a
+                # brand-new browser context, or even raising
+                # DiscoveryFailure(SCRAPER_ERROR) on the last attempt) is
+                # exactly the wasted ~20s of "shutdown/forced cancellation"
+                # latency reported live. Detected only when should_stop()
+                # is ALSO true — a real crash that happens to coincide with
+                # an unrelated shutdown flag must still surface normally.
+                if should_stop is not None and should_stop() and _looks_like_shutdown_noise(exc):
+                    log.info(
+                        f"[maps] suppressing expected shutdown-noise error for "
+                        f"{full_query!r} (attempt {attempt}/{max_attempts}, "
+                        f"{yielded} place(s) already yielded) — cooperative "
+                        f"stop already requested, not a genuine crash: {exc}"
+                    )
+                    return
                 crashed = True
                 is_last_attempt = attempt >= max_attempts
                 log.error(

@@ -22,6 +22,7 @@ Run: pytest tests/test_run_query_target_reached_lifecycle.py -v
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -344,3 +345,177 @@ class TestTargetReachedShutdownSemantics:
             service._set_shutdown_reason(None)
             service._shutdown_event.clear()
 
+
+class TestConsumerStoppedShutdownSemantics:
+    """
+    FINAL SHUTDOWN LATENCY + CONSUMER_STOPPED FIX — item 1: a plain
+    CONSUMER_STOPPED SIGTERM (the Node bridge's own consumer breaking out
+    early — e.g. area rotation hitting its streaming batch quota) must be
+    treated as a successful non-failure termination, exactly like
+    TARGET_REACHED, but WITHOUT being reported as target_reached (the
+    PARENT request's target was not necessarily met) or as exhausted (the
+    search space did not genuinely run out).
+    """
+
+    @pytest.mark.asyncio
+    async def test_consumer_stopped_shutdown_produces_success_without_target_reached(self, monkeypatch, tmp_path):
+        import threading
+        import io
+
+        fake_provider = _CountingFakeProvider(supply=None)
+        monkeypatch.setattr(service, "GoogleMapsProvider", lambda: fake_provider)
+
+        shutdown_event = threading.Event()
+        service._set_shutdown_reason("CONSUMER_STOPPED")
+
+        try:
+            leads = []
+            async for lead in service.run_query(
+                query="coffee", city="New York", deliver_target=20,
+                discovery_only=True, db_path=str(tmp_path / "leads_consumer_stopped.db"),
+                shutdown_event=shutdown_event,
+                shutdown_reason="CONSUMER_STOPPED",
+            ):
+                leads.append(lead)
+                if len(leads) == 5:
+                    shutdown_event.set()
+
+            assert len(leads) == 5
+
+            # Also exercise _main_cli end-to-end with CONSUMER_STOPPED,
+            # the same way the TARGET_REACHED/USER_CANCELLED tests above
+            # do — this is the actual code path pythonBridge.ts's area
+            # rotation SIGTERM drives in production.
+            service._set_shutdown_reason("CONSUMER_STOPPED")
+            monkeypatch.setattr(sys, "argv", ["service.py", json.dumps({"query": "coffee", "city": "New York", "deliver_target": 20, "discovery_only": True, "db_path": str(tmp_path / "leads_consumer_stopped2.db")})])
+            out = io.StringIO()
+            monkeypatch.setattr(sys, "stdout", out)
+
+            def _stop_after_5():
+                while len([line for line in out.getvalue().splitlines() if line.strip() and not line.startswith("{'__done__'")]) < 5:
+                    time.sleep(0.01)
+                service._shutdown_event.set()
+
+            threading.Thread(target=_stop_after_5, daemon=True).start()
+            await service._main_cli()
+
+            lines = [json.loads(l) for l in out.getvalue().splitlines() if l.strip()]
+            done_line = next((l for l in lines if l.get("__done__")), None)
+            assert done_line is not None
+            assert done_line["delivered"] == 5
+            assert done_line["requested"] == 20
+            # The core of this fix: success=True, never a CANCELLED failure.
+            assert done_line["success"] is True
+            assert done_line["failure_reason"] is None
+            # Distinct from TARGET_REACHED: the parent's target was not
+            # necessarily met, only this call's own batch was satisfied.
+            assert done_line["target_reached"] is False
+            assert done_line["termination_reason"] == "SUCCESS_CONSUMER_STOPPED"
+            # Distinct from genuine exhaustion: the search space did not
+            # actually run out, this run was just asked to stop early.
+            assert done_line["exhausted"] is False
+        finally:
+            service._set_shutdown_reason(None)
+            service._shutdown_event.clear()
+
+    @pytest.mark.asyncio
+    async def test_consumer_stopped_forced_cancellation_still_reports_success(self, monkeypatch, tmp_path):
+        """
+        Same CONSUMER_STOPPED reason, but exercised through the
+        asyncio.CancelledError branch of `_main_cli` (i.e. the cooperative
+        checkpoints didn't wind down in time and `_run_with_graceful_
+        shutdown`'s escalation forced a `task.cancel()`) — the OTHER of
+        the two places this fix touches, previously falling into the
+        `else` branch and raising DiscoveryFailure(CANCELLED) exactly the
+        same as the discovery_only/main branches above did.
+        """
+        import io
+
+        service._set_shutdown_reason("CONSUMER_STOPPED")
+        try:
+            monkeypatch.setattr(sys, "argv", ["service.py", json.dumps({"query": "coffee", "city": "New York", "deliver_target": 20, "discovery_only": True, "db_path": str(tmp_path / "leads_forced.db")})])
+            out = io.StringIO()
+            monkeypatch.setattr(sys, "stdout", out)
+
+            async def _raise_cancelled(**kwargs):
+                raise asyncio.CancelledError()
+                yield  # pragma: no cover - makes this an async generator
+
+            monkeypatch.setattr(service, "run_query", _raise_cancelled)
+
+            await service._main_cli()
+
+            lines = [json.loads(l) for l in out.getvalue().splitlines() if l.strip()]
+            done_line = next((l for l in lines if l.get("__done__")), None)
+            assert done_line is not None
+            assert done_line["success"] is True
+            assert done_line["failure_reason"] is None
+            assert done_line["target_reached"] is False
+            assert done_line["termination_reason"] == "SUCCESS_CONSUMER_STOPPED"
+            assert done_line["exhausted"] is False
+        finally:
+            service._set_shutdown_reason(None)
+            service._shutdown_event.clear()
+
+
+class TestFastTargetCleanupGracePeriod:
+    """
+    FINAL SHUTDOWN LATENCY + CONSUMER_STOPPED FIX — item 3: a SIGTERM
+    whose reason means "no useful work remains" (TARGET_REACHED /
+    CONSUMER_STOPPED) must escalate to forced cancellation on a much
+    shorter fuse than a genuine watchdog/user-cancel SIGTERM, which still
+    gets the full COOPERATIVE_SHUTDOWN_GRACE_S window to wind down
+    in-flight work safely.
+    """
+
+    def test_grace_period_selection(self):
+        assert service._shutdown_grace_period_s("TARGET_REACHED") == service.FAST_SHUTDOWN_GRACE_S
+        assert service._shutdown_grace_period_s("CONSUMER_STOPPED") == service.FAST_SHUTDOWN_GRACE_S
+        assert service._shutdown_grace_period_s("USER_CANCELLED") == service.COOPERATIVE_SHUTDOWN_GRACE_S
+        assert service._shutdown_grace_period_s("WATCHDOG_TIMEOUT") == service.COOPERATIVE_SHUTDOWN_GRACE_S
+        assert service._shutdown_grace_period_s(None) == service.COOPERATIVE_SHUTDOWN_GRACE_S
+        # Sanity: the fast fuse really is shorter, not just a different value.
+        assert service.FAST_SHUTDOWN_GRACE_S < service.COOPERATIVE_SHUTDOWN_GRACE_S
+
+    @pytest.mark.asyncio
+    async def test_consumer_stopped_sigterm_escalates_on_the_fast_window(self, monkeypatch):
+        import os
+        import signal
+        import tempfile
+
+        # Shrink both windows (proportionally) so this test runs fast
+        # while still proving CONSUMER_STOPPED uses the SHORT one.
+        monkeypatch.setattr(service, "FAST_SHUTDOWN_GRACE_S", 0.05)
+        monkeypatch.setattr(service, "COOPERATIVE_SHUTDOWN_GRACE_S", 1.0)
+
+        async def _never_finishes_on_its_own():
+            # Never checks _shutdown_event — forces this test down the
+            # escalation (forced task.cancel()) path deterministically.
+            await asyncio.sleep(100)
+
+        # `_run_with_graceful_shutdown` resets the in-process shutdown
+        # reason to None at entry (matching production: the reason is
+        # meant to be discovered fresh from the stop-reason file/IPC when
+        # SIGTERM actually arrives, not carried over from a previous run)
+        # — so, like the real Node bridge, write the reason to the
+        # stop-reason file this same PID's `_get_shutdown_reason()` reads,
+        # rather than pre-seeding the in-process global.
+        stop_file = os.path.join(tempfile.gettempdir(), f"mast_stop_{os.getpid()}.txt")
+        with open(stop_file, "w", encoding="utf-8") as f:
+            f.write("CONSUMER_STOPPED")
+        try:
+            start = time.monotonic()
+            task = asyncio.ensure_future(service._run_with_graceful_shutdown(_never_finishes_on_its_own))
+            await asyncio.sleep(0.01)  # let the signal handler register
+            os.kill(os.getpid(), signal.SIGTERM)
+            await task
+            elapsed = time.monotonic() - start
+            # Escalated on the FAST (0.05s) window, nowhere near the full
+            # COOPERATIVE (1.0s) one this same reason used to always wait.
+            assert elapsed < 0.5
+        finally:
+            service._set_shutdown_reason(None)
+            try:
+                os.remove(stop_file)
+            except OSError:
+                pass

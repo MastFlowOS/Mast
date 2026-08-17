@@ -986,6 +986,14 @@ export async function* runEngineQuery(
         // LIFECYCLE FIX: additive field — see EngineDoneInfo.targetReached.
         const rawTargetReached =
           parsed.target_reached === undefined ? undefined : Boolean(parsed.target_reached);
+        // LIFECYCLE FIX (CONSUMER_STOPPED semantics — FINAL SHUTDOWN
+        // LATENCY + CONSUMER_STOPPED FIX): service.py now writes this
+        // explicit string (see its own termination_reason derivation)
+        // rather than leaving Node to re-derive "was this exhaustion or a
+        // requested early stop" purely from success/targetReached, which
+        // cannot tell the two apart on their own — both look like
+        // `success && !targetReached`.
+        const rawTerminationReason = parsed.termination_reason as string | undefined;
 
         const requestTerminalReason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
         const isParentTargetReached =
@@ -1045,8 +1053,19 @@ export async function* runEngineQuery(
         );
         // PART D: see EngineDoneInfo.terminationReason's own doc comment
         // for the full derivation table this mirrors exactly.
+        //
+        // LIFECYCLE FIX (CONSUMER_STOPPED semantics): a plain consumer-
+        // stopped-early success (area rotation / batch quota satisfied)
+        // must be classified as SUCCESS_CONSUMER_STOPPED, not
+        // SUCCESS_EXHAUSTED — service.py's own `rawTerminationReason`
+        // already carries that distinction (see its termination_reason
+        // derivation), so it's trusted here rather than re-derived.
         const terminationReason: EngineDoneInfo["terminationReason"] = success
-          ? (targetReached ? "SUCCESS_TARGET_REACHED" : "SUCCESS_EXHAUSTED")
+          ? (targetReached
+              ? "SUCCESS_TARGET_REACHED"
+              : rawTerminationReason === "SUCCESS_CONSUMER_STOPPED"
+                ? "SUCCESS_CONSUMER_STOPPED"
+                : "SUCCESS_EXHAUSTED")
           : failureReason === "CANCELLED"
             ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
             : "FAILURE";

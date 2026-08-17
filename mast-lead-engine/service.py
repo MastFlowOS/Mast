@@ -207,6 +207,27 @@ def _set_shutdown_reason(reason: Optional[str]) -> None:
     _shutdown_reason = reason
 
 
+# LIFECYCLE FIX (FINAL SHUTDOWN LATENCY + CONSUMER_STOPPED FIX): both of
+# these reasons mean "this run stopped on request, not because anything
+# went wrong" — TARGET_REACHED (the parent request's target was already
+# satisfied by a sibling) and CONSUMER_STOPPED (the Node bridge's own
+# consumer, e.g. area rotation hitting its streaming batch quota, simply
+# stopped iterating early; see pythonBridge.ts's `consumerStoppedEarly`).
+# Previously only TARGET_REACHED was recognized here, so a plain area-
+# worker rotation SIGTERM (reason=CONSUMER_STOPPED) fell through to the
+# `else` branch at every call site below and was misreported as
+# `DiscoveryFailure(CANCELLED)` — a normal, expected termination surfaced
+# as a failure. USER_CANCELLED/WATCHDOG_TIMEOUT/unspecified are
+# deliberately NOT included here: those must keep raising
+# DiscoveryFailure(CANCELLED) unchanged (see module docstring — "Keep real
+# crash/watchdog/user-cancelled semantics unchanged").
+_NON_FAILURE_SHUTDOWN_REASONS = frozenset({"TARGET_REACHED", "CONSUMER_STOPPED"})
+
+
+def _is_non_failure_shutdown(reason: Optional[str]) -> bool:
+    return reason in _NON_FAILURE_SHUTDOWN_REASONS
+
+
 # How long _run_with_graceful_shutdown waits for the cooperative shutdown
 # above to finish on its own before escalating to a forced task
 # cancellation (the old, unconditional behavior). Comfortably shorter than
@@ -216,6 +237,26 @@ def _set_shutdown_reason(reason: Optional[str]) -> None:
 # path (which still gets to write __done__ and close resources in order)
 # has a real chance to win the race before Node's hard kill would fire.
 COOPERATIVE_SHUTDOWN_GRACE_S = 12.0
+
+# LIFECYCLE FIX (FAST TARGET CLEANUP — FINAL SHUTDOWN LATENCY +
+# CONSUMER_STOPPED FIX): the live run this fix responds to spent ~20s
+# after TARGET_REACHED just waiting out this escalation window on unused
+# sibling workers, even though `should_stop`/`_should_stop_discovery` were
+# already true and there was no useful work left to wind down. That full
+# 12s window exists to protect a run that's still actively finishing
+# meaningful work (a genuine watchdog/user-cancel mid-scrape) — it is
+# unnecessary generosity for a reason that already means "nothing useful
+# is left to do", so those two reasons get a much shorter fuse before
+# falling back to forced cancellation. Not zero: `run_query`'s own
+# checkpoints (should_stop / the between-pass shutdown_event check) are
+# frequent but not synchronous with an in-flight Playwright call, so a
+# short window still lets an already-cheap checkpoint fire and exit
+# cleanly instead of hitting the forced-cancellation path on every run.
+FAST_SHUTDOWN_GRACE_S = 2.0
+
+
+def _shutdown_grace_period_s(reason: Optional[str]) -> float:
+    return FAST_SHUTDOWN_GRACE_S if _is_non_failure_shutdown(reason) else COOPERATIVE_SHUTDOWN_GRACE_S
 
 
 def _build_storage_backend() -> SupabaseStorageBackend:
@@ -688,12 +729,11 @@ async def run_query(
                 tracer.sweep_incomplete("run_ended_before_business_finished (discovery_only)")
             if _stopped_by_shutdown and not gate.target_reached:
                 effective_reason = shutdown_reason or _get_shutdown_reason()
-                if effective_reason == "TARGET_REACHED":
+                if _is_non_failure_shutdown(effective_reason):
                     log.info(
                         "[run_query] discovery_only: cooperative shutdown stopped this run due to "
-                        "TARGET_REACHED (parent target satisfied) — completing as "
-                        "successful early stop (delivered=%d/%d)",
-                        gate.accepted, _deliver_target,
+                        "%s — completing as successful early stop (delivered=%d/%d)",
+                        effective_reason, gate.accepted, _deliver_target,
                     )
                 else:
                     log.warning(
@@ -982,12 +1022,11 @@ async def run_query(
                 # is ever reached.
                 if _stopped_by_shutdown and not gate.target_reached:
                     effective_reason = shutdown_reason or _get_shutdown_reason()
-                    if effective_reason == "TARGET_REACHED":
+                    if _is_non_failure_shutdown(effective_reason):
                         log.info(
                             "[run_query] cooperative shutdown stopped this run due to "
-                            "TARGET_REACHED (parent target satisfied) — completing as "
-                            "successful early stop (delivered=%d/%d)",
-                            gate.accepted, _deliver_target,
+                            "%s — completing as successful early stop (delivered=%d/%d)",
+                            effective_reason, gate.accepted, _deliver_target,
                         )
                     else:
                         log.warning(
@@ -1195,9 +1234,9 @@ async def _main_cli() -> None:
         # as `exhausted=True` — see DiscoveryFailureReason.CANCELLED's own
         # docstring for why that invariant matters here specifically.
         effective_reason = _get_shutdown_reason()
-        if effective_reason == "TARGET_REACHED":
+        if _is_non_failure_shutdown(effective_reason):
             log.info(
-                f"[main_cli] run_query cancelled during TARGET_REACHED shutdown "
+                f"[main_cli] run_query cancelled during {effective_reason} shutdown "
                 f"(delivered={delivered}) — completing as successful early stop"
             )
             failure = None
@@ -1235,13 +1274,30 @@ async def _main_cli() -> None:
     # LIFECYCLE FIX (TARGET_REACHED semantics): When parent target is reached,
     # child termination is a SUCCESSFUL EARLY STOP: success=True,
     # target_reached=True, termination_reason="SUCCESS_TARGET_REACHED".
+    #
+    # LIFECYCLE FIX (CONSUMER_STOPPED semantics — FINAL SHUTDOWN LATENCY +
+    # CONSUMER_STOPPED FIX): a plain CONSUMER_STOPPED stop (area rotation /
+    # the Node bridge's own consumer breaking out early) is ALSO a
+    # successful early stop, but it must NOT be reported as
+    # target_reached=True (the PARENT request's target was not necessarily
+    # met — only this call's own batch was satisfied; see
+    # pythonBridge.ts's SUCCESS_CONSUMER_STOPPED doc comment) and must NOT
+    # be reported as exhausted=True either (the search space did not run
+    # out — this run was asked to stop, mid-search, by its consumer).
     effective_reason = _get_shutdown_reason()
     is_target_reached_stop = failure is None and (delivered >= requested or effective_reason == "TARGET_REACHED")
+    is_consumer_stopped_stop = (
+        failure is None and not is_target_reached_stop and effective_reason == "CONSUMER_STOPPED"
+    )
     target_reached = is_target_reached_stop
     success = failure is None
-    exhausted = False if (failure is not None or target_reached) else delivered < requested
+    exhausted = (
+        False if (failure is not None or target_reached or is_consumer_stopped_stop)
+        else delivered < requested
+    )
     termination_reason = (
         "SUCCESS_TARGET_REACHED" if (success and target_reached)
+        else "SUCCESS_CONSUMER_STOPPED" if (success and is_consumer_stopped_stop)
         else "SUCCESS_EXHAUSTED" if success
         else failure.reason.value
     )
@@ -1434,21 +1490,22 @@ async def _run_with_graceful_shutdown(coro_fn) -> None:
     def _on_sigterm() -> None:
         nonlocal escalate_task
         reason = _get_shutdown_reason()
+        grace_s = _shutdown_grace_period_s(reason)
         log.warning(
             f"[service] received SIGTERM (reason={reason or 'unspecified'}) — requesting cooperative shutdown "
             "(run_query's own checkpoints get up to "
-            f"{COOPERATIVE_SHUTDOWN_GRACE_S:.0f}s to wind down active work "
+            f"{grace_s:.0f}s to wind down active work "
             "and let cleanup — including __done__ — run normally, before "
             "falling back to a forced cancellation)"
         )
         _shutdown_event.set()
 
         async def _escalate_if_still_running() -> None:
-            await asyncio.sleep(COOPERATIVE_SHUTDOWN_GRACE_S)
+            await asyncio.sleep(grace_s)
             if not task.done():
                 log.warning(
                     "[service] cooperative shutdown did not finish within "
-                    f"{COOPERATIVE_SHUTDOWN_GRACE_S:.0f}s of SIGTERM — "
+                    f"{grace_s:.0f}s of SIGTERM ({reason or 'unspecified'}) — "
                     "escalating to forced task cancellation (same "
                     "last-resort behavior this handler always had; may "
                     "leave a background thread orphaned if one is still "

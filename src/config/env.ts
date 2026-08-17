@@ -180,6 +180,21 @@ const EnvSchema = z.object({
   // this max().
   GOOGLE_MAPS_AREA_WORKERS: z.coerce.number().int().min(1).max(8).default(8),
 
+  // PROCESS REGISTRY EXPLOSION FIX (log-volume half): discoveryPlanJob.ts's
+  // per-candidate tracing block (PIPELINE/DISCOVERED/EXITED HERE/reason=/
+  // BUSINESS_UPSERTED/ENSURE_ENRICHED_*/CHANNELS_*/DELIVER_LEAD_*/
+  // INSERT_LEAD_*/FINISHED) emits ~10-15 console.log lines PER CANDIDATE
+  // at the default INFO level — with the engine intentionally over-fetching
+  // (askFor = streamTarget*4) to compensate for enrichment/filter/dedup
+  // loss, a single 10-lead request can scan hundreds of candidates, which
+  // is what actually produced "Railway dropped 7,123 messages": this one
+  // block, not the lifecycle/target/failure/final summary lines (those stay
+  // unconditional — see runOneAreaAttempt's own summary console.info calls,
+  // untouched by this flag). Defaults OFF so production log volume is the
+  // lifecycle/target/failure/final metrics only; set true to re-enable full
+  // per-candidate pipeline tracing for a specific investigation.
+  DISCOVERY_PIPELINE_TRACE_LOGS: z.coerce.boolean().default(false),
+
   // PHASE 8 — AI Opportunity Intelligence (Executive Briefings, Weekly
   // Intelligence, Opportunity Insights, Pipeline Coaching). Optional: if
   // unset, /v1/intelligence's AI-backed endpoints return 503 rather than

@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { runEngineQuery } from "../scraperBridge/pythonBridge.js";
+import type { EngineLead } from "../scraperBridge/pythonBridge.js";
 import { deliverLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
@@ -8,6 +9,24 @@ import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/region
 import type { CountryInfo } from "../lib/geo/countries.js";
 import { PipelineTracer } from "../lib/pipelineTrace.js";
 import { registerRequestAbortController, terminateRequest, isRequestActive } from "../discovery/requestLifecycle.js";
+// AREA POOL FIX (issue 3): poolExpandJob is what actually runs for
+// Starter/Pro/Premium plans (instant_pool/instant_pool_ranked — this is
+// the "N newForUser" job the production log referred to) — the
+// discoveryPlanJob.ts task queue only runs for discoveryMode==="live"
+// plans. Because this file called runEngineQuery() directly, once per
+// city, sequentially, it never went anywhere near runAreaWorkerPool() —
+// hence zero [discovery-capacity]/[area-worker-start] lines in the log
+// despite GOOGLE_MAPS_AREA_WORKERS being configured. See this file's
+// runGoogleAreaPoolForCity() below for the fix: reuses the SAME pool
+// primitives discoveryPlanJob.ts's runOneAreaAttempt/handleDiscoveryTask
+// wiring already uses, driving the SAME processLead() per-lead pipeline
+// (dedup/channels/target semantics untouched — only the query is now
+// scoped per curated area, and multiple areas can run concurrently).
+import { getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
+import { claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
+import { runAreaWorkerPool, type AreaRunOutcome } from "../discovery/googleAreaPool.js";
+import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
+import { env } from "../config/env.js";
 
 export type PoolExpandFollowUp = {
   userId: string;
@@ -258,6 +277,277 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
 
     const stillNeededNow = () => (followUp ? payload.shortfall - newForUser : payload.shortfall - delivered);
 
+    /**
+     * One lead's full validate → deliver → dedup/target-check pipeline —
+     * extracted VERBATIM (no behavior change) from what used to be the
+     * inline body of the single `for await` loop below, so both the
+     * legacy sequential path (no curated areas) and the new
+     * runGoogleAreaPoolForCity() path (curated areas — multiple engine
+     * processes at once) share the exact same dedup/channel/target logic
+     * instead of two independently-maintained copies.
+     *
+     * Returns what the caller should do next:
+     *  - "continue": process the next lead (rejected/duplicate/nothing to stop for)
+     *  - "batch_done": this engine process has delivered its streaming
+     *    batch — caller ends ITS OWN `for await` (moves to the next round
+     *    in the legacy path; lets the area worker claim a new area in the
+     *    pooled path)
+     *  - "stop_outer": target reached / user cancelled / plan limit hit —
+     *    caller must stop EVERYTHING (both paths already called
+     *    terminateRequest()/abortController.abort() before returning this,
+     *    exactly as the original inline code did, so concurrent pooled
+     *    areas stop too)
+     *
+     * Any error deliverLead() throws still propagates out of this
+     * function exactly as before — the legacy path's own `for await`
+     * remains uncaught (bubbles to this function's outer catch, which
+     * marks the job failed, same as always); the pooled path relies on
+     * runAreaWorkerPool's own per-area try/catch (Step 8 — one area's
+     * failure isolated from its siblings), consistent with how
+     * discoveryPlanJob.ts's own pooled path already treats a per-lead
+     * failure inside one area.
+     */
+    async function processLead(
+      lead: EngineLead,
+      streamTarget: number,
+      chunk: { deliveredThisChunk: number },
+    ): Promise<"continue" | "batch_done" | "stop_outer"> {
+      const pid = tracer.receive(lead._pipeline_id, lead.name);
+      try {
+        if (followUp && !channelsSatisfied(lead, followUp.channels)) {
+          tracer.reject(pid, `channel_filter:${JSON.stringify(followUp.channels)}`);
+          return "continue"; // doesn't satisfy every requested channel for the waiting user — not counted
+        }
+
+        const validation = validateLead(lead);
+        if (!validation.valid) {
+          console.log(`[poolExpandJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
+          tracer.reject(pid, `validation:${validation.reason}`);
+          return "continue";
+        }
+
+        tracer.transition(pid, "DATABASE_INSERT_STARTED");
+        let result: DeliveryResult;
+        try {
+          result = await deliverLead(
+            lead,
+            {
+              userId: followUp?.userId ?? null,
+              professionSlug: followUp?.professionSlug ?? null,
+              discoveryMode: followUp?.rank ? "instant_pool_ranked" : "instant_pool",
+              scrapeJobId: followUp?.scrapeJobId ?? "",
+              dailyLimit: followUp?.dailyLimit,
+              monthlyLimit: followUp?.monthlyLimit,
+              // PHASE 3A FIX: routes this delivery through the same
+              // atomic claim_discovery_delivery() reservation
+              // discovery.task (live mode) uses — see
+              // getOrCreatePoolExpandPlanId() above. undefined for
+              // bare pool-growth runs (no followUp), matching
+              // insertLeadForUser()'s existing "no plan id → no
+              // reservation" behavior.
+              discoveryPlanId,
+            },
+            payload.region,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          tracer.fail(pid, `deliverLead threw: ${message}`);
+          console.error(`[poolExpandJob] [trace] ${JSON.stringify(lead.name)} \u2193 FAILED — deliverLead threw: ${message}`);
+          throw err; // preserve existing behavior exactly — propagate, job still fails as before
+        } finally {
+          // Phase S1: by the time this finally runs, this pipeline id's
+          // fate for the database-insert stage is already settled —
+          // either FAILED (catch above, about to rethrow) or `result`
+          // was assigned and is delivered below. deliverLead() can
+          // never leave it open.
+        }
+
+        // This file's own semantics (unchanged): a business is
+        // considered added to the pool the moment deliverLead()
+        // resolves without throwing, regardless of whether THIS
+        // followUp user specifically got a new CRM row for it — so
+        // that is exactly what DELIVERED tracks here too.
+        tracer.transition(pid, "DATABASE_INSERTED");
+        tracer.deliver(pid);
+
+        delivered += 1;
+        chunk.deliveredThisChunk += 1;
+        if (result.wasNewForUser) newForUser += 1;
+
+        if (followUp) {
+          // Guard: if the job was cancelled while we were running, stop.
+          const { data: jobStatus } = await supabaseAdmin.from("scrape_jobs")
+            .select("status").eq("id", followUp.scrapeJobId).maybeSingle();
+          if (jobStatus?.status === "cancelled") {
+            if (reqId) terminateRequest(reqId, "USER_CANCELLED");
+            abortController.abort("USER_CANCELLED");
+            return "stop_outer";
+          }
+
+          await supabaseAdmin.from("scrape_jobs")
+            .update({ results_count: resultsCountBase + newForUser })
+            .eq("id", followUp.scrapeJobId)
+            .not("status", "eq", "cancelled");
+
+          if (result.limitReached) {
+            console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
+            userPlanLimitHit = true;
+            if (reqId) terminateRequest(reqId, "EXHAUSTED");
+            abortController.abort("EXHAUSTED");
+            return "stop_outer";
+          }
+
+          if (newForUser >= payload.shortfall) {
+            if (reqId) terminateRequest(reqId, "TARGET_REACHED");
+            abortController.abort("TARGET_REACHED");
+            return "stop_outer";
+          }
+        } else if (delivered >= payload.shortfall) {
+          if (reqId) terminateRequest(reqId, "TARGET_REACHED");
+          abortController.abort("TARGET_REACHED");
+          return "stop_outer";
+        }
+
+        if (chunk.deliveredThisChunk >= streamTarget) {
+          return "batch_done"; // this process has delivered its streaming batch for this round — move on
+        }
+        return "continue";
+      } catch (err) {
+        // Phase S1 safety net: catches anything NOT already handled
+        // above (e.g. channelsSatisfied()/validateLead() throwing
+        // unexpectedly, or the scrape_jobs status read/update
+        // failing) so this pipeline id is never left open even for a
+        // genuinely unforeseen error. If deliverLead's own catch
+        // above already closed it out as FAILED, tracer.fail() here
+        // is a safe no-op (first outcome wins, logged, not silently
+        // overwritten). Does not change what happens to the job: the
+        // existing outer catch (below, at the function level) still
+        // marks a followUp job 'failed' and rethrows exactly as
+        // before.
+        const message = err instanceof Error ? err.message : String(err);
+        tracer.fail(pid, `unhandled error while processing lead: ${message}`);
+        throw err;
+      }
+    }
+
+    /**
+     * AREA POOL FIX (issue 3): runs runAreaWorkerPool() for one (niche,
+     * country, city) round instead of a single sequential runEngineQuery()
+     * call, when curated (or default) areas exist for this city — mirrors
+     * discoveryPlanJob.ts's handleDiscoveryTask wiring (same
+     * computeDynamicDiscoveryCapacity sizing via `requestedQuantity`, same
+     * claim_discovery_area/record_discovery_area_outcome calls, same
+     * process-wide browser slot semaphore) so `requested=10 →
+     * computedWorkers=2 → finalWorkers=2` actually happens for THIS job
+     * type too, not just discovery.task.
+     *
+     * Returns "stop_outer" if any area's processLead() decided the whole
+     * job should stop (target reached / cancelled / limit reached) —
+     * every other concurrently-running area already got
+     * abortController.abort()'d by processLead() itself by the time this
+     * resolves (runAreaWorkerPool awaits every worker before returning).
+     */
+    async function runGoogleAreaPoolForCity(
+      singleNiche: string,
+      country: CountryInfo,
+      city: string,
+      areas: string[],
+    ): Promise<"stop_outer" | "continued"> {
+      let stopOuter = false;
+      const browserPool = getBrowserSlotPool();
+
+      const result = await runAreaWorkerPool({
+        configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
+        totalCuratedAreas: areas.length,
+        availableCapacity: browserPool.available(),
+        requestedQuantity: target,
+        claimNextArea: (usedAreas) =>
+          claimAreaForCity(supabaseAdmin, {
+            niche: singleNiche,
+            countryCode: country.code,
+            city,
+            source: "google_maps",
+            areas: areas.filter((a) => !usedAreas.has(a)),
+          }),
+        tryAcquireSlot: () => browserPool.tryAcquire(),
+        isTerminal: () => stopOuter || stillNeededNow() <= 0 || abortController.signal.aborted,
+        onEvent: (event) => {
+          if (event.type === "worker_finished") {
+            recordAreaOutcome(supabaseAdmin, {
+              niche: singleNiche,
+              countryCode: country.code,
+              city,
+              area: event.area,
+              source: "google_maps",
+              discovered: event.outcome.discovered,
+              accepted: event.outcome.accepted,
+            }).catch((err) => console.warn(`[poolExpandJob] recordAreaOutcome failed for area=${event.area}`, err));
+          }
+        },
+        runArea: async (area): Promise<AreaRunOutcome> => {
+          let discovered = 0;
+          let accepted = 0;
+          let rejected = 0;
+          let areaExhausted = false;
+          const chunk = { deliveredThisChunk: 0 };
+          const remaining = stillNeededNow();
+          const streamTarget = Math.max(Math.min(remaining, STREAM_BATCH_FLOOR), 1);
+          const askFor = Math.max(streamTarget * 4, target);
+
+          try {
+            for await (const lead of runEngineQuery(
+              {
+                query: `${singleNiche} in ${area}, ${city}`,
+                city,
+                country: country.code,
+                niche: singleNiche,
+                region: payload.region,
+                max_results: askFor,
+                required_channels: followUp?.channels ?? [],
+                db_path: `data/leads-pool-expand.db`,
+              },
+              abortController.signal,
+              (info) => {
+                areaExhausted = info.exhausted;
+                if (info.success === false) {
+                  console.warn(
+                    `[poolExpandJob] engine discovery FAILED for area=${area} (${city}/${country.code}) — ` +
+                      `reason=${info.failureReason} detail=${info.failureDetail ?? "n/a"}`,
+                  );
+                }
+              },
+              { requestId: reqId },
+            )) {
+              discovered += 1;
+              const outcome = await processLead(lead, streamTarget, chunk);
+              if (outcome === "stop_outer") {
+                stopOuter = true;
+                accepted = chunk.deliveredThisChunk;
+                break;
+              }
+              if (outcome === "batch_done") {
+                accepted = chunk.deliveredThisChunk;
+                break;
+              }
+            }
+          } finally {
+            accepted = chunk.deliveredThisChunk;
+            rejected = Math.max(0, discovered - accepted);
+          }
+
+          return { discovered, accepted, rejected, duplicates: 0, exhausted: areaExhausted, failed: false };
+        },
+      });
+
+      if (result.startedWorkers === 0 && result.poolSize === 0) {
+        // Saturated (no browser slot) or misconfigured — fall through so
+        // the caller's existing legacy single-search path still covers
+        // this round instead of silently doing nothing.
+        return "continued";
+      }
+      return stopOuter ? "stop_outer" : "continued";
+    }
+
     outer: for (const singleNiche of niches) {
       if (stillNeededNow() <= 0) break;
 
@@ -269,13 +559,27 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           const remaining = stillNeededNow();
           if (remaining <= 0) break;
 
+          // AREA POOL FIX (issue 3): route through the SAME Google Maps
+          // area worker pool discoveryPlanJob.ts uses, when this city has
+          // curated (or default) sub-areas — see runGoogleAreaPoolForCity()
+          // above. Falls through to the legacy single-search path below
+          // only when there are no areas to use, or the pool reports it
+          // couldn't start (saturated browser slots) — same end result as
+          // before in that case, just without the area refinement.
+          const areas = getAreasForCityOrDefault(country.code, city);
+          if (areas.length > 0) {
+            const poolOutcome = await runGoogleAreaPoolForCity(singleNiche, country, city, areas);
+            if (poolOutcome === "stop_outer") break outer;
+            continue; // this round's city is done (pool exhausted areas or hit capacity) — next city
+          }
+
           const chunk = rotation.chunkSize(remaining); // fairness share — diversity accounting only
           // Streaming target for THIS spawned process — see discoverJob.ts.
           const streamTarget = Math.min(remaining, Math.max(chunk, STREAM_BATCH_FLOOR));
           const askFor = Math.max(streamTarget * 4, target);
 
           let citySearchExhausted = false;
-          let deliveredThisChunk = 0;
+          const chunkState = { deliveredThisChunk: 0 };
 
           for await (const lead of runEngineQuery(
             {
@@ -304,122 +608,9 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             },
             { requestId: reqId },
           )) {
-            const pid = tracer.receive(lead._pipeline_id, lead.name);
-
-            try {
-              if (followUp && !channelsSatisfied(lead, followUp.channels)) {
-                tracer.reject(pid, `channel_filter:${JSON.stringify(followUp.channels)}`);
-                continue; // doesn't satisfy every requested channel for the waiting user — not counted
-              }
-
-              const validation = validateLead(lead);
-              if (!validation.valid) {
-                console.log(`[poolExpandJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
-                tracer.reject(pid, `validation:${validation.reason}`);
-                continue;
-              }
-
-              tracer.transition(pid, "DATABASE_INSERT_STARTED");
-              let result: DeliveryResult;
-              try {
-                result = await deliverLead(
-                  lead,
-                  {
-                    userId: followUp?.userId ?? null,
-                    professionSlug: followUp?.professionSlug ?? null,
-                    discoveryMode: followUp?.rank ? "instant_pool_ranked" : "instant_pool",
-                    scrapeJobId: followUp?.scrapeJobId ?? "",
-                    dailyLimit: followUp?.dailyLimit,
-                    monthlyLimit: followUp?.monthlyLimit,
-                    // PHASE 3A FIX: routes this delivery through the same
-                    // atomic claim_discovery_delivery() reservation
-                    // discovery.task (live mode) uses — see
-                    // getOrCreatePoolExpandPlanId() above. undefined for
-                    // bare pool-growth runs (no followUp), matching
-                    // insertLeadForUser()'s existing "no plan id → no
-                    // reservation" behavior.
-                    discoveryPlanId,
-                  },
-                  payload.region,
-                );
-              } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                tracer.fail(pid, `deliverLead threw: ${message}`);
-                console.error(`[poolExpandJob] [trace] ${JSON.stringify(lead.name)} \u2193 FAILED — deliverLead threw: ${message}`);
-                throw err; // preserve existing behavior exactly — propagate, job still fails as before
-              } finally {
-                // Phase S1: by the time this finally runs, this pipeline id's
-                // fate for the database-insert stage is already settled —
-                // either FAILED (catch above, about to rethrow) or `result`
-                // was assigned and is delivered below. deliverLead() can
-                // never leave it open.
-              }
-
-              // This file's own semantics (unchanged): a business is
-              // considered added to the pool the moment deliverLead()
-              // resolves without throwing, regardless of whether THIS
-              // followUp user specifically got a new CRM row for it — so
-              // that is exactly what DELIVERED tracks here too.
-              tracer.transition(pid, "DATABASE_INSERTED");
-              tracer.deliver(pid);
-
-              delivered += 1;
-              deliveredThisChunk += 1;
-              if (result.wasNewForUser) newForUser += 1;
-
-              if (followUp) {
-                // Guard: if the job was cancelled while we were running, stop.
-                const { data: jobStatus } = await supabaseAdmin.from("scrape_jobs")
-                  .select("status").eq("id", followUp.scrapeJobId).maybeSingle();
-                if (jobStatus?.status === "cancelled") {
-                  if (reqId) terminateRequest(reqId, "USER_CANCELLED");
-                  abortController.abort("USER_CANCELLED");
-                  break outer;
-                }
-
-                await supabaseAdmin.from("scrape_jobs")
-                  .update({ results_count: resultsCountBase + newForUser })
-                  .eq("id", followUp.scrapeJobId)
-                  .not("status", "eq", "cancelled");
-
-                if (result.limitReached) {
-                  console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
-                  userPlanLimitHit = true;
-                  if (reqId) terminateRequest(reqId, "EXHAUSTED");
-                  abortController.abort("EXHAUSTED");
-                  break outer;
-                }
-
-                if (newForUser >= payload.shortfall) {
-                  if (reqId) terminateRequest(reqId, "TARGET_REACHED");
-                  abortController.abort("TARGET_REACHED");
-                  break outer;
-                }
-              } else if (delivered >= payload.shortfall) {
-                if (reqId) terminateRequest(reqId, "TARGET_REACHED");
-                abortController.abort("TARGET_REACHED");
-                break outer;
-              }
-
-              if (deliveredThisChunk >= streamTarget) {
-                break; // this process has delivered its streaming batch for this round — move on
-              }
-            } catch (err) {
-              // Phase S1 safety net: catches anything NOT already handled
-              // above (e.g. channelsSatisfied()/validateLead() throwing
-              // unexpectedly, or the scrape_jobs status read/update
-              // failing) so this pipeline id is never left open even for a
-              // genuinely unforeseen error. If deliverLead's own catch
-              // above already closed it out as FAILED, tracer.fail() here
-              // is a safe no-op (first outcome wins, logged, not silently
-              // overwritten). Does not change what happens to the job: the
-              // existing outer catch (below, at the function level) still
-              // marks a followUp job 'failed' and rethrows exactly as
-              // before.
-              const message = err instanceof Error ? err.message : String(err);
-              tracer.fail(pid, `unhandled error while processing lead: ${message}`);
-              throw err;
-            }
+            const outcome = await processLead(lead, streamTarget, chunkState);
+            if (outcome === "stop_outer") break outer;
+            if (outcome === "batch_done") break;
           }
 
           if (citySearchExhausted) {

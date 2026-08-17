@@ -65,6 +65,18 @@ const CONCURRENCY_RECHECK_DELAY_SECONDS = 5;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const REQUEST_TERMINAL_POLL_MS = 500;
 
+// PROCESS REGISTRY EXPLOSION FIX (log-volume half): the per-candidate
+// pipeline trace below (PIPELINE/DISCOVERED/EXITED HERE/reason=/etc, ~10-15
+// lines per candidate) is what actually produced "Railway dropped 7,123
+// messages" — not the per-city/per-task summary lines, which stay
+// unconditional. Gated behind DISCOVERY_PIPELINE_TRACE_LOGS (default off);
+// see src/config/env.ts for the full rationale. Lifecycle/target/failure/
+// final metrics (CITY_FINISHED, area-worker-pool events, job summaries) are
+// untouched by this flag on purpose.
+function traceLog(message: string): void {
+  if (env.DISCOVERY_PIPELINE_TRACE_LOGS) console.log(message);
+}
+
 /**
  * MINIMAL FIX (discovery liveness / city failure classification — forensic
  * audit §9/§10): thrown when the engine's own `runEngineQuery()` call
@@ -294,15 +306,15 @@ async function runOneAreaAttempt(
 
     discovered += 1;
     const pid = lead._pipeline_id ?? `local:${discovered}`;
-    console.log(`PIPELINE ${pid}`);
-    console.log(`DISCOVERED name=${JSON.stringify(lead.name)}`);
+    traceLog(`PIPELINE ${pid}`);
+    traceLog(`DISCOVERED name=${JSON.stringify(lead.name)}`);
 
     const validation = validateDiscoveryCandidate(lead);
     if (!validation.valid) {
       rejected += 1;
-      console.log(`PIPELINE ${pid}`);
-      console.log(`EXITED HERE`);
-      console.log(`reason=validateDiscoveryCandidate:${validation.reason}`);
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=validateDiscoveryCandidate:${validation.reason}`);
       continue;
     }
 
@@ -313,7 +325,7 @@ async function runOneAreaAttempt(
     const businessId = await upsertBusinessFromEngineLead(lead, payload.request.region, undefined, payload.request.scrapeJobId);
     tUpsert.end();
     if (requestAbort.signal.aborted) break outer;
-    console.log(`BUSINESS_UPSERTED businessId=${businessId}`);
+    traceLog(`BUSINESS_UPSERTED businessId=${businessId}`);
     const tEnqueue = profiler.timer("enqueue_enrich");
     await enqueueBusinessProcessing(businessId, "enrich");
     tEnqueue.end();
@@ -328,9 +340,9 @@ async function runOneAreaAttempt(
 
     if (!channelsSatisfied(lead, mapsCheckableChannels)) {
       rejected += 1;
-      console.log(`PIPELINE ${pid}`);
-      console.log(`EXITED HERE`);
-      console.log(`reason=maps_channel_gate:requested=${JSON.stringify(mapsCheckableChannels)},phone=${JSON.stringify(lead.phone)},website=${JSON.stringify(lead.website)}`);
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=maps_channel_gate:requested=${JSON.stringify(mapsCheckableChannels)},phone=${JSON.stringify(lead.phone)},website=${JSON.stringify(lead.website)}`);
       continue;
     }
 
@@ -340,12 +352,12 @@ async function runOneAreaAttempt(
       // (the async worker still finishes enriching it), we just skip
       // this lead's channel gate for now and move on.
       const tEnsureStart = Date.now();
-      console.log(`ENSURE_ENRICHED_START`);
+      traceLog(`ENSURE_ENRICHED_START`);
       try {
         const tEnsure = profiler.timer("ensure_enriched");
         await ensureEnriched(businessId);
         tEnsure.end();
-        console.log(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms`);
+        traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms`);
 
         if (requestedChannels.includes("instagram")) {
           const tIntel = profiler.timer("ensure_intelligence");
@@ -356,22 +368,22 @@ async function runOneAreaAttempt(
         const message = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
         console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence failed for businessId=${businessId} — skipping channel gate`, enrichErr);
         rejected += 1;
-        console.log(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms (threw)`);
-        console.log(`PIPELINE ${pid}`);
-        console.log(`EXITED HERE`);
-        console.log(`reason=ensureEnriched_threw:businessId=${businessId},error=${JSON.stringify(message)}`);
+        traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms (threw)`);
+        traceLog(`PIPELINE ${pid}`);
+        traceLog(`EXITED HERE`);
+        traceLog(`reason=ensureEnriched_threw:businessId=${businessId},error=${JSON.stringify(message)}`);
         continue;
       }
       const { data: enriched } = await db.from("businesses")
         .select("email, phone, instagram, website").eq("id", businessId).maybeSingle();
       const satisfied = Boolean(enriched) && channelsSatisfied(enriched, requestedChannels);
-      console.log(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
-      console.log(`CHANNELS_SATISFIED=${satisfied}`);
+      traceLog(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
+      traceLog(`CHANNELS_SATISFIED=${satisfied}`);
       if (!satisfied) {
         rejected += 1;
-        console.log(`PIPELINE ${pid}`);
-        console.log(`EXITED HERE`);
-        console.log(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},row=${JSON.stringify(enriched)}`);
+        traceLog(`PIPELINE ${pid}`);
+        traceLog(`EXITED HERE`);
+        traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},row=${JSON.stringify(enriched)}`);
         continue;
       }
     }
@@ -380,7 +392,7 @@ async function runOneAreaAttempt(
     // Preserve work already completed, but never start a new acceptance.
     if (requestAbort.signal.aborted || await observeTerminalPlan()) break outer;
 
-    console.log(`DELIVER_LEAD_START`);
+    traceLog(`DELIVER_LEAD_START`);
     const tDeliver = profiler.timer("deliver_lead");
     const delivery = await deliverLead(lead, {
       userId: payload.request.userId,
@@ -392,7 +404,7 @@ async function runOneAreaAttempt(
       discoveryPlanId: payload.planId,
     }, payload.request.region, businessId);
     tDeliver.end();
-    console.log(`DELIVER_LEAD_END result=${JSON.stringify(delivery)}`);
+    traceLog(`DELIVER_LEAD_END result=${JSON.stringify(delivery)}`);
 
     // NOTE: insertLeadForUser() runs INSIDE deliverLead() (deliverLead.ts,
     // not instrumented per scope) — there is no separate timestamp
@@ -400,26 +412,26 @@ async function runOneAreaAttempt(
     // immediately after DELIVER_LEAD_END resolves, which is the earliest
     // point this file can observe it.
     if (delivery.limitReached) {
-      console.log(`PIPELINE ${pid}`);
-      console.log(`EXITED HERE`);
-      console.log(`reason=plan_limit_reached:no leads row inserted,delivery=${JSON.stringify(delivery)}`);
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=plan_limit_reached:no leads row inserted,delivery=${JSON.stringify(delivery)}`);
       await observeTerminalPlan();
       break outer;
     }
     if (!delivery.wasNewForUser) {
-      console.log(`PIPELINE ${pid}`);
-      console.log(`EXITED HERE`);
-      console.log(`reason=duplicate_already_owned_by_user:businessId=${businessId},no new leads row inserted`);
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=duplicate_already_owned_by_user:businessId=${businessId},no new leads row inserted`);
       duplicates += 1;
       continue;
     }
 
-    console.log(`INSERT_LEAD_START`);
+    traceLog(`INSERT_LEAD_START`);
     // insertLeadForUser() (deliverLead.ts) already ran by this point as
     // part of the deliverLead() call above; DeliveryResult does not
     // expose leads.id, so it cannot be printed here without modifying
     // deliverLead.ts, which is out of scope for this instrumentation pass.
-    console.log(`INSERT_LEAD_END leadId=<unavailable from discoveryPlanJob.ts — DeliveryResult has no leads.id field>`);
+    traceLog(`INSERT_LEAD_END leadId=<unavailable from discoveryPlanJob.ts — DeliveryResult has no leads.id field>`);
 
     profiler.mark("first_lead_delivered");
     // Phase 7: record time-to-first-lead (idempotent — COALESCE guard in DB).

@@ -188,7 +188,7 @@ class InMemoryStorageBackend:
         return stored
 
 
-def _build_driver(provider: DiscoveryProviderInterface, *, on_stage_outcome):
+def _build_driver(provider: DiscoveryProviderInterface, *, on_stage_outcome, on_progress=None):
     coordinator = EngineCoordinator()
     ctx = coordinator.create_session(
         user_id="test-user", provider="staggered_test_provider", requested_count=10,
@@ -202,6 +202,7 @@ def _build_driver(provider: DiscoveryProviderInterface, *, on_stage_outcome):
         discovery_provider=provider,
         discovery_request=type("Req", (), {"session_id": session_id})(),
         storage_backend=backend,
+        on_progress=on_progress,
     )
     engine_runtime = coordinator.get_engine_runtime(session_id)
 
@@ -409,3 +410,89 @@ class TestTargetReachedStillWins:
         )
         pids = [o.pipeline_id for o in backend.persisted]
         assert len(pids) == len(set(pids)), f"duplicate storage: {pids}"
+
+
+class TestFirstCandidateEnqueuedBeforeDiscoveryComplete:
+    """Instrumentation report — the literal claim the Phase 2B fix makes:
+    the first discovered candidate reaches a downstream queue
+    (`_on_candidate`'s own "candidate_queued" `on_progress` event, emitted
+    the instant `website_in`/`instagram_in` are enqueued -- see
+    `engine.execution_driver.build_seven_stage_pipeline`'s `_on_candidate`)
+    strictly before Discovery's own producer stage reports itself
+    complete (the first `StageOutcome(stage_name="discovery", ran=True)`,
+    emitted only once `DiscoveryWorker.process()` has driven the provider
+    to exhaustion -- workers/discovery_worker.py "Revision history, v3").
+
+    Five candidates, real-paced `CANDIDATE_GAP_S` apart, are enough that
+    "first candidate enqueued" and "discovery complete" cannot coincide by
+    accident -- discovery is still sleeping between candidates 2-5 while
+    candidate 1 is already sitting in website_in/instagram_in.
+
+    Run: pytest tests/test_pipeline_continuous_flow.py -v -k instrumentation
+    """
+
+    def test_first_candidate_enqueued_before_discovery_complete(self):
+        provider = StaggeredDiscoveryProvider(count=5, gap_s=CANDIDATE_GAP_S)
+
+        progress_lock = threading.Lock()
+        first_candidate_enqueued_at: list[float] = []
+
+        def _on_progress(stage: str, event: str, item_id) -> None:
+            if stage == "discovery" and event == "candidate_queued":
+                with progress_lock:
+                    if not first_candidate_enqueued_at:
+                        first_candidate_enqueued_at.append(time.perf_counter())
+
+        outcomes_lock = threading.Lock()
+        discovery_complete_at: list[float] = []
+
+        def _on_stage_outcome(outcome: StageOutcome) -> None:
+            if outcome.stage_name == "discovery" and outcome.ran:
+                with outcomes_lock:
+                    if not discovery_complete_at:
+                        discovery_complete_at.append(time.perf_counter())
+
+        driver, _backend = _build_driver(
+            provider, on_stage_outcome=_on_stage_outcome, on_progress=_on_progress,
+        )
+        driver.start()
+        try:
+            deadline = time.perf_counter() + WAIT_TIMEOUT_S
+            while not discovery_complete_at and time.perf_counter() < deadline:
+                time.sleep(POLL_S)
+        finally:
+            driver.stop()
+
+        assert discovery_complete_at, (
+            "discovery never reported completion -- driver.producers_finished() "
+            "logic or the discovery StageOutcome wiring is broken"
+        )
+        assert first_candidate_enqueued_at, (
+            "REGRESSION: no candidate_queued on_progress event was ever observed "
+            "-- either _on_candidate stopped emitting it, or discovery never "
+            "streamed a single candidate before completing/failing"
+        )
+
+        first_enqueued = first_candidate_enqueued_at[0]
+        complete = discovery_complete_at[0]
+        gap_ms = (complete - first_enqueued) * 1000.0
+
+        report = (
+            "\n--- Phase 2B instrumentation report "
+            "(first_candidate_enqueued vs discovery_complete) ---\n"
+            f"first_candidate_enqueued_at = {first_enqueued:.4f}s\n"
+            f"discovery_complete_at       = {complete:.4f}s\n"
+            f"lead_time (enqueue -> discovery finished) = {gap_ms:.1f}ms\n"
+            f"first_candidate_enqueued < discovery_complete: "
+            f"{'PASS' if first_enqueued < complete else 'FAIL'}\n"
+            "---------------------------------------------------------------\n"
+        )
+        print(report)
+
+        assert first_enqueued < complete, (
+            "REGRESSION: the first candidate was not enqueued into "
+            "website_in/instagram_in until AFTER discovery's producer stage "
+            "had already reported completion -- discovery is once again "
+            "running to full exhaustion before enrichment can begin (the "
+            f"exact Phase 2B bug).\n{report}"
+        )

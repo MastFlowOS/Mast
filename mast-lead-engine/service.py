@@ -484,12 +484,36 @@ async def run_query(
         `required_categories`). They are still accepted here so
         existing callers don't break, but are currently no-ops for the
         production (non discovery_only) path.
-      * Discovery no longer overlaps with enrichment the way the V1
-        asyncio-task pipeline did: DiscoveryWorker.process() (Engine
-        2.0, unmodified) drives its provider to exhaustion inside one
-        synchronous call, by design (see workers/discovery_worker.py)
-        — enrichment of already-discovered candidates proceeds once
-        that call returns, not concurrently with it.
+      * STALE NOTE, corrected (Phase 2B): this paragraph previously
+        claimed discovery does not overlap with enrichment because
+        DiscoveryWorker.process() blocks until its provider is
+        exhausted. That was true of the ORIGINAL inline scheduling
+        this driver used, but is no longer true of the pipeline this
+        function actually drives. `ExecutionDriver` now runs every
+        producer StageConfig (today: only Discovery) on its own
+        dedicated thread, started as soon as this driver begins
+        producing passes at all, decoupled from the transformer-stage
+        pass loop (engine/execution_driver.py, "PHASE 2B FIX
+        (continuous pipeline flow)"). `DiscoveryWorker.process()`
+        still blocks its own thread until the provider is exhausted —
+        that part of the quoted claim above was correct and remains
+        unchanged (workers/discovery_worker.py, "Revision history,
+        v3") — but that thread is no longer the same thread the
+        Website/Instagram/Contact/Merge/Qualification/Storage passes
+        run on, so it no longer blocks them. Each candidate is handed
+        to `website_in`/`instagram_in` via `on_candidate` the instant
+        it streams in (engine/execution_driver.py's `_on_candidate`),
+        and the transformer-stage loop dequeues it immediately,
+        concurrently with discovery still producing more candidates.
+        `driver.producers_finished()` — not "every queue empty" — is
+        what `_fully_drained()` below now checks before declaring
+        genuine exhaustion, precisely because discovery may simply be
+        between candidates. See tests/test_pipeline_continuous_flow.py
+        for the regression coverage (including an instrumentation
+        report asserting first_candidate_enqueued < discovery_complete)
+        proving this actually holds for the real, unmodified
+        `ExecutionDriver` + `build_seven_stage_pipeline()` this
+        function drives.
     """
     _legacy_knobs_ignored = {
         k: v for k, v in {

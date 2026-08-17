@@ -23,7 +23,7 @@ test("production area worker pool wiring: resolves sub-areas for any city", () =
   assert.deepEqual(resolvedDefault, DEFAULT_SUB_AREAS);
 });
 
-test("production 10-lead path: dynamic capacity sizes to 2 workers with concurrent overlapping execution", async () => {
+test("production 10-lead path: dynamic capacity sizes to 3 workers with concurrent overlapping execution", async () => {
   const areaStartTimes = new Map<string, number>();
   const areaEndTimes = new Map<string, number>();
   const events: AreaWorkerLogEvent[] = [];
@@ -43,7 +43,11 @@ test("production 10-lead path: dynamic capacity sizes to 2 workers with concurre
     availableCapacity,
     configuredWorkers,
   );
-  assert.equal(computedWorkers, 2, "10-lead request must dynamically size to 2 workers");
+  assert.equal(
+    computedWorkers,
+    3,
+    "10-lead request must dynamically size to 3 workers when >= 3 areas and >= 3 slots are available",
+  );
 
   const availableAreas = ["Downtown", "North", "South", "East", "West", "Central"];
   let nextAreaIdx = 0;
@@ -87,15 +91,15 @@ test("production 10-lead path: dynamic capacity sizes to 2 workers with concurre
     onEvent: (ev) => events.push(ev),
   });
 
-  assert.equal(result.poolSize, 2);
+  assert.equal(result.poolSize, 3);
   assert.equal(result.startedWorkers, 6);
-  assert.equal(maxConcurrentSlots, 2, "Exactly 2 workers must hold browser slots concurrently");
+  assert.equal(maxConcurrentSlots, 3, "Exactly 3 workers must hold browser slots concurrently");
 
   // Verify pool start event
   const poolStart = events.find((e) => e.type === "pool_start");
   assert.ok(poolStart);
   if (poolStart?.type === "pool_start") {
-    assert.equal(poolStart.poolSize, 2);
+    assert.equal(poolStart.poolSize, 3);
   }
 
   // Verify worker started events

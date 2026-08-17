@@ -93,7 +93,10 @@ export function computeAreaPoolSize(configured: number, availableAreas: number, 
 /**
  * Dynamic discovery capacity model (Phase 6 SLA requirement: 5-10 min for 10-100 leads):
  * Scales safe concurrency with requested lead quantity:
- *   • <= 10 leads: low concurrency (up to 2 workers)
+ *   • <= 10 leads: low concurrency (up to 3 workers — still bounded below by
+ *     whatever curated areas and browser slots are actually available, so a
+ *     10-lead request with only 1-2 usable areas or slots degrades exactly
+ *     as before; 3 is only reached when >= 3 areas AND >= 3 slots are free)
  *   • <= 25 leads: moderate concurrency (up to 3 workers)
  *   • <= 50 leads: higher concurrency (up to 4 workers)
  *   • > 50 leads : maximum safe concurrency (up to 6-8 workers or configured ceiling)
@@ -112,7 +115,7 @@ export function computeDynamicDiscoveryCapacity(
 
   let desired: number;
   if (requestedQuantity <= 10) {
-    desired = Math.min(2, maxConfigured);
+    desired = Math.min(3, maxConfigured);
   } else if (requestedQuantity <= 25) {
     desired = Math.min(3, maxConfigured);
   } else if (requestedQuantity <= 50) {
@@ -181,7 +184,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
   } = params;
 
   const computedWorkers = requestedQuantity !== undefined
-    ? (requestedQuantity <= 10 ? 2 : requestedQuantity <= 25 ? 3 : requestedQuantity <= 50 ? 4 : 8)
+    ? (requestedQuantity <= 10 ? 3 : requestedQuantity <= 25 ? 3 : requestedQuantity <= 50 ? 4 : 8)
     : configuredWorkers;
   const poolSize = requestedQuantity !== undefined
     ? computeDynamicDiscoveryCapacity(requestedQuantity, totalCuratedAreas, availableCapacity, configuredWorkers)

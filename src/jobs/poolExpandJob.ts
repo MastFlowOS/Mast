@@ -438,8 +438,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
      * computeDynamicDiscoveryCapacity sizing via `requestedQuantity`, same
      * claim_discovery_area/record_discovery_area_outcome calls, same
      * process-wide browser slot semaphore) so `requested=10 →
-     * computedWorkers=2 → finalWorkers=2` actually happens for THIS job
-     * type too, not just discovery.task.
+     * computedWorkers=3 → finalWorkers=3` (when >= 3 areas and >= 3
+     * browser slots are available; otherwise the usual area/slot bound
+     * applies) actually happens for THIS job type too, not just
+     * discovery.task.
      *
      * Returns "stop_outer" if any area's processLead() decided the whole
      * job should stop (target reached / cancelled / limit reached) —

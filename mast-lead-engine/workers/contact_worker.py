@@ -52,6 +52,31 @@ reviews used:
    WhatsApp/Messenger/Telegram/LinkedIn links as in-scope objective
    contact facts, and no field previously existed to hold any of them.
 
+6. `instagram_url` — added (4-channel blocker fix, post-Phase-5.6).
+   Production analysis found Instagram structurally unsatisfiable as a
+   required channel: no provider populates
+   `BusinessCandidate.instagram_url`, `InstagramWorker` only inspects
+   a profile that already has a URL, and `ContactIntel` itself had
+   nowhere to hold one even if this worker found it while scanning the
+   business's own site. But the scan this worker already performs for
+   `whatsapp_link`/`messenger_link`/`telegram_link`/`linkedin_url` is
+   the exact same anchor-tag scan that would find an Instagram link
+   sitting in the same footer/header social-icon row — no new fetch,
+   no new page, no new worker. This worker now also extracts one
+   Instagram URL from the same already-fetched HTML, using
+   `utils.parsing.extract_ig_urls` (and its `clean_ig_url`/
+   `is_real_ig_handle` helpers) rather than inventing a fresh regex —
+   that module already implements exactly this canonicalization
+   (`https://www.instagram.com/<handle>/`) and fake/reserved-path
+   rejection (`/p/`, `/reel/`, `/explore/`, purely numeric segments,
+   etc.), and the V1 crawler (`enrichment/site_crawler.py`) already
+   relies on it in production for the identical extraction. Reusing it
+   here keeps ContactWorker's own `_extract_first_link` pattern (used
+   for WhatsApp/Messenger/Telegram/LinkedIn) for links that are
+   already full URLs on the page, while Instagram — whose canonical
+   form isn't always the literal href text — goes through the
+   dedicated helper built for that normalization.
+
 4. `fetch_duration` — added, mirroring
    `WebsiteIntel.response_time` / `InstagramIntel.fetch_duration`: a
    timing measurement of this worker's own fetch(es), not a judgment.
@@ -177,7 +202,7 @@ from typing import Dict, Optional, Tuple
 from urllib.parse import urljoin
 
 from engine.contracts import ContactIntel, WebsiteIntel
-from utils.parsing import is_valid_email
+from utils.parsing import extract_ig_urls, is_valid_email
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
 
@@ -266,6 +291,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         messenger_link: Optional[str] = None
         telegram_link: Optional[str] = None
         linkedin_url: Optional[str] = None
+        instagram_url: Optional[str] = None
         total_elapsed = 0.0
 
         for url in urls:
@@ -290,6 +316,8 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                 telegram_link = self._extract_first_link(html, page_url, _TELEGRAM_RE)
             if linkedin_url is None:
                 linkedin_url = self._extract_first_link(html, page_url, _LINKEDIN_RE)
+            if instagram_url is None:
+                instagram_url = self._extract_instagram_url(html)
 
         return ContactIntel(
             pipeline_id=item.pipeline_id,
@@ -300,6 +328,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             messenger_link=messenger_link,
             telegram_link=telegram_link,
             linkedin_url=linkedin_url,
+            instagram_url=instagram_url,
             fetch_duration=total_elapsed,
         )
 
@@ -374,3 +403,20 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             if pattern.search(resolved):
                 return resolved
         return None
+
+    @staticmethod
+    def _extract_instagram_url(html: str) -> Optional[str]:
+        """
+        First canonical Instagram profile URL found on the page, or
+        None. Delegates entirely to `utils.parsing.extract_ig_urls`,
+        which already canonicalizes to
+        `https://www.instagram.com/<handle>/` and rejects
+        reserved/non-profile paths (`/p/`, `/reel/`, `/explore/`,
+        purely numeric segments, etc.) — see this module's own
+        docstring, "Instagram-discovery correction", for why no
+        separate extraction logic is written here.
+        """
+        if not html:
+            return None
+        ig_urls = extract_ig_urls(html)
+        return ig_urls[0] if ig_urls else None

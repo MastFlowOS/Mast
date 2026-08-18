@@ -429,6 +429,27 @@ class ContactIntel:
           a timing measurement of ContactWorker's own fetch(es), not a
           judgment.
 
+    Instagram-discovery correction (4-channel blocker fix): this
+    contract previously had no field to hold an Instagram URL
+    discovered on the scanned website/contact page, even though
+    ContactWorker already extracted the structurally identical
+    WhatsApp/Messenger/Telegram/LinkedIn link fields above via the
+    same anchor scan. QualificationWorker's "instagram" required-
+    channel rule already defensively read
+    `getattr(contact_intel, "instagram_url", None)` in anticipation of
+    this field (see workers/qualification_worker.py) — this was the
+    one remaining piece needed to make that read meaningful instead of
+    always None. Added `instagram_url` here, matching `linkedin_url`'s
+    shape exactly (a single canonical URL, not a tuple — only the
+    first/most-confident match found on the scanned pages is kept, the
+    same "first match wins" precedent whatsapp_link/messenger_link/
+    telegram_link/linkedin_url already use). Populated using the same
+    canonicalization and fake-handle rejection already implemented and
+    battle-tested in `utils.parsing.extract_ig_urls`/`clean_ig_url`/
+    `is_real_ig_handle` (used identically by the V1 crawler in
+    `enrichment/site_crawler.py`) — no new normalization logic
+    invented here, only reused.
+
     Created by: ContactWorker (Phase 6), given a WebsiteIntel.
     Consumed by: MergeWorker only, per the Ownership Table.
     Terminal or intermediate: intermediate — one of the four inputs
@@ -446,6 +467,7 @@ class ContactIntel:
     messenger_link: Optional[str] = None
     telegram_link: Optional[str] = None
     linkedin_url: Optional[str] = None
+    instagram_url: Optional[str] = None
 
     # Metrics
     fetch_duration: Optional[float] = None

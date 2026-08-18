@@ -355,6 +355,56 @@ def _candidate_dict(candidate) -> dict:
     }
 
 
+def _resolve_instagram_url(candidate, instagram_intel, contact_intel) -> str | None:
+    """
+    SCHEMA MISMATCH FIX (Node channelFilter vs Python Qualification):
+    QualificationWorker's "instagram" required-channel rule
+    (workers/qualification_worker.py) treats the channel as satisfied
+    by ANY of three independent sources, in this priority order:
+
+        1. business.instagram_url    — an authoritative URL a discovery
+                                        provider (e.g. a future Maps
+                                        variant) attached directly to
+                                        the BusinessCandidate.
+        2. instagram_intel           — InstagramWorker actually reached
+                                        a live, reachable profile
+                                        (`profile_reachable is True`).
+        3. contact_intel.instagram_url — ContactWorker found an
+                                        Instagram link on the business's
+                                        own website/contact page (the
+                                        "4-channel blocker fix" — see
+                                        ContactIntel's docstring).
+
+    `_opportunity_to_lead_dict` previously only ever read
+    `instagram_intel.profile_url`, ignoring sources 1 and 3 entirely.
+    That meant a candidate qualified by ContactWorker's site-discovered
+    Instagram link (source 3 — the common real-world case once a
+    profile itself is private/rate-limited/unreachable) was PASSED by
+    QualificationWorker but then reached Node's `channelFilter.ts`
+    (src/lib/channelFilter.ts, which independently re-checks
+    `lead.instagram`) with an empty `instagram` field, and was silently
+    rejected downstream with `channel_filter:[...]` even though
+    Qualification had already said all four channels were satisfied.
+
+    This resolver mirrors QualificationWorker's exact source priority
+    and boolean semantics so the `instagram` value handed to Node is
+    non-empty in precisely the cases QualificationWorker already
+    counted as "has Instagram" — no channel semantics change, only the
+    lead_dict's field now agrees with the decision already made.
+    """
+    if candidate is not None and getattr(candidate, "instagram_url", None):
+        return candidate.instagram_url
+    if (
+        instagram_intel is not None
+        and instagram_intel.profile_reachable is True
+        and instagram_intel.profile_url
+    ):
+        return instagram_intel.profile_url
+    if contact_intel is not None and getattr(contact_intel, "instagram_url", None):
+        return contact_intel.instagram_url
+    return None
+
+
 def _opportunity_to_lead_dict(
     opportunity: QualifiedOpportunity, stored: StoredOpportunity
 ) -> dict[str, Any]:
@@ -395,7 +445,14 @@ def _opportunity_to_lead_dict(
         "email": emails[0] if emails else None,
         "emails": emails,
         "website_reachable": website_intel.website_reachable if website_intel else None,
-        "instagram": instagram_intel.profile_url if instagram_intel else None,
+        # SCHEMA MISMATCH FIX: was `instagram_intel.profile_url if instagram_intel
+        # else None`, which silently dropped the ContactWorker-discovered and
+        # BusinessCandidate-level sources QualificationWorker's "instagram"
+        # required-channel rule already accepts — see
+        # `_resolve_instagram_url`'s own docstring above for the full
+        # production trace (candidate_qualified -> storage success ->
+        # NODE_RECEIVED -> REJECTED reason=channel_filter:[...]).
+        "instagram": _resolve_instagram_url(candidate, instagram_intel, contact_intel),
         "ig_username": instagram_intel.username if instagram_intel else None,
         "ig_followers": instagram_intel.followers if instagram_intel else None,
         "ig_verified": instagram_intel.verified if instagram_intel else None,

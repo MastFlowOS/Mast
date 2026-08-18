@@ -666,10 +666,46 @@ async def run_query(
 
         if stage == "discovery" and event == "candidate_discovered":
             _mark("first_candidate_discovered")
+            profiler.incr("raw_candidates")
         elif stage == "discovery" and event == "candidate_queued":
             _mark("first_candidate_accepted")
+            profiler.incr("early_new")
+        elif stage == "discovery" and event == "candidate_early_duplicate":
+            profiler.incr("early_duplicates")
+        elif event == "candidate_early_channel_pruned":
+            # Emitted by discovery (pre-enqueue) and by website/contact
+            # (post-enqueue, once a channel becomes provably unsatisfiable)
+            # — see engine/execution_driver.py's `_on_candidate` /
+            # `_on_enrichment_failure_outcome`. All three count toward the
+            # same "early_pruned" area-sla figure; this stage never gets
+            # fully enriched either way, so the distinction between
+            # pre-enqueue and post-enqueue pruning doesn't change what the
+            # figure is meant to answer ("how many candidates did the
+            # pipeline give up on early").
+            profiler.incr("early_pruned")
         elif event == "stage_completed" and stage in ("website", "instagram", "contact"):
             _mark("first_enrichment_completed")
+        elif event == "stage_failed" and stage == "contact":
+            profiler.incr("contact_failures")
+        elif stage == "qualification" and event == "candidate_qualified":
+            _mark("first_candidate_qualified")
+            profiler.incr("qualified")
+
+    def _on_stage_timing(outcome) -> None:
+        # PHASE 2 (per-area latency profiling): route each stage's
+        # `EngineRuntime.execute_stage()` timing into the profiler's
+        # existing StageTimer machinery under a `<stage>_worker` name, so
+        # `area_sla_line()` can read it back via `_sum("website_worker")`
+        # etc. Deliberately named `<stage>_worker` rather than bare
+        # `<stage>` so it can never collide with a scraper-side stage name
+        # (e.g. a hypothetical future "storage" timer inside a worker
+        # itself) sharing the same StageTimer dict. Never allowed to raise
+        # — `build_seven_stage_pipeline()` already wraps this call in its
+        # own try/except, but a defensive check here costs nothing.
+        try:
+            profiler.record_stage_duration(f"{outcome.stage_name}_worker", outcome.duration_ms)
+        except Exception:
+            pass
 
     # LIFECYCLE FIX (target reached / graceful shutdown): a single
     # cooperative check, shared by both branches below, threaded into
@@ -897,6 +933,7 @@ async def run_query(
                 storage_backend=streaming_backend,
                 niche=niche or None,
                 on_progress=_on_progress,
+                on_stage_timing=_on_stage_timing,
                 early_dedup_checker=_build_early_dedup_checker(),
                 required_channels=tuple(required_channels) if required_channels else None,
                 instance_counts=instance_counts,
@@ -1056,6 +1093,7 @@ async def run_query(
                             break
                         tracer.transition(pid, "YIELDED_TO_NODE")
                         tracer.deliver(pid)
+                        profiler.incr("delivered")
                         yield lead_dict
                         if gate.target_reached:
                             break
@@ -1245,6 +1283,70 @@ async def run_query(
             delivered=gate.accepted,
             requested=_deliver_target,  # report the user-facing target, not the scan budget
         )
+        # Phase 2 (per-area latency profiling, Step 2): the ONE
+        # authoritative per-area summary this phase adds. `city` is the
+        # per-child area name (Bronx, Queens, ... — see pythonBridge.ts,
+        # which spawns one `run_query()` per area with `city=<area>`).
+        # Uses `_request_started_ts` as its time base (same reference
+        # `_latency_marks` already uses) so `runtime_ms` and the
+        # `first_*_ms` fields share one clock; the stage-time and counter
+        # fields come from `profiler` directly and are clock-independent.
+        _area_runtime_ms = (time.perf_counter() - _request_started_ts) * 1000.0
+        _area_sla_kwargs = dict(
+            area=city,
+            runtime_ms=_area_runtime_ms,
+            first_candidate_ms=(
+                _latency_marks["first_candidate_discovered"] * 1000.0
+                if "first_candidate_discovered" in _latency_marks else None
+            ),
+            first_enrichment_ms=(
+                _latency_marks["first_enrichment_completed"] * 1000.0
+                if "first_enrichment_completed" in _latency_marks else None
+            ),
+            first_qualified_ms=(
+                _latency_marks["first_candidate_qualified"] * 1000.0
+                if "first_candidate_qualified" in _latency_marks else None
+            ),
+            first_delivered_ms=(
+                _latency_marks["first_lead_delivered"] * 1000.0
+                if "first_lead_delivered" in _latency_marks else None
+            ),
+        )
+        profiler.print_area_sla(**_area_sla_kwargs)
+        # Also embed the same fields, structurally, in the __done__
+        # sentinel payload (`_last_perf_summary`) — the stderr block above
+        # is for a human tailing logs; this is for anything that wants to
+        # parse it (e.g. a future dashboard aggregating area-sla across
+        # a whole production run) without scraping text.
+        _last_perf_summary["area_sla"] = {
+            **{k: v for k, v in _area_sla_kwargs.items()},
+            "maps_ms": profiler._stages["playwright_startup"].total_ms
+                + profiler._stages["browser_startup"].total_ms
+                + profiler._stages["context_creation"].total_ms
+                + profiler._stages["page_creation"].total_ms,
+            "navigation_ms": profiler._stages["maps_initial_load"].total_ms,
+            "panel_ms": profiler._stages["place_panel_wait"].total_ms
+                + profiler._stages["place_settle"].total_ms,
+            "scroll_ms": profiler._stages["scroll_movement"].total_ms
+                + profiler._stages["scroll_wait"].total_ms,
+            "place_click_ms": profiler._stages["place_click"].total_ms,
+            "rate_limit_ms": profiler._stages["rate_limit_wait_search"].total_ms
+                + profiler._stages["rate_limit_wait_place"].total_ms,
+            "extraction_ms": profiler._stages["maps_place_extraction"].total_ms,
+            "website_ms": profiler._stages["website_worker"].total_ms,
+            "instagram_ms": profiler._stages["instagram_worker"].total_ms,
+            "contact_ms": profiler._stages["contact_worker"].total_ms,
+            "merge_ms": profiler._stages["merge_worker"].total_ms,
+            "qualification_ms": profiler._stages["qualification_worker"].total_ms,
+            "storage_ms": profiler._stages["storage_worker"].total_ms,
+            "raw_candidates": profiler.counter("raw_candidates"),
+            "early_new": profiler.counter("early_new"),
+            "early_duplicates": profiler.counter("early_duplicates"),
+            "early_pruned": profiler.counter("early_pruned"),
+            "contact_failures": profiler.counter("contact_failures"),
+            "qualified": profiler.counter("qualified"),
+            "delivered": profiler.counter("delivered"),
+        }
         log.info("[run_query] outer cleanup finished")
 
 

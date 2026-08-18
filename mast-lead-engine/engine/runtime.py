@@ -173,7 +173,9 @@ TODO(future milestones):
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from engine.runtime_context import RuntimeContext
@@ -351,6 +353,21 @@ class StageOutcome:
     dead_lettered: bool = False
     detail: Optional[str] = None
 
+    # PHASE 2 (per-area latency profiling): purely observational timing,
+    # additive to the fields above. `duration_ms` is the wall-clock time
+    # spent inside this cycle's `worker.process(worker_input)` call only
+    # (allocate/release/queue bookkeeping is excluded, matching what an
+    # "$STAGE_ms" figure in an [area-sla] report should mean: time the
+    # worker itself was doing work, not scheduler overhead). `None` for a
+    # no-op cycle (`ran=False`), exactly like `worker_id` above.
+    # `queue_wait_ms` is how long the dequeued `QueueItem` sat in its
+    # input queue between `enqueue()` and this cycle's `dequeue()` call —
+    # `None` for a producer stage (no `input_queue_id`) or a no-op cycle,
+    # same convention as `queue_item_id`. Neither field changes any
+    # branching in this file or any caller; both are purely additive.
+    duration_ms: Optional[float] = None
+    queue_wait_ms: Optional[float] = None
+
 
 class EngineRuntime:
     """
@@ -419,10 +436,27 @@ class EngineRuntime:
             )
 
         item: Optional[QueueItem] = None
+        queue_wait_ms: Optional[float] = None
         if input_queue is not None:
             item = input_queue.dequeue()
             if item is None:
                 return StageOutcome(stage_name=stage.name, ran=False)
+            # PHASE 2 (per-area latency profiling, audit item #16 — queue
+            # wait / backpressure): how long this item sat between
+            # Queue.enqueue() (created_at) and this dequeue(). Wall-clock
+            # (datetime), not perf_counter, because created_at is set by
+            # Queue.enqueue() with datetime.now(timezone.utc) and there is
+            # no perf_counter equivalent recorded at enqueue time — see
+            # queues/queue.py's `_now()`. Never raises: a naive/aware
+            # mismatch or clock oddity degrades to `None` rather than
+            # failing the whole stage cycle over an observability detail.
+            try:
+                queue_wait_ms = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - item.created_at).total_seconds() * 1000.0,
+                )
+            except Exception:  # noqa: BLE001 - observability must never break execution
+                queue_wait_ms = None
             worker_input = stage.build_worker_input(item)
         else:
             worker_input = stage.produce_worker_input()
@@ -479,11 +513,19 @@ class EngineRuntime:
         worker.start()
         registry.update_state(worker_id, WorkerState.WORKING)
 
+        # PHASE 2 (per-area latency profiling, audit items #10-#15 —
+        # WebsiteWorker/InstagramWorker/ContactWorker/Merge/Qualification/
+        # Storage): time only the `worker.process()` call itself, not the
+        # allocate/reserve/release bookkeeping around it, so this measures
+        # the same thing an "$STAGE_ms" figure in an [area-sla] report
+        # should mean — time the worker was actually doing work.
+        _t0 = time.perf_counter()
         try:
             output = worker.process(worker_input)
         except Exception as exc:  # noqa: BLE001 - deliberately broad: any
             # process() failure, of any kind, is this stage's Failure
             # path, not an Engine Runtime error.
+            duration_ms = (time.perf_counter() - _t0) * 1000.0
             return self._handle_failure(
                 stage=stage,
                 exc=exc,
@@ -494,7 +536,10 @@ class EngineRuntime:
                 input_queue=input_queue,
                 queue_item_id=queue_item_id,
                 pipeline_id=pipeline_id,
+                duration_ms=duration_ms,
+                queue_wait_ms=queue_wait_ms,
             )
+        duration_ms = (time.perf_counter() - _t0) * 1000.0
 
         return self._handle_success(
             stage=stage,
@@ -506,6 +551,8 @@ class EngineRuntime:
             queues=queues,
             pipeline_id=pipeline_id,
             queue_item_id=queue_item_id,
+            duration_ms=duration_ms,
+            queue_wait_ms=queue_wait_ms,
         )
 
     # -- success / failure handling ------------------------------------------
@@ -522,6 +569,8 @@ class EngineRuntime:
         queues: Any,
         pipeline_id: Optional[str],
         queue_item_id: Optional[str],
+        duration_ms: Optional[float] = None,
+        queue_wait_ms: Optional[float] = None,
     ) -> StageOutcome:
         worker.complete()
         registry.update_state(worker_id, WorkerState.COMPLETED)
@@ -555,6 +604,8 @@ class EngineRuntime:
             worker_id=worker_id,
             queue_item_id=queue_item_id,
             pipeline_id=pipeline_id,
+            duration_ms=duration_ms,
+            queue_wait_ms=queue_wait_ms,
         )
 
     def _handle_failure(
@@ -569,6 +620,8 @@ class EngineRuntime:
         input_queue: Any,
         queue_item_id: Optional[str],
         pipeline_id: Optional[str] = None,
+        duration_ms: Optional[float] = None,
+        queue_wait_ms: Optional[float] = None,
     ) -> StageOutcome:
         worker.fail()
         registry.update_state(worker_id, WorkerState.FAILED)
@@ -606,6 +659,8 @@ class EngineRuntime:
             pipeline_id=pipeline_id,
             dead_lettered=dead_lettered,
             detail=str(exc),
+            duration_ms=duration_ms,
+            queue_wait_ms=queue_wait_ms,
         )
 
     # -- internal --------------------------------------------------------

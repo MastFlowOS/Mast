@@ -836,6 +836,7 @@ def build_seven_stage_pipeline(
     storage_worker_factory: Optional[Callable[[], BaseWorker]] = None,
     instance_counts: Optional[Dict[str, int]] = None,
     on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None,
+    on_stage_timing: Optional[Callable[[StageOutcome], None]] = None,
     early_dedup_checker: Optional[PersistentEarlyDedupChecker] = None,
     scrape_job_id: Optional[str] = None,
     required_channels: Optional[Tuple[str, ...] | list[str]] = None,
@@ -1510,9 +1511,22 @@ def build_seven_stage_pipeline(
         # callback (unchanged) and this phase's additive progress
         # instrumentation. `ExecutionDriver` itself still accepts exactly
         # one such callback -- this is that single callback.
+        #
+        # PHASE 2 (per-area latency profiling): `on_stage_timing`, if
+        # supplied, is a third consumer, fanned out the same way. It
+        # receives the raw `StageOutcome` (not just stage/event/item_id
+        # like `on_progress`) specifically so a caller can read
+        # `duration_ms` / `queue_wait_ms` / `success` — none of which
+        # `on_progress`'s narrower signature carries. Never allowed to
+        # raise into pipeline code, matching `_emit`'s own posture above.
         _on_qualification_outcome(outcome)
         _on_enrichment_failure_outcome(outcome)
         _emit_stage_outcome(outcome)
+        if on_stage_timing is not None:
+            try:
+                on_stage_timing(outcome)
+            except Exception:
+                log.debug("on_stage_timing observer raised — ignored", exc_info=True)
 
     return stages, queue_ids, fan_in, _combined_on_stage_outcome
 

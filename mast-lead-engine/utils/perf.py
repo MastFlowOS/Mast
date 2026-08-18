@@ -41,7 +41,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Generator
+from typing import Any, Generator
 
 from utils.lifecycle_tracker import (
     active_browsers,
@@ -141,6 +141,13 @@ class RunProfiler:
         self._marks: dict[str, float] = {}          # event name → abs time
         self._rejections: list[RejectionRecord] = []
         self._per_business: list[BusinessTiming] = []
+
+        # Phase 2 (per-area latency profiling): generic named counters —
+        # see incr()/counter() below. Separate from `_discovered`/
+        # `_delivered` above (those two are driven by begin_business()/
+        # end_business(), which the current Engine 2.0 pipeline never
+        # calls — see this class's Phase 2 audit notes on incr()).
+        self._counters: dict[str, int] = defaultdict(int)
 
         # Current business being timed (set by begin_business / end_business)
         self._current_business: BusinessTiming | None = None
@@ -250,6 +257,109 @@ class RunProfiler:
         if self._business_start is None:
             return 0.0
         return (time.perf_counter() - self._business_start) * 1000.0
+
+    # ── Phase 2 (per-area latency profiling): stage-duration + counters ────
+    #
+    # These two methods are the bridge between `EngineRuntime.execute_stage()`
+    # / `build_seven_stage_pipeline()`'s new `on_stage_timing`/`_emit` events
+    # (engine/runtime.py, engine/execution_driver.py) and this profiler's
+    # existing `StageTimer` machinery. Deliberately generic (any stage name,
+    # any counter name) rather than one method per field, so the [area-sla]
+    # report (service.py) can be assembled without adding a new RunProfiler
+    # method every time a new stage or count is wired in.
+
+    def record_stage_duration(self, stage: str, elapsed_ms: float | None) -> None:
+        """Record one sample for an out-of-band timed stage (i.e. one not
+        wrapped in `timer()` because the timing happens in a different
+        module — see `EngineRuntime.execute_stage()`'s `duration_ms`).
+        No-ops on `None` (a no-op cycle, e.g. `ran=False`) rather than
+        recording a bogus zero sample."""
+        if elapsed_ms is None:
+            return
+        self._stages[stage].record(elapsed_ms)
+
+    def incr(self, counter: str, by: int = 1) -> None:
+        """Increment a named area-sla counter (raw_candidates, early_new,
+        early_duplicates, early_pruned, contact_failures, qualified,
+        delivered, ...). Unlike `_discovered`/`_delivered` above — which
+        are only ever touched by the dead `begin_business()`/`end_business()`
+        pair (see Phase 2 audit note in these methods' own docstrings) —
+        these counters are driven directly by the pipeline's real
+        `on_progress`/`on_stage_timing` events, so they reflect Engine 2.0
+        as it actually runs today."""
+        self._counters[counter] += by
+
+    def counter(self, name: str) -> int:
+        return self._counters.get(name, 0)
+
+    def area_sla_line(
+        self,
+        *,
+        area: str,
+        runtime_ms: float,
+        first_candidate_ms: float | None,
+        first_enrichment_ms: float | None,
+        first_qualified_ms: float | None,
+        first_delivered_ms: float | None,
+    ) -> str:
+        """
+        Build the single, authoritative `[area-sla]` report line for this
+        run (Phase 2 §Step 2). One line per area child — this is the
+        report a human (or a log-scraping script comparing Bronx/Queens/
+        Staten Island/Manhattan against Brooklyn) is meant to grep for.
+
+        Stage-time fields are sums of the underlying `StageTimer`s named
+        below — every one of them either already existed (Maps/browser
+        stages, wired by scraper/maps_scraper.py) or was added this phase
+        (website/instagram/contact/merge/qualification/storage worker
+        stages, wired via `EngineRuntime.execute_stage()`'s new
+        `duration_ms` -> `on_stage_timing` -> `record_stage_duration()`
+        path). A field is 0 if the underlying stage never ran this run
+        (e.g. `skip_ig`), not missing — matching every other numeric
+        field in this line.
+        """
+        def _sum(*names: str) -> float:
+            return round(sum(self._stages[n].total_ms for n in names if n in self._stages), 1)
+
+        def _ms(v: float | None) -> str:
+            return "" if v is None else str(round(v, 1))
+
+        fields = [
+            ("area", area),
+            ("runtime_ms", round(runtime_ms, 1)),
+            ("first_candidate_ms", _ms(first_candidate_ms)),
+            ("first_enrichment_ms", _ms(first_enrichment_ms)),
+            ("first_qualified_ms", _ms(first_qualified_ms)),
+            ("first_delivered_ms", _ms(first_delivered_ms)),
+            ("maps_ms", _sum("playwright_startup", "browser_startup", "context_creation", "page_creation")),
+            ("navigation_ms", _sum("maps_initial_load")),
+            ("panel_ms", _sum("place_panel_wait", "place_settle")),
+            ("scroll_ms", _sum("scroll_movement", "scroll_wait")),
+            ("place_click_ms", _sum("place_click")),
+            ("rate_limit_ms", _sum("rate_limit_wait_search", "rate_limit_wait_place")),
+            ("extraction_ms", _sum("maps_place_extraction")),
+            ("website_ms", _sum("website_worker")),
+            ("instagram_ms", _sum("instagram_worker")),
+            ("contact_ms", _sum("contact_worker")),
+            ("merge_ms", _sum("merge_worker")),
+            ("qualification_ms", _sum("qualification_worker")),
+            ("storage_ms", _sum("storage_worker")),
+            ("raw_candidates", self.counter("raw_candidates")),
+            ("early_new", self.counter("early_new")),
+            ("early_duplicates", self.counter("early_duplicates")),
+            ("early_pruned", self.counter("early_pruned")),
+            ("contact_failures", self.counter("contact_failures")),
+            ("qualified", self.counter("qualified")),
+            ("delivered", self.counter("delivered")),
+        ]
+        return "[area-sla]\n" + "\n".join(f"{k}={v}" for k, v in fields)
+
+    def print_area_sla(self, **kwargs: Any) -> None:
+        """Print the `[area-sla]` block to stderr (same stream
+        `print_report()` already uses) so it lands in the same per-child
+        log a production run already captures."""
+        import sys
+        print("\n" + self.area_sla_line(**kwargs) + "\n", file=sys.stderr)
 
     # ── Computed metrics ──────────────────────────────────────────────────────
 
@@ -549,6 +659,11 @@ class NullProfiler:
     def end_business(self, outcome: str) -> None: pass  # noqa: ARG002
     def record_rejection(self, reason: str, elapsed_ms: float) -> None: pass  # noqa: ARG002
     def elapsed_since_business_start_ms(self) -> float: return 0.0
+    def record_stage_duration(self, stage: str, elapsed_ms: float | None) -> None: pass  # noqa: ARG002
+    def incr(self, counter: str, by: int = 1) -> None: pass  # noqa: ARG002
+    def counter(self, name: str) -> int: return 0  # noqa: ARG002
+    def area_sla_line(self, **kwargs: object) -> str: return ""  # noqa: ARG002
+    def print_area_sla(self, **kwargs: object) -> None: pass  # noqa: ARG002
     def summary(self) -> dict: return {}
     def print_report(self, **_: object) -> None: pass
 

@@ -230,6 +230,7 @@ def _translate_overpass(context: DiscoveryQueryContext) -> Optional[OverpassDisc
         tags=tags,
         area_name=context.city or context.country or None,
         limit=context.max_results,
+        should_stop=context.should_stop,
     )
 
 

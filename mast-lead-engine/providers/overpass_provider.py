@@ -359,6 +359,21 @@ class OverpassDiscoveryRequest:
     area_name: Optional[str] = None
     limit: Optional[int] = None
     timeout_seconds: int = 25
+    should_stop: Optional[Callable[[], bool]] = None
+    """
+    PHASE 1B parity fix — same cooperative checkpoint
+    GoogleMapsDiscoveryRequest.should_stop already defines (see
+    google_maps_provider.py), threaded through here for the identical
+    reason: a composite/parallel discovery run that has already reached
+    its target (or is otherwise winding down) must not pay for this
+    provider's own internal HTTP retry/backoff/mirror-failover loop
+    (`_http_post_urllib`) once that loop is not going to matter. `None`
+    (the default) preserves exact previous behavior — a caller that
+    doesn't pass one (existing tests, validate_overpass_provider.py)
+    always gets the full retry/backoff/mirror behavior. See
+    `OverpassProvider.discover()` and `_http_post_urllib()` for where
+    this is actually consulted.
+    """
 
     def __post_init__(self) -> None:
         if not self.tags:
@@ -407,6 +422,22 @@ _DEFAULT_TRANSPORT_HEADERS: dict[str, str] = {
 }
 
 
+class _StopRequested(Exception):
+    """
+    Internal-only signal: `should_stop()` reported true while
+    `_http_post_urllib` was mid retry/backoff/mirror-failover loop.
+    Never escapes this function — caught immediately below and turned
+    into a `DiscoveryFailure`-free early return path exactly like a
+    real (non-retryable) transport failure would look to `discover()`,
+    except `discover()` itself checks `should_stop()` first (see
+    `OverpassProvider.discover()`) and simply won't call this function
+    at all in the common case. This exception only covers the case
+    where a stop is requested *while already inside* the retry loop
+    (e.g. between a 429 response and the next attempt), which a
+    before-the-call check alone cannot catch.
+    """
+
+
 def _http_post_urllib(
     url: str,
     data: str,
@@ -414,6 +445,7 @@ def _http_post_urllib(
     timeout: float = 35.0,
     max_retries_per_endpoint: int = 2,
     backoff_factor: float = 0.5,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> dict[str, Any]:
     """
     Default transport: stdlib POST of the Overpass QL query text against the
@@ -426,6 +458,19 @@ def _http_post_urllib(
     If the target endpoint experiences transient HTTP errors (429, 502, 503, 504)
     or network/timeout exceptions, this transport retrying on the primary endpoint
     and failing over to secondary public Overpass mirrors (`_DEFAULT_MIRRORS`).
+
+    `should_stop`: PHASE 1B parity fix — optional cooperative checkpoint,
+    consulted (a) before every backoff sleep and (b) before hopping to
+    the next mirror. `None` (the default) preserves exact previous
+    behavior — every existing caller (validate_overpass_provider.py,
+    any caller that built its own `http_post` signature before this
+    parameter existed) is unaffected: this function is called
+    positionally/by-keyword the same way it always was, and callers
+    that pass a custom `http_post` callable of their own to
+    `OverpassProvider` are never affected by this parameter at all,
+    since `discover()` only forwards `should_stop` to whichever
+    callable was actually injected via a `try/except TypeError`
+    backward-compatibility call (see `OverpassProvider.discover()`).
     """
     request_headers = {**_DEFAULT_TRANSPORT_HEADERS, **headers}
     body = urlencode({"data": data}).encode("utf-8")
@@ -435,54 +480,91 @@ def _http_post_urllib(
         if mirror not in candidate_urls:
             candidate_urls.append(mirror)
 
+    def _stop_requested() -> bool:
+        return should_stop is not None and should_stop()
+
     last_exception: Optional[BaseException] = None
 
-    for target_url in candidate_urls:
-        for attempt in range(max_retries_per_endpoint):
-            request = Request(target_url, data=body, headers=request_headers, method="POST")
-            try:
-                with urlopen(request, timeout=timeout) as response:
-                    return json.loads(response.read().decode("utf-8"))
-            except HTTPError as exc:
-                last_exception = exc
-                if exc.code in _RETRYABLE_STATUS_CODES:
-                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                    delay: Optional[float] = None
-                    if retry_after:
-                        try:
-                            delay = float(retry_after)
-                        except ValueError:
-                            pass
-                    if delay is None:
-                        delay = (backoff_factor * (2 ** attempt)) + random.uniform(0, 0.25)
+    try:
+        for target_url in candidate_urls:
+            if _stop_requested():
+                log.info(
+                    "[overpass] should_stop reported true before trying %s — "
+                    "aborting further mirror failover.",
+                    target_url,
+                )
+                raise _StopRequested()
+
+            for attempt in range(max_retries_per_endpoint):
+                request = Request(target_url, data=body, headers=request_headers, method="POST")
+                try:
+                    with urlopen(request, timeout=timeout) as response:
+                        return json.loads(response.read().decode("utf-8"))
+                except HTTPError as exc:
+                    last_exception = exc
+                    if exc.code in _RETRYABLE_STATUS_CODES:
+                        if _stop_requested():
+                            log.info(
+                                "[overpass] should_stop reported true after HTTP %d "
+                                "from %s — aborting retry instead of sleeping.",
+                                exc.code, target_url,
+                            )
+                            raise _StopRequested() from None
+                        retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                        delay: Optional[float] = None
+                        if retry_after:
+                            try:
+                                delay = float(retry_after)
+                            except ValueError:
+                                pass
+                        if delay is None:
+                            delay = (backoff_factor * (2 ** attempt)) + random.uniform(0, 0.25)
+                        log.warning(
+                            "[overpass] HTTP %d from %s (attempt %d/%d). Retrying in %.2fs...",
+                            exc.code,
+                            target_url,
+                            attempt + 1,
+                            max_retries_per_endpoint,
+                            delay,
+                        )
+                        time.sleep(delay)
+                    else:
+                        raise
+                except (URLError, TimeoutError, OSError) as exc:
+                    last_exception = exc
+                    if _stop_requested():
+                        log.info(
+                            "[overpass] should_stop reported true after a network "
+                            "error connecting to %s — aborting retry instead of "
+                            "sleeping.",
+                            target_url,
+                        )
+                        raise _StopRequested() from None
+                    delay = (backoff_factor * (2 ** attempt)) + random.uniform(0, 0.25)
                     log.warning(
-                        "[overpass] HTTP %d from %s (attempt %d/%d). Retrying in %.2fs...",
-                        exc.code,
+                        "[overpass] Network error (%s) connecting to %s (attempt %d/%d). Retrying in %.2fs...",
+                        exc,
                         target_url,
                         attempt + 1,
                         max_retries_per_endpoint,
                         delay,
                     )
                     time.sleep(delay)
-                else:
-                    raise
-            except (URLError, TimeoutError, OSError) as exc:
-                last_exception = exc
-                delay = (backoff_factor * (2 ** attempt)) + random.uniform(0, 0.25)
-                log.warning(
-                    "[overpass] Network error (%s) connecting to %s (attempt %d/%d). Retrying in %.2fs...",
-                    exc,
-                    target_url,
-                    attempt + 1,
-                    max_retries_per_endpoint,
-                    delay,
-                )
-                time.sleep(delay)
 
-        log.warning(
-            "[overpass] Exhausted retries for %s. Attempting fallback mirror...",
-            target_url,
-        )
+            log.warning(
+                "[overpass] Exhausted retries for %s. Attempting fallback mirror...",
+                target_url,
+            )
+    except _StopRequested:
+        # Same "no results, no exception" shape `discover()` already
+        # tolerates from an empty-but-successful response — see
+        # `discover()`, which returns early via its own should_stop()
+        # check and never calls this function in the common case. This
+        # branch only fires for a stop requested *mid*-retry, and — like
+        # the pre-call check in discover() — simply yields zero
+        # candidates rather than raising, so a cooperative shutdown is
+        # never surfaced to callers as a transport failure.
+        return {"elements": []}
 
     if last_exception is not None:
         raise last_exception
@@ -623,14 +705,46 @@ class OverpassProvider(DiscoveryProviderInterface):
         per entry in the response's `elements[]`. Any exception raised
         by the HTTP transport propagates unchanged — nothing here
         catches or swallows it.
+
+        PHASE 1B parity fix — checks `request.should_stop()` before
+        issuing the request at all (same "provider's one HTTP call is
+        otherwise a single un-interruptible item" concern
+        ParallelCompositeDiscoveryProvider's own docstring documents
+        as an "honest limit"). If a stop has already been requested by
+        the time this runs, nothing is sent and the iterator yields
+        zero candidates, exactly like a genuinely empty Overpass
+        response would. `request.should_stop` is also threaded into
+        the default transport's own retry/backoff/mirror loop (see
+        `_http_post_urllib`) so a stop requested *during* that loop
+        aborts it too, rather than only being checked here at the
+        very start.
         """
+        if request.should_stop is not None and request.should_stop():
+            log.info(
+                "[overpass_provider] should_stop reported true before the "
+                "request was issued — skipping this Overpass call entirely "
+                "(session=%s)", request.session_id,
+            )
+            return
         query = _build_ql(request)
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         socket_timeout = float(request.timeout_seconds + 10)
         try:
-            payload = self._http_post(self._endpoint_url, query, headers, timeout=socket_timeout)
+            payload = self._http_post(
+                self._endpoint_url, query, headers,
+                timeout=socket_timeout, should_stop=request.should_stop,
+            )
         except TypeError:
-            payload = self._http_post(self._endpoint_url, query, headers)
+            # Backward compatibility: an injected `http_post` that predates
+            # `should_stop` and/or `timeout` (e.g.
+            # validate_overpass_provider.py's fakes, or a caller's own
+            # custom transport) doesn't accept one or both keywords —
+            # peel them off one at a time rather than assuming which one
+            # was rejected.
+            try:
+                payload = self._http_post(self._endpoint_url, query, headers, timeout=socket_timeout)
+            except TypeError:
+                payload = self._http_post(self._endpoint_url, query, headers)
         elements = payload.get("elements", [])
         for element in elements:
             yield self._to_business_candidate(element, request, request.session_id)

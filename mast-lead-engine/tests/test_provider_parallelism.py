@@ -544,6 +544,35 @@ class TestRequestTranslation:
         assert request is not None
         assert request.tags == {"shop": "widgets"}
 
+    def test_overpass_translation_threads_should_stop_through(self):
+        """PHASE 1B parity fix: OverpassDiscoveryRequest.should_stop must
+        be wired from DiscoveryQueryContext.should_stop exactly like
+        GoogleMapsDiscoveryRequest.should_stop already is — this was the
+        missing link that let a bridged Overpass call keep retrying after
+        a request-level TARGET_REACHED."""
+        def should_stop() -> bool:
+            return True
+
+        context = DiscoveryQueryContext(
+            session_id="s1", query="coffee shop", city="Austin",
+            country="US", niche="coffee_shop", should_stop=should_stop,
+        )
+        request = translate_request("overpass", context)
+        assert request is not None
+        assert request.should_stop is should_stop
+
+    def test_overpass_translation_defaults_should_stop_to_none(self):
+        """Backward compatibility: a context without should_stop must
+        translate to a request with should_stop=None, preserving prior
+        behavior for every existing caller of translate_request()."""
+        context = DiscoveryQueryContext(
+            session_id="s1", query="coffee shop", city="Austin",
+            country="US", niche="coffee_shop",
+        )
+        request = translate_request("overpass", context)
+        assert request is not None
+        assert request.should_stop is None
+
     def test_crunchbase_returns_none_without_organization_query(self):
         context = DiscoveryQueryContext(
             session_id="s1", query="coffee shop", city="Austin", country="US",

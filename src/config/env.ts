@@ -184,7 +184,11 @@ const EnvSchema = z.object({
   // slots. Each engine also creates Python/provider threads, a Playwright
   // driver, and a Chromium process tree, so this protects PID/thread limits.
   // Raise only after measuring the target container's resource budget.
-  GOOGLE_MAPS_SAFE_RESOURCE_WORKERS: z.coerce.number().int().min(1).max(8).default(1),
+  //
+  // Phase 1B: raised from 1 -> 2 after the controlled 2-worker validation
+  // (see googleAreaPool.test.ts "Phase 1B" cases). 3 previously caused OS
+  // thread/PID exhaustion; do not raise further without re-measuring.
+  GOOGLE_MAPS_SAFE_RESOURCE_WORKERS: z.coerce.number().int().min(1).max(8).default(2),
 
   // PROCESS REGISTRY EXPLOSION FIX (log-volume half): discoveryPlanJob.ts's
   // per-candidate tracing block (PIPELINE/DISCOVERED/EXITED HERE/reason=/

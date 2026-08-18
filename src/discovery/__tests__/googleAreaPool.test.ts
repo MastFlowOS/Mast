@@ -18,7 +18,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { computeAreaPoolSize, runAreaWorkerPool, type AreaRunOutcome, type AreaWorkerLogEvent } from "../googleAreaPool.js";
+import {
+  computeAreaPoolSize,
+  computeDynamicDiscoveryCapacity,
+  runAreaWorkerPool,
+  type AreaRunOutcome,
+  type AreaWorkerLogEvent,
+} from "../googleAreaPool.js";
 import { createBrowserSlotPool } from "../../lib/browserSlotPool.js";
 
 function outcome(partial: Partial<AreaRunOutcome> = {}): AreaRunOutcome {
@@ -104,6 +110,59 @@ test("safe resource ceiling bounds dynamic area workers without duplicate claims
   assert.equal(result.poolSize, 2, "requested=10 with safeResourceWorkers=2 must select two workers");
   assert.equal(maxActive, 2, "resource ceiling must bound concurrent area execution");
   assert.equal(claimed.size, result.areasProcessed.length, "an area must never be claimed twice");
+});
+
+// ── Phase 1B: controlled 2-worker validation ────────────────────────────────
+// requested=10 leads drives computedWorkers=3 (the <=10 branch of the
+// dynamic capacity formula), but the production-safe resource ceiling of 2
+// must still win: finalWorkers=2. This proves the ceiling is enforced via
+// the existing safeResourceWorkers parameter/config knob, not a hardcoded
+// override, and that plenty of areas/capacity are available so the ceiling
+// — not areas or browser slots — is what binds.
+test("Phase 1B: computeDynamicDiscoveryCapacity — requested=10 => computedWorkers=3 before the safe-resource ceiling is applied", () => {
+  // No safeResourceWorkers arg here: isolates the "computedWorkers=3" part
+  // of the phase prompt's scenario from the ceiling itself.
+  const computedWorkers = computeDynamicDiscoveryCapacity(10, /* availableAreas */ 10, /* capacitySlots */ 10, /* maxConfigured */ 8);
+  assert.equal(computedWorkers, 3, "requested=10 leads must desire 3 workers before any resource ceiling is applied");
+});
+
+test("Phase 1B: computeDynamicDiscoveryCapacity — requested=10, computedWorkers=3, safeResourceWorkers=2 => finalWorkers=2", () => {
+  const finalWorkers = computeDynamicDiscoveryCapacity(10, /* availableAreas */ 10, /* capacitySlots */ 10, /* maxConfigured */ 8, /* safeResourceWorkers */ 2);
+  assert.equal(finalWorkers, 2, "the safe-resource ceiling of 2 must win over the computed desire of 3");
+});
+
+test("Phase 1B: runAreaWorkerPool end-to-end — requested=10, safeResourceWorkers=2 => finalWorkers=2, never more than 2 concurrent areas run", async () => {
+  const areas = ["Area-1", "Area-2", "Area-3", "Area-4", "Area-5"];
+  const claimed = new Set<string>();
+  let active = 0;
+  let peakActive = 0;
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 8, // plenty configured; the ceiling, not this, must bind
+    safeResourceWorkers: 2, // Phase 1B production-safe resource ceiling
+    requestedQuantity: 10, // drives computedWorkers=3 internally
+    totalCuratedAreas: areas.length, // plenty of areas; not the binding constraint
+    availableCapacity: 5, // plenty of browser-slot capacity; not the binding constraint
+    claimNextArea: async (usedAreas) => {
+      const next = areas.find((area) => !usedAreas.has(area) && !claimed.has(area));
+      if (!next) return undefined;
+      claimed.add(next);
+      return next;
+    },
+    runArea: async () => {
+      active += 1;
+      peakActive = Math.max(peakActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return outcome({ discovered: 1, accepted: 1 });
+    },
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+  });
+
+  assert.equal(result.poolSize, 2, "finalWorkers must be 2: the safe-resource ceiling, not computedWorkers=3, must bind");
+  assert.equal(peakActive, 2, "no more than 2 area workers may run concurrently under the Phase 1B ceiling");
+  assert.equal(claimed.size, result.areasProcessed.length, "an area must never be claimed twice under the 2-worker ceiling");
 });
 
 // ── Test C (pool behavior): 3 areas + pool size 5 → only 3 workers, no fake work ──

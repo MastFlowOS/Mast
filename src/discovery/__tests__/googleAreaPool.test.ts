@@ -72,6 +72,40 @@ test("B: with 4 available areas and pool size 4, all 4 areas are claimed exactly
   assert.deepEqual(new Set(result.areasProcessed), new Set(areas));
 });
 
+test("safe resource ceiling bounds dynamic area workers without duplicate claims", async () => {
+  const areas = ["Brooklyn", "Queens", "Manhattan", "Bronx"];
+  const claimed = new Set<string>();
+  let active = 0;
+  let maxActive = 0;
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 8,
+    safeResourceWorkers: 2,
+    requestedQuantity: 10,
+    totalCuratedAreas: areas.length,
+    availableCapacity: 4,
+    claimNextArea: async (usedAreas) => {
+      const next = areas.find((area) => !usedAreas.has(area) && !claimed.has(area));
+      if (!next) return undefined;
+      claimed.add(next);
+      return next;
+    },
+    runArea: async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return outcome({ discovered: 1, accepted: 1 });
+    },
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+  });
+
+  assert.equal(result.poolSize, 2, "requested=10 with safeResourceWorkers=2 must select two workers");
+  assert.equal(maxActive, 2, "resource ceiling must bound concurrent area execution");
+  assert.equal(claimed.size, result.areasProcessed.length, "an area must never be claimed twice");
+});
+
 // ── Test C (pool behavior): 3 areas + pool size 5 → only 3 workers, no fake work ──
 test("C: fewer areas than configured workers starts only as many workers as areas exist", async () => {
   const areas = ["Brooklyn", "Queens", "Manhattan"];

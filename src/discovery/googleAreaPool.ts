@@ -86,8 +86,13 @@ export type AreaWorkerPoolResult = {
  * what "zero workers" means (googleAreaPool's own runAreaWorkerPool treats
  * it as "nothing started this pass", not an error).
  */
-export function computeAreaPoolSize(configured: number, availableAreas: number, capacitySlots: number): number {
-  return Math.max(0, Math.min(configured, availableAreas, capacitySlots));
+export function computeAreaPoolSize(
+  configured: number,
+  availableAreas: number,
+  capacitySlots: number,
+  safeResourceWorkers = Number.MAX_SAFE_INTEGER,
+): number {
+  return Math.max(0, Math.min(configured, availableAreas, capacitySlots, safeResourceWorkers));
 }
 
 /**
@@ -108,6 +113,7 @@ export function computeDynamicDiscoveryCapacity(
   availableAreas: number,
   capacitySlots: number,
   maxConfigured: number = 8,
+  safeResourceWorkers: number = Number.MAX_SAFE_INTEGER,
 ): number {
   if (requestedQuantity <= 0 || availableAreas <= 0 || capacitySlots <= 0 || maxConfigured <= 0) {
     return 0;
@@ -124,11 +130,13 @@ export function computeDynamicDiscoveryCapacity(
     desired = Math.min(8, maxConfigured);
   }
 
-  return Math.max(0, Math.min(desired, availableAreas, capacitySlots));
+  return Math.max(0, Math.min(desired, availableAreas, capacitySlots, safeResourceWorkers));
 }
 
 export type RunAreaWorkerPoolParams = {
   configuredWorkers: number;
+  /** Hard cap for concurrent area engines, protecting PID/native-thread limits. */
+  safeResourceWorkers?: number;
   /** Total curated areas for this city (used only for the pool-size formula and logging). */
   totalCuratedAreas: number;
   /** Non-blocking: current browser-slot capacity snapshot for sizing decisions. */
@@ -173,6 +181,7 @@ export type RunAreaWorkerPoolParams = {
 export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promise<AreaWorkerPoolResult> {
   const {
     configuredWorkers,
+    safeResourceWorkers = Number.MAX_SAFE_INTEGER,
     totalCuratedAreas,
     availableCapacity,
     requestedQuantity,
@@ -187,12 +196,13 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     ? (requestedQuantity <= 10 ? 3 : requestedQuantity <= 25 ? 3 : requestedQuantity <= 50 ? 4 : 8)
     : configuredWorkers;
   const poolSize = requestedQuantity !== undefined
-    ? computeDynamicDiscoveryCapacity(requestedQuantity, totalCuratedAreas, availableCapacity, configuredWorkers)
-    : computeAreaPoolSize(configuredWorkers, totalCuratedAreas, availableCapacity);
+    ? computeDynamicDiscoveryCapacity(requestedQuantity, totalCuratedAreas, availableCapacity, configuredWorkers, safeResourceWorkers)
+    : computeAreaPoolSize(configuredWorkers, totalCuratedAreas, availableCapacity, safeResourceWorkers);
 
   console.info(
     `[discovery-capacity] requested=${requestedQuantity ?? "n/a"} computedWorkers=${computedWorkers} ` +
-      `areas=${totalCuratedAreas} browserSlots=${availableCapacity} finalWorkers=${poolSize}`,
+      `areas=${totalCuratedAreas} browserSlots=${availableCapacity} configuredWorkers=${configuredWorkers} ` +
+      `safeResourceWorkers=${safeResourceWorkers} finalWorkers=${poolSize}`,
   );
   onEvent?.({ type: "pool_start", configured: configuredWorkers, availableAreas: totalCuratedAreas, capacity: availableCapacity, poolSize });
 

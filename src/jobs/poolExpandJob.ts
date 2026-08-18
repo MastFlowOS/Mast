@@ -460,6 +460,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
 
       const result = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
+        safeResourceWorkers: env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS,
         totalCuratedAreas: areas.length,
         availableCapacity: browserPool.available(),
         requestedQuantity: target,

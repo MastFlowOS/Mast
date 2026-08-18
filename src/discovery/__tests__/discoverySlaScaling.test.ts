@@ -36,6 +36,19 @@ test("computeDynamicDiscoveryCapacity: scales concurrency safely by requested qu
   assert.equal(computeDynamicDiscoveryCapacity(0, 10, 4, 8), 0);
 });
 
+test("computeDynamicDiscoveryCapacity: safe resource ceiling is an independent final bound", () => {
+  // A small request still follows its dynamic desired count, but the
+  // resource ceiling wins after area, browser, and configured limits.
+  assert.equal(computeDynamicDiscoveryCapacity(10, 6, 6, 8, 1), 1);
+  assert.equal(computeDynamicDiscoveryCapacity(10, 6, 6, 8, 2), 2);
+
+  // Existing bounds remain independently authoritative.
+  assert.equal(computeDynamicDiscoveryCapacity(100, 1, 8, 8, 8), 1);
+  assert.equal(computeDynamicDiscoveryCapacity(100, 8, 1, 8, 8), 1);
+  assert.equal(computeDynamicDiscoveryCapacity(100, 8, 8, 1, 8), 1);
+  assert.equal(computeAreaPoolSize(8, 8, 8, 2), 2);
+});
+
 test("computeDynamicDiscoveryCapacity: 10-lead 3-worker upgrade is still fully dynamic, not hardcoded", () => {
   // The new ceiling (3) for <= 10 leads is only reached when BOTH the
   // area bound and the browser-slot bound independently allow it.
@@ -364,4 +377,3 @@ test("runAreaWorkerPool: shared target stops all workers with no overshoot or du
   const uniqueClaimed = new Set(claimed);
   assert.equal(uniqueClaimed.size, claimed.length);
 });
-

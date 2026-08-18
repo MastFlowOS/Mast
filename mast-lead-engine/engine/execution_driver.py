@@ -551,9 +551,26 @@ class ExecutionDriver:
                 name=f"mast-execution-driver-producer-{stage.name}",
                 daemon=True,
             )
+            try:
+                thread.start()
+            except BaseException:
+                # Do not leave this failed launch marked as started.  Setting
+                # the driver stop flag prevents any subsequent stage work;
+                # callers retain the original start exception and execute
+                # their normal stop()/join cleanup for previously-started
+                # producers only.
+                self._stop_event.set()
+                with self._producer_lock:
+                    self._producers_started.discard(stage.name)
+                raise
+            # `Thread.join()` is only legal after `start()` succeeds.  If
+            # resource exhaustion makes start() raise, leave this thread out
+            # of the cleanup registry so stop() cannot mask that root error
+            # with "cannot join thread before it is started".  Producers
+            # started earlier in this loop remain registered and are still
+            # handled by the ordinary stop()/join cleanup path.
             with self._producer_lock:
                 self._producer_threads[stage.name] = thread
-            thread.start()
             log.info("ExecutionDriver: producer stage=%s started on its own thread", stage.name)
 
     def _run_producer_stage(self, stage: StageConfig) -> None:

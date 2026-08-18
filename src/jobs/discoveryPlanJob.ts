@@ -768,6 +768,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
       poolResult = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
+        safeResourceWorkers: env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS,
         totalCuratedAreas: curatedAreas.length,
         availableCapacity: browserSlotPool.available(),
         requestedQuantity: effectiveRequested,

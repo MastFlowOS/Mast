@@ -180,6 +180,12 @@ const EnvSchema = z.object({
   // this max().
   GOOGLE_MAPS_AREA_WORKERS: z.coerce.number().int().min(1).max(8).default(8),
 
+  // Caps concurrent Google Maps area engines independently of browser memory
+  // slots. Each engine also creates Python/provider threads, a Playwright
+  // driver, and a Chromium process tree, so this protects PID/thread limits.
+  // Raise only after measuring the target container's resource budget.
+  GOOGLE_MAPS_SAFE_RESOURCE_WORKERS: z.coerce.number().int().min(1).max(8).default(1),
+
   // PROCESS REGISTRY EXPLOSION FIX (log-volume half): discoveryPlanJob.ts's
   // per-candidate tracing block (PIPELINE/DISCOVERED/EXITED HERE/reason=/
   // BUSINESS_UPSERTED/ENSURE_ENRICHED_*/CHANNELS_*/DELIVER_LEAD_*/

@@ -85,7 +85,7 @@ from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
 from utils.lifecycle_tracker import log_milestone
 from utils.perf import RunProfiler, NullProfiler
 from utils.pipeline_trace import PipelineTracer
-from utils.parsing import is_valid_email
+from utils.parsing import is_valid_email, is_weak_site
 
 # Engine 2.0 — production entrypoint now drives discovery / enrichment /
 # qualification / storage through the real seven-stage runtime instead of
@@ -718,6 +718,26 @@ async def run_query(
         elif stage == "qualification" and event == "candidate_qualified":
             _mark("first_candidate_qualified")
             profiler.incr("qualified")
+        # Phase 3B-VALIDATION (observability only): these `site_class_*`
+        # events are new, additive labels emitted alongside the existing
+        # events above (see engine/execution_driver.py's `_site_class`
+        # usages) — they never replace or gate anything already handled
+        # above; they only route into their own, separately-summed
+        # `*_weak_site`/`*_normal_site` counters so §Task 1-4 of the
+        # Phase 3B audit can be answered from real run telemetry instead
+        # of a one-off log query.
+        elif stage == "discovery" and event.startswith("site_class_queued:"):
+            profiler.incr(f"early_new_{event.rsplit(':', 1)[1]}_site")
+        elif stage == "website" and event.startswith("site_class_stage_completed:"):
+            profiler.incr(f"website_reached_{event.rsplit(':', 1)[1]}_site")
+        elif stage == "website" and event.startswith("site_class_stage_failed:"):
+            profiler.incr(f"website_failed_{event.rsplit(':', 1)[1]}_site")
+        elif stage == "contact" and event.startswith("site_class_stage_completed:"):
+            profiler.incr(f"contact_reached_{event.rsplit(':', 1)[1]}_site")
+        elif stage == "contact" and event.startswith("site_class_stage_failed:"):
+            profiler.incr(f"contact_failures_{event.rsplit(':', 1)[1]}_site")
+        elif stage == "qualification" and event.startswith("site_class_qualified:"):
+            profiler.incr(f"qualified_{event.rsplit(':', 1)[1]}_site")
 
     def _on_stage_timing(outcome) -> None:
         # PHASE 2 (per-area latency profiling): route each stage's
@@ -1181,6 +1201,17 @@ async def run_query(
                         tracer.transition(pid, "YIELDED_TO_NODE")
                         tracer.deliver(pid)
                         profiler.incr("delivered")
+                        # Phase 3B-VALIDATION (observability only): label
+                        # this delivered lead weak vs normal site, read
+                        # straight off the already-in-hand `opportunity`
+                        # (EnrichedBusiness.business is the original
+                        # BusinessCandidate — no new lookup, no new state).
+                        _delivered_business = (
+                            opportunity.business.business if opportunity.business else None
+                        )
+                        if _delivered_business is not None:
+                            _delivered_cls = "weak" if is_weak_site(_delivered_business.website) else "normal"
+                            profiler.incr(f"delivered_{_delivered_cls}_site")
                         yield lead_dict
                         if gate.target_reached:
                             break

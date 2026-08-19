@@ -380,7 +380,64 @@ class RunProfiler:
             ("qualified", self.counter("qualified")),
             ("delivered", self.counter("delivered")),
         ]
+        fields.extend(self._weak_site_validation_fields())
         return "[area-sla]\n" + "\n".join(f"{k}={v}" for k, v in fields)
+
+    # ── Phase 3B-VALIDATION (observability only) ────────────────────────
+    #
+    # Everything below reads counters/timers that already exist by the
+    # time this is called (populated via `incr()`/`record_stage_duration()`
+    # from `service.py`'s `_on_progress`/`_on_stage_timing`, fed in turn by
+    # the new, additive `site_class_*` events in
+    # `engine/execution_driver.py`). Nothing here changes what gets
+    # pruned, qualified, or delivered — it only reports on it, to answer
+    # the Phase 3B audit's validation questions (weak vs normal site
+    # counts/conversion, and an estimate of worker/network time that
+    # pruning weak-site candidates at discovery would avoid) directly from
+    # a real run instead of a one-off log query.
+    def _weak_site_validation_fields(self) -> list[tuple[str, Any]]:
+        def _rate(numerator: int, denominator: int) -> str:
+            return f"{(numerator / denominator * 100):.1f}%" if denominator else "n/a"
+
+        early_new_weak = self.counter("early_new_weak_site")
+        early_new_normal = self.counter("early_new_normal_site")
+        qualified_weak = self.counter("qualified_weak_site")
+        qualified_normal = self.counter("qualified_normal_site")
+        contact_failures_weak = self.counter("contact_failures_weak_site")
+        contact_failures_normal = self.counter("contact_failures_normal_site")
+
+        # Avoided-work estimate: for every weak-site candidate that reached
+        # Website and/or Contact, what it cost is approximated as this
+        # run's own observed average duration for that stage (falls back
+        # to 0 if the stage never ran, i.e. no sample to average). This is
+        # an estimate of the wall-clock/network work that would be
+        # skipped if weak-site candidates were pruned at discovery (§4 of
+        # the task) — it does not change what actually ran this session.
+        website_avg_ms = self._stages["website_worker"].stats()["avg_ms"] or 0.0
+        contact_avg_ms = self._stages["contact_worker"].stats()["avg_ms"] or 0.0
+        website_reached_weak = self.counter("website_reached_weak_site") + self.counter("website_failed_weak_site")
+        contact_reached_weak = self.counter("contact_reached_weak_site") + self.counter("contact_failures_weak_site")
+        estimated_ms_saved = (website_reached_weak * website_avg_ms) + (contact_reached_weak * contact_avg_ms)
+
+        return [
+            ("early_new_weak_site", early_new_weak),
+            ("early_new_normal_site", early_new_normal),
+            ("website_reached_weak_site", self.counter("website_reached_weak_site")),
+            ("website_reached_normal_site", self.counter("website_reached_normal_site")),
+            ("website_failed_weak_site", self.counter("website_failed_weak_site")),
+            ("website_failed_normal_site", self.counter("website_failed_normal_site")),
+            ("contact_reached_weak_site", self.counter("contact_reached_weak_site")),
+            ("contact_reached_normal_site", self.counter("contact_reached_normal_site")),
+            ("contact_failures_weak_site", contact_failures_weak),
+            ("contact_failures_normal_site", contact_failures_normal),
+            ("qualified_weak_site", qualified_weak),
+            ("qualified_normal_site", qualified_normal),
+            ("delivered_weak_site", self.counter("delivered_weak_site")),
+            ("delivered_normal_site", self.counter("delivered_normal_site")),
+            ("weak_site_to_qualified_rate", _rate(qualified_weak, early_new_weak)),
+            ("normal_site_to_qualified_rate", _rate(qualified_normal, early_new_normal)),
+            ("estimated_weak_site_ms_saved_if_pruned", round(estimated_ms_saved, 1)),
+        ]
 
     def print_area_sla(self, **kwargs: Any) -> None:
         """Print the `[area-sla]` block to stderr (same stream

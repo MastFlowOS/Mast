@@ -262,7 +262,7 @@ from workers.merge_worker import MergeWorker
 from workers.qualification_worker import QualificationWorker
 from workers.scoring_worker import ScoringWorker
 from workers.storage_worker import StorageWorker
-from utils.parsing import is_valid_email
+from utils.parsing import is_valid_email, is_weak_site
 
 # -- Batch intelligence chain (Part 3, MAST Lead Engine 2.0 continuation) --
 # The domain-layer subsystems Prioritization/Ranking/Mission Generation/
@@ -848,6 +848,22 @@ class _QualificationInFlight:
             return self._pipeline_id_by_item.pop(queue_item_id, None)
 
 
+# Phase 3B-VALIDATION (observability only, no behavior change): classifies
+# a candidate's Maps `website` as "weak" (matches the existing, already
+# shipped `utils.parsing.is_weak_site` classifier — social/directory/
+# page-builder placeholder domains) or "normal" (anything else). Reused at
+# every `_emit`-adjacent point below so the resulting `site_class_*`
+# progress events can be bucketed by `service.py`'s `_on_progress` into
+# `early_new_weak_site` / `early_new_normal_site` (and the matching
+# per-stage counters) without altering `_on_candidate`'s existing pruning
+# decision, `_website_downstream`/`_contact_downstream`'s existing gating,
+# or `_qualification_downstream`'s existing accept/reject logic in any way
+# — this only ever reads `candidate.website` to *label* an event that was
+# (or would have been) emitted regardless.
+def _site_class(website: Optional[str]) -> str:
+    return "weak" if is_weak_site(website) else "normal"
+
+
 def build_seven_stage_pipeline(
     coordinator: EngineCoordinator,
     session_id: str,
@@ -1095,6 +1111,24 @@ def build_seven_stage_pipeline(
         item_id = outcome.queue_item_id or outcome.worker_id
         event = "stage_completed" if outcome.success else "stage_failed"
         _emit(outcome.stage_name, event, item_id)
+        # Phase 3B-VALIDATION (observability only): for the two stages the
+        # audit is validating (website, contact), also emit a weak/normal
+        # site label for this same outcome, keyed by pipeline_id (not
+        # queue_item_id/worker_id like the line above — pipeline_id is what
+        # the "site_class_queued" event from _on_candidate used, so the two
+        # can be joined). Looked up via `fan_in.get_business`, the same
+        # accessor `_website_downstream`/`_contact_downstream` already use
+        # for their own (unmodified) required-channel checks — no new
+        # state, no new lookup path. A miss (business no longer registered)
+        # is silently skipped; this is telemetry, never a gate.
+        if outcome.stage_name in ("website", "contact") and outcome.pipeline_id:
+            business = fan_in.get_business(outcome.pipeline_id)
+            if business is not None:
+                _emit(
+                    outcome.stage_name,
+                    f"site_class_{event}:{_site_class(business.website)}",
+                    outcome.pipeline_id,
+                )
 
     # -- Discovery: producer, per StageConfig's own contract -------------
 
@@ -1193,6 +1227,15 @@ def build_seven_stage_pipeline(
             pipeline_id=candidate.pipeline_id, stage="instagram", payload=candidate
         )
         _emit("discovery", "candidate_queued", candidate.pipeline_id)
+        # Phase 3B-VALIDATION: label this early_new candidate weak vs
+        # normal site. Purely additive — a new, distinctly-named event
+        # alongside the existing "candidate_queued" one above, not a
+        # replacement for it.
+        _emit(
+            "discovery",
+            f"site_class_queued:{_site_class(candidate.website)}",
+            candidate.pipeline_id,
+        )
 
     discovery_stage = StageConfig(
         name="discovery",
@@ -1373,6 +1416,15 @@ def build_seven_stage_pipeline(
             enriched.business.session_id if enriched.business is not None else session_id
         )
         _emit("qualification", "candidate_qualified", result.pipeline_id)
+        # Phase 3B-VALIDATION: label this qualified candidate weak vs
+        # normal site, using the same stashed `EnrichedBusiness.business`
+        # this function already popped above — no new lookup.
+        if enriched.business is not None:
+            _emit(
+                "qualification",
+                f"site_class_qualified:{_site_class(enriched.business.website)}",
+                result.pipeline_id,
+            )
         score = _scoring_worker.process(enriched)
         qualified_opportunity = QualifiedOpportunity(
             pipeline_id=result.pipeline_id,

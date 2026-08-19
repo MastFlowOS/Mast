@@ -499,4 +499,16 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
             review_count=place.reviews,
             coordinates=None,
             discovered_at=datetime.now(timezone.utc).isoformat(),
+            # Phase 4A: existing RawPlace.closed value, traced through
+            # unchanged — see BusinessCandidate.closed's own docstring
+            # in engine/contracts.py. No new closed-business rule is
+            # invented here; this is a straight field-for-field mapping
+            # like every other line above. getattr(..., False) rather
+            # than a direct attribute access solely so this stays
+            # tolerant of pre-Phase-4A test doubles for RawPlace (e.g.
+            # tests/test_google_maps_provider_should_stop.py's
+            # `_FakeRawPlace`) that don't set `closed` — RawPlace.closed
+            # itself already defaults to False, so this preserves that
+            # same default rather than changing behavior for them.
+            closed=bool(getattr(place, "closed", False)),
         )

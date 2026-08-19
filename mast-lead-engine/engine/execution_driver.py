@@ -261,6 +261,18 @@ from workers.instagram_worker import InstagramWorker
 from workers.merge_worker import MergeWorker
 from workers.qualification_worker import QualificationWorker
 from workers.scoring_worker import ScoringWorker
+# Phase 4A (discovery-time keyword disqualification): the exact same
+# predicate ScoringWorker uses to hard-disqualify a chain/cannabis
+# EnrichedBusiness at scoring time (opportunity_score 0/10) — imported
+# directly rather than reimplemented, per this module's own reuse
+# convention (see _site_class below, which already reuses
+# utils.parsing.is_weak_site the same way). Both functions read only
+# `name`/`category`, exactly the shape BusinessCandidate exposes, so no
+# adapter is needed. Reusing the functions themselves (not just the
+# CHAIN_KEYWORDS/CANNABIS_KEYWORDS data they're built on) guarantees the
+# discovery-time check can never drift from the scoring-time one.
+from workers.scoring_worker import _is_cannabis as _keyword_is_cannabis
+from workers.scoring_worker import _is_chain as _keyword_is_chain
 from workers.storage_worker import StorageWorker
 from utils.parsing import is_valid_email, is_weak_site
 
@@ -1194,19 +1206,70 @@ def build_seven_stage_pipeline(
             _emit("discovery", "candidate_early_duplicate", candidate.pipeline_id)
             return
 
+        # PHASE 4A — SAFE ZERO-COST DISCOVERY FILTERS
+        # Both checks below use only data that already exists on
+        # BusinessCandidate at this point (no extra fetch, no extra
+        # enrichment call) and, like the dedup check just above, prune
+        # by returning before the candidate is ever registered with
+        # FanInRuntime or enqueued into any branch — so a pruned
+        # candidate is invisible to Website/Instagram/Contact
+        # enrichment and never counts toward the accepted-lead target.
+
+        # A. CLOSED BUSINESS: BusinessCandidate.closed is a straight
+        # trace of RawPlace.closed (see that field's docstring in
+        # engine/contracts.py) — no new closed-business rule is
+        # invented here, this only acts earlier on a value Maps
+        # discovery already produced.
+        if candidate.closed:
+            _emit("discovery", "candidate_closed_pruned", candidate.pipeline_id)
+            log.info(
+                "discovery: pipeline_id=%s safe-pruned (reason=closed_business)",
+                candidate.pipeline_id,
+            )
+            return
+
+        # B. EXISTING CHAIN/CANNABIS FILTER: the exact same predicate
+        # ScoringWorker uses (see the import above) — reused here, not
+        # duplicated, so a chain/cannabis candidate that would be
+        # hard-disqualified at scoring time anyway (opportunity_score
+        # 0/10 — see workers/scoring_worker.py's process()) is instead
+        # recognized before it burns a Website/Instagram/Contact
+        # enrichment call. Final qualification semantics are
+        # unaffected: this predicate always agreed with scoring's
+        # verdict, it just now also gets consulted earlier.
+        if _keyword_is_cannabis(candidate.name, candidate.category) or _keyword_is_chain(candidate.name):
+            _emit("discovery", "candidate_keyword_pruned", candidate.pipeline_id)
+            log.info(
+                "discovery: pipeline_id=%s safe-pruned (reason=discovery_keyword_pruned)",
+                candidate.pipeline_id,
+            )
+            return
+
         # GENERIC SAFE CHANNEL PRUNING:
         # A candidate is pruned early ONLY if it is definitely impossible to satisfy
         # a required channel based on current evidence (no direct evidence on Maps
         # AND no website to enable downstream discovery).
         if required_channels:
             has_site = bool(candidate.website)
-            has_maps_valid_email = bool(getattr(candidate, "email", None) and is_valid_email(getattr(candidate, "email", None)))
             for ch in required_channels:
                 if ch == "website" and not has_site:
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
                     log.info("discovery: pipeline_id=%s safe-pruned (missing website for website channel)", candidate.pipeline_id)
                     return
-                elif ch == "email" and not has_maps_valid_email and not has_site:
+                elif ch == "email" and not has_site:
+                    # BusinessCandidate carries no `email` field (Google
+                    # Maps discovery never surfaces one — see
+                    # BusinessCandidate's own docstring: "no email").
+                    # The `has_maps_valid_email` branch this replaced
+                    # read `getattr(candidate, "email", None)`, which is
+                    # always None, so that branch was structurally dead:
+                    # it could never evaluate to True and never changed
+                    # this decision. The website-based email fallback
+                    # (email is only ever discoverable once a website
+                    # exists, via ContactWorker downstream) is preserved
+                    # exactly — this condition is unchanged for every
+                    # real input, since has_maps_valid_email was always
+                    # False.
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
                     log.info("discovery: pipeline_id=%s safe-pruned (no valid email on Maps and no website to discover email)", candidate.pipeline_id)
                     return

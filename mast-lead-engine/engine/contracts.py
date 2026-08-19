@@ -216,6 +216,23 @@ class BusinessCandidate:
     # handling.
     instagram_url: Optional[str] = None
 
+    # Phase 4A addition: surfaces RawPlace.closed (scraper/maps_scraper.py)
+    # onto the discovery contract so a permanently-closed business can be
+    # recognized — and safely pruned before Website/Contact enrichment —
+    # by anything downstream of a DiscoveryProviderInterface, not just
+    # MapsScraper's own internal search loop (which already skips closed
+    # places before they're ever yielded as a RawPlace, but that guard is
+    # specific to the Google Maps scraping path; this field lets the
+    # contract itself carry the fact for any current or future provider).
+    # Defaults to False — an unknown/absent Maps signal is treated the
+    # same as "not known to be closed", exactly as RawPlace.closed itself
+    # defaults to False. Optional and appended last, mirroring
+    # instagram_url immediately above: purely additive, no existing field
+    # semantics change, and any existing keyword-constructed
+    # BusinessCandidate (no provider currently populates this) is
+    # unaffected.
+    closed: bool = False
+
 
 # ---------------------------------------------------------------------------
 # 2. WebsiteIntel

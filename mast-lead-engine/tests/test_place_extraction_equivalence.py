@@ -558,7 +558,13 @@ def test_only_one_page_evaluate_call_per_extraction():
         page = CountingPage(COMPLETE_PLACE_HTML)
         return await _extract_place_data(page, config=CONFIG)
 
-    result = asyncio.get_event_loop().run_until_complete(_run())
+    # `asyncio.get_event_loop()` is deprecated (and, depending on what ran
+    # earlier in the process / thread, can raise outright) when there is no
+    # running loop in Python 3.12 — see https://github.com/python/cpython/issues/100160.
+    # `asyncio.run()` always creates a fresh loop for this coroutine and tears
+    # it down afterwards, so the test no longer depends on event-loop state
+    # left behind by other tests. Same coroutine, same assertions below.
+    result = asyncio.run(_run())
     assert result is not None
     assert calls["evaluate"] == 1
     assert calls["query_selector"] == 0

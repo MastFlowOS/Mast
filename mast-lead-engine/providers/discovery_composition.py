@@ -111,6 +111,7 @@ from providers.provider_request_translation import (
     translate_request,
 )
 from providers.provider_selection import DEFAULT_ENTITY_TYPES, select_relevant_providers
+from providers.provider_timing import wrap_with_timing
 from providers.target_aware_provider import TargetAwareDiscoveryProvider
 
 log = logging.getLogger(__name__)
@@ -174,6 +175,8 @@ def compose_discovery(
     should_stop: Optional[Callable[[], bool]] = None,
     on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None,
     google_maps_factory: Optional[Callable[[], DiscoveryProviderInterface]] = None,
+    overpass_factory: Optional[Callable[[], DiscoveryProviderInterface]] = None,
+    profiler: Any = None,
 ) -> ComposedDiscovery:
     """
     Build the one DiscoveryProviderInterface + request pair
@@ -185,10 +188,33 @@ def compose_discovery(
     for why this exists (preserving the pre-existing
     `service.GoogleMapsProvider` test seam).
 
+    `overpass_factory` — PHASE 2B addition, same shape and same reason
+    as `google_maps_factory` immediately above (a zero-arg override for
+    how `overpass` is constructed, forwarded unchanged to
+    `build_production_registry()`), added so a caller (service.py) can
+    construct an `OverpassProvider` carrying this run's real `profiler`
+    the same way it now does for `GoogleMapsProvider`, without breaking
+    the existing test seam for callers that don't supply one.
+
+    `profiler` — PHASE 2B addition. When supplied, every constructed
+    provider instance is wrapped in a `TimedDiscoveryProvider` (see
+    providers/provider_timing.py) that records that provider's own
+    authoritative wall-clock total (`google_maps_provider_total` /
+    `overpass_provider_total` / `<provider_id>_provider_total`) into
+    this profiler — independent of, and not derived from, whatever
+    internal sub-stage timers that provider does or doesn't have. Does
+    NOT change candidate output, ordering, or content in any way; a
+    `None` profiler (the default) makes every wrap a no-op passthrough
+    (see `wrap_with_timing()`), so a caller that doesn't pass one gets
+    byte-for-byte the same composed provider this function has always
+    returned.
+
     Raises NoRelevantProviderError if no provider survives selection,
     configuration-availability filtering, and request translation.
     """
-    registry = build_production_registry(google_maps_factory=google_maps_factory)
+    registry = build_production_registry(
+        google_maps_factory=google_maps_factory, overpass_factory=overpass_factory,
+    )
     capabilities_by_id = registry.capabilities_all()
 
     relevant = select_relevant_providers(capabilities_by_id, entity_types=entity_types)
@@ -248,7 +274,11 @@ def compose_discovery(
         deduplicate=True,
     )
     instances = [
-        _construct_provider(registry, provider_id, google_maps_factory)
+        wrap_with_timing(
+            _construct_provider(registry, provider_id, google_maps_factory, overpass_factory),
+            profiler=profiler,
+            total_stage=f"{provider_id}_provider_total",
+        )
         for provider_id in configuration.providers
     ]
     composed_provider: DiscoveryProviderInterface
@@ -296,17 +326,19 @@ def _construct_provider(
     registry,
     provider_id: str,
     google_maps_factory: Optional[Callable[[], DiscoveryProviderInterface]],
+    overpass_factory: Optional[Callable[[], DiscoveryProviderInterface]] = None,
 ) -> DiscoveryProviderInterface:
     """
     Construct one provider instance for composition.
 
     Delegates to `registry.get(provider_id)` for every provider —
     except `google_maps` when a `google_maps_factory` override was
-    given, which is called directly instead, bypassing
-    `ProviderRegistry`'s own `isinstance(..., DiscoveryProviderInterface)`
-    construction check.
+    given, or `overpass` when an `overpass_factory` override was given
+    (PHASE 2B addition, same reasoning), either of which is called
+    directly instead, bypassing `ProviderRegistry`'s own
+    `isinstance(..., DiscoveryProviderInterface)` construction check.
 
-    Why this bypass is necessary (and only for this one case): the
+    Why this bypass is necessary (and only for these two cases): the
     pre-existing test seam this override exists to preserve (see
     `compose_discovery()`'s own docstring and
     `build_production_registry()`'s) substitutes a plain duck-typed
@@ -323,6 +355,8 @@ def _construct_provider(
     """
     if provider_id == "google_maps" and google_maps_factory is not None:
         return google_maps_factory()
+    if provider_id == "overpass" and overpass_factory is not None:
+        return overpass_factory()
     return registry.get(provider_id)
 
 

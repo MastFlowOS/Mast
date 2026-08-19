@@ -144,6 +144,7 @@ from engine.interfaces import DiscoveryProviderInterface
 from providers.provider_capabilities import ProviderCapabilities
 from providers.provider_metadata import ProviderMetadata
 from scraper.maps_scraper import MapsScraper, RawPlace
+from utils.perf import NullProfiler
 from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
 
 log = get_logger("providers.google_maps")
@@ -224,7 +225,31 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
     shared across calls or instances, matching MapsScraper's own
     existing usage pattern in service.py (a fresh instance per
     `async with` block, never reused).
+
+    PHASE 2B (discovery wall-clock instrumentation) — ROOT CAUSE FIX:
+    `profiler`, if supplied, is threaded straight into every
+    `MapsScraper` this provider constructs. Before this fix, this
+    class never accepted a profiler at all, so `_discover_async()`
+    always built `MapsScraper(config, proxy_manager, stats)` with no
+    third argument — `MapsScraper.__init__` defaults `profiler` to
+    `NullProfiler()` in that case, which silently no-ops every
+    `with self._profiler.timer(...)` call already wired into
+    scraper/maps_scraper.py (playwright_startup, browser_startup,
+    context_creation, page_creation, rate_limit_wait_search,
+    maps_initial_load, place_click, place_panel_wait,
+    rate_limit_wait_place, place_settle, maps_place_extraction,
+    duplicate_detection, retry_wait, ...). That is the entire reason
+    the production `[area-sla]` report's maps_ms/navigation_ms/
+    panel_ms/scroll_ms/place_click_ms/rate_limit_ms/extraction_ms
+    fields read 0 even while discovery_worker consumes 200-315s of
+    real wall-clock time: the timers were always firing against a
+    profiler nobody was ever going to read. `None` (the default)
+    preserves the exact previous behavior for any caller that doesn't
+    pass one (existing tests, validate_composite_provider.py, etc.).
     """
+
+    def __init__(self, *, profiler: Any = None) -> None:
+        self._profiler = profiler or NullProfiler()
 
     @property
     def provider_id(self) -> str:
@@ -351,7 +376,23 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
         stats = RunStats()
         proxy_manager = ProxyManager()
 
-        async with MapsScraper(config, proxy_manager, stats) as scraper:
+        # PHASE 2B ROOT CAUSE FIX: `self._profiler` (real profiler when
+        # one was supplied at construction, NullProfiler otherwise) is
+        # now actually threaded into MapsScraper — see this class's own
+        # docstring for why omitting this argument was the entire cause
+        # of the zeroed-out [area-sla] discovery stage timers. Falls
+        # back to the old zero-profiler construction via `try/except
+        # TypeError` (same backward-compatibility idiom used throughout
+        # this codebase — see OverpassProvider.discover()) because some
+        # existing tests (e.g.
+        # tests/test_google_maps_provider_should_stop.py's
+        # `_FakeMapsScraper`) monkeypatch this module's `MapsScraper`
+        # name with a fake that predates the `profiler` keyword.
+        try:
+            scraper_cm = MapsScraper(config, proxy_manager, stats, profiler=self._profiler)
+        except TypeError:
+            scraper_cm = MapsScraper(config, proxy_manager, stats)
+        async with scraper_cm as scraper:
             # LIFECYCLE FIX: hold the generator in a variable (rather than
             # inlining it into the `async for`) so it can be explicitly
             # `aclose()`d in `finally` below regardless of whether the loop

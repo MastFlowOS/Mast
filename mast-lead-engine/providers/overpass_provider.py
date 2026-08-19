@@ -306,6 +306,7 @@ from engine.contracts import BusinessCandidate
 from engine.interfaces import DiscoveryProviderInterface
 from providers.provider_capabilities import ProviderCapabilities
 from providers.provider_metadata import ProviderMetadata
+from utils.perf import NullProfiler
 
 log = logging.getLogger(__name__)
 
@@ -446,6 +447,7 @@ def _http_post_urllib(
     max_retries_per_endpoint: int = 2,
     backoff_factor: float = 0.5,
     should_stop: Optional[Callable[[], bool]] = None,
+    on_attempt: Optional[Callable[[], None]] = None,
 ) -> dict[str, Any]:
     """
     Default transport: stdlib POST of the Overpass QL query text against the
@@ -471,6 +473,18 @@ def _http_post_urllib(
     since `discover()` only forwards `should_stop` to whichever
     callable was actually injected via a `try/except TypeError`
     backward-compatibility call (see `OverpassProvider.discover()`).
+
+    `on_attempt`: PHASE 2B (discovery wall-clock instrumentation)
+    addition — optional, called once per actual HTTP attempt made
+    (i.e. once per `urlopen()` call, including every retry and every
+    mirror hop), with no arguments. This is the ground-truth source
+    for `overpass_requests`/`overpass_retries` (see
+    `OverpassProvider.discover()`, which counts calls into this
+    callback rather than trying to infer attempt count from the
+    outside — the outside has no visibility into mirror failover or
+    per-endpoint retries otherwise). `None` (the default) preserves
+    exact previous behavior for every existing caller — same
+    backward-compatibility shape as `should_stop` immediately above.
     """
     request_headers = {**_DEFAULT_TRANSPORT_HEADERS, **headers}
     body = urlencode({"data": data}).encode("utf-8")
@@ -496,6 +510,11 @@ def _http_post_urllib(
                 raise _StopRequested()
 
             for attempt in range(max_retries_per_endpoint):
+                if on_attempt is not None:
+                    try:
+                        on_attempt()
+                    except Exception:
+                        pass
                 request = Request(target_url, data=body, headers=request_headers, method="POST")
                 try:
                     with urlopen(request, timeout=timeout) as response:
@@ -626,12 +645,25 @@ class OverpassProvider(DiscoveryProviderInterface):
     Stateless: every discover() call issues its own HTTP request
     against the injected (or default) transport; nothing is cached or
     shared across calls or instances.
+
+    PHASE 2B (discovery wall-clock instrumentation): `profiler`, if
+    supplied, receives two counters per `discover()` call —
+    `overpass_requests` (total HTTP attempts actually made, across
+    every retry and mirror hop) and `overpass_retries` (attempts
+    beyond the first, i.e. `overpass_requests - 1`, floored at 0) —
+    via the default transport's new `on_attempt` hook (see
+    `_http_post_urllib`'s own docstring). A caller-injected `http_post`
+    that doesn't accept `on_attempt` is unaffected, same
+    backward-compatibility shape `discover()` already uses for
+    `should_stop`/`timeout` below.
     """
 
     def __init__(
         self,
         endpoint_url: str = _DEFAULT_ENDPOINT,
         http_post: Optional[Callable[[str, str, dict[str, str]], dict[str, Any]]] = None,
+        *,
+        profiler: Any = None,
     ) -> None:
         """
         `endpoint_url` defaults to the public overpass-api.de mirror —
@@ -643,9 +675,14 @@ class OverpassProvider(DiscoveryProviderInterface):
         call). Injecting a different callable — e.g. a fake for tests,
         or a caller's own rate-limited HTTP client — never requires
         touching `discover()` or any engine code.
+
+        `profiler` — see class docstring's PHASE 2B paragraph. `None`
+        (the default) preserves exact previous behavior: no counters
+        recorded, no behavior change (`NullProfiler.incr()` is a no-op).
         """
         self._endpoint_url = endpoint_url
         self._http_post = http_post or _http_post_urllib
+        self._profiler = profiler if profiler is not None else NullProfiler()
 
     @property
     def provider_id(self) -> str:
@@ -729,22 +766,50 @@ class OverpassProvider(DiscoveryProviderInterface):
         query = _build_ql(request)
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         socket_timeout = float(request.timeout_seconds + 10)
+
+        # PHASE 2B (discovery wall-clock instrumentation): counts every
+        # actual HTTP attempt the default transport makes for THIS
+        # discover() call (see `_http_post_urllib`'s `on_attempt` param).
+        # A caller-injected `http_post` without `on_attempt` support
+        # simply never calls this closure — `_attempts_made` stays 0,
+        # and the `_attempts_made or 1` fallback below still records one
+        # honest request (the call this method itself just made) rather
+        # than silently reporting 0 requests for a call that plainly
+        # happened.
+        _attempts_made = 0
+
+        def _count_attempt() -> None:
+            nonlocal _attempts_made
+            _attempts_made += 1
+
         try:
             payload = self._http_post(
                 self._endpoint_url, query, headers,
                 timeout=socket_timeout, should_stop=request.should_stop,
+                on_attempt=_count_attempt,
             )
         except TypeError:
             # Backward compatibility: an injected `http_post` that predates
-            # `should_stop` and/or `timeout` (e.g.
+            # `should_stop` / `timeout` / `on_attempt` (e.g.
             # validate_overpass_provider.py's fakes, or a caller's own
-            # custom transport) doesn't accept one or both keywords —
-            # peel them off one at a time rather than assuming which one
-            # was rejected.
+            # custom transport) doesn't accept one or more of these
+            # keywords — peel them off one at a time rather than assuming
+            # which one was rejected.
             try:
-                payload = self._http_post(self._endpoint_url, query, headers, timeout=socket_timeout)
+                payload = self._http_post(
+                    self._endpoint_url, query, headers,
+                    timeout=socket_timeout, should_stop=request.should_stop,
+                )
             except TypeError:
-                payload = self._http_post(self._endpoint_url, query, headers)
+                try:
+                    payload = self._http_post(self._endpoint_url, query, headers, timeout=socket_timeout)
+                except TypeError:
+                    payload = self._http_post(self._endpoint_url, query, headers)
+
+        _requests = _attempts_made or 1
+        self._profiler.incr("overpass_requests", by=_requests)
+        self._profiler.incr("overpass_retries", by=max(0, _requests - 1))
+
         elements = payload.get("elements", [])
         for element in elements:
             yield self._to_business_candidate(element, request, request.session_id)

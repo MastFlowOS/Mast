@@ -338,6 +338,34 @@ class RunProfiler:
             ("place_click_ms", _sum("place_click")),
             ("rate_limit_ms", _sum("rate_limit_wait_search", "rate_limit_wait_place")),
             ("extraction_ms", _sum("maps_place_extraction")),
+            # PHASE 2B (discovery wall-clock instrumentation) — new
+            # fields below. `discovery_total_ms` / `google_maps_total_ms`
+            # / `overpass_total_ms` are single, direct wall-clock
+            # measurements (ExecutionDriver's `on_stage_wallclock` /
+            # providers/provider_timing.py's `TimedDiscoveryProvider`
+            # respectively) — NOT computed as sums of the granular
+            # sub-stage fields above or below; see those modules' own
+            # docstrings for why that distinction matters. The
+            # maps_navigation_ms/panel_resolution_ms/place_detail_ms/
+            # candidate_extraction_ms quartet below are the same
+            # underlying samples as navigation_ms/panel_ms/
+            # place_click_ms/extraction_ms above, kept side-by-side
+            # under both names rather than renamed in place, so any
+            # existing log-scraping script reading the original field
+            # names keeps working unmodified.
+            ("discovery_total_ms", _sum("discovery_total_ms")),
+            ("google_maps_total_ms", _sum("google_maps_provider_total")),
+            ("overpass_total_ms", _sum("overpass_provider_total")),
+            ("maps_navigation_ms", _sum("maps_initial_load")),
+            ("panel_resolution_ms", _sum("place_panel_wait", "place_settle")),
+            ("place_detail_ms", _sum("place_click")),
+            ("candidate_extraction_ms", _sum("maps_place_extraction")),
+            ("retry_wait_ms", _sum("retry_wait")),
+            ("maps_rounds", self.counter("maps_rounds")),
+            ("maps_candidates_seen", self.counter("maps_candidates_seen")),
+            ("maps_candidates_yielded", self.counter("maps_candidates_yielded")),
+            ("overpass_requests", self.counter("overpass_requests")),
+            ("overpass_retries", self.counter("overpass_retries")),
             ("website_ms", _sum("website_worker")),
             ("instagram_ms", _sum("instagram_worker")),
             ("contact_ms", _sum("contact_worker")),

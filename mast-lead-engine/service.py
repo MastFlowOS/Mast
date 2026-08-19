@@ -98,6 +98,7 @@ from engine.contracts import QualifiedOpportunity, StoredOpportunity
 from engine.execution_driver import ExecutionDriver, build_seven_stage_pipeline, run_batch_intelligence
 from storage.early_persistent_dedup import PersistentEarlyDedupChecker, PersistentEarlyDedupError
 from providers.google_maps_provider import GoogleMapsProvider, GoogleMapsDiscoveryRequest
+from providers.overpass_provider import OverpassProvider
 from providers.discovery_composition import compose_discovery, NoRelevantProviderError
 from storage_backends.supabase_backend import SupabaseStorageBackend
 from storage_backends.batch_intelligence_backend import SupabaseBatchIntelligenceBackend
@@ -594,6 +595,33 @@ async def run_query(
     # timed instead of running invisibly before any timer exists.
     profiler = RunProfiler()
     profiler.mark("python_imports_done")  # see _IMPORTS_ELAPSED_MS below
+
+    def _google_maps_factory() -> Any:
+        # PHASE 2B ROOT CAUSE FIX: threads this run's real `profiler`
+        # into GoogleMapsProvider (see that class's own docstring) —
+        # but via a `try/except TypeError` fallback rather than a bare
+        # `GoogleMapsProvider(profiler=profiler)` call, because
+        # `GoogleMapsProvider` here is looked up from THIS module's
+        # global namespace at call time, and several existing tests
+        # (e.g. tests/test_run_query_target_reached_lifecycle.py)
+        # deliberately monkeypatch `service.GoogleMapsProvider` with a
+        # zero-arg `lambda: fake_provider` to inject a fake — the
+        # pre-existing test seam `compose_discovery()`'s own docstring
+        # documents. A real `GoogleMapsProvider` accepts `profiler=`;
+        # a zero-arg test fake does not, so the fallback preserves
+        # that seam exactly as it worked before this phase.
+        try:
+            return GoogleMapsProvider(profiler=profiler)
+        except TypeError:
+            return GoogleMapsProvider()
+
+    def _overpass_factory() -> Any:
+        # PHASE 2B: same fix, same reasoning, for Overpass.
+        try:
+            return OverpassProvider(profiler=profiler)
+        except TypeError:
+            return OverpassProvider()
+
     store = LeadStore(db_path, profiler=profiler)
 
     # Phase S1: one PipelineTracer per run_query() call — lives entirely in
@@ -759,7 +787,18 @@ async def run_query(
                 # branch below, so both code paths get the same liveness
                 # heartbeat from MapsScraper.search().
                 on_progress=_on_progress,
-                google_maps_factory=GoogleMapsProvider,
+                # PHASE 2B ROOT CAUSE FIX — see the matching comment in
+                # the non-discovery_only branch below for the full
+                # explanation. This is very likely the exact branch the
+                # Phase 2B production log evidence (discovery_worker
+                # consuming 100% of Bronx/Queens/Staten Island/Manhattan
+                # runtime, [area-sla] fields all reading 0) was captured
+                # from: `discovery_only=True` runs no enrichment stage at
+                # all, so "discovery is the dominant stage" is trivially
+                # true here, not merely observed.
+                google_maps_factory=_google_maps_factory,
+                overpass_factory=_overpass_factory,
+                profiler=profiler,
             )
             provider, request = composed.provider, composed.request
             log.info(
@@ -769,12 +808,24 @@ async def run_query(
             result_q: "thread_queue.Queue" = thread_queue.Queue(maxsize=1)
 
             def _discover_worker() -> None:
+                # PHASE 2B (discovery wall-clock instrumentation):
+                # this thread's entire body IS discovery, start to
+                # finish (this branch runs no enrichment stage at
+                # all — see the composition call above) — so timing
+                # its full lifetime directly is authoritative
+                # discovery_total_ms, not a derived/summed value.
+                profiler.mark("discovery_worker_start")
+                _t0 = _time.perf_counter()
                 try:
                     for candidate in provider.discover(request):
                         result_q.put(candidate)
                 except BaseException as exc:  # noqa: BLE001 - forwarded below
                     result_q.put(exc)
                 finally:
+                    profiler.record_stage_duration(
+                        "discovery_total_ms", (_time.perf_counter() - _t0) * 1000.0
+                    )
+                    profiler.mark("discovery_worker_end")
                     result_q.put(_SENTINEL)
 
             thread = threading.Thread(
@@ -902,7 +953,24 @@ async def run_query(
                 # (see scraper/maps_scraper.py) reach stdout at all in this
                 # (non-discovery_only) branch.
                 on_progress=_on_progress,
-                google_maps_factory=GoogleMapsProvider,
+                # PHASE 2B ROOT CAUSE FIX: thread this run's real
+                # `profiler` (constructed above, near the top of
+                # run_query()) into the GoogleMapsProvider/OverpassProvider
+                # instances compose_discovery() actually builds, instead
+                # of the bare `GoogleMapsProvider`/`OverpassProvider`
+                # classes (zero-arg factories that always left
+                # MapsScraper defaulting to a NullProfiler — see
+                # GoogleMapsProvider's own docstring for the full
+                # explanation). `_google_maps_factory`/`_overpass_factory`
+                # (defined near the top of run_query(), just after
+                # `profiler` itself) preserve the exact pre-existing
+                # `Callable[[], DiscoveryProviderInterface]` test seam —
+                # monkeypatching `service.GoogleMapsProvider` with a
+                # zero-arg fake still works via their `try/except
+                # TypeError` fallback (see their own docstrings).
+                google_maps_factory=_google_maps_factory,
+                overpass_factory=_overpass_factory,
+                profiler=profiler,
             )
             discovery_provider = composed.provider
             discovery_request = composed.request
@@ -941,8 +1009,26 @@ async def run_query(
             engine_coordinator.mark_running(session_id)
             engine_runtime = engine_coordinator.get_engine_runtime(session_id)
 
+            def _on_discovery_wallclock(stage_name: str, elapsed_ms: float) -> None:
+                # PHASE 2B (discovery wall-clock instrumentation): the
+                # `discovery` stage's single `execute_stage()` call
+                # already blocks until `discovery_provider` is fully
+                # exhausted (see ExecutionDriver's own "PHASE 2B FIX
+                # (continuous pipeline flow)" docstring note) — so this
+                # one measurement IS discovery_total_ms, not a sum of
+                # anything. Also fixes the pre-existing
+                # "discovery_worker_end" gap: that mark was set nowhere
+                # in this codebase before this fix, silently degrading
+                # `_discovery_span_ms()`/`_browser_utilization_pct()`/
+                # `_discovery_worker_utilization_pct()` in print_report()
+                # to a whole-run-span fallback.
+                if stage_name == "discovery":
+                    profiler.record_stage_duration("discovery_total_ms", elapsed_ms)
+                    profiler.mark("discovery_worker_end")
+
             driver = ExecutionDriver(
-                engine_runtime, stages, on_stage_outcome=cleanup_cb, run_producers_once=True,
+                engine_runtime, stages, on_stage_outcome=cleanup_cb,
+                on_stage_wallclock=_on_discovery_wallclock, run_producers_once=True,
             )
 
             all_input_queue_ids = [
@@ -967,6 +1053,7 @@ async def run_query(
                 return all(queue_manager.get_queue(qid).is_empty() for qid in all_input_queue_ids)
 
             profiler.mark("discovery_worker_start")
+
             # PART D (Phase 2B — watchdog shutdown semantics): set when
             # the loop below breaks specifically because
             # `shutdown_event` was seen set, as opposed to breaking
@@ -1333,6 +1420,25 @@ async def run_query(
             "rate_limit_ms": profiler._stages["rate_limit_wait_search"].total_ms
                 + profiler._stages["rate_limit_wait_place"].total_ms,
             "extraction_ms": profiler._stages["maps_place_extraction"].total_ms,
+            # PHASE 2B (discovery wall-clock instrumentation) — kept in
+            # sync with the new fields `RunProfiler.area_sla_line()`
+            # itself now reports; see that method's own docstring for
+            # why these are direct measurements, not sums, for the
+            # three *_total_ms fields.
+            "discovery_total_ms": profiler._stages["discovery_total_ms"].total_ms,
+            "google_maps_total_ms": profiler._stages["google_maps_provider_total"].total_ms,
+            "overpass_total_ms": profiler._stages["overpass_provider_total"].total_ms,
+            "maps_navigation_ms": profiler._stages["maps_initial_load"].total_ms,
+            "panel_resolution_ms": profiler._stages["place_panel_wait"].total_ms
+                + profiler._stages["place_settle"].total_ms,
+            "place_detail_ms": profiler._stages["place_click"].total_ms,
+            "candidate_extraction_ms": profiler._stages["maps_place_extraction"].total_ms,
+            "retry_wait_ms": profiler._stages["retry_wait"].total_ms,
+            "maps_rounds": profiler.counter("maps_rounds"),
+            "maps_candidates_seen": profiler.counter("maps_candidates_seen"),
+            "maps_candidates_yielded": profiler.counter("maps_candidates_yielded"),
+            "overpass_requests": profiler.counter("overpass_requests"),
+            "overpass_retries": profiler.counter("overpass_retries"),
             "website_ms": profiler._stages["website_worker"].total_ms,
             "instagram_ms": profiler._stages["instagram_worker"].total_ms,
             "contact_ms": profiler._stages["contact_worker"].total_ms,

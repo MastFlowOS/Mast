@@ -238,6 +238,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -327,6 +328,7 @@ class ExecutionDriver:
         active_poll_seconds: float = 0.0,
         idle_poll_seconds: float = 0.25,
         on_stage_outcome: Optional[Callable[[StageOutcome], None]] = None,
+        on_stage_wallclock: Optional[Callable[[str, float], None]] = None,
     ) -> None:
         """
         Parameters
@@ -365,6 +367,28 @@ class ExecutionDriver:
             for this milestone's own validation script). Never called
             concurrently with itself, since there is only one drive
             thread.
+        on_stage_wallclock:
+            PHASE 2B (discovery wall-clock instrumentation) addition.
+            Optional observer called once per `_execute_one()` call
+            with `(stage.name, elapsed_ms)` — the REAL wall-clock time
+            that single `execute_stage()` call took, timed here at the
+            outermost boundary this class controls, independent of
+            (and not derived from) any timer internal to the worker
+            itself. For a producer stage (Discovery today), a single
+            call already blocks until the provider is fully exhausted
+            (see the "PHASE 2B FIX (continuous pipeline flow)" note
+            just below), so for that stage this elapsed time IS the
+            authoritative `discovery_total_ms` service.py's
+            `[area-sla]` report now surfaces — not a sum of any
+            sub-stage timers, a single direct measurement of the one
+            call that matters. For a transformer stage (Website,
+            Instagram, ...), each call only ever processes whatever
+            was queued at that moment, so a caller wanting a
+            *cumulative* total across many calls (as opposed to one
+            call's duration) is expected to accumulate these callbacks
+            itself — this driver does not do so on a caller's behalf.
+            `None` (the default) is a no-op, identical to
+            `on_stage_outcome` immediately above.
         """
         if not stages:
             raise ValueError("ExecutionDriver requires at least one StageConfig")
@@ -374,6 +398,7 @@ class ExecutionDriver:
         self._active_poll_seconds = active_poll_seconds
         self._idle_poll_seconds = idle_poll_seconds
         self._on_stage_outcome = on_stage_outcome
+        self._on_stage_wallclock = on_stage_wallclock
 
         self._producer_names = {
             s.name for s in self._stages if s.input_queue_id is None
@@ -700,8 +725,11 @@ class ExecutionDriver:
         `StageOutcome(success=False, ...)`.
         """
         try:
+            _t0 = time.perf_counter()
             outcome = self._runtime.execute_stage(stage)
         except Exception as exc:  # noqa: BLE001 - fatal, not a worker failure
+            if self._on_stage_wallclock is not None:
+                self._on_stage_wallclock(stage.name, (time.perf_counter() - _t0) * 1000.0)
             self.last_error = exc
             self._stop_event.set()
             log.error(
@@ -709,6 +737,8 @@ class ExecutionDriver:
                 stage.name, exc,
             )
             return None
+        if self._on_stage_wallclock is not None:
+            self._on_stage_wallclock(stage.name, (time.perf_counter() - _t0) * 1000.0)
         if self._on_stage_outcome is not None:
             self._on_stage_outcome(outcome)
         return outcome

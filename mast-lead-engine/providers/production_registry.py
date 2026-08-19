@@ -115,6 +115,7 @@ def _require_credential(provider_id: str) -> str:
 def build_production_registry(
     *,
     google_maps_factory: Optional[Callable[[], DiscoveryProviderInterface]] = None,
+    overpass_factory: Optional[Callable[[], DiscoveryProviderInterface]] = None,
 ) -> ProviderRegistry:
     """
     Build and return a fresh `ProviderRegistry` with all eight
@@ -139,6 +140,15 @@ def build_production_registry(
     factory builds instances — the same "metadata/capabilities never
     require construction" rule `ProviderRegistry.register()` already
     documents).
+
+    `overpass_factory` — PHASE 2B addition, same shape and identical
+    reasoning to `google_maps_factory` above, added so service.py can
+    construct an `OverpassProvider` carrying this run's real profiler
+    (see `providers/overpass_provider.py`'s own docstring) the same
+    way `google_maps_factory` already lets it do for
+    `GoogleMapsProvider`. `None` (the default) preserves exact
+    previous behavior — the bare `OverpassProvider` class, used
+    directly as a zero-arg factory, exactly as before this addition.
     """
     registry = ProviderRegistry()
 
@@ -174,7 +184,7 @@ def build_production_registry(
     )
     registry.register(
         "overpass",
-        OverpassProvider,
+        overpass_factory or OverpassProvider,
         metadata=OverpassProvider.metadata(),
         capabilities=OverpassProvider.capabilities(),
     )

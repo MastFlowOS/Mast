@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 from urllib.parse import urlencode, urlparse, quote_plus
@@ -1536,6 +1537,15 @@ class MapsScraper:
                     # chance to look. Now we validate after every single
                     # replay scroll and stop the moment either condition is
                     # true, instead of always doing the full replay count.
+                    # PHASE 2B (discovery wall-clock instrumentation):
+                    # authoritative wall-clock cost of recovering from a
+                    # crash -- the fast-forward replay loop below is real,
+                    # measurable work (scrolling + DOM queries), not a
+                    # sleep/backoff. Measured as one manual perf_counter
+                    # span (rather than `self._profiler.timer(...)`) so the
+                    # existing loop body below does not need to be
+                    # reindented under a `with` block.
+                    _retry_wait_t0 = time.perf_counter()
                     for replay_round in range(total_scroll_rounds):
                         await _human_scroll(
                             page, panel_sel, config=self.config, profiler=self._profiler,
@@ -1598,6 +1608,13 @@ class MapsScraper:
                 ):
                     rounds_this_attempt += 1
                     total_scroll_rounds += 1
+                    # PHASE 2B (discovery wall-clock instrumentation):
+                    # one real scroll round of the outer collection loop
+                    # (not the replay/fast-forward rounds after a crash —
+                    # those are counted separately under "retry_wait", see
+                    # below). A round is real, incremented work whether or
+                    # not it turns out to contain any unseen anchors.
+                    self._profiler.incr("maps_rounds")
 
                     # MINIMAL FIX (discovery liveness — forensic audit §9):
                     # reset once per OUTER round so the inner anchor-processing
@@ -1698,6 +1715,16 @@ class MapsScraper:
                         # OUTER round, not once per anchor re-query.
                         if not _round_scan_emitted and len(listing_anchors) > 0:
                             _emit_progress("round_scanned", str(len(listing_anchors)))
+                            # PHASE 2B: raw cards visible in the DOM this
+                            # round -- "seen" in the sense of "the browser
+                            # rendered these listing cards", independent of
+                            # how many turn out to be duplicates, fail
+                            # extraction, or get clicked at all. Guarded by
+                            # the same `_round_scan_emitted` flag as
+                            # `round_scanned` above so a re-query within the
+                            # same round (no scroll happened) never double
+                            # counts the same cards.
+                            self._profiler.incr("maps_candidates_seen", by=len(listing_anchors))
                             _round_scan_emitted = True
 
                         # ROOT CAUSE FIX (Parts 4–5): the resolved panel
@@ -1939,6 +1966,7 @@ class MapsScraper:
                             _emit_progress("candidate_queued", place_key)
                             yield place
                             yielded += 1
+                            self._profiler.incr("maps_candidates_yielded")
                         finally:
                             # Clicking a card left us on this place's
                             # detail pane. Return to the results list

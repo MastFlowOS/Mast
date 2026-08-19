@@ -1055,7 +1055,7 @@ async def _extract_rating(page: Page) -> tuple[float | None, int]:
     return rating, reviews
 
 
-async def _extract_place_data(
+async def _extract_place_data_legacy(
     page: Page,
     *,
     config: ScraperConfig,
@@ -1066,6 +1066,14 @@ async def _extract_place_data(
     country: str = "",
 ) -> RawPlace | None:
     """Extract all structured data from the currently open place panel.
+
+    LEGACY / REFERENCE IMPLEMENTATION — kept only as the ground truth for
+    the equivalence tests in tests/test_place_extraction_equivalence.py
+    (Phase 3A audit optimization #1). Production no longer calls this;
+    `_extract_place_data` below is the batched, single-round-trip
+    replacement. This function is untouched from before Phase 3A — do not
+    "fix" it, its whole value is being a byte-for-byte behavioral
+    reference.
 
     Phase 2A: the place-settle wait used to live here as an unconditional
     sleep, which meant the profiler's `maps_place_extraction` timer (wrapped
@@ -1168,6 +1176,363 @@ async def _extract_place_data(
                 place.hours_summary = (await hours_el.inner_text()).strip()[:200]
         except Exception:
             pass
+
+    except Exception:
+        pass
+
+    return place
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Batched place extractor — Phase 3A (candidate-extraction audit,
+# optimization #1)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# `_extract_place_data_legacy` above issues ~25-40 separate Playwright/CDP
+# round-trips per candidate (one query_selector/query_selector_all/
+# get_attribute/inner_text call at a time) plus up to two full-page
+# `page.content()` serializations. Every one of those is an async IPC hop
+# to the browser process; on a memory-constrained host that's the dominant
+# cost of `maps_place_extraction` (see the Phase 3 audit).
+#
+# This section replaces that with exactly ONE `page.evaluate()` call that
+# reads the same DOM the legacy code reads and returns a single JSON blob.
+# All actual parsing/normalization (phone regex extraction, review-count
+# parsing, URL cleaning/ordering-platform filtering, rating regex, address
+# city-split, the HTML-signals regexes) stays in Python, unchanged, reusing
+# the exact same functions the legacy path used — only the number of
+# browser round-trips changes. See tests/test_place_extraction_equivalence.py
+# for the side-by-side proof this produces identical RawPlace output to
+# `_extract_place_data_legacy` across representative fixtures.
+#
+# The JS below is built from the SAME selector-precedence lists
+# (_PLACE_NAME_SELECTORS, _CATEGORY_SELECTORS, etc.) already defined at the
+# top of this module and used elsewhere (e.g. the place_panel_wait click
+# code), passed in as the `sel` argument to page.evaluate(script, arg) —
+# so the selector lists exist in exactly one place; the JS never hardcodes
+# a second copy that could drift from the Python lists.
+
+_PLACE_EXTRACT_SELECTORS: dict[str, list[str]] = {
+    "name": _PLACE_NAME_SELECTORS,
+    "category": _CATEGORY_SELECTORS,
+    "address": _ADDRESS_SELECTORS,
+    "rating": _RATING_SELECTORS,
+    "review": _REVIEW_SELECTORS,
+    "phone": _PHONE_SELECTORS,
+    "website": _WEBSITE_SELECTORS,
+}
+
+# Every sub-section is individually try/caught, mirroring the granularity
+# of the legacy Python code (each of `_try_selectors`, `_extract_phone`,
+# `_extract_website`, `_extract_rating`, and the signals block has its own
+# independent exception handling there) — a failure reading one field must
+# not blank out the others, exactly as today.
+_PLACE_EXTRACT_JS = """
+(sel) => {
+    function firstNonEmptyText(selectors) {
+        for (const s of selectors) {
+            try {
+                const el = document.querySelector(s);
+                if (el) {
+                    const t = (el.innerText || "").trim();
+                    if (t) return t;
+                }
+            } catch (e) {}
+        }
+        return "";
+    }
+
+    const name = firstNonEmptyText(sel.name);
+    const category = firstNonEmptyText(sel.category);
+    const address = firstNonEmptyText(sel.address);
+    const ratingRaw = firstNonEmptyText(sel.rating);
+    const reviewRaw = firstNonEmptyText(sel.review);
+
+    // Flattened in the exact selector-then-DOM-order the legacy
+    // `for sel in _PHONE_SELECTORS: for el in query_selector_all(sel)`
+    // loop visited elements, so the Python-side parser below can walk
+    // this list and reproduce the identical early-return precedence.
+    const phoneCandidates = [];
+    for (const s of sel.phone) {
+        let els = [];
+        try { els = Array.from(document.querySelectorAll(s)); } catch (e) {}
+        for (const el of els) {
+            phoneCandidates.push({
+                ariaLabel: el.getAttribute("aria-label") || "",
+                href: el.getAttribute("href") || "",
+                innerText: (el.innerText || "").trim(),
+            });
+        }
+    }
+
+    // One entry per selector (or null), matching the legacy code's use of
+    // query_selector (first match only) rather than query_selector_all.
+    const websiteCandidates = [];
+    for (const s of sel.website) {
+        let el = null;
+        try { el = document.querySelector(s); } catch (e) {}
+        if (!el) { websiteCandidates.push(null); continue; }
+        websiteCandidates.push({
+            href: el.getAttribute("href") || "",
+            innerText: (el.innerText || "").trim(),
+        });
+    }
+
+    // Legacy code only runs this page-wide (unscoped) fallback scan when
+    // the primary review-selector text came back empty.
+    let reviewFallbackAria = [];
+    if (!reviewRaw) {
+        try {
+            reviewFallbackAria = Array.from(
+                document.querySelectorAll("[aria-label*='review' i]")
+            ).map((el) => el.getAttribute("aria-label") || "");
+        } catch (e) {}
+    }
+
+    let hoursSummary = "";
+    try {
+        const hoursEl = document.querySelector("div[aria-label*='Hours'] .OMl5r");
+        if (hoursEl) hoursSummary = (hoursEl.innerText || "").trim();
+    } catch (e) {}
+
+    let photosTabText = "";
+    try {
+        photosTabText = Array.from(
+            document.querySelectorAll("button, div[role=tab]")
+        ).map((el) => el.textContent).join(" ");
+    } catch (e) {}
+
+    // Equivalent to Playwright's page.content() for the main frame, used
+    // by the legacy code for its HTML-signals regex scan and its phone
+    // page.content() fallback. Fetched ONCE here instead of up to twice.
+    let html = "";
+    try { html = document.documentElement.outerHTML; } catch (e) {}
+
+    return {
+        name, category, address, ratingRaw, reviewRaw,
+        phoneCandidates, websiteCandidates,
+        reviewFallbackAria, hoursSummary, photosTabText,
+        html,
+    };
+}
+"""
+
+
+def _phone_from_candidates(candidates: "list[dict]") -> str:
+    """Pure port of `_extract_place_data_legacy`'s `_extract_phone` main
+    loop (selector precedence + per-element early-return order preserved
+    exactly). Operates on the flattened candidate list the batched JS
+    collects instead of live Playwright elements.
+    """
+    for c in candidates:
+        href = c.get("href") or ""
+        aria = c.get("ariaLabel") or ""
+
+        if href.startswith("tel:"):
+            return href[4:].strip()
+        if "phone" in aria.lower() or "call" in aria.lower():
+            phones = extract_phones(aria)
+            if phones:
+                return phones[0]
+
+        text = c.get("innerText") or ""
+        phones = extract_phones(text)
+        if phones:
+            return phones[0]
+
+    return ""
+
+
+def _phone_from_html_fallback(html: str) -> str:
+    """Pure port of `_extract_phone`'s `page.content()` fallback scan."""
+    if not html:
+        return ""
+    try:
+        tel_match = re.search(r'href=["\']tel:([^"\']+)["\']', html)
+        if tel_match:
+            return tel_match.group(1).strip()
+        phones = extract_phones(html[:50_000])  # Only scan first 50KB
+        if phones:
+            return phones[0]
+    except Exception:
+        pass
+    return ""
+
+
+def _website_from_candidates(candidates: "list[dict | None]") -> str:
+    """Pure port of `_extract_website` — one candidate per selector
+    (`query_selector` semantics, first match only), same fall-through from
+    "href is an ordering platform" to "check this element's text" that the
+    legacy per-selector loop body had.
+    """
+    for c in candidates:
+        if not c:
+            continue
+        href = c.get("href") or ""
+        if href and href.startswith("http"):
+            m = re.search(r"[?&]q=([^&]+)", href)
+            if m:
+                from urllib.parse import unquote
+                href = unquote(m.group(1))
+            if not is_ordering_platform(href):
+                return clean_url(href)
+        text = c.get("innerText") or ""
+        if text and "." in text and " " not in text:
+            return f"https://{text}" if not text.startswith("http") else text
+    return ""
+
+
+def _rating_from_raw(raw_rating: str) -> "float | None":
+    """Pure port of `_extract_rating`'s rating-parsing half."""
+    if not raw_rating:
+        return None
+    m = re.search(r"([\d.]+)", raw_rating.replace(",", "."))
+    if not m:
+        return None
+    try:
+        rating = float(m.group(1))
+    except ValueError:
+        return None
+    if rating > 5:
+        return None
+    return rating
+
+
+def _reviews_from_raw_or_fallback(raw_reviews: str, fallback_arias: "list[str]") -> int:
+    """Pure port of `_extract_rating`'s review-count-parsing half,
+    including the page-wide aria-label fallback scan.
+    """
+    if raw_reviews:
+        return parse_review_count(raw_reviews)
+    for aria in fallback_arias:
+        count = parse_review_count(aria)
+        if count > 0:
+            return count
+    return 0
+
+
+async def _extract_place_data(
+    page: Page,
+    *,
+    config: ScraperConfig,
+    query: str = "",
+    niche: str = "",
+    region: str = "",
+    city: str = "",
+    country: str = "",
+) -> RawPlace | None:
+    """Extract all structured data from the currently open place panel.
+
+    Phase 3A: this is now the batched, single-`page.evaluate()`
+    implementation — the production entry point both `MapsScraper.search()`
+    and `MapsScraper.get_place_by_url()` call, unchanged at their call
+    sites. See the module-level comment block above and
+    `_extract_place_data_legacy` (kept as the reference implementation)
+    for what changed and why.
+
+    Phase 2A note (unchanged from before): the place-settle wait lives in
+    the caller (`_wait_for_place_settle`, its own `place_settle` profiler
+    stage) — this function is only ever called after that settle wait has
+    already run.
+    """
+    place = RawPlace(query=query, niche=niche, region=region, city=city, country=country)
+
+    try:
+        data = await page.evaluate(_PLACE_EXTRACT_JS, _PLACE_EXTRACT_SELECTORS)
+    except Exception as exc:
+        # Mirrors the legacy convergence: if the page/execution context is
+        # in a state this bad, every individual query_selector call in the
+        # legacy path would also fail (same root cause), which resolves to
+        # an empty name there too — legacy also returns None in that case.
+        log.debug(f"[maps] batched place-extraction evaluate() failed: {exc}")
+        return None
+
+    if not data:
+        return None
+
+    place.name = (data.get("name") or "").strip()
+    if not place.name:
+        log.debug("[maps] could not extract place name — skipping")
+        return None
+
+    place.category = (data.get("category") or "").strip()
+
+    raw_address = (data.get("address") or "").strip()
+    if raw_address:
+        place.address = raw_address
+        if not place.city and "," in raw_address:
+            parts = [p.strip() for p in raw_address.split(",")]
+            if len(parts) >= 2:
+                place.city = parts[-2] if len(parts) > 2 else parts[0]
+
+    html = data.get("html") or ""
+
+    phone = _phone_from_candidates(data.get("phoneCandidates") or [])
+    if not phone:
+        # Same html blob already fetched above — this eliminates the
+        # legacy code's second, independent `page.content()` call.
+        phone = _phone_from_html_fallback(html)
+    place.phone = phone
+
+    place.website = _website_from_candidates(data.get("websiteCandidates") or [])
+
+    place.rating = _rating_from_raw((data.get("ratingRaw") or "").strip())
+    place.reviews = _reviews_from_raw_or_fallback(
+        (data.get("reviewRaw") or "").strip(),
+        data.get("reviewFallbackAria") or [],
+    )
+
+    place.maps_link = page.url
+
+    # --- Signals from full HTML scan — identical regexes to the legacy
+    # path, operating on the same `html` string instead of a fresh
+    # page.content() call. -----------------------------------------------
+    try:
+        html_low = html.lower()
+
+        place.has_photos = bool(
+            re.search(r'"photo".*?"count"\s*:\s*[1-9]', html, re.DOTALL)
+            or 'aria-label="Photos"' in html
+            or "photocount" in html_low
+            or 'data-photo' in html_low
+            or "Photos" in (data.get("photosTabText") or "")
+        )
+
+        place.has_popular_times = bool(
+            "popular times" in html_low
+            or "populartimes" in html_low
+            or "live music" in html_low  # approximation
+        )
+
+        place.owner_responds_to_reviews = bool(
+            "owner" in html_low and "response" in html_low
+            or "responded to this review" in html_low
+        )
+
+        place.is_google_verified = bool(
+            re.search(r'aria-label="Claimed"', html, re.I)
+            or "verified" in html_low
+            or "Claimed by" in html
+        )
+
+        place.closed = bool(
+            "permanently closed" in html_low
+            or "closed permanently" in html_low
+        )
+
+        place.multi_location = bool(
+            re.search(r"\d+\s+location", html_low)
+            or "chain" in html_low
+            or "franchis" in html_low
+        )
+
+        m = re.search(r'aria-label="Price:\s*([^"]+)"', html)
+        if m:
+            place.price_range = m.group(1).strip()
+
+        hours_summary = (data.get("hoursSummary") or "").strip()
+        if hours_summary:
+            place.hours_summary = hours_summary[:200]
 
     except Exception:
         pass

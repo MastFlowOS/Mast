@@ -305,6 +305,14 @@ class WebsiteIntel:
     title: Optional[str] = None
     description: Optional[str] = None
     contact_page: Optional[str] = None
+    # Phase 9.1 (audit follow-up, additive): which keyword out of
+    # WebsiteWorker's broadened contact-page hint set (e.g. "contact",
+    # "press", "careers", "policies", ...) matched the anchor that
+    # produced `contact_page` above. None whenever `contact_page` is
+    # None. Purely observational — telemetry only (see
+    # engine/execution_driver.py's `_website_downstream` /
+    # service.py's `_on_progress`) — never read for gating/qualification.
+    contact_page_hint: Optional[str] = None
     detected_platform: Optional[str] = None
     page_language: Optional[str] = None
 

@@ -130,7 +130,37 @@ _ANCHOR_RE = re.compile(
     r'<a\s[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
     re.IGNORECASE | re.DOTALL,
 )
-_CONTACT_HINT_RE = re.compile("contact", re.IGNORECASE)
+
+# Phase 9.1 (audit follow-up): the "contact"-only substring match missed
+# real, confirmed false negatives (Chalait, Café Grumpy, Blank Street)
+# that publish public emails under Press/Careers/Wholesale/Policies
+# pages instead of a page literally called "Contact". Broadened to this
+# short, explicit keyword set — same href/text matching mechanism, same
+# "first matching link wins" document-order semantics, still exactly
+# one secondary page chosen. Order here is the alternation's own order
+# (used only to report which keyword matched a given anchor via
+# `match.group(1)`; it does not reorder anchors — the first anchor in
+# the document that matches ANY of these keywords still wins, per the
+# existing behavior). `\b` word boundaries keep e.g. "policy" from
+# matching inside "policies" (and vice versa) or terms like "contactless".
+_CONTACT_PAGE_HINT_KEYWORDS: tuple[str, ...] = (
+    "contact",
+    "help",
+    "support",
+    "about",
+    "press",
+    "careers",
+    "wholesale",
+    "partners",
+    "terms",
+    "policy",
+    "policies",
+    "locations",
+)
+_CONTACT_HINT_RE = re.compile(
+    r"\b(" + "|".join(_CONTACT_PAGE_HINT_KEYWORDS) + r")\b",
+    re.IGNORECASE,
+)
 
 #: Minimal, purely factual platform signatures — a literal string match
 #: against the fetched HTML, not a heuristic judgment about the site.
@@ -229,6 +259,7 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
             )
 
         html = raw.decode(charset, errors="replace")
+        contact_page, contact_page_hint = self._extract_contact_page(html, final_url)
 
         return WebsiteIntel(
             pipeline_id=item.pipeline_id,
@@ -239,7 +270,8 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
             redirect_chain=tuple(redirect_tracker.chain) or None,
             title=self._extract_title(html),
             description=self._extract_meta_description(html),
-            contact_page=self._extract_contact_page(html, final_url),
+            contact_page=contact_page,
+            contact_page_hint=contact_page_hint,
             detected_platform=self._detect_platform(html),
             page_language=self._extract_language(html),
             response_time=elapsed,
@@ -277,16 +309,28 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
         return None
 
     @staticmethod
-    def _extract_contact_page(html: str, base_url: str) -> Optional[str]:
+    def _extract_contact_page(
+        html: str, base_url: str
+    ) -> "tuple[Optional[str], Optional[str]]":
         """
-        First link on this page whose href or link text mentions
-        "contact", resolved to an absolute URL against base_url.
-        Reports only that such a link exists on the page already
-        fetched — does not follow it. Extracting emails/phones from
-        the linked page is ContactWorker's responsibility, not this
-        worker's (see module docstring, review point 3).
+        First link on this page whose href or link text mentions one of
+        `_CONTACT_PAGE_HINT_KEYWORDS` (Phase 9.1: broadened from the
+        literal substring "contact" — see that tuple's comment),
+        resolved to an absolute URL against base_url. Still exactly the
+        existing "first matching link wins" document-order semantics
+        and still exactly one secondary page. Reports only that such a
+        link exists on the page already fetched — does not follow it.
+        Extracting emails/phones from the linked page is ContactWorker's
+        responsibility, not this worker's (see module docstring, review
+        point 3).
+
+        Returns a (url, matched_keyword) pair, both None if no anchor
+        matches. href is checked before text, matching the previous
+        `href-or-text` check order, so `matched_keyword` reflects
+        whichever of the two produced the match.
         """
         for href, text in _ANCHOR_RE.findall(html):
-            if _CONTACT_HINT_RE.search(href) or _CONTACT_HINT_RE.search(text):
-                return urljoin(base_url, href.strip())
-        return None
+            match = _CONTACT_HINT_RE.search(href) or _CONTACT_HINT_RE.search(text)
+            if match:
+                return urljoin(base_url, href.strip()), match.group(1).lower()
+        return None, None

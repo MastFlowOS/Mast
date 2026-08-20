@@ -1327,6 +1327,17 @@ def build_seven_stage_pipeline(
                 fan_in.prune_business(intel.pipeline_id, "unreachable_website_no_email")
                 return None
         fan_in.record_website_result(intel.pipeline_id, intel)
+        # Phase 9.1 (audit follow-up, additive/observational only): report
+        # which broadened contact-page hint keyword (if any) matched, so
+        # the audit's "contact_page_hint=<keyword>" telemetry ask is
+        # answerable from real run counters (see service.py's
+        # `_on_progress`) without touching pruning/qualification here.
+        if intel.contact_page_hint:
+            _emit(
+                "website",
+                f"contact_page_hint:{intel.contact_page_hint}",
+                intel.pipeline_id,
+            )
         if intel.website_reachable is False:
             return None
         return intel

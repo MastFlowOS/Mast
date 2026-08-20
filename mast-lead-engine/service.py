@@ -729,6 +729,14 @@ async def run_query(
             profiler.incr("tel_links_extracted")
         elif stage == "contact" and event == "partial_contact_success":
             profiler.incr("partial_contact_successes")
+        # Phase 9.1 (audit follow-up) — additive, observational only:
+        # which broadened contact-page hint keyword WebsiteWorker's
+        # secondary-page match used (contact/help/support/about/press/
+        # careers/wholesale/partners/terms/policy/policies/locations).
+        # Never gates anything; see engine/execution_driver.py's
+        # `_website_downstream`.
+        elif stage == "website" and event.startswith("contact_page_hint:"):
+            profiler.incr(f"contact_page_hint_{event.rsplit(':', 1)[1]}")
         elif stage == "qualification" and event == "candidate_qualified":
             _mark("first_candidate_qualified")
             profiler.incr("qualified")

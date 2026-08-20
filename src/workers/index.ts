@@ -9,6 +9,7 @@ import { handleBusinessProcessingJob, type BusinessProcessingPayload } from "../
 import { sweepStaleScrapeJobs } from "../jobs/staleScrapeJobSweep.js";
 import { env } from "../config/env.js";
 import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance, initBrowserSlotPool } from "../lib/workerCapacity.js";
+import { initResourceCapacity, logStartupResourceTelemetry } from "../lib/resourceCapacity.js";
 import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
 
 // Ensure the provider registry is initialised at startup so any
@@ -70,10 +71,26 @@ async function main() {
   // measured memory budget, regardless of how many discovery_tasks or
   // in-task area workers are trying to run at once.
   const browserSlotPool = initBrowserSlotPool(browserCapacity.browserSlots);
+
+  // ── Phase 6: resource-aware (PID/thread) safe area-worker ceiling ───────
+  // Memory alone (browserSlots above) does not prove safety — see
+  // resourceCapacity.ts's own doc comment for the full audit trail. This
+  // measures the real cgroup PID budget once at startup and is what
+  // discoveryPlanJob.ts / poolExpandJob.ts now read instead of a hardcoded
+  // safeResourceWorkers constant.
+  const resourceCapacity = initResourceCapacity(env.GOOGLE_MAPS_AREA_WORKERS);
   console.log(
     `[worker] google-area-pool capacity browserSlots=${browserSlotPool.capacity} ` +
-      `configuredGoogleAreaWorkers=${env.GOOGLE_MAPS_AREA_WORKERS}`,
+      `configuredGoogleAreaWorkers=${env.GOOGLE_MAPS_AREA_WORKERS} ` +
+      `safeResourceWorkers=${resourceCapacity.safeAreaWorkers} (basis=${resourceCapacity.pidCeilingBasis})`,
   );
+  // PHASE 6B — one consolidated startup telemetry line: PID limit/current,
+  // memory limit/current, this Node process's own PID/thread count, the
+  // configured area-worker ceiling, browser slots, and the final computed
+  // safe resource-worker count. Per-area-worker before/after/after-cleanup
+  // deltas are logged separately, as they happen, by
+  // areaWorkerTelemetry.ts (wired into pythonBridge.ts's runEngineQuery()).
+  logStartupResourceTelemetry(resourceCapacity, browserSlotPool.capacity, env.GOOGLE_MAPS_AREA_WORKERS);
 
   // Heartbeat the worker_instances row every 30 seconds so the ops dashboard
   // has a live view of actual capacity across the fleet.

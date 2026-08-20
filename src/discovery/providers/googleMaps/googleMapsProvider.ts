@@ -51,7 +51,7 @@ export class GoogleMapsProvider implements DiscoveryProvider {
       },
       signal,
       onDone,
-      { requestId: options.requestId },
+      { requestId: options.requestId, areaLabel: target.area },
     );
   }
 }

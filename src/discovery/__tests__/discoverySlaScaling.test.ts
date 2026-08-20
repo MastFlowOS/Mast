@@ -14,12 +14,12 @@ test("computeDynamicDiscoveryCapacity: scales concurrency safely by requested qu
   assert.equal(computeDynamicDiscoveryCapacity(10, 5, 4, 8), 3);
   assert.equal(computeDynamicDiscoveryCapacity(5, 5, 4, 8), 3);
 
-  // 25 leads requested -> moderate concurrency (3)
-  assert.equal(computeDynamicDiscoveryCapacity(25, 5, 4, 8), 3);
+  // 25 leads requested -> moderate concurrency (4, Phase 6 tier)
+  assert.equal(computeDynamicDiscoveryCapacity(25, 5, 4, 8), 4);
 
-  // 50 leads requested -> higher concurrency (4)
-  assert.equal(computeDynamicDiscoveryCapacity(50, 6, 4, 8), 4);
-  assert.equal(computeDynamicDiscoveryCapacity(50, 6, 8, 8), 4);
+  // 50 leads requested -> higher concurrency (6, Phase 6 tier)
+  assert.equal(computeDynamicDiscoveryCapacity(50, 6, 4, 8), 4); // bounded by 4 browser slots
+  assert.equal(computeDynamicDiscoveryCapacity(50, 6, 8, 8), 6);
 
   // 100 leads requested -> max safe concurrency
   assert.equal(computeDynamicDiscoveryCapacity(100, 10, 6, 8), 6);
@@ -183,7 +183,7 @@ test("runAreaWorkerPool: 10-lead run stays at 2 workers when only 2 browser slot
   assert.equal(result.poolSize, 2);
 });
 
-test("runAreaWorkerPool: deterministic 25-lead run scales to 3 workers", async () => {
+test("runAreaWorkerPool: deterministic 25-lead run scales to 4 workers", async () => {
   const slotPool = createBrowserSlotPool(6);
   const areas = ["Area1", "Area2", "Area3", "Area4", "Area5", "Area6"];
   let targetCount = 0;
@@ -212,12 +212,12 @@ test("runAreaWorkerPool: deterministic 25-lead run scales to 3 workers", async (
     isTerminal: () => targetCount >= targetMax,
   });
 
-  assert.equal(result.poolSize, 3); // 25 leads -> 3 workers
+  assert.equal(result.poolSize, 4); // 25 leads -> 4 workers (Phase 6 tier)
   assert.equal(result.totals.accepted, 25);
   assert.equal(result.allFailed, false);
 });
 
-test("runAreaWorkerPool: deterministic 50-lead run scales to 4 workers", async () => {
+test("runAreaWorkerPool: deterministic 50-lead run scales to 6 workers", async () => {
   const slotPool = createBrowserSlotPool(8);
   const areas = ["Area1", "Area2", "Area3", "Area4", "Area5", "Area6", "Area7", "Area8"];
   let targetCount = 0;
@@ -246,7 +246,7 @@ test("runAreaWorkerPool: deterministic 50-lead run scales to 4 workers", async (
     isTerminal: () => targetCount >= targetMax,
   });
 
-  assert.equal(result.poolSize, 4); // 50 leads -> 4 workers
+  assert.equal(result.poolSize, 6); // 50 leads -> 6 workers (Phase 6 tier)
   assert.equal(result.totals.accepted, 50);
   assert.equal(result.allFailed, false);
 });

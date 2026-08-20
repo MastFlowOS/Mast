@@ -17,6 +17,7 @@ import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discove
 import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
+import { getResourceCapacity } from "../lib/resourceCapacity.js";
 import {
   initJobMetrics,
   finalizeJobMetrics,
@@ -768,7 +769,10 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
       poolResult = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
-        safeResourceWorkers: env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS,
+        // Phase 6: resource-aware (cgroup PID/thread) ceiling, measured
+        // once at worker startup — see resourceCapacity.ts — instead of
+        // the old hardcoded safeResourceWorkers=2 constant.
+        safeResourceWorkers: getResourceCapacity().safeAreaWorkers,
         totalCuratedAreas: curatedAreas.length,
         availableCapacity: browserSlotPool.available(),
         requestedQuantity: effectiveRequested,

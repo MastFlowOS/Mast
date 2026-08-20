@@ -98,16 +98,40 @@ export function computeAreaPoolSize(
 /**
  * Dynamic discovery capacity model (Phase 6 SLA requirement: 5-10 min for 10-100 leads):
  * Scales safe concurrency with requested lead quantity:
- *   • <= 10 leads: low concurrency (up to 3 workers — still bounded below by
- *     whatever curated areas and browser slots are actually available, so a
- *     10-lead request with only 1-2 usable areas or slots degrades exactly
- *     as before; 3 is only reached when >= 3 areas AND >= 3 slots are free)
- *   • <= 25 leads: moderate concurrency (up to 3 workers)
- *   • <= 50 leads: higher concurrency (up to 4 workers)
- *   • > 50 leads : maximum safe concurrency (up to 6-8 workers or configured ceiling)
+ *   • <= 10  leads: low concurrency (up to 3 workers)
+ *   • <= 25  leads: moderate concurrency (up to 4 workers)
+ *   • <= 50  leads: higher concurrency (up to 6 workers)
+ *   • <= 100 leads: high concurrency (up to 10 workers)
+ *   • > 100  leads: maximum safe concurrency (up to 12 workers)
  *
- * Never exceeds available curated areas, measured browser slot capacity, or maxConfigured.
+ * These "desired" numbers are deliberately larger than a single worker
+ * process's own PID/thread budget alone would ever allow (see
+ * resourceCapacity.ts) — that is intentional. This function only expresses
+ * *throughput intent* from request size; `safeResourceWorkers` (Phase 6:
+ * now a real cgroup-PID-derived measurement, not a guessed constant — see
+ * resourceCapacity.ts's `measureResourceCapacity()`) remains the actual,
+ * final, independently-authoritative safety bound applied below, exactly
+ * like `availableAreas` and `capacitySlots` already were. Raising the
+ * "desired" ceiling here can never by itself cause more concurrency than
+ * the deployment has actually proven safe.
+ *
+ * Never exceeds available curated areas, measured browser slot capacity,
+ * maxConfigured, or safeResourceWorkers.
  */
+/**
+ * Pure tier lookup used by both `computeDynamicDiscoveryCapacity()` (the
+ * real sizing decision) and `runAreaWorkerPool()`'s startup log line (an
+ * unclamped "what did throughput intent alone ask for" figure) — kept as a
+ * single source of truth so the two can never drift out of sync.
+ */
+export function desiredWorkersForQuantity(requestedQuantity: number): number {
+  if (requestedQuantity <= 10) return 3;
+  if (requestedQuantity <= 25) return 4;
+  if (requestedQuantity <= 50) return 6;
+  if (requestedQuantity <= 100) return 10;
+  return 12;
+}
+
 export function computeDynamicDiscoveryCapacity(
   requestedQuantity: number,
   availableAreas: number,
@@ -119,16 +143,7 @@ export function computeDynamicDiscoveryCapacity(
     return 0;
   }
 
-  let desired: number;
-  if (requestedQuantity <= 10) {
-    desired = Math.min(3, maxConfigured);
-  } else if (requestedQuantity <= 25) {
-    desired = Math.min(3, maxConfigured);
-  } else if (requestedQuantity <= 50) {
-    desired = Math.min(4, maxConfigured);
-  } else {
-    desired = Math.min(8, maxConfigured);
-  }
+  const desired = Math.min(desiredWorkersForQuantity(requestedQuantity), maxConfigured);
 
   return Math.max(0, Math.min(desired, availableAreas, capacitySlots, safeResourceWorkers));
 }
@@ -193,7 +208,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
   } = params;
 
   const computedWorkers = requestedQuantity !== undefined
-    ? (requestedQuantity <= 10 ? 3 : requestedQuantity <= 25 ? 3 : requestedQuantity <= 50 ? 4 : 8)
+    ? desiredWorkersForQuantity(requestedQuantity)
     : configuredWorkers;
   const poolSize = requestedQuantity !== undefined
     ? computeDynamicDiscoveryCapacity(requestedQuantity, totalCuratedAreas, availableCapacity, configuredWorkers, safeResourceWorkers)

@@ -175,20 +175,61 @@ const EnvSchema = z.object({
   // evidence in this codebase for a higher safe default, and the capacity
   // model (workerCapacity.ts's browserSlotPool) is what actually prevents
   // OOM once this is raised — the config ceiling alone is not a safety
-  // mechanism, just an intent. Bounded at 8 as a sanity ceiling; the real,
-  // memory-aware ceiling is enforced at runtime by browserSlotPool, not by
-  // this max().
-  GOOGLE_MAPS_AREA_WORKERS: z.coerce.number().int().min(1).max(8).default(8),
+  // mechanism, just an intent. Bounded at 16 as a sanity ceiling (raised
+  // from 8 in Phase 6 so a resource-proven 100-lead tier is not clipped by
+  // this config knob before it ever reaches the real, measured ceiling);
+  // the real, resource-aware ceiling is enforced at runtime by
+  // resourceCapacity.ts + browserSlotPool, not by this max().
+  GOOGLE_MAPS_AREA_WORKERS: z.coerce.number().int().min(1).max(16).default(8),
 
-  // Caps concurrent Google Maps area engines independently of browser memory
-  // slots. Each engine also creates Python/provider threads, a Playwright
-  // driver, and a Chromium process tree, so this protects PID/thread limits.
-  // Raise only after measuring the target container's resource budget.
+  // PHASE 6 — resource-aware safe concurrency (replaces the old hardcoded
+  // "safeResourceWorkers = 2"). Each Google area worker is NOT just one
+  // browser slot's worth of memory — it is one Python subprocess (its own
+  // ExecutionDriver thread + one producer thread + one thread per active
+  // discovery provider, see engine/execution_driver.py and
+  // providers/parallel_composite_provider.py), driving Playwright (which
+  // itself launches a Node-based driver process), which in turn launches a
+  // full multi-process Chromium tree (main + zygote + GPU + renderer +
+  // network utility processes, each independently multi-threaded).
+  // Linux's `pids` cgroup controller counts every one of those THREADS as
+  // well as every process against the container's pids.max — which is
+  // exactly the resource "can't start new thread" /
+  // "pthread_create: Resource temporarily unavailable" was hitting even
+  // while free memory (and therefore browserSlots) still looked enormous.
+  // resourceCapacity.ts measures pids.max/pids.current from the real
+  // cgroup at worker startup and derives a safe area-worker ceiling from
+  // it instead of a guessed constant.
   //
-  // Phase 1B: raised from 1 -> 2 after the controlled 2-worker validation
-  // (see googleAreaPool.test.ts "Phase 1B" cases). 3 previously caused OS
-  // thread/PID exhaustion; do not raise further without re-measuring.
-  GOOGLE_MAPS_SAFE_RESOURCE_WORKERS: z.coerce.number().int().min(1).max(8).default(2),
+  // PIDS_PER_AREA_WORKER: measured PID/thread footprint of ONE area worker
+  // (Python process + its threads + Playwright driver + full Chromium
+  // process tree). This default is a documented conservative estimate,
+  // NOT a real production measurement — re-measure it on the target
+  // container by sampling /sys/fs/cgroup/pids.current immediately before
+  // and after a single isolated area run (GOOGLE_MAPS_AREA_WORKERS=1) and
+  // set this env var to the observed delta plus headroom. Do not change
+  // this default in code without that measurement.
+  PIDS_PER_AREA_WORKER: z.coerce.number().int().min(1).default(220),
+
+  // PIDs to reserve for the Node worker process itself, pg-boss, other
+  // in-flight non-Google-Maps tasks in this same process, and OS baseline
+  // — subtracted from pids.max before dividing by PIDS_PER_AREA_WORKER.
+  PIDS_RESERVE_BUDGET: z.coerce.number().int().min(0).default(300),
+
+  // Fallback ceiling used ONLY when the cgroup `pids` controller cannot be
+  // read at all (non-Linux dev machine, or a host without the pids
+  // controller enabled) — i.e. when PID accounting is genuinely
+  // unavailable, not merely "unlimited". Unavailable accounting must never
+  // be treated as "safe to go unbounded"; it falls back to this
+  // known-safe, previously-validated value (Phase 1B's controlled
+  // 2-worker validation — see googleAreaPool.test.ts "Phase 1B" cases).
+  GOOGLE_MAPS_SAFE_RESOURCE_WORKERS_FALLBACK: z.coerce.number().int().min(1).max(16).default(2),
+
+  // Optional manual override/sanity-cap layered on top of the measured
+  // resource-aware ceiling (final = min(this, measured) when set). Unset
+  // by default so the measured ceiling from resourceCapacity.ts is
+  // authoritative; set this only to force a lower cap during a rollout or
+  // incident, never to raise above what was actually measured.
+  GOOGLE_MAPS_SAFE_RESOURCE_WORKERS: z.coerce.number().int().min(1).max(16).optional(),
 
   // PROCESS REGISTRY EXPLOSION FIX (log-volume half): discoveryPlanJob.ts's
   // per-candidate tracing block (PIPELINE/DISCOVERED/EXITED HERE/reason=/

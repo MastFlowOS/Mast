@@ -9,6 +9,12 @@ import {
   registerRequestEngineProcess,
   getRequestTerminalReason,
 } from "../discovery/requestLifecycle.js";
+import {
+  newAreaRunId,
+  recordBeforeAreaStart,
+  recordAfterAreaStart,
+  recordAfterAreaCleanup,
+} from "../lib/areaWorkerTelemetry.js";
 
 export type EngineLead = {
   name: string;
@@ -118,6 +124,13 @@ export type EngineQueryParams = {
 export type EngineRunOptions = {
   /** Durable discovery plan that owns this process, when this is live discovery. */
   requestId?: string;
+  /**
+   * PHASE 6B — optional curated-area label (or "n/a" for a city with no
+   * curated areas), purely for area-worker resource telemetry (see
+   * areaWorkerTelemetry.ts). Never read for qualification, dedup,
+   * targeting, or any other decision — display/log tagging only.
+   */
+  areaLabel?: string;
 };
 
 export type EngineVerifyParams = {
@@ -705,6 +718,13 @@ export async function* runEngineQuery(
   const _t0 = process.hrtime.bigint();
   const hrElapsedMs = () => Number(process.hrtime.bigint() - _t0) / 1e6;
 
+  // PHASE 6B — real per-area-worker PID/memory footprint measurement.
+  // Snapshot BEFORE the subprocess exists at all, so the after_start delta
+  // below is attributable to this one worker (see areaWorkerTelemetry.ts's
+  // own doc comment for the single-active-worker caveat this relies on).
+  const areaTelemetryRunId = newAreaRunId();
+  recordBeforeAreaStart(areaTelemetryRunId, options.areaLabel);
+
   const child = spawn(PYTHON_CMD, ["service.py"], {
     cwd: enginePath,
     stdio: ["pipe", "pipe", "pipe"],
@@ -1088,7 +1108,14 @@ export async function* runEngineQuery(
 
       // Phase 2: record first-line and first-lead timestamps
       if (firstLineMs === null) firstLineMs = hrElapsedMs();
-      if (firstLeadMs === null) firstLeadMs = hrElapsedMs();
+      if (firstLeadMs === null) {
+        firstLeadMs = hrElapsedMs();
+        // PHASE 6B — this is the earliest observable point the browser is
+        // fully initialized AND the engine has produced a real result
+        // (see areaWorkerTelemetry.ts's own doc comment on why this proxy
+        // is used instead of a dedicated "browser ready" event).
+        recordAfterAreaStart(areaTelemetryRunId, options.areaLabel);
+      }
 
       bridgeReceived += 1;
       yield parsed as EngineLead;
@@ -1168,6 +1195,14 @@ export async function* runEngineQuery(
     // every case because it was attached before the event could possibly
     // have fired, not after.
     const { code: exitCode, signal: closeSignal } = await childClosed;
+
+    // PHASE 6B — the child has now actually exited (browser/Chromium tree
+    // torn down, no longer holding any of its PIDs) — this is the
+    // after_cleanup sample. If the browser never got far enough to be
+    // "fully initialized" (recordAfterAreaStart() never fired — e.g. an
+    // early crash/timeout), this is called anyway so activeRuns/
+    // startedSnapshots bookkeeping for this run doesn't leak.
+    recordAfterAreaCleanup(areaTelemetryRunId, options.areaLabel);
 
     // Phase 7 observability: decrement active browsers counter on exit.
     workerMetrics.activeBrowsers = Math.max(0, workerMetrics.activeBrowsers - 1);

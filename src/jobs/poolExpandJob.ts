@@ -27,6 +27,7 @@ import { claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.j
 import { runAreaWorkerPool, type AreaRunOutcome } from "../discovery/googleAreaPool.js";
 import { areaStreamTarget, cityStreamTarget, computeAskFor } from "../discovery/roundSizing.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
+import { getResourceCapacity } from "../lib/resourceCapacity.js";
 import { env } from "../config/env.js";
 
 export type PoolExpandFollowUp = {
@@ -536,7 +537,9 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
 
       const result = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
-        safeResourceWorkers: env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS,
+        // Phase 6: resource-aware (cgroup PID/thread) ceiling — see
+        // resourceCapacity.ts and discoveryPlanJob.ts's matching call site.
+        safeResourceWorkers: getResourceCapacity().safeAreaWorkers,
         totalCuratedAreas: areas.length,
         availableCapacity: browserPool.available(),
         requestedQuantity: target,

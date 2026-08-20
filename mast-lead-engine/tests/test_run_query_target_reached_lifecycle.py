@@ -215,6 +215,87 @@ class TestScraperFailureRemainsDistinct:
         assert len(leads) == 2
 
 
+class TestDeliverTargetDecoupledFromMaxResults:
+    """PHASE 5 — target-aware discovery stopping (Node/Python contract
+    regression test).
+
+    Before this phase, poolExpandJob.ts never sent `deliver_target` at
+    all, so Python's own fallback (`_deliver_target = deliver_target if
+    deliver_target is not None else max_results`) silently made the
+    QUALIFIED-lead stopping target equal to the generous RAW SCAN BUDGET
+    (`max_results`/`askFor`) instead of the caller's real, much smaller,
+    per-round need. This is exactly why hundreds of raw Maps candidates
+    kept getting pulled long after enough qualified leads already existed
+    for that round — the discovery loop's own `_should_stop_discovery()`
+    literally didn't know the true target was that much smaller.
+
+    This test reproduces the production parameter shape directly: a large
+    `max_results` (mirrors `askFor = streamTarget * 4`) alongside a small,
+    EXPLICIT `deliver_target` (mirrors `streamTarget`) — proving that once
+    both are passed (the fix), the small `deliver_target` — not the large
+    `max_results` — is what governs when `should_stop()`/the provider
+    genuinely stops pulling candidates.
+    """
+
+    @pytest.mark.asyncio
+    async def test_large_max_results_does_not_defeat_small_deliver_target(self, monkeypatch, tmp_path):
+        # Mirrors production: askFor = max(streamTarget * 4, streamTarget)
+        # for a streamTarget of 5 → askFor = 20. An inexhaustible fake
+        # provider stands in for "hundreds of candidates available" so
+        # nothing except deliver_target can be the reason this stops early.
+        fake_provider = _CountingFakeProvider(supply=None)
+        monkeypatch.setattr(service, "GoogleMapsProvider", lambda: fake_provider)
+
+        stream_target = 5
+        ask_for = max(stream_target * 4, stream_target)  # 20 — the generous scan budget
+        assert ask_for > stream_target, "test is only meaningful if max_results is genuinely larger"
+
+        leads = await _drain(service.run_query(
+            query="coffee", city="New York",
+            max_results=ask_for, deliver_target=stream_target,
+            discovery_only=True, db_path=str(tmp_path / "leads_decoupled.db"),
+        ))
+
+        assert len(leads) == stream_target, (
+            "must stop at the small deliver_target, never scale up to the "
+            "larger max_results scan budget"
+        )
+        assert fake_provider.pulled == stream_target, (
+            f"provider was pulled {fake_provider.pulled} times for a "
+            f"deliver_target of {stream_target} with max_results={ask_for} "
+            "available — any excess here is exactly the wasted post-target "
+            "Maps discovery this phase eliminates"
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_deliver_target_falls_back_to_max_results_old_behavior(self, monkeypatch, tmp_path):
+        # Documents the OLD (pre-fix) behavior this phase moved away from:
+        # when a caller omits deliver_target entirely (exactly what
+        # poolExpandJob.ts used to do), Python's fallback makes the scan
+        # budget itself the stopping target — i.e. it happily scans all
+        # the way up to max_results, not the caller's true smaller need.
+        # This is not a bug in service.py (the fallback is intentional
+        # backward compatibility, documented in service.py's own
+        # docstring) — it is a regression guard proving the CALLER
+        # (poolExpandJob.ts) is what must supply deliver_target for the
+        # fix to take effect.
+        fake_provider = _CountingFakeProvider(supply=None)
+        monkeypatch.setattr(service, "GoogleMapsProvider", lambda: fake_provider)
+
+        leads = await _drain(service.run_query(
+            query="coffee", city="New York",
+            max_results=20,  # no deliver_target passed at all
+            discovery_only=True, db_path=str(tmp_path / "leads_no_target.db"),
+        ))
+
+        assert len(leads) == 20, (
+            "with no deliver_target, the engine correctly falls back to "
+            "max_results as its own stopping target — this is the exact "
+            "over-scan poolExpandJob.ts's missing deliver_target caused "
+            "in production before this phase's fix"
+        )
+
+
 class TestShutdownEventAlsoStopsDiscovery:
     """The other half of `_should_stop_discovery()` — a cooperative
     shutdown request must stop discovery exactly like target_reached

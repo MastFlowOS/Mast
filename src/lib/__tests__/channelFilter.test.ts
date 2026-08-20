@@ -72,3 +72,31 @@ test("channelsSatisfied handles ['phone', 'website', 'instagram'] requirement", 
   assert.equal(channelsSatisfied(AllThree, ["phone", "website", "instagram"]), true);
   assert.equal(channelsSatisfied(MissingPhone, ["phone", "website", "instagram"]), false);
 });
+
+// PHASE 5 — target-aware discovery stopping made per-round budgets smaller
+// and more dynamic; the CRITICAL constraint in that phase is that this
+// strict four-channel bar (website + email + phone + instagram) is never
+// relaxed to hit those tighter budgets faster. This test pins that bar
+// directly, independent of any round-sizing changes.
+test("PHASE 5 regression: strict four-channel qualification (website+email+phone+instagram) is unchanged", () => {
+  const fourChannels = ["website", "email", "phone", "instagram"];
+  const full = {
+    website: "https://biz.example.com",
+    email: "hello@biz.example.com",
+    phone: "+15551234567",
+    instagram: "https://instagram.com/biz",
+  };
+  assert.equal(channelsSatisfied(full, fourChannels), true);
+
+  // Missing exactly one of the four must still fail — no partial credit,
+  // regardless of how close to the target the round's budget is.
+  for (const missing of fourChannels) {
+    const partial = { ...full, [missing]: "" };
+    assert.equal(
+      channelsSatisfied(partial, fourChannels),
+      false,
+      `candidate missing only '${missing}' must NOT satisfy the strict four-channel requirement`,
+    );
+  }
+});
+

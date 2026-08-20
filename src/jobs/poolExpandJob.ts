@@ -25,6 +25,7 @@ import { registerRequestAbortController, terminateRequest, isRequestActive } fro
 import { getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { runAreaWorkerPool, type AreaRunOutcome } from "../discovery/googleAreaPool.js";
+import { areaStreamTarget, cityStreamTarget, computeAskFor } from "../discovery/roundSizing.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
 import { env } from "../config/env.js";
 
@@ -225,6 +226,17 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   // insertLeadForUser() never reaches the reservation check anyway.
   let discoveryPlanId: string | undefined;
 
+  // PHASE 5 — TARGET-AWARE DISCOVERY STOPPING (telemetry state).
+  // Declared here (outer function scope, not inside the try block) so the
+  // `finally` block's summary log below can always read final values,
+  // regardless of which exit path the function takes. See
+  // logChildTelemetry()'s doc comment (below, inside the try block, where
+  // it's constructed) for what each field means.
+  let targetReachedAtMs: number | null = null;
+  let candidatesAfterParentTarget = 0;
+  let mapsOperationsAfterParentTarget = 0;
+  let maxTargetStopLatencyMs = 0;
+
   try {
     if (followUp) {
       discoveryPlanId = await getOrCreatePoolExpandPlanId(followUp, payload);
@@ -273,9 +285,71 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     // pool-growth run (no followUp), it's "add `shortfall` more businesses
     // to the pool" — there's no per-user channel filter to apply in that
     // case, so every delivered (deduped) business counts.
+    //
+    // NOTE: `target` is used ONLY for the area worker pool's concurrency
+    // sizing (`requestedQuantity` → computeDynamicDiscoveryCapacity), which
+    // the audit's CRITICAL section says must not change (worker count).
+    // It is NOT used as the per-round scan/deliver budget any more — see
+    // askFor/streamTarget below, which now track `stillNeededNow()`
+    // instead of this fixed value.
     const target = payload.shortfall;
 
     const stillNeededNow = () => (followUp ? payload.shortfall - newForUser : payload.shortfall - delivered);
+
+    // PHASE 5 — TARGET-AWARE DISCOVERY STOPPING (telemetry).
+    //
+    // `targetReachedAtMs` is set the instant the GLOBAL (parent) target is
+    // satisfied — see processLead() below, the exact point that already
+    // calls abortController.abort("TARGET_REACHED"). Every engine
+    // subprocess's onDone callback (legacy path and area-pooled path,
+    // below) reads this to tell "this child's own natural completion" apart
+    // from "this child was still mid-flight when the parent's target was
+    // already met elsewhere, and got torn down because of that" — the
+    // latter is exactly the waste this phase targets.
+    //
+    // These are best-effort production measurements, not a precise
+    // per-candidate audit trail: `candidatesAfterParentTarget` sums each
+    // stopped child's OWN `maps_candidates_seen` counter (from its
+    // `__perf__.area_sla`) — i.e. the total raw Maps candidates that child
+    // had scanned by the time it was killed, not strictly only the ones
+    // scanned after the abort fired (Python does not timestamp individual
+    // candidates). It is therefore an upper bound on in-flight scan waste
+    // at the moment of stop, not an exact count. (State vars themselves —
+    // targetReachedAtMs/candidatesAfterParentTarget/
+    // mapsOperationsAfterParentTarget/maxTargetStopLatencyMs — are declared
+    // in the outer function scope above so the `finally` block's summary
+    // can read them too.)
+    function logChildTelemetry(
+      label: string,
+      childRequested: number,
+      info: { delivered: number; requested: number; perf?: Record<string, unknown> },
+    ) {
+      const childDelivered = info.delivered;
+      const childRemaining = Math.max(0, childRequested - childDelivered);
+      const parentTarget = payload.shortfall;
+      const parentDelivered = followUp ? newForUser : delivered;
+      const parentRemaining = Math.max(0, parentTarget - parentDelivered);
+      const areaSla = (info.perf?.area_sla ?? {}) as Record<string, unknown>;
+      const mapsCandidatesSeen = typeof areaSla.maps_candidates_seen === "number" ? areaSla.maps_candidates_seen : undefined;
+
+      let stopLine = "";
+      if (targetReachedAtMs !== null) {
+        const discoveryStopAtMs = Date.now();
+        const targetStopLatencyMs = discoveryStopAtMs - targetReachedAtMs;
+        maxTargetStopLatencyMs = Math.max(maxTargetStopLatencyMs, targetStopLatencyMs);
+        mapsOperationsAfterParentTarget += 1;
+        if (typeof mapsCandidatesSeen === "number") candidatesAfterParentTarget += mapsCandidatesSeen;
+        stopLine =
+          ` stop_signal_at_ms=${targetReachedAtMs} discovery_stop_at_ms=${discoveryStopAtMs} ` +
+          `target_stop_latency_ms=${targetStopLatencyMs} candidates_in_flight_at_stop=${mapsCandidatesSeen ?? "n/a"}`;
+      }
+
+      console.log(
+        `[poolExpandJob][telemetry] ${label} parent_target=${parentTarget} parent_delivered=${parentDelivered} ` +
+          `parent_remaining=${parentRemaining} child_requested=${childRequested} child_delivered=${childDelivered} ` +
+          `child_remaining=${childRemaining}${stopLine}`,
+      );
+    }
 
     /**
      * One lead's full validate → deliver → dedup/target-check pipeline —
@@ -398,11 +472,13 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           }
 
           if (newForUser >= payload.shortfall) {
+            targetReachedAtMs = Date.now();
             if (reqId) terminateRequest(reqId, "TARGET_REACHED");
             abortController.abort("TARGET_REACHED");
             return "stop_outer";
           }
         } else if (delivered >= payload.shortfall) {
+          targetReachedAtMs = Date.now();
           if (reqId) terminateRequest(reqId, "TARGET_REACHED");
           abortController.abort("TARGET_REACHED");
           return "stop_outer";
@@ -494,8 +570,15 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           let areaExhausted = false;
           const chunk = { deliveredThisChunk: 0 };
           const remaining = stillNeededNow();
-          const streamTarget = Math.max(Math.min(remaining, STREAM_BATCH_FLOOR), 1);
-          const askFor = Math.max(streamTarget * 4, target);
+          // PHASE 5 FIX: streamTarget is this area's real, current per-round
+          // need — derived from `stillNeededNow()` (the GLOBAL remaining,
+          // shrinking live as siblings deliver), never the fixed full
+          // `target`. askFor (the RAW Maps scan budget) now floors on this
+          // dynamic value too, instead of on the fixed full shortfall — so
+          // an area claimed once the global target is nearly satisfied asks
+          // for a proportionally small scan, not a full-sized one.
+          const streamTarget = areaStreamTarget(remaining, STREAM_BATCH_FLOOR);
+          const askFor = computeAskFor(streamTarget);
 
           try {
             for await (const lead of runEngineQuery(
@@ -505,13 +588,26 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 country: country.code,
                 niche: singleNiche,
                 region: payload.region,
-                max_results: askFor,
+                max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
+                // PHASE 5 FIX: tells the Python engine's LeadAcceptanceGate
+                // (service.py's `_deliver_target`) the true number of
+                // QUALIFIED leads this round needs, decoupled from the
+                // generous `max_results` scan budget above. Previously
+                // omitted, so `_deliver_target` silently fell back to
+                // `max_results` (askFor) — the engine kept chasing up to 4x
+                // (or, before this fix, the full un-shrinking shortfall)
+                // more qualified leads than this round actually needed
+                // before its own should_stop() cooperative check ever
+                // fired, letting MapsScraper.search() keep scanning raw
+                // candidates well past the point this round was satisfied.
+                deliver_target: streamTarget,
                 required_channels: followUp?.channels ?? [],
                 db_path: `data/leads-pool-expand.db`,
               },
               abortController.signal,
               (info) => {
                 areaExhausted = info.exhausted;
+                logChildTelemetry(`area=${area} city=${city}`, streamTarget, info);
                 if (info.success === false) {
                   console.warn(
                     `[poolExpandJob] engine discovery FAILED for area=${area} (${city}/${country.code}) — ` +
@@ -578,8 +674,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
 
           const chunk = rotation.chunkSize(remaining); // fairness share — diversity accounting only
           // Streaming target for THIS spawned process — see discoverJob.ts.
-          const streamTarget = Math.min(remaining, Math.max(chunk, STREAM_BATCH_FLOOR));
-          const askFor = Math.max(streamTarget * 4, target);
+          const streamTarget = cityStreamTarget(remaining, chunk, STREAM_BATCH_FLOOR);
+          // PHASE 5 FIX: askFor's floor now tracks streamTarget (the real,
+          // currently-remaining need) instead of the fixed full `target` —
+          // see the matching comment in runGoogleAreaPoolForCity() above.
+          const askFor = computeAskFor(streamTarget);
 
           let citySearchExhausted = false;
           const chunkState = { deliveredThisChunk: 0 };
@@ -592,12 +691,17 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               niche: singleNiche,
               region: payload.region,
               max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
+              // PHASE 5 FIX: see the matching deliver_target comment in
+              // runGoogleAreaPoolForCity() above — same decoupling, same
+              // reason, for the legacy (no curated areas) path.
+              deliver_target: streamTarget,
               required_channels: followUp?.channels ?? [],
               db_path: `data/leads-pool-expand.db`,
             },
             abortController.signal,
             (info) => {
               citySearchExhausted = info.exhausted;
+              logChildTelemetry(`city=${city}`, streamTarget, info);
               if (info.success === false) {
                 // See discoverJob.ts's onDone callback for the full
                 // explanation (Part 8 fix) — citySearchExhausted is
@@ -682,6 +786,24 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     // terminal outcome instead of silently falling out of the report.
     tracer.sweepIncomplete("job_ended_before_business_finished");
     console.log(`[poolExpandJob] pipeline reconciliation:\n${tracer.reconcile()}`);
+
+    // PHASE 5 — TARGET-AWARE DISCOVERY STOPPING (job-level telemetry
+    // summary). Logged on every exit path (normal completion, early
+    // return, cancellation, or an exception still propagating past this
+    // point) so a production run always leaves one line answering "how
+    // much Maps discovery happened after the parent target was already
+    // satisfied" — see logChildTelemetry()'s doc comment above for what
+    // candidatesAfterParentTarget/mapsOperationsAfterParentTarget actually
+    // measure (an upper bound, not an exact per-candidate count).
+    const finalParentDelivered = followUp ? newForUser : delivered;
+    console.log(
+      `[poolExpandJob][telemetry] SUMMARY parent_target=${payload.shortfall} ` +
+        `parent_delivered=${finalParentDelivered} parent_remaining=${Math.max(0, payload.shortfall - finalParentDelivered)} ` +
+        `target_reached_at_ms=${targetReachedAtMs ?? "n/a"} ` +
+        `max_target_stop_latency_ms=${targetReachedAtMs !== null ? maxTargetStopLatencyMs : "n/a"} ` +
+        `maps_operations_after_parent_target=${mapsOperationsAfterParentTarget} ` +
+        `candidates_after_parent_target=${candidatesAfterParentTarget}`,
+    );
   }
 
   console.log(

@@ -467,6 +467,16 @@ class ContactIntel:
     `enrichment/site_crawler.py`) — no new normalization logic
     invented here, only reused.
 
+    Phase 8.1 addition (ContactWorker resilience fix): five fields —
+    `contact_page_fetch_failed`, `homepage_fetch_failed`,
+    `mailto_extracted`, `tel_extracted`, `partial_contact_success` —
+    added. Same category as `fetch_duration`: a measurement of this
+    worker's own run (which candidate page(s) failed, whether evidence
+    came from a literal mailto:/tel: href instead of a fetch, whether
+    the result is partial), not a judgment about the business. Default
+    `False` for every field preserves the exact prior shape for any
+    caller not yet reading them.
+
     Created by: ContactWorker (Phase 6), given a WebsiteIntel.
     Consumed by: MergeWorker only, per the Ownership Table.
     Terminal or intermediate: intermediate — one of the four inputs
@@ -488,6 +498,13 @@ class ContactIntel:
 
     # Metrics
     fetch_duration: Optional[float] = None
+
+    # Metrics — Phase 8.1 (per-page fetch resilience)
+    contact_page_fetch_failed: bool = False
+    homepage_fetch_failed: bool = False
+    mailto_extracted: bool = False
+    tel_extracted: bool = False
+    partial_contact_success: bool = False
 
 
 # ---------------------------------------------------------------------------

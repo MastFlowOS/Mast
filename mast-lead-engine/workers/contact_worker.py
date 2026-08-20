@@ -184,11 +184,63 @@ No module-level mutable state, no caches. Every process() call builds
 its own request(s)/timer from scratch, mirroring WebsiteWorker's and
 InstagramWorker's "fresh instance per call" pattern.
 
+Phase 8.1 — resilience fix (mailto:/tel: fetch bug + isolated page
+failures)
+--------------------------------------------------------------------
+Production audit of 104 `contact_stage_failed` occurrences (53 unique
+businesses, all with `WebsiteWorker` success) found two bugs in this
+file, confirmed against `kettl.co`:
+
+1. `mailto:`/`tel:` values in `contact_page` were passed straight into
+   `_fetch()`, which calls `urllib.request.urlopen()` on them — these
+   are not fetchable URLs, so this always raised. Fixed: `_fetch()` is
+   never called on a `mailto:`/`tel:` value; the address/number is
+   read directly off the literal href instead (same validators as
+   before — `is_valid_email` for mailto, no loosening either way), and
+   this counts as evidence found, not a page needing a network call.
+
+2. `_pages_to_fetch()`'s two candidates were fetched in one unguarded
+   loop, so a `contact_page` failure raised out of `process()` before
+   `final_url` was ever tried, discarding a page that may have loaded
+   fine. Fixed: each candidate page is now fetched in its own
+   try/except; one page's failure is recorded and the loop continues
+   to the next candidate instead of aborting `process()`.
+
+Both fixes are additive to extraction, not a loosening of it: the
+"Error handling" section above (no retry, no swallowed exceptions, no
+partial `ContactIntel`) still holds for the case that now actually
+matters — if every fetchable page fails and no evidence (mailto/tel or
+otherwise) was found at all, the last fetch exception is re-raised
+unmodified, exactly as before this phase. What changes is only that a
+single page's failure no longer erases evidence already recovered from
+another page, and that mailto:/tel: values never reach `urlopen()` in
+the first place. Qualification's requirement (website + valid email +
+valid phone + valid instagram) is untouched — this phase makes more of
+the *evidence already on the page* recoverable; it invents nothing and
+relaxes no validator.
+
+New `ContactIntel` fields (`contact_page_fetch_failed`,
+`homepage_fetch_failed`, `mailto_extracted`, `tel_extracted`,
+`partial_contact_success`) are plain facts about this worker's own
+run — which candidate page(s) failed, whether the recovered evidence
+came from a literal mailto:/tel: href instead of a fetch, and whether
+the overall result is now partial rather than a total loss — following
+the exact precedent `fetch_duration` set in Phase 5.6: a measurement
+of the extraction, not a judgment. `ContactWorker` still touches no
+profiler/telemetry/runtime import itself; per-page counters
+(`contact_page_fetch_failures`, `homepage_fetch_failures`,
+`mailto_links_extracted`, `tel_links_extracted`,
+`partial_contact_successes`) are derived from these fields one layer
+up, in `engine/execution_driver.py`'s `_contact_downstream` /
+`service.py`'s `_on_progress`, the same place every other stage
+counter in this codebase is already incremented.
+
 Status
 ------
-Phase 5.6. Depends only on WebsiteIntel, ContactIntel, BaseWorker,
-WorkerCapability, and the standard library. No queue/, providers/,
-engine.coordinator, or runtime import anywhere in this file.
+Phase 8.1 (built on Phase 5.6). Depends only on WebsiteIntel,
+ContactIntel, BaseWorker, WorkerCapability, and the standard library.
+No queue/, providers/, engine.coordinator, or runtime import anywhere
+in this file.
 """
 
 from __future__ import annotations
@@ -276,12 +328,21 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
     def process(self, item: WebsiteIntel) -> ContactIntel:
         """
         Consume exactly one WebsiteIntel and produce exactly one
-        ContactIntel. Never mutates `item`. See "Error handling" above
-        — nothing here is caught; a failed fetch propagates completely
-        and no ContactIntel (partial or otherwise) is returned.
+        ContactIntel. Never mutates `item`.
+
+        Phase 8.1: each candidate page (`contact_page`, `final_url`) is
+        now fetched independently — one page's failure is recorded and
+        does not prevent the other page from being tried, and does not
+        discard evidence already extracted from a page that succeeded.
+        `mailto:`/`tel:` candidates are never fetched at all (see
+        `_read_evidence_page`). "Error handling" above still holds for
+        a *total* loss: if every fetchable page failed and no evidence
+        of any kind was recovered, the last fetch exception propagates
+        unmodified and no ContactIntel is returned — do not swallow
+        that case.
         """
-        urls = self._pages_to_fetch(item)
-        if not urls:
+        pages = self._pages_to_fetch(item)
+        if not pages:
             return ContactIntel(pipeline_id=item.pipeline_id)
 
         emails: "dict[str, None]" = {}
@@ -294,8 +355,42 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         instagram_url: Optional[str] = None
         total_elapsed = 0.0
 
-        for url in urls:
-            html, page_url, elapsed = self._fetch(url)
+        contact_page_fetch_failed = False
+        homepage_fetch_failed = False
+        mailto_extracted = False
+        tel_extracted = False
+        any_page_recovered = False
+        last_exc: Optional[BaseException] = None
+
+        for role, url in pages:
+            # FIX 1 — mailto:/tel: are literal evidence, never a fetch.
+            if url.lower().startswith(_MAILTO_PREFIX):
+                address = url[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
+                if address and is_valid_email(address):
+                    emails.setdefault(address.lower(), None)
+                    mailto_extracted = True
+                any_page_recovered = True
+                continue
+            if url.lower().startswith(_TEL_PREFIX):
+                number = url[len(_TEL_PREFIX):].strip()
+                if number:
+                    phones.setdefault(number, None)
+                    tel_extracted = True
+                any_page_recovered = True
+                continue
+
+            # FIX 2 — isolate this page's fetch failure from the rest.
+            try:
+                html, page_url, elapsed = self._fetch(url)
+            except Exception as exc:  # noqa: BLE001 — recorded, not swallowed
+                last_exc = exc
+                if role == "contact_page":
+                    contact_page_fetch_failed = True
+                else:
+                    homepage_fetch_failed = True
+                continue
+
+            any_page_recovered = True
             total_elapsed += elapsed
 
             for email in self._extract_emails(html):
@@ -319,6 +414,28 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             if instagram_url is None:
                 instagram_url = self._extract_instagram_url(html)
 
+        if not any_page_recovered:
+            # Every candidate was a fetch and every fetch failed — no
+            # usable contact data exists. Preserve the pre-8.1
+            # contract: propagate, do not return a partial/empty
+            # ContactIntel, do not invent success.
+            assert last_exc is not None
+            raise last_exc
+
+        partial_contact_success = bool(
+            (contact_page_fetch_failed or homepage_fetch_failed)
+            and (
+                emails
+                or phones
+                or contact_form_url
+                or whatsapp_link
+                or messenger_link
+                or telegram_link
+                or linkedin_url
+                or instagram_url
+            )
+        )
+
         return ContactIntel(
             pipeline_id=item.pipeline_id,
             emails=tuple(emails) or None,
@@ -330,6 +447,11 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             linkedin_url=linkedin_url,
             instagram_url=instagram_url,
             fetch_duration=total_elapsed,
+            contact_page_fetch_failed=contact_page_fetch_failed,
+            homepage_fetch_failed=homepage_fetch_failed,
+            mailto_extracted=mailto_extracted,
+            tel_extracted=tel_extracted,
+            partial_contact_success=partial_contact_success,
         )
 
     def timeout_seconds(self) -> float:
@@ -341,18 +463,22 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
     # read or written, so these can't leak between process() calls.
 
     @staticmethod
-    def _pages_to_fetch(item: WebsiteIntel) -> Tuple[str, ...]:
+    def _pages_to_fetch(item: WebsiteIntel) -> Tuple[Tuple[str, str], ...]:
         """
-        contact_page first (most likely to hold a contact form/explicit
-        channels), then final_url if present and distinct. See module
-        docstring "Which pages get fetched".
+        (role, url) pairs — contact_page first (most likely to hold a
+        contact form/explicit channels), then final_url if present and
+        distinct. See module docstring "Which pages get fetched". The
+        role (`"contact_page"` / `"homepage"`) is carried alongside the
+        URL only so Phase 8.1's per-page failure can be attributed to
+        the right counter/field — it changes no fetch order or dedup
+        behavior versus before.
         """
-        urls: "dict[str, None]" = {}
+        urls: "dict[str, str]" = {}
         if item.contact_page:
-            urls.setdefault(item.contact_page, None)
+            urls.setdefault(item.contact_page, "contact_page")
         if item.final_url:
-            urls.setdefault(item.final_url, None)
-        return tuple(urls)
+            urls.setdefault(item.final_url, "homepage")
+        return tuple((role, url) for url, role in urls.items())
 
     def _fetch(self, url: str) -> Tuple[str, str, float]:
         """

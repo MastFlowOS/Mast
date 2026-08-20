@@ -715,6 +715,20 @@ async def run_query(
             _mark("first_enrichment_completed")
         elif event == "stage_failed" and stage == "contact":
             profiler.incr("contact_failures")
+        # Phase 8.1 (ContactWorker resilience fix) — additive per-page
+        # counters, emitted alongside (never instead of) the existing
+        # contact_stage_failed / contact_failures counters above. See
+        # engine/execution_driver.py's `_contact_downstream`.
+        elif stage == "contact" and event == "contact_page_fetch_failed":
+            profiler.incr("contact_page_fetch_failures")
+        elif stage == "contact" and event == "homepage_fetch_failed":
+            profiler.incr("homepage_fetch_failures")
+        elif stage == "contact" and event == "mailto_link_extracted":
+            profiler.incr("mailto_links_extracted")
+        elif stage == "contact" and event == "tel_link_extracted":
+            profiler.incr("tel_links_extracted")
+        elif stage == "contact" and event == "partial_contact_success":
+            profiler.incr("partial_contact_successes")
         elif stage == "qualification" and event == "candidate_qualified":
             _mark("first_candidate_qualified")
             profiler.incr("qualified")

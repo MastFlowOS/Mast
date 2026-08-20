@@ -1382,6 +1382,26 @@ def build_seven_stage_pipeline(
                 _emit("contact", "candidate_early_channel_pruned", intel.pipeline_id)
                 fan_in.prune_business(intel.pipeline_id, "missing_required_channel:phone")
                 return None
+
+        # Phase 8.1 (ContactWorker resilience fix): these are plain
+        # facts ContactWorker already computed about its own run (see
+        # workers/contact_worker.py's module docstring) — this is only
+        # where they're translated into the same _emit/profiler.incr
+        # plumbing every other stage counter in this file already
+        # uses. Never gates/prunes anything; purely additive
+        # observability alongside the existing contact_stage_failed
+        # counter above, which this does not touch.
+        if getattr(intel, "contact_page_fetch_failed", False):
+            _emit("contact", "contact_page_fetch_failed", intel.pipeline_id)
+        if getattr(intel, "homepage_fetch_failed", False):
+            _emit("contact", "homepage_fetch_failed", intel.pipeline_id)
+        if getattr(intel, "mailto_extracted", False):
+            _emit("contact", "mailto_link_extracted", intel.pipeline_id)
+        if getattr(intel, "tel_extracted", False):
+            _emit("contact", "tel_link_extracted", intel.pipeline_id)
+        if getattr(intel, "partial_contact_success", False):
+            _emit("contact", "partial_contact_success", intel.pipeline_id)
+
         fan_in.record_contact_result(intel.pipeline_id, intel)
         return None
 

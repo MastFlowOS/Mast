@@ -26,6 +26,11 @@ import { getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { runAreaWorkerPool, type AreaRunOutcome } from "../discovery/googleAreaPool.js";
 import { areaStreamTarget, cityStreamTarget, computeAskFor } from "../discovery/roundSizing.js";
+import {
+  RunStabilityTracker,
+  extractAreaSlaCounters,
+  type AreaTelemetryRecorder,
+} from "../discovery/runStabilityTelemetry.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
 import { getResourceCapacity } from "../lib/resourceCapacity.js";
 import { env } from "../config/env.js";
@@ -238,6 +243,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   let mapsOperationsAfterParentTarget = 0;
   let maxTargetStopLatencyMs = 0;
 
+  // PHASE 10 — RUN-TO-RUN STABILITY TELEMETRY. One tracker per job
+  // invocation; see runStabilityTelemetry.ts for the pure recording/
+  // aggregation logic this just wires up. Declared here (outer function
+  // scope) for the same reason as the PHASE 5 telemetry state above: the
+  // `finally` block's summary log must be able to read it regardless of
+  // which exit path this function takes.
+  const stability = new RunStabilityTracker();
+  let areasStartedCount = 0;
+  const areaWorkerNumbers = new Map<string, number>();
+
   try {
     if (followUp) {
       discoveryPlanId = await getOrCreatePoolExpandPlanId(followUp, payload);
@@ -287,12 +302,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     // to the pool" — there's no per-user channel filter to apply in that
     // case, so every delivered (deduped) business counts.
     //
-    // NOTE: `target` is used ONLY for the area worker pool's concurrency
-    // sizing (`requestedQuantity` → computeDynamicDiscoveryCapacity), which
-    // the audit's CRITICAL section says must not change (worker count).
-    // It is NOT used as the per-round scan/deliver budget any more — see
-    // askFor/streamTarget below, which now track `stillNeededNow()`
-    // instead of this fixed value.
+    // NOTE: `target` is used for BOTH (a) the area worker pool's
+    // concurrency sizing (`requestedQuantity` → computeDynamicDiscoveryCapacity
+    // — unchanged, worker COUNT is untouched by this phase) and (b) — as
+    // of PHASE 10 — each child's own `deliver_target`/`askFor` scan budget
+    // (askFor/streamTarget below). `stillNeededNow()` (the live, shrinking
+    // remaining) is still used to decide WHETHER to start another
+    // round/area at all, and to stop already-running siblings the instant
+    // it hits zero — see roundSizing.ts's doc comment for why the two
+    // concerns (how much to ask a child for vs. when to stop asking) are
+    // deliberately decoupled.
     const target = payload.shortfall;
 
     const stillNeededNow = () => (followUp ? payload.shortfall - newForUser : payload.shortfall - delivered);
@@ -386,8 +405,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       lead: EngineLead,
       streamTarget: number,
       chunk: { deliveredThisChunk: number },
+      areaRecorder?: AreaTelemetryRecorder,
     ): Promise<"continue" | "batch_done" | "stop_outer"> {
       const pid = tracer.receive(lead._pipeline_id, lead.name);
+      // PHASE 10 telemetry: every lead the engine yields counts as a
+      // "candidate seen" for this area, regardless of what happens to it
+      // next — and whether email/instagram are present on arrival is
+      // recorded here, BEFORE any validation/delivery logic runs, so it's
+      // a pure observation and never changes what gets delivered (item 5:
+      // no quality/qualification semantics change).
+      areaRecorder?.recordCandidateSeen({ hasEmail: Boolean(lead.email), hasInstagram: Boolean(lead.instagram) });
       try {
         if (followUp && !channelsSatisfied(lead, followUp.channels)) {
           tracer.reject(pid, `channel_filter:${JSON.stringify(followUp.channels)}`);
@@ -400,6 +427,14 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           tracer.reject(pid, `validation:${validation.reason}`);
           return "continue";
         }
+
+        // PHASE 10 telemetry: reaching here means this lead already
+        // passed the engine's own strict qualification gate (website+
+        // email+phone+instagram, enforced via `required_channels`/
+        // `deliver_target` server-side) AND this run's own channel/format
+        // checks above — i.e. "qualified" in the run-stability sense.
+        // Purely observational; does not gate anything below.
+        areaRecorder?.recordQualified();
 
         tracer.transition(pid, "DATABASE_INSERT_STARTED");
         let result: DeliveryResult;
@@ -447,6 +482,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
 
         delivered += 1;
         chunk.deliveredThisChunk += 1;
+        areaRecorder?.recordDelivered();
         if (result.wasNewForUser) newForUser += 1;
 
         if (followUp) {
@@ -534,6 +570,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     ): Promise<"stop_outer" | "continued"> {
       let stopOuter = false;
       const browserPool = getBrowserSlotPool();
+      stability.startWave();
 
       const result = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
@@ -554,6 +591,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         tryAcquireSlot: () => browserPool.tryAcquire(),
         isTerminal: () => stopOuter || stillNeededNow() <= 0 || abortController.signal.aborted,
         onEvent: (event) => {
+          if (event.type === "worker_started") {
+            areasStartedCount += 1;
+            areaWorkerNumbers.set(event.area, event.slot + 1);
+          }
           if (event.type === "worker_finished") {
             recordAreaOutcome(supabaseAdmin, {
               niche: singleNiche,
@@ -572,16 +613,21 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           let rejected = 0;
           let areaExhausted = false;
           const chunk = { deliveredThisChunk: 0 };
-          const remaining = stillNeededNow();
-          // PHASE 5 FIX: streamTarget is this area's real, current per-round
-          // need — derived from `stillNeededNow()` (the GLOBAL remaining,
-          // shrinking live as siblings deliver), never the fixed full
-          // `target`. askFor (the RAW Maps scan budget) now floors on this
-          // dynamic value too, instead of on the fixed full shortfall — so
-          // an area claimed once the global target is nearly satisfied asks
-          // for a proportionally small scan, not a full-sized one.
-          const streamTarget = areaStreamTarget(remaining, STREAM_BATCH_FLOOR);
+          // PHASE 10 FIX (child_requested=5 regression): streamTarget
+          // (-> deliver_target, "child_requested" in the telemetry log
+          // below) is the fixed, AUTHORITATIVE GLOBAL `target`
+          // (`payload.shortfall`) — never `stillNeededNow()`. Giving each
+          // area's expensive, freshly-launched Google Maps session a
+          // productive target (up to the full request size) — instead of
+          // an artificially shrunk one — is what makes that session worth
+          // starting at all. Overshoot once the GLOBAL target is actually
+          // satisfied is still prevented, independently, by
+          // abortController.abort("TARGET_REACHED") in processLead() below
+          // (see roundSizing.ts's doc comment for the full writeup).
+          const streamTarget = areaStreamTarget(target, STREAM_BATCH_FLOOR);
           const askFor = computeAskFor(streamTarget);
+          const areaRecorder = stability.startArea(area, areaWorkerNumbers.get(area) ?? 0, streamTarget);
+          let lastPerf: Record<string, unknown> | undefined;
 
           try {
             for await (const lead of runEngineQuery(
@@ -610,6 +656,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               abortController.signal,
               (info) => {
                 areaExhausted = info.exhausted;
+                lastPerf = info.perf;
                 logChildTelemetry(`area=${area} city=${city}`, streamTarget, info);
                 if (info.success === false) {
                   console.warn(
@@ -621,7 +668,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               { requestId: reqId },
             )) {
               discovered += 1;
-              const outcome = await processLead(lead, streamTarget, chunk);
+              const outcome = await processLead(lead, streamTarget, chunk, areaRecorder);
               if (outcome === "stop_outer") {
                 stopOuter = true;
                 accepted = chunk.deliveredThisChunk;
@@ -635,6 +682,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           } finally {
             accepted = chunk.deliveredThisChunk;
             rejected = Math.max(0, discovered - accepted);
+            stability.recordAreaFinished(areaRecorder.finish(extractAreaSlaCounters(lastPerf?.area_sla as Record<string, unknown> | undefined)));
           }
 
           return { discovered, accepted, rejected, duplicates: 0, exhausted: areaExhausted, failed: false };
@@ -676,11 +724,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           }
 
           const chunk = rotation.chunkSize(remaining); // fairness share — diversity accounting only
-          // Streaming target for THIS spawned process — see discoverJob.ts.
-          const streamTarget = cityStreamTarget(remaining, chunk, STREAM_BATCH_FLOOR);
-          // PHASE 5 FIX: askFor's floor now tracks streamTarget (the real,
-          // currently-remaining need) instead of the fixed full `target` —
-          // see the matching comment in runGoogleAreaPoolForCity() above.
+          // PHASE 10 FIX: streamTarget (-> deliver_target) is the fixed,
+          // authoritative global `target`, never the shrinking `remaining`
+          // — see roundSizing.ts's doc comment for the full regression
+          // writeup. `chunk`/STREAM_BATCH_FLOOR remain true minimums only.
+          const streamTarget = cityStreamTarget(target, chunk, STREAM_BATCH_FLOOR);
           const askFor = computeAskFor(streamTarget);
 
           let citySearchExhausted = false;
@@ -807,6 +855,36 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         `maps_operations_after_parent_target=${mapsOperationsAfterParentTarget} ` +
         `candidates_after_parent_target=${candidatesAfterParentTarget}`,
     );
+
+    // PHASE 10 — RUN-TO-RUN STABILITY TELEMETRY (job-level summary + area
+    // yield report). Logged alongside the PHASE 5 summary above, on every
+    // exit path, for the exact same reason. See runStabilityTelemetry.ts
+    // for what each field means and compareAreaWaves()'s doc comment for
+    // why the wave-comparison signals deliberately don't name a single
+    // root cause.
+    const jobSummary = stability.summary({ areasStarted: areasStartedCount, targetReachedAtMs });
+    console.log(
+      `[poolExpandJob][stability] SUMMARY area_waves=${jobSummary.areaWaves} areas_started=${jobSummary.areasStarted} ` +
+        `areas_completed=${jobSummary.areasCompleted} global_target_time_ms=${jobSummary.globalTargetTimeMs ?? "n/a"} ` +
+        `total_runtime_ms=${jobSummary.totalRuntimeMs} per_wave_yield=${JSON.stringify(jobSummary.perWaveYield)} ` +
+        `avg_qualified_per_area=${jobSummary.averageQualifiedPerArea.toFixed(2)} ` +
+        `median_qualified_per_area=${jobSummary.medianQualifiedPerArea}`,
+    );
+    for (const row of stability.yieldReport()) {
+      console.log(
+        `[poolExpandJob][stability][area-yield] area=${row.area} raw=${row.raw} yielded=${row.yielded} ` +
+          `qualified=${row.qualified} yield_rate=${row.yield_rate.toFixed(3)} qualification_rate=${row.qualification_rate.toFixed(3)}`,
+      );
+    }
+    const waveComparison = stability.waveComparison();
+    if (waveComparison.waveCount > 1) {
+      for (const signal of waveComparison.signals) {
+        console.log(
+          `[poolExpandJob][stability][wave-variance] metric=${signal.metric} hypothesis="${signal.hypothesis}" ` +
+            `values=${JSON.stringify(signal.values.map((v) => Number(v.toFixed(2))))} cv=${signal.coefficientOfVariation.toFixed(3)}`,
+        );
+      }
+    }
   }
 
   console.log(

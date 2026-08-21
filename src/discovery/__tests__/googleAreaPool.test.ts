@@ -398,3 +398,95 @@ test("onEvent reports pool_start, worker_started/finished, and pool_stopped in a
   assert.equal(events.filter((e) => e === "worker_started").length, 2);
   assert.equal(events.filter((e) => e === "worker_finished").length, 2);
 });
+
+// ── PHASE 10 — discovery-capacity log storm regression ─────────────────
+//
+// Production emitted hundreds of identical `[discovery-capacity]` lines
+// and Railway dropped >1,600 messages because of it. The log line itself
+// sits at the correct call site (once per `runAreaWorkerPool()`
+// invocation, i.e. once per actual pool-sizing decision) — the storm was
+// really caused by `runAreaWorkerPool()` (and therefore this log) being
+// re-entered far too many times per job, a symptom of the
+// `child_requested=5` budget regression fixed in roundSizing.ts (see
+// roundSizing.test.ts). This test pins the log line's own contract in
+// isolation: no matter how many areas one pool run processes (many
+// candidates, many completed areas, many claim attempts), the sizing log
+// fires EXACTLY ONCE for that one call — it must never live inside the
+// per-area/per-candidate loop.
+test("PHASE 10: [discovery-capacity] is logged exactly once per runAreaWorkerPool() call, regardless of how many areas it processes", async () => {
+  const originalInfo = console.info;
+  const captured: string[] = [];
+  console.info = ((...args: unknown[]) => {
+    captured.push(String(args[0]));
+  }) as typeof console.info;
+
+  try {
+    const areas = ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8"];
+    let cursor = 0;
+
+    await runAreaWorkerPool({
+      configuredWorkers: 3,
+      totalCuratedAreas: areas.length,
+      availableCapacity: 3,
+      requestedQuantity: 10,
+      claimNextArea: async (usedAreas) => {
+        while (cursor < areas.length) {
+          const a = areas[cursor++];
+          if (!usedAreas.has(a)) return a;
+        }
+        return undefined;
+      },
+      // Each area "processes" several candidates worth of work — proving
+      // the log doesn't live inside any per-candidate/per-loop hot path.
+      runArea: async () => outcome({ discovered: 5, accepted: 2 }),
+      tryAcquireSlot: () => () => {},
+      isTerminal: () => false,
+    });
+
+    const capacityLines = captured.filter((line) => line.startsWith("[discovery-capacity]"));
+    assert.equal(capacityLines.length, 1, `expected exactly one [discovery-capacity] line per pool creation, got ${capacityLines.length}`);
+  } finally {
+    console.info = originalInfo;
+  }
+});
+
+test("PHASE 10: multiple SEQUENTIAL pool creations (simulating multiple rounds/areas in one job) each log exactly once — total matches call count, not candidate count", async () => {
+  const originalInfo = console.info;
+  const captured: string[] = [];
+  console.info = ((...args: unknown[]) => {
+    captured.push(String(args[0]));
+  }) as typeof console.info;
+
+  try {
+    const POOL_CREATIONS = 4;
+    for (let i = 0; i < POOL_CREATIONS; i++) {
+      const areas = [`R${i}-A1`, `R${i}-A2`];
+      let cursor = 0;
+      await runAreaWorkerPool({
+        configuredWorkers: 2,
+        totalCuratedAreas: areas.length,
+        availableCapacity: 2,
+        requestedQuantity: 10,
+        claimNextArea: async (usedAreas) => {
+          while (cursor < areas.length) {
+            const a = areas[cursor++];
+            if (!usedAreas.has(a)) return a;
+          }
+          return undefined;
+        },
+        runArea: async () => outcome({ discovered: 3, accepted: 1 }),
+        tryAcquireSlot: () => () => {},
+        isTerminal: () => false,
+      });
+    }
+
+    const capacityLines = captured.filter((line) => line.startsWith("[discovery-capacity]"));
+    assert.equal(
+      capacityLines.length,
+      POOL_CREATIONS,
+      "log count must equal the number of pool CREATIONS (rounds), never scale with candidates processed inside them",
+    );
+  } finally {
+    console.info = originalInfo;
+  }
+});

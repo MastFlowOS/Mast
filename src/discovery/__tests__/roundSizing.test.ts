@@ -1,22 +1,27 @@
 /**
  * PHASE 5 — target-aware discovery stopping.
+ * PHASE 10 — run-to-run stability: reverts the `child_requested=5`
+ * regression Phase 5 introduced.
  *
- * Two things are tested here, matching the audit's TESTS requirements:
+ * Three things are tested here:
  *
- *  1. The pure per-round sizing formulas (roundSizing.ts) that
- *     poolExpandJob.ts now uses for BOTH the legacy sequential path and
- *     the curated-area pooled path — proving `streamTarget`/`askFor`
- *     shrink with the live remaining target (never the fixed original
- *     job target), and that `deliver_target` (== streamTarget) is what
- *     gets sent to the engine, decoupled from the generous scan budget.
+ *  1. The pure per-round sizing formulas (roundSizing.ts) — proving
+ *     `streamTarget`/`askFor` (and therefore `deliver_target`) now track
+ *     the FIXED, authoritative global `target`, never a shrinking live
+ *     remaining, and never collapse to a tiny floor for a normal-sized
+ *     request (the exact regression production hit: a 10-lead request's
+ *     `child_requested` collapsing to 5).
  *
- *  2. Global-target-reached sibling stopping, using the SAME
- *     `runAreaWorkerPool` harness pattern already established in
- *     discoveryAreaPoolProductionPath.test.ts — proving that once a
- *     shared "remaining" counter hits 0 (simulating another sibling
- *     area/city having already delivered enough), no further area is
- *     claimed, and that a remaining of exactly 1 lets exactly one more
- *     area run before stopping.
+ *  2. Global-target-reached sibling stopping keeps working — using the
+ *     SAME `runAreaWorkerPool` harness pattern already established in
+ *     discoveryAreaPoolProductionPath.test.ts — proving that even though
+ *     every child now asks for the full target, concurrent siblings still
+ *     stop the instant the shared "remaining" counter hits 0, and no
+ *     overshoot happens.
+ *
+ *  3. `deliver_target` and `max_results` (`askFor`) are computed
+ *     independently — `askFor` is always a multiple of `streamTarget`,
+ *     never a value the engine could confuse for `deliver_target` itself.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -27,43 +32,39 @@ const STREAM_BATCH_FLOOR = 5;
 
 // ── 1. Pure formula tests ──────────────────────────────────────────────
 
-test("areaStreamTarget clamps to the streaming floor, never the full original target", () => {
-  // Plenty still remaining (10) — clamped to the floor (5), not 10.
-  assert.equal(areaStreamTarget(10, STREAM_BATCH_FLOOR), 5);
-  // Only 1 still remaining — must ask for exactly 1, not the floor.
-  assert.equal(areaStreamTarget(1, STREAM_BATCH_FLOOR), 1);
-  // Exactly at the floor.
-  assert.equal(areaStreamTarget(5, STREAM_BATCH_FLOOR), 5);
+test("areaStreamTarget: a normal 10-lead request asks each child for the full 10, never collapses to the floor", () => {
+  // THE CORE REGRESSION FIX: previously Math.min(target, floor) collapsed
+  // this to 5 (STREAM_BATCH_FLOOR) even though 10 leads were requested.
+  assert.equal(areaStreamTarget(10, STREAM_BATCH_FLOOR), 10);
+  assert.notEqual(areaStreamTarget(10, STREAM_BATCH_FLOOR), 5, "child_requested must never collapse to the floor for a normal-sized request");
 });
 
-test("areaStreamTarget never returns less than 1 even for a degenerate remaining", () => {
-  // stillNeededNow() <= 0 is guarded by the caller before this is ever
-  // invoked in production, but the formula itself must not return 0 or
-  // negative (an engine deliver_target of 0 has different semantics —
-  // LeadAcceptanceGate(0) is immediately target_reached).
-  assert.equal(areaStreamTarget(0, STREAM_BATCH_FLOOR), 1);
+test("areaStreamTarget never returns less than the floor even for a tiny target", () => {
+  assert.equal(areaStreamTarget(1, STREAM_BATCH_FLOOR), 5);
+  assert.equal(areaStreamTarget(0, STREAM_BATCH_FLOOR), 5);
 });
 
-test("cityStreamTarget follows the smaller of remaining vs the fairness/floor share", () => {
-  // remaining=10, chunk=2 (fairness share) -> floor(5) wins over chunk, but remaining(10) is bigger than floor -> min(10, max(2,5)) = 5
-  assert.equal(cityStreamTarget(10, 2, STREAM_BATCH_FLOOR), 5);
-  // remaining=1 -> must never exceed the true remaining need regardless of chunk/floor
-  assert.equal(cityStreamTarget(1, 2, STREAM_BATCH_FLOOR), 1);
-  assert.equal(cityStreamTarget(1, 10, STREAM_BATCH_FLOOR), 1);
+test("areaStreamTarget scales up for larger requests too — floor/target are both true minimums, never caps", () => {
+  assert.equal(areaStreamTarget(25, STREAM_BATCH_FLOOR), 25);
+  assert.equal(areaStreamTarget(100, STREAM_BATCH_FLOOR), 100);
 });
 
-test("computeAskFor scales with the dynamic streamTarget, not a fixed original job target", () => {
-  // THE CORE FIX: previously askFor floored on the full, fixed
-  // `payload.shortfall` (e.g. 10) regardless of how small streamTarget
-  // had shrunk to. Now it floors on streamTarget itself.
-  assert.equal(computeAskFor(5), 20); // 5*4
-  assert.equal(computeAskFor(1), 4);  // 1*4 -- NOT 10 (the old fixed-target floor)
-  assert.equal(computeAskFor(1) < 10, true, "askFor for a near-satisfied round must not still be sized for the full original job");
+test("cityStreamTarget: a normal 10-lead request is not shrunk by a small fairness chunk", () => {
+  // target=10, chunk=2 (fairness share) -> must still be 10, not min(10, max(2,5))=5 (the old bug).
+  assert.equal(cityStreamTarget(10, 2, STREAM_BATCH_FLOOR), 10);
+  // A generous chunk/floor never shrinks below the authoritative target either.
+  assert.equal(cityStreamTarget(10, 20, STREAM_BATCH_FLOOR), 20, "chunk/floor are minimums — the larger of target/chunk/floor wins");
+});
+
+test("computeAskFor scales with streamTarget and is always independent of / larger than deliver_target", () => {
+  assert.equal(computeAskFor(10), 40); // 10*4 — a normal 10-lead request's real scan budget
+  assert.equal(computeAskFor(5), 20);  // 5*4
+  assert.equal(computeAskFor(1), 4);   // 1*4
 });
 
 test("askFor is always >= streamTarget (never asks for less raw supply than the qualified target itself)", () => {
-  for (const remaining of [1, 2, 5, 20]) {
-    const st = areaStreamTarget(remaining, STREAM_BATCH_FLOOR);
+  for (const target of [1, 2, 5, 10, 20, 100]) {
+    const st = areaStreamTarget(target, STREAM_BATCH_FLOOR);
     const askFor = computeAskFor(st);
     assert.ok(askFor >= st);
   }
@@ -71,11 +72,12 @@ test("askFor is always >= streamTarget (never asks for less raw supply than the 
 
 // ── 2. Global-target-reached sibling stopping (coordination contract) ──
 //
-// Mirrors how poolExpandJob.ts actually wires runAreaWorkerPool: `isTerminal`
-// reads a live "remaining" function (stillNeededNow() in production);
-// each simulated area decrements a SHARED remaining counter by however
-// many it "delivers", exactly like processLead()/abortController do in
-// production once newForUser reaches payload.shortfall.
+// Mirrors how poolExpandJob.ts actually wires runAreaWorkerPool:
+// `isTerminal` reads a live "remaining" function (stillNeededNow() in
+// production) that is now DECOUPLED from each child's own deliver_target
+// (childRequested/streamTarget, sized off the fixed `target`) — the two
+// concerns are independent, and this section proves stopping still works
+// correctly with that decoupling in place.
 
 function makeHarness(totalRemaining: number, perAreaDeliver: number) {
   let remaining = totalRemaining;
@@ -123,6 +125,16 @@ test("TEST 1 — global target reached stops all further sibling discovery (no n
   assert.equal(harness.startedAreas.length, 2, "no third area should ever have been claimed once the global target was satisfied");
 });
 
+test("TEST 2 — a productive single area asking for the full target can satisfy the whole request alone", async () => {
+  // Simulates PHASE 10's fix directly: one area asked for the full
+  // target (deliver_target=10, not shrunk to 5) delivers all 10 itself.
+  const harness = makeHarness(10, 10);
+  await harness.run();
+
+  assert.equal(harness.getRemaining(), 0);
+  assert.equal(harness.startedAreas.length, 1, "one productive area, given a real budget, should be able to satisfy the whole request");
+});
+
 test("TEST 3 — one remaining global lead allows exactly one more area to run, then stops", async () => {
   const harness = makeHarness(1, 5); // one area can easily over-deliver if not clamped
   await harness.run();
@@ -139,15 +151,16 @@ test("TEST 4 — zero remaining global target stops immediately (no area ever cl
   assert.equal(result.startedWorkers, 0);
 });
 
-test("TEST 5 — no overshoot: delivered never exceeds what was actually still needed", async () => {
-  // A generous per-area delivery (STREAM_BATCH_FLOOR-sized, 5) against a
-  // total remaining of 7 must not jointly exceed 7 — the second area's
-  // own streamTarget (via areaStreamTarget(remaining=2, floor=5) === 2)
-  // is what production code passes as deliver_target, capping it exactly
-  // at what's left. This test simulates that clamped-at-source behavior
-  // (an area is only ever ASKED for min(remaining, floor), never floor
-  // unconditionally) — see areaStreamTarget itself, tested above.
-  let remaining = 7;
+test("TEST 5 — no overshoot even though every child now asks for the full authoritative target", async () => {
+  // Each area is given deliver_target = areaStreamTarget(target=7, floor)
+  // = 7 (the full, fixed target) — NOT clamped down as remaining shrinks.
+  // Overshoot protection comes from isTerminal() / the engine's own
+  // LeadAcceptanceGate honoring deliver_target as a per-CALL cap, and — in
+  // production — abortController.abort() the instant the plan-level
+  // target is met. This harness proves the pool-level coordination half
+  // of that: no sibling starts once remaining hits 0.
+  const target = 7;
+  let remaining = target;
   const delivered: number[] = [];
   const availableAreas = ["A1", "A2", "A3"];
   let nextIdx = 0;
@@ -156,7 +169,7 @@ test("TEST 5 — no overshoot: delivered never exceeds what was actually still n
     configuredWorkers: 1,
     totalCuratedAreas: availableAreas.length,
     availableCapacity: 1,
-    requestedQuantity: 7,
+    requestedQuantity: target,
     claimNextArea: async (used) => {
       while (nextIdx < availableAreas.length) {
         const a = availableAreas[nextIdx++];
@@ -165,9 +178,14 @@ test("TEST 5 — no overshoot: delivered never exceeds what was actually still n
       return undefined;
     },
     runArea: async (): Promise<AreaRunOutcome> => {
-      // Exactly what poolExpandJob.ts does: ask for areaStreamTarget(remaining, floor), not the raw floor.
-      const streamTarget = areaStreamTarget(remaining, STREAM_BATCH_FLOOR);
-      const thisAreaDelivers = streamTarget; // engine honors deliver_target exactly (see Python-side test)
+      // Exactly what poolExpandJob.ts does post-fix: ask for
+      // areaStreamTarget(target, floor) — the fixed authoritative target
+      // — but a real engine session still only delivers what's actually
+      // still needed globally (simulated here by clamping to `remaining`,
+      // mirroring the engine's own LeadAcceptanceGate honoring the plan's
+      // live delivered count via abort, not via a shrunk deliver_target).
+      const streamTarget = areaStreamTarget(target, STREAM_BATCH_FLOOR);
+      const thisAreaDelivers = Math.min(streamTarget, remaining);
       delivered.push(thisAreaDelivers);
       remaining -= thisAreaDelivers;
       return { discovered: thisAreaDelivers, accepted: thisAreaDelivers, rejected: 0, duplicates: 0, exhausted: true, failed: false };
@@ -179,4 +197,5 @@ test("TEST 5 — no overshoot: delivered never exceeds what was actually still n
   const totalDelivered = delivered.reduce((a, b) => a + b, 0);
   assert.equal(totalDelivered, 7, "total delivered must equal exactly what was needed, no more");
   assert.equal(remaining, 0);
+  assert.equal(delivered.length, 1, "one area asked for the full target should satisfy this request without needing siblings");
 });

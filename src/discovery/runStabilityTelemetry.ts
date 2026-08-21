@@ -32,6 +32,89 @@
  * a verdict this module hands down on its own.
  */
 
+/**
+ * PHASE 11.1 — area-yield telemetry honesty.
+ *
+ * Distinguishes WHY an area's `AreaTelemetryRecord` looks the way it does:
+ *
+ *   fresh_area_run     — a child area worker actually launched and
+ *                         performed discovery work; the engine reported
+ *                         real `area_sla` Maps-funnel counters this pass.
+ *   partial_area_run   — the child started but was stopped (watchdog,
+ *                         cancellation, or an outright failure) before it
+ *                         could report a normal completion. Whatever was
+ *                         genuinely observed before the stop is preserved
+ *                         and reported as-is — never zeroed out, never
+ *                         upgraded to look like a full run.
+ *   parent_pool_cache   — the child's engine invocation completed
+ *                         NORMALLY (its own target was reached / it
+ *                         exhausted / its consumer stopped it on purpose)
+ *                         but never reported a fresh Maps funnel for this
+ *                         pass. Whatever got delivered did not come from
+ *                         fresh raw/yielded discovery counted THIS
+ *                         invocation — see computeAreaYieldReport()'s
+ *                         `n/a` handling below.
+ *   unknown             — insufficient evidence to say which of the above
+ *                         applies (e.g. this area's engine invocation
+ *                         never reported ANY completion info at all, or
+ *                         an old caller never wired the new evidence
+ *                         through) — never guessed, always the safe
+ *                         (all-n/a) default in the report.
+ *
+ * See `determineAreaWorkSource()` below for the pure decision function,
+ * and pythonBridge.ts's `EngineDoneInfo.terminationReason` for the
+ * authoritative per-invocation signal this is built from.
+ */
+export type AreaWorkSource = "fresh_area_run" | "partial_area_run" | "parent_pool_cache" | "unknown";
+
+/**
+ * Mirrors `EngineDoneInfo["terminationReason"]` (pythonBridge.ts) without
+ * importing it — this module stays engine/bridge-import-free (see the
+ * module doc comment above), and the two are kept in sync structurally
+ * (string literal union) rather than by a hard type dependency.
+ */
+export type AreaTerminationReason =
+  | "SUCCESS_TARGET_REACHED"
+  | "SUCCESS_EXHAUSTED"
+  | "SUCCESS_CONSUMER_STOPPED"
+  | "WATCHDOG_TIMEOUT"
+  | "CANCELLED"
+  | "FAILURE";
+
+export type AreaWorkEvidence = {
+  /** True when the engine reported a real numeric `maps_candidates_seen` for this pass (see extractAreaSlaCounters). */
+  hasFreshMapsTelemetry: boolean;
+  /** This area's own engine invocation's termination classification — undefined only for a call site that doesn't thread it through. */
+  terminationReason?: AreaTerminationReason;
+  /** False only when this area's engine invocation never produced ANY onDone/perf info at all (e.g. threw before completion could be observed). */
+  perfReceived: boolean;
+};
+
+/**
+ * Pure classification — see the `AreaWorkSource` doc comment above for what
+ * each value means. Deliberately does NOT look at `delivered`/`qualified`
+ * counts: a cached delivery can be >0, and the PHASE 11.1 prompt is
+ * explicit that freshness must never be inferred from delivery counts.
+ */
+export function determineAreaWorkSource(evidence: AreaWorkEvidence): AreaWorkSource {
+  if (!evidence.perfReceived) return "unknown";
+
+  const stoppedEarly =
+    evidence.terminationReason === "WATCHDOG_TIMEOUT" ||
+    evidence.terminationReason === "CANCELLED" ||
+    evidence.terminationReason === "FAILURE";
+  if (stoppedEarly) return "partial_area_run";
+
+  if (evidence.hasFreshMapsTelemetry) return "fresh_area_run";
+
+  // No fresh Maps funnel reported. If we also don't know how this run
+  // ended (old call site, terminationReason never threaded through),
+  // that's insufficient evidence either way — don't guess "cache".
+  if (evidence.terminationReason === undefined) return "unknown";
+
+  return "parent_pool_cache";
+}
+
 /** One area worker's full run-stability record — see the PHASE 10 prompt's field list. */
 export type AreaTelemetryRecord = {
   area: string;
@@ -50,6 +133,10 @@ export type AreaTelemetryRecord = {
   runtimeMs: number;
   firstQualifiedMs: number | null;
   firstDeliveredMs: number | null;
+  /** PHASE 11.1: true only when `area_sla.maps_candidates_seen` was a real number reported by the engine this pass (see extractAreaSlaCounters). */
+  hasFreshMapsTelemetry: boolean;
+  /** PHASE 11.1: why this record looks the way it does — see the `AreaWorkSource` doc comment above. */
+  source: AreaWorkSource;
 };
 
 /** Raw `area_sla` counters as reported by the Python engine's `__done__` perf blob. */
@@ -132,11 +219,39 @@ export class AreaTelemetryRecorder {
     if (this.firstDeliveredMs === null) this.firstDeliveredMs = this.now() - this.startedAtMs;
   }
 
-  finish(areaSla: AreaSlaCounters = {}): AreaTelemetryRecord {
+  /**
+   * `evidence` is PHASE 11.1's addition: how this area's engine invocation
+   * actually ended, used to classify `source` below — see
+   * `determineAreaWorkSource()`. Optional, and defaults to "we don't know
+   * how it ended but we did get SOME completion callback" (perfReceived:
+   * true, terminationReason: undefined) for callers that predate this
+   * phase, which resolves to `fresh_area_run` when real area_sla telemetry
+   * is present (unchanged behavior) or `unknown` when it isn't (safer than
+   * the old silent fallback — see computeAreaYieldReport()).
+   */
+  finish(
+    areaSla: AreaSlaCounters = {},
+    evidence: { terminationReason?: AreaTerminationReason; perfReceived?: boolean } = {},
+  ): AreaTelemetryRecord {
+    const hasFreshMapsTelemetry = areaSla.mapsCandidatesSeen !== undefined;
+    const perfReceived = evidence.perfReceived ?? true;
+    const source = determineAreaWorkSource({
+      hasFreshMapsTelemetry,
+      terminationReason: evidence.terminationReason,
+      perfReceived,
+    });
     return {
       area: this.area,
       workerNumber: this.workerNumber,
       childRequested: this.childRequested,
+      // PHASE 11.1: these two fields are UNCHANGED — still fall back to the
+      // local candidate count when the engine reported no fresh area_sla,
+      // preserving every existing consumer of AreaTelemetryRecord (wave
+      // comparison, job summaries, etc. — see this file's module doc
+      // comment and the PHASE 11.1 prompt's "preserve all existing
+      // telemetry" step). What changed is that computeAreaYieldReport()
+      // below no longer presents this fallback value AS IF it were a real
+      // raw/yielded Maps count when `source` says otherwise.
       mapsCandidatesSeen: areaSla.mapsCandidatesSeen ?? this.candidatesSeenLocal,
       mapsCandidatesYielded: areaSla.mapsCandidatesYielded ?? this.candidatesSeenLocal,
       earlyNew: areaSla.earlyNew ?? 0,
@@ -150,6 +265,8 @@ export class AreaTelemetryRecorder {
       runtimeMs: this.now() - this.startedAtMs,
       firstQualifiedMs: this.firstQualifiedMs,
       firstDeliveredMs: this.firstDeliveredMs,
+      hasFreshMapsTelemetry,
+      source,
     };
   }
 }
@@ -272,11 +389,30 @@ export class RunStabilityTracker {
 
 // ── Deterministic area yield report (PHASE 10 item 4) ──────────────────
 
+/**
+ * PHASE 11.1: `raw`/`yielded`/`qualified` are now honesty-gated by
+ * `source` — "n/a" whenever this area didn't demonstrably do fresh
+ * discovery/qualification work THIS invocation, instead of silently
+ * substituting a fallback/cached number as if it were a real funnel count
+ * (the bug this phase fixes — see the module doc comment above).
+ *
+ * `maps_candidates_seen`/`maps_candidates_yielded` are the PRESERVED,
+ * UNCHANGED full counters from `AreaTelemetryRecord` (real engine value,
+ * or the pre-existing local-count fallback) — kept for anyone doing
+ * deeper diagnostic analysis; only the `raw`/`yielded`/`qualified`
+ * headline fields are gated. `delivered` and `runtime_ms` are always real
+ * Node-local observations regardless of source and are never hidden.
+ */
 export type AreaYieldReportRow = {
   area: string;
-  raw: number;
-  yielded: number;
-  qualified: number;
+  source: AreaWorkSource;
+  raw: number | "n/a";
+  yielded: number | "n/a";
+  qualified: number | "n/a";
+  delivered: number;
+  runtime_ms: number;
+  maps_candidates_seen: number;
+  maps_candidates_yielded: number;
   yield_rate: number;
   qualification_rate: number;
 };
@@ -288,14 +424,42 @@ function safeRate(numerator: number, denominator: number): number {
 
 /** One row per completed area, in completion order — never aggregated or reordered, so it stays directly comparable to the raw per-area log lines. */
 export function computeAreaYieldReport(records: readonly AreaTelemetryRecord[]): AreaYieldReportRow[] {
-  return records.map((r) => ({
-    area: r.area,
-    raw: r.mapsCandidatesSeen,
-    yielded: r.mapsCandidatesYielded,
-    qualified: r.qualified,
-    yield_rate: safeRate(r.mapsCandidatesYielded, r.mapsCandidatesSeen),
-    qualification_rate: safeRate(r.qualified, r.mapsCandidatesYielded),
-  }));
+  return records.map((r) => {
+    // Backward compat (PHASE 11.1 test 7): a record built before this
+    // phase (or by a caller that never wired the new fields through) has
+    // no `source`/`hasFreshMapsTelemetry` — default to the SAFE reading
+    // ("unknown" → every headline field n/a) rather than crashing or
+    // guessing "fresh".
+    const source: AreaWorkSource = r.source ?? "unknown";
+    const isFreshOrPartial = source === "fresh_area_run" || source === "partial_area_run";
+    // Even for a partial run, raw/yielded are only real if the engine
+    // actually reported a fresh area_sla before it was stopped — an area
+    // aborted before any area_sla ever came back has no genuine raw/yielded
+    // evidence, only whatever Node observed locally (candidates seen over
+    // the stream), which is exactly the number this phase says must never
+    // be presented as "raw"/"yielded".
+    const rawReportable = isFreshOrPartial && r.hasFreshMapsTelemetry;
+
+    return {
+      area: r.area,
+      source,
+      raw: rawReportable ? r.mapsCandidatesSeen : "n/a",
+      yielded: rawReportable ? r.mapsCandidatesYielded : "n/a",
+      // `qualified` is a genuine Node-local observation (recordQualified()
+      // firing on a real per-lead pipeline event) independent of area_sla,
+      // so it's reportable for fresh/partial runs even without fresh Maps
+      // telemetry — but NEVER for parent_pool_cache/unknown, where this
+      // phase's prompt is explicit that a cache-sourced delivery must not
+      // be presented as a freshly-qualified count (see Step 6's examples).
+      qualified: isFreshOrPartial ? r.qualified : "n/a",
+      delivered: r.delivered,
+      runtime_ms: r.runtimeMs,
+      maps_candidates_seen: r.mapsCandidatesSeen,
+      maps_candidates_yielded: r.mapsCandidatesYielded,
+      yield_rate: safeRate(r.mapsCandidatesYielded, r.mapsCandidatesSeen),
+      qualification_rate: safeRate(r.qualified, r.mapsCandidatesYielded),
+    };
+  });
 }
 
 // ── Deterministic wave-comparison variance signals (PHASE 10 item 4) ───

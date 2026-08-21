@@ -30,6 +30,7 @@ import {
   RunStabilityTracker,
   extractAreaSlaCounters,
   type AreaTelemetryRecorder,
+  type AreaTerminationReason,
 } from "../discovery/runStabilityTelemetry.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
 import { getResourceCapacity } from "../lib/resourceCapacity.js";
@@ -628,6 +629,15 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           const askFor = computeAskFor(streamTarget);
           const areaRecorder = stability.startArea(area, areaWorkerNumbers.get(area) ?? 0, streamTarget);
           let lastPerf: Record<string, unknown> | undefined;
+          // PHASE 11.1: the bridge's own termination classification for
+          // THIS area's engine invocation (see EngineDoneInfo.terminationReason
+          // in pythonBridge.ts) — the authoritative signal for whether this
+          // area completed normally, was stopped mid-flight, or failed.
+          // `doneInfoReceived` distinguishes "we got a completion callback
+          // with no fresh telemetry in it" (parent_pool_cache-eligible)
+          // from "we never got a completion callback at all" (unknown).
+          let lastTerminationReason: AreaTerminationReason | undefined;
+          let doneInfoReceived = false;
 
           try {
             for await (const lead of runEngineQuery(
@@ -657,6 +667,8 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               (info) => {
                 areaExhausted = info.exhausted;
                 lastPerf = info.perf;
+                lastTerminationReason = info.terminationReason;
+                doneInfoReceived = true;
                 logChildTelemetry(`area=${area} city=${city}`, streamTarget, info);
                 if (info.success === false) {
                   console.warn(
@@ -682,7 +694,12 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           } finally {
             accepted = chunk.deliveredThisChunk;
             rejected = Math.max(0, discovered - accepted);
-            stability.recordAreaFinished(areaRecorder.finish(extractAreaSlaCounters(lastPerf?.area_sla as Record<string, unknown> | undefined)));
+            stability.recordAreaFinished(
+              areaRecorder.finish(
+                extractAreaSlaCounters(lastPerf?.area_sla as Record<string, unknown> | undefined),
+                { terminationReason: lastTerminationReason, perfReceived: doneInfoReceived },
+              ),
+            );
           }
 
           return { discovered, accepted, rejected, duplicates: 0, exhausted: areaExhausted, failed: false };

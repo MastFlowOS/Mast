@@ -17,6 +17,7 @@ import {
   computeJobTelemetrySummary,
   computeAreaYieldReport,
   compareAreaWaves,
+  determineAreaWorkSource,
   type AreaTelemetryRecord,
 } from "../runStabilityTelemetry.js";
 
@@ -43,6 +44,11 @@ function record(overrides: Partial<AreaTelemetryRecord> = {}): AreaTelemetryReco
     runtimeMs: 5000,
     firstQualifiedMs: 500,
     firstDeliveredMs: 600,
+    // Default to a legitimate fresh run for tests that predate PHASE 11.1
+    // and aren't exercising source semantics — see the dedicated
+    // "area-yield report honesty" section below for cache/partial/unknown.
+    hasFreshMapsTelemetry: true,
+    source: "fresh_area_run",
     ...overrides,
   };
 }
@@ -234,20 +240,241 @@ test("RunStabilityTracker.startWave() records a new wave boundary each call — 
 
 // ── computeAreaYieldReport (PHASE 10 item 4) ────────────────────────────
 
-test("computeAreaYieldReport computes yield_rate/qualification_rate per area", () => {
+test("computeAreaYieldReport computes yield_rate/qualification_rate per area for a fresh run", () => {
   const records = [
     record({ area: "A1", mapsCandidatesSeen: 100, mapsCandidatesYielded: 50, qualified: 10 }),
     record({ area: "A2", mapsCandidatesSeen: 40, mapsCandidatesYielded: 40, qualified: 40 }),
   ];
   const report = computeAreaYieldReport(records);
-  assert.deepEqual(report[0], { area: "A1", raw: 100, yielded: 50, qualified: 10, yield_rate: 0.5, qualification_rate: 0.2 });
-  assert.deepEqual(report[1], { area: "A2", raw: 40, yielded: 40, qualified: 40, yield_rate: 1, qualification_rate: 1 });
+  assert.deepEqual(report[0], {
+    area: "A1",
+    source: "fresh_area_run",
+    raw: 100,
+    yielded: 50,
+    qualified: 10,
+    delivered: 10,
+    runtime_ms: 5000,
+    maps_candidates_seen: 100,
+    maps_candidates_yielded: 50,
+    yield_rate: 0.5,
+    qualification_rate: 0.2,
+  });
+  assert.deepEqual(report[1], {
+    area: "A2",
+    source: "fresh_area_run",
+    raw: 40,
+    yielded: 40,
+    qualified: 40,
+    delivered: 10,
+    runtime_ms: 5000,
+    maps_candidates_seen: 40,
+    maps_candidates_yielded: 40,
+    yield_rate: 1,
+    qualification_rate: 1,
+  });
 });
 
 test("computeAreaYieldReport never divides by zero — returns 0 rate for a zero-candidate area", () => {
   const report = computeAreaYieldReport([record({ area: "Dead", mapsCandidatesSeen: 0, mapsCandidatesYielded: 0, qualified: 0 })]);
   assert.equal(report[0].yield_rate, 0);
   assert.equal(report[0].qualification_rate, 0);
+});
+
+// ── PHASE 11.1 — area-yield telemetry honesty ───────────────────────────
+
+test("determineAreaWorkSource: fresh area_sla telemetry + normal completion -> fresh_area_run", () => {
+  assert.equal(
+    determineAreaWorkSource({ hasFreshMapsTelemetry: true, terminationReason: "SUCCESS_TARGET_REACHED", perfReceived: true }),
+    "fresh_area_run",
+  );
+  assert.equal(
+    determineAreaWorkSource({ hasFreshMapsTelemetry: true, terminationReason: "SUCCESS_EXHAUSTED", perfReceived: true }),
+    "fresh_area_run",
+  );
+});
+
+test("determineAreaWorkSource: normal completion but no fresh area_sla -> parent_pool_cache (never inferred from delivered count)", () => {
+  assert.equal(
+    determineAreaWorkSource({ hasFreshMapsTelemetry: false, terminationReason: "SUCCESS_TARGET_REACHED", perfReceived: true }),
+    "parent_pool_cache",
+  );
+  assert.equal(
+    determineAreaWorkSource({ hasFreshMapsTelemetry: false, terminationReason: "SUCCESS_CONSUMER_STOPPED", perfReceived: true }),
+    "parent_pool_cache",
+  );
+});
+
+test("determineAreaWorkSource: stopped before normal completion -> partial_area_run, regardless of telemetry presence", () => {
+  assert.equal(
+    determineAreaWorkSource({ hasFreshMapsTelemetry: true, terminationReason: "WATCHDOG_TIMEOUT", perfReceived: true }),
+    "partial_area_run",
+  );
+  assert.equal(
+    determineAreaWorkSource({ hasFreshMapsTelemetry: false, terminationReason: "CANCELLED", perfReceived: true }),
+    "partial_area_run",
+  );
+  assert.equal(
+    determineAreaWorkSource({ hasFreshMapsTelemetry: false, terminationReason: "FAILURE", perfReceived: true }),
+    "partial_area_run",
+  );
+});
+
+test("determineAreaWorkSource: no completion info at all -> unknown", () => {
+  assert.equal(determineAreaWorkSource({ hasFreshMapsTelemetry: false, perfReceived: false }), "unknown");
+  assert.equal(determineAreaWorkSource({ hasFreshMapsTelemetry: true, perfReceived: false }), "unknown");
+});
+
+test("determineAreaWorkSource: completion info present but no terminationReason and no fresh telemetry -> unknown, not guessed as cache", () => {
+  assert.equal(determineAreaWorkSource({ hasFreshMapsTelemetry: false, perfReceived: true }), "unknown");
+});
+
+test("AreaTelemetryRecorder.finish() classifies source from the passed evidence, independent of local candidate/delivery counts", () => {
+  const rec = new AreaTelemetryRecorder("Brooklyn", 1, 10);
+  // Simulates the confirmed bug scenario: 10 leads streamed through Node
+  // and delivered, but the engine reported no fresh area_sla this pass —
+  // this must NOT be reported as a fresh 10/10/10 funnel.
+  for (let i = 0; i < 10; i++) {
+    rec.recordCandidateSeen({ hasEmail: true, hasInstagram: true });
+    rec.recordQualified();
+    rec.recordDelivered();
+  }
+  const finished = rec.finish({}, { terminationReason: "SUCCESS_TARGET_REACHED", perfReceived: true });
+  assert.equal(finished.source, "parent_pool_cache");
+  assert.equal(finished.hasFreshMapsTelemetry, false);
+  // Full counters are still preserved (PHASE 10 telemetry untouched) —
+  // only the area-yield report's headline fields are gated (below).
+  assert.equal(finished.mapsCandidatesSeen, 10);
+  assert.equal(finished.qualified, 10);
+  assert.equal(finished.delivered, 10);
+});
+
+test("1. fresh area run produces source=fresh_area_run with real numeric raw/yielded values in the yield report", () => {
+  const rec = new AreaTelemetryRecorder("Brooklyn", 1, 10);
+  rec.recordCandidateSeen({ hasEmail: true, hasInstagram: true });
+  rec.recordQualified();
+  rec.recordDelivered();
+  const finished = rec.finish(
+    { mapsCandidatesSeen: 777, mapsCandidatesYielded: 84 },
+    { terminationReason: "SUCCESS_TARGET_REACHED", perfReceived: true },
+  );
+  const [row] = computeAreaYieldReport([finished]);
+  assert.equal(row.source, "fresh_area_run");
+  assert.equal(row.raw, 777);
+  assert.equal(row.yielded, 84);
+  assert.equal(row.qualified, 1);
+});
+
+test("2. parent-pool cache delivery produces source=parent_pool_cache, raw=n/a, yielded=n/a, and never copies delivered into raw/yielded", () => {
+  const rec = new AreaTelemetryRecorder("Brooklyn", 1, 10);
+  for (let i = 0; i < 10; i++) {
+    rec.recordCandidateSeen({ hasEmail: true, hasInstagram: true });
+    rec.recordQualified();
+    rec.recordDelivered();
+  }
+  const finished = rec.finish({}, { terminationReason: "SUCCESS_TARGET_REACHED", perfReceived: true });
+  const [row] = computeAreaYieldReport([finished]);
+  assert.equal(row.source, "parent_pool_cache");
+  assert.equal(row.raw, "n/a");
+  assert.equal(row.yielded, "n/a");
+  assert.equal(row.qualified, "n/a");
+  assert.equal(row.delivered, 10, "delivered stays a real, visible number");
+  assert.notEqual(row.raw, row.delivered, "raw must never silently equal delivered");
+  assert.notEqual(row.yielded, row.delivered, "yielded must never silently equal delivered");
+});
+
+test("3. a partial/aborted area produces source=partial_area_run and preserves observed counters", () => {
+  const rec = new AreaTelemetryRecorder("Queens", 1, 10);
+  rec.recordCandidateSeen({ hasEmail: true, hasInstagram: true });
+  rec.recordCandidateSeen({ hasEmail: false, hasInstagram: true });
+  rec.recordQualified();
+  rec.recordDelivered();
+  // Engine reported partial real telemetry before being cancelled.
+  const finished = rec.finish(
+    { mapsCandidatesSeen: 120, mapsCandidatesYielded: 12 },
+    { terminationReason: "CANCELLED", perfReceived: true },
+  );
+  const [row] = computeAreaYieldReport([finished]);
+  assert.equal(row.source, "partial_area_run");
+  assert.equal(row.raw, 120, "observed values are preserved, not fabricated or zeroed");
+  assert.equal(row.yielded, 12);
+  assert.equal(row.qualified, 1);
+  assert.equal(row.delivered, 1);
+});
+
+test("3b. a partial/aborted area with no telemetry ever reported keeps raw/yielded n/a but still reports observed qualified/delivered", () => {
+  const rec = new AreaTelemetryRecorder("Queens", 1, 10);
+  rec.recordCandidateSeen({ hasEmail: true, hasInstagram: true });
+  rec.recordQualified();
+  rec.recordDelivered();
+  const finished = rec.finish({}, { terminationReason: "WATCHDOG_TIMEOUT", perfReceived: true });
+  const [row] = computeAreaYieldReport([finished]);
+  assert.equal(row.source, "partial_area_run");
+  assert.equal(row.raw, "n/a", "no genuine raw Maps evidence ever came back for this aborted run");
+  assert.equal(row.yielded, "n/a");
+  assert.equal(row.qualified, 1, "still a real, locally-observed count");
+  assert.equal(row.delivered, 1);
+});
+
+test("4. cached area delivery does not inflate the area's own qualification_rate/yield_rate away from reality", () => {
+  // qualification_rate/yield_rate are computed off the PRESERVED
+  // maps_candidates_seen/yielded diagnostic counters (unchanged Phase 10
+  // math) — cache-sourced rows still expose these for deeper analysis,
+  // but the headline raw/yielded/qualified fields never claim a fresh
+  // funnel exists where none was observed.
+  const cached = record({
+    area: "Brooklyn",
+    source: "parent_pool_cache",
+    hasFreshMapsTelemetry: false,
+    mapsCandidatesSeen: 10,
+    mapsCandidatesYielded: 10,
+    qualified: 10,
+    delivered: 10,
+  });
+  const [row] = computeAreaYieldReport([cached]);
+  assert.equal(row.raw, "n/a");
+  assert.equal(row.yielded, "n/a");
+  assert.equal(row.qualified, "n/a");
+});
+
+test("5. existing parent target / sibling stop behavior is unchanged — fresh_area_run records still compute normally alongside cache/partial rows", () => {
+  const records = [
+    record({ area: "Manhattan", source: "fresh_area_run", hasFreshMapsTelemetry: true, mapsCandidatesSeen: 200, mapsCandidatesYielded: 20, qualified: 5, delivered: 5 }),
+    record({ area: "Brooklyn", source: "parent_pool_cache", hasFreshMapsTelemetry: false, delivered: 10 }),
+  ];
+  const report = computeAreaYieldReport(records);
+  assert.equal(report[0].source, "fresh_area_run");
+  assert.equal(report[0].raw, 200);
+  assert.equal(report[1].source, "parent_pool_cache");
+  assert.equal(report[1].raw, "n/a");
+});
+
+test("6. run-stability job summary remains valid — averageQualifiedPerArea still reflects each record's real local qualified count regardless of source", () => {
+  const records = [
+    record({ area: "Brooklyn", source: "parent_pool_cache", hasFreshMapsTelemetry: false, qualified: 10 }),
+    record({ area: "Manhattan", source: "fresh_area_run", hasFreshMapsTelemetry: true, qualified: 4 }),
+  ];
+  const summary = computeJobTelemetrySummary(records, {
+    areaWaves: 1,
+    areasStarted: 2,
+    totalRuntimeMs: 10000,
+    globalTargetTimeMs: null,
+    waveBoundaries: [0],
+  });
+  assert.equal(summary.averageQualifiedPerArea, 7); // (10 + 4) / 2 — job summary math untouched by this phase
+});
+
+test("7. backward compatibility: a record with no source/hasFreshMapsTelemetry field does not crash the report and defaults to all-n/a", () => {
+  const legacyRecord = record();
+  // Simulate a pre-PHASE-11.1 record (no `source`/`hasFreshMapsTelemetry`).
+  delete (legacyRecord as Partial<AreaTelemetryRecord>).source;
+  delete (legacyRecord as Partial<AreaTelemetryRecord>).hasFreshMapsTelemetry;
+
+  const [row] = computeAreaYieldReport([legacyRecord]);
+  assert.equal(row.source, "unknown");
+  assert.equal(row.raw, "n/a");
+  assert.equal(row.yielded, "n/a");
+  assert.equal(row.qualified, "n/a");
+  assert.equal(row.delivered, legacyRecord.delivered, "delivered is still surfaced even for an unclassifiable legacy record");
 });
 
 // ── compareAreaWaves (PHASE 10 item 4 — deterministic variance signals) ─

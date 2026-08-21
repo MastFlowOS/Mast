@@ -237,6 +237,7 @@ something that hasn't already been rebuilt).
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -1172,6 +1173,52 @@ def build_seven_stage_pipeline(
             checked=checked,
         )
 
+    def _log_discovery_early_prune(
+        candidate: BusinessCandidate, decision: EarlyDedupDecision
+    ) -> None:
+        """
+        Phase 11.3 — telemetry only. Fires exactly once, only for the
+        "no valid email on Maps and no website to discover email" early
+        prune gate below (the `ch == "email" and not has_site` branch),
+        so the rejected candidate can be identified for audit. Does NOT
+        change prune behavior in any way — this is called immediately
+        before that branch's existing `return`, never instead of it.
+
+        Every field is one already sitting on `candidate` or on the
+        `decision` this call site already computed via
+        `_early_dedup_decision` earlier in `_on_candidate` — no extra
+        fetch, no extra parsing, no network call, mirroring
+        `log_early_dedup_decision`'s own zero-cost contract. `provider`
+        reads `candidate.provider` directly (set by the discovery
+        provider itself, e.g. "overpass"/"google_maps" — see
+        providers/*_provider.py's own `provider_id`), never guessed from
+        a URL string. `maps_place_id` reuses `decision.maps_place_id`
+        (already derived from `candidate.maps_url` for the early-dedup
+        check above) rather than recomputing it. `source_url` is the raw
+        `candidate.maps_url` so both the derived id and its source are
+        visible. `has_website` is always False on this exact gate (the
+        branch below only runs when `not has_site`), computed from
+        `candidate.website` rather than hardcoded so the log stays
+        accurate if this helper is ever reused elsewhere. Never allowed
+        to raise into the discovery pipeline — logging failures must
+        never affect discovery.
+        """
+        try:
+            fields = {
+                "provider": candidate.provider or "unknown",
+                "business_name": candidate.name,
+                "address": candidate.address,
+                "phone": candidate.phone,
+                "maps_place_id": decision.maps_place_id,
+                "source_url": candidate.maps_url,
+                "has_phone": bool(candidate.phone),
+                "has_website": bool(candidate.website),
+                "prune_reason": "no_email_and_no_website",
+            }
+            log.info("[discovery-early-prune] %s", json.dumps(fields))
+        except Exception:
+            log.debug("_log_discovery_early_prune failed — ignored", exc_info=True)
+
     def _on_candidate(candidate: BusinessCandidate) -> None:
         """
         See workers/discovery_worker.py's own "Ownership of
@@ -1272,6 +1319,7 @@ def build_seven_stage_pipeline(
                     # False.
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
                     log.info("discovery: pipeline_id=%s safe-pruned (no valid email on Maps and no website to discover email)", candidate.pipeline_id)
+                    _log_discovery_early_prune(candidate, decision)
                     return
                 elif ch == "phone" and not candidate.phone and not has_site:
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)

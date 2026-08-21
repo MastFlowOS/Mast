@@ -364,6 +364,13 @@ class RunProfiler:
             ("maps_rounds", self.counter("maps_rounds")),
             ("maps_candidates_seen", self.counter("maps_candidates_seen")),
             ("maps_candidates_yielded", self.counter("maps_candidates_yielded")),
+            # PHASE 12A (zero-risk Maps click reduction): direct click
+            # count (see MapsScraper.search()'s _human_click call site)
+            # and the count of clicks skipped because the card itself
+            # already, explicitly reported the business as permanently
+            # closed — the only behavior change this phase makes.
+            ("maps_candidates_clicked", self.counter("maps_candidates_clicked")),
+            ("maps_candidates_card_closed_skipped", self.counter("maps_candidates_card_closed_skipped")),
             ("overpass_requests", self.counter("overpass_requests")),
             ("overpass_retries", self.counter("overpass_retries")),
             ("website_ms", _sum("website_worker")),

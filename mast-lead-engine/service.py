@@ -1490,6 +1490,11 @@ async def run_query(
             "maps_rounds": profiler.counter("maps_rounds"),
             "maps_candidates_seen": profiler.counter("maps_candidates_seen"),
             "maps_candidates_yielded": profiler.counter("maps_candidates_yielded"),
+            # PHASE 12A (zero-risk Maps click reduction) — kept in sync
+            # with the same two new fields RunProfiler.area_sla_line()
+            # now reports; see that method's docstring.
+            "maps_candidates_clicked": profiler.counter("maps_candidates_clicked"),
+            "maps_candidates_card_closed_skipped": profiler.counter("maps_candidates_card_closed_skipped"),
             "overpass_requests": profiler.counter("overpass_requests"),
             "overpass_retries": profiler.counter("overpass_retries"),
             "website_ms": profiler._stages["website_worker"].total_ms,

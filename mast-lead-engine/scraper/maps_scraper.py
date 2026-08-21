@@ -893,6 +893,87 @@ async def _human_click(page: Page, element) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Card-level pre-click signal extraction (Phase 12A — zero-risk Maps click
+# reduction, forensic audit §7/§9)
+#
+# The Phase 12 audit found that the results-feed anchor already carries
+# name/rating/review-count/closed-status text (typically via its
+# aria-label) before it is ever clicked, but the collection loop discarded
+# everything except `href`. This phase reads that already-rendered text —
+# no navigation, no extra page load, no extra rate-limit token — and uses
+# it for exactly ONE decision: whether the card explicitly, unambiguously
+# says the business is permanently closed. Every other field captured here
+# (rating, review_count, name) is informational only in this phase; NOTHING
+# below may branch discovery behavior on them — see the click-gating site
+# in `MapsScraper.search()` for the single, narrow use of `closed`.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Deliberately the same two phrases `_extract_place_data` already checks
+# for post-click (`place.closed`, see its html_low scan) — kept in sync
+# rather than inventing a new vocabulary, since both are trying to detect
+# the exact same Google-rendered status, just at two different points in
+# the pipeline (before vs. after the click).
+_CARD_CLOSED_MARKERS = (
+    "permanently closed",
+    "closed permanently",
+)
+
+# Best-effort patterns for the two other cheap card signals. Neither
+# feeds a decision in this phase (see module note above) — they exist so
+# the "minimal card signal object" the audit called for is actually
+# populated for future telemetry/visibility, not left as dead fields.
+_CARD_RATING_RE = re.compile(r"([\d.]+)\s*star", re.IGNORECASE)
+_CARD_REVIEW_COUNT_RE = re.compile(r"[\d,]+\s*reviews?", re.IGNORECASE)
+
+
+async def _extract_card_signals(anchor) -> dict:
+    """Read cheap, already-rendered signals off a single results-feed
+    anchor, without clicking it or triggering any navigation.
+
+    Returns a plain dict — `name`, `rating`, `review_count`,
+    `visible_text`, `closed` — built entirely from `aria-label` and
+    `inner_text()` on the anchor itself (the only two calls this makes).
+    Every field is best-effort and defaults to an empty/None/zero value on
+    any extraction failure; this must never raise into the caller, since a
+    failure here should fall back to the pre-Phase-12A behavior (click as
+    normal), not abort discovery.
+    """
+    aria = ""
+    text = ""
+    try:
+        aria = await anchor.get_attribute("aria-label") or ""
+    except Exception:
+        pass
+    try:
+        text = (await anchor.inner_text()).strip()
+    except Exception:
+        pass
+
+    combined = f"{aria} {text}".strip()
+    combined_low = combined.lower()
+
+    closed = any(marker in combined_low for marker in _CARD_CLOSED_MARKERS)
+
+    rating: float | None = None
+    m = _CARD_RATING_RE.search(combined)
+    if m:
+        rating = _rating_from_raw(m.group(1))
+
+    review_count = 0
+    m = _CARD_REVIEW_COUNT_RE.search(combined)
+    if m:
+        review_count = parse_review_count(m.group(0))
+
+    return {
+        "name": aria.split("·")[0].strip() if aria else "",
+        "rating": rating,
+        "review_count": review_count,
+        "visible_text": combined,
+        "closed": closed,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Place data extractor
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -2156,6 +2237,36 @@ class MapsScraper:
                             # round; fall through to the EOL check / scroll.
                             break
 
+                        # PHASE 12A (zero-risk Maps click reduction, audit
+                        # §7/§9): read the cheap, already-rendered card
+                        # signals for this ONE selected anchor before
+                        # spending a click on it. The ONLY behavior change
+                        # in this phase: if the card itself explicitly and
+                        # unambiguously reports the business as
+                        # permanently closed, skip the click entirely —
+                        # every other card signal (rating, review_count,
+                        # name, category) is captured for telemetry only
+                        # and must never gate this decision (see
+                        # _extract_card_signals's docstring). An unknown/
+                        # ambiguous card (extraction failure, no marker
+                        # found) falls straight through to the exact
+                        # pre-Phase-12A click path below, unchanged.
+                        card_signals = await _extract_card_signals(anchor)
+                        if card_signals.get("closed"):
+                            log.info(
+                                f"[maps][diag] card reports explicit closed "
+                                f"status — skipping click (place_key="
+                                f"{place_key!r})"
+                            )
+                            self._profiler.incr("maps_candidates_card_closed_skipped")
+                            # Mark it seen (mirrors what the post-click
+                            # `place.closed` path already does — see
+                            # `seen_hrefs.add(place_key)` further below)
+                            # so this same anchor isn't re-evaluated every
+                            # subsequent round.
+                            seen_hrefs.add(place_key)
+                            continue
+
                         try:
                             with self._profiler.timer("place_click"):
                                 try:
@@ -2163,6 +2274,7 @@ class MapsScraper:
                                 except Exception:
                                     pass
                                 await _human_click(page, anchor)
+                                self._profiler.incr("maps_candidates_clicked")
                         except Exception as exc:
                             # The anchor detached between being selected
                             # above and being clicked here (or was already

@@ -99,6 +99,31 @@ def is_configured(provider_id: str) -> bool:
     return bool(os.environ.get(env_var))
 
 
+# PHASE 11.4 — Overpass A/B test. Name of the environment variable
+# that gates whether `overpass` participates in provider composition
+# at all, independent of `is_configured()` above (overpass needs no
+# credential and stays fully implemented either way — see
+# `is_overpass_enabled()`).
+OVERPASS_ENABLE_ENV_VAR = "DISCOVERY_ENABLE_OVERPASS"
+
+
+def is_overpass_enabled() -> bool:
+    """
+    Whether `overpass` should be included in provider composition,
+    per the `DISCOVERY_ENABLE_OVERPASS` configuration flag (PHASE 11.4
+    Overpass A/B test — see providers/discovery_composition.py for
+    where this is consumed).
+
+    Default MUST remain `True` to preserve existing behavior: unset,
+    empty, or any value other than the literal (case-insensitive)
+    string "false" is treated as enabled. Only "false" disables it.
+    This is a pure configuration gate on *composition* — it does not
+    touch `OverpassProvider`, its registration above, worker counts,
+    resource capacity, qualification, scoring, or dedup.
+    """
+    return os.environ.get(OVERPASS_ENABLE_ENV_VAR, "true").strip().lower() != "false"
+
+
 def _require_credential(provider_id: str) -> str:
     env_var = _CREDENTIAL_ENV_VARS[provider_id]
     value = os.environ.get(env_var)

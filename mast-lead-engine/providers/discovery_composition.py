@@ -90,6 +90,14 @@ Provider Parallelism v1 milestone. Wires the existing, unmodified
 provider layer (ProviderRegistry, ParallelCompositeDiscoveryProvider,
 ProviderDeduplicator) into production for the first time. Does not
 modify DiscoveryWorker, ExecutionDriver, or any provider.
+
+PHASE 11.4 addendum — Overpass A/B test: provider-id selection above
+now also checks `production_registry.is_overpass_enabled()`
+(`DISCOVERY_ENABLE_OVERPASS`, default `true`) for `provider_id ==
+"overpass"` only, before the existing credential check. When disabled,
+`OverpassProvider` is never constructed and never included in
+composition; every other provider's selection, translation, and
+composition path is untouched.
 """
 
 from __future__ import annotations
@@ -103,7 +111,11 @@ from providers.parallel_composite_provider import (
     ParallelCompositeDiscoveryProvider,
     ParallelDiscoveryRequest,
 )
-from providers.production_registry import build_production_registry, is_configured
+from providers.production_registry import (
+    build_production_registry,
+    is_configured,
+    is_overpass_enabled,
+)
 from providers.provider_configuration import ProviderConfiguration
 from providers.provider_deduplicator import ProviderDeduplicator
 from providers.provider_request_translation import (
@@ -236,6 +248,17 @@ def compose_discovery(
     selected_ids: list[str] = []
     translated_requests: dict[str, Any] = {}
     for provider_id in relevant:
+        if provider_id == "overpass" and not is_overpass_enabled():
+            # PHASE 11.4 — Overpass A/B test. A pure composition-time
+            # gate: OverpassProvider is never constructed and never
+            # included below, but nothing about it is deleted or
+            # modified, and no other provider's selection, worker
+            # count, resource capacity, qualification, scoring, or
+            # dedup behavior changes. Google Maps (and any other
+            # relevant/configured provider) proceeds through the
+            # normal path below, unaffected.
+            log.info("[provider] overpass disabled by configuration")
+            continue
         if not is_configured(provider_id):
             log.info(
                 "[provider] %s excluded: missing credential (%s not set)",

@@ -72,6 +72,16 @@ export type AreaWorkSource = "fresh_area_run" | "partial_area_run" | "parent_poo
  * importing it — this module stays engine/bridge-import-free (see the
  * module doc comment above), and the two are kept in sync structurally
  * (string literal union) rather than by a hard type dependency.
+ *
+ * PHASE 12D adds two Node-side-only reasons that never come from the
+ * bridge: `area_productivity_timeout_before_first_qualified` and
+ * `area_productivity_idle_timeout` (see areaProductivity.ts). When one of
+ * these fires, poolExpandJob.ts's `runArea()` reports it here INSTEAD OF
+ * whatever generic bridge-level reason (typically `CANCELLED`, since the
+ * area's own engine subprocess was asked to stop via SIGTERM) the aborted
+ * engine call itself produced — this is Node's own, more specific account
+ * of WHY that area stopped, and is strictly more informative than the
+ * bridge's generic classification for a caller-initiated abort.
  */
 export type AreaTerminationReason =
   | "SUCCESS_TARGET_REACHED"
@@ -79,7 +89,9 @@ export type AreaTerminationReason =
   | "SUCCESS_CONSUMER_STOPPED"
   | "WATCHDOG_TIMEOUT"
   | "CANCELLED"
-  | "FAILURE";
+  | "FAILURE"
+  | "area_productivity_timeout_before_first_qualified"
+  | "area_productivity_idle_timeout";
 
 export type AreaWorkEvidence = {
   /** True when the engine reported a real numeric `maps_candidates_seen` for this pass (see extractAreaSlaCounters). */
@@ -102,7 +114,13 @@ export function determineAreaWorkSource(evidence: AreaWorkEvidence): AreaWorkSou
   const stoppedEarly =
     evidence.terminationReason === "WATCHDOG_TIMEOUT" ||
     evidence.terminationReason === "CANCELLED" ||
-    evidence.terminationReason === "FAILURE";
+    evidence.terminationReason === "FAILURE" ||
+    // PHASE 12D: an adaptive area-productivity stop is, from a telemetry-
+    // honesty standpoint, the exact same shape as any other early stop —
+    // whatever the engine had genuinely reported before it was asked to
+    // stop is preserved as a partial run, never upgraded to look complete.
+    evidence.terminationReason === "area_productivity_timeout_before_first_qualified" ||
+    evidence.terminationReason === "area_productivity_idle_timeout";
   if (stoppedEarly) return "partial_area_run";
 
   if (evidence.hasFreshMapsTelemetry) return "fresh_area_run";

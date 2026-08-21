@@ -32,6 +32,14 @@ import {
   type AreaTelemetryRecorder,
   type AreaTerminationReason,
 } from "../discovery/runStabilityTelemetry.js";
+import {
+  createAreaProductivityState,
+  evaluateAreaProductivity,
+  recordDeliveredLead,
+  recordQualifiedLead,
+  scopeAreaAbort,
+  type AreaProductivityState,
+} from "../discovery/areaProductivity.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
 import { getResourceCapacity } from "../lib/resourceCapacity.js";
 import { env } from "../config/env.js";
@@ -153,6 +161,14 @@ export type PoolExpandJobPayload = {
 // it gets the identical fix: a streaming batch floor decoupled from the
 // per-round fairness accounting.
 const STREAM_BATCH_FLOOR = 5;
+
+// PHASE 12D: how often each area's own adaptive-productivity timer polls
+// the pure evaluateAreaProductivity() classifier (see areaProductivity.ts).
+// This is purely a check-frequency knob, not a behavioral one — the actual
+// exploration/inactivity window is env.AREA_PRODUCTIVITY_IDLE_MS. Kept
+// small relative to that window so a stop is detected promptly without
+// meaningfully changing when the classifier actually says stop.
+const AREA_PRODUCTIVITY_CHECK_INTERVAL_MS = 5_000;
 
 export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promise<void> {
   const { followUp } = payload;
@@ -407,6 +423,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       streamTarget: number,
       chunk: { deliveredThisChunk: number },
       areaRecorder?: AreaTelemetryRecorder,
+      // PHASE 12D: only supplied by the area-pooled path (runGoogleAreaPoolForCity
+      // below) — the legacy sequential (no curated areas) path is
+      // intentionally untouched by this phase, exactly as the phase prompt
+      // scopes it ("isolating this change").
+      productivity?: AreaProductivityState,
     ): Promise<"continue" | "batch_done" | "stop_outer"> {
       const pid = tracer.receive(lead._pipeline_id, lead.name);
       // PHASE 10 telemetry: every lead the engine yields counts as a
@@ -436,6 +457,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         // checks above — i.e. "qualified" in the run-stability sense.
         // Purely observational; does not gate anything below.
         areaRecorder?.recordQualified();
+        // PHASE 12D: same "this lead qualified" observation point, feeding
+        // the adaptive area-productivity classifier instead of (or as well
+        // as) the run-stability telemetry above — also purely observational,
+        // does not gate anything below, and does not change qualification.
+        if (productivity) recordQualifiedLead(productivity);
 
         tracer.transition(pid, "DATABASE_INSERT_STARTED");
         let result: DeliveryResult;
@@ -484,6 +510,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         delivered += 1;
         chunk.deliveredThisChunk += 1;
         areaRecorder?.recordDelivered();
+        if (productivity) recordDeliveredLead(productivity);
         if (result.wasNewForUser) newForUser += 1;
 
         if (followUp) {
@@ -639,6 +666,42 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           let lastTerminationReason: AreaTerminationReason | undefined;
           let doneInfoReceived = false;
 
+          // PHASE 12D — HYBRID ADAPTIVE AREA STOPPING.
+          //
+          // `productivity` is this area's own live state (startedAt/
+          // firstQualifiedAt/lastQualifiedAt/qualifiedCount/deliveredCount/
+          // stoppedReason — see areaProductivity.ts). `areaAbort` scopes
+          // cancellation to THIS area only: its `signal` is what gets
+          // passed to runEngineQuery() below (NOT the shared job-level
+          // `abortController.signal` directly) so that aborting it SIGTERMs
+          // only this area's own engine subprocess. It still aborts
+          // automatically whenever the shared `abortController` aborts
+          // (TARGET_REACHED/USER_CANCELLED/EXHAUSTED — see
+          // scopeAreaAbort()'s doc comment), so the existing global abort
+          // path is completely unchanged; this is purely an ADDITIONAL,
+          // narrower way for a single area to stop early.
+          const productivity = createAreaProductivityState();
+          const { signal: areaSignal, controller: areaAbort } = scopeAreaAbort(abortController.signal);
+
+          const productivityTimer = setInterval(() => {
+            if (areaAbort.signal.aborted) return;
+            const stopReason = evaluateAreaProductivity(productivity, Date.now(), env.AREA_PRODUCTIVITY_IDLE_MS);
+            if (!stopReason) return;
+            productivity.stoppedReason = stopReason;
+            console.info(
+              `[poolExpandJob][area-productivity] area=${area} stop_reason=${stopReason} ` +
+                `qualified=${productivity.qualifiedCount} delivered=${productivity.deliveredCount} ` +
+                `elapsed_ms=${Date.now() - productivity.startedAt}`,
+            );
+            // Aborts ONLY this area's own scoped signal — see
+            // scopeAreaAbort()'s doc comment. Never calls
+            // terminateRequest()/abortController.abort(): those are the
+            // GLOBAL paths and must never be triggered by one area going
+            // idle (Step "STOPPING MECHANISM" in the phase prompt).
+            areaAbort.abort(stopReason);
+          }, AREA_PRODUCTIVITY_CHECK_INTERVAL_MS);
+          productivityTimer.unref?.();
+
           try {
             for await (const lead of runEngineQuery(
               {
@@ -663,7 +726,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 required_channels: followUp?.channels ?? [],
                 db_path: `data/leads-pool-expand.db`,
               },
-              abortController.signal,
+              // PHASE 12D: this area's own scoped signal, not the shared
+              // job-level abortController.signal directly — see the doc
+              // comment above `productivity`/`areaAbort`.
+              areaSignal,
               (info) => {
                 areaExhausted = info.exhausted;
                 lastPerf = info.perf;
@@ -680,7 +746,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               { requestId: reqId },
             )) {
               discovered += 1;
-              const outcome = await processLead(lead, streamTarget, chunk, areaRecorder);
+              const outcome = await processLead(lead, streamTarget, chunk, areaRecorder, productivity);
               if (outcome === "stop_outer") {
                 stopOuter = true;
                 accepted = chunk.deliveredThisChunk;
@@ -692,12 +758,21 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               }
             }
           } finally {
+            clearInterval(productivityTimer);
             accepted = chunk.deliveredThisChunk;
             rejected = Math.max(0, discovered - accepted);
+            // PHASE 12D: when THIS area's own productivity timer is what
+            // ended the run, that specific, more informative reason takes
+            // precedence over whatever generic bridge-level reason
+            // (typically CANCELLED, since the subprocess was SIGTERM'd)
+            // the aborted engine call itself reported — see
+            // AreaTerminationReason's doc comment in
+            // runStabilityTelemetry.ts.
+            const effectiveTerminationReason = productivity.stoppedReason ?? lastTerminationReason;
             stability.recordAreaFinished(
               areaRecorder.finish(
                 extractAreaSlaCounters(lastPerf?.area_sla as Record<string, unknown> | undefined),
-                { terminationReason: lastTerminationReason, perfReceived: doneInfoReceived },
+                { terminationReason: effectiveTerminationReason, perfReceived: doneInfoReceived },
               ),
             );
           }

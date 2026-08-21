@@ -182,6 +182,24 @@ const EnvSchema = z.object({
   // resourceCapacity.ts + browserSlotPool, not by this max().
   GOOGLE_MAPS_AREA_WORKERS: z.coerce.number().int().min(1).max(16).default(8),
 
+  // PHASE 12D — HYBRID ADAPTIVE AREA STOPPING. Shared "time since last
+  // qualification" window used by src/discovery/areaProductivity.ts for
+  // BOTH of its two clocks:
+  //   - before an area's first qualified lead: the bounded EXPLORATION
+  //     window an area gets before it's declared unproductive and replaced;
+  //   - after an area's first qualified lead: the INACTIVITY window that
+  //     resets every time the area qualifies another lead, so a steadily-
+  //     productive area is never stopped by this timer.
+  //
+  // The Phase 12C production audit observed first-qualified latency in the
+  // ~56-85 SECOND range. This default (120s) is set comfortably above that
+  // observed range so a genuinely-still-exploring area is not mistaken for
+  // an unproductive one during rollout — it is a CONSERVATIVE INITIAL
+  // ROLLOUT VALUE, not a proven optimum. Tune down as real production data
+  // accumulates on how this adaptive behavior performs; do not treat 120s
+  // as a permanent constant.
+  AREA_PRODUCTIVITY_IDLE_MS: z.coerce.number().int().min(10_000).default(120_000),
+
   // PHASE 6 — resource-aware safe concurrency (replaces the old hardcoded
   // "safeResourceWorkers = 2"). Each Google area worker is NOT just one
   // browser slot's worth of memory — it is one Python subprocess (its own

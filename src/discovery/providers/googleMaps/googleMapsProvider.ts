@@ -44,6 +44,7 @@ export class GoogleMapsProvider implements DiscoveryProvider {
         country: target.countryCode,
         region: target.region,
         niche: target.niche,
+        area: target.area,
         max_results: options.maxResults,
         discovery_only: options.discoveryOnly,
         require_viability: false,

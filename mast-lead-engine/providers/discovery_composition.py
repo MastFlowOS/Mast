@@ -180,6 +180,7 @@ def compose_discovery(
     country: str = "",
     niche: str = "",
     region: str = "",
+    area: Optional[str] = None,
     max_results: int = 60,
     entity_types: Sequence[str] = DEFAULT_ENTITY_TYPES,
     osm_tags: Optional[dict] = None,
@@ -207,6 +208,17 @@ def compose_discovery(
     construct an `OverpassProvider` carrying this run's real `profiler`
     the same way it now does for `GoogleMapsProvider`, without breaking
     the existing test seam for callers that don't supply one.
+
+    `area` — AREA-SCOPE OVERPASS FIX (Phase 13C). Optional, more
+    specific sub-city scope (e.g. a named borough/neighborhood such
+    as "Brooklyn") already curated by the caller, forwarded unchanged
+    into `DiscoveryQueryContext(area=area)`. Only consumed today by
+    Overpass's own request translation (see
+    provider_request_translation.py), which prefers it over
+    `city`/`country` when present; every other provider's selection,
+    translation, and composition path is untouched. A caller that
+    doesn't pass one (the default, `None`) gets byte-for-byte the same
+    composed request this function has always returned.
 
     `profiler` — PHASE 2B addition. When supplied, every constructed
     provider instance is wrapped in a `TimedDiscoveryProvider` (see
@@ -238,6 +250,7 @@ def compose_discovery(
         country=country,
         niche=niche,
         region=region,
+        area=area,
         max_results=max_results,
         osm_tags=osm_tags,
         organization_query=organization_query,

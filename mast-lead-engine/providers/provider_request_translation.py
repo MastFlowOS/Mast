@@ -94,6 +94,14 @@ class DiscoveryQueryContext:
     that supports them gets the same target/shutdown/progress
     behavior GoogleMapsProvider alone has today.
 
+    `area` is an optional, more specific sub-city scope (e.g. a named
+    borough/neighborhood such as "Brooklyn") already curated by the
+    caller. When present it is preferred over `city`/`country` for
+    providers that support scoping by area name (currently Overpass
+    only); when absent, behavior falls back exactly to the prior
+    city/country scoping. This is purely an optional refinement of
+    scope — it does not change which fields other providers use.
+
     `osm_tags` / `organization_query` are optional, caller-supplied
     escape hatches for the two translation cases this module will
     never guess at (see module docstring, "Honesty rule") — omitted
@@ -107,6 +115,7 @@ class DiscoveryQueryContext:
     country: str = ""
     niche: str = ""
     region: str = ""
+    area: Optional[str] = None
     max_results: int = 60
     osm_tags: Optional[Mapping[str, str]] = None
     organization_query: Optional[str] = None
@@ -228,7 +237,7 @@ def _translate_overpass(context: DiscoveryQueryContext) -> Optional[OverpassDisc
     return OverpassDiscoveryRequest(
         session_id=context.session_id,
         tags=tags,
-        area_name=context.city or context.country or None,
+        area_name=context.area or context.city or context.country or None,
         limit=context.max_results,
         should_stop=context.should_stop,
     )

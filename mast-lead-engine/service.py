@@ -475,6 +475,7 @@ async def run_query(
     country: str = "US",
     niche: str = "",
     region: str = "",
+    area: str = "",
     max_results: int = 60,
     deliver_target: int | None = None,
     max_ig_followers: int = 5000,
@@ -532,6 +533,20 @@ async def run_query(
     explicit that deduplication is not this milestone's job — so
     service.py, as composition root, keeps applying it exactly as
     before).
+
+    `area` — AREA-SCOPE OVERPASS FIX (Phase 13C). Optional, more
+    specific sub-city scope (e.g. a curated borough/neighborhood name
+    such as "Brooklyn") already known by the caller for this run,
+    forwarded unchanged to `compose_discovery()` -> `DiscoveryQueryContext`.
+    Today this is consumed only by Overpass's own request translation
+    (see providers/provider_request_translation.py), which prefers it
+    over `city`/`country` for its `area_name` when present. Every
+    other provider (including Google Maps), qualification, scoring,
+    dedup, worker counts, and resource capacity are untouched by this
+    parameter. Omitted (the default, `""`) preserves the exact prior
+    city/country-scoped Overpass behavior for any existing caller that
+    doesn't pass it — see providers/provider_request_translation.py's
+    own docstring for the fallback rule.
 
     Known, intentional behavior changes from V1 (not bugs — see the
     accompanying migration review):
@@ -818,7 +833,7 @@ async def run_query(
             composed = compose_discovery(
                 session_id=str(_time.time_ns()),  # no session/pipeline is created in this mode
                 query=query, city=city, country=country,
-                niche=niche, region=region, max_results=raw_supply_cap,
+                niche=niche, region=region, area=area, max_results=raw_supply_cap,
                 should_stop=_should_stop_discovery,
                 # MINIMAL FIX (discovery liveness — forensic audit §9):
                 # `_on_progress` already exists and already writes the
@@ -980,7 +995,7 @@ async def run_query(
             # deployment state.
             composed = compose_discovery(
                 session_id=session_id, query=query, city=city, country=country,
-                niche=niche, region=region, max_results=raw_supply_cap,
+                niche=niche, region=region, area=area, max_results=raw_supply_cap,
                 should_stop=_should_stop_discovery,
                 # MINIMAL FIX (discovery liveness — forensic audit §9):
                 # `on_progress=_on_progress` below (passed to

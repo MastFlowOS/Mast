@@ -201,6 +201,71 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
     }
   });
 
+  test("6a-area. AREA-SCOPE OVERPASS FIX (Phase 13C): EngineQueryParams.area is actually transmitted to the Python subprocess's stdin payload", async () => {
+    // Regression guard for the Node -> Python leg of the area-scope fix:
+    // googleMapsProvider.ts now sets `area: target.area` on the params
+    // object passed to runEngineQuery() (previously `target.area` only
+    // reached Node-side telemetry via `areaLabel`). This test proves that
+    // field genuinely lands in the JSON Node writes to the child's stdin —
+    // not just that the TS type compiles — using a fake engine
+    // (echo-params-engine) that reads stdin and echoes the whole parsed
+    // payload back on the emitted lead.
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "echo-params-engine");
+    try {
+      const leads: any[] = [];
+      await withTimeout(
+        (async () => {
+          for await (const lead of runEngineQuery(
+            { query: "coffee shop", city: "New York", niche: "coffee_shop", area: "Brooklyn" },
+            undefined,
+            undefined,
+          )) {
+            leads.push(lead);
+          }
+        })(),
+        5000,
+        "runEngineQuery area-transmission check",
+      );
+      assert.equal(leads.length, 1);
+      assert.equal(leads[0]._received_params.area, "Brooklyn");
+      assert.equal(leads[0]._received_params.city, "New York");
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+    }
+  });
+
+  test("6a-area-omitted. existing non-area callers remain compatible: no `area` key at all is sent when the caller never sets it", async () => {
+    // Backward-compatibility companion to the test above: a caller that
+    // never passes `area` (every pre-Phase-13C call site, and any caller
+    // targeting a city with no curated sub-area) must produce a payload
+    // with no `area` field, exactly as before this phase.
+    const { runEngineQuery } = await import("../pythonBridge.js");
+    const originalPath = env.SCRAPER_ENGINE_PATH;
+    env.SCRAPER_ENGINE_PATH = path.join(FIXTURES_DIR, "echo-params-engine");
+    try {
+      const leads: any[] = [];
+      await withTimeout(
+        (async () => {
+          for await (const lead of runEngineQuery(
+            { query: "coffee shop", city: "Austin" },
+            undefined,
+            undefined,
+          )) {
+            leads.push(lead);
+          }
+        })(),
+        5000,
+        "runEngineQuery no-area backward-compat check",
+      );
+      assert.equal(leads.length, 1);
+      assert.equal(Object.prototype.hasOwnProperty.call(leads[0]._received_params, "area"), false);
+    } finally {
+      env.SCRAPER_ENGINE_PATH = originalPath;
+    }
+  });
+
   test("6b. consumer breaks early mid-stream (triggers gracefulKillProcessTree in the generator's finally) and still settles", async () => {
     // This is the literal reported call path: Node only needs a few leads,
     // breaks out of `for await` early, the generator's `finally` sends

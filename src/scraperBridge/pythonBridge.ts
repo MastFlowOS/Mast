@@ -95,6 +95,20 @@ export type EngineQueryParams = {
   niche?: string;
   region?: string;
   /**
+   * AREA-SCOPE OVERPASS FIX (Phase 13C) — optional, more specific
+   * sub-city scope (e.g. a curated borough/neighborhood name such as
+   * "Brooklyn", the same value already carried on `SearchTarget.area`
+   * — see googleMapsSearchGenerator.ts / areaRotation.ts). Threaded
+   * unchanged through to service.py's `run_query(area=...)`, which
+   * only uses it to scope Overpass's own OSM query (see
+   * provider_request_translation.py) more precisely than `city`
+   * alone; every other provider's request, plus qualification,
+   * scoring, dedup, worker counts, and resource capacity, is
+   * untouched by this field. Omitted (or empty) preserves the exact
+   * prior city-level behavior for any existing caller.
+   */
+  area?: string;
+  /**
    * Raw scan budget: how many raw Maps places the Python subprocess may
    * scan before stopping.  Intentionally larger than `deliver_target` to
    * compensate for enrichment/filter/dedup losses.  Passed to

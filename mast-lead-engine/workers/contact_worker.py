@@ -249,12 +249,24 @@ import re
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Dict, Optional, Tuple
 from urllib.parse import urljoin
 
 from engine.contracts import ContactIntel, WebsiteIntel
-from utils.parsing import extract_ig_urls, is_valid_email
+from utils.parsing import (
+    digits_only,
+    extract_contextual_attribute_contacts,
+    extract_ig_urls_with_source,
+    extract_jsonld_contact_data,
+    extract_phones,
+    find_secondary_contact_link,
+    has_invalid_ig_candidate,
+    is_valid_email,
+    is_valid_phone,
+    normalize_phone,
+)
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
 
@@ -340,19 +352,29 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         of any kind was recovered, the last fetch exception propagates
         unmodified and no ContactIntel is returned — do not swallow
         that case.
+
+        Phase 15: Quality-preserving contact acquisition enhancements:
+        - Structured data (JSON-LD Organization / LocalBusiness / ContactPoint)
+        - Icon & contextual attribute extraction (mailto/tel icons, aria-label, title, data-*)
+        - Early exit once both valid email and phone are present
+        - Bounded secondary-page discovery (at most 1 extra same-domain page from priority list:
+          contact > about > team > staff > locations > catering > wholesale > press > partners)
+        - Maximum 3 total page fetches per candidate
         """
         pages = self._pages_to_fetch(item)
         if not pages:
             return ContactIntel(pipeline_id=item.pipeline_id)
 
-        emails: "dict[str, None]" = {}
-        phones: "dict[str, None]" = {}
+        emails: "dict[str, str]" = {}
+        phones: "dict[str, str]" = {}
         contact_form_url: Optional[str] = None
         whatsapp_link: Optional[str] = None
         messenger_link: Optional[str] = None
         telegram_link: Optional[str] = None
         linkedin_url: Optional[str] = None
         instagram_url: Optional[str] = None
+        instagram_source: Optional[str] = None
+        instagram_invalid_candidate_seen = False
         total_elapsed = 0.0
 
         contact_page_fetch_failed = False
@@ -362,19 +384,28 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         any_page_recovered = False
         last_exc: Optional[BaseException] = None
 
+        fetched_htmls: list[tuple[str, str]] = []
+        tried_urls: set[str] = set()
+
         for role, url in pages:
+            tried_urls.add(url.strip())
             # FIX 1 — mailto:/tel: are literal evidence, never a fetch.
             if url.lower().startswith(_MAILTO_PREFIX):
                 address = url[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
+                address = urllib.parse.unquote(address)
                 if address and is_valid_email(address):
-                    emails.setdefault(address.lower(), None)
+                    emails.setdefault(address.lower(), "mailto")
                     mailto_extracted = True
                 any_page_recovered = True
                 continue
             if url.lower().startswith(_TEL_PREFIX):
-                number = url[len(_TEL_PREFIX):].strip()
-                if number:
-                    phones.setdefault(number, None)
+                number = url[len(_TEL_PREFIX):].split("?", 1)[0].strip()
+                number = urllib.parse.unquote(number)
+                if number and is_valid_phone(number):
+                    phones.setdefault(number, "tel")
+                    tel_extracted = True
+                elif number:
+                    phones.setdefault(number, "tel")
                     tel_extracted = True
                 any_page_recovered = True
                 continue
@@ -392,11 +423,20 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
 
             any_page_recovered = True
             total_elapsed += elapsed
+            fetched_htmls.append((html, page_url))
+            tried_urls.add(page_url.strip())
 
-            for email in self._extract_emails(html):
-                emails.setdefault(email, None)
-            for phone in self._extract_phones(html):
-                phones.setdefault(phone, None)
+            self._extract_page_contact_data(
+                html=html,
+                page_url=page_url,
+                page_role=role,
+                emails=emails,
+                phones=phones,
+            )
+            if any(s == "mailto" for s in emails.values()):
+                mailto_extracted = True
+            if any(s == "tel" for s in phones.values()):
+                tel_extracted = True
 
             if contact_form_url is None and _FORM_RE.search(html):
                 contact_form_url = page_url
@@ -412,7 +452,65 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             if linkedin_url is None:
                 linkedin_url = self._extract_first_link(html, page_url, _LINKEDIN_RE)
             if instagram_url is None:
-                instagram_url = self._extract_instagram_url(html)
+                instagram_url, instagram_source = self._extract_instagram_evidence(html)
+                if instagram_url is None and has_invalid_ig_candidate(html):
+                    instagram_invalid_candidate_seen = True
+
+            # Early Exit: If valid email AND valid phone are both present, stop fetching
+            if bool(emails) and bool(phones):
+                break
+
+        # Phase 15: Bounded Secondary Page Discovery
+        secondary_page_fetched = False
+        secondary_page_fetch_failed = False
+        secondary_page_type: Optional[str] = None
+
+        # Only discover/fetch secondary page if contact data is still missing (missing email OR missing phone)
+        # AND at least one initial page was successfully fetched.
+        if (not emails or not phones) and fetched_htmls:
+            base_url = item.final_url or item.contact_page or (fetched_htmls[0][1] if fetched_htmls else "")
+            sec_url, sec_type = find_secondary_contact_link(
+                fetched_htmls=fetched_htmls,
+                base_url=base_url,
+                tried_urls=tried_urls,
+            )
+            if sec_url:
+                secondary_page_fetched = True
+                secondary_page_type = sec_type
+                try:
+                    sec_html, sec_page_url, sec_elapsed = self._fetch(sec_url)
+                    total_elapsed += sec_elapsed
+                    any_page_recovered = True
+                    self._extract_page_contact_data(
+                        html=sec_html,
+                        page_url=sec_page_url,
+                        page_role="secondary_page",
+                        emails=emails,
+                        phones=phones,
+                    )
+                    if any(s == "mailto" for s in emails.values()):
+                        mailto_extracted = True
+                    if any(s == "tel" for s in phones.values()):
+                        tel_extracted = True
+
+                    if contact_form_url is None and _FORM_RE.search(sec_html):
+                        contact_form_url = sec_page_url
+                    if whatsapp_link is None:
+                        whatsapp_link = self._extract_first_link(sec_html, sec_page_url, _WHATSAPP_RE)
+                    if messenger_link is None:
+                        messenger_link = self._extract_first_link(sec_html, sec_page_url, _MESSENGER_RE)
+                    if telegram_link is None:
+                        telegram_link = self._extract_first_link(sec_html, sec_page_url, _TELEGRAM_RE)
+                    if linkedin_url is None:
+                        linkedin_url = self._extract_first_link(sec_html, sec_page_url, _LINKEDIN_RE)
+                    if instagram_url is None:
+                        instagram_url, instagram_source = self._extract_instagram_evidence(sec_html)
+                        if instagram_url is None and has_invalid_ig_candidate(sec_html):
+                            instagram_invalid_candidate_seen = True
+                except Exception as exc:
+                    secondary_page_fetch_failed = True
+                    if last_exc is None:
+                        last_exc = exc
 
         if not any_page_recovered:
             # Every candidate was a fetch and every fetch failed — no
@@ -423,7 +521,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             raise last_exc
 
         partial_contact_success = bool(
-            (contact_page_fetch_failed or homepage_fetch_failed)
+            (contact_page_fetch_failed or homepage_fetch_failed or secondary_page_fetch_failed)
             and (
                 emails
                 or phones
@@ -436,6 +534,9 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             )
         )
 
+        email_source = next(iter(emails.values())) if emails else None
+        phone_source = next(iter(phones.values())) if phones else None
+
         return ContactIntel(
             pipeline_id=item.pipeline_id,
             emails=tuple(emails) or None,
@@ -446,12 +547,19 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             telegram_link=telegram_link,
             linkedin_url=linkedin_url,
             instagram_url=instagram_url,
+            instagram_source=instagram_source,
+            instagram_invalid_candidate_seen=instagram_invalid_candidate_seen,
             fetch_duration=total_elapsed,
             contact_page_fetch_failed=contact_page_fetch_failed,
             homepage_fetch_failed=homepage_fetch_failed,
             mailto_extracted=mailto_extracted,
             tel_extracted=tel_extracted,
             partial_contact_success=partial_contact_success,
+            email_source=email_source,
+            phone_source=phone_source,
+            secondary_page_type=secondary_page_type,
+            secondary_page_fetched=secondary_page_fetched,
+            secondary_page_fetch_failed=secondary_page_fetch_failed,
         )
 
     def timeout_seconds(self) -> float:
@@ -496,29 +604,99 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         return html, resolved_url, elapsed
 
     @staticmethod
+    def _extract_page_contact_data(
+        *,
+        html: str,
+        page_url: str,
+        page_role: str,
+        emails: "dict[str, str]",
+        phones: "dict[str, str]",
+    ) -> None:
+        if not html:
+            return
+
+        def _add_phone(num: str, source: str) -> None:
+            if not num:
+                return
+            if not is_valid_phone(num):
+                return
+            d = digits_only(num)
+            key_d = d[-10:] if len(d) >= 10 else d
+            for existing in phones:
+                ex_d = digits_only(existing)
+                ex_key = ex_d[-10:] if len(ex_d) >= 10 else ex_d
+                if key_d == ex_key:
+                    return
+            phones[num] = source
+
+        # 1. Anchor mailto: and tel: links
+        for href in _ANCHOR_RE.findall(html):
+            href_clean = href.strip()
+            if href_clean.lower().startswith(_MAILTO_PREFIX):
+                address = href_clean[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
+                address = urllib.parse.unquote(address)
+                if address and is_valid_email(address):
+                    emails.setdefault(address.lower(), "mailto")
+            elif href_clean.lower().startswith(_TEL_PREFIX):
+                number = href_clean[len(_TEL_PREFIX):].split("?", 1)[0].strip()
+                number = urllib.parse.unquote(number)
+                _add_phone(number, "tel")
+
+        # 2. JSON-LD structured data (Organization / LocalBusiness / ContactPoint)
+        jsonld_data = extract_jsonld_contact_data(html)
+        for e in jsonld_data.get("emails", []):
+            if is_valid_email(e):
+                emails.setdefault(e.lower(), "jsonld")
+        for p in jsonld_data.get("phones", []):
+            _add_phone(p, "jsonld")
+
+        # 3. Contextual HTML attributes (aria-label, title, alt, data-*) & icon containers
+        attr_data = extract_contextual_attribute_contacts(html)
+        for e in attr_data.get("emails", []):
+            if is_valid_email(e):
+                emails.setdefault(e.lower(), page_role)
+        for p in attr_data.get("phones", []):
+            _add_phone(p, page_role)
+
+        # 4. Text regex emails
+        for match in _EMAIL_RE.findall(html):
+            clean = urllib.parse.unquote(match).lower()
+            if is_valid_email(clean):
+                emails.setdefault(clean, page_role)
+
+        # 5. Text / visible phones
+        for token in extract_phones(html):
+            _add_phone(token, page_role)
+
+    @staticmethod
     def _extract_emails(html: str) -> Tuple[str, ...]:
         if not html:
             return ()
-        found: "dict[str, None]" = {}
-        for href in _ANCHOR_RE.findall(html):
-            if href.lower().startswith(_MAILTO_PREFIX):
-                address = href[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
-                if address and is_valid_email(address):
-                    found.setdefault(address.lower(), None)
-        for match in _EMAIL_RE.findall(html):
-            if is_valid_email(match):
-                found.setdefault(match.lower(), None)
-        return tuple(found)
+        emails: "dict[str, str]" = {}
+        phones: "dict[str, str]" = {}
+        ContactWorker._extract_page_contact_data(
+            html=html,
+            page_url="",
+            page_role="homepage",
+            emails=emails,
+            phones=phones,
+        )
+        return tuple(emails)
 
     @staticmethod
     def _extract_phones(html: str) -> Tuple[str, ...]:
-        found: "dict[str, None]" = {}
-        for href in _ANCHOR_RE.findall(html):
-            if href.lower().startswith(_TEL_PREFIX):
-                number = href[len(_TEL_PREFIX):].strip()
-                if number:
-                    found.setdefault(number, None)
-        return tuple(found)
+        if not html:
+            return ()
+        emails: "dict[str, str]" = {}
+        phones: "dict[str, str]" = {}
+        ContactWorker._extract_page_contact_data(
+            html=html,
+            page_url="",
+            page_role="homepage",
+            emails=emails,
+            phones=phones,
+        )
+        return tuple(phones)
 
     @staticmethod
     def _extract_first_link(
@@ -531,18 +709,34 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         return None
 
     @staticmethod
-    def _extract_instagram_url(html: str) -> Optional[str]:
+    def _extract_instagram_evidence(html: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        First canonical Instagram profile URL found on the page, or
-        None. Delegates entirely to `utils.parsing.extract_ig_urls`,
-        which already canonicalizes to
-        `https://www.instagram.com/<handle>/` and rejects
-        reserved/non-profile paths (`/p/`, `/reel/`, `/explore/`,
+        (url, source) for the first canonical Instagram profile found on
+        the page, or (None, None). Delegates entirely to
+        `utils.parsing.extract_ig_urls_with_source`, which already
+        canonicalizes to `https://www.instagram.com/<handle>/` and
+        rejects reserved/non-profile paths (`/p/`, `/reel/`, `/explore/`,
         purely numeric segments, etc.) — see this module's own
-        docstring, "Instagram-discovery correction", for why no
-        separate extraction logic is written here.
+        docstring, "Instagram-discovery correction", for why no separate
+        extraction logic is written here.
+
+        Phase 14.2: broadened from a single `extract_ig_urls()` call to
+        `extract_ig_urls_with_source()`, which additionally recognizes a
+        literal instagram.com URL wherever it appears in this
+        already-fetched HTML (anchor href, JSON-LD `sameAs`, `<meta>`
+        content attributes, or bare in the markup) and, only when no
+        such URL exists anywhere on the page, a business-specific
+        plain-text @handle next to the word "instagram". No new page is
+        fetched and no crawling is added — this only looks harder at the
+        HTML ContactWorker already has in hand. `source` is carried
+        through to `ContactIntel.instagram_source` purely for telemetry
+        (see Phase 14.2's execution_driver/service telemetry wiring) —
+        it plays no part in qualification.
         """
         if not html:
-            return None
-        ig_urls = extract_ig_urls(html)
-        return ig_urls[0] if ig_urls else None
+            return None, None
+        evidence = extract_ig_urls_with_source(html)
+        if not evidence:
+            return None, None
+        return evidence[0]
+

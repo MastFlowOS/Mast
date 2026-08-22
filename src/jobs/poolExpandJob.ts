@@ -710,6 +710,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 country: country.code,
                 niche: singleNiche,
                 region: payload.region,
+                area,
                 max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
                 // PHASE 5 FIX: tells the Python engine's LeadAcceptanceGate
                 // (service.py's `_deliver_target`) the true number of
@@ -743,7 +744,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                   );
                 }
               },
-              { requestId: reqId },
+              { requestId: reqId, areaLabel: area },
             )) {
               discovered += 1;
               const outcome = await processLead(lead, streamTarget, chunk, areaRecorder, productivity);

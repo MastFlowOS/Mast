@@ -877,6 +877,55 @@ def _site_class(website: Optional[str]) -> str:
     return "weak" if is_weak_site(website) else "normal"
 
 
+def _instagram_telemetry_events(intel: Any, *, url_input_present: bool) -> "tuple[str, ...]":
+    """
+    Phase 14.2 (Instagram acquisition, quality-preserving) — "Make
+    Instagram telemetry truthful". Pure decision logic, extracted from
+    `_instagram_downstream` (inside `build_seven_stage_pipeline`) so it
+    is directly unit-testable without constructing a full pipeline.
+    Purely observational: returns which telemetry events this
+    already-computed `InstagramIntel` implies, never mutates `intel`
+    and never feeds back into qualification/scoring/dedup.
+
+    `short_circuited` reuses the one shape `workers/instagram_worker.py`
+    only ever returns when `item.instagram_url` was never populated —
+    `InstagramIntel(pipeline_id=..., profile_reachable=False)`, i.e.
+    `profile_reachable is False` AND `fetch_duration is None` — every
+    other returned `InstagramIntel` (reached, HTTP error, network
+    failure) sets `fetch_duration` from an actual attempted fetch. This
+    distinguishes "never attempted a request" from "attempted and got
+    no response" without any change to `InstagramWorker`/
+    `InstagramIntel` themselves.
+    """
+    events = ["instagram_attempted"]
+    if url_input_present:
+        events.append("instagram_url_input_present")
+    if intel.profile_reachable is True:
+        events.append("instagram_profile_reachable")
+    if intel.profile_reachable is False and intel.fetch_duration is None:
+        events.append("instagram_short_circuited")
+    return tuple(events)
+
+
+def _contact_instagram_discovery_event(intel: Any) -> str:
+    """
+    Phase 14.2 — ContactWorker side of the same telemetry ask. Pure
+    decision logic, extracted from `_contact_downstream` for the same
+    testability reason as `_instagram_telemetry_events` above. Reads
+    only the observational `ContactIntel` fields ContactWorker already
+    computed (`instagram_url`, `instagram_source`,
+    `instagram_invalid_candidate_seen` — see `workers/contact_worker.py`
+    and `ContactIntel`'s own docstring); never gates/prunes anything.
+    """
+    discovered = getattr(intel, "instagram_url", None)
+    if discovered:
+        source = getattr(intel, "instagram_source", None) or "unknown"
+        return f"instagram_discovery_found:{source}"
+    if getattr(intel, "instagram_invalid_candidate_seen", False):
+        return "instagram_discovery_invalid"
+    return "instagram_discovery_missing"
+
+
 def build_seven_stage_pipeline(
     coordinator: EngineCoordinator,
     session_id: str,
@@ -1403,6 +1452,20 @@ def build_seven_stage_pipeline(
     #    forwards nothing meaningful (see Item 4 fix note below).
 
     def _instagram_downstream(intel) -> None:
+        # Phase 14.2 (Instagram acquisition, quality-preserving) —
+        # "Make Instagram telemetry truthful". See
+        # `_instagram_telemetry_events`'s own docstring above for the
+        # full reasoning; this closure only supplies the one piece that
+        # function can't compute itself (whether the original candidate
+        # had an `instagram_url` before InstagramWorker ran) and emits
+        # the events it returns. Purely observational: never
+        # gates/prunes anything QualificationWorker later sees.
+        business = fan_in.get_business(intel.pipeline_id)
+        url_input_present = bool(business and getattr(business, "instagram_url", None))
+
+        for event in _instagram_telemetry_events(intel, url_input_present=url_input_present):
+            _emit("instagram", event, intel.pipeline_id)
+
         fan_in.record_instagram_result(intel.pipeline_id, intel)
         return None
 
@@ -1460,6 +1523,33 @@ def build_seven_stage_pipeline(
             _emit("contact", "tel_link_extracted", intel.pipeline_id)
         if getattr(intel, "partial_contact_success", False):
             _emit("contact", "partial_contact_success", intel.pipeline_id)
+
+        # Phase 14.2 (Instagram acquisition, quality-preserving) —
+        # "Make Instagram telemetry truthful", ContactWorker side. See
+        # `_contact_instagram_discovery_event`'s own docstring above.
+        # Qualification continues to read only `instagram_url`,
+        # unchanged.
+        _emit("contact", _contact_instagram_discovery_event(intel), intel.pipeline_id)
+
+        # Phase 15 (Email / Contact Acquisition telemetry)
+        if getattr(intel, "emails", None) and any(is_valid_email(e) for e in intel.emails):
+            _emit("contact", "email_acquired", intel.pipeline_id)
+        else:
+            _emit("contact", "email_missing_after_scan", intel.pipeline_id)
+
+        if getattr(intel, "phones", None) and len(intel.phones) > 0:
+            _emit("contact", "phone_acquired", intel.pipeline_id)
+        else:
+            _emit("contact", "phone_missing_after_scan", intel.pipeline_id)
+
+        if getattr(intel, "secondary_page_fetched", False):
+            _emit("contact", "email_secondary_page_fetched", intel.pipeline_id)
+            _emit("contact", "phone_secondary_page_fetched", intel.pipeline_id)
+            if getattr(intel, "email_source", None) == "secondary_page":
+                _emit("contact", "email_secondary_page_found", intel.pipeline_id)
+
+        if getattr(intel, "secondary_page_fetch_failed", False):
+            _emit("contact", "secondary_page_fetch_failures", intel.pipeline_id)
 
         fan_in.record_contact_result(intel.pipeline_id, intel)
         return None

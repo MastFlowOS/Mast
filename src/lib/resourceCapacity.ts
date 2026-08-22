@@ -214,26 +214,105 @@ export function computeSafePidWorkerCeiling(
   return { ceiling, basis: "measured" };
 }
 
+export type ComputeSafeResourceCapacityParams = {
+  pidsMax: number | null;
+  pidsCurrent: number | null;
+  pidsPerAreaWorker: number;
+  reservePids: number;
+  fallbackCeiling: number;
+  cgroupMemoryLimitMb?: number | null;
+  cgroupMemoryCurrentMb?: number | null;
+  perBrowserMb?: number;
+  reserveMemoryMb?: number;
+  configuredCeiling?: number;
+  manualCap?: number;
+};
+
+export type SafeResourceCapacityResult = {
+  pidWorkerCeiling: number;
+  pidCeilingBasis: PidCeilingBasis;
+  cgroupMemoryWorkerCeiling: number | null;
+  rawResourceCeiling: number;
+  safeAreaWorkers: number;
+};
+
+/**
+ * Pure arithmetic resource capacity model (Phase 16).
+ * Combines measured PID budget and cgroup memory headroom into a single
+ * safe, conservative ceiling while respecting configured ceilings and manual caps.
+ */
+export function computeSafeResourceCapacity(params: ComputeSafeResourceCapacityParams): SafeResourceCapacityResult {
+  const {
+    pidsMax,
+    pidsCurrent,
+    pidsPerAreaWorker,
+    reservePids,
+    fallbackCeiling,
+    cgroupMemoryLimitMb = null,
+    cgroupMemoryCurrentMb = null,
+    perBrowserMb = 350,
+    reserveMemoryMb = 256,
+    configuredCeiling = Number.MAX_SAFE_INTEGER,
+    manualCap,
+  } = params;
+
+  const { ceiling: pidWorkerCeiling, basis: pidCeilingBasis } = computeSafePidWorkerCeiling(
+    pidsMax,
+    pidsCurrent,
+    pidsPerAreaWorker,
+    reservePids,
+    fallbackCeiling,
+  );
+
+  let cgroupMemoryWorkerCeiling: number | null = null;
+  if (cgroupMemoryLimitMb !== null && cgroupMemoryLimitMb !== undefined) {
+    const baselineMem = cgroupMemoryCurrentMb ?? 0;
+    const memBudget = Math.max(0, cgroupMemoryLimitMb - baselineMem - reserveMemoryMb);
+    cgroupMemoryWorkerCeiling = Math.max(0, Math.floor(memBudget / Math.max(1, perBrowserMb)));
+  }
+
+  const rawResourceCeiling =
+    cgroupMemoryWorkerCeiling !== null
+      ? Math.min(pidWorkerCeiling, cgroupMemoryWorkerCeiling)
+      : pidWorkerCeiling;
+
+  const safeAreaWorkers = Math.min(
+    configuredCeiling,
+    rawResourceCeiling,
+    manualCap ?? rawResourceCeiling,
+  );
+
+  return {
+    pidWorkerCeiling,
+    pidCeilingBasis,
+    cgroupMemoryWorkerCeiling,
+    rawResourceCeiling,
+    safeAreaWorkers,
+  };
+}
+
 export type ResourceCapacity = {
   pidCapacity: PidCapacitySnapshot;
   cgroupMemoryLimitMb: number | null;
   /** PHASE 6B — cgroup memory.current at the moment this was measured (startup). */
   cgroupMemoryCurrentMb: number | null;
+  /** PHASE 16 — cgroup memory ceiling in workers (null if unconstrained / non-cgroup). */
+  cgroupMemoryWorkerCeiling: number | null;
   /** PHASE 6B — this Node worker process's own PID. */
   nodePid: number;
   /** PHASE 6B — this Node worker process's own OS thread count (null if unreadable / non-Linux). */
   nodeThreadCount: number | null;
   pidsPerAreaWorker: number;
   reservePids: number;
-  /** Ceiling derived purely from PID/thread accounting (before folding in the configured/env ceiling). */
+  /** Ceiling derived purely from PID/thread accounting (before folding in memory or configured/env ceiling). */
   pidWorkerCeiling: number;
   pidCeilingBasis: PidCeilingBasis;
-  /** Final safe area-worker count: min(configuredCeiling, pidWorkerCeiling), clamped to >= 1. */
+  /** Final safe area-worker count: min(configuredCeiling, rawResourceCeiling, manualCap ?? rawResourceCeiling). */
   safeAreaWorkers: number;
 };
 
 /**
- * TASK 1 + TASK 3 — measures this worker process's real PID/thread budget
+ * TASK 1 + TASK 3 — measures this worker process's real PID/thread and memory budget
  * once at startup and folds it together with the configured area-worker
  * ceiling into a single deterministic, observable number. Mirrors
  * workerCapacity.ts's `measureBrowserCapacity()` in shape and logging so
@@ -250,42 +329,44 @@ export function measureResourceCapacity(configuredCeiling: number): ResourceCapa
   const cgroupMemoryCurrentMb = readCgroupMemoryCurrentMb();
   const nodePid = process.pid;
   const nodeThreadCount = readNodeThreadCount();
-  const { ceiling: pidWorkerCeiling, basis: pidCeilingBasis } = computeSafePidWorkerCeiling(
-    pidCapacity.pidsMax,
-    pidCapacity.pidsCurrent,
-    env.PIDS_PER_AREA_WORKER,
-    env.PIDS_RESERVE_BUDGET,
-    env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS_FALLBACK,
-  );
 
-  // Manual override (env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS), when set, is a
-  // sanity CAP layered on top of the measured ceiling — it can only lower
-  // the final number, never raise it past what was actually measured.
-  const manualCap = env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS;
-  const bounded = manualCap !== undefined ? Math.min(configuredCeiling, pidWorkerCeiling, manualCap) : Math.min(configuredCeiling, pidWorkerCeiling);
-  const safeAreaWorkers = Math.max(1, bounded);
+  const computed = computeSafeResourceCapacity({
+    pidsMax: pidCapacity.pidsMax,
+    pidsCurrent: pidCapacity.pidsCurrent,
+    pidsPerAreaWorker: env.PIDS_PER_AREA_WORKER,
+    reservePids: env.PIDS_RESERVE_BUDGET,
+    fallbackCeiling: env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS_FALLBACK,
+    cgroupMemoryLimitMb,
+    cgroupMemoryCurrentMb,
+    perBrowserMb: env.BROWSER_MEMORY_ESTIMATE_MB,
+    reserveMemoryMb: env.WORKER_MEMORY_RESERVE_MB,
+    configuredCeiling,
+    manualCap: env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS,
+  });
 
   console.log(
     `[resourceCapacity] cgroup=${pidCapacity.cgroupVersion} nodePid=${nodePid} nodeThreads=${nodeThreadCount ?? "unknown"} ` +
       `pidsMax=${pidCapacity.pidsMax ?? "unlimited/unknown"} pidsCurrent=${pidCapacity.pidsCurrent ?? "unknown"} ` +
       `cgroupMemLimitMb=${cgroupMemoryLimitMb ?? "unknown"} cgroupMemCurrentMb=${cgroupMemoryCurrentMb?.toFixed(1) ?? "unknown"} ` +
+      `cgroupMemWorkerCeiling=${computed.cgroupMemoryWorkerCeiling ?? "unconstrained"} ` +
       `pidsPerAreaWorker=${env.PIDS_PER_AREA_WORKER} reservePids=${env.PIDS_RESERVE_BUDGET} ` +
-      `basis=${pidCeilingBasis} pidWorkerCeiling=${pidWorkerCeiling} ` +
-      `configuredCeiling=${configuredCeiling} manualCap=${manualCap ?? "unset"} ` +
-      `safeAreaWorkers=${safeAreaWorkers}`,
+      `basis=${computed.pidCeilingBasis} pidWorkerCeiling=${computed.pidWorkerCeiling} ` +
+      `configuredCeiling=${configuredCeiling} manualCap=${env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS ?? "unset"} ` +
+      `safeAreaWorkers=${computed.safeAreaWorkers}`,
   );
 
   return {
     pidCapacity,
     cgroupMemoryLimitMb,
     cgroupMemoryCurrentMb,
+    cgroupMemoryWorkerCeiling: computed.cgroupMemoryWorkerCeiling,
     nodePid,
     nodeThreadCount,
     pidsPerAreaWorker: env.PIDS_PER_AREA_WORKER,
     reservePids: env.PIDS_RESERVE_BUDGET,
-    pidWorkerCeiling,
-    pidCeilingBasis,
-    safeAreaWorkers,
+    pidWorkerCeiling: computed.pidWorkerCeiling,
+    pidCeilingBasis: computed.pidCeilingBasis,
+    safeAreaWorkers: computed.safeAreaWorkers,
   };
 }
 
@@ -305,6 +386,7 @@ export function logStartupResourceTelemetry(capacity: ResourceCapacity, browserS
     `[resourceCapacity][startup] nodePid=${capacity.nodePid} nodeThreads=${capacity.nodeThreadCount ?? "unknown"} ` +
       `pidsMax=${capacity.pidCapacity.pidsMax ?? "unlimited/unknown"} pidsCurrent=${capacity.pidCapacity.pidsCurrent ?? "unknown"} ` +
       `memoryMaxMb=${capacity.cgroupMemoryLimitMb?.toFixed(1) ?? "unknown"} memoryCurrentMb=${capacity.cgroupMemoryCurrentMb?.toFixed(1) ?? "unknown"} ` +
+      `memoryWorkerCeiling=${capacity.cgroupMemoryWorkerCeiling ?? "unconstrained"} ` +
       `configuredAreaWorkerCeiling=${configuredAreaWorkers} browserSlots=${browserSlots} ` +
       `computedSafeResourceWorkers=${capacity.safeAreaWorkers} (basis=${capacity.pidCeilingBasis})`,
   );
@@ -339,6 +421,7 @@ export function getResourceCapacity(): ResourceCapacity {
       pidCapacity: { cgroupVersion: "unavailable", pidsMax: null, pidsCurrent: null },
       cgroupMemoryLimitMb: null,
       cgroupMemoryCurrentMb: null,
+      cgroupMemoryWorkerCeiling: null,
       nodePid: process.pid,
       nodeThreadCount: readNodeThreadCount(),
       pidsPerAreaWorker: env.PIDS_PER_AREA_WORKER,
@@ -354,4 +437,181 @@ export function getResourceCapacity(): ResourceCapacity {
 export const __testing_resourceCapacity = {
   reset: () => { processResourceCapacity = undefined; },
   set: (capacity: ResourceCapacity) => { processResourceCapacity = capacity; },
+};
+
+/**
+ * PHASE 18 — resource-aware ENRICHMENT concurrency.
+ *
+ * Applies the exact same measured-PID-budget model this module already
+ * uses for area workers (see the module docstring above and Phase 6's
+ * `computeSafeResourceCapacity`) to the businessEnrich (Website+Contact)
+ * and businessScore (Instagram) pg-boss queues in workers/index.ts —
+ * NOT a second independent resource model, the same
+ * `computeSafeResourceCapacity` pure function, called with an
+ * enrichment-specific PID-per-worker assumption
+ * (`env.ENRICHMENT_PIDS_PER_WORKER`, deliberately distinct from
+ * `env.PIDS_PER_AREA_WORKER` — see that env var's own doc comment for
+ * why the two are not interchangeable) instead of the area-worker one.
+ *
+ * `configuredCeiling` here is the TOTAL desired concurrency across BOTH
+ * enrichment queues (`ENRICHMENT_TASK_CONCURRENCY +
+ * INTELLIGENCE_TASK_CONCURRENCY`) — they are two independently-configured
+ * pg-boss queues today (not one shared queue), but both run inside the
+ * same worker process and both spawn the same kind of lightweight
+ * `service.py enrich`/`service.py score` subprocess, so they compete for
+ * the exact same measured PID budget. `splitEnrichmentCapacity` below is
+ * what turns one combined safe ceiling back into two per-queue
+ * `batchSize` values without letting either queue starve the other.
+ */
+export type EnrichmentCapacity = {
+  pidCapacity: PidCapacitySnapshot;
+  cgroupMemoryLimitMb: number | null;
+  cgroupMemoryCurrentMb: number | null;
+  cgroupMemoryWorkerCeiling: number | null;
+  enrichmentPidsPerWorker: number;
+  reservePids: number;
+  pidWorkerCeiling: number;
+  pidCeilingBasis: PidCeilingBasis;
+  /** Combined businessEnrich + businessScore safe ceiling, before the per-queue split. */
+  safeEnrichmentWorkers: number;
+};
+
+export function measureEnrichmentCapacity(configuredCeiling: number): EnrichmentCapacity {
+  const pidCapacity = readPidCapacity();
+  // Memory ceiling only participates when a real per-worker estimate has
+  // been configured (see ENRICHMENT_MEMORY_MB_PER_WORKER's own doc
+  // comment) — an unset value must leave the memory dimension
+  // unconstrained, never silently assume some invented footprint.
+  const cgroupMemoryLimitMb = env.ENRICHMENT_MEMORY_MB_PER_WORKER !== undefined ? readCgroupMemoryLimitMb() : null;
+  const cgroupMemoryCurrentMb = cgroupMemoryLimitMb !== null ? readCgroupMemoryCurrentMb() : null;
+
+  const computed = computeSafeResourceCapacity({
+    pidsMax: pidCapacity.pidsMax,
+    pidsCurrent: pidCapacity.pidsCurrent,
+    pidsPerAreaWorker: env.ENRICHMENT_PIDS_PER_WORKER,
+    reservePids: env.PIDS_RESERVE_BUDGET,
+    fallbackCeiling: env.ENRICHMENT_SAFE_RESOURCE_WORKERS_FALLBACK,
+    cgroupMemoryLimitMb,
+    cgroupMemoryCurrentMb,
+    perBrowserMb: env.ENRICHMENT_MEMORY_MB_PER_WORKER ?? 1,
+    reserveMemoryMb: env.WORKER_MEMORY_RESERVE_MB,
+    configuredCeiling,
+    manualCap: env.ENRICHMENT_SAFE_RESOURCE_WORKERS,
+  });
+
+  console.log(
+    `[resourceCapacity][enrichment] cgroup=${pidCapacity.cgroupVersion} ` +
+      `pidsMax=${pidCapacity.pidsMax ?? "unlimited/unknown"} pidsCurrent=${pidCapacity.pidsCurrent ?? "unknown"} ` +
+      `memoryMaxMb=${cgroupMemoryLimitMb ?? "unconstrained"} memoryCurrentMb=${cgroupMemoryCurrentMb?.toFixed(1) ?? "unconstrained"} ` +
+      `memoryWorkerCeiling=${computed.cgroupMemoryWorkerCeiling ?? "unconstrained"} ` +
+      `enrichmentPidsPerWorker=${env.ENRICHMENT_PIDS_PER_WORKER} reservePids=${env.PIDS_RESERVE_BUDGET} ` +
+      `basis=${computed.pidCeilingBasis} pidWorkerCeiling=${computed.pidWorkerCeiling} ` +
+      `enrichment_configured_concurrency=${configuredCeiling} manualCap=${env.ENRICHMENT_SAFE_RESOURCE_WORKERS ?? "unset"} ` +
+      `enrichment_safe_resource_concurrency=${computed.safeAreaWorkers}`,
+  );
+
+  return {
+    pidCapacity,
+    cgroupMemoryLimitMb,
+    cgroupMemoryCurrentMb,
+    cgroupMemoryWorkerCeiling: computed.cgroupMemoryWorkerCeiling,
+    enrichmentPidsPerWorker: env.ENRICHMENT_PIDS_PER_WORKER,
+    reservePids: env.PIDS_RESERVE_BUDGET,
+    pidWorkerCeiling: computed.pidWorkerCeiling,
+    pidCeilingBasis: computed.pidCeilingBasis,
+    safeEnrichmentWorkers: computed.safeAreaWorkers,
+  };
+}
+
+/**
+ * PHASE 18, STEP 4/5 — turns one combined safe enrichment ceiling back
+ * into two independent per-queue `batchSize` values (businessEnrich,
+ * businessScore) without merging the two pg-boss queues into one (the
+ * smallest change preserving today's queue architecture — see
+ * workers/index.ts) and without letting either stage starve the other.
+ *
+ * Pure arithmetic, unit-testable on its own: allocates the combined
+ * `safeTotal` proportionally to each queue's OWN configured desire
+ * (`enrichConfigured` covers Website+Contact, `intelligenceConfigured`
+ * covers Instagram), floors each share, and hands any leftover unit (from
+ * flooring) to whichever queue's exact share was larger — so the two
+ * outputs always sum to `min(safeTotal, enrichConfigured +
+ * intelligenceConfigured)`, never more, and never less than that sum
+ * would allow. Never forces either output above 0 back to 1 — a
+ * genuinely zero combined ceiling produces two zero shares (STEP 6).
+ */
+export function splitEnrichmentCapacity(
+  safeTotal: number,
+  enrichConfigured: number,
+  intelligenceConfigured: number,
+): { enrichConcurrency: number; intelligenceConcurrency: number } {
+  const totalConfigured = enrichConfigured + intelligenceConfigured;
+  if (safeTotal <= 0 || totalConfigured <= 0) {
+    return { enrichConcurrency: 0, intelligenceConcurrency: 0 };
+  }
+
+  const capped = Math.min(safeTotal, totalConfigured);
+  const enrichShareExact = (capped * enrichConfigured) / totalConfigured;
+  const intelligenceShareExact = capped - enrichShareExact;
+
+  let enrichConcurrency = Math.min(enrichConfigured, Math.floor(enrichShareExact));
+  let intelligenceConcurrency = Math.min(intelligenceConfigured, Math.floor(intelligenceShareExact));
+
+  // Hand any leftover (lost to flooring, or headroom either individual
+  // queue cap didn't use) to whichever queue still has room under its own
+  // configured ceiling, preferring the larger fractional remainder first
+  // — deterministic tie-break, no starvation of the smaller queue.
+  let leftover = capped - enrichConcurrency - intelligenceConcurrency;
+  const enrichRemainder = enrichShareExact - Math.floor(enrichShareExact);
+  const intelligenceRemainder = intelligenceShareExact - Math.floor(intelligenceShareExact);
+  const order: Array<"enrich" | "intelligence"> =
+    enrichRemainder >= intelligenceRemainder ? ["enrich", "intelligence"] : ["intelligence", "enrich"];
+
+  for (const which of order) {
+    if (leftover <= 0) break;
+    if (which === "enrich") {
+      const room = enrichConfigured - enrichConcurrency;
+      const take = Math.min(room, leftover);
+      enrichConcurrency += take;
+      leftover -= take;
+    } else {
+      const room = intelligenceConfigured - intelligenceConcurrency;
+      const take = Math.min(room, leftover);
+      intelligenceConcurrency += take;
+      leftover -= take;
+    }
+  }
+
+  return { enrichConcurrency, intelligenceConcurrency };
+}
+
+let processEnrichmentCapacity: EnrichmentCapacity | undefined;
+
+export function initEnrichmentCapacity(configuredCeiling: number): EnrichmentCapacity {
+  processEnrichmentCapacity = measureEnrichmentCapacity(configuredCeiling);
+  return processEnrichmentCapacity;
+}
+
+export function getEnrichmentCapacity(): EnrichmentCapacity {
+  if (!processEnrichmentCapacity) {
+    console.warn("[resourceCapacity][enrichment] getEnrichmentCapacity() called before initEnrichmentCapacity() — falling back to the known-safe constant");
+    const fallback = env.ENRICHMENT_SAFE_RESOURCE_WORKERS_FALLBACK;
+    processEnrichmentCapacity = {
+      pidCapacity: { cgroupVersion: "unavailable", pidsMax: null, pidsCurrent: null },
+      cgroupMemoryLimitMb: null,
+      cgroupMemoryCurrentMb: null,
+      cgroupMemoryWorkerCeiling: null,
+      enrichmentPidsPerWorker: env.ENRICHMENT_PIDS_PER_WORKER,
+      reservePids: env.PIDS_RESERVE_BUDGET,
+      pidWorkerCeiling: fallback,
+      pidCeilingBasis: "fallback_unavailable",
+      safeEnrichmentWorkers: fallback,
+    };
+  }
+  return processEnrichmentCapacity;
+}
+
+export const __testing_enrichmentCapacity = {
+  reset: () => { processEnrichmentCapacity = undefined; },
+  set: (capacity: EnrichmentCapacity) => { processEnrichmentCapacity = capacity; },
 };

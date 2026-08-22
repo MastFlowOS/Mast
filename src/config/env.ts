@@ -249,6 +249,61 @@ const EnvSchema = z.object({
   // incident, never to raise above what was actually measured.
   GOOGLE_MAPS_SAFE_RESOURCE_WORKERS: z.coerce.number().int().min(1).max(16).optional(),
 
+  // PHASE 18 — resource-aware ENRICHMENT concurrency. Mirrors Phase 16's
+  // area-worker treatment, applied to the businessEnrich (Website+Contact,
+  // one runEngineEnrich() subprocess call per business — see
+  // businessProcessingJob.ts's enrichBusiness()) and businessScore
+  // (Instagram, same subprocess mechanism) pg-boss queues, which together
+  // are the enrichment throughput bottleneck the Phase 18 production audit
+  // measured (~2/min against a 3.33/min target).
+  //
+  // ENRICHMENT_PIDS_PER_WORKER: measured PID/thread footprint of ONE
+  // enrichment job's `service.py enrich`/`service.py score` subprocess.
+  // Deliberately NOT the same as PIDS_PER_AREA_WORKER (220): the Engine
+  // 2.0 WebsiteWorker/ContactWorker/InstagramWorker this subprocess drives
+  // are plain `urllib.request` HTTP inspectors (workers/website_worker.py,
+  // workers/contact_worker.py, workers/instagram_worker.py's own module
+  // docstrings) — no Playwright driver process, no Chromium process tree.
+  // This default (20) is a documented CONSERVATIVE ROLLOUT BASELINE, not a
+  // real production measurement — re-measure it the same way
+  // PIDS_PER_AREA_WORKER's own comment describes (sample
+  // /sys/fs/cgroup/pids.current immediately before/after a single isolated
+  // enrichment job) once enrichment_configured_concurrency /
+  // enrichment_safe_resource_concurrency / enrichment_final_concurrency
+  // telemetry (resourceCapacity.ts) has real data, and set this env var to
+  // the observed delta plus headroom. Do not change this default in code
+  // without that measurement.
+  ENRICHMENT_PIDS_PER_WORKER: z.coerce.number().int().min(1).default(20),
+
+  // Optional cgroup-memory-based enrichment ceiling, parallel to
+  // BROWSER_MEMORY_ESTIMATE_MB above. Left unset by default: unlike
+  // discovery's browser slots, no trustworthy per-enrichment-worker memory
+  // measurement exists yet either (see ENRICHMENT_PIDS_PER_WORKER above) —
+  // an invented number here would be exactly the "optimistic assumption"
+  // Phase 18 was told not to invent. When unset, the enrichment capacity
+  // model folds in ONLY the measured PID ceiling (still real and still
+  // resource-aware); set this once a real per-worker RSS delta has been
+  // measured to also fold in a memory-derived ceiling.
+  ENRICHMENT_MEMORY_MB_PER_WORKER: z.coerce.number().int().min(1).optional(),
+
+  // Fallback ceiling used ONLY when the cgroup `pids` controller cannot be
+  // read at all — same "unavailable, not merely unlimited" contract as
+  // GOOGLE_MAPS_SAFE_RESOURCE_WORKERS_FALLBACK. Defaults to the SUM of
+  // today's two fixed concurrency knobs (ENRICHMENT_TASK_CONCURRENCY +
+  // INTELLIGENCE_TASK_CONCURRENCY = 8 + 8 = 16) precisely because that is
+  // the already-running, already-safe combined concurrency production
+  // runs today with zero resource-awareness at all — i.e. "can't measure
+  // it" must fall back to "the number that was already proven fine",
+  // never to an unbounded or invented figure.
+  ENRICHMENT_SAFE_RESOURCE_WORKERS_FALLBACK: z.coerce.number().int().min(1).max(128).default(16),
+
+  // Optional manual override/sanity-cap on the TOTAL (businessEnrich +
+  // businessScore combined) resource-aware enrichment ceiling, mirroring
+  // GOOGLE_MAPS_SAFE_RESOURCE_WORKERS. Unset by default so the measured
+  // ceiling is authoritative; set only to force a lower combined cap
+  // during rollout or incident response, never to raise above measured.
+  ENRICHMENT_SAFE_RESOURCE_WORKERS: z.coerce.number().int().min(0).max(128).optional(),
+
   // PROCESS REGISTRY EXPLOSION FIX (log-volume half): discoveryPlanJob.ts's
   // per-candidate tracing block (PIPELINE/DISCOVERED/EXITED HERE/reason=/
   // BUSINESS_UPSERTED/ENSURE_ENRICHED_*/CHANNELS_*/DELIVER_LEAD_*/

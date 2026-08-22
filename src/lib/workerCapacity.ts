@@ -28,6 +28,7 @@ import os from "node:os";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 import { env } from "../config/env.js";
 import { workerMetrics } from "./observability.js";
+import { readCgroupMemoryLimitMb, readCgroupMemoryCurrentMb } from "./resourceCapacity.js";
 export { type BrowserSlotPool, createBrowserSlotPool, initBrowserSlotPool, getBrowserSlotPool, acquireBrowserSlotBlocking, __testing_browserSlotPool as __testing_workerCapacity } from "./browserSlotPool.js";
 
 export type WorkerPoolType = "browser" | "light_compute" | "ai";
@@ -58,12 +59,20 @@ export type WorkerCapacity = {
  *     floor((freeMem - WORKER_MEMORY_RESERVE_MB) / BROWSER_MEMORY_ESTIMATE_MB))
  *   clamped to [1, configuredConcurrency]
  *
+ * Uses real cgroup memory limits and live usage when running in a container,
+ * falling back to os.freemem()/os.totalmem() on unconstrained hosts.
+ *
  * Tune BROWSER_MEMORY_ESTIMATE_MB and WORKER_MEMORY_RESERVE_MB via env vars
  * when deploying to a different container size \u2014 don\u2019t change this code.
  */
 export function measureBrowserCapacity(configuredConcurrency: number): WorkerCapacity {
-  const totalMb = os.totalmem() / 1024 / 1024;
-  const freeMb = os.freemem() / 1024 / 1024;
+  const cgroupLimitMb = readCgroupMemoryLimitMb();
+  const cgroupCurrentMb = readCgroupMemoryCurrentMb();
+
+  const totalMb = cgroupLimitMb ?? (os.totalmem() / 1024 / 1024);
+  const freeMb = cgroupLimitMb !== null
+    ? Math.max(0, cgroupLimitMb - (cgroupCurrentMb ?? 0))
+    : (os.freemem() / 1024 / 1024);
 
   const perBrowserMb = env.BROWSER_MEMORY_ESTIMATE_MB;
   const reserveMb = env.WORKER_MEMORY_RESERVE_MB;

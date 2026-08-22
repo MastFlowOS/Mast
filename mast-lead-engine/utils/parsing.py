@@ -7,10 +7,11 @@ Battle-tested for international formats.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 import urllib.parse
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -57,6 +58,8 @@ def normalize_phone(raw: str | None, region: str = "US") -> str:
     if s.lower().startswith("tel:"):
         s = s[4:].strip()
     d = digits_only(s)
+    if not is_valid_phone(d, min_digits=7):
+        return ""
     if len(d) == 10 and region.upper() in ("US", "CA", "USA", "CANADA"):
         return f"+1 ({d[:3]}) {d[3:6]}-{d[6:]}"
     if len(d) == 11 and d.startswith("1"):
@@ -87,7 +90,11 @@ def extract_phones(text: str) -> list[str]:
         _add(m)
     for m in _JSON_PHONE_RE.findall(text):
         _add(m)
-    for m in _PHONE_PATTERN.finditer(text):
+    # For visible text: strip script/style and tags so attributes like data-id / width / height aren't matched
+    cleaned_text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned_text = re.sub(r"<[^>]+>", " ", cleaned_text)
+
+    for m in _PHONE_PATTERN.finditer(cleaned_text):
         token = m.group(0).strip()
         if len(digits_only(token)) >= 7:
             _add(token)
@@ -590,6 +597,174 @@ def extract_ig_urls(text: str) -> list[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Instagram discovery — source classification + plain-text @handle fallback
+#
+# Phase 14.2 (Instagram acquisition, quality-preserving). `extract_ig_urls()`
+# above already finds a literal `instagram.com/<handle>` URL wherever one
+# appears in the raw HTML blob it's given — that single regex pass already
+# covers anchor hrefs, bare URLs elsewhere in the markup, JSON-LD
+# (`Organization.sameAs`, profile `sameAs` lists) and `<meta ...>` tag
+# `content=` attributes alike, since none of those are structurally special
+# to a plain substring/regex scan: a JSON-LD `sameAs` value or a meta
+# `content` attribute containing `https://www.instagram.com/joesbarber/` is
+# just that same literal string sitting in the page text. What
+# `extract_ig_urls()` never did is (a) say *which* of those shapes a given
+# match came from, which Phase 14.2's telemetry ask needs, or (b) recognize
+# a business handle mentioned as plain text (`Instagram: @joesbarber`) with
+# no `instagram.com` URL anywhere on the page at all.
+#
+# `extract_ig_urls_with_source()` adds both, additively, reusing every
+# validation/canonicalization rule above (`_IG_URL_RE`, `_IG_NON_HANDLES`,
+# `is_real_ig_handle`) rather than duplicating them, and does not change
+# `extract_ig_urls()` itself — it is used elsewhere (V1 crawler, Maps
+# scraper) and this phase's own instruction is "bounded, cheap
+# improvements", not a rewrite of an already-working, already-tested path.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_ANCHOR_HREF_RE = re.compile(
+    r'<a\s[^>]*href=["\']([^"\']+)["\']', re.IGNORECASE | re.DOTALL
+)
+_JSONLD_BLOCK_RE = re.compile(
+    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
+_META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+
+#: A business-specific @handle mentioned as plain text, e.g.
+#: "Follow us on Instagram: @joesbarber". Deliberately conservative — see
+#: `_find_plain_ig_handles()` below for the context requirement that keeps
+#: this from firing on an arbitrary @mention (Twitter handle, email
+#: fragment, etc.) elsewhere on the page.
+_PLAIN_HANDLE_RE = re.compile(r"(?<![\w.@\-])@([A-Za-z0-9_.]{2,30})\b")
+_PLAIN_HANDLE_CONTEXT_WINDOW = 60
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _ig_source_for_span(
+    start: int,
+    end: int,
+    anchor_spans: "list[tuple[int, int]]",
+    jsonld_spans: "list[tuple[int, int]]",
+    meta_spans: "list[tuple[int, int]]",
+) -> str:
+    for s, e in anchor_spans:
+        if s <= start and end <= e:
+            return "anchor_href"
+    for s, e in jsonld_spans:
+        if s <= start and end <= e:
+            return "jsonld"
+    for s, e in meta_spans:
+        if s <= start and end <= e:
+            return "meta"
+    return "raw_html"
+
+
+def _find_plain_ig_handles(html: str) -> list[str]:
+    """
+    Business-specific @handles mentioned as plain text, ONLY when the
+    surrounding text (within `_PLAIN_HANDLE_CONTEXT_WINDOW` characters
+    either side) also mentions "instagram" — e.g. "Instagram: @joesbarber"
+    or "Follow @joesbarber on Instagram". This is deliberately the
+    lowest-confidence signal: an arbitrary @mention with no nearby
+    "instagram" text (a Twitter handle, an email fragment, an unrelated
+    @-mention) never qualifies. The literal word "@instagram" itself is
+    excluded — that names the platform, not a business account.
+    """
+    if not html or "@" not in html:
+        return []
+    text = _HTML_TAG_RE.sub(" ", html)
+    results: list[str] = []
+    seen: set[str] = set()
+    for m in _PLAIN_HANDLE_RE.finditer(text):
+        handle = m.group(1)
+        low = handle.lower()
+        if low in seen:
+            continue
+        if low in _IG_NON_HANDLES or low == "instagram" or handle.isdigit():
+            continue
+        if not _IG_HANDLE_RE.match(handle):
+            continue
+        window = text[
+            max(0, m.start() - _PLAIN_HANDLE_CONTEXT_WINDOW):
+            min(len(text), m.end() + _PLAIN_HANDLE_CONTEXT_WINDOW)
+        ]
+        if not re.search(r"instagram", window, re.IGNORECASE):
+            continue
+        seen.add(low)
+        results.append(handle)
+    return results
+
+
+def extract_ig_urls_with_source(text: str) -> list[tuple[str, str]]:
+    """
+    Like `extract_ig_urls()`, but paired with where each canonical
+    Instagram URL was found: "anchor_href", "jsonld", "meta", "raw_html"
+    (a literal instagram.com URL elsewhere in the markup), or
+    "plain_handle" (a business @handle in plain text next to the word
+    "instagram", with no instagram.com URL anywhere on the page).
+
+    Order matches `extract_ig_urls()`'s own first-match-found order for
+    literal URLs; the plain-text fallback is only ever consulted when no
+    literal instagram.com URL was found anywhere on the page — it is the
+    least confident signal and never overrides an actual URL.
+    """
+    if not text:
+        return []
+
+    anchor_spans = [m.span(1) for m in _ANCHOR_HREF_RE.finditer(text)]
+    jsonld_spans = [m.span() for m in _JSONLD_BLOCK_RE.finditer(text)]
+    meta_spans = [m.span() for m in _META_TAG_RE.finditer(text)]
+
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for m in _IG_URL_RE.finditer(text):
+        handle = m.group(1).split("/")[0].lower()
+        if not handle or handle in _IG_NON_HANDLES or handle.isdigit():
+            continue
+        url = f"https://www.instagram.com/{handle}/"
+        if url in seen or not is_real_ig_handle(url):
+            continue
+        seen.add(url)
+        source = _ig_source_for_span(
+            m.start(), m.end(), anchor_spans, jsonld_spans, meta_spans
+        )
+        results.append((url, source))
+
+    if not results:
+        for handle in _find_plain_ig_handles(text):
+            url = f"https://www.instagram.com/{handle}/"
+            if url in seen:
+                continue
+            seen.add(url)
+            results.append((url, "plain_handle"))
+
+    return results
+
+
+def has_invalid_ig_candidate(text: str) -> bool:
+    """
+    True if the HTML contains something shaped like an
+    `instagram.com/<path>` URL that was correctly declined as evidence —
+    a reserved path (`/p/`, `/reel/`, `/explore/`, ...), a numeric-only
+    segment, or a bare instagram.com homepage link — i.e. a near-miss the
+    extractor saw and rejected, not silence. Purely observational (see
+    ContactIntel.instagram_invalid_candidate_seen / Phase 14.2 telemetry);
+    never changes what `extract_ig_urls`/`extract_ig_urls_with_source`
+    return as evidence.
+    """
+    if not text:
+        return False
+    for m in _IG_URL_RE.finditer(text):
+        handle = m.group(1).split("/")[0].lower()
+        url = f"https://www.instagram.com/{handle}/"
+        if not handle or handle in _IG_NON_HANDLES or handle.isdigit():
+            return True
+        if not is_real_ig_handle(url):
+            return True
+    return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # LinkedIn URL helpers
 # ──────────────────────────────────────────────────────────────────────────────
 #
@@ -644,3 +819,334 @@ def norm_text(value: str | None) -> str:
 def slug(value: str) -> str:
     """Convert to lowercase URL-safe slug."""
     return re.sub(r"[^a-z0-9]+", "-", norm_text(value)).strip("-")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 15 — Contact Acquisition & Discovery Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_JSONLD_CONTACT_TYPES = frozenset({
+    "organization", "localbusiness", "contactpoint", "corporation",
+    "store", "restaurant", "foodestablishment", "medicalbusiness",
+    "dentist", "bakery", "cafeorcoffeeshop", "barorpub", "winery",
+    "automotivebusiness", "childcare", "drycleaningorlaundry",
+    "emergencyservice", "employmentagency", "entertainmentbusiness",
+    "financialservice", "healthandbeautybusiness", "homeandconstructionbusiness",
+    "internetcafé", "legalbusiness", "library", "lodgingbusiness",
+    "professionalservice", "radiostation", "realestateagent",
+    "recyclingcenter", "selfstorage", "shoppingcenter", "sportsactivitylocation",
+    "televisionstation", "touristinformationcenter", "travelagency",
+    "postaladdress", "place", "service", "company", "business",
+})
+
+
+def _walk_jsonld(data: object) -> list[dict]:
+    """Yield all dict nodes in a parsed JSON-LD document or graph."""
+    nodes: list[dict] = []
+    if isinstance(data, dict):
+        nodes.append(data)
+        for v in data.values():
+            if isinstance(v, (dict, list)):
+                nodes.extend(_walk_jsonld(v))
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, (dict, list)):
+                nodes.extend(_walk_jsonld(item))
+    return nodes
+
+
+def extract_jsonld_contact_data(html: str) -> dict[str, list[str]]:
+    """Extract explicit email, telephone, and social URLs from JSON-LD schema blocks.
+
+    Inspects Organization, LocalBusiness (and all sub-classes), and ContactPoint.
+    Only explicit fields are extracted and validated via is_valid_email / is_valid_phone.
+    """
+    if not html:
+        return {"emails": [], "phones": [], "urls": []}
+
+    emails: list[str] = []
+    phones: list[str] = []
+    urls: list[str] = []
+    seen_emails: set[str] = set()
+    seen_phones: set[str] = set()
+    seen_urls: set[str] = set()
+
+    for script_match in _JSONLD_BLOCK_RE.finditer(html):
+        raw_json = script_match.group(1).strip()
+        if not raw_json:
+            continue
+        try:
+            parsed = json.loads(raw_json)
+        except Exception:
+            continue
+
+        for node in _walk_jsonld(parsed):
+            node_type = node.get("@type") or node.get("type") or ""
+            type_names: list[str] = []
+            if isinstance(node_type, str):
+                type_names = [node_type.strip().lower()]
+            elif isinstance(node_type, list):
+                type_names = [str(t).strip().lower() for t in node_type if t]
+
+            # Check if this node represents an organization/business/contactpoint
+            # or has explicit contact fields
+            is_contact_node = any(
+                t in _JSONLD_CONTACT_TYPES or any(sub in t for sub in ("business", "organization", "contactpoint", "store", "company"))
+                for t in type_names
+            )
+
+            # Email extraction
+            email_val = node.get("email")
+            if email_val:
+                raw_emails = [email_val] if isinstance(email_val, str) else (email_val if isinstance(email_val, list) else [])
+                for e in raw_emails:
+                    if isinstance(e, str):
+                        clean_e = e.strip().lower()
+                        if clean_e.startswith("mailto:"):
+                            clean_e = clean_e[len("mailto:"):].split("?", 1)[0].strip()
+                        if is_valid_email(clean_e) and clean_e not in seen_emails:
+                            seen_emails.add(clean_e)
+                            emails.append(clean_e)
+
+            # Telephone extraction
+            phone_val = node.get("telephone") or node.get("phone") or node.get("phoneNumber") or node.get("formatted_phone_number")
+            if phone_val:
+                raw_phones = [phone_val] if isinstance(phone_val, str) else (phone_val if isinstance(phone_val, list) else [])
+                for p in raw_phones:
+                    if isinstance(p, str):
+                        norm_p = normalize_phone(p)
+                        if norm_p and norm_p not in seen_phones:
+                            seen_phones.add(norm_p)
+                            phones.append(norm_p)
+
+            # URL / sameAs extraction
+            url_val = node.get("url")
+            same_as = node.get("sameAs")
+            raw_urls = []
+            if isinstance(url_val, str):
+                raw_urls.append(url_val)
+            elif isinstance(url_val, list):
+                raw_urls.extend(url_val)
+            if isinstance(same_as, str):
+                raw_urls.append(same_as)
+            elif isinstance(same_as, list):
+                raw_urls.extend(same_as)
+            for u in raw_urls:
+                if isinstance(u, str) and u.strip() and u.strip() not in seen_urls:
+                    seen_urls.add(u.strip())
+                    urls.append(u.strip())
+
+    return {"emails": emails, "phones": phones, "urls": urls}
+
+
+_ATTR_SCAN_RE = re.compile(
+    r'<([a-zA-Z0-9]+)\s+([^>]*?)>',
+    re.IGNORECASE | re.DOTALL,
+)
+_ATTR_PAIR_RE = re.compile(
+    r'([a-zA-Z0-9_\-:]+)\s*=\s*(?:["\']([^"\']*)["\']|([^\s>]+))',
+    re.IGNORECASE,
+)
+_PHONE_CONTEXT_ATTR_NAMES = frozenset({
+    "data-phone", "data-tel", "data-telephone", "data-contact-phone",
+    "data-call", "data-phonenumber", "data-phone-number", "data-number",
+})
+_EMAIL_CONTEXT_ATTR_NAMES = frozenset({
+    "data-email", "data-mail", "data-contact-email", "data-e-mail",
+    "data-mailto", "data-address",
+})
+_PHONE_KEYWORD_RE = re.compile(r"\b(?:call|phone|tel|telephone|contact|mobile|cell|dial)\b", re.IGNORECASE)
+_EMAIL_KEYWORD_RE = re.compile(r"\b(?:email|mail|contact|envelope|msg|message|write)\b", re.IGNORECASE)
+
+
+def extract_contextual_attribute_contacts(html: str) -> dict[str, list[str]]:
+    """Extract emails and phones from contact-bearing HTML attributes and icon containers.
+
+    Inspects href, aria-label, title, alt, data-* attributes on elements with
+    contact context (or wrapping icon elements).
+    Rejects arbitrary numeric strings and non-email '@' fragments.
+    """
+    if not html:
+        return {"emails": [], "phones": [], "pop_phones": [], "emails_with_source": []}
+
+    found_emails: list[str] = []
+    found_phones: list[str] = []
+    seen_emails: set[str] = set()
+    seen_phones: set[str] = set()
+
+    for tag_match in _ATTR_SCAN_RE.finditer(html):
+        tag_name = tag_match.group(1).lower()
+        attr_str = tag_match.group(2)
+        attrs = {m[0]: m[1] if m[1] else m[2] for m in _ATTR_PAIR_RE.findall(attr_str)}
+
+        # Check for email attributes
+        for attr_key, attr_val in attrs.items():
+            attr_key_low = attr_key.lower()
+            val = (attr_val or "").strip()
+            if not val:
+                continue
+
+            # 1. Direct email-named attributes
+            if attr_key_low in _EMAIL_CONTEXT_ATTR_NAMES:
+                for match in _SCAN_EMAIL_RE.findall(val):
+                    clean = match.lower()
+                    if clean not in seen_emails and is_valid_email(clean):
+                        seen_emails.add(clean)
+                        found_emails.append(clean)
+                continue
+
+            # 2. aria-label / title / alt with email syntax or email context
+            if attr_key_low in ("aria-label", "title", "alt"):
+                if "@" in val:
+                    for match in _SCAN_EMAIL_RE.findall(val):
+                        clean = match.lower()
+                        if clean not in seen_emails and is_valid_email(clean):
+                            seen_emails.add(clean)
+                            found_emails.append(clean)
+
+            # 3. Direct phone-named attributes
+            if attr_key_low in _PHONE_CONTEXT_ATTR_NAMES:
+                norm = normalize_phone(val)
+                if norm and norm not in seen_phones and is_valid_phone(norm):
+                    seen_phones.add(norm)
+                    found_phones.append(norm)
+                continue
+
+            # 4. aria-label / title / alt with phone context
+            if attr_key_low in ("aria-label", "title", "alt"):
+                has_phone_ctx = bool(_PHONE_KEYWORD_RE.search(attr_key_low) or _PHONE_KEYWORD_RE.search(val) or val.lower().startswith("tel:"))
+                if has_phone_ctx:
+                    for m in _PHONE_PATTERN.finditer(val):
+                        token = m.group(0).strip()
+                        if len(digits_only(token)) >= 7:
+                            norm = normalize_phone(token)
+                            if norm and norm not in seen_phones and is_valid_phone(norm):
+                                seen_phones.add(norm)
+                                found_phones.append(norm)
+
+    return {"emails": found_emails, "phones": found_phones}
+
+
+_SECONDARY_PAGE_PRIORITY: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("contact", re.compile(r"\bcontact(?:-us|_us|us)?\b", re.IGNORECASE)),
+    ("about", re.compile(r"\babout(?:-us|_us|us)?\b", re.IGNORECASE)),
+    ("team", re.compile(r"\bteam\b", re.IGNORECASE)),
+    ("staff", re.compile(r"\bstaff\b", re.IGNORECASE)),
+    ("locations", re.compile(r"\b(?:locations?)\b", re.IGNORECASE)),
+    ("catering", re.compile(r"\bcatering\b", re.IGNORECASE)),
+    ("wholesale", re.compile(r"\bwholesale\b", re.IGNORECASE)),
+    ("press", re.compile(r"\bpress\b", re.IGNORECASE)),
+    ("partners", re.compile(r"\bpartners?\b", re.IGNORECASE)),
+)
+
+_IGNORED_LINK_EXTENSIONS = frozenset({
+    ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",
+    ".zip", ".mp4", ".mov", ".avi", ".css", ".js", ".json",
+    ".xml", ".rss", ".ico", ".woff", ".woff2", ".ttf",
+})
+
+_SOCIAL_DOMAINS = frozenset({
+    "facebook.com", "instagram.com", "twitter.com", "x.com",
+    "linkedin.com", "youtube.com", "tiktok.com", "pinterest.com",
+    "yelp.com", "tripadvisor.com", "google.com", "apple.com",
+})
+
+_ANCHOR_RE = re.compile(
+    r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def find_secondary_contact_link(
+    fetched_htmls: list[tuple[str, str]],
+    base_url: str,
+    tried_urls: set[str],
+) -> tuple[str | None, str | None]:
+    """Find the single highest-priority same-domain secondary page from already-fetched HTMLs.
+
+    Priority order:
+    1. contact
+    2. about
+    3. team
+    4. staff
+    5. locations
+    6. catering
+    7. wholesale
+    8. press
+    9. partners
+
+    Strictly same-domain, non-external, non-social, and not already fetched.
+    Returns (best_url, matched_category) or (None, None).
+    """
+    if not fetched_htmls or not base_url:
+        return None, None
+
+    base_parsed = urlparse(base_url)
+    base_domain = base_parsed.netloc.lower().lstrip("www.").split(":")[0]
+    if not base_domain:
+        return None, None
+
+    normalized_tried = {u.strip().rstrip("/").lower() for u in tried_urls if u}
+
+    # Collect candidates: (priority_index, category_name, url)
+    candidates: list[tuple[int, str, str]] = []
+    seen_urls: set[str] = set()
+
+    for html, page_url in fetched_htmls:
+        if not html:
+            continue
+        for href, text in _ANCHOR_RE.findall(html):
+            href_clean = href.strip()
+            if not href_clean or href_clean.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
+                continue
+
+            resolved = urljoin(page_url, href_clean)
+            resolved_no_hash = resolved.split("#", 1)[0].strip()
+            resolved_clean = resolved_no_hash.rstrip("/")
+            resolved_low = resolved_clean.lower()
+
+            if resolved_low in normalized_tried or resolved_low in seen_urls:
+                continue
+
+            parsed = urlparse(resolved_no_hash)
+            if parsed.scheme not in ("http", "https"):
+                continue
+
+            cand_domain = parsed.netloc.lower().lstrip("www.").split(":")[0]
+            if not cand_domain:
+                continue
+            if cand_domain != base_domain and not cand_domain.endswith("." + base_domain):
+                continue
+            if any(cand_domain == d or cand_domain.endswith("." + d) for d in _SOCIAL_DOMAINS):
+                continue
+
+            # Check file extensions
+            path_low = parsed.path.lower()
+            if any(path_low.endswith(ext) for ext in _IGNORED_LINK_EXTENSIONS):
+                continue
+
+            # Evaluate against priority list
+            # Inspect href path, query, and anchor text
+            haystack = f"{parsed.path} {parsed.query} {text}"
+            matched_priority: int | None = None
+            matched_category: str | None = None
+
+            for p_idx, (cat_name, cat_pattern) in enumerate(_SECONDARY_PAGE_PRIORITY):
+                if cat_pattern.search(haystack):
+                    matched_priority = p_idx
+                    matched_category = cat_name
+                    break
+
+            if matched_priority is not None and matched_category is not None:
+                seen_urls.add(resolved_low)
+                candidates.append((matched_priority, matched_category, resolved_no_hash))
+
+    if not candidates:
+        return None, None
+
+    # Pick lowest priority index (0 is highest priority: contact, then about, etc.)
+    # Stable sort preserves document encounter order
+    candidates.sort(key=lambda item: item[0])
+    _, best_cat, best_url = candidates[0]
+    return best_url, best_cat
+

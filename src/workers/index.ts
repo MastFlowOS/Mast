@@ -9,7 +9,7 @@ import { handleBusinessProcessingJob, type BusinessProcessingPayload } from "../
 import { sweepStaleScrapeJobs } from "../jobs/staleScrapeJobSweep.js";
 import { env } from "../config/env.js";
 import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance, initBrowserSlotPool } from "../lib/workerCapacity.js";
-import { initResourceCapacity, logStartupResourceTelemetry } from "../lib/resourceCapacity.js";
+import { initResourceCapacity, logStartupResourceTelemetry, initEnrichmentCapacity, splitEnrichmentCapacity } from "../lib/resourceCapacity.js";
 import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
 
 // Ensure the provider registry is initialised at startup so any
@@ -92,12 +92,60 @@ async function main() {
   // areaWorkerTelemetry.ts (wired into pythonBridge.ts's runEngineQuery()).
   logStartupResourceTelemetry(resourceCapacity, browserSlotPool.capacity, env.GOOGLE_MAPS_AREA_WORKERS);
 
+  // ── Phase 18: resource-aware ENRICHMENT concurrency ─────────────────────
+  // Same measured-PID model as the area-worker ceiling above, applied to
+  // the businessEnrich (Website+Contact) and businessScore (Instagram)
+  // queues — see resourceCapacity.ts's "PHASE 18" section for the full
+  // rationale on why these two independently-configured queues are folded
+  // into ONE combined ceiling and then split, rather than treated as
+  // fully independent resource pools.
+  const enrichmentConfiguredTotal = env.ENRICHMENT_TASK_CONCURRENCY + env.INTELLIGENCE_TASK_CONCURRENCY;
+  const enrichmentCapacity = initEnrichmentCapacity(enrichmentConfiguredTotal);
+  const { enrichConcurrency: businessEnrichConcurrency, intelligenceConcurrency: businessScoreConcurrency } =
+    splitEnrichmentCapacity(enrichmentCapacity.safeEnrichmentWorkers, env.ENRICHMENT_TASK_CONCURRENCY, env.INTELLIGENCE_TASK_CONCURRENCY);
+  console.log(
+    `[worker] enrichment capacity enrichment_configured_concurrency=${enrichmentConfiguredTotal} ` +
+      `enrichment_safe_resource_concurrency=${enrichmentCapacity.safeEnrichmentWorkers} ` +
+      `enrichment_final_concurrency=${businessEnrichConcurrency + businessScoreConcurrency} ` +
+      `(businessEnrich=${businessEnrichConcurrency}, businessScore=${businessScoreConcurrency}, basis=${enrichmentCapacity.pidCeilingBasis})`,
+  );
+
+  // PHASE 18 — lightweight in-process gauges for enrichment_queue_depth /
+  // *_active telemetry (STEP 7). Purely observational counters, never read
+  // by any scheduling decision above — mirrors this module's own
+  // heartbeat-interval logging cadence rather than adding a new timer.
+  const enrichmentTelemetry = { websiteContactActive: 0, instagramActive: 0 };
+
   // Heartbeat the worker_instances row every 30 seconds so the ops dashboard
   // has a live view of actual capacity across the fleet.
   const workerHeartbeatInterval = setInterval(
     () => heartbeatWorkerInstance(browserCapacity.workerId),
     30_000,
   );
+
+  // PHASE 18, STEP 7 — observational-only enrichment stage telemetry,
+  // logged on the same 30s cadence as the existing heartbeat rather than a
+  // new timer. Queue depth is best-effort (pg-boss's own getQueueSize());
+  // a failure here never affects enrichment/discovery, matching this
+  // module's existing "fire and forget, never throw" observability
+  // convention (see observability.ts's own module docstring).
+  const enrichmentTelemetryInterval = setInterval(() => {
+    (async () => {
+      let websiteContactQueueDepth: number | "unknown" = "unknown";
+      let instagramQueueDepth: number | "unknown" = "unknown";
+      try {
+        websiteContactQueueDepth = await (boss as any).getQueueSize?.(QUEUES.businessEnrich) ?? "unknown";
+        instagramQueueDepth = await (boss as any).getQueueSize?.(QUEUES.businessScore) ?? "unknown";
+      } catch (err) {
+        console.warn("[worker] enrichment telemetry: getQueueSize failed (non-fatal):", err);
+      }
+      console.log(
+        `[worker][enrichment-telemetry] website_active=${enrichmentTelemetry.websiteContactActive} ` +
+          `contact_active=${enrichmentTelemetry.websiteContactActive} instagram_active=${enrichmentTelemetry.instagramActive} ` +
+          `enrichment_queue_depth=${websiteContactQueueDepth} intelligence_queue_depth=${instagramQueueDepth}`,
+      );
+    })().catch((err) => console.warn("[worker] enrichment telemetry loop failed (non-fatal):", err));
+  }, 30_000);
 
   // ── Graceful shutdown ─────────────────────────────────────────────────
   // Railway sends SIGTERM (SIGINT for local Ctrl+C) before killing the
@@ -127,6 +175,7 @@ async function main() {
     console.log(`[worker] received ${signal}, starting graceful shutdown (timeout=${GRACEFUL_STOP_TIMEOUT_MS}ms)`);
 
     clearInterval(workerHeartbeatInterval);
+    clearInterval(enrichmentTelemetryInterval);
 
     const forceExitTimer = setTimeout(() => {
       console.error(`[worker] graceful shutdown exceeded ${FORCE_EXIT_TIMEOUT_MS}ms — forcing exit`);
@@ -160,12 +209,35 @@ async function main() {
     await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleDiscoveryTask(job.data)));
   });
 
-  await boss.work<BusinessProcessingPayload>(QUEUES.businessEnrich, { batchSize: env.ENRICHMENT_TASK_CONCURRENCY }, async (jobs) => {
-    await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
-  });
-  await boss.work<BusinessProcessingPayload>(QUEUES.businessScore, { batchSize: env.INTELLIGENCE_TASK_CONCURRENCY }, async (jobs) => {
-    await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
-  });
+  // PHASE 18, STEP 6 — a safe capacity of 0 means do not launch enrichment
+  // workers for that queue at all (never force a minimum of 1 against the
+  // resource ceiling); pg-boss's own `work()` batchSize does not accept 0,
+  // so the correct expression of "zero safe capacity" is skipping
+  // registration entirely rather than passing a floor()'d-to-1 value.
+  if (businessEnrichConcurrency > 0) {
+    await boss.work<BusinessProcessingPayload>(QUEUES.businessEnrich, { batchSize: businessEnrichConcurrency }, async (jobs) => {
+      enrichmentTelemetry.websiteContactActive += jobs.length;
+      try {
+        await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
+      } finally {
+        enrichmentTelemetry.websiteContactActive -= jobs.length;
+      }
+    });
+  } else {
+    console.warn("[worker] enrichment_final_concurrency=0 for businessEnrich (Website+Contact) — not registering a worker for this queue");
+  }
+  if (businessScoreConcurrency > 0) {
+    await boss.work<BusinessProcessingPayload>(QUEUES.businessScore, { batchSize: businessScoreConcurrency }, async (jobs) => {
+      enrichmentTelemetry.instagramActive += jobs.length;
+      try {
+        await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
+      } finally {
+        enrichmentTelemetry.instagramActive -= jobs.length;
+      }
+    });
+  } else {
+    console.warn("[worker] enrichment_final_concurrency=0 for businessScore (Instagram) — not registering a worker for this queue");
+  }
 
   // discover.live is the only queued discovery path as of Phase 3 — Instant
   // Discovery (Starter/Pro/Premium) is a synchronous pool lookup in the

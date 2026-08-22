@@ -744,6 +744,44 @@ async def run_query(
             profiler.incr("tel_links_extracted")
         elif stage == "contact" and event == "partial_contact_success":
             profiler.incr("partial_contact_successes")
+        # Phase 14.2 (Instagram acquisition, quality-preserving) —
+        # "Make Instagram telemetry truthful". Additive counters only;
+        # never gate/prune anything. See engine/execution_driver.py's
+        # `_instagram_downstream` / `_contact_downstream` for what each
+        # event means and the InstagramIntel/ContactIntel fields it's
+        # derived from.
+        elif stage == "instagram" and event == "instagram_attempted":
+            profiler.incr("instagram_attempted")
+        elif stage == "instagram" and event == "instagram_url_input_present":
+            profiler.incr("instagram_url_input_present")
+        elif stage == "instagram" and event == "instagram_profile_reachable":
+            profiler.incr("instagram_profile_reachable")
+        elif stage == "instagram" and event == "instagram_short_circuited":
+            profiler.incr("instagram_short_circuited")
+        elif stage == "contact" and event.startswith("instagram_discovery_found:"):
+            profiler.incr("instagram_discovery_found")
+            profiler.incr(f"instagram_source_{event.rsplit(':', 1)[1]}")
+        elif stage == "contact" and event == "instagram_discovery_invalid":
+            profiler.incr("instagram_discovery_invalid")
+        elif stage == "contact" and event == "instagram_discovery_missing":
+            profiler.incr("instagram_discovery_missing")
+        # Phase 15 (Email / Contact Acquisition telemetry)
+        elif stage == "contact" and event == "email_secondary_page_fetched":
+            profiler.incr("email_secondary_page_fetched")
+        elif stage == "contact" and event == "email_secondary_page_found":
+            profiler.incr("email_secondary_page_found")
+        elif stage == "contact" and event == "email_acquired":
+            profiler.incr("email_acquired")
+        elif stage == "contact" and event == "email_missing_after_scan":
+            profiler.incr("email_missing_after_scan")
+        elif stage == "contact" and event == "phone_secondary_page_fetched":
+            profiler.incr("phone_secondary_page_fetched")
+        elif stage == "contact" and event == "phone_acquired":
+            profiler.incr("phone_acquired")
+        elif stage == "contact" and event == "phone_missing_after_scan":
+            profiler.incr("phone_missing_after_scan")
+        elif stage == "contact" and event == "secondary_page_fetch_failures":
+            profiler.incr("secondary_page_fetch_failures")
         # Phase 9.1 (audit follow-up) — additive, observational only:
         # which broadened contact-page hint keyword WebsiteWorker's
         # secondary-page match used (contact/help/support/about/press/
@@ -1523,6 +1561,26 @@ async def run_query(
             "early_duplicates": profiler.counter("early_duplicates"),
             "early_pruned": profiler.counter("early_pruned"),
             "contact_failures": profiler.counter("contact_failures"),
+            # Phase 14.2 (Instagram acquisition telemetry) — additive,
+            # observational only; see engine/execution_driver.py's
+            # `_instagram_downstream`/`_contact_downstream` and
+            # service.py's `_on_progress` above for what each counts.
+            "instagram_attempted": profiler.counter("instagram_attempted"),
+            "instagram_url_input_present": profiler.counter("instagram_url_input_present"),
+            "instagram_profile_reachable": profiler.counter("instagram_profile_reachable"),
+            "instagram_short_circuited": profiler.counter("instagram_short_circuited"),
+            "instagram_discovery_found": profiler.counter("instagram_discovery_found"),
+            "instagram_discovery_missing": profiler.counter("instagram_discovery_missing"),
+            "instagram_discovery_invalid": profiler.counter("instagram_discovery_invalid"),
+            # Phase 15 (Email / Contact Acquisition telemetry)
+            "email_secondary_page_fetched": profiler.counter("email_secondary_page_fetched"),
+            "email_secondary_page_found": profiler.counter("email_secondary_page_found"),
+            "email_acquired": profiler.counter("email_acquired"),
+            "email_missing_after_scan": profiler.counter("email_missing_after_scan"),
+            "phone_secondary_page_fetched": profiler.counter("phone_secondary_page_fetched"),
+            "phone_acquired": profiler.counter("phone_acquired"),
+            "phone_missing_after_scan": profiler.counter("phone_missing_after_scan"),
+            "secondary_page_fetch_failures": profiler.counter("secondary_page_fetch_failures"),
             "qualified": profiler.counter("qualified"),
             "delivered": profiler.counter("delivered"),
         }

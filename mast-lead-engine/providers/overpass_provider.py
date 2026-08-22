@@ -375,6 +375,10 @@ class OverpassDiscoveryRequest:
     `OverpassProvider.discover()` and `_http_post_urllib()` for where
     this is actually consulted.
     """
+    city: Optional[str] = None
+    area: Optional[str] = None
+    scope_source: Optional[str] = None
+    scope_valid: bool = True
 
     def __post_init__(self) -> None:
         if not self.tags:
@@ -763,6 +767,17 @@ class OverpassProvider(DiscoveryProviderInterface):
                 "(session=%s)", request.session_id,
             )
             return
+
+        scope_source = request.scope_source or ("area" if request.area else "city_fallback")
+        scope_event = {
+            "city": request.city,
+            "area": request.area,
+            "area_name": request.area_name,
+            "scope_source": scope_source,
+            "scope_valid": request.scope_valid,
+        }
+        log.info("[overpass-scope] %s", json.dumps(scope_event))
+
         query = _build_ql(request)
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         socket_timeout = float(request.timeout_seconds + 10)

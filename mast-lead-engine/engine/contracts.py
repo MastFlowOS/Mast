@@ -485,6 +485,29 @@ class ContactIntel:
     `False` for every field preserves the exact prior shape for any
     caller not yet reading them.
 
+    Phase 14.2 addition (Instagram acquisition, quality-preserving):
+    two fields — `instagram_source`, `instagram_invalid_candidate_seen`
+    — added. Both are plain, observational facts about this worker's
+    own extraction, not new evidence and not a qualification input:
+        - `instagram_source` names which shape of the page
+          `instagram_url` (above) was actually found in —
+          "anchor_href", "jsonld", "meta", "raw_html", or
+          "plain_handle" — for the telemetry this phase's own
+          "Instagram Telemetry" requirement asks for. `None` whenever
+          `instagram_url` is `None`.
+        - `instagram_invalid_candidate_seen` is `True` when the scanned
+          page contained something instagram.com-shaped that
+          `utils.parsing`'s existing validation correctly declined
+          (a reserved path, a numeric-only segment, a bare homepage
+          link) — i.e. a near-miss the extractor saw and rejected, not
+          silence. Distinguishes "no Instagram anywhere on the page"
+          from "Instagram mentioned but not a business profile" in
+          telemetry only; `instagram_url` itself is never set from a
+          rejected candidate either way.
+    Neither field changes what counts as a valid `instagram_url` or
+    feeds QualificationWorker's "instagram" required-channel rule,
+    which reads only `instagram_url` (unchanged) exactly as before.
+
     Created by: ContactWorker (Phase 6), given a WebsiteIntel.
     Consumed by: MergeWorker only, per the Ownership Table.
     Terminal or intermediate: intermediate — one of the four inputs
@@ -513,6 +536,19 @@ class ContactIntel:
     mailto_extracted: bool = False
     tel_extracted: bool = False
     partial_contact_success: bool = False
+
+    # Metrics — Phase 14.2 (Instagram acquisition telemetry, observational
+    # only — see this class's own docstring; never read by qualification)
+    instagram_source: Optional[str] = None
+    instagram_invalid_candidate_seen: bool = False
+
+    # Metrics — Phase 15 (Email / Contact Acquisition telemetry, observational
+    # only — see this class's own docstring; never read by qualification)
+    email_source: Optional[str] = None
+    phone_source: Optional[str] = None
+    secondary_page_type: Optional[str] = None
+    secondary_page_fetched: bool = False
+    secondary_page_fetch_failed: bool = False
 
 
 # ---------------------------------------------------------------------------

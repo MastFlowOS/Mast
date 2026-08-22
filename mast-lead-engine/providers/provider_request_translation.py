@@ -69,6 +69,7 @@ modify any provider or its request dataclass.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
@@ -80,6 +81,8 @@ from providers.foursquare_provider import FoursquareDiscoveryRequest
 from providers.google_maps_provider import GoogleMapsDiscoveryRequest
 from providers.overpass_provider import OverpassDiscoveryRequest
 from providers.yelp_provider import YelpDiscoveryRequest
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,16 +233,125 @@ def _translate_azure_maps(context: DiscoveryQueryContext) -> AzureMapsDiscoveryR
     )
 
 
+# ---------------------------------------------------------------------------
+# OpenStreetMap Area Normalization — canonical boundary names for curated
+# sub-city areas (Phase 17).
+# ---------------------------------------------------------------------------
+_OSM_AREA_NORMALIZATIONS: Mapping[str, str] = {
+    # New York boroughs
+    "the bronx": "The Bronx",
+    "bronx": "The Bronx",
+    "brooklyn": "Brooklyn",
+    "queens": "Queens",
+    "manhattan": "Manhattan",
+    "staten island": "Staten Island",
+    # Toronto areas
+    "downtown toronto": "Downtown Toronto",
+    "etobicoke": "Etobicoke",
+    "scarborough": "Scarborough",
+    "north york": "North York",
+    "the beaches": "The Beaches",
+    # Vancouver
+    "downtown vancouver": "Downtown Vancouver",
+    "kitsilano": "Kitsilano",
+    "mount pleasant": "Mount Pleasant",
+    "yaletown": "Yaletown",
+    "west end": "West End",
+    # London
+    "camden": "Camden",
+    "shoreditch": "Shoreditch",
+    "westminster": "Westminster",
+    "greenwich": "Greenwich",
+    "kensington": "Kensington",
+    "islington": "Islington",
+    # Los Angeles
+    "downtown la": "Downtown LA",
+    "hollywood": "Hollywood",
+    "santa monica": "Santa Monica",
+    "venice": "Venice",
+    "koreatown": "Koreatown",
+    "silver lake": "Silver Lake",
+    # Chicago
+    "the loop": "The Loop",
+    "wicker park": "Wicker Park",
+    "lincoln park": "Lincoln Park",
+    "logan square": "Logan Square",
+    "hyde park": "Hyde Park",
+    # Mexico City
+    "roma norte": "Roma Norte",
+    "polanco": "Polanco",
+    "condesa": "Condesa",
+    "coyoacán": "Coyoacán",
+    "coyoacan": "Coyoacán",
+    "santa fe": "Santa Fe",
+    # Paris
+    "le marais": "Le Marais",
+    "montmartre": "Montmartre",
+    "saint-germain-des-prés": "Saint-Germain-des-Prés",
+    "saint-germain-des-pres": "Saint-Germain-des-Prés",
+    "belleville": "Belleville",
+    "bastille": "Bastille",
+}
+
+
+def normalize_osm_area(area: Optional[str]) -> Optional[str]:
+    """
+    Normalizes an area string to its canonical OSM boundary name.
+
+    Prefers exact configured area strings first, matching known variations
+    and casing where appropriate. Returns None if the area is empty or invalid.
+    """
+    if area is None:
+        return None
+    cleaned = area.strip()
+    if not cleaned:
+        return None
+    normalized = _OSM_AREA_NORMALIZATIONS.get(cleaned.lower())
+    if normalized is not None:
+        return normalized
+    # Fallback to exact cleaned string if valid
+    return cleaned
+
+
 def _translate_overpass(context: DiscoveryQueryContext) -> Optional[OverpassDiscoveryRequest]:
     tags = _resolve_osm_tags(context)
     if not tags:
         return None
+
+    is_area_scoped = context.area is not None and context.area.strip() != ""
+    if is_area_scoped:
+        normalized_area = normalize_osm_area(context.area)
+        if normalized_area is None:
+            log.warning(
+                "[overpass-scope] area scope failed for area=%r in city=%r: "
+                "cannot resolve OSM boundary name — skipping Overpass invocation safely",
+                context.area,
+                context.city,
+            )
+            return None
+        area_name = normalized_area
+        scope_source = "area"
+        scope_valid = True
+        area = normalized_area
+        city = context.city or None
+    else:
+        # Legacy / non-area callers: preserve existing city/country fallback.
+        area_name = context.city or context.country or None
+        scope_source = "city_fallback"
+        scope_valid = bool(area_name)
+        area = None
+        city = context.city or None
+
     return OverpassDiscoveryRequest(
         session_id=context.session_id,
         tags=tags,
-        area_name=context.area or context.city or context.country or None,
+        area_name=area_name,
         limit=context.max_results,
         should_stop=context.should_stop,
+        city=city,
+        area=area,
+        scope_source=scope_source,
+        scope_valid=scope_valid,
     )
 
 

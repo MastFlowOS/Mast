@@ -275,6 +275,7 @@ from workers.scoring_worker import ScoringWorker
 from workers.scoring_worker import _is_cannabis as _keyword_is_cannabis
 from workers.scoring_worker import _is_chain as _keyword_is_chain
 from workers.storage_worker import StorageWorker
+from opportunity_qualification.niche_relevance import evaluate_niche_relevance
 from utils.parsing import is_valid_email, is_weak_site
 
 # -- Batch intelligence chain (Part 3, MAST Lead Engine 2.0 continuation) --
@@ -1637,7 +1638,60 @@ def build_seven_stage_pipeline(
                 result.pipeline_id,
             )
             return None
+        effective_niche = (
+            getattr(enriched.business, "requested_niche", None)
+            if enriched.business is not None
+            else None
+        ) or niche
+        if effective_niche:
+            _emit("qualification", "niche_relevance_checked", result.pipeline_id)
+            cat = enriched.business.category if enriched.business is not None else None
+            b_name = enriched.business.name if enriched.business is not None else None
+            relevance, _ = evaluate_niche_relevance(effective_niche, cat, b_name)
+            if relevance == "match":
+                _emit("qualification", "niche_relevance_passed", result.pipeline_id)
+            elif relevance == "ambiguous":
+                _emit("qualification", "niche_relevance_ambiguous", result.pipeline_id)
+            elif relevance == "mismatch":
+                _emit("qualification", "niche_relevance_mismatch", result.pipeline_id)
+
         if not result.qualified:
+            if "niche_mismatch" in result.reasons:
+                obs_category = enriched.business.category if enriched.business is not None else None
+                provider_id = enriched.business.provider if enriched.business is not None else "unknown"
+                try:
+                    log.info(
+                        "[niche_relevance_mismatch] %s",
+                        json.dumps({
+                            "event": "niche_mismatch",
+                            "requested_niche": effective_niche,
+                            "observed_category": obs_category,
+                            "provider": provider_id,
+                            "rejection_reason": "niche_mismatch",
+                            "pipeline_id": result.pipeline_id,
+                        }),
+                    )
+                except Exception:
+                    log.debug("niche_relevance_mismatch log failed — ignored", exc_info=True)
+            if "instagram_followers_over_limit" in result.reasons:
+                follower_count = (
+                    enriched.instagram_intel.followers
+                    if enriched.instagram_intel is not None
+                    else None
+                )
+                try:
+                    log.info(
+                        "[instagram_followers_over_limit] %s",
+                        json.dumps({
+                            "event": "instagram_followers_over_limit",
+                            "requested_niche": niche,
+                            "pipeline_id": result.pipeline_id,
+                            "follower_count": follower_count,
+                        }),
+                    )
+                except Exception:
+                    log.debug("instagram_followers_over_limit log failed — ignored", exc_info=True)
+                _emit("qualification", "instagram_followers_over_limit", result.pipeline_id)
             log.info(
                 "qualification: pipeline_id=%s rejected (%s); not "
                 "forwarded to Storage",

@@ -8,6 +8,7 @@ import { NICHES, stripActivityMarkers } from "@/lib/lead-workspace";
 import { staggerDelay } from "@/lib/motion";
 import { useOpportunityExplanation, useOpportunityInsight } from "@/hooks/use-mast-api";
 import { FeatureGate } from "@/components/mast/FeatureGate";
+import { normalizeInstagram } from "@/lib/instagram";
 
 function formatSourceLabel(source: string | null | undefined): string {
   if (!source) return "Mast Opportunity Engine";
@@ -220,16 +221,20 @@ export function LeftSidebar({
                   copied={copied === "Website"}
                 />
               )}
-              {lead.instagramHandle && (
-                <ContactRow
-                  icon={Instagram}
-                  label="Instagram"
-                  value={`@${lead.instagramHandle.replace(/^@/, "")}`}
-                  href={`https://instagram.com/${lead.instagramHandle.replace(/^@/, "")}`}
-                  onCopy={() => handleCopy(lead.instagramHandle!, "Instagram")}
-                  copied={copied === "Instagram"}
-                />
-              )}
+              {(() => {
+                const ig = normalizeInstagram(lead.instagramHandle);
+                if (!ig) return null;
+                return (
+                  <ContactRow
+                    icon={Instagram}
+                    label="Instagram"
+                    value={`@${ig.handle}`}
+                    href={ig.profileUrl}
+                    onCopy={() => handleCopy(`@${ig.handle}`, "Instagram")}
+                    copied={copied === "Instagram"}
+                  />
+                );
+              })()}
               {lead.location && (
                 <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-background border border-border">
                   <MapPin className="size-4 text-muted-foreground shrink-0" />

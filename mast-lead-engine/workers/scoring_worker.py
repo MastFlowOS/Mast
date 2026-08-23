@@ -174,6 +174,7 @@ engine.coordinator, or runtime import anywhere in this file.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from typing import Optional
 
 from engine.contracts import EnrichedBusiness, OpportunityScore
@@ -370,28 +371,36 @@ class ScoringWorker(BaseWorker[EnrichedBusiness, OpportunityScore]):
     def _website_quality_component(business, website_intel) -> int:
         """0-100. Higher = stronger existing site (less opportunity).
         Restricted to facts that exist on BusinessCandidate/
-        WebsiteIntel today — no tech_stack/ssl_valid/load_time_ms
-        (those fields don't exist anywhere in engine/contracts.py)."""
+        WebsiteIntel today.
+
+        Calibrated so that a truly best-in-class website (reachable, HTTPS,
+        recognized platform, premium domain) achieves quality 100 (weakness = 0),
+        while preserving:
+        - missing website = 0 (weakness = 100)
+        - unreachable website = 10 (weakness = 90)
+        - weak site (e.g. linktree, wixsite) = 25 (weakness = 75)
+        - average/good website = 80-90 (weakness = 10-20)
+        """
         website = business.website if business is not None else None
         if not website:
             return 0
         if _is_weak_site(website):
             return 25
 
-        score = 55
+        score = 65
 
         if website_intel is not None:
             if website_intel.website_reachable is False:
                 return 10  # has a domain, but it doesn't resolve/serve
             if website_intel.https is True:
-                score += 10
+                score += 15
             elif website_intel.https is False:
-                score -= 15
+                score -= 20
             # Custom-platform signal, restricted to what WebsiteWorker
             # actually detects today (workers/website_worker.py's
             # _PLATFORM_SIGNATURES).
             if website_intel.detected_platform in ("WordPress", "Squarespace"):
-                score += 5
+                score += 10
 
         host = _domain_of(website)
         if any(host.endswith(t) for t in _PREMIUM_TLDS):
@@ -421,7 +430,9 @@ class ScoringWorker(BaseWorker[EnrichedBusiness, OpportunityScore]):
                 score += 12
             elif rating >= 3.5:
                 score += 5
-            elif rating < 3.0:
+            elif rating >= 3.0:
+                score += 0  # 3.0–3.49: Intentional neutral band (documented per Phase 23)
+            else:
                 score -= 20
 
         review_count = business.review_count if business is not None else None
@@ -432,15 +443,12 @@ class ScoringWorker(BaseWorker[EnrichedBusiness, OpportunityScore]):
         if instagram_intel is not None and instagram_intel.profile_reachable:
             score += 20
             followers = instagram_intel.followers
-            if followers is not None:
-                if followers <= _IG_TINY_MAX:
-                    score += 5
-                elif followers <= _IG_IDEAL_MAX:
-                    score += 20
-                elif followers <= _IG_GROWING_MAX:
-                    score += 10
-                else:
-                    score += 5
+            if followers is not None and followers > 0:
+                # Phase 23: Deterministic monotonic logarithmic curve with diminishing returns.
+                # Maximum follower contribution is +20.
+                clamped = min(100_000, followers)
+                ratio = math.log10(1.0 + clamped) / math.log10(100_001.0)
+                score += int(round(ratio * 20))
             if instagram_intel.verified:
                 score += 10
             days = _days_since(instagram_intel.last_post_date)
@@ -454,28 +462,30 @@ class ScoringWorker(BaseWorker[EnrichedBusiness, OpportunityScore]):
 
     @staticmethod
     def _outreach_readiness_component(business, instagram_intel, contact_intel) -> int:
-        """0-100. Contact-channel richness — how many real channels
-        does this worker have facts for."""
-        score = 0
+        """0-100. Contact-channel richness — normalized from raw channels (max 85)
+        to the full 0-100 scale: round((raw / 85) * 100)."""
+        raw = 0
         if business is not None and business.phone:
-            score += 20
+            raw += 20
         if contact_intel is not None:
             if contact_intel.emails:
-                score += 25
+                raw += 25
             if contact_intel.phones and not (business and business.phone):
-                score += 15
+                raw += 15
             if contact_intel.contact_form_url:
-                score += 10
+                raw += 10
             if any((
                 contact_intel.whatsapp_link,
                 contact_intel.messenger_link,
                 contact_intel.telegram_link,
                 contact_intel.linkedin_url,
             )):
-                score += 10
+                raw += 10
         if instagram_intel is not None and instagram_intel.profile_reachable:
-            score += 20
-        return max(0, min(100, score))
+            raw += 20
+
+        normalized = int(round((raw / 85.0) * 100))
+        return max(0, min(100, normalized))
 
     @staticmethod
     def _business_health_component(business, website_intel, instagram_intel) -> int:

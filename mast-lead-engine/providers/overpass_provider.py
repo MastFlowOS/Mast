@@ -379,6 +379,7 @@ class OverpassDiscoveryRequest:
     area: Optional[str] = None
     scope_source: Optional[str] = None
     scope_valid: bool = True
+    requested_niche: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.tags:
@@ -896,4 +897,5 @@ class OverpassProvider(DiscoveryProviderInterface):
             coordinates=coordinates,
             discovered_at=datetime.now(timezone.utc).isoformat(),
             instagram_url=None,  # contact:instagram format is unnormalized — never guessed.
+            requested_niche=_or_none(request.requested_niche),
         )

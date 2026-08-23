@@ -431,7 +431,11 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
             )
             try:
                 async for place in search_gen:
-                    yield self._to_business_candidate(place, request.session_id)
+                    yield self._to_business_candidate(
+                        place,
+                        request.session_id,
+                        requested_niche=request.niche or None,
+                    )
                     # Checked *after* yielding, never before: whatever this
                     # iteration already retrieved from Maps is always
                     # propagated to the caller first ("finish current lead
@@ -451,7 +455,10 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
                 await search_gen.aclose()
 
     def _to_business_candidate(
-        self, place: RawPlace, session_id: str
+        self,
+        place: RawPlace,
+        session_id: str,
+        requested_niche: Optional[str] = None,
     ) -> BusinessCandidate:
         """
         Field-for-field mapping, RawPlace -> BusinessCandidate. Only
@@ -511,4 +518,5 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
             # itself already defaults to False, so this preserves that
             # same default rather than changing behavior for them.
             closed=bool(getattr(place, "closed", False)),
+            requested_niche=_or_none(requested_niche),
         )

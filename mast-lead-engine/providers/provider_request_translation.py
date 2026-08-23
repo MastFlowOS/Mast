@@ -352,6 +352,7 @@ def _translate_overpass(context: DiscoveryQueryContext) -> Optional[OverpassDisc
         area=area,
         scope_source=scope_source,
         scope_valid=scope_valid,
+        requested_niche=context.niche or None,
     )
 
 

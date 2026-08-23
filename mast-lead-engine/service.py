@@ -790,6 +790,14 @@ async def run_query(
         # `_website_downstream`.
         elif stage == "website" and event.startswith("contact_page_hint:"):
             profiler.incr(f"contact_page_hint_{event.rsplit(':', 1)[1]}")
+        elif stage == "qualification" and event in (
+            "niche_relevance_checked",
+            "niche_relevance_passed",
+            "niche_relevance_mismatch",
+            "niche_relevance_ambiguous",
+            "instagram_followers_over_limit",
+        ):
+            profiler.incr(event)
         elif stage == "qualification" and event == "candidate_qualified":
             _mark("first_candidate_qualified")
             profiler.incr("qualified")

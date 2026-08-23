@@ -88,10 +88,10 @@ export function isValidWebsite(value: string | null | undefined): boolean {
   return /^https?:\/\/[^\s]+\.[^\s]{2,}/i.test(website);
 }
 
+import { normalizeInstagram } from "./instagram.js";
+
 export function isValidInstagram(value: string | null | undefined): boolean {
-  const instagram = (value || "").trim();
-  if (!instagram) return false;
-  return /^https?:\/\/(www\.)?instagram\.com\/[A-Za-z0-9_.]+\/?$/i.test(instagram);
+  return normalizeInstagram(value) !== null;
 }
 
 export function validateLead(lead: LeadValidationCandidate): LeadValidationResult {

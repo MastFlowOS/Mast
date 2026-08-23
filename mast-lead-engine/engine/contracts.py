@@ -233,6 +233,11 @@ class BusinessCandidate:
     # unaffected.
     closed: bool = False
 
+    # Traceability addition: records what niche a candidate's run actually
+    # requested from the discovery provider. Purely additive and observational
+    # — not used for gating, filtering, or scoring.
+    requested_niche: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # 2. WebsiteIntel

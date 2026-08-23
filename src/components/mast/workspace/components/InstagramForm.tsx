@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { useRecordLeadActivity } from "@/hooks/use-mast-api";
 import type { Lead } from "@/lib/api";
 
+import { normalizeInstagram } from "@/lib/instagram";
+
 interface InstagramFormProps {
   lead: Lead;
   body: string;
@@ -42,12 +44,11 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
   };
 
   const handleOpen = async () => {
-    if (!lead.instagramHandle) {
-      toast.error("No Instagram handle for this lead");
+    const ig = normalizeInstagram(lead.instagramHandle);
+    if (!ig) {
+      toast.error("No valid Instagram handle for this lead");
       return;
     }
-
-    const handle = lead.instagramHandle.replace(/^@/, "");
 
     // Auto-copy message before opening Instagram
     let didCopy = false;
@@ -55,10 +56,8 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
       didCopy = await copyToClipboard(body);
     }
 
-    // Try to open a DM link; Instagram's direct message link works in the app
-    // but not on web. We open profile + copied message is the best we can do on web.
-    const profileUrl = `https://www.instagram.com/${handle}/`;
-    window.open(profileUrl, "_blank", "noopener,noreferrer");
+    // Open ig.me DM link in a new tab/window without sending or DOM injection
+    window.open(ig.dmUrl, "_blank", "noopener,noreferrer");
 
     try {
       await recordActivity.mutateAsync({
@@ -67,15 +66,19 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
           type: "instagram_opened",
           channel: "instagram",
           body,
-          content: `Instagram profile opened for @${handle}${didCopy ? " (message copied to clipboard)" : ""}`,
+          content: `Instagram opened for @${ig.handle}${didCopy ? " (message copied to clipboard)" : ""}`,
         },
       });
     } catch {
       // Non-critical
     }
 
-    if (didCopy) {
-      toast.success("Message copied — paste it in the DM after Instagram opens");
+    if (body.trim()) {
+      if (didCopy) {
+        toast.success("Instagram opened · Message copied");
+      } else {
+        toast.error("Instagram opened · Copy manually");
+      }
     } else {
       toast.success("Instagram opened");
     }
@@ -147,7 +150,7 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
           className="w-full gap-1.5 sm:w-auto"
         >
           <Instagram className="size-4" />
-          Open Instagram{body.trim() ? " + Copy" : ""}
+          Open Instagram{body.trim() ? " + Copy Message" : ""}
         </Button>
 
         <Button

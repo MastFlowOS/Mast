@@ -81,8 +81,10 @@ the milestone's own example rejection reasons):
     4. `required_categories` was configured and the business's
        category is not in it
        -> rejected_reason: "unsupported business type"
+    5. Instagram follower count is known and > 100,000
+       -> rejected_reason: "instagram_followers_over_limit"
 
-A business that clears all four is qualified. `business_problems` and
+A business that clears all five is qualified. `business_problems` and
 `needed_services` are collected independently of the qualify/reject
 decision — a qualified business can still carry problems (e.g. "no
 HTTPS") that describe what a freelancer could fix.
@@ -123,6 +125,7 @@ from __future__ import annotations
 from typing import FrozenSet, Optional
 
 from engine.contracts import EnrichedBusiness, QualificationResult
+from opportunity_qualification.niche_relevance import evaluate_niche_relevance
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
 
@@ -256,6 +259,36 @@ class QualificationWorker(BaseWorker[EnrichedBusiness, QualificationResult]):
             and (business is None or business.category not in self._required_categories)
         ):
             reasons.append("unsupported business type")
+            rejected = True
+
+        # Phase 24 — Deterministic Niche / Category Relevance Gate.
+        # Resolves requested_niche from BusinessCandidate (preferred) or worker config.
+        # Clear Match -> PASS
+        # Ambiguous / Unknown -> KEEP (do NOT reject solely because category is missing)
+        # Clear Mismatch -> REJECT ("niche_mismatch")
+        effective_niche = (
+            getattr(business, "requested_niche", None) if business is not None else None
+        ) or self._niche
+
+        if not rejected and effective_niche:
+            category = business.category if business is not None else None
+            name = business.name if business is not None else None
+            relevance, _reason = evaluate_niche_relevance(effective_niche, category, name)
+            if relevance == "mismatch":
+                reasons.append("niche_mismatch")
+                rejected = True
+
+        # Rule 5 — Instagram follower count over limit (>100K).
+        # Phase 23: Businesses above 100K followers are considered too large /
+        # established for SMB freelancer opportunity targeting.
+        # Unknown/missing follower count (None) is NOT rejected by this rule.
+        if (
+            not rejected
+            and instagram_intel is not None
+            and instagram_intel.followers is not None
+            and instagram_intel.followers > 100_000
+        ):
+            reasons.append("instagram_followers_over_limit")
             rejected = True
 
         business_problems = self._collect_business_problems(

@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import type { Lead } from "@/lib/api";
 import { stripActivityMarkers } from "@/lib/lead-workspace";
+import { normalizeInstagram } from "@/lib/instagram";
 
 interface LeadDetailsDrawerProps {
   lead: Lead | null;
@@ -263,25 +264,30 @@ Mast Acquisition OS`;
               />
 
               {/* Instagram */}
-              <ContactField
-                label="Instagram"
-                value={lead.instagramHandle}
-                icon={Instagram}
-                onCopy={() => handleCopy(lead.instagramHandle!, "Instagram")}
-                isCopied={copiedField === "Instagram"}
-                action={
-                  lead.instagramHandle ? (
-                    <a
-                      href={`https://instagram.com/${lead.instagramHandle.replace(/^@/, "")}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="size-7 rounded bg-brand/10 hover:bg-brand/20 grid place-items-center text-brand transition-colors focus:outline-none"
-                    >
-                      <ExternalLink className="size-4" />
-                    </a>
-                  ) : undefined
-                }
-              />
+              {(() => {
+                const ig = normalizeInstagram(lead.instagramHandle);
+                return (
+                  <ContactField
+                    label="Instagram"
+                    value={ig ? `@${ig.handle}` : lead.instagramHandle}
+                    icon={Instagram}
+                    onCopy={() => handleCopy(ig ? `@${ig.handle}` : lead.instagramHandle!, "Instagram")}
+                    isCopied={copiedField === "Instagram"}
+                    action={
+                      ig ? (
+                        <a
+                          href={ig.profileUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="size-7 rounded bg-brand/10 hover:bg-brand/20 grid place-items-center text-brand transition-colors focus:outline-none"
+                        >
+                          <ExternalLink className="size-4" />
+                        </a>
+                      ) : undefined
+                    }
+                  />
+                );
+              })()}
             </div>
           </div>
 

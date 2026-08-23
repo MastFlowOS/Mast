@@ -42,14 +42,17 @@ process.env.DATABASE_URL ??= "postgres://user:pass@localhost:5432/testdb";
 process.env.ALLOWED_ORIGIN ??= "http://localhost:5173";
 
 import {
+  classifyAreaYield,
   createAreaProductivityState,
   evaluateAreaProductivity,
+  evaluateAreaYieldStop,
   recordDeliveredLead,
   recordProductiveActivity,
   recordQualifiedLead,
   scopeAreaAbort,
   type AreaProductivityLimits,
   type AreaProductivityState,
+  type AreaYieldLimits,
 } from "../areaProductivity.js";
 import { runAreaWorkerPool, type AreaRunOutcome } from "../googleAreaPool.js";
 
@@ -423,4 +426,182 @@ test("8: runAreaWorkerPool claims a replacement area after one area is stopped a
   assert.equal(claimed.length, areas.length, "every area must eventually be claimed — the released slot let the worker keep going");
   assert.equal(result.startedWorkers, areas.length);
   assert.equal(parent.signal.aborted, false, "the adaptively-stopped area must never abort the shared parent signal");
+});
+
+// =============================================================================
+// PHASE 30 — AREA YIELD / ROTATION OPTIMIZATION
+//
+// `classifyAreaYield`/`evaluateAreaYieldStop` are a SEPARATE, independent
+// check from `evaluateAreaProductivity` above — an area can pass the idle
+// check forever (steady candidate_discovered/candidate_queued activity)
+// while still being LOW_YIELD. Regression scenario named in the phase
+// prompt: production went from ~100 leads/6min to ~53 leads/30min because
+// low-yield-but-busy areas (Bronx-like/Staten-Island-like) occupied worker
+// slots that Queens-like/Manhattan-like productive areas never got to use.
+// =============================================================================
+
+const YIELD_LIMITS: AreaYieldLimits = {
+  minElapsedMsForEvaluation: 90_000,
+  minCandidateVolumeForEvaluation: 15,
+  lowYieldMaxRate: 0.05,
+  marginalMaxRate: 0.15,
+};
+
+function recordDiscoveries(state: AreaProductivityState, count: number, now: number): void {
+  for (let i = 0; i < count; i++) recordProductiveActivity(state, "candidate_discovered", now);
+}
+
+// ── Yield test 1: low candidate volume → keep area alive ───────────────────
+test("yield 1: low candidate volume keeps an area classified productive (and un-stoppable) even past the time gate", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 5, 100_000); // well past minElapsedMsForEvaluation, but under minCandidateVolumeForEvaluation
+  assert.equal(classifyAreaYield(state, 100_000, YIELD_LIMITS), "productive");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, YIELD_LIMITS), null);
+});
+
+// ── Yield test 2: productive area → keep alive ──────────────────────────────
+// Manhattan-like: high candidate volume, healthy qualification rate.
+test("yield 2: a genuinely productive area (healthy qualification rate) is never classified low_yield", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 40, 100_000);
+  for (let i = 0; i < 10; i++) recordQualifiedLead(state, 100_000); // 10/40 = 25% — well above marginalMaxRate
+  assert.equal(classifyAreaYield(state, 100_000, YIELD_LIMITS), "productive");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, YIELD_LIMITS), null);
+});
+
+// ── Yield test 3: high candidate volume + near-zero qualification → low_yield ──
+// Bronx-like/Staten-Island-like: busy discovery, nothing ever qualifies.
+test("yield 3: high candidate volume with near-zero qualification is classified low_yield and stops the area", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 30, 100_000); // 0/30 = 0%
+  assert.equal(classifyAreaYield(state, 100_000, YIELD_LIMITS), "low_yield");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, YIELD_LIMITS), "area_productivity_low_yield");
+});
+
+// ── Yield test 4: moderate candidate volume + some qualification → productive ──
+test("yield 4: moderate candidate volume with a decent qualification rate is classified productive", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 20, 100_000);
+  for (let i = 0; i < 5; i++) recordQualifiedLead(state, 100_000); // 5/20 = 25%
+  assert.equal(classifyAreaYield(state, 100_000, YIELD_LIMITS), "productive");
+});
+
+// ── Yield test 5: marginal yield → keep temporarily ─────────────────────────
+// Queens-like: some qualification, but thin relative to volume — kept alive,
+// never stopped, distinct from both "productive" and "low_yield".
+test("yield 5: a marginal qualification rate is classified marginal and is never stopped by the yield classifier", () => {
+  // Queens-like: rate strictly between lowYieldMaxRate (0.05) and marginalMaxRate (0.15).
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 20, 100_000);
+  for (let i = 0; i < 2; i++) recordQualifiedLead(state, 100_000); // 2/20 = 10%
+  assert.equal(classifyAreaYield(state, 100_000, YIELD_LIMITS), "marginal");
+  assert.equal(
+    evaluateAreaYieldStop(state, 100_000, YIELD_LIMITS),
+    null,
+    "marginal is kept temporarily — only low_yield ever stops an area",
+  );
+});
+
+// ── Yield test 6: low-yield stop does not abort siblings ───────────────────
+test("yield 6: a low-yield area's own scoped abort never touches the shared parent signal (siblings unaffected)", () => {
+  const parent = new AbortController();
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 30, 100_000);
+  const stopReason = evaluateAreaYieldStop(state, 100_000, YIELD_LIMITS);
+  assert.equal(stopReason, "area_productivity_low_yield");
+
+  const { signal, controller } = scopeAreaAbort(parent.signal);
+  controller.abort(stopReason);
+  assert.equal(signal.aborted, true, "this area's own scoped signal aborts");
+  assert.equal(parent.signal.aborted, false, "the shared parent/job signal — and therefore every sibling area — is untouched");
+});
+
+// ── Yield test 7: global TARGET_REACHED unchanged ───────────────────────────
+test("yield 7: aborting the shared parent signal (TARGET_REACHED) still reaches an area regardless of its yield classification", () => {
+  const parent = new AbortController();
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 30, 100_000); // this area would independently classify low_yield too
+  const { signal } = scopeAreaAbort(parent.signal);
+  assert.equal(signal.aborted, false);
+  parent.abort("TARGET_REACHED");
+  assert.equal(signal.aborted, true, "the existing global TARGET_REACHED path is completely untouched by yield classification");
+});
+
+// ── Yield test 8: max runtime unchanged (precedence: maxRuntime/idle checked before yield) ──
+test("yield 8: evaluateAreaProductivity's max-runtime/idle precedence is untouched — yield is only consulted when it returns null", () => {
+  const limits: AreaProductivityLimits = { productiveIdleMs: 60_000, maxAreaRuntimeMs: 100_000 };
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 30, 50_000); // would independently be low_yield once evaluable
+  // At now=100_000 the max-runtime ceiling fires FIRST — the caller-side
+  // precedence (evaluateAreaProductivity(...) ?? evaluateAreaYieldStop(...))
+  // means evaluateAreaYieldStop is never even reached in that case.
+  assert.equal(evaluateAreaProductivity(state, 100_000, limits), "area_productivity_max_runtime");
+});
+
+// ── Yield test 9: productive activity still prevents false idle stop, independent of yield ──
+test("yield 9: an area with continuous discovery activity never trips the idle clock, even while separately being low_yield", () => {
+  const idleLimits: AreaProductivityLimits = { productiveIdleMs: 60_000, maxAreaRuntimeMs: 10_000_000 };
+  const state = createAreaProductivityState(0);
+  let now = 0;
+  for (let i = 0; i < 30; i++) {
+    now += 5_000; // steady activity, well within the 60s idle window every time
+    recordProductiveActivity(state, "candidate_discovered", now);
+  }
+  assert.equal(evaluateAreaProductivity(state, now, idleLimits), null, "idle clock unaffected — this area is still busy");
+  // ...yet the SEPARATE yield check now says stop, because it is genuinely low-yield:
+  assert.equal(classifyAreaYield(state, now, YIELD_LIMITS), "low_yield");
+  assert.equal(evaluateAreaYieldStop(state, now, YIELD_LIMITS), "area_productivity_low_yield");
+});
+
+// ── Yield test 10: next queued area can occupy freed slot (rotation via existing pool) ──
+// Mirrors the existing "8" orchestration test above but with a yield-style
+// stop reason, confirming runAreaWorkerPool's worker loop (unmodified by
+// this phase) claims a replacement area the exact same way for a
+// low-yield stop as it does for an idle/max-runtime stop.
+test("yield 10: runAreaWorkerPool claims a replacement area after one area is stopped for low yield", async () => {
+  const areas = ["Bronx-like", "Staten-Island-like", "Queens-like", "Manhattan-like"];
+  const claimed: string[] = [];
+  const parent = new AbortController();
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 1, // single slot — a replacement claim proves the slot was actually released
+    totalCuratedAreas: areas.length,
+    availableCapacity: 1,
+    claimNextArea: async (usedAreas) => {
+      const next = areas.find((a) => !usedAreas.has(a));
+      if (!next) return undefined;
+      claimed.push(next);
+      return next;
+    },
+    runArea: async (area) => {
+      if (area === "Bronx-like" || area === "Staten-Island-like") {
+        // Busy but low-yield — rotated out by its own scoped abort, exactly
+        // like poolExpandJob.ts's real runArea() does when evaluateAreaYieldStop fires.
+        const state = createAreaProductivityState(0);
+        recordDiscoveries(state, 25, 100_000);
+        const stopReason = evaluateAreaYieldStop(state, 100_000, YIELD_LIMITS);
+        assert.equal(stopReason, "area_productivity_low_yield");
+        const { signal, controller } = scopeAreaAbort(parent.signal);
+        controller.abort(stopReason);
+        assert.equal(signal.aborted, true);
+        return outcome({ discovered: 25, accepted: 0 });
+      }
+      // Queens-like / Manhattan-like: productive, runs to natural completion.
+      return outcome({ discovered: 10, accepted: 4 });
+    },
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+  });
+
+  assert.equal(claimed.length, areas.length, "every area must eventually be claimed — the low-yield rotations freed slots for the rest");
+  assert.equal(result.startedWorkers, areas.length);
+  assert.equal(parent.signal.aborted, false, "low-yield rotation never aborts the shared parent signal");
+});
+
+// ── Yield test: env defaults are internally consistent ─────────────────────
+test("yield env: AREA_YIELD_MARGINAL_MAX_RATE default is >= AREA_YIELD_LOW_MAX_RATE default", async () => {
+  const { env } = await import("../../config/env.js");
+  assert.ok(env.AREA_YIELD_MARGINAL_MAX_RATE >= env.AREA_YIELD_LOW_MAX_RATE);
+  assert.ok(env.AREA_YIELD_MIN_ELAPSED_MS < env.AREA_PRODUCTIVITY_IDLE_MS, "yield evaluation should be reachable before the idle ceiling would otherwise fire");
+  assert.ok(env.AREA_YIELD_MIN_CANDIDATE_VOLUME >= 1);
 });

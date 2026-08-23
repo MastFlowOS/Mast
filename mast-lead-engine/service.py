@@ -1556,6 +1556,15 @@ async def run_query(
             # now reports; see that method's docstring.
             "maps_candidates_clicked": profiler.counter("maps_candidates_clicked"),
             "maps_candidates_card_closed_skipped": profiler.counter("maps_candidates_card_closed_skipped"),
+            # PHASE 33A (place panel wait telemetry)
+            "place_panel_wait_count": profiler.place_panel_wait_summary()["place_panel_wait_count"],
+            "place_panel_wait_total_ms": profiler.place_panel_wait_summary()["place_panel_wait_total_ms"],
+            "place_panel_wait_avg_ms": profiler.place_panel_wait_summary()["place_panel_wait_avg_ms"],
+            "place_panel_wait_p50_ms": profiler.place_panel_wait_summary()["place_panel_wait_p50_ms"],
+            "place_panel_wait_p90_ms": profiler.place_panel_wait_summary()["place_panel_wait_p90_ms"],
+            "place_panel_wait_p99_ms": profiler.place_panel_wait_summary()["place_panel_wait_p99_ms"],
+            "place_panel_wait_max_ms": profiler.place_panel_wait_summary()["place_panel_wait_max_ms"],
+            "place_panel_wait_timeout_count": profiler.place_panel_wait_summary()["place_panel_wait_timeout_count"],
             "overpass_requests": profiler.counter("overpass_requests"),
             "overpass_retries": profiler.counter("overpass_retries"),
             "website_ms": profiler._stages["website_worker"].total_ms,

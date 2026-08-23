@@ -95,7 +95,12 @@ export type AreaTerminationReason =
   // PHASE 25: the new hard wall-clock ceiling (maxAreaRuntimeMs) — see
   // areaProductivity.ts's doc comment. Same "partial run" telemetry
   // treatment as the other two adaptive-stop reasons below.
-  | "area_productivity_max_runtime";
+  | "area_productivity_max_runtime"
+  // PHASE 30: a busy-but-low-yield area rotated out by classifyAreaYield —
+  // see areaProductivity.ts's doc comment. Same "partial run" telemetry
+  // treatment as the other adaptive-stop reasons: whatever this area
+  // genuinely reported before being rotated is preserved as-is.
+  | "area_productivity_low_yield";
 
 export type AreaWorkEvidence = {
   /** True when the engine reported a real numeric `maps_candidates_seen` for this pass (see extractAreaSlaCounters). */
@@ -125,7 +130,9 @@ export function determineAreaWorkSource(evidence: AreaWorkEvidence): AreaWorkSou
     // stop is preserved as a partial run, never upgraded to look complete.
     evidence.terminationReason === "area_productivity_timeout_before_first_qualified" ||
     evidence.terminationReason === "area_productivity_idle_timeout" ||
-    evidence.terminationReason === "area_productivity_max_runtime";
+    evidence.terminationReason === "area_productivity_max_runtime" ||
+    // PHASE 30: see AreaTerminationReason's doc comment above.
+    evidence.terminationReason === "area_productivity_low_yield";
   if (stoppedEarly) return "partial_area_run";
 
   if (evidence.hasFreshMapsTelemetry) return "fresh_area_run";

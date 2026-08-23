@@ -2301,17 +2301,27 @@ class MapsScraper:
                                         _PLACE_NAME_SELECTORS[0],
                                         timeout=self.config.place_timeout_ms,
                                     )
+                                    self._profiler.incr("place_panel_wait_resolved")
                                 except PlaywrightTimeoutError:
                                     found_panel = False
                                     for sel in _PLACE_NAME_SELECTORS[1:]:
                                         try:
                                             await page.wait_for_selector(sel, timeout=2000)
                                             found_panel = True
+                                            self._profiler.incr("place_panel_wait_resolved")
                                             break
                                         except PlaywrightTimeoutError:
                                             continue
                                     if not found_panel:
+                                        if should_stop is not None and should_stop():
+                                            self._profiler.incr("place_panel_wait_aborted")
+                                        else:
+                                            self._profiler.incr("place_panel_wait_timeout")
                                         continue
+                                except Exception:
+                                    if should_stop is not None and should_stop():
+                                        self._profiler.incr("place_panel_wait_aborted")
+                                    raise
 
                             # Phase 2A / audit §3.1 + §3.3: the rate-limiter
                             # wait was previously invisible to the profiler

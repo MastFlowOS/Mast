@@ -24,8 +24,14 @@ import { registerRequestAbortController, terminateRequest, isRequestActive } fro
 // scoped per curated area, and multiple areas can run concurrently).
 import { getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
-import { runAreaWorkerPool, type AreaRunOutcome } from "../discovery/googleAreaPool.js";
+import { runAreaWorkerPool, computeDynamicDiscoveryCapacity, type AreaRunOutcome } from "../discovery/googleAreaPool.js";
 import { areaStreamTarget, cityStreamTarget, computeAskFor } from "../discovery/roundSizing.js";
+import {
+  createAreaScanBudgetCoordinator,
+  allocateInitialAreaScanBudget,
+  requestAreaScanBudgetExpansion,
+  type AreaScanBudgetCoordinator,
+} from "../discovery/areaScanBudget.js";
 import {
   RunStabilityTracker,
   extractAreaSlaCounters,
@@ -35,6 +41,8 @@ import {
 import {
   createAreaProductivityState,
   evaluateAreaProductivity,
+  evaluateAreaYieldStop,
+  classifyAreaYield,
   recordDeliveredLead,
   recordProductiveActivity,
   recordQualifiedLead,
@@ -619,6 +627,39 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       const browserPool = getBrowserSlotPool();
       stability.startWave();
 
+      // PHASE 32 — AREA SCAN-BUDGET OPTIMIZATION. One shared budget for
+      // THIS city's area-pool run (STEP 5: sibling isolation — a fresh
+      // coordinator per runGoogleAreaPoolForCity() call, never reused
+      // across cities/requests). `streamTargetForCity` is the same fixed
+      // value every area in this run already computed independently via
+      // `areaStreamTarget(target, STREAM_BATCH_FLOOR)` below — hoisted
+      // here once since it does not vary per area. `activeAreaCount`
+      // mirrors runAreaWorkerPool's OWN concurrency formula exactly (same
+      // inputs, same exported pure function) so the shared budget is split
+      // across the actual number of concurrent workers the pool below will
+      // start — never guessed independently.
+      const streamTargetForCity = areaStreamTarget(target, STREAM_BATCH_FLOOR);
+      const activeAreaCount = Math.max(
+        1,
+        computeDynamicDiscoveryCapacity(
+          target,
+          areas.length,
+          browserPool.available(),
+          env.GOOGLE_MAPS_AREA_WORKERS,
+          getResourceCapacity().safeAreaWorkers,
+        ),
+      );
+      const scanBudgetCoordinator: AreaScanBudgetCoordinator = createAreaScanBudgetCoordinator(streamTargetForCity, {
+        multiplier: env.AREA_SCAN_BUDGET_MULTIPLIER,
+        minAreaBudgetFactor: env.AREA_SCAN_BUDGET_MIN_FACTOR,
+        maxAreaBudgetFactor: env.AREA_SCAN_BUDGET_MAX_FACTOR,
+        expansionChunkFactor: env.AREA_SCAN_BUDGET_EXPANSION_FACTOR,
+      });
+      console.info(
+        `[poolExpandJob][area-scan-budget] city=${city} global_scan_budget=${scanBudgetCoordinator.globalScanBudget} ` +
+          `stream_target=${streamTargetForCity} active_area_count=${activeAreaCount}`,
+      );
+
       const result = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
         // Phase 6: resource-aware (cgroup PID/thread) ceiling — see
@@ -671,8 +712,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           // satisfied is still prevented, independently, by
           // abortController.abort("TARGET_REACHED") in processLead() below
           // (see roundSizing.ts's doc comment for the full writeup).
-          const streamTarget = areaStreamTarget(target, STREAM_BATCH_FLOOR);
-          const askFor = computeAskFor(streamTarget);
+          const streamTarget = streamTargetForCity;
+          // PHASE 32: was computeAskFor(streamTarget) — every area's own
+          // independent 4x-multiplied scan budget. Now a bounded SLICE of
+          // the shared per-city budget (see scanBudgetCoordinator above);
+          // `askFor` may grow via requestAreaScanBudgetExpansion() below if
+          // this area proves productive and exhausts its slice before
+          // reaching its own streamTarget.
+          let askFor = allocateInitialAreaScanBudget(scanBudgetCoordinator, area, activeAreaCount);
+          const initialAskFor = askFor;
+          let scanBudgetExpansionRounds = 0;
           const areaRecorder = stability.startArea(area, areaWorkerNumbers.get(area) ?? 0, streamTarget);
           let lastPerf: Record<string, unknown> | undefined;
           // PHASE 11.1: the bridge's own termination classification for
@@ -711,34 +760,68 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             productiveIdleMs: env.AREA_PRODUCTIVITY_IDLE_MS,
             maxAreaRuntimeMs: env.AREA_PRODUCTIVITY_MAX_RUNTIME_MS,
           };
+          // PHASE 30: a SEPARATE, independent check from productivityLimits
+          // above — see areaProductivity.ts's classifyAreaYield doc comment
+          // for why an idle-safe (still busy) area can nonetheless be
+          // low-yield and worth rotating out.
+          const yieldLimits = {
+            minElapsedMsForEvaluation: env.AREA_YIELD_MIN_ELAPSED_MS,
+            minCandidateVolumeForEvaluation: env.AREA_YIELD_MIN_CANDIDATE_VOLUME,
+            lowYieldMaxRate: env.AREA_YIELD_LOW_MAX_RATE,
+            marginalMaxRate: env.AREA_YIELD_MARGINAL_MAX_RATE,
+          };
 
           const productivityTimer = setInterval(() => {
             if (areaAbort.signal.aborted) return;
-            const stopReason = evaluateAreaProductivity(productivity, Date.now(), productivityLimits);
+            const now = Date.now();
+            // PHASE 25's idle/max-runtime check still runs FIRST and
+            // unconditionally — precedence is unchanged (STEP 4 of the
+            // Phase 25 prompt). Only if it says "keep going" do we ALSO
+            // check the PHASE 30 yield classifier — an area that failed
+            // the idle/max-runtime check was already going to stop for
+            // that reason regardless of its yield.
+            const stopReason = evaluateAreaProductivity(productivity, now, productivityLimits)
+              ?? evaluateAreaYieldStop(productivity, now, yieldLimits);
             if (!stopReason) return;
             productivity.stoppedReason = stopReason;
-            // PHASE 25 STEP 8 — observational-only telemetry. Never gates
-            // anything above; only describes why the stop already happened.
+            // PHASE 25 STEP 8 (extended PHASE 30) — observational-only
+            // telemetry. Never gates anything above; only describes why the
+            // stop already happened.
+            const candidateVolume = productivity.newlyDiscoveredCount + productivity.newlyQueuedCount;
+            const yieldCount = Math.max(productivity.qualifiedCount, productivity.deliveredCount);
             console.info(
               `[poolExpandJob][area-productivity] area=${area} stop_reason=${stopReason} ` +
                 `qualified=${productivity.qualifiedCount} delivered=${productivity.deliveredCount} ` +
-                `elapsed_ms=${Date.now() - productivity.startedAt} ` +
-                `time_since_last_productive_activity_ms=${Date.now() - productivity.lastProductiveActivityAt} ` +
+                `elapsed_ms=${now - productivity.startedAt} ` +
+                `time_since_last_productive_activity_ms=${now - productivity.lastProductiveActivityAt} ` +
                 `last_productive_activity=${new Date(productivity.lastProductiveActivityAt).toISOString()} ` +
                 `productive_event_type=${productivity.lastProductiveEventType ?? "none"} ` +
                 `productive_idle_ms=${productivityLimits.productiveIdleMs} ` +
-                `max_area_runtime_ms=${productivityLimits.maxAreaRuntimeMs}`,
+                `max_area_runtime_ms=${productivityLimits.maxAreaRuntimeMs} ` +
+                `newly_discovered=${productivity.newlyDiscoveredCount} newly_queued=${productivity.newlyQueuedCount} ` +
+                `candidate_volume=${candidateVolume} yield_rate=${candidateVolume > 0 ? (yieldCount / candidateVolume).toFixed(3) : "n/a"}`,
             );
             // Aborts ONLY this area's own scoped signal — see
             // scopeAreaAbort()'s doc comment. Never calls
             // terminateRequest()/abortController.abort(): those are the
             // GLOBAL paths and must never be triggered by one area going
-            // idle (Step "STOPPING MECHANISM" in the phase prompt).
+            // idle or low-yield (Step "STOPPING MECHANISM" in the phase
+            // prompt / PHASE 30 STEP 4's sibling/global safety).
             areaAbort.abort(stopReason);
           }, AREA_PRODUCTIVITY_CHECK_INTERVAL_MS);
           productivityTimer.unref?.();
 
           try {
+            // PHASE 32 — bounded expansion loop. Almost always runs exactly
+            // once (the common case, identical to pre-Phase-32 behavior
+            // apart from `askFor`'s smaller starting value). Only loops
+            // again when the engine call below reports `exhausted: true`
+            // (ran out of ITS OWN scan budget, not target-reached/aborted)
+            // AND this area hasn't yet delivered its own `streamTarget`
+            // AND `requestAreaScanBudgetExpansion` grants more (STEP 3) —
+            // never unbounded (see that function's own caps).
+            areaScanBudgetLoop: for (;;) {
+            let batchStop = false;
             for await (const lead of runEngineQuery(
               {
                 query: `${singleNiche} in ${area}, ${city}`,
@@ -802,17 +885,55 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               if (outcome === "stop_outer") {
                 stopOuter = true;
                 accepted = chunk.deliveredThisChunk;
+                batchStop = true;
                 break;
               }
               if (outcome === "batch_done") {
                 accepted = chunk.deliveredThisChunk;
+                batchStop = true;
                 break;
               }
             }
+
+            if (batchStop) break areaScanBudgetLoop;
+
+            // The engine's own generator ended naturally (this area's
+            // streamTarget was not reached via processLead's "batch_done").
+            // Only consider an expansion grant when it was genuinely the
+            // SCAN BUDGET that ran out (`areaExhausted`) — never when the
+            // global target was already hit, this area was itself
+            // aborted (idle/low-yield/parent-abort — scopeAreaAbort), or
+            // this area already reached its own streamTarget.
+            if (
+              stopOuter ||
+              areaAbort.signal.aborted ||
+              !areaExhausted ||
+              chunk.deliveredThisChunk >= streamTarget
+            ) {
+              break areaScanBudgetLoop;
+            }
+
+            const yieldClass = classifyAreaYield(productivity, Date.now(), yieldLimits);
+            const grant = requestAreaScanBudgetExpansion(scanBudgetCoordinator, area, yieldClass);
+            if (grant <= 0) break areaScanBudgetLoop;
+
+            askFor = grant;
+            scanBudgetExpansionRounds += 1;
+            } // areaScanBudgetLoop
           } finally {
             clearInterval(productivityTimer);
             accepted = chunk.deliveredThisChunk;
             rejected = Math.max(0, discovered - accepted);
+            // PHASE 32 STEP 6 — compact per-area scan-budget telemetry, so
+            // the next benchmark can confirm areas are no longer each
+            // getting a giant duplicated budget.
+            console.info(
+              `[poolExpandJob][area-scan-budget] area=${area} city=${city} ` +
+                `global_scan_budget=${scanBudgetCoordinator.globalScanBudget} ` +
+                `area_initial_scan_budget=${initialAskFor} ` +
+                `area_scan_budget_expansions=${scanBudgetExpansionRounds} ` +
+                `area_final_scan_budget=${askFor}`,
+            );
             // PHASE 12D: when THIS area's own productivity timer is what
             // ended the run, that specific, more informative reason takes
             // precedence over whatever generic bridge-level reason

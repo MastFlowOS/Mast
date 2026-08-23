@@ -373,6 +373,17 @@ class RunProfiler:
             ("maps_candidates_card_closed_skipped", self.counter("maps_candidates_card_closed_skipped")),
             ("overpass_requests", self.counter("overpass_requests")),
             ("overpass_retries", self.counter("overpass_retries")),
+            # PHASE 33A (place panel wait telemetry) — compact aggregate
+            # summary derived strictly from existing recorded timings and
+            # timeout counters.
+            ("place_panel_wait_count", self.place_panel_wait_summary()["place_panel_wait_count"]),
+            ("place_panel_wait_total_ms", self.place_panel_wait_summary()["place_panel_wait_total_ms"]),
+            ("place_panel_wait_avg_ms", _ms(self.place_panel_wait_summary()["place_panel_wait_avg_ms"])),
+            ("place_panel_wait_p50_ms", _ms(self.place_panel_wait_summary()["place_panel_wait_p50_ms"])),
+            ("place_panel_wait_p90_ms", _ms(self.place_panel_wait_summary()["place_panel_wait_p90_ms"])),
+            ("place_panel_wait_p99_ms", _ms(self.place_panel_wait_summary()["place_panel_wait_p99_ms"])),
+            ("place_panel_wait_max_ms", _ms(self.place_panel_wait_summary()["place_panel_wait_max_ms"])),
+            ("place_panel_wait_timeout_count", self.place_panel_wait_summary()["place_panel_wait_timeout_count"]),
             ("website_ms", _sum("website_worker")),
             ("instagram_ms", _sum("instagram_worker")),
             ("contact_ms", _sum("contact_worker")),
@@ -546,6 +557,36 @@ class RunProfiler:
             })
         return result
 
+    def place_panel_wait_summary(self) -> dict[str, Any]:
+        """
+        Compact aggregate summary for place_panel_wait timings (Phase 33A).
+        Derives all distribution metrics directly from the existing StageTimer
+        samples for 'place_panel_wait', plus the timeout count.
+        """
+        timer = self._stages.get("place_panel_wait")
+        if not timer or timer.count == 0:
+            return {
+                "place_panel_wait_count": 0,
+                "place_panel_wait_total_ms": 0.0,
+                "place_panel_wait_avg_ms": None,
+                "place_panel_wait_p50_ms": None,
+                "place_panel_wait_p90_ms": None,
+                "place_panel_wait_p99_ms": None,
+                "place_panel_wait_max_ms": None,
+                "place_panel_wait_timeout_count": self.counter("place_panel_wait_timeout"),
+            }
+        stats = timer.stats()
+        return {
+            "place_panel_wait_count": stats["count"],
+            "place_panel_wait_total_ms": round(stats["total_ms"], 1),
+            "place_panel_wait_avg_ms": round(stats["avg_ms"], 1) if stats["avg_ms"] is not None else None,
+            "place_panel_wait_p50_ms": round(stats["p50_ms"], 1) if stats["p50_ms"] is not None else None,
+            "place_panel_wait_p90_ms": round(stats["p90_ms"], 1) if stats["p90_ms"] is not None else None,
+            "place_panel_wait_p99_ms": round(stats["p99_ms"], 1) if stats["p99_ms"] is not None else None,
+            "place_panel_wait_max_ms": round(stats["max_ms"], 1) if stats["max_ms"] is not None else None,
+            "place_panel_wait_timeout_count": self.counter("place_panel_wait_timeout"),
+        }
+
     # ── Output ────────────────────────────────────────────────────────────────
 
     def summary(self) -> dict:
@@ -567,6 +608,7 @@ class RunProfiler:
 
         first_disc = self._marks.get("first_discovered_business")
         first_yield = self._marks.get("first_yielded_business")
+        ppw_summary = self.place_panel_wait_summary()
 
         return {
             "run_total_ms": round(total_ms, 1),
@@ -590,6 +632,7 @@ class RunProfiler:
             ),
             "browser_utilization_pct": self._browser_utilization_pct,
             "discovery_worker_utilization_pct": self._discovery_worker_utilization_pct,
+            "place_panel_wait_summary": ppw_summary,
             "stages": stages_dict,
             "rejection_breakdown": self._rejection_breakdown(),
             "resources": {
@@ -615,6 +658,8 @@ class RunProfiler:
             # wiring — no raw HTML or per-page content is included, only
             # these small integer tallies.
             "counters": dict(self._counters),
+            # Phase 33A (place panel wait telemetry)
+            **ppw_summary,
         }
 
     def print_report(
@@ -793,6 +838,17 @@ class NullProfiler:
     def counter(self, name: str) -> int: return 0  # noqa: ARG002
     def area_sla_line(self, **kwargs: object) -> str: return ""  # noqa: ARG002
     def print_area_sla(self, **kwargs: object) -> None: pass  # noqa: ARG002
+    def place_panel_wait_summary(self) -> dict[str, Any]:
+        return {
+            "place_panel_wait_count": 0,
+            "place_panel_wait_total_ms": 0.0,
+            "place_panel_wait_avg_ms": None,
+            "place_panel_wait_p50_ms": None,
+            "place_panel_wait_p90_ms": None,
+            "place_panel_wait_p99_ms": None,
+            "place_panel_wait_max_ms": None,
+            "place_panel_wait_timeout_count": 0,
+        }
     def summary(self) -> dict: return {}
     def print_report(self, **_: object) -> None: pass
 

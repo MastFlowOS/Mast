@@ -223,6 +223,92 @@ const EnvSchema = z.object({
   // genuinely-productive long-tail areas.
   AREA_PRODUCTIVITY_MAX_RUNTIME_MS: z.coerce.number().int().min(60_000).default(600_000),
 
+  // PHASE 30 — AREA YIELD / ROTATION OPTIMIZATION. Independent of the two
+  // knobs above: an area that keeps discovering/queueing candidates never
+  // trips AREA_PRODUCTIVITY_IDLE_MS (by design, since PHASE 25), which is
+  // exactly the regression this phase fixes — a low-yield-but-busy area
+  // could occupy one of only a handful of worker slots for minutes,
+  // starving other queued areas (production regression: ~100 leads/6min →
+  // ~53 leads/30min). See areaProductivity.ts's `classifyAreaYield`.
+  //
+  // Stage A gate (STEP 3's "early exploration window"): an area is never
+  // yield-evaluated before BOTH this much time AND
+  // AREA_YIELD_MIN_CANDIDATE_VOLUME candidates have accumulated — kept
+  // deliberately shorter than AREA_PRODUCTIVITY_IDLE_MS (120s) so a
+  // genuinely low-yield area can be rotated out well before it would ever
+  // reach the idle/max-runtime ceilings, while still comfortably exceeding
+  // the ~56-85s first-qualified latency the Phase 12C audit observed for
+  // areas that DO qualify quickly. CONSERVATIVE INITIAL ROLLOUT VALUE.
+  AREA_YIELD_MIN_ELAPSED_MS: z.coerce.number().int().min(10_000).default(90_000),
+
+  // Stage A gate, volume half — see AREA_YIELD_MIN_ELAPSED_MS above. An
+  // area with fewer than this many discovered+queued candidates is never
+  // yield-evaluated, regardless of elapsed time (STEP 3: "do not stop an
+  // area solely because qualified=0 if candidate volume is still low").
+  AREA_YIELD_MIN_CANDIDATE_VOLUME: z.coerce.number().int().min(1).default(15),
+
+  // Stage B: once evaluation is allowed, qualified-or-delivered / candidate
+  // volume at or below this fraction is classified LOW_YIELD (the only
+  // class that can stop an area — see evaluateAreaYieldStop). 0.05 means an
+  // area that has produced 20+ candidates with at most 1 qualified/
+  // delivered lead is treated as low yield.
+  AREA_YIELD_LOW_MAX_RATE: z.coerce.number().min(0).max(1).default(0.05),
+
+  // Stage B: ratio strictly above AREA_YIELD_LOW_MAX_RATE and at or below
+  // this fraction is MARGINAL — kept alive, never stopped by the yield
+  // classifier (STEP 3: "prefer a conservative two-stage model" /
+  // marginal yield → keep temporarily). Must stay >= AREA_YIELD_LOW_MAX_RATE.
+  AREA_YIELD_MARGINAL_MAX_RATE: z.coerce.number().min(0).max(1).default(0.15),
+
+  // PHASE 32 — AREA SCAN-BUDGET OPTIMIZATION. Before this phase, every
+  // concurrent area independently received `computeAskFor(streamTarget)`
+  // (streamTarget * this same multiplier) as its own `max_results` scan
+  // budget — for a normal target=100 request with 3 concurrent areas, that
+  // meant ~400 raw Maps candidates PER area (up to ~1200 total), massively
+  // over-scanning low-yield areas and holding scarce browser slots. This
+  // multiplier now sizes a single SHARED global scan budget
+  // (`computeGlobalScanBudget` in areaScanBudget.ts) that concurrent areas
+  // draw slices from, instead of each replicating it independently.
+  // UNCHANGED numeric default (4) from the old `computeAskFor` multiplier —
+  // this phase only changes how the resulting budget is DISTRIBUTED across
+  // concurrent areas, not the total intended scan volume for one
+  // streamTarget's worth of work.
+  AREA_SCAN_BUDGET_MULTIPLIER: z.coerce.number().min(1).default(4),
+
+  // A single area's INITIAL slice of the shared global scan budget
+  // (globalScanBudget / activeAreaCount) is never allowed to fall below
+  // streamTarget * this factor, regardless of how many areas are
+  // concurrently active — a lone/slow area must still receive a realistic
+  // chance at finding streamTarget qualified leads in one pass. Default 1
+  // (never below streamTarget itself) is the same implicit floor
+  // `computeAskFor` always guaranteed before this phase (it never returned
+  // less than streamTarget). CONSERVATIVE INITIAL ROLLOUT VALUE — see the
+  // Phase 32 prompt's STEP 8 safety check; tune only once a benchmark shows
+  // headroom.
+  AREA_SCAN_BUDGET_MIN_FACTOR: z.coerce.number().min(0).default(1),
+
+  // A single area's CUMULATIVE allocation (initial + all expansions) is
+  // never allowed to exceed streamTarget * this factor. Default equals
+  // AREA_SCAN_BUDGET_MULTIPLIER so that, even after unlimited expansion
+  // grants, one area can never receive MORE than the old (pre-Phase-32)
+  // per-area formula would have given it — this is what keeps a single
+  // productive area from ever consuming the entire shared budget (STEP 5:
+  // "one area cannot consume the entire global scan budget") while still
+  // preserving the exact historical fast-run ceiling for the legacy
+  // single-active-area case (STEP 8).
+  AREA_SCAN_BUDGET_MAX_FACTOR: z.coerce.number().min(1).default(4),
+
+  // Size (in streamTarget units) of ONE expansion grant handed to a
+  // demonstrably productive area that has exhausted its current scan
+  // budget without reaching its own streamTarget yet (STEP 3: "a
+  // productive area may receive additional scan budget"). Default 1 is a
+  // conservative, single-streamTarget-sized top-up — never larger than the
+  // area's own original ask — rather than a large re-grant; combined with
+  // AREA_SCAN_BUDGET_MAX_FACTOR above and remaining global headroom, this
+  // naturally self-limits (STEP 3: "a low-yield area should NOT receive
+  // unlimited additional scan budget").
+  AREA_SCAN_BUDGET_EXPANSION_FACTOR: z.coerce.number().min(0).default(1),
+
   // PHASE 6 — resource-aware safe concurrency (replaces the old hardcoded
   // "safeResourceWorkers = 2"). Each Google area worker is NOT just one
   // browser slot's worth of memory — it is one Python subprocess (its own
@@ -369,6 +455,34 @@ const EnvSchema = z.object({
           `(${val.SCRAPER_SUBPROCESS_INACTIVITY_MS}ms) — the absolute safety ceiling ` +
           `must never fire before the inactivity timeout could have already caught a ` +
           `genuinely stalled subprocess.`,
+      });
+    }
+    // PHASE 30: same "fail loudly at startup, not silently at runtime"
+    // treatment for the new yield thresholds' own ordering invariant —
+    // classifyAreaYield's Stage B assumes marginalMaxRate >= lowMaxRate
+    // (see areaProductivity.ts's AreaYieldLimits doc comment).
+    if (val.AREA_YIELD_MARGINAL_MAX_RATE < val.AREA_YIELD_LOW_MAX_RATE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["AREA_YIELD_MARGINAL_MAX_RATE"],
+        message:
+          `AREA_YIELD_MARGINAL_MAX_RATE (${val.AREA_YIELD_MARGINAL_MAX_RATE}) must be >= ` +
+          `AREA_YIELD_LOW_MAX_RATE (${val.AREA_YIELD_LOW_MAX_RATE}) — the marginal band sits ` +
+          `above the low-yield cutoff by definition.`,
+      });
+    }
+    // PHASE 32: same treatment for the scan-budget factor ordering
+    // invariant — allocateInitialAreaScanBudget/requestAreaScanBudgetExpansion
+    // (areaScanBudget.ts) assume maxFactor >= minFactor, or every initial
+    // allocation would be clamped down below its own floor.
+    if (val.AREA_SCAN_BUDGET_MAX_FACTOR < val.AREA_SCAN_BUDGET_MIN_FACTOR) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["AREA_SCAN_BUDGET_MAX_FACTOR"],
+        message:
+          `AREA_SCAN_BUDGET_MAX_FACTOR (${val.AREA_SCAN_BUDGET_MAX_FACTOR}) must be >= ` +
+          `AREA_SCAN_BUDGET_MIN_FACTOR (${val.AREA_SCAN_BUDGET_MIN_FACTOR}) — a single area's ` +
+          `budget ceiling can never sit below its own guaranteed floor.`,
       });
     }
   });

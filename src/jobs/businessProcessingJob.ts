@@ -9,6 +9,7 @@ import type { Json } from "../types/database.types.js";
 import { env } from "../config/env.js";
 import { aiEnabled, generateJSON, AI_MODEL } from "../lib/ai.js";
 import { PROFESSION_SLUGS } from "../scoring/professionWeights.js";
+import { trackActiveEnrichment, trackActiveIntelligence } from "../lib/enrichmentTelemetry.js";
 
 export type ProcessingKind = "enrich" | "score";
 export type BusinessProcessingPayload = { taskId: string };
@@ -254,147 +255,151 @@ export async function ensureIntelligence(businessId: string): Promise<void> {
 }
 
 async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise<void> {
-  const { data: business, error } = await supabaseAdmin.from("businesses")
-    .select("name, email, phone, website, instagram, emails, phones, field_provenance")
-    .eq("id", businessId).single();
-  if (error) throw error;
+  return trackActiveEnrichment(async () => {
+    const { data: business, error } = await supabaseAdmin.from("businesses")
+      .select("name, email, phone, website, instagram, emails, phones, field_provenance")
+      .eq("id", businessId).single();
+    if (error) throw error;
 
-  // Milestone 2: Engine 2.0's WebsiteWorker/ContactWorker/MergeWorker
-  // replace the V1 SiteCrawler path runEngineVerify() used to drive here.
-  // See engine_enrichment_bridge.py's module docstring for exactly which
-  // `businesses` columns this can and cannot populate.
-  let site: any = {};
-  if (business.website) {
-    site = await runEngineEnrich({ website: business.website }, signal);
-  }
+    // Milestone 2: Engine 2.0's WebsiteWorker/ContactWorker/MergeWorker
+    // replace the V1 SiteCrawler path runEngineVerify() used to drive here.
+    // See engine_enrichment_bridge.py's module docstring for exactly which
+    // `businesses` columns this can and cannot populate.
+    let site: any = {};
+    if (business.website) {
+      site = await runEngineEnrich({ website: business.website }, signal);
+    }
 
-  // Audit Broken #3 fix
-  const siteEmail = isValidEmail(site.email) ? site.email : undefined;
-  const sitePhone = isValidPhone(site.phone) ? site.phone : undefined;
-  const siteEmails = (site.emails ?? []).filter((email: any) => isValidEmail(email));
-  const sitePhones = (site.phones ?? []).filter((phone: any) => isValidPhone(phone));
+    // Audit Broken #3 fix
+    const siteEmail = isValidEmail(site.email) ? site.email : undefined;
+    const sitePhone = isValidPhone(site.phone) ? site.phone : undefined;
+    const siteEmails = (site.emails ?? []).filter((email: any) => isValidEmail(email));
+    const sitePhones = (site.phones ?? []).filter((phone: any) => isValidPhone(phone));
 
-  const existingEmails: string[] = Array.isArray(business.emails)
-    ? business.emails.map(extractStoredEmail).filter((email): email is string => typeof email === "string")
-    : [];
-  const existingPhones: string[] = Array.isArray(business.phones)
-    ? business.phones.filter((phone): phone is string => typeof phone === "string")
-    : [];
-  const emails: string[] = Array.from(
-    new Set([...existingEmails, siteEmail, ...siteEmails].filter((email): email is string => typeof email === "string")),
-  );
-  const phones: string[] = Array.from(
-    new Set([...existingPhones, sitePhone, ...sitePhones].filter((phone): phone is string => typeof phone === "string")),
-  );
+    const existingEmails: string[] = Array.isArray(business.emails)
+      ? business.emails.map(extractStoredEmail).filter((email): email is string => typeof email === "string")
+      : [];
+    const existingPhones: string[] = Array.isArray(business.phones)
+      ? business.phones.filter((phone): phone is string => typeof phone === "string")
+      : [];
+    const emails: string[] = Array.from(
+      new Set([...existingEmails, siteEmail, ...siteEmails].filter((email): email is string => typeof email === "string")),
+    );
+    const phones: string[] = Array.from(
+      new Set([...existingPhones, sitePhone, ...sitePhones].filter((phone): phone is string => typeof phone === "string")),
+    );
 
-  // Milestone 2: Engine 2.0's ContactWorker/WebsiteWorker report objective
-  // extraction facts only (see WebsiteIntel/ContactIntel's own contract
-  // docstrings) — there is no per-field source/confidence tag like V1's
-  // field_sources to fold in here, so field_provenance is carried forward
-  // unchanged rather than guessed at.
-  const provenance: Record<string, Json | undefined> = isJsonObject(business.field_provenance) ? { ...business.field_provenance } : {};
+    // Milestone 2: Engine 2.0's ContactWorker/WebsiteWorker report objective
+    // extraction facts only (see WebsiteIntel/ContactIntel's own contract
+    // docstrings) — there is no per-field source/confidence tag like V1's
+    // field_sources to fold in here, so field_provenance is carried forward
+    // unchanged rather than guessed at.
+    const provenance: Record<string, Json | undefined> = isJsonObject(business.field_provenance) ? { ...business.field_provenance } : {};
 
-  // Update business with website data.
-  // NOTE on fields intentionally left `undefined` (not overwritten) below:
-  // `instagram`/`facebook` here mean "a social link found ON the
-  // business's own website" — no Engine 2.0 contract field covers on-page
-  // social-link discovery (InstagramIntel describes a profile you already
-  // know the URL of; ContactIntel only carries linkedin_url among social
-  // links). `seo`/`blog` and `signals.tech_stack`'s prior shape likewise
-  // have no Engine 2.0 source yet. All are flagged gaps, not silent data
-  // loss — see engine_enrichment_bridge.py's module docstring — and
-  // leaving them `undefined` means Supabase leaves whatever was last
-  // stored untouched, same as it already does for any other field a given
-  // enrichment pass doesn't return.
-  const { error: updateError } = await supabaseAdmin.from("businesses").update({
-    email: siteEmail || undefined,
-    phone: sitePhone || undefined,
-    linkedin: site.linkedin || undefined,
-    emails,
-    phones,
-    field_provenance: provenance,
-    ssl_valid: site.ssl_valid ?? undefined,
-    load_time_ms: site.load_time_ms ?? undefined,
-    signals: site.detected_platform ? toJson({ tech_stack: { detected_platform: site.detected_platform } }) : undefined,
-    last_verified_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }).eq("id", businessId);
-  if (updateError) throw updateError;
+    // Update business with website data.
+    // NOTE on fields intentionally left `undefined` (not overwritten) below:
+    // `instagram`/`facebook` here mean "a social link found ON the
+    // business's own website" — no Engine 2.0 contract field covers on-page
+    // social-link discovery (InstagramIntel describes a profile you already
+    // know the URL of; ContactIntel only carries linkedin_url among social
+    // links). `seo`/`blog` and `signals.tech_stack`'s prior shape likewise
+    // have no Engine 2.0 source yet. All are flagged gaps, not silent data
+    // loss — see engine_enrichment_bridge.py's module docstring — and
+    // leaving them `undefined` means Supabase leaves whatever was last
+    // stored untouched, same as it already does for any other field a given
+    // enrichment pass doesn't return.
+    const { error: updateError } = await supabaseAdmin.from("businesses").update({
+      email: siteEmail || undefined,
+      phone: sitePhone || undefined,
+      linkedin: site.linkedin || undefined,
+      emails,
+      phones,
+      field_provenance: provenance,
+      ssl_valid: site.ssl_valid ?? undefined,
+      load_time_ms: site.load_time_ms ?? undefined,
+      signals: site.detected_platform ? toJson({ tech_stack: { detected_platform: site.detected_platform } }) : undefined,
+      last_verified_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq("id", businessId);
+    if (updateError) throw updateError;
 
-  // Validation
-  const validation = validateLead({
-    name: business.name,
-    email: siteEmail || business.email,
-    phone: sitePhone || business.phone,
-    website: business.website,
-    instagram: site.instagram || business.instagram,
+    // Validation
+    const validation = validateLead({
+      name: business.name,
+      email: siteEmail || business.email,
+      phone: sitePhone || business.phone,
+      website: business.website,
+      instagram: site.instagram || business.instagram,
+    });
+    if (!validation.valid) {
+      console.log(`[enrichBusiness] businessId=${businessId} failed validation: ${validation.reason} — dropping`);
+      return;
+    }
+
+    // Scoring
+    await computeAndStoreOpportunityScores(businessId);
+    await computeAndStoreBusinessHealth(businessId);
+
+    // Push to intelligence queue
+    await enqueueBusinessProcessing(businessId, "score");
   });
-  if (!validation.valid) {
-    console.log(`[enrichBusiness] businessId=${businessId} failed validation: ${validation.reason} — dropping`);
-    return;
-  }
-
-  // Scoring
-  await computeAndStoreOpportunityScores(businessId);
-  await computeAndStoreBusinessHealth(businessId);
-
-  // Push to intelligence queue
-  await enqueueBusinessProcessing(businessId, "score");
 }
 
 async function scoreBusiness(businessId: string): Promise<void> {
-  const { data: business, error } = await supabaseAdmin.from("businesses")
-    .select("name, website, instagram, email, phone, emails, phones, field_provenance, signals")
-    .eq("id", businessId).single();
-  if (error) throw error;
+  return trackActiveIntelligence(async () => {
+    const { data: business, error } = await supabaseAdmin.from("businesses")
+      .select("name, website, instagram, email, phone, emails, phones, field_provenance, signals")
+      .eq("id", businessId).single();
+    if (error) throw error;
 
-  // Milestone 2: Engine 2.0's InstagramWorker replaces the V1
-  // IGIntelligence path runEngineVerify() used to drive here.
-  let social: any = {};
-  if (business.instagram) {
-    social = await runEngineEnrich({ instagram: business.instagram });
-  }
-
-  // instagram_last_post_date -> ig_last_post_days is a plain date-math
-  // unit conversion (today - last_post_date), not an estimate — InstagramIntel
-  // gives the raw date because Engine 2.0's InstagramWorker deliberately
-  // never computes derived metrics itself (see InstagramIntel's own Phase
-  // 5.5 docstring). ig_activity / ig_legitimacy have no Engine 2.0 source
-  // at all — legitimacy specifically is exactly the kind of invented/
-  // estimated score InstagramIntel's docstring excludes on principle — so
-  // both are left out of updatedSignals below (flagged gap, not
-  // fabricated) rather than defaulted to null and silently overwriting
-  // whatever a prior pass may have stored.
-  const igLastPostDays = social.instagram_last_post_date
-    ? Math.floor((Date.now() - new Date(social.instagram_last_post_date).getTime()) / 86_400_000)
-    : undefined;
-
-  // Remaining enrichment: update business with Instagram data
-  const currentSignals = isJsonObject(business.signals) ? { ...business.signals } : {};
-  const updatedSignals = {
-    ...currentSignals,
-    ig_followers: social.instagram_followers ?? currentSignals.ig_followers ?? null,
-    ig_last_post_days: igLastPostDays ?? currentSignals.ig_last_post_days ?? null,
-  };
-
-  const { error: updateError } = await supabaseAdmin.from("businesses").update({
-    signals: toJson(updatedSignals),
-    updated_at: new Date().toISOString(),
-  }).eq("id", businessId);
-  if (updateError) throw updateError;
-
-  // Final scoring & health
-  await computeAndStoreOpportunityScores(businessId);
-  await computeAndStoreBusinessHealth(businessId);
-
-  // AI intelligence: pre-generate opportunity insights if AI is enabled
-  if (aiEnabled()) {
-    try {
-      await generateBackgroundOpportunityInsights(businessId);
-    } catch (aiErr) {
-      console.warn(`[scoreBusiness] AI opportunity insight pre-generation failed for businessId=${businessId}`, aiErr);
+    // Milestone 2: Engine 2.0's InstagramWorker replaces the V1
+    // IGIntelligence path runEngineVerify() used to drive here.
+    let social: any = {};
+    if (business.instagram) {
+      social = await runEngineEnrich({ instagram: business.instagram });
     }
-  }
+
+    // instagram_last_post_date -> ig_last_post_days is a plain date-math
+    // unit conversion (today - last_post_date), not an estimate — InstagramIntel
+    // gives the raw date because Engine 2.0's InstagramWorker deliberately
+    // never computes derived metrics itself (see InstagramIntel's own Phase
+    // 5.5 docstring). ig_activity / ig_legitimacy have no Engine 2.0 source
+    // at all — legitimacy specifically is exactly the kind of invented/
+    // estimated score InstagramIntel's docstring excludes on principle — so
+    // both are left out of updatedSignals below (flagged gap, not
+    // fabricated) rather than defaulted to null and silently overwriting
+    // whatever a prior pass may have stored.
+    const igLastPostDays = social.instagram_last_post_date
+      ? Math.floor((Date.now() - new Date(social.instagram_last_post_date).getTime()) / 86_400_000)
+      : undefined;
+
+    // Remaining enrichment: update business with Instagram data
+    const currentSignals = isJsonObject(business.signals) ? { ...business.signals } : {};
+    const updatedSignals = {
+      ...currentSignals,
+      ig_followers: social.instagram_followers ?? currentSignals.ig_followers ?? null,
+      ig_last_post_days: igLastPostDays ?? currentSignals.ig_last_post_days ?? null,
+    };
+
+    const { error: updateError } = await supabaseAdmin.from("businesses").update({
+      signals: toJson(updatedSignals),
+      updated_at: new Date().toISOString(),
+    }).eq("id", businessId);
+    if (updateError) throw updateError;
+
+    // Final scoring & health
+    await computeAndStoreOpportunityScores(businessId);
+    await computeAndStoreBusinessHealth(businessId);
+
+    // AI intelligence: pre-generate opportunity insights if AI is enabled
+    if (aiEnabled()) {
+      try {
+        await generateBackgroundOpportunityInsights(businessId);
+      } catch (aiErr) {
+        console.warn(`[scoreBusiness] AI opportunity insight pre-generation failed for businessId=${businessId}`, aiErr);
+      }
+    }
+  });
 }
 
 async function generateBackgroundOpportunityInsights(businessId: string): Promise<void> {

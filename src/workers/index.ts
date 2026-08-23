@@ -11,6 +11,7 @@ import { env } from "../config/env.js";
 import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance, initBrowserSlotPool } from "../lib/workerCapacity.js";
 import { initResourceCapacity, logStartupResourceTelemetry, initEnrichmentCapacity, splitEnrichmentCapacity } from "../lib/resourceCapacity.js";
 import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
+import { getEnrichmentTelemetrySnapshot, getEnrichmentQueueDepth, formatEnrichmentTelemetryLog } from "../lib/enrichmentTelemetry.js";
 
 // Ensure the provider registry is initialised at startup so any
 // getProvider() call in handleDiscoveryTask has the implementations loaded.
@@ -110,12 +111,6 @@ async function main() {
       `(businessEnrich=${businessEnrichConcurrency}, businessScore=${businessScoreConcurrency}, basis=${enrichmentCapacity.pidCeilingBasis})`,
   );
 
-  // PHASE 18 — lightweight in-process gauges for enrichment_queue_depth /
-  // *_active telemetry (STEP 7). Purely observational counters, never read
-  // by any scheduling decision above — mirrors this module's own
-  // heartbeat-interval logging cadence rather than adding a new timer.
-  const enrichmentTelemetry = { websiteContactActive: 0, instagramActive: 0 };
-
   // Heartbeat the worker_instances row every 30 seconds so the ops dashboard
   // has a live view of actual capacity across the fleet.
   const workerHeartbeatInterval = setInterval(
@@ -123,26 +118,27 @@ async function main() {
     30_000,
   );
 
-  // PHASE 18, STEP 7 — observational-only enrichment stage telemetry,
-  // logged on the same 30s cadence as the existing heartbeat rather than a
-  // new timer. Queue depth is best-effort (pg-boss's own getQueueSize());
-  // a failure here never affects enrichment/discovery, matching this
-  // module's existing "fire and forget, never throw" observability
-  // convention (see observability.ts's own module docstring).
+  // PHASE 29 — Truthful enrichment telemetry and pg-boss queue depths.
+  // Observational-only enrichment stage telemetry, logged on the same 30s
+  // cadence as the existing heartbeat. Queue depth queries pg-boss's native
+  // getQueueSize(); 0 means confirmed empty, "unavailable" means measurement
+  // failed (never false 0). Active counters accurately track live execution.
   const enrichmentTelemetryInterval = setInterval(() => {
     (async () => {
-      let websiteContactQueueDepth: number | "unknown" = "unknown";
-      let instagramQueueDepth: number | "unknown" = "unknown";
+      let enrichmentQueueDepth: number | "unavailable" = "unavailable";
+      let intelligenceQueueDepth: number | "unavailable" = "unavailable";
       try {
-        websiteContactQueueDepth = await (boss as any).getQueueSize?.(QUEUES.businessEnrich) ?? "unknown";
-        instagramQueueDepth = await (boss as any).getQueueSize?.(QUEUES.businessScore) ?? "unknown";
+        enrichmentQueueDepth = await getEnrichmentQueueDepth(boss, QUEUES.businessEnrich);
+        intelligenceQueueDepth = await getEnrichmentQueueDepth(boss, QUEUES.businessScore);
       } catch (err) {
         console.warn("[worker] enrichment telemetry: getQueueSize failed (non-fatal):", err);
       }
+      const snapshot = getEnrichmentTelemetrySnapshot();
       console.log(
-        `[worker][enrichment-telemetry] website_active=${enrichmentTelemetry.websiteContactActive} ` +
-          `contact_active=${enrichmentTelemetry.websiteContactActive} instagram_active=${enrichmentTelemetry.instagramActive} ` +
-          `enrichment_queue_depth=${websiteContactQueueDepth} intelligence_queue_depth=${instagramQueueDepth}`,
+        formatEnrichmentTelemetryLog(snapshot, {
+          enrichment_queue_depth: enrichmentQueueDepth,
+          intelligence_queue_depth: intelligenceQueueDepth,
+        }),
       );
     })().catch((err) => console.warn("[worker] enrichment telemetry loop failed (non-fatal):", err));
   }, 30_000);
@@ -216,24 +212,14 @@ async function main() {
   // registration entirely rather than passing a floor()'d-to-1 value.
   if (businessEnrichConcurrency > 0) {
     await boss.work<BusinessProcessingPayload>(QUEUES.businessEnrich, { batchSize: businessEnrichConcurrency }, async (jobs) => {
-      enrichmentTelemetry.websiteContactActive += jobs.length;
-      try {
-        await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
-      } finally {
-        enrichmentTelemetry.websiteContactActive -= jobs.length;
-      }
+      await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
     });
   } else {
     console.warn("[worker] enrichment_final_concurrency=0 for businessEnrich (Website+Contact) — not registering a worker for this queue");
   }
   if (businessScoreConcurrency > 0) {
     await boss.work<BusinessProcessingPayload>(QUEUES.businessScore, { batchSize: businessScoreConcurrency }, async (jobs) => {
-      enrichmentTelemetry.instagramActive += jobs.length;
-      try {
-        await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
-      } finally {
-        enrichmentTelemetry.instagramActive -= jobs.length;
-      }
+      await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
     });
   } else {
     console.warn("[worker] enrichment_final_concurrency=0 for businessScore (Instagram) — not registering a worker for this queue");

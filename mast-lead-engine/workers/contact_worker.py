@@ -356,10 +356,13 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         Phase 15: Quality-preserving contact acquisition enhancements:
         - Structured data (JSON-LD Organization / LocalBusiness / ContactPoint)
         - Icon & contextual attribute extraction (mailto/tel icons, aria-label, title, data-*)
-        - Early exit once both valid email and phone are present
+        - Early exit once valid email, valid phone, AND Instagram are all present
+          (Phase 27, Step 1 — previously email+phone alone; see the early-exit
+          comment below for why that was insufficient)
         - Bounded secondary-page discovery (at most 1 extra same-domain page from priority list:
-          contact > about > team > staff > locations > catering > wholesale > press > partners)
-        - Maximum 3 total page fetches per candidate
+          contact > about > team > staff > locations > catering > wholesale > press > partners),
+          triggered by a missing email, phone, OR Instagram (Phase 27, Step 2)
+        - Maximum 3 total page fetches per candidate (unchanged — Phase 27, Step 4)
         """
         pages = self._pages_to_fetch(item)
         if not pages:
@@ -456,8 +459,19 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                 if instagram_url is None and has_invalid_ig_candidate(html):
                     instagram_invalid_candidate_seen = True
 
-            # Early Exit: If valid email AND valid phone are both present, stop fetching
-            if bool(emails) and bool(phones):
+            # Early Exit (Phase 27, Step 1): previously this stopped as
+            # soon as valid email AND valid phone were both present,
+            # even when Instagram was still missing — which, combined
+            # with `_pages_to_fetch()`'s contact-page-first order, meant
+            # a contact page with email+phone but no Instagram could
+            # end the loop before the homepage (often carrying an
+            # Instagram icon in its footer) was ever inspected. Now
+            # requires Instagram too, so a still-missing Instagram
+            # channel no longer gets silently skipped while pages that
+            # could supply it remain unfetched. Still bounded by the
+            # same `pages` tuple (contact_page, final_url) — at most two
+            # iterations of this loop regardless.
+            if bool(emails) and bool(phones) and instagram_url is not None:
                 break
 
         # Phase 15: Bounded Secondary Page Discovery
@@ -465,9 +479,15 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         secondary_page_fetch_failed = False
         secondary_page_type: Optional[str] = None
 
-        # Only discover/fetch secondary page if contact data is still missing (missing email OR missing phone)
-        # AND at least one initial page was successfully fetched.
-        if (not emails or not phones) and fetched_htmls:
+        # Only discover/fetch secondary page if contact data OR Instagram
+        # is still missing (Phase 27, Step 2: Instagram is now also a
+        # missing-required-acquisition-target that can justify the one
+        # allowed secondary-page fetch, same as email/phone always
+        # could) AND at least one initial page was successfully fetched.
+        # The secondary-page priority order itself (contact > about >
+        # team > staff > locations > catering > wholesale > press >
+        # partners) is unchanged — see find_secondary_contact_link().
+        if (not emails or not phones or instagram_url is None) and fetched_htmls:
             base_url = item.final_url or item.contact_page or (fetched_htmls[0][1] if fetched_htmls else "")
             sec_url, sec_type = find_secondary_contact_link(
                 fetched_htmls=fetched_htmls,
@@ -711,7 +731,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
     @staticmethod
     def _extract_instagram_evidence(html: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        (url, source) for the first canonical Instagram profile found on
+        (url, source) for the highest-ranked Instagram evidence found on
         the page, or (None, None). Delegates entirely to
         `utils.parsing.extract_ig_urls_with_source`, which already
         canonicalizes to `https://www.instagram.com/<handle>/` and
@@ -724,11 +744,19 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         `extract_ig_urls_with_source()`, which additionally recognizes a
         literal instagram.com URL wherever it appears in this
         already-fetched HTML (anchor href, JSON-LD `sameAs`, `<meta>`
-        content attributes, or bare in the markup) and, only when no
-        such URL exists anywhere on the page, a business-specific
+        content attributes, or bare in the markup) and a business-specific
         plain-text @handle next to the word "instagram". No new page is
         fetched and no crawling is added — this only looks harder at the
-        HTML ContactWorker already has in hand. `source` is carried
+        HTML ContactWorker already has in hand.
+
+        Phase 27 (Step 5-7): `extract_ig_urls_with_source` now also
+        recognizes scheme-less/protocol-relative Instagram URLs and
+        `data-instagram*` attributes, and returns candidates ranked by
+        evidence strength (anchor/social link > data attribute > JSON-LD
+        > meta > raw HTML > plain @handle) with the strongest candidate
+        first — this method still just takes that first entry, so the
+        selection logic itself lives entirely in
+        `extract_ig_urls_with_source`, not here. `source` is carried
         through to `ContactIntel.instagram_source` purely for telemetry
         (see Phase 14.2's execution_driver/service telemetry wiring) —
         it plays no part in qualification.

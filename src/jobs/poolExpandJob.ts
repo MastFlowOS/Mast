@@ -36,6 +36,7 @@ import {
   createAreaProductivityState,
   evaluateAreaProductivity,
   recordDeliveredLead,
+  recordProductiveActivity,
   recordQualifiedLead,
   scopeAreaAbort,
   type AreaProductivityState,
@@ -162,13 +163,31 @@ export type PoolExpandJobPayload = {
 // per-round fairness accounting.
 const STREAM_BATCH_FLOOR = 5;
 
-// PHASE 12D: how often each area's own adaptive-productivity timer polls
-// the pure evaluateAreaProductivity() classifier (see areaProductivity.ts).
-// This is purely a check-frequency knob, not a behavioral one — the actual
-// exploration/inactivity window is env.AREA_PRODUCTIVITY_IDLE_MS. Kept
-// small relative to that window so a stop is detected promptly without
-// meaningfully changing when the classifier actually says stop.
+// PHASE 12D (still true under PHASE 25): how often each area's own
+// adaptive-productivity timer polls the pure evaluateAreaProductivity()
+// classifier (see areaProductivity.ts). This is purely a check-frequency
+// knob, not a behavioral one — the actual idle/max-runtime windows are
+// env.AREA_PRODUCTIVITY_IDLE_MS / env.AREA_PRODUCTIVITY_MAX_RUNTIME_MS.
+// Kept small relative to those windows so a stop is detected promptly
+// without meaningfully changing when the classifier actually says stop.
 const AREA_PRODUCTIVITY_CHECK_INTERVAL_MS = 5_000;
+
+// PHASE 25 — STEP 1/STEP 3 audit result: of the engine's existing
+// `"type":"progress"` stdout events (service.py's `_on_progress` /
+// MapsScraper's `_emit_progress` — see pythonBridge.ts's EngineProgressEvent),
+// only these two are HIGH-CONFIDENCE evidence of a genuinely NEW candidate
+// being produced by this area's Maps discovery. Every other existing event
+// (`maps_navigation_start`/`maps_navigation_complete`/`panel_resolved` —
+// session lifecycle, not per-candidate; `round_scanned` — a scan round
+// that may or may not have found anything new, i.e. the "repeated UI/DOM
+// polling" case STEP 3 explicitly says must NOT reset the clock;
+// `crash_recovered`/`crash_detected` — recovery churn, not forward
+// progress) is deliberately EXCLUDED from resetting the productive-activity
+// clock. This is the exact fix for the Bronx/Staten Island benchmark
+// failure: both were actively emitting `candidate_discovered`/
+// `candidate_queued` at the moment the old (qualified-only) clock killed
+// them.
+const PRODUCTIVE_DISCOVERY_PROGRESS_EVENTS = new Set(["candidate_discovered", "candidate_queued"]);
 
 export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promise<void> {
   const { followUp } = payload;
@@ -666,11 +685,14 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           let lastTerminationReason: AreaTerminationReason | undefined;
           let doneInfoReceived = false;
 
-          // PHASE 12D — HYBRID ADAPTIVE AREA STOPPING.
+          // PHASE 12D — HYBRID ADAPTIVE AREA STOPPING (PHASE 25: upgraded
+          // to key off PRODUCTIVE ACTIVITY, not just qualified leads — see
+          // areaProductivity.ts's module doc comment for the full writeup).
           //
           // `productivity` is this area's own live state (startedAt/
           // firstQualifiedAt/lastQualifiedAt/qualifiedCount/deliveredCount/
-          // stoppedReason — see areaProductivity.ts). `areaAbort` scopes
+          // stoppedReason/lastProductiveActivityAt/lastProductiveEventType —
+          // see areaProductivity.ts). `areaAbort` scopes
           // cancellation to THIS area only: its `signal` is what gets
           // passed to runEngineQuery() below (NOT the shared job-level
           // `abortController.signal` directly) so that aborting it SIGTERMs
@@ -682,16 +704,30 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           // narrower way for a single area to stop early.
           const productivity = createAreaProductivityState();
           const { signal: areaSignal, controller: areaAbort } = scopeAreaAbort(abortController.signal);
+          // PHASE 25: shared limits object — see areaProductivity.ts's
+          // AreaProductivityLimits and env.ts for where these two knobs
+          // come from and why their defaults are safe.
+          const productivityLimits = {
+            productiveIdleMs: env.AREA_PRODUCTIVITY_IDLE_MS,
+            maxAreaRuntimeMs: env.AREA_PRODUCTIVITY_MAX_RUNTIME_MS,
+          };
 
           const productivityTimer = setInterval(() => {
             if (areaAbort.signal.aborted) return;
-            const stopReason = evaluateAreaProductivity(productivity, Date.now(), env.AREA_PRODUCTIVITY_IDLE_MS);
+            const stopReason = evaluateAreaProductivity(productivity, Date.now(), productivityLimits);
             if (!stopReason) return;
             productivity.stoppedReason = stopReason;
+            // PHASE 25 STEP 8 — observational-only telemetry. Never gates
+            // anything above; only describes why the stop already happened.
             console.info(
               `[poolExpandJob][area-productivity] area=${area} stop_reason=${stopReason} ` +
                 `qualified=${productivity.qualifiedCount} delivered=${productivity.deliveredCount} ` +
-                `elapsed_ms=${Date.now() - productivity.startedAt}`,
+                `elapsed_ms=${Date.now() - productivity.startedAt} ` +
+                `time_since_last_productive_activity_ms=${Date.now() - productivity.lastProductiveActivityAt} ` +
+                `last_productive_activity=${new Date(productivity.lastProductiveActivityAt).toISOString()} ` +
+                `productive_event_type=${productivity.lastProductiveEventType ?? "none"} ` +
+                `productive_idle_ms=${productivityLimits.productiveIdleMs} ` +
+                `max_area_runtime_ms=${productivityLimits.maxAreaRuntimeMs}`,
             );
             // Aborts ONLY this area's own scoped signal — see
             // scopeAreaAbort()'s doc comment. Never calls
@@ -744,7 +780,22 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                   );
                 }
               },
-              { requestId: reqId, areaLabel: area },
+              {
+                requestId: reqId,
+                areaLabel: area,
+                // PHASE 25: live discovery-progress signal — see
+                // PRODUCTIVE_DISCOVERY_PROGRESS_EVENTS's doc comment above
+                // for exactly which events count and why. Purely additive
+                // observation; never affects what runEngineQuery yields.
+                onProgress: (progress) => {
+                  if (progress.stage !== "discovery") return;
+                  if (!PRODUCTIVE_DISCOVERY_PROGRESS_EVENTS.has(progress.event)) return;
+                  recordProductiveActivity(
+                    productivity,
+                    progress.event === "candidate_queued" ? "candidate_queued" : "candidate_discovered",
+                  );
+                },
+              },
             )) {
               discovered += 1;
               const outcome = await processLead(lead, streamTarget, chunk, areaRecorder, productivity);

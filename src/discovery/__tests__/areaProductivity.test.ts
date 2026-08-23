@@ -1,29 +1,38 @@
 /**
- * PHASE 12D — Hybrid adaptive area stopping.
+ * PHASE 25 — Area productivity stop logic (upgrades PHASE 12D's
+ * qualified-only clock to a "time since last PRODUCTIVE ACTIVITY" clock —
+ * see areaProductivity.ts's module doc comment for the full writeup).
  *
  * Pure-logic tests for areaProductivity.ts's classifier/state helpers
- * (tests 1-4, 10, 12, 13 below), plus an orchestration-level test that
- * wires the classifier + scopeAreaAbort() together with the REAL
- * runAreaWorkerPool() from googleAreaPool.ts (tests 5, 6, 8) — matching
- * the style of googleAreaPool.test.ts: no Postgres, no engine subprocess,
- * fake `runArea`/`claimNextArea`/`tryAcquireSlot` implementations, with a
- * fake `now()` clock so timing is deterministic instead of racing real
- * wall-clock time.
+ * (tests 1-4, 10, 12, 13, plus new PHASE 25 tests below), plus an
+ * orchestration-level test that wires the classifier + scopeAreaAbort()
+ * together with the REAL runAreaWorkerPool() from googleAreaPool.ts (tests
+ * 5, 6, 8) — matching the style of googleAreaPool.test.ts: no Postgres, no
+ * engine subprocess, fake `runArea`/`claimNextArea`/`tryAcquireSlot`
+ * implementations, with a fake `now()` clock so timing is deterministic
+ * instead of racing real wall-clock time.
  *
  * Tests 7, 9, 11 (global TARGET_REACHED unchanged; qualification
  * semantics unchanged; no change to scoring/dedup/channel rules) are not
  * re-tested here — see googleAreaPool.test.ts's own cancellation/target
  * coverage for 7, and note that this phase's diff touches no
  * qualification/scoring/dedup/channel file at all (see the final report).
+ *
+ * PHASE 25 additions: tests 2 (discovery keeps a not-yet-qualified area
+ * alive — the exact Bronx/Staten Island benchmark regression), 7
+ * (enrichment/queueing style productive activity), 8 (duplicate/heartbeat/
+ * rate-limit-only do NOT reset the clock), 13 (max wall-clock runtime
+ * bound fires even under continuous activity) below correspond to the
+ * phase prompt's STEP 9 test list items 2/3/8/9/10/13.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
 
 // ---------------------------------------------------------------------------
-// Test 12 below dynamically imports src/config/env.ts, which reads required
-// config (SUPABASE_URL, DATABASE_URL, etc.) once at import time via a zod
-// schema — see pythonBridge.lifecycle.test.ts for the same pattern. These
-// must be set before that dynamic import happens.
+// Some tests below dynamically import src/config/env.ts, which reads
+// required config (SUPABASE_URL, DATABASE_URL, etc.) once at import time via
+// a zod schema — see pythonBridge.lifecycle.test.ts for the same pattern.
+// These must be set before that dynamic import happens.
 // ---------------------------------------------------------------------------
 process.env.NODE_ENV ??= "test";
 process.env.SUPABASE_URL ??= "https://example-project.supabase.co";
@@ -36,39 +45,59 @@ import {
   createAreaProductivityState,
   evaluateAreaProductivity,
   recordDeliveredLead,
+  recordProductiveActivity,
   recordQualifiedLead,
   scopeAreaAbort,
+  type AreaProductivityLimits,
   type AreaProductivityState,
 } from "../areaProductivity.js";
 import { runAreaWorkerPool, type AreaRunOutcome } from "../googleAreaPool.js";
 
 const IDLE_MS = 60_000; // fixed test window, independent of the real env default
+// Effectively "no max runtime" for tests that only care about the idle
+// window — a value far above anything any test below advances its clock to.
+const NO_MAX_RUNTIME = 10_000_000;
+const LIMITS: AreaProductivityLimits = { productiveIdleMs: IDLE_MS, maxAreaRuntimeMs: NO_MAX_RUNTIME };
 
 function outcome(partial: Partial<AreaRunOutcome> = {}): AreaRunOutcome {
   return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: false, failed: false, ...partial };
 }
 
-// ── Test 1: zero qualified leads reaches exploration timeout ───────────────
-test("1: an area with zero qualified leads is stopped once the exploration window elapses", () => {
+// ── Test 1: zero productive activity reaches exploration timeout ──────────
+test("1: an area with zero productive activity is stopped once the exploration window elapses", () => {
   const state = createAreaProductivityState(0);
-  assert.equal(evaluateAreaProductivity(state, 30_000, IDLE_MS), null, "not yet at the window");
+  assert.equal(evaluateAreaProductivity(state, 30_000, LIMITS), null, "not yet at the window");
   assert.equal(
-    evaluateAreaProductivity(state, IDLE_MS, IDLE_MS),
+    evaluateAreaProductivity(state, IDLE_MS, LIMITS),
     "area_productivity_timeout_before_first_qualified",
-    "exploration window elapsed with zero qualified leads",
+    "exploration window elapsed with zero productive activity",
   );
 });
 
-// ── Test 2: one qualified lead before timeout resets the clock ─────────────
-test("2: a single qualified lead before the exploration window resets the inactivity clock", () => {
+// ── Test 2: candidate discovery before any qualified lead keeps the clock alive ──
+// PHASE 25 — this is the exact Bronx/Staten Island benchmark regression:
+// both were actively discovering candidates around 120s with zero
+// qualified leads and were killed anyway under the OLD (qualified-only)
+// logic. Under the new logic, discovery activity alone must reset the
+// clock, regardless of qualified count.
+test("2: candidate discovery activity (no qualified leads yet) resets the clock and prevents a premature stop", () => {
   const state = createAreaProductivityState(0);
-  recordQualifiedLead(state, 40_000); // qualifies before the 60s exploration window would expire
-  assert.equal(evaluateAreaProductivity(state, 40_000, IDLE_MS), null);
+  recordProductiveActivity(state, "candidate_discovered", 40_000); // discovers before the 60s window would expire
+  assert.equal(evaluateAreaProductivity(state, 40_000, LIMITS), null);
   // Old clock (from startedAt=0) would have expired at 60_000 — but the
-  // reference point is now 40_000 (lastQualifiedAt), so the area survives
-  // past the OLD deadline as long as it's within IDLE_MS of the new one.
-  assert.equal(evaluateAreaProductivity(state, 90_000, IDLE_MS), null, "clock reset to lastQualifiedAt, not startedAt");
-  assert.equal(evaluateAreaProductivity(state, 100_000, IDLE_MS), "area_productivity_idle_timeout");
+  // reference point is now 40_000 (lastProductiveActivityAt), so the area
+  // survives past the OLD deadline as long as it's within IDLE_MS of the new one.
+  assert.equal(
+    evaluateAreaProductivity(state, 90_000, LIMITS),
+    null,
+    "clock reset by discovery activity alone, not by qualification",
+  );
+  assert.equal(state.qualifiedCount, 0, "still zero qualified — discovery alone must not fabricate a qualification");
+  assert.equal(
+    evaluateAreaProductivity(state, 100_000, LIMITS),
+    "area_productivity_timeout_before_first_qualified",
+    "still classified as pre-first-qualified once discovery activity also goes stale",
+  );
 });
 
 // ── Test 3: repeated qualified leads keep the area alive ───────────────────
@@ -78,7 +107,7 @@ test("3: repeated qualified leads before each deadline keep the area running ind
   for (let i = 0; i < 20; i++) {
     now += 30_000; // well within the 60s window every time
     recordQualifiedLead(state, now);
-    assert.equal(evaluateAreaProductivity(state, now, IDLE_MS), null, `iteration ${i} must not stop the area`);
+    assert.equal(evaluateAreaProductivity(state, now, LIMITS), null, `iteration ${i} must not stop the area`);
   }
   assert.equal(state.qualifiedCount, 20);
 });
@@ -87,11 +116,52 @@ test("3: repeated qualified leads before each deadline keep the area running ind
 test("4: an area that goes idle after producing a qualified lead stops at the inactivity timeout, not before", () => {
   const state = createAreaProductivityState(0);
   recordQualifiedLead(state, 10_000);
-  assert.equal(evaluateAreaProductivity(state, 10_000 + IDLE_MS - 1, IDLE_MS), null, "one ms before the deadline");
+  assert.equal(evaluateAreaProductivity(state, 10_000 + IDLE_MS - 1, LIMITS), null, "one ms before the deadline");
   assert.equal(
-    evaluateAreaProductivity(state, 10_000 + IDLE_MS, IDLE_MS),
+    evaluateAreaProductivity(state, 10_000 + IDLE_MS, LIMITS),
     "area_productivity_idle_timeout",
     "exactly at the deadline",
+  );
+});
+
+// ── Test 7: candidate queued / enrichment-style productive activity after qualification ──
+// PHASE 25 — after at least one qualified lead, continued discovery/queueing
+// activity must also keep the area alive, exactly like continued
+// qualification did under the old logic. Matches the Brooklyn (qualified=1)
+// and Queens (qualified=3) benchmark scenarios, both stopped prematurely by
+// the old qualified-only clock while still actively discovering.
+test("7: candidate queued/enrichment-style activity after the first qualified lead prevents a premature idle stop", () => {
+  const state = createAreaProductivityState(0);
+  recordQualifiedLead(state, 5_000);
+  recordProductiveActivity(state, "candidate_queued", 5_000 + IDLE_MS - 1_000); // just under the deadline
+  assert.equal(evaluateAreaProductivity(state, 5_000 + IDLE_MS - 1_000, LIMITS), null);
+  // Old deadline (from lastQualifiedAt=5_000) would have been 5_000+IDLE_MS —
+  // but the new productive activity moved the reference point forward.
+  assert.equal(
+    evaluateAreaProductivity(state, 5_000 + IDLE_MS + 30_000, LIMITS),
+    null,
+    "clock reset by candidate_queued, surviving past the OLD qualified-only deadline",
+  );
+  recordProductiveActivity(state, "enrichment_completed", 5_000 + IDLE_MS + 30_000);
+  assert.equal(state.lastProductiveEventType, "enrichment_completed");
+});
+
+// ── Test 8: duplicate/heartbeat/rate-limit-only activity must NOT reset the clock ──
+// PHASE 25 STEP 3's negative list — these are deliberately never routed to
+// recordProductiveActivity by poolExpandJob.ts's onProgress wiring, so this
+// test simply documents/locks in that the classifier has no way to be told
+// about them: only genuine productive events (via recordProductiveActivity/
+// recordQualifiedLead/recordDeliveredLead) can move the clock at all.
+test("8: an area with no genuine productive activity still times out even if time passes (duplicate/heartbeat/rate-limit-wait analog)", () => {
+  const state = createAreaProductivityState(0);
+  // Simulate the passage of time with nothing but non-productive noise
+  // (heartbeats, duplicate candidates, rate-limit waits) — none of which
+  // this module is ever told about, so lastProductiveActivityAt never moves.
+  assert.equal(evaluateAreaProductivity(state, IDLE_MS - 1, LIMITS), null);
+  assert.equal(
+    evaluateAreaProductivity(state, IDLE_MS, LIMITS),
+    "area_productivity_timeout_before_first_qualified",
+    "no genuine productive activity was ever recorded, so the exploration window still elapses",
   );
 });
 
@@ -105,7 +175,7 @@ test("10: an area with hundreds of qualified leads is never stopped by count alo
   }
   assert.equal(state.qualifiedCount, 500);
   // Still well within the inactivity window since the last one — must not stop.
-  assert.equal(evaluateAreaProductivity(state, now + 1_000, IDLE_MS), null);
+  assert.equal(evaluateAreaProductivity(state, now + 1_000, LIMITS), null);
 });
 
 // ── Test 12: default configuration value is applied correctly ──────────────
@@ -117,8 +187,19 @@ test("12: env default for AREA_PRODUCTIVITY_IDLE_MS is a conservative value grou
   );
 });
 
-// ── Test 13: configuration/env override works correctly ────────────────────
-test("13: AREA_PRODUCTIVITY_IDLE_MS env override is honored", async () => {
+// PHASE 25 — env default for the new hard runtime ceiling: must sit
+// comfortably above the slowest genuinely-productive area observed in the
+// benchmark audit (Queens, still discovering at ~240s with 3 qualified).
+test("12b: env default for AREA_PRODUCTIVITY_MAX_RUNTIME_MS sits above the audit's longest observed productive run (240s)", async () => {
+  const { env } = await import("../../config/env.js");
+  assert.ok(
+    env.AREA_PRODUCTIVITY_MAX_RUNTIME_MS >= 240_000,
+    "default must sit at/above the audit's observed longest productive run (240s / Queens)",
+  );
+});
+
+// ── Test 13a: configuration/env override works correctly ───────────────────
+test("13a: AREA_PRODUCTIVITY_IDLE_MS env override is honored", async () => {
   const previous = process.env.AREA_PRODUCTIVITY_IDLE_MS;
   process.env.AREA_PRODUCTIVITY_IDLE_MS = "45000";
   try {
@@ -135,17 +216,54 @@ test("13: AREA_PRODUCTIVITY_IDLE_MS env override is honored", async () => {
   }
 });
 
-// ── recordDeliveredLead is observational only, never affects the classifier ──
-test("recordDeliveredLead updates deliveredCount without affecting the productivity classifier", () => {
+// ── Test 13b: max wall-clock runtime fires even under continuous productive activity ──
+// PHASE 25 STEP 4/STEP 9 item 13 — a pathological provider that keeps
+// producing SOME activity forever must still be bounded.
+test("13b: maxAreaRuntimeMs stops an area even while it keeps reporting productive activity", () => {
+  const limits: AreaProductivityLimits = { productiveIdleMs: IDLE_MS, maxAreaRuntimeMs: 300_000 };
   const state = createAreaProductivityState(0);
-  recordDeliveredLead(state);
-  recordDeliveredLead(state);
+  let now = 0;
+  // Keep the area "productive" (never idle) every 10s, well under the
+  // idle window, all the way out past the 300s max-runtime ceiling.
+  for (let i = 0; i < 40; i++) {
+    now += 10_000;
+    if (now >= 300_000) break;
+    recordProductiveActivity(state, "candidate_discovered", now);
+    assert.equal(evaluateAreaProductivity(state, now, limits), null, `iteration ${i} must not stop the area yet`);
+  }
+  assert.equal(
+    evaluateAreaProductivity(state, 300_000, limits),
+    "area_productivity_max_runtime",
+    "the hard wall-clock ceiling must fire regardless of ongoing activity",
+  );
+});
+
+test("13c: maxAreaRuntimeMs takes precedence over an idle-timeout reason at the exact same instant", () => {
+  // Construct a state that is BOTH past its idle window AND past max
+  // runtime at the same `now` — max runtime must win (STEP 4's stated
+  // precedence: it is checked first, unconditionally).
+  const limits: AreaProductivityLimits = { productiveIdleMs: 60_000, maxAreaRuntimeMs: 100_000 };
+  const state = createAreaProductivityState(0);
+  assert.equal(evaluateAreaProductivity(state, 100_000, limits), "area_productivity_max_runtime");
+});
+
+// ── recordDeliveredLead is productive activity (PHASE 25) but observational re: qualifiedCount ──
+test("recordDeliveredLead updates deliveredCount and counts as productive activity, without fabricating a qualification", () => {
+  const state = createAreaProductivityState(0);
+  recordDeliveredLead(state, 10_000);
+  recordDeliveredLead(state, 20_000);
   assert.equal(state.deliveredCount, 2);
   assert.equal(state.qualifiedCount, 0);
+  assert.equal(state.lastProductiveEventType, "delivered");
+  // The clock was reset at 20_000 by the second delivery, so the area
+  // survives right up to (but not including) 20_000 + IDLE_MS...
+  assert.equal(evaluateAreaProductivity(state, 20_000 + IDLE_MS - 1, LIMITS), null);
+  // ...and is still classified as "before first qualified" once it does
+  // finally go idle, since no lead has actually qualified.
   assert.equal(
-    evaluateAreaProductivity(state, IDLE_MS, IDLE_MS),
+    evaluateAreaProductivity(state, 20_000 + IDLE_MS, LIMITS),
     "area_productivity_timeout_before_first_qualified",
-    "delivered-without-qualified must still be treated as unproductive",
+    "delivered-without-qualified is still classified as pre-first-qualified once truly idle",
   );
 });
 
@@ -186,12 +304,12 @@ async function simulateArea(opts: {
   area: string;
   parentSignal: AbortSignal;
   qualifiedAtOffsets: number[]; // ms offsets (from this area's own start) at which a qualified lead arrives
-  idleMs: number;
+  limits: AreaProductivityLimits;
   clock: { now: () => number; advance: (ms: number) => void };
   /** ms offset (from this area's own start) for a final productivity check after the last scheduled qualified lead (or immediately, if there are none). Defaults to the last offset. */
   finalCheckAtOffset?: number;
 }): Promise<{ outcome: AreaRunOutcome; productivity: AreaProductivityState; stoppedBySelf: boolean }> {
-  const { area, parentSignal, qualifiedAtOffsets, idleMs, clock } = opts;
+  const { area, parentSignal, qualifiedAtOffsets, limits, clock } = opts;
   const startedAt = clock.now();
   const productivity = createAreaProductivityState(startedAt);
   const { signal: areaSignal, controller: areaAbort } = scopeAreaAbort(parentSignal);
@@ -202,7 +320,7 @@ async function simulateArea(opts: {
   for (const offset of qualifiedAtOffsets) {
     if (areaSignal.aborted) break;
     clock.advance(offset - (clock.now() - startedAt));
-    const stopReason = evaluateAreaProductivity(productivity, clock.now(), idleMs);
+    const stopReason = evaluateAreaProductivity(productivity, clock.now(), limits);
     if (stopReason) {
       productivity.stoppedReason = stopReason;
       areaAbort.abort(stopReason);
@@ -216,7 +334,7 @@ async function simulateArea(opts: {
   if (!areaSignal.aborted) {
     const finalOffset = opts.finalCheckAtOffset ?? qualifiedAtOffsets[qualifiedAtOffsets.length - 1] ?? 0;
     clock.advance(finalOffset - (clock.now() - startedAt));
-    const finalStopReason = evaluateAreaProductivity(productivity, clock.now(), idleMs);
+    const finalStopReason = evaluateAreaProductivity(productivity, clock.now(), limits);
     if (finalStopReason) {
       productivity.stoppedReason = finalStopReason;
       areaAbort.abort(finalStopReason);
@@ -241,7 +359,7 @@ test("5 & 6: one unproductive area stops on its own while a productive sibling k
     area: "Area-Unproductive",
     parentSignal: parent.signal,
     qualifiedAtOffsets: [], // never qualifies anything — must hit the exploration timeout
-    idleMs: IDLE_MS,
+    limits: LIMITS,
     clock: clockA,
     finalCheckAtOffset: IDLE_MS, // drive the final check past the exploration window
   });
@@ -250,7 +368,7 @@ test("5 & 6: one unproductive area stops on its own while a productive sibling k
     area: "Area-Productive",
     parentSignal: parent.signal,
     qualifiedAtOffsets: [10_000, 40_000, 70_000, 100_000], // steadily productive, well within the window each time
-    idleMs: IDLE_MS,
+    limits: LIMITS,
     clock: clockB,
   });
 

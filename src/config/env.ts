@@ -182,23 +182,46 @@ const EnvSchema = z.object({
   // resourceCapacity.ts + browserSlotPool, not by this max().
   GOOGLE_MAPS_AREA_WORKERS: z.coerce.number().int().min(1).max(16).default(8),
 
-  // PHASE 12D — HYBRID ADAPTIVE AREA STOPPING. Shared "time since last
-  // qualification" window used by src/discovery/areaProductivity.ts for
-  // BOTH of its two clocks:
-  //   - before an area's first qualified lead: the bounded EXPLORATION
-  //     window an area gets before it's declared unproductive and replaced;
-  //   - after an area's first qualified lead: the INACTIVITY window that
-  //     resets every time the area qualifies another lead, so a steadily-
-  //     productive area is never stopped by this timer.
+  // PHASE 25 (was PHASE 12D) — HYBRID ADAPTIVE AREA STOPPING. Shared
+  // "time since last PRODUCTIVE ACTIVITY" window used by
+  // src/discovery/areaProductivity.ts's `evaluateAreaProductivity()` for
+  // BOTH the pre-first-qualified and post-first-qualified windows (PHASE 25
+  // unified what PHASE 12D ran as two separate clocks — see that module's
+  // doc comment for the full writeup). "Productive activity" is broader
+  // than "qualified lead" as of PHASE 25: candidate discovery/queueing and
+  // delivery also count (see areaProductivity.ts's ProductiveEventType),
+  // so this window is now a genuine STALL detector, not a "how long until
+  // the next qualified lead" detector.
   //
   // The Phase 12C production audit observed first-qualified latency in the
-  // ~56-85 SECOND range. This default (120s) is set comfortably above that
-  // observed range so a genuinely-still-exploring area is not mistaken for
-  // an unproductive one during rollout — it is a CONSERVATIVE INITIAL
-  // ROLLOUT VALUE, not a proven optimum. Tune down as real production data
-  // accumulates on how this adaptive behavior performs; do not treat 120s
-  // as a permanent constant.
+  // ~56-85 SECOND range. This default (120s) is kept UNCHANGED from PHASE
+  // 12D rather than tightened: PHASE 25's semantics are strictly more
+  // permissive than PHASE 12D's for the SAME numeric value (an area now
+  // survives on discovery/queueing activity alone, where PHASE 12D would
+  // have required an actual qualified lead), so 120s remains at least as
+  // conservative as before with no new false-stop risk. It is still a
+  // CONSERVATIVE INITIAL ROLLOUT VALUE, not a proven optimum — tune down
+  // as real production data accumulates; do not treat 120s as permanent.
   AREA_PRODUCTIVITY_IDLE_MS: z.coerce.number().int().min(10_000).default(120_000),
+
+  // PHASE 25 — hard wall-clock ceiling on ONE area's total runtime,
+  // independent of how much productive activity it keeps reporting (STEP 4
+  // of the phase prompt: "a pathological provider cannot run forever").
+  // This is a SEPARATE bound from AREA_PRODUCTIVITY_IDLE_MS above: an area
+  // that never goes idle (keeps discovering/qualifying/delivering right up
+  // to this ceiling) is stopped here regardless.
+  //
+  // Grounded in the same Coffee Shop benchmark audit the Phase 25 prompt
+  // supplied: the slowest genuinely-productive area observed (Queens) was
+  // still actively discovering at ~240s with 3 qualified leads when the
+  // OLD (pre-Phase-25) logic killed it early. This default (600s / 10min)
+  // gives that kind of steadily-productive area 2.5x the observed longest
+  // legitimate runtime as headroom before the hard ceiling fires, while
+  // still bounding a truly pathological (e.g. stuck-in-a-crash-recovery-
+  // loop) provider to a fixed, finite worst case. CONSERVATIVE INITIAL
+  // ROLLOUT VALUE — tune down once more production runtime data exists for
+  // genuinely-productive long-tail areas.
+  AREA_PRODUCTIVITY_MAX_RUNTIME_MS: z.coerce.number().int().min(60_000).default(600_000),
 
   // PHASE 6 — resource-aware safe concurrency (replaces the old hardcoded
   // "safeResourceWorkers = 2"). Each Google area worker is NOT just one

@@ -546,11 +546,31 @@ _IG_NON_HANDLES = frozenset({
     "p", "reel", "reels", "tv", "explore", "stories", "accounts",
     "about", "directory", "legal", "privacy", "press", "help",
     "api", "oauth", "challenge", "login", "signup", "explore",
+    # Phase 27, Step 5: explicitly named in the reserved-path reject
+    # list ("/direct/") but missing from this set before now.
+    "direct",
 })
 
 _IG_HANDLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{1,}$")
+
+# Phase 27 (Instagram acquisition control-flow + extraction hardening):
+# broadened from a scheme-required `https?://` prefix to also recognize
+# protocol-relative (`//instagram.com/...`) and bare-domain
+# (`instagram.com/...`, no scheme, no leading slashes) forms — both
+# confirmed misses in Phase 26 production analysis. The leading
+# `(?<![\w.-])` negative lookbehind is what keeps the now-optional
+# scheme/slashes safe: without it, a bare-domain match would also fire
+# inside an unrelated word ending in "instagram.com" (e.g.
+# "fakeinstagram.com/x"); the lookbehind requires the match start with a
+# non-word/non-dot/non-hyphen character (or the start of the string),
+# which a real "instagram.com" reference — preceded by whitespace, a
+# quote, `//`, or nothing — always satisfies, while a domain that merely
+# ends the same way never does. Capture group 1 (the handle) is
+# unaffected by which prefix variant matched, so every existing caller
+# (`extract_ig_urls`, `extract_ig_urls_with_source`,
+# `has_invalid_ig_candidate`) gets the broadened recognition for free.
 _IG_URL_RE = re.compile(
-    r"https?://(?:www\.)?instagram\.com/([A-Za-z0-9_.]+)(?:/[^\"'\s]*)?",
+    r"(?<![\w.-])(?:(?:https?:)?//)?(?:www\.)?instagram\.com/([A-Za-z0-9_.]+)(?:/[^\"'\s<>]*)?",
     re.IGNORECASE,
 )
 
@@ -569,10 +589,23 @@ def is_real_ig_handle(url: str) -> bool:
 
 
 def clean_ig_url(raw: str) -> str:
-    """Normalise an Instagram URL to https://www.instagram.com/<handle>/"""
+    """Normalise an Instagram URL to https://www.instagram.com/<handle>/
+
+    Phase 27: accepts the same broadened set of input shapes
+    `_IG_URL_RE` now recognizes (protocol-relative `//...` and bare
+    `instagram.com/...` with no scheme at all) by giving `urlparse` an
+    explicit scheme first — `urlparse` otherwise reads a schemeless
+    `instagram.com/x` as a relative path (empty netloc), which would
+    silently produce a wrong/empty handle.
+    """
     raw = raw.split('"')[0].split("'")[0].strip()
+    normalized = raw
+    if normalized.startswith("//"):
+        normalized = "https:" + normalized
+    elif not re.match(r"^https?://", normalized, re.IGNORECASE):
+        normalized = "https://" + normalized
     try:
-        p = urlparse(raw)
+        p = urlparse(normalized)
         handle = p.path.strip("/").split("/")[0]
         if handle:
             return f"https://www.instagram.com/{handle}/"
@@ -639,6 +672,80 @@ _PLAIN_HANDLE_RE = re.compile(r"(?<![\w.@\-])@([A-Za-z0-9_.]{2,30})\b")
 _PLAIN_HANDLE_CONTEXT_WINDOW = 60
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
+# Phase 27 (Instagram acquisition control-flow + extraction hardening),
+# Step 6: a bare Instagram handle sitting in a clearly Instagram-specific
+# HTML attribute — `data-instagram="business"`,
+# `data-instagram-handle="business"`, `data-instagram-url="..."` — with
+# no `instagram.com` text anywhere on the page for `_IG_URL_RE` to catch.
+# Deliberately narrow: only attribute names that explicitly say
+# "instagram" qualify, so an arbitrary `data-id="business"` or
+# `data-name="business"` is never treated as Instagram evidence (the
+# context must be explicit, per Step 6's own instruction) — this is a
+# fixed attribute-name allowlist, not a generic data-* scan.
+_IG_DATA_ATTR_RE = re.compile(
+    r'\bdata-instagram(?:-handle|-url|-id)?\s*=\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+
+#: Source-type preference order (Step 7 — wrong-account precedence).
+#: Lower number wins. A business-owned anchor/footer/social link is the
+#: strongest signal; an unstructured plain-text @handle mention is the
+#: weakest. `meta` (e.g. an `og:see_also`/`twitter:site` tag) sits with
+#: the "explicit URL elsewhere" tier: structured enough to trust over
+#: raw body text, but not an explicit social link or a business's own
+#: data attribute.
+_IG_SOURCE_PRIORITY = {
+    "anchor_href": 0,
+    "data_attribute": 1,
+    "jsonld": 2,
+    "meta": 3,
+    "raw_html": 4,
+    "plain_handle": 5,
+}
+
+
+def _ig_handle_from_attr_value(value: str) -> "str | None":
+    """
+    Resolve a `data-instagram*` attribute value — which may be a bare
+    handle (`"business"`) or a full/partial URL
+    (`"https://instagram.com/business"`, `"instagram.com/business"`) —
+    to a validated lowercase handle, or None if it doesn't look like a
+    real business handle. Reuses `_IG_URL_RE`/`_IG_NON_HANDLES`/
+    `_IG_HANDLE_RE` rather than a second parsing path.
+    """
+    value = value.strip()
+    if not value:
+        return None
+    url_match = _IG_URL_RE.search(value)
+    if url_match:
+        handle = url_match.group(1).split("/")[0].lower()
+    else:
+        handle = value.lstrip("@").split("/")[0].split("?")[0].lower()
+    if not handle or handle in _IG_NON_HANDLES or handle.isdigit():
+        return None
+    if not _IG_HANDLE_RE.match(handle):
+        return None
+    return handle
+
+
+def _find_ig_data_attribute_candidates(html: str) -> "list[tuple[int, str]]":
+    """(position, canonical_url) pairs from `data-instagram*` attributes.
+    See `_IG_DATA_ATTR_RE`'s own comment for the explicit-context
+    requirement that keeps this from firing on unrelated `data-*`
+    attributes."""
+    if not html or "data-instagram" not in html.lower():
+        return []
+    candidates: "list[tuple[int, str]]" = []
+    for m in _IG_DATA_ATTR_RE.finditer(html):
+        handle = _ig_handle_from_attr_value(m.group(1))
+        if not handle:
+            continue
+        url = f"https://www.instagram.com/{handle}/"
+        if not is_real_ig_handle(url):
+            continue
+        candidates.append((m.start(), url))
+    return candidates
+
 
 def _ig_source_for_span(
     start: int,
@@ -698,15 +805,29 @@ def _find_plain_ig_handles(html: str) -> list[str]:
 def extract_ig_urls_with_source(text: str) -> list[tuple[str, str]]:
     """
     Like `extract_ig_urls()`, but paired with where each canonical
-    Instagram URL was found: "anchor_href", "jsonld", "meta", "raw_html"
-    (a literal instagram.com URL elsewhere in the markup), or
-    "plain_handle" (a business @handle in plain text next to the word
-    "instagram", with no instagram.com URL anywhere on the page).
+    Instagram URL was found: "anchor_href", "data_attribute", "jsonld",
+    "meta", "raw_html" (a literal instagram.com URL elsewhere in the
+    markup), or "plain_handle" (a business @handle in plain text next to
+    the word "instagram").
 
-    Order matches `extract_ig_urls()`'s own first-match-found order for
-    literal URLs; the plain-text fallback is only ever consulted when no
-    literal instagram.com URL was found anywhere on the page — it is the
-    least confident signal and never overrides an actual URL.
+    Phase 27 (Step 7 — wrong-account precedence): previously this
+    function returned candidates in raw document order, and only ever
+    looked for a plain-text @handle when zero `instagram.com` URLs were
+    found anywhere on the page — so a single arbitrary/incidental
+    Instagram URL (e.g. a press-mention link) silently suppressed a
+    correct plain-handle mention elsewhere on the same page, and a
+    same-priority-but-later structured signal (JSON-LD) could rank
+    ahead of a same-page anchor purely because it happened to appear
+    earlier in the HTML. Fixed by collecting every candidate first, from
+    every source (including `data-instagram*` attributes and plain-text
+    @handles, unconditionally — no longer gated on "no URL found"), then
+    ranking by evidence-type strength (`_IG_SOURCE_PRIORITY`) with
+    document position only as a same-type tie-break, then deduplicating
+    canonical handles. A plain-text @handle is therefore never silently
+    discarded (Step 7's own bug report) even when a stronger candidate
+    also exists on the page — it simply ranks below any URL-based
+    evidence, exactly as `test_plain_handle_only_used_when_no_url_present`
+    already established for the anchor-vs-plain-handle case.
     """
     if not text:
         return []
@@ -715,28 +836,47 @@ def extract_ig_urls_with_source(text: str) -> list[tuple[str, str]]:
     jsonld_spans = [m.span() for m in _JSONLD_BLOCK_RE.finditer(text)]
     meta_spans = [m.span() for m in _META_TAG_RE.finditer(text)]
 
-    results: list[tuple[str, str]] = []
-    seen: set[str] = set()
+    # 1. Collect every literal instagram.com URL candidate, whatever
+    #    shape it's written in (see _IG_URL_RE), tagged with its
+    #    document position and source.
+    raw_candidates: "list[tuple[int, str, str]]" = []  # (position, source, url)
     for m in _IG_URL_RE.finditer(text):
         handle = m.group(1).split("/")[0].lower()
         if not handle or handle in _IG_NON_HANDLES or handle.isdigit():
             continue
         url = f"https://www.instagram.com/{handle}/"
-        if url in seen or not is_real_ig_handle(url):
+        if not is_real_ig_handle(url):
             continue
-        seen.add(url)
         source = _ig_source_for_span(
             m.start(), m.end(), anchor_spans, jsonld_spans, meta_spans
         )
+        raw_candidates.append((m.start(), source, url))
+
+    # 2. Collect data-instagram* attribute candidates (Step 6).
+    for pos, url in _find_ig_data_attribute_candidates(text):
+        raw_candidates.append((pos, "data_attribute", url))
+
+    # 3. Rank by evidence-type strength, document position as tie-break,
+    #    then deduplicate canonical handles (first/best-ranked wins).
+    raw_candidates.sort(key=lambda c: (_IG_SOURCE_PRIORITY[c[1]], c[0]))
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for _pos, source, url in raw_candidates:
+        if url in seen:
+            continue
+        seen.add(url)
         results.append((url, source))
 
-    if not results:
-        for handle in _find_plain_ig_handles(text):
-            url = f"https://www.instagram.com/{handle}/"
-            if url in seen:
-                continue
-            seen.add(url)
-            results.append((url, "plain_handle"))
+    # 4. Plain-text @handle mentions are always collected too (Step 7 —
+    #    no longer suppressed just because a URL-based candidate
+    #    exists), but stay ranked last: the lowest-confidence signal
+    #    never overrides an actual URL or data attribute.
+    for handle in _find_plain_ig_handles(text):
+        url = f"https://www.instagram.com/{handle}/"
+        if url in seen:
+            continue
+        seen.add(url)
+        results.append((url, "plain_handle"))
 
     return results
 

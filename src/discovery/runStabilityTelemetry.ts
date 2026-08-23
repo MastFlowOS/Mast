@@ -91,7 +91,11 @@ export type AreaTerminationReason =
   | "CANCELLED"
   | "FAILURE"
   | "area_productivity_timeout_before_first_qualified"
-  | "area_productivity_idle_timeout";
+  | "area_productivity_idle_timeout"
+  // PHASE 25: the new hard wall-clock ceiling (maxAreaRuntimeMs) — see
+  // areaProductivity.ts's doc comment. Same "partial run" telemetry
+  // treatment as the other two adaptive-stop reasons below.
+  | "area_productivity_max_runtime";
 
 export type AreaWorkEvidence = {
   /** True when the engine reported a real numeric `maps_candidates_seen` for this pass (see extractAreaSlaCounters). */
@@ -120,7 +124,8 @@ export function determineAreaWorkSource(evidence: AreaWorkEvidence): AreaWorkSou
     // whatever the engine had genuinely reported before it was asked to
     // stop is preserved as a partial run, never upgraded to look complete.
     evidence.terminationReason === "area_productivity_timeout_before_first_qualified" ||
-    evidence.terminationReason === "area_productivity_idle_timeout";
+    evidence.terminationReason === "area_productivity_idle_timeout" ||
+    evidence.terminationReason === "area_productivity_max_runtime";
   if (stoppedEarly) return "partial_area_run";
 
   if (evidence.hasFreshMapsTelemetry) return "fresh_area_run";

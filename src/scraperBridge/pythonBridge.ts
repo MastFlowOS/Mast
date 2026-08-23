@@ -145,6 +145,24 @@ export type EngineRunOptions = {
    * targeting, or any other decision — display/log tagging only.
    */
   areaLabel?: string;
+  /**
+   * PHASE 25 — live callback fired for EVERY `"type":"progress"` stdout
+   * line as it arrives (not just the first occurrence of a given
+   * stage:event pair, unlike `EngineDoneInfo.progressMarks`, and not
+   * deferred until `__done__`). Lets a caller observe forward progress
+   * (e.g. `discovery:candidate_discovered`) in real time — see
+   * poolExpandJob.ts's area-productivity idle timer, the first consumer.
+   * Purely observational: never gates anything in this file, never
+   * changes what gets yielded/delivered.
+   */
+  onProgress?: (event: EngineProgressEvent) => void;
+};
+
+/** PHASE 25 — one `"type":"progress"` stdout line, as delivered to `EngineRunOptions.onProgress`. */
+export type EngineProgressEvent = {
+  stage: string;
+  event: string;
+  itemId?: string;
 };
 
 export type EngineVerifyParams = {
@@ -1002,6 +1020,16 @@ export async function* runEngineQuery(
         // into per-anchor log spam (Step 2's own explicit constraint).
         const key = `${parsed.stage ?? "unknown"}:${parsed.event ?? "unknown"}`;
         if (!(key in progressMarks)) progressMarks[key] = hrElapsedMs();
+        // PHASE 25: unlike progressMarks above (first-occurrence only,
+        // read once at __done__), this fires for every progress line, live,
+        // so a caller's own idle-activity clock always sees the LATEST
+        // occurrence as it happens — not just the first, and not delayed
+        // until the subprocess finishes.
+        options.onProgress?.({
+          stage: typeof parsed.stage === "string" ? parsed.stage : "unknown",
+          event: typeof parsed.event === "string" ? parsed.event : "unknown",
+          itemId: typeof parsed.item_id === "string" ? parsed.item_id : undefined,
+        });
         continue;
       }
 

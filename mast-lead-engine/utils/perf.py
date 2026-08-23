@@ -601,6 +601,20 @@ class RunProfiler:
                 "mem_end_mb": round(self._mem_end_mb, 1),
             },
             "marks": {k: round((v - self._run_start) * 1000, 1) for k, v in self._marks.items()},
+            # Phase 27 (Instagram acquisition control-flow + extraction
+            # hardening), Step 9: every counter incr()'d during this run
+            # (raw_candidates, contact_failures, the instagram_* counters
+            # service.py's _on_progress increments, etc.) — previously
+            # `incr()`/`counter()` only lived in RunProfiler's in-memory
+            # `_counters` dict and were never included here, so nothing
+            # that read `summary()` (the __done__ sentinel embedding in
+            # service.py, or a caller inspecting this dict directly) could
+            # ever see them; they existed only for the lifetime of the
+            # process. Embedding the whole dict, generically, means any
+            # future named counter is persisted for free with no further
+            # wiring — no raw HTML or per-page content is included, only
+            # these small integer tallies.
+            "counters": dict(self._counters),
         }
 
     def print_report(
@@ -690,6 +704,29 @@ class RunProfiler:
         for r in rej_data:
             avg_s = r["avg_enrich_ms_before_reject"] / 1000
             lines.append(f"  {r['reason']:<34}{r['count']:>6}  {avg_s:.2f}s")
+
+        # Instagram acquisition telemetry (Phase 27, Step 9) — printed
+        # only when at least one instagram_* counter was incremented
+        # this run, so runs that never touch ContactWorker/InstagramWorker
+        # (e.g. unit tests constructing a bare RunProfiler) don't grow an
+        # empty section. Sourced from the same `_counters` dict now
+        # embedded in summary()["counters"] — this is a human-readable
+        # view of a subset of it, not a second source of truth.
+        ig_counter_names = (
+            "instagram_attempted",
+            "instagram_discovery_found",
+            "instagram_discovery_missing",
+            "instagram_discovery_invalid",
+            "instagram_url_input_present",
+            "instagram_profile_reachable",
+            "instagram_short_circuited",
+        )
+        if any(self._counters.get(n, 0) for n in ig_counter_names):
+            lines.append("")
+            lines.append("  INSTAGRAM ACQUISITION")
+            lines.append("  " + "─" * (W - 2))
+            for name in ig_counter_names:
+                lines.append(f"  {name:<34}{self._counters.get(name, 0):>6}")
 
         # Resource usage
         lines.append("")

@@ -323,10 +323,11 @@ test("P36-13: global scan budget headroom cannot be exceeded across expansions",
   allocateInitialAreaScanBudget(coordinator, "area-a", 2); // 50
   allocateInitialAreaScanBudget(coordinator, "area-b", 2); // 50
 
-  // Expand both
+  // Expand both until global budget exhausted
   while (coordinator.allocated < coordinator.globalScanBudget) {
-    const grant = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
-    if (grant <= 0) break;
+    const grantA = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+    const grantB = requestAreaScanBudgetExpansion(coordinator, "area-b", "productive");
+    if (grantA <= 0 && grantB <= 0) break;
   }
 
   assert.ok(coordinator.allocated <= coordinator.globalScanBudget);

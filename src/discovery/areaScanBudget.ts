@@ -100,17 +100,15 @@ export function computeGlobalScanBudget(
   const minExplorationTotal = safeActiveAreaCount * (limits.minExplorationCandidates ?? 0);
   const initialBaseBudget = Math.max(targetScaledBudget, minExplorationTotal);
 
-  if (safeActiveAreaCount <= 1 || !limits.productiveMaxFactor) {
+  if (!limits.productiveMaxFactor) {
     return initialBaseBudget;
   }
 
-  // Multi-area shared expansion headroom pool
+  // Multi-area shared expansion headroom pool sized to allow productive areas
+  // to expand up to maxProductiveCandidates (400) when global target is unmet.
   const maxProductiveCeiling = limits.maxProductiveCandidates ?? 400;
-  const expansionHeadroom = Math.min(
-    targetScaledBudget,
-    Math.max(0, safeActiveAreaCount * maxProductiveCeiling - initialBaseBudget),
-  );
-  return initialBaseBudget + expansionHeadroom;
+  const maxPoolCapacity = safeActiveAreaCount * maxProductiveCeiling;
+  return Math.max(initialBaseBudget, maxPoolCapacity);
 }
 
 /** Per-area bookkeeping the coordinator keeps for telemetry and cap enforcement. */
@@ -211,18 +209,15 @@ export function requestAreaScanBudgetExpansion(
   const entry = coordinator.perArea.get(area);
   if (!entry) return 0;
 
-  const maxFactor = yieldClass === "productive"
-    ? (coordinator.limits.productiveMaxFactor ?? coordinator.limits.maxAreaBudgetFactor)
-    : coordinator.limits.maxAreaBudgetFactor;
-
-  const factorCap = Math.ceil(coordinator.streamTarget * maxFactor);
   const explorationFloor = coordinator.limits.minExplorationCandidates ?? 0;
   const hardCap = coordinator.limits.maxProductiveCandidates ?? 400;
 
-  const cap = Math.min(
-    hardCap,
-    Math.max(explorationFloor, factorCap),
-  );
+  const cap = yieldClass === "productive" && coordinator.limits.productiveMaxFactor
+    ? hardCap
+    : Math.min(
+        hardCap,
+        Math.max(explorationFloor, Math.ceil(coordinator.streamTarget * coordinator.limits.maxAreaBudgetFactor)),
+      );
 
   const remainingForArea = cap - entry.final;
   if (remainingForArea <= 0) return 0;
@@ -230,7 +225,10 @@ export function requestAreaScanBudgetExpansion(
   const remainingGlobal = coordinator.globalScanBudget - coordinator.allocated;
   if (remainingGlobal <= 0) return 0;
 
-  const chunk = Math.ceil(coordinator.streamTarget * coordinator.limits.expansionChunkFactor);
+  const chunk = Math.max(
+    100,
+    Math.ceil(coordinator.streamTarget * coordinator.limits.expansionChunkFactor),
+  );
   const grant = Math.max(0, Math.min(chunk, remainingForArea, remainingGlobal));
   if (grant <= 0) return 0;
 

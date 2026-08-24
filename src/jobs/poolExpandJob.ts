@@ -363,7 +363,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     // deliberately decoupled.
     const target = payload.shortfall;
 
-    const stillNeededNow = () => (followUp ? payload.shortfall - newForUser : payload.shortfall - delivered);
+    const stillNeededNow = () => (followUp && newForUser > 0 ? payload.shortfall - newForUser : payload.shortfall - delivered);
 
     // PHASE 5 — TARGET-AWARE DISCOVERY STOPPING (telemetry).
     //
@@ -396,7 +396,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       const childDelivered = info.delivered;
       const childRemaining = Math.max(0, childRequested - childDelivered);
       const parentTarget = payload.shortfall;
-      const parentDelivered = followUp ? newForUser : delivered;
+      const parentDelivered = followUp && newForUser > 0 ? newForUser : delivered;
       const parentRemaining = Math.max(0, parentTarget - parentDelivered);
       const areaSla = (info.perf?.area_sla ?? {}) as Record<string, unknown>;
       const mapsCandidatesSeen = typeof areaSla.maps_candidates_seen === "number" ? areaSla.maps_candidates_seen : undefined;
@@ -1148,7 +1148,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     // satisfied" — see logChildTelemetry()'s doc comment above for what
     // candidatesAfterParentTarget/mapsOperationsAfterParentTarget actually
     // measure (an upper bound, not an exact per-candidate count).
-    const finalParentDelivered = followUp ? newForUser : delivered;
+    const finalParentDelivered = followUp && newForUser > 0 ? newForUser : delivered;
     console.log(
       `[poolExpandJob][telemetry] SUMMARY parent_target=${payload.shortfall} ` +
         `parent_delivered=${finalParentDelivered} parent_remaining=${Math.max(0, payload.shortfall - finalParentDelivered)} ` +

@@ -68,6 +68,11 @@ def main():
         signal.signal(signal.SIGTERM, _on_sigterm)
     sys.stdin.read()
     stop_file = os.path.join(tempfile.gettempdir(), f"mast_stop_{os.getpid()}.txt")
+    if os.path.exists(stop_file):
+        try:
+            os.remove(stop_file)
+        except OSError:
+            pass
     for i in range(20):
         if os.path.exists(stop_file):
             _on_sigterm(None, None)

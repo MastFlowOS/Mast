@@ -649,12 +649,17 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           getResourceCapacity().safeAreaWorkers,
         ),
       );
-      const scanBudgetCoordinator: AreaScanBudgetCoordinator = createAreaScanBudgetCoordinator(streamTargetForCity, {
-        multiplier: env.AREA_SCAN_BUDGET_MULTIPLIER,
-        minAreaBudgetFactor: env.AREA_SCAN_BUDGET_MIN_FACTOR,
-        maxAreaBudgetFactor: env.AREA_SCAN_BUDGET_MAX_FACTOR,
-        expansionChunkFactor: env.AREA_SCAN_BUDGET_EXPANSION_FACTOR,
-      });
+      const scanBudgetCoordinator: AreaScanBudgetCoordinator = createAreaScanBudgetCoordinator(
+        streamTargetForCity,
+        {
+          multiplier: env.AREA_SCAN_BUDGET_MULTIPLIER,
+          minAreaBudgetFactor: env.AREA_SCAN_BUDGET_MIN_FACTOR,
+          maxAreaBudgetFactor: env.AREA_SCAN_BUDGET_MAX_FACTOR,
+          expansionChunkFactor: env.AREA_SCAN_BUDGET_EXPANSION_FACTOR,
+          minExplorationCandidates: env.AREA_SCAN_MIN_EXPLORATION_CANDIDATES,
+        },
+        activeAreaCount,
+      );
       console.info(
         `[poolExpandJob][area-scan-budget] city=${city} global_scan_budget=${scanBudgetCoordinator.globalScanBudget} ` +
           `stream_target=${streamTargetForCity} active_area_count=${activeAreaCount}`,

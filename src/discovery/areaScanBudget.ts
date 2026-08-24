@@ -52,7 +52,8 @@ export type AreaScanBudgetLimits = {
   minAreaBudgetFactor: number;
   /**
    * A single area's CUMULATIVE allocation (initial + every expansion) is
-   * never larger than `streamTarget * maxAreaBudgetFactor` — the ceiling
+   * never larger than `streamTarget * maxAreaBudgetFactor` (or
+   * `minExplorationCandidates` if larger) — the ceiling
    * that makes STEP 5's "one area cannot consume the entire global scan
    * budget" true regardless of how much unused headroom siblings leave
    * behind. Must be >= `minAreaBudgetFactor` (enforced at config load —
@@ -64,17 +65,29 @@ export type AreaScanBudgetLimits = {
    * `requestAreaScanBudgetExpansion` below.
    */
   expansionChunkFactor: number;
+  /**
+   * PHASE 34 — Absolute minimum exploration candidate volume floor for an
+   * active area before yield classification. Default: 50.
+   */
+  minExplorationCandidates: number;
 };
 
 /**
- * The TOTAL shared scan budget for one city's area-pool run. Intentionally
- * the exact same formula `computeAskFor` always used
- * (`streamTarget * multiplier`, floored at `streamTarget`) — this phase
- * changes how that total is DISTRIBUTED across concurrent areas, not the
- * total scan volume one streamTarget's worth of work was ever allotted.
+ * The TOTAL shared scan budget for one city's area-pool run.
+ * PHASE 34 (Option B): Sized to at least `streamTarget * multiplier` (floored at `streamTarget`)
+ * AND has a minimum floor sufficient for `activeAreaCount * minExplorationCandidates`
+ * so small targets (e.g. target=10 with 3 active areas) do not starve concurrent areas
+ * of their exploration runway.
  */
-export function computeGlobalScanBudget(streamTarget: number, limits: Pick<AreaScanBudgetLimits, "multiplier">): number {
-  return computeAskFor(streamTarget, limits.multiplier);
+export function computeGlobalScanBudget(
+  streamTarget: number,
+  limits: Pick<AreaScanBudgetLimits, "multiplier" | "minExplorationCandidates">,
+  activeAreaCount: number = 1,
+): number {
+  const safeActiveAreaCount = Math.max(1, Math.floor(activeAreaCount) || 1);
+  const targetScaledBudget = computeAskFor(streamTarget, limits.multiplier);
+  const minExplorationTotal = safeActiveAreaCount * (limits.minExplorationCandidates ?? 0);
+  return Math.max(targetScaledBudget, minExplorationTotal);
 }
 
 /** Per-area bookkeeping the coordinator keeps for telemetry and cap enforcement. */
@@ -102,10 +115,11 @@ export type AreaScanBudgetCoordinator = {
 export function createAreaScanBudgetCoordinator(
   streamTarget: number,
   limits: AreaScanBudgetLimits,
+  activeAreaCount: number = 1,
 ): AreaScanBudgetCoordinator {
   return {
     streamTarget,
-    globalScanBudget: computeGlobalScanBudget(streamTarget, limits),
+    globalScanBudget: computeGlobalScanBudget(streamTarget, limits, activeAreaCount),
     limits,
     allocated: 0,
     perArea: new Map(),
@@ -113,7 +127,7 @@ export function createAreaScanBudgetCoordinator(
 }
 
 /**
- * STEP 2/STEP 5 — one area's INITIAL scan budget slice.
+ * STEP 2/STEP 5 / PHASE 34 — one area's INITIAL scan budget slice.
  *
  * `activeAreaCount` is the number of areas expected to run concurrently
  * against this SAME shared budget (poolExpandJob.ts passes the pool's own
@@ -125,6 +139,9 @@ export function createAreaScanBudgetCoordinator(
  * down to EXACTLY the old per-area formula's result — single-area behavior
  * is unchanged.
  *
+ * PHASE 34: Initial area budget is max(fair-share, exploration floor),
+ * bounded by per-area cap and remaining global headroom.
+ *
  * Never negative, never below the floor, never above the cap or the
  * remaining global budget.
  */
@@ -135,14 +152,18 @@ export function allocateInitialAreaScanBudget(
 ): number {
   const safeActiveAreaCount = Math.max(1, Math.floor(activeAreaCount) || 1);
   const share = Math.ceil(coordinator.globalScanBudget / safeActiveAreaCount);
-  const floor = Math.ceil(coordinator.streamTarget * coordinator.limits.minAreaBudgetFactor);
-  const cap = Math.ceil(coordinator.streamTarget * coordinator.limits.maxAreaBudgetFactor);
+  const streamTargetFloor = Math.ceil(coordinator.streamTarget * coordinator.limits.minAreaBudgetFactor);
+  const explorationFloor = coordinator.limits.minExplorationCandidates ?? 0;
+  const floor = Math.max(streamTargetFloor, explorationFloor);
+  const streamTargetCap = Math.ceil(coordinator.streamTarget * coordinator.limits.maxAreaBudgetFactor);
+  const cap = Math.max(floor, streamTargetCap);
   const remaining = Math.max(0, coordinator.globalScanBudget - coordinator.allocated);
 
   // Floor always wins over a starved share (a lone/slow area must still get
   // a realistic shot); cap and remaining global headroom both still apply
   // on top, per STEP 5 fairness / STEP 8 safety.
-  const budget = Math.max(floor, Math.min(share, cap, Math.max(floor, remaining)));
+  const desired = Math.max(share, floor);
+  const budget = Math.max(floor, Math.min(desired, cap, Math.max(floor, remaining)));
 
   coordinator.allocated += budget;
   coordinator.perArea.set(area, { initial: budget, expansions: 0, expansionGrants: 0, final: budget });
@@ -158,11 +179,11 @@ export function allocateInitialAreaScanBudget(
  * reads its verdict (STEP 3: "Do NOT duplicate the yield classifier").
  *
  * Returns the additional amount granted (0 if none — caller stops asking).
- * Bounded by BOTH this area's own cumulative cap (`maxAreaBudgetFactor`)
- * AND the remaining shared headroom (`globalScanBudget - allocated`) — a
- * single productive area can still never consume the entire shared budget
- * (STEP 5), and a low-yield area never receives unlimited expansion
- * (STEP 3).
+ * Bounded by BOTH this area's own cumulative cap (`maxAreaBudgetFactor` or
+ * `minExplorationCandidates`) AND the remaining shared headroom
+ * (`globalScanBudget - allocated`) — a single productive area can still
+ * never consume the entire shared budget (STEP 5), and a low-yield area
+ * never receives unlimited expansion (STEP 3).
  */
 export function requestAreaScanBudgetExpansion(
   coordinator: AreaScanBudgetCoordinator,
@@ -174,7 +195,10 @@ export function requestAreaScanBudgetExpansion(
   const entry = coordinator.perArea.get(area);
   if (!entry) return 0;
 
-  const cap = Math.ceil(coordinator.streamTarget * coordinator.limits.maxAreaBudgetFactor);
+  const cap = Math.max(
+    coordinator.limits.minExplorationCandidates ?? 0,
+    Math.ceil(coordinator.streamTarget * coordinator.limits.maxAreaBudgetFactor),
+  );
   const remainingForArea = cap - entry.final;
   if (remainingForArea <= 0) return 0;
 

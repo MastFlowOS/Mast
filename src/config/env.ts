@@ -245,7 +245,9 @@ const EnvSchema = z.object({
   // area with fewer than this many discovered+queued candidates is never
   // yield-evaluated, regardless of elapsed time (STEP 3: "do not stop an
   // area solely because qualified=0 if candidate volume is still low").
-  AREA_YIELD_MIN_CANDIDATE_VOLUME: z.coerce.number().int().min(1).default(15),
+  // PHASE 34: Aligned with AREA_SCAN_MIN_EXPLORATION_CANDIDATES (default 50)
+  // so an area is given a meaningful exploration sample before yield evaluation.
+  AREA_YIELD_MIN_CANDIDATE_VOLUME: z.coerce.number().int().min(1).default(50),
 
   // Stage B: once evaluation is allowed, qualified-or-delivered / candidate
   // volume at or below this fraction is classified LOW_YIELD (the only
@@ -308,6 +310,13 @@ const EnvSchema = z.object({
   // naturally self-limits (STEP 3: "a low-yield area should NOT receive
   // unlimited additional scan budget").
   AREA_SCAN_BUDGET_EXPANSION_FACTOR: z.coerce.number().min(0).default(1),
+
+  // PHASE 34 — RESTORE AREA EXPLORATION RUNWAY.
+  // Absolute minimum exploration candidate volume floor for an active area.
+  // Sized to ensure small targets (e.g. target=10 with 3 active areas) do not
+  // starve areas with a ~10-14 raw candidate allocation before yield classification
+  // evaluates them. 50 gives each active area a meaningful discovery sample.
+  AREA_SCAN_MIN_EXPLORATION_CANDIDATES: z.coerce.number().int().min(1).default(50),
 
   // PHASE 6 — resource-aware safe concurrency (replaces the old hardcoded
   // "safeResourceWorkers = 2"). Each Google area worker is NOT just one

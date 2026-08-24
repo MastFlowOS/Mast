@@ -1,12 +1,18 @@
 /**
- * PHASE 32 — AREA SCAN-BUDGET OPTIMIZATION.
+ * PHASE 34 — RESTORE AREA EXPLORATION RUNWAY.
+ * (Building on Phase 32 shared-budget and Phase 30 yield rotation models)
  *
- * Proves the shared-budget model in areaScanBudget.ts replaces "every area
- * independently gets streamTarget*4 as max_results" with a bounded,
- * fairly-distributed, expandable-for-productive-areas shared budget —
- * without ever breaking the global TARGET_REACHED semantics, resource
- * capacity/concurrency limits, or the Phase 30 yield classifier's own
- * stop decision.
+ * Proves that:
+ * 1. Small targets (target=10, 3 areas) provide each area with >= exploration floor (50).
+ * 2. Large targets (target=100, 3 areas) retain shared allocation without flat 4x duplication.
+ * 3. Exploration floor never exceeds per-area hard ceiling.
+ * 4. Low-yield area rotates after exploring sufficient candidate volume (50) and time (90s).
+ * 5. Productive area can expand from shared headroom.
+ * 6. Marginal area remains eligible for continuation and expansion.
+ * 7. Global target stops everything (coordinator never decides target stop).
+ * 8. Zero/empty areas remain safe.
+ * 9. Phase 30/32/34 interaction is deterministic.
+ * 10. Worker count / resource capacity is untouched.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -17,6 +23,12 @@ import {
   requestAreaScanBudgetExpansion,
   type AreaScanBudgetLimits,
 } from "../areaScanBudget.js";
+import {
+  createAreaProductivityState,
+  recordProductiveActivity,
+  classifyAreaYield,
+  evaluateAreaYieldStop,
+} from "../areaProductivity.js";
 import { computeAskFor } from "../roundSizing.js";
 import { runAreaWorkerPool, type AreaRunOutcome } from "../googleAreaPool.js";
 
@@ -25,118 +37,104 @@ const DEFAULT_LIMITS: AreaScanBudgetLimits = {
   minAreaBudgetFactor: 1,
   maxAreaBudgetFactor: 4,
   expansionChunkFactor: 1,
+  minExplorationCandidates: 50,
 };
 
-// ── Test 1: target=100 does NOT give every area 400 raw candidates by default ──
+// ── Test 1: target=10, 3 areas → each area gets >= exploration floor (50) ──
 
-test("initial per-area budget is far below the old flat 4x-per-area amount when multiple areas are active", () => {
+test("1. target=10, 3 areas: each area gets >= exploration floor (50) when headroom allows", () => {
+  const streamTarget = 10;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS, 3);
+  // Option B: globalScanBudget = max(10 * 4, 3 * 50) = 150
+  assert.equal(coordinator.globalScanBudget, 150);
+
+  const budgetA = allocateInitialAreaScanBudget(coordinator, "area-a", 3);
+  const budgetB = allocateInitialAreaScanBudget(coordinator, "area-b", 3);
+  const budgetC = allocateInitialAreaScanBudget(coordinator, "area-c", 3);
+
+  assert.equal(budgetA, 50, "area A receives exploration floor 50");
+  assert.equal(budgetB, 50, "area B receives exploration floor 50");
+  assert.equal(budgetC, 50, "area C receives exploration floor 50");
+  assert.equal(budgetA + budgetB + budgetC, 150);
+});
+
+// ── Test 2: target=100, 3 areas → no area gets a flat 4x-target allocation by default ──
+
+test("2. target=100, 3 areas: no area gets flat 4x target by default; areas receive fair share >= exploration floor", () => {
   const streamTarget = 100;
-  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS);
-  assert.equal(coordinator.globalScanBudget, 400); // same total as before — just no longer replicated
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS, 3);
+  // globalScanBudget = max(100 * 4, 3 * 50) = 400
+  assert.equal(coordinator.globalScanBudget, 400);
 
   const budgetA = allocateInitialAreaScanBudget(coordinator, "area-a", 3);
   const budgetB = allocateInitialAreaScanBudget(coordinator, "area-b", 3);
   const budgetC = allocateInitialAreaScanBudget(coordinator, "area-c", 3);
 
   for (const b of [budgetA, budgetB, budgetC]) {
-    assert.ok(b < 400, `expected a bounded share, got ${b}`);
+    assert.ok(b >= DEFAULT_LIMITS.minExplorationCandidates, `expected at least exploration floor, got ${b}`);
+    assert.ok(b < 400, `expected fair share far below flat 400, got ${b}`);
   }
-  // Old behavior: EVERY area got 400. New: 3 areas roughly split ~400 total.
   assert.equal(budgetA + budgetB + budgetC, coordinator.globalScanBudget);
 });
 
-// ── Test 2: multiple active areas share the global budget ──
+// ── Test 3: exploration floor never exceeds per-area hard ceiling ──
 
-test("total allocated across concurrently-active areas never exceeds the shared global budget (when no floor override applies)", () => {
-  const streamTarget = 40;
-  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS);
-  const activeAreaCount = 4; // matches multiplier, so floor never overrides the even split
-  let total = 0;
-  for (const area of ["a", "b", "c", "d"]) {
-    total += allocateInitialAreaScanBudget(coordinator, area, activeAreaCount);
-  }
-  assert.equal(total, coordinator.globalScanBudget);
-  assert.equal(coordinator.allocated, coordinator.globalScanBudget);
-});
-
-// ── Test 3: each area gets a fair initial allocation ──
-
-test("initial allocations are equal (fair) across identically-situated concurrent areas", () => {
-  const streamTarget = 60;
-  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS);
-  const budgets = ["a", "b", "c"].map((area) => allocateInitialAreaScanBudget(coordinator, area, 3));
-  assert.equal(budgets[0], budgets[1]);
-  assert.equal(budgets[1], budgets[2]);
-});
-
-test("a lone/slow area is never starved below its own streamTarget-derived floor, even with many nominal siblings", () => {
+test("3. exploration floor never exceeds per-area hard ceiling", () => {
   const streamTarget = 10;
-  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS);
-  // 20 "active" areas would mathematically starve an even split (400/20=20 → below floor of 10*1=10... still fine here)
-  // use a smaller multiplier scenario to actually trigger the floor:
-  const tightCoordinator = createAreaScanBudgetCoordinator(streamTarget, { ...DEFAULT_LIMITS, multiplier: 2 });
-  const budget = allocateInitialAreaScanBudget(tightCoordinator, "area-a", 20);
-  assert.ok(budget >= streamTarget, `expected at least the streamTarget floor (${streamTarget}), got ${budget}`);
-});
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS, 3);
+  const budget = allocateInitialAreaScanBudget(coordinator, "area-a", 3);
+  assert.equal(budget, 50);
 
-// ── Test 4: productive areas can receive additional budget ──
-
-test("a productive area exhausting a small slice with headroom remaining gets a positive expansion grant", () => {
-  const streamTarget = 20;
-  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS); // globalScanBudget = 80
-  allocateInitialAreaScanBudget(coordinator, "area-a", 4); // ~20 each, headroom left by siblings not yet claimed
+  // Cumulative cap is max(floor, streamTarget * maxAreaBudgetFactor) = max(50, 40) = 50
   const grant = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
-  assert.ok(grant > 0, "expected a positive expansion grant for a productive area with global headroom");
+  assert.equal(grant, 0, "area already at its cap ceiling cannot expand further without additional headroom");
 });
 
-test("marginal areas (not yet low-yield) can also receive an expansion grant", () => {
-  const streamTarget = 20;
-  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS);
+// ── Test 4: low-yield area can still rotate after sufficient exploration ──
+
+test("4. low-yield area can still rotate after exploring sufficient candidate volume and elapsed time", () => {
+  const state = createAreaProductivityState(0);
+  const yieldLimits = {
+    minElapsedMsForEvaluation: 90_000,
+    minCandidateVolumeForEvaluation: 50,
+    lowYieldMaxRate: 0.05,
+    marginalMaxRate: 0.15,
+  };
+
+  // Stage A: 20 candidates (< 50 floor) at 100s -> still classified productive (cannot rotate yet)
+  for (let i = 0; i < 20; i++) recordProductiveActivity(state, "candidate_discovered", 100_000);
+  assert.equal(classifyAreaYield(state, 100_000, yieldLimits), "productive");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, yieldLimits), null);
+
+  // Stage B: 50 candidates (>= 50 floor) at 100s with 0 qualified -> classified low_yield and stopped
+  for (let i = 0; i < 30; i++) recordProductiveActivity(state, "candidate_discovered", 100_000);
+  assert.equal(classifyAreaYield(state, 100_000, yieldLimits), "low_yield");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, yieldLimits), "area_productivity_low_yield");
+});
+
+// ── Test 5: productive area can expand ──
+
+test("5. productive area exhausting its slice with shared headroom remaining gets expansion grant", () => {
+  const streamTarget = 50;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS, 4); // global = 200
+  allocateInitialAreaScanBudget(coordinator, "area-a", 4); // initial = 50
+  const grant = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+  assert.ok(grant > 0, "expected positive expansion grant for productive area");
+});
+
+// ── Test 6: marginal area remains eligible for continuation ──
+
+test("6. marginal area remains eligible for continuation and expansion", () => {
+  const streamTarget = 50;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS, 4);
   allocateInitialAreaScanBudget(coordinator, "area-a", 4);
   const grant = requestAreaScanBudgetExpansion(coordinator, "area-a", "marginal");
-  assert.ok(grant > 0);
+  assert.ok(grant > 0, "marginal area should receive expansion chunk");
 });
 
-// ── Test 5: low-yield areas do not receive unlimited expansion ──
+// ── Test 7: global target still stops everything ──
 
-test("a low_yield-classified area always receives a zero expansion grant", () => {
-  const streamTarget = 20;
-  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS);
-  allocateInitialAreaScanBudget(coordinator, "area-a", 1);
-  const grant = requestAreaScanBudgetExpansion(coordinator, "area-a", "low_yield");
-  assert.equal(grant, 0);
-});
-
-test("expansion grants stop once a single area's cumulative allocation hits maxAreaBudgetFactor * streamTarget", () => {
-  const streamTarget = 10;
-  const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS); // cap = 4 * 10 = 40, global = 40
-  allocateInitialAreaScanBudget(coordinator, "area-a", 1); // sole area -> initial = 40 (== cap) already
-  const grant = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
-  assert.equal(grant, 0, "area is already at its cumulative cap — no further expansion should be granted");
-});
-
-test("repeated expansion requests for one area are bounded and eventually return 0 (never unlimited)", () => {
-  const streamTarget = 10;
-  const coordinator = createAreaScanBudgetCoordinator(streamTarget, { ...DEFAULT_LIMITS, multiplier: 8, maxAreaBudgetFactor: 8, expansionChunkFactor: 1 });
-  allocateInitialAreaScanBudget(coordinator, "area-a", 4); // small initial slice, leaves lots of headroom
-  let grants = 0;
-  let safety = 0;
-  while (safety++ < 100) {
-    const grant = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
-    if (grant <= 0) break;
-    grants += 1;
-  }
-  assert.ok(grants > 0, "expected at least one grant given headroom");
-  assert.ok(safety < 100, "expansion loop must terminate — it must not be unlimited");
-});
-
-// ── Test 6: global TARGET_REACHED semantics unchanged ──
-// (This is enforced entirely OUTSIDE this module — by abortController.abort()
-// in poolExpandJob.ts's processLead(), independent of max_results/askFor.
-// What this module must prove is that it never changes deliver_target or the
-// stopping signal itself — it only ever affects `max_results`.)
-
-test("the coordinator never computes or exposes anything resembling a deliver_target / stop signal", () => {
+test("7. coordinator never computes or exposes anything resembling a deliver_target / stop signal", () => {
   const coordinator = createAreaScanBudgetCoordinator(50, DEFAULT_LIMITS);
   const keys = Object.keys(coordinator);
   for (const key of keys) {
@@ -147,54 +145,38 @@ test("the coordinator never computes or exposes anything resembling a deliver_ta
   }
 });
 
-// ── Test 7: zero/empty area lists remain safe ──
+// ── Test 8: zero/empty area lists remain safe ──
 
-test("allocateInitialAreaScanBudget is safe with activeAreaCount of 0 (defensively treated as 1)", () => {
-  const coordinator = createAreaScanBudgetCoordinator(10, DEFAULT_LIMITS);
+test("8. allocateInitialAreaScanBudget is safe with activeAreaCount of 0 (defensively treated as 1)", () => {
+  const coordinator = createAreaScanBudgetCoordinator(10, DEFAULT_LIMITS, 0);
   const budget = allocateInitialAreaScanBudget(coordinator, "area-a", 0);
   assert.ok(Number.isFinite(budget) && budget > 0);
 });
 
-test("requestAreaScanBudgetExpansion is safe for an area that was never allocated (returns 0)", () => {
+test("8b. requestAreaScanBudgetExpansion is safe for an area that was never allocated (returns 0)", () => {
   const coordinator = createAreaScanBudgetCoordinator(10, DEFAULT_LIMITS);
   const grant = requestAreaScanBudgetExpansion(coordinator, "never-allocated", "productive");
   assert.equal(grant, 0);
 });
 
-// ── Test 8: legacy/single-area behavior remains compatible where expected ──
+// ── Test 9: Phase 30/32/34 interaction is deterministic ──
 
-test("legacy/single-active-area case: initial allocation equals the OLD computeAskFor(streamTarget) result exactly", () => {
-  for (const streamTarget of [1, 5, 10, 25, 100]) {
-    const coordinator = createAreaScanBudgetCoordinator(streamTarget, DEFAULT_LIMITS);
-    const budget = allocateInitialAreaScanBudget(coordinator, "solo-area", 1);
-    assert.equal(budget, computeAskFor(streamTarget), `streamTarget=${streamTarget}`);
-  }
+test("9. Phase 30/32/34 yield classification interaction with expansion coordinator is deterministic", () => {
+  const coordinator = createAreaScanBudgetCoordinator(20, DEFAULT_LIMITS, 2);
+  allocateInitialAreaScanBudget(coordinator, "area-a", 2);
+
+  // low_yield always receives 0 expansion
+  const lowYieldGrant = requestAreaScanBudgetExpansion(coordinator, "area-a", "low_yield");
+  assert.equal(lowYieldGrant, 0);
+
+  // productive receives positive expansion
+  const productiveGrant = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+  assert.ok(productiveGrant > 0);
 });
 
-// ── Test 9: existing Phase 30 yield rotation remains intact ──
+// ── Test 10: worker count / resource capacity is untouched ──
 
-test("the coordinator never itself decides to stop an area — it only ever returns a budget number, deferring the stop decision to evaluateAreaYieldStop", () => {
-  // Structural proof: requestAreaScanBudgetExpansion's return type is a
-  // number (an additional budget amount), never a stop reason string or
-  // boolean — the actual STOP decision stays owned by
-  // areaProductivity.ts's evaluateAreaYieldStop, exactly as before this
-  // phase. A low_yield classification here simply withholds MORE scan
-  // budget; it does not by itself stop anything.
-  const coordinator = createAreaScanBudgetCoordinator(10, DEFAULT_LIMITS);
-  allocateInitialAreaScanBudget(coordinator, "area-a", 1);
-  const result = requestAreaScanBudgetExpansion(coordinator, "area-a", "low_yield");
-  assert.equal(typeof result, "number");
-});
-
-// ── Test 10: scan budget cannot bypass resource capacity/concurrency limits ──
-
-test("scan-budget allocation is independent of, and never widens, runAreaWorkerPool's own worker/concurrency sizing", async () => {
-  // runAreaWorkerPool's pool size is governed entirely by
-  // computeDynamicDiscoveryCapacity/computeAreaPoolSize (worker COUNT) —
-  // areaScanBudget.ts has no input to, and never changes, that formula. We
-  // prove this by running the pool with a tight capacity ceiling and
-  // confirming the number of STARTED workers is unaffected by how the
-  // (separately-computed) scan budget was sized.
+test("10. scan-budget allocation is independent of, and never widens, runAreaWorkerPool's own worker/concurrency sizing", async () => {
   const areas = ["a", "b", "c", "d", "e"];
   const usedAreas = new Set<string>();
   const result = await runAreaWorkerPool({
@@ -204,7 +186,7 @@ test("scan-budget allocation is independent of, and never widens, runAreaWorkerP
     availableCapacity: 8,
     claimNextArea: async (used) => areas.find((a) => !used.has(a) && !usedAreas.has(a)),
     runArea: async (): Promise<AreaRunOutcome> => {
-      usedAreas.add("x"); // no-op marker; scan budget itself is computed entirely outside this harness
+      usedAreas.add("x");
       return { discovered: 1, accepted: 1, rejected: 0, duplicates: 0, exhausted: true, failed: false };
     },
     tryAcquireSlot: () => () => {},

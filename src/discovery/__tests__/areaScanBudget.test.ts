@@ -195,3 +195,151 @@ test("10. scan-budget allocation is independent of, and never widens, runAreaWor
 
   assert.ok(result.poolSize <= 2, "safeResourceWorkers must still cap concurrency regardless of scan-budget sizing");
 });
+
+// =============================================================================
+// PHASE 36 — SCALABLE DISCOVERY RUNWAY & EXPANSION TESTS
+// =============================================================================
+
+const P36_BUDGET_LIMITS: AreaScanBudgetLimits = {
+  multiplier: 4,
+  minAreaBudgetFactor: 1,
+  maxAreaBudgetFactor: 4,
+  expansionChunkFactor: 1,
+  minExplorationCandidates: 50,
+  productiveMaxFactor: 4,
+  maxProductiveCandidates: 400,
+};
+
+// ── Test 7: productive area expands beyond initial ~133 budget ───────────────
+test("P36-7: productive area expands beyond initial ~133 budget up to productive max", () => {
+  const streamTarget = 100;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, P36_BUDGET_LIMITS, 3);
+  const initial = allocateInitialAreaScanBudget(coordinator, "area-a", 3);
+  assert.equal(initial, 134, "initial allocation is ~134");
+
+  // Area is productive -> expands beyond 134
+  const grant1 = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+  assert.equal(grant1, 100, "granted first 100 expansion chunk");
+  assert.equal(coordinator.perArea.get("area-a")?.final, 234);
+
+  const grant2 = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+  assert.equal(grant2, 100, "granted second 100 expansion chunk");
+  assert.equal(coordinator.perArea.get("area-a")?.final, 334);
+
+  const grant3 = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+  assert.equal(grant3, 66, "granted remaining chunk to reach 400 ceiling");
+  assert.equal(coordinator.perArea.get("area-a")?.final, 400);
+});
+
+// ── Test 8: productive area cannot exceed productive max ceiling (400) ──────
+test("P36-8: productive area cannot exceed productive max ceiling (400)", () => {
+  const streamTarget = 100;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, P36_BUDGET_LIMITS, 3);
+  allocateInitialAreaScanBudget(coordinator, "area-a", 3); // 134
+
+  // Exhaust all expansions up to 400
+  requestAreaScanBudgetExpansion(coordinator, "area-a", "productive"); // 234
+  requestAreaScanBudgetExpansion(coordinator, "area-a", "productive"); // 334
+  requestAreaScanBudgetExpansion(coordinator, "area-a", "productive"); // 400
+
+  // Next expansion attempt must be rejected (grant = 0)
+  const grantPastCeiling = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+  assert.equal(grantPastCeiling, 0, "productive area cannot exceed productive max ceiling");
+  assert.equal(coordinator.perArea.get("area-a")?.final, 400);
+});
+
+// ── Test 9: low-yield area cannot expand ────────────────────────────────────
+test("P36-9: low-yield area receives 0 expansion grant", () => {
+  const streamTarget = 100;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, P36_BUDGET_LIMITS, 3);
+  allocateInitialAreaScanBudget(coordinator, "area-low-yield", 3); // 134
+
+  const grant = requestAreaScanBudgetExpansion(coordinator, "area-low-yield", "low_yield");
+  assert.equal(grant, 0, "low-yield area must receive 0 expansion");
+  assert.equal(coordinator.perArea.get("area-low-yield")?.final, 134);
+});
+
+// ── Test 10: multiple areas share expansion headroom fairly ─────────────────
+test("P36-10: multiple productive areas share expansion headroom fairly", () => {
+  const streamTarget = 100;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, P36_BUDGET_LIMITS, 2); // global = 800
+  const initA = allocateInitialAreaScanBudget(coordinator, "area-a", 2); // 200
+  const initB = allocateInitialAreaScanBudget(coordinator, "area-b", 2); // 200
+
+  assert.equal(initA, 200);
+  assert.equal(initB, 200);
+
+  // Both areas expand in turn
+  const grantA1 = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+  const grantB1 = requestAreaScanBudgetExpansion(coordinator, "area-b", "productive");
+  assert.equal(grantA1, 100);
+  assert.equal(grantB1, 100);
+
+  const grantA2 = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+  const grantB2 = requestAreaScanBudgetExpansion(coordinator, "area-b", "productive");
+  assert.equal(grantA2, 100);
+  assert.equal(grantB2, 100);
+
+  assert.equal(coordinator.perArea.get("area-a")?.final, 400);
+  assert.equal(coordinator.perArea.get("area-b")?.final, 400);
+  assert.equal(coordinator.allocated, 800);
+});
+
+// ── Test 11: target=10 retains exploration floor 50 ─────────────────────────
+test("P36-11: target=10 retains exploration floor 50", () => {
+  const streamTarget = 10;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, P36_BUDGET_LIMITS, 3);
+  const budgetA = allocateInitialAreaScanBudget(coordinator, "area-a", 3);
+  const budgetB = allocateInitialAreaScanBudget(coordinator, "area-b", 3);
+  const budgetC = allocateInitialAreaScanBudget(coordinator, "area-c", 3);
+
+  assert.equal(budgetA, 50, "area A receives exploration floor 50");
+  assert.equal(budgetB, 50, "area B receives exploration floor 50");
+  assert.equal(budgetC, 50, "area C receives exploration floor 50");
+});
+
+// ── Test 12: target=100 no longer terminally caps productive areas at ~133 ──
+test("P36-12: target=100 no longer terminally caps productive areas at ~133", () => {
+  const streamTarget = 100;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, P36_BUDGET_LIMITS, 3);
+  const initial = allocateInitialAreaScanBudget(coordinator, "area-a", 3);
+  assert.equal(initial, 134);
+
+  const grant = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+  assert.ok(grant > 0, "productive area MUST receive expansion beyond initial 134");
+  assert.ok(coordinator.perArea.get("area-a")!.final > 134);
+});
+
+// ── Test 13: global headroom cannot be exceeded ─────────────────────────────
+test("P36-13: global scan budget headroom cannot be exceeded across expansions", () => {
+  const streamTarget = 50;
+  const limits: AreaScanBudgetLimits = {
+    ...P36_BUDGET_LIMITS,
+    multiplier: 2, // global = 100 + 100 = 200
+  };
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, limits, 2);
+  allocateInitialAreaScanBudget(coordinator, "area-a", 2); // 50
+  allocateInitialAreaScanBudget(coordinator, "area-b", 2); // 50
+
+  // Expand both
+  while (coordinator.allocated < coordinator.globalScanBudget) {
+    const grant = requestAreaScanBudgetExpansion(coordinator, "area-a", "productive");
+    if (grant <= 0) break;
+  }
+
+  assert.ok(coordinator.allocated <= coordinator.globalScanBudget);
+  const excessGrant = requestAreaScanBudgetExpansion(coordinator, "area-b", "productive");
+  assert.equal(excessGrant, 0, "no expansion possible once global headroom is exhausted");
+});
+
+// ── Test 14: sibling isolation remains unchanged ────────────────────────────
+test("P36-14: sibling isolation remains unchanged (coordinators are isolated per city/request)", () => {
+  const coordCity1 = createAreaScanBudgetCoordinator(100, P36_BUDGET_LIMITS, 2);
+  const coordCity2 = createAreaScanBudgetCoordinator(100, P36_BUDGET_LIMITS, 2);
+
+  allocateInitialAreaScanBudget(coordCity1, "area-1", 2);
+  requestAreaScanBudgetExpansion(coordCity1, "area-1", "productive");
+
+  assert.equal(coordCity1.allocated > 0, true);
+  assert.equal(coordCity2.allocated, 0, "City 2 coordinator is completely unpolluted by City 1 allocations");
+});

@@ -262,6 +262,14 @@ const EnvSchema = z.object({
   // marginal yield → keep temporarily). Must stay >= AREA_YIELD_LOW_MAX_RATE.
   AREA_YIELD_MARGINAL_MAX_RATE: z.coerce.number().min(0).max(1).default(0.15),
 
+  // PHASE 36 — In-flight candidate grace window for yield evaluation.
+  // When an area meets the evaluation time/volume gates but has candidates
+  // still in-flight through enrichment/qualification, yield evaluation is
+  // deferred until in-flight candidates drain or this grace duration elapses.
+  // 60s matches the observed enrichment pipeline drain latency while staying
+  // comfortably below AREA_PRODUCTIVITY_MAX_RUNTIME_MS (480s) and IDLE_MS (120s).
+  AREA_YIELD_INFLIGHT_GRACE_MS: z.coerce.number().int().min(1_000).default(60_000),
+
   // PHASE 32 — AREA SCAN-BUDGET OPTIMIZATION. Before this phase, every
   // concurrent area independently received `computeAskFor(streamTarget)`
   // (streamTarget * this same multiplier) as its own `max_results` scan
@@ -317,6 +325,16 @@ const EnvSchema = z.object({
   // starve areas with a ~10-14 raw candidate allocation before yield classification
   // evaluates them. 50 gives each active area a meaningful discovery sample.
   AREA_SCAN_MIN_EXPLORATION_CANDIDATES: z.coerce.number().int().min(1).default(50),
+
+  // PHASE 36 — RESTORE PRODUCTIVE AREA SCALABLE CEILING.
+  // Allows demonstrably productive areas to expand up to streamTarget * this factor
+  // from shared global headroom, removing the artificial initial-share ceiling.
+  // Default 4 matches historical baseline multiplier.
+  AREA_SCAN_PRODUCTIVE_MAX_FACTOR: z.coerce.number().min(1).default(4),
+
+  // Hard per-area candidate volume ceiling for productive expansion.
+  // Matches the 400 candidate baseline per area.
+  AREA_SCAN_PRODUCTIVE_MAX_CANDIDATES: z.coerce.number().int().min(50).default(400),
 
   // PHASE 6 — resource-aware safe concurrency (replaces the old hardcoded
   // "safeResourceWorkers = 2"). Each Google area worker is NOT just one
@@ -492,6 +510,17 @@ const EnvSchema = z.object({
           `AREA_SCAN_BUDGET_MAX_FACTOR (${val.AREA_SCAN_BUDGET_MAX_FACTOR}) must be >= ` +
           `AREA_SCAN_BUDGET_MIN_FACTOR (${val.AREA_SCAN_BUDGET_MIN_FACTOR}) — a single area's ` +
           `budget ceiling can never sit below its own guaranteed floor.`,
+      });
+    }
+    // PHASE 36: productive max factor must be >= min factor
+    if (val.AREA_SCAN_PRODUCTIVE_MAX_FACTOR < val.AREA_SCAN_BUDGET_MIN_FACTOR) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["AREA_SCAN_PRODUCTIVE_MAX_FACTOR"],
+        message:
+          `AREA_SCAN_PRODUCTIVE_MAX_FACTOR (${val.AREA_SCAN_PRODUCTIVE_MAX_FACTOR}) must be >= ` +
+          `AREA_SCAN_BUDGET_MIN_FACTOR (${val.AREA_SCAN_BUDGET_MIN_FACTOR}) — productive area ` +
+          `ceiling cannot sit below initial floor.`,
       });
     }
   });

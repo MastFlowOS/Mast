@@ -102,6 +102,16 @@ export type AreaProductivityState = {
    */
   newlyDiscoveredCount: number;
   newlyQueuedCount: number;
+  /**
+   * PHASE 36 — In-flight candidate tracking.
+   * Tracks admitted candidates currently in-flight through enrichment and
+   * qualification that have not yet reached a terminal resolution.
+   */
+  inFlightCount: number;
+  /** Count of candidates that have reached a terminal outcome (qualified, rejected, early_pruned, failed). */
+  terminalCandidateCount: number;
+  /** Telemetry flag: whether a low-yield classification was deferred because candidates were in-flight. */
+  yieldEvaluationDeferredDueToInflight: boolean;
 };
 
 export function createAreaProductivityState(now: number = Date.now()): AreaProductivityState {
@@ -116,6 +126,9 @@ export function createAreaProductivityState(now: number = Date.now()): AreaProdu
     lastProductiveEventType: null,
     newlyDiscoveredCount: 0,
     newlyQueuedCount: 0,
+    inFlightCount: 0,
+    terminalCandidateCount: 0,
+    yieldEvaluationDeferredDueToInflight: false,
   };
 }
 
@@ -151,8 +164,57 @@ export function recordProductiveActivity(
   // OUTCOMES the yield classifier measures volume AGAINST, not volume
   // themselves — counting them here too would make the yield rate
   // trivially high for every area regardless of actual yield.
-  if (eventType === "candidate_discovered") state.newlyDiscoveredCount += 1;
-  if (eventType === "candidate_queued") state.newlyQueuedCount += 1;
+  if (eventType === "candidate_discovered") {
+    state.newlyDiscoveredCount += 1;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
+  if (eventType === "candidate_queued") {
+    state.newlyQueuedCount += 1;
+  }
+}
+
+/**
+ * PHASE 36 — Record candidate discovery explicitly.
+ */
+export function recordCandidateDiscovered(state: AreaProductivityState, now: number = Date.now()): void {
+  recordProductiveActivity(state, "candidate_discovered", now);
+}
+
+/**
+ * PHASE 36 — Record candidate queueing explicitly.
+ */
+export function recordCandidateQueued(state: AreaProductivityState, now: number = Date.now()): void {
+  recordProductiveActivity(state, "candidate_queued", now);
+}
+
+export type CandidateTerminalOutcome = "qualified" | "rejected" | "early_pruned" | "failed";
+
+/**
+ * PHASE 36 — Record a candidate reaching a terminal lifecycle outcome
+ * (qualified, rejected, early_pruned, failed).
+ */
+export function recordCandidateTerminal(
+  state: AreaProductivityState,
+  outcome: CandidateTerminalOutcome,
+  now: number = Date.now(),
+): void {
+  state.terminalCandidateCount += 1;
+  state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  if (outcome === "qualified") {
+    recordQualifiedLead(state, now);
+  }
+}
+
+export function recordCandidateRejected(state: AreaProductivityState, now: number = Date.now()): void {
+  recordCandidateTerminal(state, "rejected", now);
+}
+
+export function recordCandidateEarlyPruned(state: AreaProductivityState, now: number = Date.now()): void {
+  recordCandidateTerminal(state, "early_pruned", now);
+}
+
+export function recordCandidateFailed(state: AreaProductivityState, now: number = Date.now()): void {
+  recordCandidateTerminal(state, "failed", now);
 }
 
 /**
@@ -166,6 +228,10 @@ export function recordProductiveActivity(
  */
 export function recordQualifiedLead(state: AreaProductivityState, now: number = Date.now()): void {
   state.qualifiedCount += 1;
+  if (state.terminalCandidateCount < state.qualifiedCount) {
+    state.terminalCandidateCount = state.qualifiedCount;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
   if (state.firstQualifiedAt === null) state.firstQualifiedAt = now;
   state.lastQualifiedAt = now;
   recordProductiveActivity(state, "qualified", now);
@@ -237,22 +303,18 @@ export function evaluateAreaProductivity(
 }
 
 /**
- * PHASE 30 — AREA YIELD / ROTATION OPTIMIZATION.
+ * PHASE 30 / PHASE 36 — AREA YIELD / ROTATION OPTIMIZATION (IN-FLIGHT AWARE).
  *
  * `evaluateAreaProductivity` above answers "has this area gone quiet?" —
  * and, by PHASE 25 design, an area that keeps discovering/queueing
  * candidates never goes quiet, no matter how few (or none) of those
- * candidates ever qualify. That is exactly the Phase 30 regression: a
- * low-yield area that stays busy (fresh `candidate_discovered`/
- * `candidate_queued` events on a steady cadence) can occupy a worker slot
- * indefinitely while contributing almost nothing, starving other queued
- * areas of a chance to run at all (~100 leads/6min → ~53 leads/30min).
+ * candidates ever qualify.
  *
- * `classifyAreaYield` is a SEPARATE, independent signal from the idle
- * clock — it never resets on activity the way `lastProductiveActivityAt`
- * does. It only asks: "of the candidates this area has actually turned
- * up, what fraction have qualified (or delivered)?" once there has been
- * enough exploration (both TIME and VOLUME) to make that ratio meaningful.
+ * PHASE 36 Fix: When candidates are still in-flight through the enrichment/
+ * qualification pipeline, an area must not be prematurely classified as
+ * LOW_YIELD solely from current qualification yield while in-flight count > 0.
+ * The yield classifier calculates yield on terminal candidates and defers
+ * LOW_YIELD decisions during the in-flight grace window.
  */
 export type AreaYieldClass = "productive" | "marginal" | "low_yield";
 
@@ -283,23 +345,21 @@ export type AreaYieldLimits = {
    * stopped by this classifier. Must be >= `lowYieldMaxRate`.
    */
   marginalMaxRate: number;
+  /**
+   * PHASE 36 — In-flight candidate grace duration (ms).
+   * Defers LOW_YIELD classification while candidates remain in-flight.
+   */
+  inFlightGraceMs?: number;
 };
 
 /**
  * Pure classifier — deterministic function of (state, now, limits), no
- * clock access, no side effects. Uses ONLY the observed counting signals
- * named in the phase prompt (qualifiedCount, deliveredCount,
- * newlyDiscoveredCount, newlyQueuedCount, elapsedMs) — never `score`,
- * candidate quality, or any fuzzy/predictive signal.
+ * clock access, no side effects.
  *
- * `candidateVolume` intentionally sums BOTH discovered and queued counts:
- * either alone can undercount a provider that discovers heavily but admits
- * few for enrichment (or vice versa), and STEP 2 lists both as candidate
- * signals rather than picking one. `yieldCount` takes the MAX (not sum) of
- * qualified/delivered — a delivered lead was necessarily qualified first,
- * so summing would double-count the exact same underlying lead and understate
- * the yield rate; max avoids that while still crediting whichever count is
- * further along.
+ * PHASE 36: In-Flight Aware Yield Evaluation.
+ * 1. If inFlightCount > 0 and within inFlightGraceMs, do not classify LOW_YIELD.
+ * 2. When evaluated, calculates yield rate against terminal candidates
+ *    (terminalCandidateCount), avoiding dilution by in-flight candidates.
  */
 export function classifyAreaYield(
   state: AreaProductivityState,
@@ -312,14 +372,31 @@ export function classifyAreaYield(
   // Stage A — early exploration: insufficient signal either way. Never
   // returns low_yield/marginal here, regardless of qualifiedCount.
   if (elapsedMs < limits.minElapsedMsForEvaluation || candidateVolume < limits.minCandidateVolumeForEvaluation) {
+    state.yieldEvaluationDeferredDueToInflight = false;
     return "productive";
   }
 
-  // Stage B — yield evaluation now that there's enough volume/time to trust the ratio.
+  // Stage B — in-flight aware yield evaluation.
   const yieldCount = Math.max(state.qualifiedCount, state.deliveredCount);
-  const rate = candidateVolume > 0 ? yieldCount / candidateVolume : 0;
+  const inFlightCount = state.inFlightCount;
+  const terminalCandidates = state.terminalCandidateCount;
 
-  if (rate <= limits.lowYieldMaxRate) return "low_yield";
+  const graceMs = limits.inFlightGraceMs ?? 0;
+  const inGrace = inFlightCount > 0 && graceMs > 0 && elapsedMs < limits.minElapsedMsForEvaluation + graceMs;
+
+  const denominator = (inFlightCount === 0 && terminalCandidates > 0) ? terminalCandidates : candidateVolume;
+  const rate = denominator > 0 ? yieldCount / denominator : 0;
+
+  if (rate <= limits.lowYieldMaxRate) {
+    if (inGrace) {
+      state.yieldEvaluationDeferredDueToInflight = true;
+      return "productive";
+    }
+    state.yieldEvaluationDeferredDueToInflight = false;
+    return "low_yield";
+  }
+
+  state.yieldEvaluationDeferredDueToInflight = false;
   if (rate <= limits.marginalMaxRate) return "marginal";
   return "productive";
 }

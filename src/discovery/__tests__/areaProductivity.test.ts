@@ -604,4 +604,146 @@ test("yield env: AREA_YIELD_MARGINAL_MAX_RATE default is >= AREA_YIELD_LOW_MAX_R
   assert.ok(env.AREA_YIELD_MARGINAL_MAX_RATE >= env.AREA_YIELD_LOW_MAX_RATE);
   assert.ok(env.AREA_YIELD_MIN_ELAPSED_MS < env.AREA_PRODUCTIVITY_IDLE_MS, "yield evaluation should be reachable before the idle ceiling would otherwise fire");
   assert.ok(env.AREA_YIELD_MIN_CANDIDATE_VOLUME >= 1);
+  assert.ok(env.AREA_YIELD_INFLIGHT_GRACE_MS >= 1000, "in-flight grace ms should be at least 1s");
+});
+
+// =============================================================================
+// PHASE 36 — IN-FLIGHT-AWARE AREA YIELD TESTS
+// =============================================================================
+
+const P36_YIELD_LIMITS: AreaYieldLimits = {
+  minElapsedMsForEvaluation: 90_000,
+  minCandidateVolumeForEvaluation: 50,
+  lowYieldMaxRate: 0.05,
+  marginalMaxRate: 0.15,
+  inFlightGraceMs: 60_000,
+};
+
+// ── Test 1: 50 discovered / 1 qualified / 49 in-flight → NOT low_yield ──────
+test("P36-1: 50 discovered / 1 qualified / 49 in-flight is NOT classified low_yield while in-flight", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 50, 100_000); // 50 discovered at 100s (> 90s min elapsed)
+
+  // 0 qualified, 50 in-flight at 100s: would be low-yield (0%), but in-flight candidates defer decision
+  const yieldClass0 = classifyAreaYield(state, 100_000, P36_YIELD_LIMITS);
+  assert.equal(yieldClass0, "productive");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, P36_YIELD_LIMITS), null);
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, true);
+
+  // 1 qualified lead (49 in-flight)
+  recordQualifiedLead(state, 100_000);
+  assert.equal(state.inFlightCount, 49);
+  assert.equal(state.terminalCandidateCount, 1);
+  assert.equal(state.qualifiedCount, 1);
+
+  // Under old Phase 30, 1/50 = 2% -> low_yield.
+  // Under Phase 36 in-flight aware logic: NOT low_yield
+  const yieldClass1 = classifyAreaYield(state, 100_000, P36_YIELD_LIMITS);
+  assert.notEqual(yieldClass1, "low_yield", "in-flight candidates must prevent premature low_yield classification");
+  assert.equal(yieldClass1, "productive");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, P36_YIELD_LIMITS), null);
+});
+
+// ── Test 2: inFlight eventually drains → yield evaluated using terminal candidates ──
+test("P36-2: inFlight eventually drains → yield evaluated using terminal candidates", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 50, 100_000);
+  recordQualifiedLead(state, 100_000); // 1 qualified lead
+
+  // Remaining 49 in-flight candidates finish: 7 more qualify, 42 rejected
+  for (let i = 0; i < 7; i++) recordQualifiedLead(state, 110_000);
+  for (let i = 0; i < 42; i++) {
+    state.terminalCandidateCount += 1;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
+
+  assert.equal(state.inFlightCount, 0, "in-flight has fully drained");
+  assert.equal(state.terminalCandidateCount, 50);
+  assert.equal(state.qualifiedCount, 8);
+
+  // 8 / 50 = 16% > marginalMaxRate (0.15) -> productive!
+  const yieldClass = classifyAreaYield(state, 110_000, P36_YIELD_LIMITS);
+  assert.equal(yieldClass, "productive");
+  assert.equal(evaluateAreaYieldStop(state, 110_000, P36_YIELD_LIMITS), null);
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, false);
+});
+
+// ── Test 3: 50 terminal / 1 qualified → low_yield ───────────────────────────
+test("P36-3: 50 terminal / 1 qualified (0 in-flight) is classified low_yield", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 50, 100_000);
+  recordQualifiedLead(state, 100_000); // 1 qualified
+  for (let i = 0; i < 49; i++) {
+    state.terminalCandidateCount += 1;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
+
+  assert.equal(state.inFlightCount, 0);
+  assert.equal(state.terminalCandidateCount, 50);
+  assert.equal(state.qualifiedCount, 1);
+
+  // 1 / 50 = 2% <= 5% -> low_yield
+  assert.equal(classifyAreaYield(state, 100_000, P36_YIELD_LIMITS), "low_yield");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, P36_YIELD_LIMITS), "area_productivity_low_yield");
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, false);
+});
+
+// ── Test 4: 50 terminal / 8 qualified → productive ──────────────────────────
+test("P36-4: 50 terminal / 8 qualified (0 in-flight) is classified productive", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 50, 100_000);
+  for (let i = 0; i < 8; i++) recordQualifiedLead(state, 100_000);
+  for (let i = 0; i < 42; i++) {
+    state.terminalCandidateCount += 1;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
+
+  assert.equal(state.inFlightCount, 0);
+  assert.equal(state.terminalCandidateCount, 50);
+  assert.equal(state.qualifiedCount, 8);
+
+  // 8 / 50 = 16% > 15% -> productive
+  assert.equal(classifyAreaYield(state, 100_000, P36_YIELD_LIMITS), "productive");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, P36_YIELD_LIMITS), null);
+});
+
+// ── Test 5: in-flight grace expires → max runtime / existing safety still wins ──
+test("P36-5: in-flight grace expires → yield evaluated and max runtime / safety still wins", () => {
+  const limits: AreaProductivityLimits = { productiveIdleMs: 60_000, maxAreaRuntimeMs: 200_000 };
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 50, 50_000); // 50 discovered with 0 qualified, 50 in-flight
+
+  // At 100s: within grace (90s + 60s = 150s), so yield stop is deferred
+  assert.equal(evaluateAreaProductivity(state, 100_000, limits), null);
+  assert.equal(evaluateAreaYieldStop(state, 100_000, P36_YIELD_LIMITS), null);
+
+  // At 160s: grace expired (> 150s), so low_yield fires
+  assert.equal(classifyAreaYield(state, 160_000, P36_YIELD_LIMITS), "low_yield");
+  assert.equal(evaluateAreaYieldStop(state, 160_000, P36_YIELD_LIMITS), "area_productivity_low_yield");
+
+  // At 200s: maxAreaRuntimeMs unconditionally takes precedence
+  assert.equal(evaluateAreaProductivity(state, 200_000, limits), "area_productivity_max_runtime");
+});
+
+// ── Test 6: TARGET_REACHED remains unchanged ───────────────────────────────
+test("P36-6: TARGET_REACHED global abort reaches area during in-flight grace", () => {
+  const parent = new AbortController();
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 50, 100_000); // 50 in-flight within grace
+  const { signal } = scopeAreaAbort(parent.signal);
+  assert.equal(signal.aborted, false);
+  parent.abort("TARGET_REACHED");
+  assert.equal(signal.aborted, true, "global target reached must abort area immediately");
+});
+
+// ── Test 15: Phase 25 productive-activity logic remains intact ──────────────
+test("P36-15: Phase 25 productive-activity logic remains intact with in-flight candidates", () => {
+  const idleLimits: AreaProductivityLimits = { productiveIdleMs: 60_000, maxAreaRuntimeMs: 500_000 };
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 25, 40_000);
+  assert.equal(evaluateAreaProductivity(state, 40_000, idleLimits), null);
+  // Steady progress resets productive clock
+  recordDiscoveries(state, 25, 80_000);
+  assert.equal(evaluateAreaProductivity(state, 80_000, idleLimits), null);
+  assert.equal(state.newlyDiscoveredCount, 50);
 });

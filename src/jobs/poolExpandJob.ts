@@ -46,6 +46,11 @@ import {
   recordDeliveredLead,
   recordProductiveActivity,
   recordQualifiedLead,
+  recordCandidateDiscovered,
+  recordCandidateQueued,
+  recordCandidateRejected,
+  recordCandidateEarlyPruned,
+  recordCandidateFailed,
   scopeAreaAbort,
   type AreaProductivityState,
 } from "../discovery/areaProductivity.js";
@@ -467,6 +472,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       try {
         if (followUp && !channelsSatisfied(lead, followUp.channels)) {
           tracer.reject(pid, `channel_filter:${JSON.stringify(followUp.channels)}`);
+          if (productivity) recordCandidateRejected(productivity);
           return "continue"; // doesn't satisfy every requested channel for the waiting user — not counted
         }
 
@@ -474,6 +480,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         if (!validation.valid) {
           console.log(`[poolExpandJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
           tracer.reject(pid, `validation:${validation.reason}`);
+          if (productivity) recordCandidateRejected(productivity);
           return "continue";
         }
 
@@ -657,6 +664,8 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           maxAreaBudgetFactor: env.AREA_SCAN_BUDGET_MAX_FACTOR,
           expansionChunkFactor: env.AREA_SCAN_BUDGET_EXPANSION_FACTOR,
           minExplorationCandidates: env.AREA_SCAN_MIN_EXPLORATION_CANDIDATES,
+          productiveMaxFactor: env.AREA_SCAN_PRODUCTIVE_MAX_FACTOR,
+          maxProductiveCandidates: env.AREA_SCAN_PRODUCTIVE_MAX_CANDIDATES,
         },
         activeAreaCount,
       );
@@ -774,6 +783,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             minCandidateVolumeForEvaluation: env.AREA_YIELD_MIN_CANDIDATE_VOLUME,
             lowYieldMaxRate: env.AREA_YIELD_LOW_MAX_RATE,
             marginalMaxRate: env.AREA_YIELD_MARGINAL_MAX_RATE,
+            inFlightGraceMs: env.AREA_YIELD_INFLIGHT_GRACE_MS,
           };
 
           const productivityTimer = setInterval(() => {
@@ -782,21 +792,31 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             // PHASE 25's idle/max-runtime check still runs FIRST and
             // unconditionally — precedence is unchanged (STEP 4 of the
             // Phase 25 prompt). Only if it says "keep going" do we ALSO
-            // check the PHASE 30 yield classifier — an area that failed
+            // check the PHASE 30 / PHASE 36 yield classifier — an area that failed
             // the idle/max-runtime check was already going to stop for
             // that reason regardless of its yield.
             const stopReason = evaluateAreaProductivity(productivity, now, productivityLimits)
               ?? evaluateAreaYieldStop(productivity, now, yieldLimits);
             if (!stopReason) return;
             productivity.stoppedReason = stopReason;
-            // PHASE 25 STEP 8 (extended PHASE 30) — observational-only
+            // PHASE 25 STEP 8 (extended PHASE 30 / PHASE 36) — observational-only
             // telemetry. Never gates anything above; only describes why the
             // stop already happened.
             const candidateVolume = productivity.newlyDiscoveredCount + productivity.newlyQueuedCount;
             const yieldCount = Math.max(productivity.qualifiedCount, productivity.deliveredCount);
+            const inFlightCount = productivity.inFlightCount;
+            const terminalCount = productivity.terminalCandidateCount;
+            const yieldRate = terminalCount > 0
+              ? (yieldCount / terminalCount).toFixed(3)
+              : (candidateVolume > 0 ? (yieldCount / candidateVolume).toFixed(3) : "n/a");
+
             console.info(
               `[poolExpandJob][area-productivity] area=${area} stop_reason=${stopReason} ` +
                 `qualified=${productivity.qualifiedCount} delivered=${productivity.deliveredCount} ` +
+                `candidate_count=${productivity.newlyDiscoveredCount} ` +
+                `terminal_candidate_count=${terminalCount} ` +
+                `in_flight_count=${inFlightCount} ` +
+                `yield_rate=${yieldRate} ` +
                 `elapsed_ms=${now - productivity.startedAt} ` +
                 `time_since_last_productive_activity_ms=${now - productivity.lastProductiveActivityAt} ` +
                 `last_productive_activity=${new Date(productivity.lastProductiveActivityAt).toISOString()} ` +
@@ -804,7 +824,8 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 `productive_idle_ms=${productivityLimits.productiveIdleMs} ` +
                 `max_area_runtime_ms=${productivityLimits.maxAreaRuntimeMs} ` +
                 `newly_discovered=${productivity.newlyDiscoveredCount} newly_queued=${productivity.newlyQueuedCount} ` +
-                `candidate_volume=${candidateVolume} yield_rate=${candidateVolume > 0 ? (yieldCount / candidateVolume).toFixed(3) : "n/a"}`,
+                `candidate_volume=${candidateVolume} ` +
+                `yield_evaluation_deferred_due_to_inflight=${productivity.yieldEvaluationDeferredDueToInflight}`,
             );
             // Aborts ONLY this area's own scoped signal — see
             // scopeAreaAbort()'s doc comment. Never calls
@@ -817,14 +838,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           productivityTimer.unref?.();
 
           try {
-            // PHASE 32 — bounded expansion loop. Almost always runs exactly
-            // once (the common case, identical to pre-Phase-32 behavior
-            // apart from `askFor`'s smaller starting value). Only loops
-            // again when the engine call below reports `exhausted: true`
-            // (ran out of ITS OWN scan budget, not target-reached/aborted)
-            // AND this area hasn't yet delivered its own `streamTarget`
-            // AND `requestAreaScanBudgetExpansion` grants more (STEP 3) —
-            // never unbounded (see that function's own caps).
+            // PHASE 32 / PHASE 36 — bounded expansion loop.
             areaScanBudgetLoop: for (;;) {
             let batchStop = false;
             for await (const lead of runEngineQuery(
@@ -836,24 +850,12 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 region: payload.region,
                 area,
                 max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
-                // PHASE 5 FIX: tells the Python engine's LeadAcceptanceGate
-                // (service.py's `_deliver_target`) the true number of
-                // QUALIFIED leads this round needs, decoupled from the
-                // generous `max_results` scan budget above. Previously
-                // omitted, so `_deliver_target` silently fell back to
-                // `max_results` (askFor) — the engine kept chasing up to 4x
-                // (or, before this fix, the full un-shrinking shortfall)
-                // more qualified leads than this round actually needed
-                // before its own should_stop() cooperative check ever
-                // fired, letting MapsScraper.search() keep scanning raw
-                // candidates well past the point this round was satisfied.
                 deliver_target: streamTarget,
                 required_channels: followUp?.channels ?? [],
                 db_path: `data/leads-pool-expand.db`,
               },
               // PHASE 12D: this area's own scoped signal, not the shared
-              // job-level abortController.signal directly — see the doc
-              // comment above `productivity`/`areaAbort`.
+              // job-level abortController.signal directly.
               areaSignal,
               (info) => {
                 areaExhausted = info.exhausted;
@@ -871,17 +873,41 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               {
                 requestId: reqId,
                 areaLabel: area,
-                // PHASE 25: live discovery-progress signal — see
-                // PRODUCTIVE_DISCOVERY_PROGRESS_EVENTS's doc comment above
-                // for exactly which events count and why. Purely additive
-                // observation; never affects what runEngineQuery yields.
+                // PHASE 25 / PHASE 36: live discovery & enrichment progress signal.
                 onProgress: (progress) => {
-                  if (progress.stage !== "discovery") return;
-                  if (!PRODUCTIVE_DISCOVERY_PROGRESS_EVENTS.has(progress.event)) return;
-                  recordProductiveActivity(
-                    productivity,
-                    progress.event === "candidate_queued" ? "candidate_queued" : "candidate_discovered",
-                  );
+                  if (progress.stage === "discovery") {
+                    if (progress.event === "candidate_discovered") {
+                      recordCandidateDiscovered(productivity);
+                    } else if (progress.event === "candidate_queued") {
+                      recordCandidateQueued(productivity);
+                    } else if (
+                      progress.event === "candidate_closed_pruned" ||
+                      progress.event === "candidate_keyword_pruned" ||
+                      progress.event === "candidate_early_channel_pruned"
+                    ) {
+                      recordCandidateEarlyPruned(productivity);
+                    }
+                  } else if (
+                    progress.stage === "website" ||
+                    progress.stage === "instagram" ||
+                    progress.stage === "contact"
+                  ) {
+                    if (progress.event === "candidate_early_channel_pruned") {
+                      recordCandidateEarlyPruned(productivity);
+                    } else if (progress.event === "stage_failed") {
+                      recordCandidateFailed(productivity);
+                    } else if (progress.event === "stage_completed") {
+                      recordProductiveActivity(productivity, "enrichment_completed");
+                    }
+                  } else if (progress.stage === "qualification") {
+                    if (
+                      progress.event === "candidate_rejected" ||
+                      progress.event === "niche_relevance_mismatch" ||
+                      progress.event === "instagram_followers_over_limit"
+                    ) {
+                      recordCandidateRejected(productivity);
+                    }
+                  }
                 },
               },
             )) {
@@ -929,15 +955,19 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             clearInterval(productivityTimer);
             accepted = chunk.deliveredThisChunk;
             rejected = Math.max(0, discovered - accepted);
-            // PHASE 32 STEP 6 — compact per-area scan-budget telemetry, so
-            // the next benchmark can confirm areas are no longer each
-            // getting a giant duplicated budget.
+            // PHASE 32 / PHASE 36 — compact per-area scan-budget and productivity telemetry.
             console.info(
               `[poolExpandJob][area-scan-budget] area=${area} city=${city} ` +
                 `global_scan_budget=${scanBudgetCoordinator.globalScanBudget} ` +
                 `area_initial_scan_budget=${initialAskFor} ` +
                 `area_scan_budget_expansions=${scanBudgetExpansionRounds} ` +
-                `area_final_scan_budget=${askFor}`,
+                `productive_expansions=${scanBudgetExpansionRounds} ` +
+                `area_final_scan_budget=${askFor} ` +
+                `final_scan_budget=${askFor} ` +
+                `in_flight_count=${productivity.inFlightCount} ` +
+                `terminal_candidate_count=${productivity.terminalCandidateCount} ` +
+                `qualified_count=${productivity.qualifiedCount} ` +
+                `yield_evaluation_deferred_due_to_inflight=${productivity.yieldEvaluationDeferredDueToInflight}`,
             );
             // PHASE 12D: when THIS area's own productivity timer is what
             // ended the run, that specific, more informative reason takes

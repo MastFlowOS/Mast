@@ -70,24 +70,47 @@ export type AreaScanBudgetLimits = {
    * active area before yield classification. Default: 50.
    */
   minExplorationCandidates: number;
+  /**
+   * PHASE 36 — Maximum productive-area scan budget multiplier factor.
+   * Allows productive areas to expand up to `streamTarget * productiveMaxFactor`.
+   * Default: 4.
+   */
+  productiveMaxFactor?: number;
+  /**
+   * PHASE 36 — Absolute per-area productive ceiling in candidate count units.
+   * Matches the historical 400-candidate baseline per area. Default: 400.
+   */
+  maxProductiveCandidates?: number;
 };
 
 /**
  * The TOTAL shared scan budget for one city's area-pool run.
- * PHASE 34 (Option B): Sized to at least `streamTarget * multiplier` (floored at `streamTarget`)
- * AND has a minimum floor sufficient for `activeAreaCount * minExplorationCandidates`
- * so small targets (e.g. target=10 with 3 active areas) do not starve concurrent areas
- * of their exploration runway.
+ * PHASE 34 / PHASE 36: Sized to ensure all active areas receive their initial exploration
+ * runway (>= activeAreaCount * minExplorationCandidates) PLUS a shared expansion headroom
+ * pool allowing productive areas to expand without unconditional flat 400 duplication to
+ * every area.
  */
 export function computeGlobalScanBudget(
   streamTarget: number,
-  limits: Pick<AreaScanBudgetLimits, "multiplier" | "minExplorationCandidates">,
+  limits: Pick<AreaScanBudgetLimits, "multiplier" | "minExplorationCandidates" | "productiveMaxFactor" | "maxProductiveCandidates">,
   activeAreaCount: number = 1,
 ): number {
   const safeActiveAreaCount = Math.max(1, Math.floor(activeAreaCount) || 1);
   const targetScaledBudget = computeAskFor(streamTarget, limits.multiplier);
   const minExplorationTotal = safeActiveAreaCount * (limits.minExplorationCandidates ?? 0);
-  return Math.max(targetScaledBudget, minExplorationTotal);
+  const initialBaseBudget = Math.max(targetScaledBudget, minExplorationTotal);
+
+  if (safeActiveAreaCount <= 1 || !limits.productiveMaxFactor) {
+    return initialBaseBudget;
+  }
+
+  // Multi-area shared expansion headroom pool
+  const maxProductiveCeiling = limits.maxProductiveCandidates ?? 400;
+  const expansionHeadroom = Math.min(
+    targetScaledBudget,
+    Math.max(0, safeActiveAreaCount * maxProductiveCeiling - initialBaseBudget),
+  );
+  return initialBaseBudget + expansionHeadroom;
 }
 
 /** Per-area bookkeeping the coordinator keeps for telemetry and cap enforcement. */
@@ -127,23 +150,13 @@ export function createAreaScanBudgetCoordinator(
 }
 
 /**
- * STEP 2/STEP 5 / PHASE 34 — one area's INITIAL scan budget slice.
+ * STEP 2/STEP 5 / PHASE 34 / PHASE 36 — one area's INITIAL scan budget slice.
  *
  * `activeAreaCount` is the number of areas expected to run concurrently
- * against this SAME shared budget (poolExpandJob.ts passes the pool's own
- * `computeDynamicDiscoveryCapacity(...)` result — the exact concurrency the
- * area worker pool itself will use, so this never drifts out of sync with
- * actual concurrency). With `activeAreaCount === 1` (the legacy/single-area
- * case — STEP 7 test 8), `share === globalScanBudget`, which is clamped by
- * `maxAreaBudgetFactor` (default == the old `computeAskFor` multiplier) back
- * down to EXACTLY the old per-area formula's result — single-area behavior
- * is unchanged.
+ * against this SAME shared budget.
  *
- * PHASE 34: Initial area budget is max(fair-share, exploration floor),
- * bounded by per-area cap and remaining global headroom.
- *
- * Never negative, never below the floor, never above the cap or the
- * remaining global budget.
+ * Initial slice is computed as the fair share of the initial exploration base budget,
+ * floored at `minExplorationCandidates` (50) and capped by per-area initial cap.
  */
 export function allocateInitialAreaScanBudget(
   coordinator: AreaScanBudgetCoordinator,
@@ -151,7 +164,11 @@ export function allocateInitialAreaScanBudget(
   activeAreaCount: number,
 ): number {
   const safeActiveAreaCount = Math.max(1, Math.floor(activeAreaCount) || 1);
-  const share = Math.ceil(coordinator.globalScanBudget / safeActiveAreaCount);
+  const targetScaledBudget = computeAskFor(coordinator.streamTarget, coordinator.limits.multiplier);
+  const minExplorationTotal = safeActiveAreaCount * (coordinator.limits.minExplorationCandidates ?? 0);
+  const initialBaseBudget = Math.max(targetScaledBudget, minExplorationTotal);
+
+  const share = Math.ceil(initialBaseBudget / safeActiveAreaCount);
   const streamTargetFloor = Math.ceil(coordinator.streamTarget * coordinator.limits.minAreaBudgetFactor);
   const explorationFloor = coordinator.limits.minExplorationCandidates ?? 0;
   const floor = Math.max(streamTargetFloor, explorationFloor);
@@ -160,8 +177,7 @@ export function allocateInitialAreaScanBudget(
   const remaining = Math.max(0, coordinator.globalScanBudget - coordinator.allocated);
 
   // Floor always wins over a starved share (a lone/slow area must still get
-  // a realistic shot); cap and remaining global headroom both still apply
-  // on top, per STEP 5 fairness / STEP 8 safety.
+  // a realistic shot); cap and remaining global headroom both still apply on top.
   const desired = Math.max(share, floor);
   const budget = Math.max(floor, Math.min(desired, cap, Math.max(floor, remaining)));
 
@@ -171,19 +187,19 @@ export function allocateInitialAreaScanBudget(
 }
 
 /**
- * STEP 3 — a demonstrably PRODUCTIVE (or still-marginal — STEP 3's
- * "prefer a conservative two-stage model") area that exhausted its current
- * slice without reaching its own streamTarget may request one more chunk.
+ * STEP 3 / PHASE 36 — a demonstrably PRODUCTIVE (or still-marginal) area
+ * that exhausted its current slice without reaching its own streamTarget
+ * may request additional scan budget.
+ *
  * A `low_yield`-classified area (areaProductivity.ts's `classifyAreaYield`)
- * ALWAYS gets 0 — this function never duplicates that classifier, it only
- * reads its verdict (STEP 3: "Do NOT duplicate the yield classifier").
+ * ALWAYS gets 0.
+ *
+ * Productive areas can expand up to `productiveMaxFactor` (capped at
+ * `maxProductiveCandidates` = 400).
  *
  * Returns the additional amount granted (0 if none — caller stops asking).
- * Bounded by BOTH this area's own cumulative cap (`maxAreaBudgetFactor` or
- * `minExplorationCandidates`) AND the remaining shared headroom
- * (`globalScanBudget - allocated`) — a single productive area can still
- * never consume the entire shared budget (STEP 5), and a low-yield area
- * never receives unlimited expansion (STEP 3).
+ * Bounded by BOTH this area's own cumulative productive cap AND the
+ * remaining shared headroom (`globalScanBudget - allocated`).
  */
 export function requestAreaScanBudgetExpansion(
   coordinator: AreaScanBudgetCoordinator,
@@ -195,10 +211,19 @@ export function requestAreaScanBudgetExpansion(
   const entry = coordinator.perArea.get(area);
   if (!entry) return 0;
 
-  const cap = Math.max(
-    coordinator.limits.minExplorationCandidates ?? 0,
-    Math.ceil(coordinator.streamTarget * coordinator.limits.maxAreaBudgetFactor),
+  const maxFactor = yieldClass === "productive"
+    ? (coordinator.limits.productiveMaxFactor ?? coordinator.limits.maxAreaBudgetFactor)
+    : coordinator.limits.maxAreaBudgetFactor;
+
+  const factorCap = Math.ceil(coordinator.streamTarget * maxFactor);
+  const explorationFloor = coordinator.limits.minExplorationCandidates ?? 0;
+  const hardCap = coordinator.limits.maxProductiveCandidates ?? 400;
+
+  const cap = Math.min(
+    hardCap,
+    Math.max(explorationFloor, factorCap),
   );
+
   const remainingForArea = cap - entry.final;
   if (remainingForArea <= 0) return 0;
 

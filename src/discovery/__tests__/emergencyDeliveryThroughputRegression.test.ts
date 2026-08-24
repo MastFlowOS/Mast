@@ -192,3 +192,128 @@ test("8. quality gates unchanged: Instagram >100K rejection, niche mismatch reje
   const badPhoneLead: EngineLead = { ...validLead, phone: "123" };
   assert.equal(validateLead(badPhoneLead).valid, false);
 });
+
+// ── Test 9: Engine request receives expanded max_results (50 -> 150 -> 250 -> 350 -> 400) ──
+test("9. engine request receives expanded max_results across successive rounds (50 -> 150 -> 250 -> 350 -> <=400)", () => {
+  const streamTarget = 10;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, BUDGET_LIMITS, 3);
+  const area = "manhattan";
+
+  let askFor = allocateInitialAreaScanBudget(coordinator, area, 3);
+  const engineMaxResultsRequests: number[] = [];
+
+  // Round 0: Initial request
+  engineMaxResultsRequests.push(askFor);
+  assert.equal(askFor, 50, "initial engine request receives max_results=50");
+
+  // Round 1: Expansion grant 1
+  const grant1 = requestAreaScanBudgetExpansion(coordinator, area, "productive");
+  assert.equal(grant1, 100);
+  askFor = coordinator.perArea.get(area)?.final ?? (askFor + grant1);
+  engineMaxResultsRequests.push(askFor);
+  assert.equal(askFor, 150, "engine request 1 receives max_results=150");
+
+  // Round 2: Expansion grant 2
+  const grant2 = requestAreaScanBudgetExpansion(coordinator, area, "productive");
+  assert.equal(grant2, 100);
+  askFor = coordinator.perArea.get(area)?.final ?? (askFor + grant2);
+  engineMaxResultsRequests.push(askFor);
+  assert.equal(askFor, 250, "engine request 2 receives max_results=250");
+
+  // Round 3: Expansion grant 3
+  const grant3 = requestAreaScanBudgetExpansion(coordinator, area, "productive");
+  assert.equal(grant3, 100);
+  askFor = coordinator.perArea.get(area)?.final ?? (askFor + grant3);
+  engineMaxResultsRequests.push(askFor);
+  assert.equal(askFor, 350, "engine request 3 receives max_results=350");
+
+  // Round 4: Expansion grant 4 (up to 400 ceiling)
+  const grant4 = requestAreaScanBudgetExpansion(coordinator, area, "productive");
+  assert.equal(grant4, 50);
+  askFor = coordinator.perArea.get(area)?.final ?? (askFor + grant4);
+  engineMaxResultsRequests.push(askFor);
+  assert.equal(askFor, 400, "engine request 4 receives max_results=400");
+
+  // Round 5: Capped at 400
+  const grant5 = requestAreaScanBudgetExpansion(coordinator, area, "productive");
+  assert.equal(grant5, 0);
+
+  assert.deepEqual(
+    engineMaxResultsRequests,
+    [50, 150, 250, 350, 400],
+    "actual engine max_results requests must be exactly [50, 150, 250, 350, 400]",
+  );
+});
+
+// ── Test 10: Parent delivery aggregation and immediate TARGET_REACHED abort ──
+test("10. parent delivery accounting: child A (1) + child B (4) + child C (5) = 10 -> TARGET_REACHED aborts siblings immediately", () => {
+  const parentTarget = 10;
+  let delivered = 0;
+  let targetReachedFired = false;
+  const parentAbort = new AbortController();
+  const sibling1 = scopeAreaAbort(parentAbort.signal);
+  const sibling2 = scopeAreaAbort(parentAbort.signal);
+  const activeSibling = scopeAreaAbort(parentAbort.signal);
+
+  function simulateChildDelivery(count: number): "continue" | "stop_outer" {
+    for (let i = 0; i < count; i++) {
+      delivered += 1;
+      if (delivered >= parentTarget) {
+        targetReachedFired = true;
+        parentAbort.abort("TARGET_REACHED");
+        return "stop_outer";
+      }
+    }
+    return "continue";
+  }
+
+  // Child A delivers 1
+  const resA = simulateChildDelivery(1);
+  assert.equal(resA, "continue");
+  assert.equal(delivered, 1);
+  assert.equal(targetReachedFired, false);
+  assert.equal(activeSibling.signal.aborted, false);
+
+  // Child B delivers 4
+  const resB = simulateChildDelivery(4);
+  assert.equal(resB, "continue");
+  assert.equal(delivered, 5);
+  assert.equal(targetReachedFired, false);
+  assert.equal(activeSibling.signal.aborted, false);
+
+  // Child C delivers 5 -> reaches 10
+  const resC = simulateChildDelivery(5);
+  assert.equal(resC, "stop_outer");
+  assert.equal(delivered, 10);
+  assert.equal(targetReachedFired, true);
+  assert.equal(parentAbort.signal.aborted, true);
+  assert.equal(parentAbort.signal.reason, "TARGET_REACHED");
+  assert.equal(sibling1.signal.aborted, true);
+  assert.equal(sibling2.signal.aborted, true);
+  assert.equal(activeSibling.signal.aborted, true);
+});
+
+// ── Test 11: Truthful enrichment active & queue lifecycle ───────────────────
+test("11. truthful enrichment lifecycle: job start -> active=1 -> running -> complete -> active=0, confirmed queued -> queue depth > 0", async () => {
+  const { getEnrichmentTelemetrySnapshot, trackActiveEnrichment, getEnrichmentQueueDepth } = await import("../../lib/enrichmentTelemetry.js");
+
+  let activeDuringJob = -1;
+  const fakeBoss = {
+    getQueueSize: async (queue: string) => (queue === "business.enrich" ? 5 : 0),
+  };
+
+  // Check queue depth before job start
+  const initialQueueDepth = await getEnrichmentQueueDepth(fakeBoss, "business.enrich");
+  assert.equal(initialQueueDepth, 5, "confirmed queued jobs report queue depth > 0");
+
+  assert.equal(getEnrichmentTelemetrySnapshot().website_active, 0, "active=0 before job");
+
+  await trackActiveEnrichment(async () => {
+    // Job running
+    activeDuringJob = getEnrichmentTelemetrySnapshot().website_active;
+    assert.equal(activeDuringJob, 1, "active=1 while job is running");
+  });
+
+  // Job complete
+  assert.equal(getEnrichmentTelemetrySnapshot().website_active, 0, "active=0 after job completes");
+});

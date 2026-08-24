@@ -396,7 +396,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       const childDelivered = info.delivered;
       const childRemaining = Math.max(0, childRequested - childDelivered);
       const parentTarget = payload.shortfall;
-      const parentDelivered = followUp && newForUser > 0 ? newForUser : delivered;
+      const parentDelivered = delivered;
       const parentRemaining = Math.max(0, parentTarget - parentDelivered);
       const areaSla = (info.perf?.area_sla ?? {}) as Record<string, unknown>;
       const mapsCandidatesSeen = typeof areaSla.maps_candidates_seen === "number" ? areaSla.maps_candidates_seen : undefined;
@@ -570,7 +570,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             return "stop_outer";
           }
 
-          if (newForUser >= payload.shortfall) {
+          if (newForUser >= payload.shortfall || delivered >= payload.shortfall) {
             targetReachedAtMs = Date.now();
             if (reqId) terminateRequest(reqId, "TARGET_REACHED");
             abortController.abort("TARGET_REACHED");
@@ -948,7 +948,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             const grant = requestAreaScanBudgetExpansion(scanBudgetCoordinator, area, yieldClass);
             if (grant <= 0) break areaScanBudgetLoop;
 
-            askFor = grant;
+            askFor = scanBudgetCoordinator.perArea.get(area)?.final ?? (askFor + grant);
             scanBudgetExpansionRounds += 1;
             } // areaScanBudgetLoop
           } finally {

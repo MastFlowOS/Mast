@@ -35,13 +35,17 @@ Pipeline, in order:
        `ProviderRegistry.create()`'s own single/parallel + dedup
        logic — see `_construct_provider()` for why this is assembled
        by hand here rather than by calling `registry.create()`
-       itself): a single selected provider runs bare, unwrapped —
-       ProviderDeduplicator exists for CROSS-provider identity
-       collisions and is only applied when more than one provider is
-       actually running (Steps 4-6: concurrent execution +
-       cross-provider dedup + no double-enrichment, all inherited
-       unmodified from the existing provider layer — see those
-       modules' own docstrings).
+       itself): every selected provider — one or many — is wrapped in
+       ProviderDeduplicator (PHASE 40: a single selected provider's
+       own repeated rows are a real duplicate source too, e.g. Maps
+       grid/tile overlap re-yielding the same listing within one
+       `discover()` call — see that class's own docstring and
+       `compose_discovery()`'s inline comment at the wrap site for the
+       full rationale). When more than one provider is selected, they
+       are additionally run concurrently first (Steps 4-6: concurrent
+       execution + cross-provider dedup + no double-enrichment, all
+       inherited unmodified from the existing provider layer — see
+       those modules' own docstrings).
 
        Provider-failure isolation (Provider Failure Isolation phase):
        when more than one provider is selected, the
@@ -319,17 +323,40 @@ def compose_discovery(
     ]
     composed_provider: DiscoveryProviderInterface
     if len(instances) == 1:
-        # Single-provider case: no dedup wrapper. ProviderDeduplicator
-        # exists for CROSS-provider identity collisions (Step 5 — see
-        # provider_deduplicator.py); with only one provider running,
-        # there is no "cross" to dedup against, and wrapping it anyway
-        # would be a real behavior change for exactly the single-
-        # provider case this phase promises to leave alone (see module
-        # docstring, "No behavior change for existing single-provider
-        # production callers") — a provider is free to yield candidates
-        # that share identity signals (e.g. Overpass venues that share
-        # a building) and those are not cross-provider duplicates.
-        composed_provider = instances[0]
+        # PHASE 40 — audit correction: a single selected provider is
+        # still wrapped in ProviderDeduplicator. Earlier reasoning here
+        # skipped the wrapper on the theory that ProviderDeduplicator
+        # only exists for CROSS-provider identity collisions, so with
+        # nothing to run "cross" against there was supposedly nothing
+        # to gain. That reasoning missed that duplicates within a
+        # SINGLE provider's own stream are exactly as real: Google
+        # Maps' own grid/tile sub-area coverage and paginated
+        # traversal legitimately re-yield the same Maps listing more
+        # than once in one `discover()` call, and provider_deduplicator.py's
+        # own docstring already anticipated this ("wrapping a single
+        # bare provider — to collapse that provider's own repeated
+        # rows — is equally valid and requires no special-casing").
+        # Production logs confirmed this is a real, common waste
+        # source: whenever a niche has no Overpass OSM-tag mapping (or
+        # a third-party provider is unconfigured), `instances` has
+        # exactly one entry, and that was — until this fix — the one
+        # path with NO in-stream fingerprint check of any kind before
+        # every repeated candidate reached the (network-bound)
+        # persistent early-dedup check and, on a first-time-this-run
+        # repeat, fell straight through to full enrichment.
+        #
+        # This is not a precision regression: every fingerprint key
+        # ProviderDeduplicator computes (provider_id+provider_business_id,
+        # maps place/link, phone, website, name+address, name+coordinates
+        # — see that module's docstring) is already documented as safe
+        # against false positives on its own, regardless of whether the
+        # two colliding candidates came from the same provider or two
+        # different ones; "Overpass venues that share a building" was
+        # never actually protected by the old skip, since two such
+        # venues still need the SAME name text to collide on key 4/5,
+        # which is the same low-risk bar already accepted everywhere
+        # else in this design.
+        composed_provider = ProviderDeduplicator(instances[0])
     else:
         composed_provider = ProviderDeduplicator(
             ParallelCompositeDiscoveryProvider(

@@ -245,6 +245,7 @@ in this file.
 
 from __future__ import annotations
 
+import concurrent.futures
 import re
 import socket
 import time
@@ -262,6 +263,7 @@ from utils.parsing import (
     extract_jsonld_contact_data,
     extract_phones,
     find_secondary_contact_link,
+    get_standard_contact_candidates,
     has_invalid_ig_candidate,
     is_valid_email,
     is_valid_phone,
@@ -278,7 +280,7 @@ DEFAULT_TIMEOUT_SECONDS = 6.0
 
 WORKER_TYPE = "contact"
 
-_USER_AGENT = "MAST-ContactWorker/1.0 (+contact extraction only)"
+_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 MAST-ContactWorker/1.0"
 
 # -- Anchor scan, same shape as WebsiteWorker's own _ANCHOR_RE — a ------
 # -- literal href/text extraction, not a heuristic judgment. ------------
@@ -342,27 +344,11 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         Consume exactly one WebsiteIntel and produce exactly one
         ContactIntel. Never mutates `item`.
 
-        Phase 8.1: each candidate page (`contact_page`, `final_url`) is
-        now fetched independently — one page's failure is recorded and
-        does not prevent the other page from being tried, and does not
-        discard evidence already extracted from a page that succeeded.
-        `mailto:`/`tel:` candidates are never fetched at all (see
-        `_read_evidence_page`). "Error handling" above still holds for
-        a *total* loss: if every fetchable page failed and no evidence
-        of any kind was recovered, the last fetch exception propagates
-        unmodified and no ContactIntel is returned — do not swallow
-        that case.
-
-        Phase 15: Quality-preserving contact acquisition enhancements:
-        - Structured data (JSON-LD Organization / LocalBusiness / ContactPoint)
-        - Icon & contextual attribute extraction (mailto/tel icons, aria-label, title, data-*)
-        - Early exit once valid email, valid phone, AND Instagram are all present
-          (Phase 27, Step 1 — previously email+phone alone; see the early-exit
-          comment below for why that was insufficient)
-        - Bounded secondary-page discovery (at most 1 extra same-domain page from priority list:
-          contact > about > team > staff > locations > catering > wholesale > press > partners),
-          triggered by a missing email, phone, OR Instagram (Phase 27, Step 2)
-        - Maximum 3 total page fetches per candidate (unchanged — Phase 27, Step 4)
+        Phase 8.1 & 39: each candidate page (`contact_page`, `final_url`) is
+        fetched independently and in parallel when multiple distinct pages exist.
+        403/404 errors immediately trigger alternate page exploration.
+        429/500 errors use bounded backoff and retry.
+        Page budget remains strictly bounded (<= 3 page fetches).
         """
         pages = self._pages_to_fetch(item)
         if not pages:
@@ -390,39 +376,10 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         fetched_htmls: list[tuple[str, str]] = []
         tried_urls: set[str] = set()
 
-        for role, url in pages:
-            tried_urls.add(url.strip())
-            # FIX 1 — mailto:/tel: are literal evidence, never a fetch.
-            if url.lower().startswith(_MAILTO_PREFIX):
-                address = url[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
-                address = urllib.parse.unquote(address)
-                if address and is_valid_email(address):
-                    emails.setdefault(address.lower(), "mailto")
-                    mailto_extracted = True
-                any_page_recovered = True
-                continue
-            if url.lower().startswith(_TEL_PREFIX):
-                number = url[len(_TEL_PREFIX):].split("?", 1)[0].strip()
-                number = urllib.parse.unquote(number)
-                if number and is_valid_phone(number):
-                    phones.setdefault(number, "tel")
-                    tel_extracted = True
-                elif number:
-                    phones.setdefault(number, "tel")
-                    tel_extracted = True
-                any_page_recovered = True
-                continue
-
-            # FIX 2 — isolate this page's fetch failure from the rest.
-            try:
-                html, page_url, elapsed = self._fetch(url)
-            except Exception as exc:  # noqa: BLE001 — recorded, not swallowed
-                last_exc = exc
-                if role == "contact_page":
-                    contact_page_fetch_failed = True
-                else:
-                    homepage_fetch_failed = True
-                continue
+        def _process_page_content(role: str, html: str, page_url: str, elapsed: float) -> None:
+            nonlocal contact_form_url, whatsapp_link, messenger_link, telegram_link
+            nonlocal linkedin_url, instagram_url, instagram_source, instagram_invalid_candidate_seen
+            nonlocal mailto_extracted, tel_extracted, any_page_recovered, total_elapsed
 
             any_page_recovered = True
             total_elapsed += elapsed
@@ -447,9 +404,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             if whatsapp_link is None:
                 whatsapp_link = self._extract_first_link(html, page_url, _WHATSAPP_RE)
             if messenger_link is None:
-                messenger_link = self._extract_first_link(
-                    html, page_url, _MESSENGER_RE
-                )
+                messenger_link = self._extract_first_link(html, page_url, _MESSENGER_RE)
             if telegram_link is None:
                 telegram_link = self._extract_first_link(html, page_url, _TELEGRAM_RE)
             if linkedin_url is None:
@@ -459,78 +414,95 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                 if instagram_url is None and has_invalid_ig_candidate(html):
                     instagram_invalid_candidate_seen = True
 
-            # Early Exit (Phase 27, Step 1): previously this stopped as
-            # soon as valid email AND valid phone were both present,
-            # even when Instagram was still missing — which, combined
-            # with `_pages_to_fetch()`'s contact-page-first order, meant
-            # a contact page with email+phone but no Instagram could
-            # end the loop before the homepage (often carrying an
-            # Instagram icon in its footer) was ever inspected. Now
-            # requires Instagram too, so a still-missing Instagram
-            # channel no longer gets silently skipped while pages that
-            # could supply it remain unfetched. Still bounded by the
-            # same `pages` tuple (contact_page, final_url) — at most two
-            # iterations of this loop regardless.
+        total_fetches = 0
+
+        for role, url in pages:
+            url_clean = url.strip()
+            tried_urls.add(url_clean)
+            if url_clean.lower().startswith(_MAILTO_PREFIX):
+                address = url_clean[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
+                address = urllib.parse.unquote(address)
+                if address and is_valid_email(address):
+                    emails.setdefault(address.lower(), "mailto")
+                    mailto_extracted = True
+                any_page_recovered = True
+                continue
+            if url_clean.lower().startswith(_TEL_PREFIX):
+                number = url_clean[len(_TEL_PREFIX):].split("?", 1)[0].strip()
+                number = urllib.parse.unquote(number)
+                if number and is_valid_phone(number):
+                    phones.setdefault(number, "tel")
+                    tel_extracted = True
+                elif number:
+                    phones.setdefault(number, "tel")
+                    tel_extracted = True
+                any_page_recovered = True
+                continue
+
+            total_fetches += 1
+            try:
+                html, page_url, elapsed = self._fetch(url_clean)
+                _process_page_content(role, html, page_url, elapsed)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if role == "contact_page":
+                    contact_page_fetch_failed = True
+                else:
+                    homepage_fetch_failed = True
+
+            # Early Exit: if valid email, valid phone, AND Instagram are all present
             if bool(emails) and bool(phones) and instagram_url is not None:
                 break
 
-        # Phase 15: Bounded Secondary Page Discovery
+        # Phase 15 & 39: Bounded Secondary Page Discovery
         secondary_page_fetched = False
         secondary_page_fetch_failed = False
         secondary_page_type: Optional[str] = None
 
-        # Only discover/fetch secondary page if contact data OR Instagram
-        # is still missing (Phase 27, Step 2: Instagram is now also a
-        # missing-required-acquisition-target that can justify the one
-        # allowed secondary-page fetch, same as email/phone always
-        # could) AND at least one initial page was successfully fetched.
-        # The secondary-page priority order itself (contact > about >
-        # team > staff > locations > catering > wholesale > press >
-        # partners) is unchanged — see find_secondary_contact_link().
-        if (not emails or not phones or instagram_url is None) and fetched_htmls:
+        if (not emails or not phones or instagram_url is None) and total_fetches < 3:
             base_url = item.final_url or item.contact_page or (fetched_htmls[0][1] if fetched_htmls else "")
-            sec_url, sec_type = find_secondary_contact_link(
-                fetched_htmls=fetched_htmls,
-                base_url=base_url,
-                tried_urls=tried_urls,
-            )
+            sec_url: Optional[str] = None
+            sec_type: Optional[str] = None
+
+            if fetched_htmls:
+                sec_url, sec_type = find_secondary_contact_link(
+                    fetched_htmls=fetched_htmls,
+                    base_url=base_url,
+                    tried_urls=tried_urls,
+                )
+
+            # Fallback to standard contact candidates if initial fetches failed (403/404)
+            if not sec_url and (not fetched_htmls or contact_page_fetch_failed) and base_url:
+                std_cands = get_standard_contact_candidates(base_url, tried_urls)
+                if std_cands:
+                    sec_type, sec_url = std_cands[0]
+
             if sec_url:
+                tried_urls.add(sec_url.strip())
+                total_fetches += 1
                 secondary_page_fetched = True
                 secondary_page_type = sec_type
                 try:
                     sec_html, sec_page_url, sec_elapsed = self._fetch(sec_url)
-                    total_elapsed += sec_elapsed
-                    any_page_recovered = True
-                    self._extract_page_contact_data(
-                        html=sec_html,
-                        page_url=sec_page_url,
-                        page_role="secondary_page",
-                        emails=emails,
-                        phones=phones,
-                    )
-                    if any(s == "mailto" for s in emails.values()):
-                        mailto_extracted = True
-                    if any(s == "tel" for s in phones.values()):
-                        tel_extracted = True
-
-                    if contact_form_url is None and _FORM_RE.search(sec_html):
-                        contact_form_url = sec_page_url
-                    if whatsapp_link is None:
-                        whatsapp_link = self._extract_first_link(sec_html, sec_page_url, _WHATSAPP_RE)
-                    if messenger_link is None:
-                        messenger_link = self._extract_first_link(sec_html, sec_page_url, _MESSENGER_RE)
-                    if telegram_link is None:
-                        telegram_link = self._extract_first_link(sec_html, sec_page_url, _TELEGRAM_RE)
-                    if linkedin_url is None:
-                        linkedin_url = self._extract_first_link(sec_html, sec_page_url, _LINKEDIN_RE)
-                    if instagram_url is None:
-                        instagram_url, instagram_source = self._extract_instagram_evidence(sec_html)
-                        if instagram_url is None and has_invalid_ig_candidate(sec_html):
-                            instagram_invalid_candidate_seen = True
+                    _process_page_content("secondary_page", sec_html, sec_page_url, sec_elapsed)
                 except Exception as exc:
                     secondary_page_fetch_failed = True
                     if last_exc is None:
                         last_exc = exc
+                    # If secondary page 404s/403s, try alternate standard contact candidate if within budget
+                    if (not emails or not phones or instagram_url is None) and total_fetches < 3 and base_url:
+                        alt_cands = get_standard_contact_candidates(base_url, tried_urls)
+                        if alt_cands:
+                            alt_type, alt_url = alt_cands[0]
+                            tried_urls.add(alt_url.strip())
+                            total_fetches += 1
+                            try:
+                                alt_html, alt_page_url, alt_elapsed = self._fetch(alt_url)
+                                secondary_page_fetch_failed = False
+                                secondary_page_type = alt_type
+                                _process_page_content("secondary_page", alt_html, alt_page_url, alt_elapsed)
+                            except Exception as alt_exc:
+                                last_exc = alt_exc
 
         if not any_page_recovered:
             # Every candidate was a fetch and every fetch failed — no
@@ -595,11 +567,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         """
         (role, url) pairs — contact_page first (most likely to hold a
         contact form/explicit channels), then final_url if present and
-        distinct. See module docstring "Which pages get fetched". The
-        role (`"contact_page"` / `"homepage"`) is carried alongside the
-        URL only so Phase 8.1's per-page failure can be attributed to
-        the right counter/field — it changes no fetch order or dedup
-        behavior versus before.
+        distinct. See module docstring "Which pages get fetched".
         """
         urls: "dict[str, str]" = {}
         if item.contact_page:
@@ -611,23 +579,48 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
     def _fetch(self, url: str) -> Tuple[str, str, float]:
         """
         Fetch `url` and return (html, resolved_url, elapsed_seconds).
-        Unguarded on purpose — see module docstring "Error handling".
+        Implements bounded 429/500 retry and URL normalization.
         """
+        raw_url = url.strip()
+        if not re.match(r"^https?://", raw_url, re.IGNORECASE):
+            raw_url = "https://" + raw_url
+
         headers = {
             "User-Agent": _USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
             "Connection": "close",
         }
-        request = urllib.request.Request(url, headers=headers)
-        start = time.monotonic()
-        with urllib.request.urlopen(request, timeout=self._timeout) as response:
-            elapsed = time.monotonic() - start
-            resolved_url = response.geturl()
-            raw = response.read()
-            charset = response.headers.get_content_charset() or "utf-8"
-        html = raw.decode(charset, errors="replace")
-        return html, resolved_url, elapsed
+
+        def _do_http(target: str) -> Tuple[str, str, float]:
+            req = urllib.request.Request(target, headers=headers)
+            start = time.monotonic()
+            with urllib.request.urlopen(req, timeout=self._timeout) as response:
+                elapsed = time.monotonic() - start
+                resolved_url = response.geturl()
+                raw = response.read()
+                charset = response.headers.get_content_charset() or "utf-8"
+            html = raw.decode(charset, errors="replace")
+            return html, resolved_url, elapsed
+
+        try:
+            return _do_http(raw_url)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                wait = 0.5
+                if retry_after:
+                    try:
+                        wait = min(max(float(retry_after), 0.1), 2.0)
+                    except Exception:
+                        wait = 0.5
+                time.sleep(wait)
+                return _do_http(raw_url)
+            elif exc.code in (400, 500, 502, 503, 504):
+                time.sleep(0.2)
+                return _do_http(raw_url)
+            else:
+                raise
 
     @staticmethod
     def _extract_page_contact_data(

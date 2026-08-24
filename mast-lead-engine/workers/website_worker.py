@@ -118,7 +118,7 @@ DEFAULT_TIMEOUT_SECONDS = 8.0
 
 WORKER_TYPE = "website"
 
-_USER_AGENT = "MAST-WebsiteWorker/1.0 (+website inspection only)"
+_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 MAST-WebsiteWorker/1.0"
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _META_DESC_RE = re.compile(
@@ -131,18 +131,8 @@ _ANCHOR_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Phase 9.1 (audit follow-up): the "contact"-only substring match missed
-# real, confirmed false negatives (Chalait, Café Grumpy, Blank Street)
-# that publish public emails under Press/Careers/Wholesale/Policies
-# pages instead of a page literally called "Contact". Broadened to this
-# short, explicit keyword set — same href/text matching mechanism, same
-# "first matching link wins" document-order semantics, still exactly
-# one secondary page chosen. Order here is the alternation's own order
-# (used only to report which keyword matched a given anchor via
-# `match.group(1)`; it does not reorder anchors — the first anchor in
-# the document that matches ANY of these keywords still wins, per the
-# existing behavior). `\b` word boundaries keep e.g. "policy" from
-# matching inside "policies" (and vice versa) or terms like "contactless".
+# Phase 9.1 & 39: contact-page hint keywords broadened to include
+# connect, find-us, visit-us, reach-us, about-us, contact-us.
 _CONTACT_PAGE_HINT_KEYWORDS: tuple[str, ...] = (
     "contact",
     "help",
@@ -218,14 +208,27 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
         exceptions" above for exactly which failures are caught and
         translated into fields versus left to propagate.
         """
-        if not item.website:
+        raw_website = (item.website or "").strip()
+        if not raw_website:
             return WebsiteIntel(pipeline_id=item.pipeline_id, website_reachable=False)
+
+        if not re.match(r"^https?://", raw_website, re.IGNORECASE):
+            target_url = "https://" + raw_website
+            fallback_http_url: Optional[str] = "http://" + raw_website
+        else:
+            target_url = raw_website
+            fallback_http_url = None
+
+        headers = {
+            "User-Agent": _USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Connection": "close",
+        }
 
         redirect_tracker = _RedirectTracker()
         opener = urllib.request.build_opener(redirect_tracker)
-        request = urllib.request.Request(
-            item.website, headers={"User-Agent": _USER_AGENT}
-        )
+        request = urllib.request.Request(target_url, headers=headers)
 
         start = time.monotonic()
         try:
@@ -241,22 +244,52 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
             return WebsiteIntel(
                 pipeline_id=item.pipeline_id,
                 website_reachable=True,
-                https=urlparse(exc.url or item.website).scheme == "https",
-                final_url=exc.url,
+                https=urlparse(exc.url or target_url).scheme == "https",
+                final_url=exc.url or target_url,
                 http_status=exc.code,
                 redirect_chain=tuple(redirect_tracker.chain) or None,
                 response_time=elapsed,
                 crawl_duration=elapsed,
             )
         except (urllib.error.URLError, socket.timeout, ConnectionError):
-            # No response at all — this is the "unreachable" fact.
-            elapsed = time.monotonic() - start
-            return WebsiteIntel(
-                pipeline_id=item.pipeline_id,
-                website_reachable=False,
-                response_time=elapsed,
-                crawl_duration=elapsed,
-            )
+            if fallback_http_url:
+                try:
+                    fallback_req = urllib.request.Request(fallback_http_url, headers=headers)
+                    with opener.open(fallback_req, timeout=self._timeout) as response:
+                        elapsed = time.monotonic() - start
+                        final_url = response.geturl()
+                        status = response.status
+                        raw = response.read()
+                        charset = response.headers.get_content_charset() or "utf-8"
+                except urllib.error.HTTPError as exc:
+                    elapsed = time.monotonic() - start
+                    return WebsiteIntel(
+                        pipeline_id=item.pipeline_id,
+                        website_reachable=True,
+                        https=False,
+                        final_url=exc.url or fallback_http_url,
+                        http_status=exc.code,
+                        redirect_chain=tuple(redirect_tracker.chain) or None,
+                        response_time=elapsed,
+                        crawl_duration=elapsed,
+                    )
+                except (urllib.error.URLError, socket.timeout, ConnectionError):
+                    elapsed = time.monotonic() - start
+                    return WebsiteIntel(
+                        pipeline_id=item.pipeline_id,
+                        website_reachable=False,
+                        response_time=elapsed,
+                        crawl_duration=elapsed,
+                    )
+            else:
+                # No response at all — this is the "unreachable" fact.
+                elapsed = time.monotonic() - start
+                return WebsiteIntel(
+                    pipeline_id=item.pipeline_id,
+                    website_reachable=False,
+                    response_time=elapsed,
+                    crawl_duration=elapsed,
+                )
 
         html = raw.decode(charset, errors="replace")
         contact_page, contact_page_hint = self._extract_contact_page(html, final_url)

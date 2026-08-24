@@ -169,6 +169,35 @@ reducing false positives.
        key 3, this key simply never fires for a Google-Maps-only
        candidate; it costs nothing to compute for one.)
 
+    6. ("maps_place", normalized_place_id) — only when `maps_url`
+       resolves to a stable Google Maps place id (e.g. a `ChIJ...`
+       token or a hex feature id embedded in the URL — see
+       `storage/dedup.py:norm_maps_place_id`, reused here unmodified,
+       the exact same normalizer `storage/early_persistent_dedup.py`
+       already keys its own `place:` fingerprint on). This is the
+       strongest possible signal for the "same exact Maps place"
+       duplicate class: two BusinessCandidate records that resolve to
+       the same place id are, by construction, the same real-world
+       Maps listing — there is no false-positive risk to weigh, unlike
+       keys 4-5. It is also, in practice, the *only* key that reliably
+       fires for back-to-back repeats of the same Maps listing seen
+       twice in one discovery run (e.g. overlapping grid/tile
+       sub-areas, or a paginated source that re-crosses a boundary):
+       `provider_business_id` (key 1) is never populated by
+       GoogleMapsProvider (see that module's own docstring), and a
+       repeat listing frequently carries no phone or website on Maps
+       at all, leaving name+address/name+coordinates as the only other
+       chance to catch it — this key removes that dependency.
+
+    7. ("maps_link", normalized_link) — fallback for when `maps_url`
+       is present but no place id could be extracted from it (see
+       `storage/dedup.py:norm_maps_link`, reused unmodified). Two
+       candidates whose Maps URLs clean down to the identical link are
+       the same listing; deliberately mutually exclusive with key 6
+       for a given candidate (a link that does resolve to a place id
+       only ever contributes the stronger key 6, never both) so the
+       two never redundantly double-count the same evidence.
+
 A candidate with none of these keys (e.g. only a bare `name` and
 nothing else corroborating it) produces an empty key set and is never
 treated as a duplicate of anything, by construction — "insufficient
@@ -260,6 +289,16 @@ from urllib.parse import urlparse
 from engine.contracts import BusinessCandidate
 from engine.interfaces import DiscoveryProviderInterface
 
+# PHASE 40 — reuses the SAME Maps place/link normalizers
+# storage/dedup.py and storage/early_persistent_dedup.py already use
+# for the identical purpose (see module docstring, "Fingerprinting",
+# key 6 below). Not reimplemented here — importing the canonical
+# normalizer is exactly what this module already does one line down
+# for its own text/phone/domain helpers' spirit (deterministic,
+# single source of truth), and avoids a second, possibly-diverging
+# definition of "what is a Maps place id" ever existing.
+from storage.dedup import norm_maps_link, norm_maps_place_id
+
 _MIN_PHONE_DIGITS = 7
 _COORDINATE_PRECISION = 5  # decimal places (~1.1m)
 
@@ -337,6 +376,20 @@ def _fingerprint_keys(candidate: BusinessCandidate) -> FrozenSet[Tuple[Any, ...]
 
     if candidate.provider_business_id:
         keys.add(("provider_id", candidate.provider, candidate.provider_business_id))
+
+    maps_place_id = norm_maps_place_id(candidate.maps_url)
+    if maps_place_id:
+        keys.add(("maps_place", maps_place_id.lower()))
+    else:
+        # Only when no stable place id could be extracted — mirrors
+        # storage/early_persistent_dedup.py's own "map: key only when
+        # no place: id was found" rule (see that module's
+        # `early_fingerprint_keys`), so a candidate never contributes
+        # both a place-id key AND a weaker whole-link key for the same
+        # `maps_url`.
+        maps_link = norm_maps_link(candidate.maps_url)
+        if maps_link and not maps_link.startswith("place:"):
+            keys.add(("maps_link", maps_link))
 
     phone = _normalize_phone(candidate.phone)
     if len(phone) >= _MIN_PHONE_DIGITS:

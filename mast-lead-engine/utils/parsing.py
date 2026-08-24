@@ -210,27 +210,68 @@ def _email_blocked(email: str) -> bool:
     return not is_valid_email(email)
 
 
+def decode_cfemail(cfemail: str) -> str:
+    """Decode Cloudflare email-protection XOR cipher string."""
+    try:
+        cfemail = cfemail.strip()
+        if len(cfemail) < 4 or len(cfemail) % 2 != 0:
+            return ""
+        k = int(cfemail[:2], 16)
+        email_chars = [chr(int(cfemail[i:i+2], 16) ^ k) for i in range(2, len(cfemail), 2)]
+        decoded = "".join(email_chars).strip().lower()
+        if is_valid_email(decoded):
+            return decoded
+    except Exception:
+        pass
+    return ""
+
+
+_OBFUSCATED_EMAIL_RE = re.compile(
+    r"\b([A-Za-z0-9._%+\-]+)\s*(?:\[at\]|\(at\)|\bat\b|\[@\])\s*([A-Za-z0-9.\-]+)\s*(?:\[dot\]|\(dot\)|\bdot\b|\[\.\]|\.)\s*([A-Za-z]{2,})\b",
+    re.IGNORECASE,
+)
+_CF_EMAIL_HREF_RE = re.compile(r'/cdn-cgi/l/email-protection#([a-f0-9]+)', re.IGNORECASE)
+_CF_EMAIL_ATTR_RE = re.compile(r'data-cfemail=["\']([a-f0-9]+)["\']', re.IGNORECASE)
+
+
 def extract_emails(html: str) -> list[str]:
-    """Extract all valid emails from HTML."""
+    """Extract all valid emails from HTML including mailto, Cloudflare, obfuscated, and plain text."""
     if not html:
         return []
     found: list[str] = []
     seen: set[str] = set()
 
-    # mailto: links first (most reliable)
-    for m in re.findall(r'mailto:([^"\'>\s?&]+)', html, flags=re.I):
-        if "@" in m:
-            e = urllib.parse.unquote(m).strip().lower()
-            if e not in seen and is_valid_email(e):
-                seen.add(e)
-                found.append(e)
-
-    # Raw email scan
-    for m in _SCAN_EMAIL_RE.findall(html):
-        e = m.lower()
+    def _add_email(raw: str) -> None:
+        if not raw:
+            return
+        e = urllib.parse.unquote(raw).strip().lower()
         if e not in seen and is_valid_email(e):
             seen.add(e)
             found.append(e)
+
+    # 1. mailto: links first (most reliable)
+    for m in re.findall(r'mailto:([^"\'>\s?&]+)', html, flags=re.I):
+        if "@" in m:
+            _add_email(m)
+
+    # 2. Cloudflare email protection
+    for m in _CF_EMAIL_HREF_RE.findall(html):
+        decoded = decode_cfemail(m)
+        if decoded:
+            _add_email(decoded)
+    for m in _CF_EMAIL_ATTR_RE.findall(html):
+        decoded = decode_cfemail(m)
+        if decoded:
+            _add_email(decoded)
+
+    # 3. Obfuscated email patterns (e.g. name [at] domain.com)
+    for m in _OBFUSCATED_EMAIL_RE.findall(html):
+        constructed = f"{m[0]}@{m[1]}.{m[2]}"
+        _add_email(constructed)
+
+    # 4. Raw email scan
+    for m in _SCAN_EMAIL_RE.findall(html):
+        _add_email(m)
 
     return found
 
@@ -570,7 +611,7 @@ _IG_HANDLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{1,}$")
 # (`extract_ig_urls`, `extract_ig_urls_with_source`,
 # `has_invalid_ig_candidate`) gets the broadened recognition for free.
 _IG_URL_RE = re.compile(
-    r"(?<![\w.-])(?:(?:https?:)?//)?(?:www\.)?instagram\.com/([A-Za-z0-9_.]+)(?:/[^\"'\s<>]*)?",
+    r"(?<![\w.-])(?:(?:https?:)?//)?(?:www\.)?(?:instagram\.com|instagr\.am)/([A-Za-z0-9_.]+)(?:/[^\"'\s<>]*)?",
     re.IGNORECASE,
 )
 
@@ -683,7 +724,7 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 # context must be explicit, per Step 6's own instruction) — this is a
 # fixed attribute-name allowlist, not a generic data-* scan.
 _IG_DATA_ATTR_RE = re.compile(
-    r'\bdata-instagram(?:-handle|-url|-id)?\s*=\s*["\']([^"\']+)["\']',
+    r'\bdata-(?:instagram|ig)(?:-handle|-url|-id|-account|-name)?\s*=\s*["\']([^"\']+)["\']',
     re.IGNORECASE,
 )
 
@@ -733,7 +774,7 @@ def _find_ig_data_attribute_candidates(html: str) -> "list[tuple[int, str]]":
     See `_IG_DATA_ATTR_RE`'s own comment for the explicit-context
     requirement that keeps this from firing on unrelated `data-*`
     attributes."""
-    if not html or "data-instagram" not in html.lower():
+    if not html or ("data-instagram" not in html.lower() and "data-ig" not in html.lower()):
         return []
     candidates: "list[tuple[int, str]]" = []
     for m in _IG_DATA_ATTR_RE.finditer(html):
@@ -768,20 +809,18 @@ def _ig_source_for_span(
 
 def _find_plain_ig_handles(html: str) -> list[str]:
     """
-    Business-specific @handles mentioned as plain text, ONLY when the
-    surrounding text (within `_PLAIN_HANDLE_CONTEXT_WINDOW` characters
-    either side) also mentions "instagram" — e.g. "Instagram: @joesbarber"
-    or "Follow @joesbarber on Instagram". This is deliberately the
-    lowest-confidence signal: an arbitrary @mention with no nearby
-    "instagram" text (a Twitter handle, an email fragment, an unrelated
-    @-mention) never qualifies. The literal word "@instagram" itself is
-    excluded — that names the platform, not a business account.
+    Business-specific @handles mentioned as plain text or within social icon
+    attributes (aria-label, title, alt), ONLY when the surrounding text / attribute
+    also mentions "instagram" — e.g. "Instagram: @joesbarber" or
+    <a aria-label="Instagram: @joesbarber" ...>.
     """
-    if not html or "@" not in html:
+    if not html or ("@" not in html and "instagram" not in html.lower()):
         return []
     text = _HTML_TAG_RE.sub(" ", html)
     results: list[str] = []
     seen: set[str] = set()
+
+    # 1. Plain text mentions
     for m in _PLAIN_HANDLE_RE.finditer(text):
         handle = m.group(1)
         low = handle.lower()
@@ -799,6 +838,28 @@ def _find_plain_ig_handles(html: str) -> list[str]:
             continue
         seen.add(low)
         results.append(handle)
+
+    # 2. Contextual attributes on elements / icons (aria-label, title, alt)
+    for tag_match in _ATTR_SCAN_RE.finditer(html):
+        attr_str = tag_match.group(2)
+        for attr_m in _ATTR_PAIR_RE.finditer(attr_str):
+            k = attr_m.group(1).lower()
+            val = (attr_m.group(2) or attr_m.group(3) or "").strip()
+            if k in ("aria-label", "title", "alt", "data-title", "data-name") and val:
+                has_ig_ctx = bool(re.search(r"instagram", k, re.I) or re.search(r"instagram", val, re.I))
+                if has_ig_ctx:
+                    for m in _PLAIN_HANDLE_RE.finditer(val):
+                        h = m.group(1)
+                        low_h = h.lower()
+                        if (
+                            low_h not in seen
+                            and low_h not in _IG_NON_HANDLES
+                            and low_h != "instagram"
+                            and not h.isdigit()
+                            and _IG_HANDLE_RE.match(h)
+                        ):
+                            seen.add(low_h)
+                            results.append(h)
     return results
 
 
@@ -1126,25 +1187,43 @@ def extract_contextual_attribute_contacts(html: str) -> dict[str, list[str]]:
             if not val:
                 continue
 
-            # 1. Direct email-named attributes
+            # 1. Cloudflare cfemail attribute
+            if attr_key_low == "data-cfemail":
+                decoded = decode_cfemail(val)
+                if decoded and decoded not in seen_emails and is_valid_email(decoded):
+                    seen_emails.add(decoded)
+                    found_emails.append(decoded)
+                continue
+
+            # 2. Direct email-named attributes
             if attr_key_low in _EMAIL_CONTEXT_ATTR_NAMES:
                 for match in _SCAN_EMAIL_RE.findall(val):
                     clean = match.lower()
                     if clean not in seen_emails and is_valid_email(clean):
                         seen_emails.add(clean)
                         found_emails.append(clean)
+                for m in _OBFUSCATED_EMAIL_RE.findall(val):
+                    constructed = f"{m[0]}@{m[1]}.{m[2]}".lower()
+                    if constructed not in seen_emails and is_valid_email(constructed):
+                        seen_emails.add(constructed)
+                        found_emails.append(constructed)
                 continue
 
-            # 2. aria-label / title / alt with email syntax or email context
+            # 3. aria-label / title / alt with email syntax or email context
             if attr_key_low in ("aria-label", "title", "alt"):
-                if "@" in val:
+                if "@" in val or "mail" in attr_key_low or "mail" in val.lower():
                     for match in _SCAN_EMAIL_RE.findall(val):
                         clean = match.lower()
                         if clean not in seen_emails and is_valid_email(clean):
                             seen_emails.add(clean)
                             found_emails.append(clean)
+                    for m in _OBFUSCATED_EMAIL_RE.findall(val):
+                        constructed = f"{m[0]}@{m[1]}.{m[2]}".lower()
+                        if constructed not in seen_emails and is_valid_email(constructed):
+                            seen_emails.add(constructed)
+                            found_emails.append(constructed)
 
-            # 3. Direct phone-named attributes
+            # 4. Direct phone-named attributes
             if attr_key_low in _PHONE_CONTEXT_ATTR_NAMES:
                 norm = normalize_phone(val)
                 if norm and norm not in seen_phones and is_valid_phone(norm):
@@ -1152,7 +1231,7 @@ def extract_contextual_attribute_contacts(html: str) -> dict[str, list[str]]:
                     found_phones.append(norm)
                 continue
 
-            # 4. aria-label / title / alt with phone context
+            # 5. aria-label / title / alt with phone context
             if attr_key_low in ("aria-label", "title", "alt"):
                 has_phone_ctx = bool(_PHONE_KEYWORD_RE.search(attr_key_low) or _PHONE_KEYWORD_RE.search(val) or val.lower().startswith("tel:"))
                 if has_phone_ctx:
@@ -1168,16 +1247,47 @@ def extract_contextual_attribute_contacts(html: str) -> dict[str, list[str]]:
 
 
 _SECONDARY_PAGE_PRIORITY: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("contact", re.compile(r"\bcontact(?:-us|_us|us)?\b", re.IGNORECASE)),
-    ("about", re.compile(r"\babout(?:-us|_us|us)?\b", re.IGNORECASE)),
+    ("contact", re.compile(r"\b(?:contact(?:-us|_us|us)?|connect|get-in-touch|reach-us)\b", re.IGNORECASE)),
+    ("about", re.compile(r"\b(?:about(?:-us|_us|us)?)\b", re.IGNORECASE)),
+    ("locations", re.compile(r"\b(?:locations?|find-us|visit-us)\b", re.IGNORECASE)),
     ("team", re.compile(r"\bteam\b", re.IGNORECASE)),
     ("staff", re.compile(r"\bstaff\b", re.IGNORECASE)),
-    ("locations", re.compile(r"\b(?:locations?)\b", re.IGNORECASE)),
     ("catering", re.compile(r"\bcatering\b", re.IGNORECASE)),
     ("wholesale", re.compile(r"\bwholesale\b", re.IGNORECASE)),
     ("press", re.compile(r"\bpress\b", re.IGNORECASE)),
     ("partners", re.compile(r"\bpartners?\b", re.IGNORECASE)),
 )
+
+_STANDARD_CONTACT_PATHS: tuple[tuple[str, str], ...] = (
+    ("contact", "/contact"),
+    ("contact", "/contact-us"),
+    ("about", "/about"),
+    ("about", "/about-us"),
+    ("locations", "/locations"),
+    ("locations", "/find-us"),
+    ("contact", "/connect"),
+)
+
+
+def get_standard_contact_candidates(
+    base_url: str,
+    tried_urls: set[str],
+) -> list[tuple[str, str]]:
+    """Return prioritized fallback (category, url) pairs for standard contact pages."""
+    if not base_url:
+        return []
+    base_parsed = urlparse(base_url)
+    if not base_parsed.scheme or not base_parsed.netloc:
+        return []
+    origin = f"{base_parsed.scheme}://{base_parsed.netloc}"
+    normalized_tried = {u.strip().rstrip("/").lower() for u in tried_urls if u}
+
+    results: list[tuple[str, str]] = []
+    for cat, path in _STANDARD_CONTACT_PATHS:
+        full_url = urljoin(origin, path)
+        if full_url.rstrip("/").lower() not in normalized_tried:
+            results.append((cat, full_url))
+    return results
 
 _IGNORED_LINK_EXTENSIONS = frozenset({
     ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",

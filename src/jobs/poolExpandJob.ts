@@ -28,8 +28,6 @@ import { runAreaWorkerPool, computeDynamicDiscoveryCapacity, type AreaRunOutcome
 import { areaStreamTarget, cityStreamTarget, computeAskFor } from "../discovery/roundSizing.js";
 import {
   createAreaScanBudgetCoordinator,
-  allocateInitialAreaScanBudget,
-  requestAreaScanBudgetExpansion,
   type AreaScanBudgetCoordinator,
 } from "../discovery/areaScanBudget.js";
 import {
@@ -42,7 +40,6 @@ import {
   createAreaProductivityState,
   evaluateAreaProductivity,
   evaluateAreaYieldStop,
-  classifyAreaYield,
   recordDeliveredLead,
   recordProductiveActivity,
   recordQualifiedLead,
@@ -727,15 +724,28 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           // abortController.abort("TARGET_REACHED") in processLead() below
           // (see roundSizing.ts's doc comment for the full writeup).
           const streamTarget = streamTargetForCity;
-          // PHASE 32: was computeAskFor(streamTarget) — every area's own
-          // independent 4x-multiplied scan budget. Now a bounded SLICE of
-          // the shared per-city budget (see scanBudgetCoordinator above);
-          // `askFor` may grow via requestAreaScanBudgetExpansion() below if
-          // this area proves productive and exhausts its slice before
-          // reaching its own streamTarget.
-          let askFor = allocateInitialAreaScanBudget(scanBudgetCoordinator, area, activeAreaCount);
-          const initialAskFor = askFor;
-          let scanBudgetExpansionRounds = 0;
+          // PHASE 41 — REGRESSION FIX: Phase 32's "bounded slice of a
+          // shared per-city budget, topped up via a scan-budget expansion
+          // grant when a productive area
+          // exhausts it" replaced the historical, known-good behavior of
+          // giving EVERY area its own full `computeAskFor(streamTarget)`
+          // budget (~400 raw `max_results` for streamTarget=100) in ONE
+          // `runEngineQuery()` call. That "exhausted slice -> ask for
+          // more" pattern forced a SECOND (third, ...) `runEngineQuery()`
+          // invocation per area whenever a productive area ran through its
+          // initial slice — each one a brand-new Python subprocess, a
+          // brand-new Playwright browser session, and a brand-new Google
+          // Maps session, none of which reuse the previous invocation's
+          // warm state. That repeated cold-start work (not worker count,
+          // not RateLimiter, not the Maps scraping logic itself) was the
+          // primary throughput regression vs. the ~100 leads/~16 min
+          // baseline. Restored: the full historical per-area budget, in
+          // ONE shot, exactly as `computeAskFor` has always computed it —
+          // no per-area / activeAreaCount division, no expansion loop.
+          // `scanBudgetCoordinator` (created above) is kept ONLY for its
+          // existing per-city telemetry log line; it is no longer consulted
+          // to size or grow this area's `askFor`.
+          const askFor = computeAskFor(streamTarget);
           const areaRecorder = stability.startArea(area, areaWorkerNumbers.get(area) ?? 0, streamTarget);
           let lastPerf: Record<string, unknown> | undefined;
           // PHASE 11.1: the bridge's own termination classification for
@@ -838,9 +848,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           productivityTimer.unref?.();
 
           try {
-            // PHASE 32 / PHASE 36 — bounded expansion loop.
-            areaScanBudgetLoop: for (;;) {
-            let batchStop = false;
+            // PHASE 41 — restored: exactly ONE runEngineQuery() invocation
+            // for this area's entire scan allocation (see `askFor` above).
+            // No expansion loop, no second engine/browser/subprocess
+            // launch for the same area — that repeated cold-start work was
+            // the confirmed regression (see the `askFor` comment above).
             for await (const lead of runEngineQuery(
               {
                 query: `${singleNiche} in ${area}, ${city}`,
@@ -916,56 +928,31 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               if (outcome === "stop_outer") {
                 stopOuter = true;
                 accepted = chunk.deliveredThisChunk;
-                batchStop = true;
                 break;
               }
               if (outcome === "batch_done") {
                 accepted = chunk.deliveredThisChunk;
-                batchStop = true;
                 break;
               }
             }
-
-            if (batchStop) break areaScanBudgetLoop;
-
-            // The engine's own generator ended naturally (this area's
-            // streamTarget was not reached via processLead's "batch_done").
-            // Only consider an expansion grant when it was genuinely the
-            // SCAN BUDGET that ran out (`areaExhausted`) — never when the
-            // global target was already hit, this area was itself
-            // aborted (idle/low-yield/parent-abort — scopeAreaAbort), or
-            // this area already reached its own streamTarget.
-            if (
-              stopOuter ||
-              areaAbort.signal.aborted ||
-              !areaExhausted ||
-              chunk.deliveredThisChunk >= streamTarget
-            ) {
-              break areaScanBudgetLoop;
-            }
-
-            const yieldClass = classifyAreaYield(productivity, Date.now(), yieldLimits);
-            const grant = requestAreaScanBudgetExpansion(scanBudgetCoordinator, area, yieldClass);
-            if (grant <= 0) break areaScanBudgetLoop;
-
-            askFor = scanBudgetCoordinator.perArea.get(area)?.final ?? (askFor + grant);
-            scanBudgetExpansionRounds += 1;
-            } // areaScanBudgetLoop
+            // PHASE 41: no expansion loop — this area's single
+            // runEngineQuery() invocation above either reached its
+            // streamTarget (batch_done), was aborted (TARGET_REACHED /
+            // idle / low-yield), or exhausted its full ~400-candidate
+            // scan budget (areaExhausted) and naturally ended. All three
+            // are terminal for this area; the area worker pool
+            // (googleAreaPool.ts) — not a same-area retry — is what picks
+            // up any remaining shortfall, exactly as it did in the
+            // known-good baseline.
           } finally {
             clearInterval(productivityTimer);
             accepted = chunk.deliveredThisChunk;
             rejected = Math.max(0, discovered - accepted);
-            const areaBudgetEntry = scanBudgetCoordinator.perArea.get(area);
-            const cumulativeScanBudget = areaBudgetEntry?.final ?? askFor;
-            // PHASE 32 / PHASE 36 / PHASE 37 — compact per-area scan-budget and productivity telemetry.
+            // PHASE 41 — compact per-area scan-budget and productivity telemetry.
             console.info(
               `[poolExpandJob][area-scan-budget] area=${area} city=${city} ` +
                 `global_scan_budget=${scanBudgetCoordinator.globalScanBudget} ` +
-                `area_initial_scan_budget=${initialAskFor} ` +
-                `area_scan_budget_expansions=${scanBudgetExpansionRounds} ` +
-                `productive_expansions=${scanBudgetExpansionRounds} ` +
-                `area_final_scan_budget=${cumulativeScanBudget} ` +
-                `final_scan_budget=${cumulativeScanBudget} ` +
+                `area_scan_budget=${askFor} ` +
                 `in_flight_count=${productivity.inFlightCount} ` +
                 `terminal_candidate_count=${productivity.terminalCandidateCount} ` +
                 `qualified_count=${productivity.qualifiedCount} ` +

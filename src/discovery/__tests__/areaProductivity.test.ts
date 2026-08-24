@@ -716,24 +716,72 @@ test("P36-4: 50 terminal / 8 qualified (0 in-flight) is classified productive", 
   assert.equal(evaluateAreaYieldStop(state, 100_000, P36_YIELD_LIMITS), null);
 });
 
-// ── Test 5: in-flight candidates defer yield stop; max runtime / safety still wins ──
-test("P37-1: in-flight candidates prevent premature low-yield termination beyond 150s, max runtime still wins", () => {
+// ── Test 5: in-flight candidates defer yield stop TEMPORARILY; a bounded ──
+// grace window (PHASE 41) — not max runtime — is what eventually lets a
+// persistently-in-flight, zero-yield area actually rotate.
+test("P41-1: in-flight candidates defer low-yield only until the grace window elapses, then the area rotates", () => {
   const limits: AreaProductivityLimits = { productiveIdleMs: 60_000, maxAreaRuntimeMs: 200_000 };
   const state = createAreaProductivityState(0);
   recordDiscoveries(state, 50, 50_000); // 50 discovered with 0 qualified, 50 in-flight
 
-  // At 100s: candidates are in flight -> yield stop deferred
+  // At 100s: candidates are in flight -> yield stop deferred (grace clock starts now)
   assert.equal(evaluateAreaProductivity(state, 100_000, limits), null);
   assert.equal(evaluateAreaYieldStop(state, 100_000, P36_YIELD_LIMITS), null);
   assert.equal(state.yieldEvaluationDeferredDueToInflight, true);
+  assert.equal(state.firstInFlightDeferralAt, 100_000);
 
-  // At 160s: beyond 150s, candidates are still in flight -> area continues, NOT killed at 150s!
-  assert.equal(classifyAreaYield(state, 160_000, P36_YIELD_LIMITS), "productive");
-  assert.equal(evaluateAreaYieldStop(state, 160_000, P36_YIELD_LIMITS), null);
+  // At 150s: still inside the 60s grace window (started at 100s) -> still deferred.
+  assert.equal(classifyAreaYield(state, 150_000, P36_YIELD_LIMITS), "productive");
+  assert.equal(evaluateAreaYieldStop(state, 150_000, P36_YIELD_LIMITS), null);
   assert.equal(state.yieldEvaluationDeferredDueToInflight, true);
 
-  // At 200s: maxAreaRuntimeMs unconditionally takes precedence
+  // At 160s: grace window (100s + 60s) has elapsed. This area never
+  // produced any terminal evidence at all (still 50 in-flight, 0
+  // qualified) — PHASE 41's bound now lets it be evaluated (and, here,
+  // rotated) on that evidence instead of waiting indefinitely for
+  // candidates that may never resolve.
+  assert.equal(classifyAreaYield(state, 160_000, P36_YIELD_LIMITS), "low_yield");
+  assert.equal(evaluateAreaYieldStop(state, 160_000, P36_YIELD_LIMITS), "area_productivity_low_yield");
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, false);
+
+  // max runtime (200s) is still a hard, independent ceiling regardless —
+  // unchanged from before this phase.
   assert.equal(evaluateAreaProductivity(state, 200_000, limits), "area_productivity_max_runtime");
+});
+
+// ── PHASE 41 regression test: a discovery stream that keeps replenishing
+// in-flight candidates just as fast as old ones resolve (inFlightCount
+// never reaches 0) must NOT be able to defer a genuinely low-yield area
+// forever — this is the exact "burns the full max-runtime ceiling"
+// regression the Phase 41 fix targets.
+test("P41-2: continuously-replenished in-flight candidates cannot defer low-yield indefinitely", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 50, 50_000); // 50 in-flight, 0 terminal, 0 qualified
+
+  // Every 10s a few candidates resolve (all rejected, 0 qualified) but
+  // discovery keeps adding just as many new ones — inFlightCount never
+  // drains to 0, exactly like a live area whose enrichment pipeline stays
+  // saturated.
+  const pollTimes = [90_000, 100_000, 110_000, 120_000, 130_000, 140_000, 150_000, 160_000];
+  const classes: string[] = [];
+  for (const t of pollTimes) {
+    // resolve 5 candidates (rejected) and discover 5 fresh ones — net
+    // in-flight count is unchanged (still > 0) at every poll.
+    for (let i = 0; i < 5; i++) {
+      state.terminalCandidateCount += 1;
+    }
+    state.newlyDiscoveredCount += 5;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+    assert.ok(state.inFlightCount > 0, `in-flight must stay > 0 at t=${t} for this regression scenario`);
+    classes.push(classifyAreaYield(state, t, P36_YIELD_LIMITS));
+  }
+
+  // It must eventually stop being deferred as "productive" and rotate —
+  // under the old unbounded Phase 37 rule every entry here would be
+  // "productive" forever, since inFlightCount > 0 at every single poll.
+  assert.ok(classes.includes("low_yield"), `expected a low_yield classification once the grace window elapsed, got: ${classes.join(", ")}`);
+  assert.equal(classes[classes.length - 1], "low_yield");
+  assert.equal(evaluateAreaYieldStop(state, pollTimes[pollTimes.length - 1], P36_YIELD_LIMITS), "area_productivity_low_yield");
 });
 
 // ── Test 6: TARGET_REACHED remains unchanged ───────────────────────────────

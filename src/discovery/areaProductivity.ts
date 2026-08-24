@@ -112,6 +112,21 @@ export type AreaProductivityState = {
   terminalCandidateCount: number;
   /** Telemetry flag: whether a low-yield classification was deferred because candidates were in-flight. */
   yieldEvaluationDeferredDueToInflight: boolean;
+  /**
+   * PHASE 41 — REGRESSION FIX: `now` of the FIRST time `classifyAreaYield`
+   * deferred a low-yield call because of in-flight candidates. `null`
+   * until that first deferral. This is what bounds the deferral —
+   * Phase 36/37's `maxPossibleRate` check on its own can be kept alive
+   * indefinitely by a discovery stream that keeps adding fresh in-flight
+   * candidates just as fast as old ones resolve (so `inFlightCount` never
+   * reaches 0 and the "in-flight could still rescue the rate" condition
+   * never goes false). Once `now - firstInFlightDeferralAt` reaches
+   * `AreaYieldLimits.inFlightGraceMs`, `classifyAreaYield` stops deferring
+   * and evaluates yield from whatever terminal evidence exists so far —
+   * even with candidates still in-flight — so a genuinely low-yield area
+   * can no longer stall a rotation decision forever.
+   */
+  firstInFlightDeferralAt: number | null;
 };
 
 export function createAreaProductivityState(now: number = Date.now()): AreaProductivityState {
@@ -129,6 +144,7 @@ export function createAreaProductivityState(now: number = Date.now()): AreaProdu
     inFlightCount: 0,
     terminalCandidateCount: 0,
     yieldEvaluationDeferredDueToInflight: false,
+    firstInFlightDeferralAt: null,
   };
 }
 
@@ -381,19 +397,42 @@ export function classifyAreaYield(
   const inFlightCount = state.inFlightCount;
   const terminalCandidates = state.terminalCandidateCount;
 
-  // PHASE 37 FIX: If candidates remain in-flight through enrichment/qualification,
+  // PHASE 37: If candidates remain in-flight through enrichment/qualification,
   // do not prematurely kill the area as LOW_YIELD while in-flight candidates could still
   // produce qualified leads or before sufficient terminal evidence has accumulated.
+  //
+  // PHASE 41 — REGRESSION FIX: that deferral is now BOUNDED. A discovery
+  // stream that keeps adding fresh in-flight candidates just as fast as
+  // old ones resolve can hold `inFlightCount > 0` (and therefore
+  // `maxPossibleRate` optimistically high) indefinitely — the low-yield
+  // stop then never fires and the area burns the full max-runtime ceiling
+  // instead of rotating. In-flight candidates may still defer a low-yield
+  // call TEMPORARILY (unchanged), but once `inFlightGraceMs` has elapsed
+  // since the FIRST such deferral, the area is evaluated on whatever
+  // terminal evidence it has actually accumulated so far, in-flight
+  // candidates or not.
   if (inFlightCount > 0) {
     const maxPossibleRate = (terminalCandidates + inFlightCount) > 0
       ? (yieldCount + inFlightCount) / (terminalCandidates + inFlightCount)
       : 0;
 
-    // Defer low-yield classification if in-flight candidates can still rescue the yield rate
-    // or if we have not reached the minimum candidate volume in terminal outcomes yet.
-    if (maxPossibleRate > limits.lowYieldMaxRate || terminalCandidates < limits.minCandidateVolumeForEvaluation) {
-      state.yieldEvaluationDeferredDueToInflight = true;
-      return "productive";
+    // Would in-flight candidates justify deferring, on the ORIGINAL
+    // (unbounded) Phase 37 rule?
+    const wantsDeferral =
+      maxPossibleRate > limits.lowYieldMaxRate || terminalCandidates < limits.minCandidateVolumeForEvaluation;
+
+    if (wantsDeferral) {
+      const graceMs = limits.inFlightGraceMs ?? Infinity;
+      if (state.firstInFlightDeferralAt === null) {
+        state.firstInFlightDeferralAt = now;
+      }
+      const withinGraceWindow = now - state.firstInFlightDeferralAt < graceMs;
+      if (withinGraceWindow) {
+        state.yieldEvaluationDeferredDueToInflight = true;
+        return "productive";
+      }
+      // Grace window exhausted — fall through to terminal-evidence
+      // evaluation below even though candidates remain in-flight.
     }
   }
 

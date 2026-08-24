@@ -368,7 +368,7 @@ class TestTargetReachedShutdownSemantics:
 
             # Set shutdown event after 5 leads in background
             def _stop_after_5():
-                while len([line for line in out.getvalue().splitlines() if line.strip() and not line.startswith("{'__done__'")]) < 5:
+                while len([line for line in out.getvalue().splitlines() if line.strip() and '"__done__"' not in line and '"progress"' not in line]) < 5:
                     time.sleep(0.01)
                 service._shutdown_event.set()
 
@@ -406,7 +406,7 @@ class TestTargetReachedShutdownSemantics:
             monkeypatch.setattr(sys, "stdout", out)
 
             def _stop_after_2():
-                while len([line for line in out.getvalue().splitlines() if line.strip() and not line.startswith("{'__done__'")]) < 2:
+                while len([line for line in out.getvalue().splitlines() if line.strip() and '"__done__"' not in line and '"progress"' not in line]) < 2:
                     time.sleep(0.01)
                 service._shutdown_event.set()
 
@@ -473,7 +473,7 @@ class TestConsumerStoppedShutdownSemantics:
             monkeypatch.setattr(sys, "stdout", out)
 
             def _stop_after_5():
-                while len([line for line in out.getvalue().splitlines() if line.strip() and not line.startswith("{'__done__'")]) < 5:
+                while len([line for line in out.getvalue().splitlines() if line.strip() and '"__done__"' not in line and '"progress"' not in line]) < 5:
                     time.sleep(0.01)
                 service._shutdown_event.set()
 
@@ -558,6 +558,7 @@ class TestFastTargetCleanupGracePeriod:
         # Sanity: the fast fuse really is shorter, not just a different value.
         assert service.FAST_SHUTDOWN_GRACE_S < service.COOPERATIVE_SHUTDOWN_GRACE_S
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="os.kill with SIGTERM terminates process on Windows")
     @pytest.mark.asyncio
     async def test_consumer_stopped_sigterm_escalates_on_the_fast_window(self, monkeypatch):
         import os

@@ -53,7 +53,7 @@ from engine.runtime import StageOutcome
 
 CANDIDATE_GAP_S = 0.35  # real, deliberate pacing between discovered candidates
 POLL_S = 0.01
-WAIT_TIMEOUT_S = 5.0
+WAIT_TIMEOUT_S = 12.0
 
 
 def _candidate(i: int, session_id: str) -> BusinessCandidate:

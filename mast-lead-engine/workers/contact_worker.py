@@ -613,7 +613,13 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         Fetch `url` and return (html, resolved_url, elapsed_seconds).
         Unguarded on purpose — see module docstring "Error handling".
         """
-        request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        headers = {
+            "User-Agent": _USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Connection": "close",
+        }
+        request = urllib.request.Request(url, headers=headers)
         start = time.monotonic()
         with urllib.request.urlopen(request, timeout=self._timeout) as response:
             elapsed = time.monotonic() - start

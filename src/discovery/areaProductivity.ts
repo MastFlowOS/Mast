@@ -376,22 +376,31 @@ export function classifyAreaYield(
     return "productive";
   }
 
-  // Stage B — in-flight aware yield evaluation.
+  // Stage B — pipeline-drain-aware yield evaluation.
   const yieldCount = Math.max(state.qualifiedCount, state.deliveredCount);
   const inFlightCount = state.inFlightCount;
   const terminalCandidates = state.terminalCandidateCount;
 
-  const graceMs = limits.inFlightGraceMs ?? 0;
-  const inGrace = inFlightCount > 0 && graceMs > 0 && elapsedMs < limits.minElapsedMsForEvaluation + graceMs;
+  // PHASE 37 FIX: If candidates remain in-flight through enrichment/qualification,
+  // do not prematurely kill the area as LOW_YIELD while in-flight candidates could still
+  // produce qualified leads or before sufficient terminal evidence has accumulated.
+  if (inFlightCount > 0) {
+    const maxPossibleRate = (terminalCandidates + inFlightCount) > 0
+      ? (yieldCount + inFlightCount) / (terminalCandidates + inFlightCount)
+      : 0;
 
-  const denominator = (inFlightCount === 0 && terminalCandidates > 0) ? terminalCandidates : candidateVolume;
-  const rate = denominator > 0 ? yieldCount / denominator : 0;
-
-  if (rate <= limits.lowYieldMaxRate) {
-    if (inGrace) {
+    // Defer low-yield classification if in-flight candidates can still rescue the yield rate
+    // or if we have not reached the minimum candidate volume in terminal outcomes yet.
+    if (maxPossibleRate > limits.lowYieldMaxRate || terminalCandidates < limits.minCandidateVolumeForEvaluation) {
       state.yieldEvaluationDeferredDueToInflight = true;
       return "productive";
     }
+  }
+
+  const denominator = terminalCandidates > 0 ? terminalCandidates : candidateVolume;
+  const rate = denominator > 0 ? yieldCount / denominator : 0;
+
+  if (rate <= limits.lowYieldMaxRate) {
     state.yieldEvaluationDeferredDueToInflight = false;
     return "low_yield";
   }

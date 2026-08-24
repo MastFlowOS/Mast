@@ -25,6 +25,7 @@ import {
 } from "../areaScanBudget.js";
 import {
   createAreaProductivityState,
+  recordCandidateRejected,
   recordProductiveActivity,
   classifyAreaYield,
   evaluateAreaYieldStop,
@@ -106,8 +107,9 @@ test("4. low-yield area can still rotate after exploring sufficient candidate vo
   assert.equal(classifyAreaYield(state, 100_000, yieldLimits), "productive");
   assert.equal(evaluateAreaYieldStop(state, 100_000, yieldLimits), null);
 
-  // Stage B: 50 candidates (>= 50 floor) at 100s with 0 qualified -> classified low_yield and stopped
+  // Stage B: 50 candidates (>= 50 floor) at 100s with 0 qualified and drained in-flight -> classified low_yield and stopped
   for (let i = 0; i < 30; i++) recordProductiveActivity(state, "candidate_discovered", 100_000);
+  for (let i = 0; i < 50; i++) recordCandidateRejected(state, 100_000);
   assert.equal(classifyAreaYield(state, 100_000, yieldLimits), "low_yield");
   assert.equal(evaluateAreaYieldStop(state, 100_000, yieldLimits), "area_productivity_low_yield");
 });
@@ -342,4 +344,38 @@ test("P36-14: sibling isolation remains unchanged (coordinators are isolated per
 
   assert.equal(coordCity1.allocated > 0, true);
   assert.equal(coordCity2.allocated, 0, "City 2 coordinator is completely unpolluted by City 1 allocations");
+});
+
+// =============================================================================
+// PHASE 37 — SCAN BUDGET CEILING & DEEP DISCOVERY REGRESSION TESTS
+// =============================================================================
+
+test("P37-5: productive area expands incrementally up to 400 candidate ceiling", () => {
+  const streamTarget = 100;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, P36_BUDGET_LIMITS, 3);
+  const initial = allocateInitialAreaScanBudget(coordinator, "area-productive", 3);
+  assert.equal(initial, 134);
+
+  // Expands through multiple discovery rounds
+  let grant = 0;
+  let rounds = 0;
+  while ((grant = requestAreaScanBudgetExpansion(coordinator, "area-productive", "productive")) > 0) {
+    rounds += 1;
+  }
+  const entry = coordinator.perArea.get("area-productive");
+  assert.ok(entry);
+  assert.equal(entry?.final, 400, "productive area must reach the historical 400 candidate ceiling");
+  assert.ok(rounds >= 2, "expansion occurs in bounded chunks");
+});
+
+test("P37-6: scan budget telemetry accurately reflects cumulative allocated limit", () => {
+  const streamTarget = 100;
+  const coordinator = createAreaScanBudgetCoordinator(streamTarget, P36_BUDGET_LIMITS, 3);
+  const initial = allocateInitialAreaScanBudget(coordinator, "area-1", 3);
+  const grant1 = requestAreaScanBudgetExpansion(coordinator, "area-1", "productive");
+  const entry = coordinator.perArea.get("area-1");
+
+  assert.equal(entry?.initial, initial);
+  assert.equal(entry?.expansions, grant1);
+  assert.equal(entry?.final, initial + grant1);
 });

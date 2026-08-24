@@ -853,11 +853,10 @@ async def run_query(
             shutdown_event is not None and shutdown_event.is_set()
         )
 
-    # See run() in main.py / the ROOT CAUSE note this replaces: request a
-    # generous raw-supply ceiling rather than a guessed pass-rate multiple,
-    # so genuine exhaustion (no more matching businesses) is what actually
-    # stops discovery, not an artificial cap.
-    raw_supply_cap = max(max_results * 20, 200)
+    # PHASE 37: max_results passed from caller represents the bounded scan budget.
+    # Do not inflate max_results with an artificial 20x multiplier, ensuring discovery
+    # budget matches actual Maps results and candidate telemetry.
+    raw_supply_cap = max_results
 
     session_id: Optional[str] = None
     driver: Optional[ExecutionDriver] = None

@@ -955,15 +955,17 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             clearInterval(productivityTimer);
             accepted = chunk.deliveredThisChunk;
             rejected = Math.max(0, discovered - accepted);
-            // PHASE 32 / PHASE 36 — compact per-area scan-budget and productivity telemetry.
+            const areaBudgetEntry = scanBudgetCoordinator.perArea.get(area);
+            const cumulativeScanBudget = areaBudgetEntry?.final ?? askFor;
+            // PHASE 32 / PHASE 36 / PHASE 37 — compact per-area scan-budget and productivity telemetry.
             console.info(
               `[poolExpandJob][area-scan-budget] area=${area} city=${city} ` +
                 `global_scan_budget=${scanBudgetCoordinator.globalScanBudget} ` +
                 `area_initial_scan_budget=${initialAskFor} ` +
                 `area_scan_budget_expansions=${scanBudgetExpansionRounds} ` +
                 `productive_expansions=${scanBudgetExpansionRounds} ` +
-                `area_final_scan_budget=${askFor} ` +
-                `final_scan_budget=${askFor} ` +
+                `area_final_scan_budget=${cumulativeScanBudget} ` +
+                `final_scan_budget=${cumulativeScanBudget} ` +
                 `in_flight_count=${productivity.inFlightCount} ` +
                 `terminal_candidate_count=${productivity.terminalCandidateCount} ` +
                 `qualified_count=${productivity.qualifiedCount} ` +

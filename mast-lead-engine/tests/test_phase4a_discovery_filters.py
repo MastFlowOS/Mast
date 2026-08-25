@@ -288,3 +288,92 @@ def test_email_required_channel_preserved_website_fallback_exactly():
     assert fan_in.get_business("p-has-site") is not None
     assert website_queue.size() == 1
     assert instagram_queue.size() == 1
+
+
+# ---------------------------------------------------------------------------
+# PHASE 42 FIX #4 — "premature safe-pruning" audit finding
+# ---------------------------------------------------------------------------
+#
+# Production evidence: Maps candidates with a valid phone number were
+# observed being discarded because they had no valid email AND no
+# website, before enrichment ever ran. This section pins down, with a
+# real behavioral test (not just code inspection), whether that is a
+# BUG (the candidate is discarded before enrichment had a legitimate
+# chance to recover the missing channel) or CORRECT (the candidate is
+# discarded because it is structurally impossible for enrichment to
+# ever recover it, given how ContactWorker/InstagramWorker are wired).
+#
+# Traced root cause: `contact_intel.emails` — the ONLY field
+# QualificationWorker's "email" channel check reads (see
+# workers/qualification_worker.py, `has_email = bool(contact_intel and
+# contact_intel.emails)`) — is populated exclusively by ContactWorker.
+# ContactWorker's own input type is WebsiteIntel
+# (`ContactWorker(BaseWorker[WebsiteIntel, ContactIntel])` —
+# workers/contact_worker.py), which only exists once WebsiteWorker has
+# successfully crawled `candidate.website` (workers/website_worker.py:
+# "It visits item.website" — no alternate source). InstagramWorker DOES
+# detect that a profile displays a public-email contact button
+# (`_PUBLIC_EMAIL_RE`), but its own docstring is explicit that it never
+# resolves the underlying value ("Never the resolved email/phone value
+# behind them; resolving those is ContactWorker's job") — and
+# ContactWorker is never wired to Instagram's output. So with
+# `website=""`, there is NO path — today, in this architecture — by
+# which `contact_intel.emails` can ever become non-empty, regardless of
+# whether the candidate has a phone number, an Instagram handle, or
+# anything else.
+#
+# Conclusion: the early prune matches the final (unmodified, per this
+# phase's explicit instruction) qualification gate's own verdict
+# exactly — pruning here saves a Website/Instagram/Contact enrichment
+# cycle that could only ever end in the same rejection anyway. This is
+# NOT the premature-pruning bug; it is the zero-cost optimization this
+# gate was built to be. Per Phase 42's own instruction ("If it is
+# intentionally correct: prove why and leave it unchanged"), this
+# behavior is left unmodified. This test exists so that a future change
+# attempting to "loosen" this gate (e.g. deferring the email-channel
+# prune whenever a phone number is present) is caught by CI as a
+# deliberate qualification-semantics change, not slipped in silently.
+
+
+def test_phone_present_no_website_still_pruned_when_email_required():
+    """The exact production scenario: Maps supplied a valid phone
+    number but no website. `required_channels` includes "email".
+    Despite the phone being present, the candidate is still pruned —
+    correctly, per the module-level comment above: email is provably
+    unreachable without a website in this architecture, regardless of
+    what other channels the candidate happens to satisfy."""
+    on_candidate, fan_in, website_queue, instagram_queue = _setup_pipeline(
+        required_channels=["email"]
+    )
+    candidate = _make_candidate(
+        "p-phone-no-site", website="", phone="+14165550199"
+    )
+
+    on_candidate(candidate)
+
+    assert fan_in.get_business("p-phone-no-site") is None, (
+        "correctly pruned: email is unreachable without a website in "
+        "this architecture, so a phone number alone cannot save it "
+        "when email is a required channel"
+    )
+    assert website_queue.size() == 0
+    assert instagram_queue.size() == 0
+
+
+def test_phone_present_no_website_survives_when_only_phone_required():
+    """Sanity counterpart: the SAME phone-only, no-website candidate is
+    NOT pruned when the configured required_channels is just ["phone"]
+    — proving the prune above is driven by the "email" requirement
+    specifically, not by some blanket "no website" rule."""
+    on_candidate, fan_in, website_queue, instagram_queue = _setup_pipeline(
+        required_channels=["phone"]
+    )
+    candidate = _make_candidate(
+        "p-phone-no-site-2", website="", phone="+14165550199"
+    )
+
+    on_candidate(candidate)
+
+    assert fan_in.get_business("p-phone-no-site-2") is not None
+    assert website_queue.size() == 1
+    assert instagram_queue.size() == 1

@@ -318,6 +318,60 @@ _DEFAULT_MIRRORS: tuple[str, ...] = (
     "https://overpass.nchc.org.tw/api/interpreter",
 )
 _RETRYABLE_STATUS_CODES: set[int] = {429, 502, 503, 504}
+
+# PHASE 42 FIX #2 (Overpass wall-clock ceiling) — root cause of the
+# production "60-150+ second Overpass call" evidence: `_http_post_urllib`
+# already bounds each individual HTTP attempt (`timeout=`) and each
+# per-endpoint retry count (`max_retries_per_endpoint=`), and each of
+# those bounds is legitimate on its own. But nothing previously bounded
+# their PRODUCT: with 4 candidate URLs (`_DEFAULT_MIRRORS`, the primary
+# endpoint plus 3 fallback mirrors) x 2 attempts per endpoint x up to
+# ~35s per attempt (`request.timeout_seconds + 10`, see
+# `OverpassProvider.discover()`), a run where every mirror times out
+# could legitimately take up to ~280 seconds end to end — comfortably
+# inside the observed 60-150+ second range, and, worse, unbounded above
+# it in a genuinely bad-network episode. That single un-interruptible
+# call runs on `ParallelCompositeDiscoveryProvider`'s own dedicated
+# per-provider thread (see that module's `_run_provider`), and its
+# `discover()` generator's `finally: thread.join()` (no timeout) means
+# the ENTIRE parallel discovery call — and therefore the area worker
+# that owns it — cannot finish until that thread does, however long
+# that turns out to be. `should_stop` (Phase 1B) already prevents this
+# loop from outliving a request that has already reached its target,
+# but does nothing for a request that is simply legitimately still
+# waiting on Overpass with no target-reached signal yet — which is the
+# common case this phase's own evidence describes.
+#
+# Fix: an explicit, independent WALL-CLOCK ceiling on the entire
+# mirror x retry loop, checked at the exact same checkpoints
+# `should_stop` already is (before trying the next endpoint, and before
+# every backoff sleep) — same mechanism, same "abort retry instead of
+# sleeping/hopping" behavior, same zero-results-not-an-exception exit
+# shape via `_StopRequested`. This does not lower the per-attempt
+# `timeout`, does not lower `max_retries_per_endpoint`, and does not
+# remove any mirror — every one of those individually-bounded knobs is
+# untouched; this only bounds how many of them can be paid for, in
+# total wall-clock time, by any single `discover()` call. Configurable
+# via `OVERPASS_MAX_WALL_CLOCK_SECONDS` (falls back to a safe default)
+# so a deployment with different network characteristics can tune it
+# without a code change; 45s comfortably covers 1-2 real attempts
+# against a healthy mirror (a normal successful call finishes in low
+# single-digit seconds) while capping the worst case far below the
+# previous ~280s ceiling.
+import os as _os
+
+_DEFAULT_MAX_WALL_CLOCK_SECONDS = 45.0
+
+
+def _overpass_max_wall_clock_seconds() -> float:
+    raw = _os.environ.get("OVERPASS_MAX_WALL_CLOCK_SECONDS")
+    if not raw:
+        return _DEFAULT_MAX_WALL_CLOCK_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_MAX_WALL_CLOCK_SECONDS
+    return value if value > 0 else _DEFAULT_MAX_WALL_CLOCK_SECONDS
 _VALID_ELEMENT_TYPES = ("node", "way", "relation")
 _ELEMENT_QL_KEYWORD = {"node": "node", "way": "way", "relation": "rel"}
 
@@ -453,6 +507,7 @@ def _http_post_urllib(
     backoff_factor: float = 0.5,
     should_stop: Optional[Callable[[], bool]] = None,
     on_attempt: Optional[Callable[[], None]] = None,
+    max_wall_clock_seconds: Optional[float] = None,
 ) -> dict[str, Any]:
     """
     Default transport: stdlib POST of the Overpass QL query text against the
@@ -490,6 +545,20 @@ def _http_post_urllib(
     per-endpoint retries otherwise). `None` (the default) preserves
     exact previous behavior for every existing caller — same
     backward-compatibility shape as `should_stop` immediately above.
+
+    `max_wall_clock_seconds`: PHASE 42 FIX #2 addition — optional
+    overall wall-clock budget covering the ENTIRE mirror x retry loop
+    (not any single attempt's own `timeout`). Consulted at exactly the
+    same checkpoints `should_stop` already is (before trying the next
+    endpoint, before every backoff sleep) and, like a `should_stop`
+    trip mid-retry, aborts the loop via `_StopRequested` rather than
+    raising — a budget expiring is not a transport failure, it is this
+    call declining to keep paying for one. `None` (the default)
+    preserves exact previous behavior — unbounded mirror x retry
+    wall-clock time — for any caller that does not pass one (existing
+    tests, validate_overpass_provider.py, any custom `http_post`).
+    See this module's own top-of-file comment (search
+    "PHASE 42 FIX #2") for the full production rationale.
     """
     request_headers = {**_DEFAULT_TRANSPORT_HEADERS, **headers}
     body = urlencode({"data": data}).encode("utf-8")
@@ -499,8 +568,22 @@ def _http_post_urllib(
         if mirror not in candidate_urls:
             candidate_urls.append(mirror)
 
+    _wall_clock_start = time.monotonic()
+
     def _stop_requested() -> bool:
-        return should_stop is not None and should_stop()
+        if should_stop is not None and should_stop():
+            return True
+        if max_wall_clock_seconds is not None and (
+            time.monotonic() - _wall_clock_start
+        ) >= max_wall_clock_seconds:
+            log.warning(
+                "[overpass] wall-clock budget of %.1fs exhausted — "
+                "aborting retry/mirror-failover loop instead of "
+                "continuing to wait on a slow Overpass endpoint.",
+                max_wall_clock_seconds,
+            )
+            return True
+        return False
 
     last_exception: Optional[BaseException] = None
 
@@ -798,16 +881,25 @@ class OverpassProvider(DiscoveryProviderInterface):
             nonlocal _attempts_made
             _attempts_made += 1
 
+        # PHASE 42 FIX #2 — see this module's top-of-file "PHASE 42 FIX #2"
+        # comment. Bounds the TOTAL wall-clock time `self._http_post` may
+        # spend across every mirror and retry for this one discover() call,
+        # independent of (and in addition to) the per-attempt `timeout`
+        # above. Falls back to a safe default if unset/invalid — see
+        # `_overpass_max_wall_clock_seconds()`.
+        max_wall_clock_seconds = _overpass_max_wall_clock_seconds()
+
         try:
             payload = self._http_post(
                 self._endpoint_url, query, headers,
                 timeout=socket_timeout, should_stop=request.should_stop,
                 on_attempt=_count_attempt,
+                max_wall_clock_seconds=max_wall_clock_seconds,
             )
         except TypeError:
             # Backward compatibility: an injected `http_post` that predates
-            # `should_stop` / `timeout` / `on_attempt` (e.g.
-            # validate_overpass_provider.py's fakes, or a caller's own
+            # `should_stop` / `timeout` / `on_attempt` / `max_wall_clock_seconds`
+            # (e.g. validate_overpass_provider.py's fakes, or a caller's own
             # custom transport) doesn't accept one or more of these
             # keywords — peel them off one at a time rather than assuming
             # which one was rejected.
@@ -815,12 +907,19 @@ class OverpassProvider(DiscoveryProviderInterface):
                 payload = self._http_post(
                     self._endpoint_url, query, headers,
                     timeout=socket_timeout, should_stop=request.should_stop,
+                    on_attempt=_count_attempt,
                 )
             except TypeError:
                 try:
-                    payload = self._http_post(self._endpoint_url, query, headers, timeout=socket_timeout)
+                    payload = self._http_post(
+                        self._endpoint_url, query, headers,
+                        timeout=socket_timeout, should_stop=request.should_stop,
+                    )
                 except TypeError:
-                    payload = self._http_post(self._endpoint_url, query, headers)
+                    try:
+                        payload = self._http_post(self._endpoint_url, query, headers, timeout=socket_timeout)
+                    except TypeError:
+                        payload = self._http_post(self._endpoint_url, query, headers)
 
         _requests = _attempts_made or 1
         self._profiler.incr("overpass_requests", by=_requests)

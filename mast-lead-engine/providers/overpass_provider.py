@@ -358,6 +358,17 @@ _RETRYABLE_STATUS_CODES: set[int] = {429, 502, 503, 504}
 # against a healthy mirror (a normal successful call finishes in low
 # single-digit seconds) while capping the worst case far below the
 # previous ~280s ceiling.
+#
+# PHASE 42B FOLLOW-UP: Phase 42's own budget check ran only BETWEEN
+# attempts (before a mirror hop, before a backoff sleep) — it never
+# shrank the per-attempt `timeout` itself, so a single silently-hanging
+# attempt could still consume the full per-attempt timeout regardless of
+# how much budget was left, and two such attempts could together exceed
+# 45s before the between-attempts check ever got a chance to fire. See
+# `_effective_attempt_timeout()` in `_http_post_urllib` below: each
+# attempt's own timeout is now capped to whatever wall-clock budget
+# genuinely remains, and the budget is also checked immediately before
+# every attempt (not only after one fails).
 import os as _os
 
 _DEFAULT_MAX_WALL_CLOCK_SECONDS = 45.0
@@ -547,18 +558,27 @@ def _http_post_urllib(
     backward-compatibility shape as `should_stop` immediately above.
 
     `max_wall_clock_seconds`: PHASE 42 FIX #2 addition — optional
-    overall wall-clock budget covering the ENTIRE mirror x retry loop
-    (not any single attempt's own `timeout`). Consulted at exactly the
-    same checkpoints `should_stop` already is (before trying the next
-    endpoint, before every backoff sleep) and, like a `should_stop`
-    trip mid-retry, aborts the loop via `_StopRequested` rather than
-    raising — a budget expiring is not a transport failure, it is this
-    call declining to keep paying for one. `None` (the default)
-    preserves exact previous behavior — unbounded mirror x retry
-    wall-clock time — for any caller that does not pass one (existing
-    tests, validate_overpass_provider.py, any custom `http_post`).
-    See this module's own top-of-file comment (search
+    overall wall-clock budget covering the ENTIRE mirror x retry loop.
+    Consulted at the same checkpoints `should_stop` already is (before
+    trying the next endpoint, before every backoff sleep) and, like a
+    `should_stop` trip mid-retry, aborts the loop via `_StopRequested`
+    rather than raising — a budget expiring is not a transport failure,
+    it is this call declining to keep paying for one. `None` (the
+    default) preserves exact previous behavior — unbounded mirror x
+    retry wall-clock time — for any caller that does not pass one
+    (existing tests, validate_overpass_provider.py, any custom
+    `http_post`). See this module's own top-of-file comment (search
     "PHASE 42 FIX #2") for the full production rationale.
+
+    PHASE 42B addition: the budget is now ALSO consulted immediately
+    before every individual attempt (not only after one fails), and
+    each attempt's own `urlopen` timeout is capped to whatever budget
+    genuinely remains (`_effective_attempt_timeout()`) — never the full
+    per-attempt `timeout` regardless of elapsed time. Without this, a
+    single silently-hanging attempt could still consume the entire
+    per-attempt `timeout` before the between-attempts checkpoints ever
+    got a chance to fire, letting real wall-clock time exceed the
+    configured budget. See top-of-file "PHASE 42B FOLLOW-UP" comment.
     """
     request_headers = {**_DEFAULT_TRANSPORT_HEADERS, **headers}
     body = urlencode({"data": data}).encode("utf-8")
@@ -585,6 +605,36 @@ def _http_post_urllib(
             return True
         return False
 
+    # PHASE 42B FIX — root cause of the still-observed ~74s Overpass call:
+    # `_stop_requested()` (both `should_stop` and the wall-clock budget
+    # above) was only ever consulted BETWEEN attempts — before hopping to
+    # the next mirror, and before a post-failure backoff sleep. Nothing
+    # bounded the duration of an individual attempt itself: each `urlopen`
+    # call below was given the full, fixed `timeout` (up to
+    # `request.timeout_seconds + 10`, ~35s) regardless of how much of the
+    # overall wall-clock budget was already spent. A silently-dropped
+    # connection (no RST, no immediate `[Errno 101] Network is
+    # unreachable` — the OS just never responds) makes `urlopen` block for
+    # the *entire* per-attempt timeout before raising; two such attempts
+    # back-to-back (35s + a short backoff + 35s) already exceed the
+    # intended 45s ceiling on their own, before any mirror is even tried —
+    # matching the production evidence of one area's Overpass telemetry
+    # reading ~74s despite `OVERPASS_MAX_WALL_CLOCK_SECONDS=45`.
+    #
+    # Fix: shrink the timeout actually handed to `urlopen` for each
+    # attempt to whatever wall-clock budget genuinely remains, and check
+    # that budget immediately before every attempt (not only after one
+    # fails) so a call is never started once there isn't time left to
+    # honestly attempt it. This does not touch `max_retries_per_endpoint`
+    # or the mirror list — it only ensures no single attempt, and
+    # therefore no sequence of attempts, can spend more real wall-clock
+    # time than `max_wall_clock_seconds` allows in total.
+    def _effective_attempt_timeout() -> float:
+        if max_wall_clock_seconds is None:
+            return timeout
+        remaining = max_wall_clock_seconds - (time.monotonic() - _wall_clock_start)
+        return max(0.0, min(timeout, remaining))
+
     last_exception: Optional[BaseException] = None
 
     try:
@@ -598,6 +648,28 @@ def _http_post_urllib(
                 raise _StopRequested()
 
             for attempt in range(max_retries_per_endpoint):
+                # Single budget check per attempt (not a separate
+                # `_stop_requested()` call plus this one): folds the
+                # should_stop()/elapsed-budget gate and the timeout-
+                # shrinking into one `time.monotonic()` read so an
+                # attempt is never started once the budget genuinely
+                # has nothing left for it.
+                if should_stop is not None and should_stop():
+                    log.info(
+                        "[overpass] should_stop reported true before attempt "
+                        "%d/%d against %s — aborting instead of starting "
+                        "another attempt.",
+                        attempt + 1, max_retries_per_endpoint, target_url,
+                    )
+                    raise _StopRequested()
+                attempt_timeout = _effective_attempt_timeout()
+                if attempt_timeout <= 0:
+                    log.warning(
+                        "[overpass] wall-clock budget of %.1fs exhausted — "
+                        "aborting before starting another attempt against %s.",
+                        max_wall_clock_seconds, target_url,
+                    )
+                    raise _StopRequested()
                 if on_attempt is not None:
                     try:
                         on_attempt()
@@ -605,7 +677,7 @@ def _http_post_urllib(
                         pass
                 request = Request(target_url, data=body, headers=request_headers, method="POST")
                 try:
-                    with urlopen(request, timeout=timeout) as response:
+                    with urlopen(request, timeout=attempt_timeout) as response:
                         return json.loads(response.read().decode("utf-8"))
                 except HTTPError as exc:
                     last_exception = exc

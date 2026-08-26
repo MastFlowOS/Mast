@@ -268,7 +268,15 @@ def test_contact_page_discovered_from_homepage():
 
 # ── Test 12: Temporary fetch failure does NOT equal confirmed missing contact ─
 def test_temporary_fetch_failure_propagates_exception():
-    """When all fetch attempts fail, ContactWorker re-raises the network exception."""
+    """
+    Phase 42D-2: when every page fetch fails, ContactWorker no longer
+    raises the underlying network exception (which used to force a
+    retry/dead-letter cycle before Maps-fallback logic could run).
+    Instead it returns a ContactIntel with only the fetch-failed flags
+    set -- no field claims contact data was found, so this still does
+    not equal a confirmed "no contact info exists" result; it lets the
+    normal success-path Maps-fallback gate decide.
+    """
     worker = ContactWorker()
 
     def mock_fail(url: str):
@@ -281,8 +289,14 @@ def test_temporary_fetch_failure_propagates_exception():
             final_url="https://down-site.com",
             contact_page="https://down-site.com/contact",
         )
-        with pytest.raises(urllib.error.URLError):
-            worker.process(item)
+        intel = worker.process(item)
+        assert intel.pipeline_id == "p-netfail"
+        assert intel.contact_page_fetch_failed is True
+        assert intel.homepage_fetch_failed is True
+        assert intel.emails is None
+        assert intel.phones is None
+        assert intel.contact_form_url is None
+        assert intel.instagram_url is None
 
 
 # ── Test 13: Page budget remains bounded ──────────────────────────────────────

@@ -52,7 +52,7 @@ import {
   type AreaProductivityState,
 } from "../discovery/areaProductivity.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
-import { getResourceCapacity } from "../lib/resourceCapacity.js";
+import { getResourceCapacity, getResourceWorkerSlotPool } from "../lib/resourceCapacity.js";
 import { env } from "../config/env.js";
 
 export type PoolExpandFollowUp = {
@@ -687,7 +687,33 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             source: "google_maps",
             areas: areas.filter((a) => !usedAreas.has(a)),
           }),
-        tryAcquireSlot: () => browserPool.tryAcquire(),
+        // PHASE 42A — ROOT-CAUSE FIX: a browser-memory slot alone is not
+        // enough. Also require a PID/thread-budget slot from the SAME
+        // process-wide semaphore every OTHER concurrently-running area
+        // pool (this job's siblings across concurrent poolExpand jobs, and
+        // discoveryPlanJob.ts's own area pools) draws from — so this
+        // area's start is refused, atomically, once the real cgroup PID
+        // budget is exhausted, regardless of how many other invocations
+        // are running right now. Both slots are acquired together and
+        // released together (all-or-nothing) so a partial acquire never
+        // leaks a held slot. See resourceCapacity.ts's
+        // initResourceWorkerSlotPool() doc comment for the full writeup.
+        tryAcquireSlot: () => {
+          const releaseBrowser = browserPool.tryAcquire();
+          if (!releaseBrowser) return undefined;
+          const releaseResource = getResourceWorkerSlotPool().tryAcquire();
+          if (!releaseResource) {
+            releaseBrowser();
+            return undefined;
+          }
+          let released = false;
+          return () => {
+            if (released) return;
+            released = true;
+            releaseResource();
+            releaseBrowser();
+          };
+        },
         isTerminal: () => stopOuter || stillNeededNow() <= 0 || abortController.signal.aborted,
         onEvent: (event) => {
           if (event.type === "worker_started") {

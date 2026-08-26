@@ -15,6 +15,33 @@ from urllib.parse import urljoin, urlparse
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Control-character sanitization
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Phase 42D-1: a URL/href value polluted with an embedded control character
+# or literal newline (e.g. from upstream scraping) survives `.strip()`
+# unchanged, since `.strip()` only trims leading/trailing whitespace. Left
+# in place, such a value reaches `urllib.request` and raises an uncaught
+# `ValueError: URL can't contain control characters` deep inside
+# `http.client` -- a class of error distinct from (and not caught by) the
+# usual `urllib.error.HTTPError` / `urllib.error.URLError` /
+# `socket.timeout` / `ConnectionError` handling already present at each
+# call site. Centralized here so every caller (WebsiteWorker.process,
+# ContactWorker._fetch, ContactWorker._extract_first_link, and this
+# module's own `clean_ig_url`) sanitizes the same way.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def strip_control_characters(text: str) -> str:
+    """Remove embedded control characters (including literal newlines/tabs
+    in the middle of the string, which plain `.strip()` does not reach)
+    from `text`. A clean string is returned unchanged. `None`/empty input
+    is returned as-is.
+    """
+    return _CONTROL_CHAR_RE.sub("", text) if text else text
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Phone
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -638,8 +665,13 @@ def clean_ig_url(raw: str) -> str:
     explicit scheme first — `urlparse` otherwise reads a schemeless
     `instagram.com/x` as a relative path (empty netloc), which would
     silently produce a wrong/empty handle.
+
+    Phase 42D-1: also strips embedded control characters/literal
+    newlines (not just leading/trailing whitespace) before parsing, so a
+    control-character-polluted Instagram href is normalized instead of
+    surviving into the stored URL.
     """
-    raw = raw.split('"')[0].split("'")[0].strip()
+    raw = strip_control_characters(raw.split('"')[0].split("'")[0].strip())
     normalized = raw
     if normalized.startswith("//"):
         normalized = "https:" + normalized

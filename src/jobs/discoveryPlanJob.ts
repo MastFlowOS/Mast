@@ -17,7 +17,7 @@ import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discove
 import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
-import { getResourceCapacity } from "../lib/resourceCapacity.js";
+import { getResourceCapacity, getResourceWorkerSlotPool } from "../lib/resourceCapacity.js";
 import {
   initJobMetrics,
   finalizeJobMetrics,
@@ -723,14 +723,26 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       // task always gets to run. Non-Google providers are completely
       // unaffected — they never touch this semaphore, matching STRICT
       // SCOPE (Google Maps only).
-      const releaseLegacySlot = sourceId === "google_maps"
+      // PHASE 42A — ROOT-CAUSE FIX: also acquire from the process-wide
+      // PID/thread-budget semaphore (see resourceCapacity.ts's
+      // initResourceWorkerSlotPool() doc comment), not just the
+      // memory-derived browser slot pool above — a legacy single-search
+      // Google Maps run spawns exactly the same kind of Python subprocess
+      // as a pooled area worker and must be counted against the same
+      // real PID budget every OTHER concurrently-running discoveryTask /
+      // poolExpand job in this process draws from.
+      const releaseLegacyBrowserSlot = sourceId === "google_maps"
         ? await acquireBrowserSlotBlocking(getBrowserSlotPool(), { signal: requestAbort.signal })
+        : undefined;
+      const releaseLegacyResourceSlot = sourceId === "google_maps"
+        ? await acquireBrowserSlotBlocking(getResourceWorkerSlotPool(), { signal: requestAbort.signal })
         : undefined;
       let attempt: AreaAttemptResult;
       try {
         attempt = await runOneAreaAttempt(attemptCtx, claimedArea);
       } finally {
-        releaseLegacySlot?.();
+        releaseLegacyResourceSlot?.();
+        releaseLegacyBrowserSlot?.();
       }
       discovered = attempt.discovered;
       accepted = attempt.accepted;
@@ -848,7 +860,26 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
             failed: attempt.shouldRetryTask,
           };
         },
-        tryAcquireSlot: () => browserSlotPool.tryAcquire(),
+        // PHASE 42A — ROOT-CAUSE FIX: see poolExpandJob.ts's matching
+        // tryAcquireSlot (identical fix, same shared semaphore) and
+        // resourceCapacity.ts's initResourceWorkerSlotPool() doc comment.
+        // Both slots acquired together / released together, all-or-nothing.
+        tryAcquireSlot: () => {
+          const releaseBrowser = browserSlotPool.tryAcquire();
+          if (!releaseBrowser) return undefined;
+          const releaseResource = getResourceWorkerSlotPool().tryAcquire();
+          if (!releaseResource) {
+            releaseBrowser();
+            return undefined;
+          }
+          let released = false;
+          return () => {
+            if (released) return;
+            released = true;
+            releaseResource();
+            releaseBrowser();
+          };
+        },
         // LIFECYCLE FIX (STOP REASON — FINAL SHUTDOWN LATENCY +
         // CONSUMER_STOPPED FIX): this used to run its own independent DB
         // read, decoupled from `observeTerminalPlan()`/`terminateRequest()`

@@ -48,6 +48,7 @@
  */
 import fs from "node:fs";
 import { env } from "../config/env.js";
+import { createBrowserSlotPool, type BrowserSlotPool } from "./browserSlotPool.js";
 
 export type CgroupVersion = "v2" | "v1" | "unavailable";
 
@@ -437,6 +438,84 @@ export function getResourceCapacity(): ResourceCapacity {
 export const __testing_resourceCapacity = {
   reset: () => { processResourceCapacity = undefined; },
   set: (capacity: ResourceCapacity) => { processResourceCapacity = capacity; },
+};
+
+/**
+ * PHASE 42A — ROOT-CAUSE FIX for "RuntimeError: can't start new thread" in
+ * production (pids.current ~855, concurrentAreaWorkers observed at 9-10
+ * despite `effectiveWorkers=3`).
+ *
+ * `safeAreaWorkers` above (ResourceCapacity) is a STATIC number, measured
+ * ONCE at process startup. Until this fix, `poolExpandJob.ts` and
+ * `discoveryPlanJob.ts` each read that static number directly
+ * (`getResourceCapacity().safeAreaWorkers`) and used it only as one of
+ * several `Math.min()` terms in `computeAreaPoolSize()` /
+ * `computeDynamicDiscoveryCapacity()` — i.e. as an upper bound each
+ * individual `runAreaWorkerPool()` CALL applied to ITSELF. It was never a
+ * shared, live-decrementing account of how many PID/thread-consuming area
+ * workers are ACTUALLY running right now across every concurrent
+ * invocation in this process.
+ *
+ * That is the exact lifecycle bug: this worker process can have many
+ * `runAreaWorkerPool()` calls in flight at once — multiple `discoveryTask`
+ * jobs processed concurrently via `processBatchConcurrently()`
+ * (workers/index.ts, `batchSize: browserCapacity.effectiveConcurrency`),
+ * and/or one or more `poolExpand` jobs running alongside them (a separate
+ * queue, same process) — and EACH ONE independently computed its own
+ * "safe" pool size using the SAME static `safeAreaWorkers` ceiling (e.g.
+ * 3), then started that many area workers. Three concurrently-running
+ * discovery jobs each independently deciding "I can safely run 3 area
+ * workers" is how `effectiveWorkers=3` in the logs coexists with 9
+ * concurrent area workers (and their Python subprocesses/threads) actually
+ * running — exactly the `concurrentAreaWorkers=9/10` telemetry from
+ * production. `browserSlotPool.ts` already solved this exact class of bug
+ * for MEMORY (a real, shared, atomically-decrementing semaphore every
+ * browser launch — legacy path and pooled path alike — acquires a slot
+ * from before spawning); the PID/thread-derived ceiling never got the same
+ * treatment, so it stayed correct in isolation but silently multiplied
+ * under real concurrency.
+ *
+ * `createBrowserSlotPool()` is a pure, domain-agnostic counting semaphore
+ * (capacity/tryAcquire/available/inUse — see browserSlotPool.ts's own doc
+ * comment), so it is reused here verbatim rather than re-implementing the
+ * same primitive a second time. `initResourceWorkerSlotPool()` is called
+ * once at worker startup (workers/index.ts, immediately after
+ * `initResourceCapacity()`) sized to the SAME measured `safeAreaWorkers`
+ * ceiling; `getResourceWorkerSlotPool()` is then combined with the
+ * existing browser slot pool at every `tryAcquireSlot()` call site
+ * (poolExpandJob.ts, discoveryPlanJob.ts) so an area worker only starts
+ * once BOTH a browser-memory slot AND a PID/thread-budget slot are
+ * actually free right now, process-wide, across every concurrently-running
+ * job — never a per-call static ceiling applied blind to sibling
+ * invocations.
+ */
+let processResourceWorkerSlotPool: BrowserSlotPool | undefined;
+
+export function initResourceWorkerSlotPool(capacity: number): BrowserSlotPool {
+  processResourceWorkerSlotPool = createBrowserSlotPool(capacity);
+  console.log(`[resourceCapacity] resourceWorkerSlotPool initialized capacity=${processResourceWorkerSlotPool.capacity}`);
+  return processResourceWorkerSlotPool;
+}
+
+/**
+ * Returns the process-wide PID/thread-budget slot pool, initializing a
+ * single-slot fallback (serialize to one area worker at a time) if
+ * `initResourceWorkerSlotPool()` was never called — e.g. in tests, or a
+ * code path racing worker startup. Never throws; a missing pool must fail
+ * SAFE (low, known-good concurrency), never fail open (unbounded area
+ * workers) — same convention as `getResourceCapacity()` and
+ * `getBrowserSlotPool()`.
+ */
+export function getResourceWorkerSlotPool(): BrowserSlotPool {
+  if (!processResourceWorkerSlotPool) {
+    console.warn("[resourceCapacity] getResourceWorkerSlotPool() called before initResourceWorkerSlotPool() — falling back to a single-slot pool");
+    processResourceWorkerSlotPool = createBrowserSlotPool(1);
+  }
+  return processResourceWorkerSlotPool;
+}
+
+export const __testing_resourceWorkerSlotPool = {
+  reset: () => { processResourceWorkerSlotPool = undefined; },
 };
 
 /**

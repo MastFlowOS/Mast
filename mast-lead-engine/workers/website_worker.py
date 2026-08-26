@@ -81,6 +81,18 @@ this worker's own inspection facts rather than a caught bug:
     - HTTP error status (4xx/5xx) -> the server responded, so the site
       IS reachable; urllib.error.HTTPError is caught narrowly and
       translated into http_status on an otherwise-normal WebsiteIntel.
+    - Malformed/control-character-polluted URL (ValueError: "URL can't
+      contain control characters", raised by http.client underneath
+      urllib.request when the target URL contains an embedded control
+      character or literal newline) -> Phase 42D-1: `process()` already
+      sanitizes `item.website` up front via
+      `utils.parsing.strip_control_characters`, so this should not
+      normally occur; `ValueError` is additionally caught here as
+      defense-in-depth (a URL library could theoretically re-inject
+      something) and treated exactly like `urllib.error.URLError` --
+      translated into `website_reachable=False`, not propagated. This
+      is still reporting a fact ("this URL could not be requested"),
+      not swallowing a genuine worker bug.
     - Anything else (programming errors, unexpected exception types)
       -> propagates completely unmodified. No bare except anywhere in
       this module.
@@ -110,6 +122,7 @@ from typing import List, Optional
 from urllib.parse import urljoin, urlparse
 
 from engine.contracts import BusinessCandidate, WebsiteIntel
+from utils.parsing import strip_control_characters
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
 
@@ -208,7 +221,7 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
         exceptions" above for exactly which failures are caught and
         translated into fields versus left to propagate.
         """
-        raw_website = (item.website or "").strip()
+        raw_website = strip_control_characters((item.website or "").strip())
         if not raw_website:
             return WebsiteIntel(pipeline_id=item.pipeline_id, website_reachable=False)
 
@@ -251,7 +264,7 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
                 response_time=elapsed,
                 crawl_duration=elapsed,
             )
-        except (urllib.error.URLError, socket.timeout, ConnectionError):
+        except (urllib.error.URLError, socket.timeout, ConnectionError, ValueError):
             if fallback_http_url:
                 try:
                     fallback_req = urllib.request.Request(fallback_http_url, headers=headers)
@@ -273,7 +286,7 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
                         response_time=elapsed,
                         crawl_duration=elapsed,
                     )
-                except (urllib.error.URLError, socket.timeout, ConnectionError):
+                except (urllib.error.URLError, socket.timeout, ConnectionError, ValueError):
                     elapsed = time.monotonic() - start
                     return WebsiteIntel(
                         pipeline_id=item.pipeline_id,

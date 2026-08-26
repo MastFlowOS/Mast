@@ -9,7 +9,7 @@ import { handleBusinessProcessingJob, type BusinessProcessingPayload } from "../
 import { sweepStaleScrapeJobs } from "../jobs/staleScrapeJobSweep.js";
 import { env } from "../config/env.js";
 import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance, initBrowserSlotPool } from "../lib/workerCapacity.js";
-import { initResourceCapacity, logStartupResourceTelemetry, initEnrichmentCapacity, splitEnrichmentCapacity } from "../lib/resourceCapacity.js";
+import { initResourceCapacity, initResourceWorkerSlotPool, logStartupResourceTelemetry, initEnrichmentCapacity, splitEnrichmentCapacity } from "../lib/resourceCapacity.js";
 import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
 import { getEnrichmentTelemetrySnapshot, getEnrichmentQueueDepth, formatEnrichmentTelemetryLog } from "../lib/enrichmentTelemetry.js";
 
@@ -80,10 +80,24 @@ async function main() {
   // discoveryPlanJob.ts / poolExpandJob.ts now read instead of a hardcoded
   // safeResourceWorkers constant.
   const resourceCapacity = initResourceCapacity(env.GOOGLE_MAPS_AREA_WORKERS);
+  // PHASE 42A — ROOT-CAUSE FIX: the measured PID/thread ceiling above
+  // (`resourceCapacity.safeAreaWorkers`) was previously only ever consulted
+  // as a static number, independently, by every concurrently-running
+  // `runAreaWorkerPool()` call in this process (multiple discoveryTask jobs
+  // via processBatchConcurrently(), and/or one or more poolExpand jobs
+  // running alongside them) — so N concurrent invocations could each
+  // independently start up to `safeAreaWorkers` area workers, multiplying
+  // real concurrency (and real Python subprocesses/OS threads) well past
+  // the measured-safe cgroup PID budget. This mirrors browserSlotPool
+  // (memory) as a REAL, shared, atomically-decrementing semaphore for the
+  // PID/thread budget too — see resourceCapacity.ts's own doc comment on
+  // initResourceWorkerSlotPool() for the full root-cause writeup.
+  const resourceWorkerSlotPool = initResourceWorkerSlotPool(resourceCapacity.safeAreaWorkers);
   console.log(
     `[worker] google-area-pool capacity browserSlots=${browserSlotPool.capacity} ` +
       `configuredGoogleAreaWorkers=${env.GOOGLE_MAPS_AREA_WORKERS} ` +
-      `safeResourceWorkers=${resourceCapacity.safeAreaWorkers} (basis=${resourceCapacity.pidCeilingBasis})`,
+      `safeResourceWorkers=${resourceCapacity.safeAreaWorkers} (basis=${resourceCapacity.pidCeilingBasis}) ` +
+      `resourceWorkerSlotPoolCapacity=${resourceWorkerSlotPool.capacity}`,
   );
   // PHASE 6B — one consolidated startup telemetry line: PID limit/current,
   // memory limit/current, this Node process's own PID/thread count, the

@@ -268,6 +268,7 @@ from utils.parsing import (
     is_valid_email,
     is_valid_phone,
     normalize_phone,
+    strip_control_characters,
 )
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
@@ -349,6 +350,25 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         403/404 errors immediately trigger alternate page exploration.
         429/500 errors use bounded backoff and retry.
         Page budget remains strictly bounded (<= 3 page fetches).
+
+        Phase 42D-2: when every attempted page fetch fails (all pages
+        403/404/network-error), this no longer raises the underlying
+        fetch exception. It returns a `ContactIntel` with only the
+        per-page `*_fetch_failed` flags and `pipeline_id` set --
+        everything else (emails, phones, contact_form_url, etc.) stays
+        at its default None/empty. This is not "inventing success":
+        no field claims contact data was found, only that the fetch
+        attempt(s) failed, which is exactly what happened. Returning
+        this lets the normal success path
+        (`execution_driver._contact_downstream`) run its existing
+        Maps-fallback required-channels check immediately, instead of
+        forcing every such business through a stage-failure retry and
+        dead-letter cycle before that same fallback logic (duplicated
+        in `_on_enrichment_failure_outcome`) gets a chance to run. A
+        business whose required channel(s) truly aren't satisfiable
+        from Maps-level data either is still correctly rejected at
+        Qualification -- this only removes an unnecessary and fragile
+        detour for the ones that already are.
         """
         pages = self._pages_to_fetch(item)
         if not pages:
@@ -505,12 +525,46 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                                 last_exc = alt_exc
 
         if not any_page_recovered:
-            # Every candidate was a fetch and every fetch failed — no
-            # usable contact data exists. Preserve the pre-8.1
-            # contract: propagate, do not return a partial/empty
-            # ContactIntel, do not invent success.
-            assert last_exc is not None
-            raise last_exc
+            # Phase 42D-2 correction: every candidate page fetch failed
+            # (e.g. every page 403'd). This previously did
+            # `assert last_exc is not None; raise last_exc`, re-raising
+            # the underlying fetch exception so engine/runtime.py's
+            # execute_stage() treated it as a stage failure, retried it
+            # per the queue's retry policy, and eventually dead-lettered
+            # it -- only then did
+            # execution_driver._on_enrichment_failure_outcome's
+            # "contact" branch get a chance to fall back to Maps-level
+            # phone/email facts before pruning.
+            #
+            # That is not "inventing success" for a bug that never
+            # happened -- returning this ContactIntel populates nothing
+            # but the fetch-failed flags and pipeline_id; every other
+            # field (emails, phones, contact_form_url, etc.) stays at
+            # its default None/empty, identical to what a real "no
+            # contact data found" ContactIntel already looks like
+            # elsewhere in this method. Every downstream consumer
+            # (_contact_downstream's required_channels gate,
+            # QualificationWorker) already treats an empty/None contact
+            # field as "no evidence found", never as a positive claim
+            # that the business has no contact info -- so this changes
+            # nothing about what "success" means, only how a business
+            # that already satisfies its required channel(s) from
+            # Maps-level data alone (e.g. business.phone already set,
+            # required_channels=("phone",)) gets there: through the
+            # SUCCESS path (_contact_downstream, which has the exact
+            # same Maps-fallback logic as
+            # _on_enrichment_failure_outcome's contact branch) instead
+            # of being forced through a wasteful and fragile
+            # retry-then-dead-letter cycle first. A business whose
+            # required channel truly isn't satisfiable from Maps data
+            # either is still correctly rejected at Qualification --
+            # that's a legitimate rejection, not a bug this changes.
+            return ContactIntel(
+                pipeline_id=item.pipeline_id,
+                contact_page_fetch_failed=contact_page_fetch_failed,
+                homepage_fetch_failed=homepage_fetch_failed,
+                secondary_page_fetch_failed=secondary_page_fetch_failed,
+            )
 
         partial_contact_success = bool(
             (contact_page_fetch_failed or homepage_fetch_failed or secondary_page_fetch_failed)
@@ -581,7 +635,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         Fetch `url` and return (html, resolved_url, elapsed_seconds).
         Implements bounded 429/500 retry and URL normalization.
         """
-        raw_url = url.strip()
+        raw_url = strip_control_characters(url.strip())
         if not re.match(r"^https?://", raw_url, re.IGNORECASE):
             raw_url = "https://" + raw_url
 
@@ -722,7 +776,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         html: str, base_url: str, pattern: "re.Pattern[str]"
     ) -> Optional[str]:
         for href in _ANCHOR_RE.findall(html):
-            resolved = urljoin(base_url, href.strip())
+            resolved = strip_control_characters(urljoin(base_url, href.strip()))
             if pattern.search(resolved):
                 return resolved
         return None

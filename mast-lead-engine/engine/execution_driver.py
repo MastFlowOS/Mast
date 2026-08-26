@@ -1437,6 +1437,30 @@ def build_seven_stage_pipeline(
                 intel.pipeline_id,
             )
         if intel.website_reachable is False:
+            # Phase 42D-1 fan-in leak fix: this candidate is not being
+            # pruned (the two `prune_business` branches above already
+            # returned early for that case) -- it simply has no
+            # reachable website to hand ContactWorker. Returning `None`
+            # here still means EngineRuntime never enqueues a
+            # `contact_in` item for it (website_stage's
+            # `output_queue_id` points at the real Contact queue, not a
+            # fan_in_sink dummy -- see module docstring review point
+            # 6), so ContactWorker will never run and never call
+            # `fan_in.record_contact_result` itself. Without this call,
+            # `contact_intel` on this pipeline_id's `_PipelineAccumulator`
+            # would stay `_UNSET` forever and `is_complete()` would never
+            # be satisfied, leaking the candidate out of
+            # `FanInRuntime._pending` permanently -- even when Maps
+            # already supplied enough phone/email for a fair
+            # Qualification evaluation. Recording `None` here marks the
+            # Contact branch terminally skipped (same DEAD-LETTERED
+            # contract `record_contact_dead_letter` uses), letting
+            # `_maybe_release` complete the accumulator and forward it
+            # to Merge/Qualification/Storage on whatever website/
+            # Maps-level facts already exist. Applies in both the
+            # `required_channels` and legacy/default (`required_channels
+            # is None`) cases -- this branch runs after both, unconditionally.
+            fan_in.record_contact_result(intel.pipeline_id, None)
             return None
         return intel
 

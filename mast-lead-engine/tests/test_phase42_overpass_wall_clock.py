@@ -78,7 +78,16 @@ class TestWallClockCeiling:
         """The exact production scenario: primary endpoint's retries are
         exhausted and the loop is about to fail over to a fallback
         mirror, but the wall-clock budget is already spent — failover
-        must be skipped, not paid for."""
+        must be skipped, not paid for.
+
+        step=15.0 (not the original 30.0): PHASE 42B added a per-attempt
+        budget checkpoint (see `_effective_attempt_timeout()` in
+        providers/overpass_provider.py), which reads the fake clock once
+        more before the first attempt than Phase 42's original
+        between-checkpoints-only version did. 15.0 keeps this test's
+        original intent — one attempt happens, the mirror hop after it
+        does not — under that additional, correct checkpoint.
+        """
         urls_attempted: list[str] = []
 
         def _fake_urlopen(request, timeout=None):
@@ -88,7 +97,7 @@ class TestWallClockCeiling:
         monkeypatch.setattr("providers.overpass_provider.urlopen", _fake_urlopen)
         monkeypatch.setattr("providers.overpass_provider.time.sleep", lambda _s: None)
         monkeypatch.setattr(
-            "providers.overpass_provider.time.monotonic", _FakeClock(step=30.0)
+            "providers.overpass_provider.time.monotonic", _FakeClock(step=15.0)
         )
 
         result = _http_post_urllib(
@@ -107,6 +116,11 @@ class TestWallClockCeiling:
         )
 
     def test_budget_exhausted_aborts_before_a_retry_sleep(self, monkeypatch):
+        """step=15.0 (not the original 25.0) — see the comment on
+        `test_budget_exhausted_aborts_before_next_mirror_instead_of_hopping`
+        above: PHASE 42B's new per-attempt checkpoint reads the fake
+        clock once more before each attempt than Phase 42's original
+        version did."""
         attempt_count = {"count": 0}
         sleep_calls = {"count": 0}
 
@@ -120,7 +134,7 @@ class TestWallClockCeiling:
         monkeypatch.setattr("providers.overpass_provider.urlopen", _fake_urlopen)
         monkeypatch.setattr("providers.overpass_provider.time.sleep", _fake_sleep)
         monkeypatch.setattr(
-            "providers.overpass_provider.time.monotonic", _FakeClock(step=25.0)
+            "providers.overpass_provider.time.monotonic", _FakeClock(step=15.0)
         )
 
         result = _http_post_urllib(

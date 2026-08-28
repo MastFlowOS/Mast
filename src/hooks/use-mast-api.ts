@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
+  isFutureIatApiError,
   awardGoalXp,
   bulkDeleteLeads,
   bulkImportLeads,
@@ -358,7 +359,13 @@ export function useSaveSettings() {
       // up the now-null session so the page's existing
       // `if (!user) navigate("/login")` guard fires — instead of leaving
       // the user stuck on a page that will only ever fail the same way.
-      if (err instanceof ApiError && err.status === 401) {
+      //
+      // Exception: the confirmed-persistent PGRST303 condition (Supabase's
+      // Auth-issuer/PostgREST-validator clock disagreement) is explicitly
+      // NOT cleared locally — the session is intentionally left intact —
+      // so re-fetching `me` here would just re-trigger the same rejection
+      // for no benefit. Skip the invalidation for that one case only.
+      if (err instanceof ApiError && err.status === 401 && !isFutureIatApiError(err)) {
         queryClient.invalidateQueries({ queryKey: queryKeys.me });
       }
     },

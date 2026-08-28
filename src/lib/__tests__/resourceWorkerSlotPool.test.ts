@@ -271,3 +271,137 @@ test("getResourceWorkerSlotPool() fails SAFE (single-slot pool) rather than open
   const pool = getResourceWorkerSlotPool();
   assert.equal(pool.capacity, 1, "a missing measurement must serialize to one area worker at a time, never allow unbounded concurrency");
 });
+
+// ── Regression 6 (Phase 2B, Test C): a 4th concurrent attempt cannot ───────
+// bypass the shared capacity=3 ceiling, even when all 4 attempts race
+// tryAcquireSlot() at the exact same moment (not sequentially).
+test("REGRESSION: a 4th simultaneous area worker cannot bypass shared capacity=3 — tryAcquireSlot() refuses once all 3 slots are held", async () => {
+  initResourceWorkerSlotPool(3);
+  const resourcePool = getResourceWorkerSlotPool();
+  const browserPool = createBrowserSlotPool(10); // memory is not the constraint under test
+
+  const pairedTryAcquireSlot = () => {
+    const releaseBrowser = browserPool.tryAcquire();
+    if (!releaseBrowser) return undefined;
+    const releaseResource = resourcePool.tryAcquire();
+    if (!releaseResource) {
+      releaseBrowser();
+      return undefined;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releaseResource();
+      releaseBrowser();
+    };
+  };
+
+  // Fire 4 simultaneous acquisition attempts (no await between them) —
+  // exactly the "many callers race the same shared pool at once" shape
+  // that matters for this regression, as opposed to sequential acquires.
+  const releases = [pairedTryAcquireSlot(), pairedTryAcquireSlot(), pairedTryAcquireSlot(), pairedTryAcquireSlot()];
+
+  const acquiredCount = releases.filter((r) => r !== undefined).length;
+  assert.equal(acquiredCount, 3, "exactly 3 of the 4 simultaneous attempts may hold a slot — the 4th must be refused");
+  assert.equal(releases[3], undefined, "the 4th attempt must receive no release function at all (refused, not queued)");
+  assert.equal(resourcePool.inUse(), 3);
+  assert.equal(resourcePool.available(), 0);
+
+  // Releasing one slot frees exactly one more attempt, never more.
+  releases[0]?.();
+  assert.equal(resourcePool.available(), 1);
+  const fifthAttempt = pairedTryAcquireSlot();
+  assert.notEqual(fifthAttempt, undefined, "a freed slot must become acquirable again");
+  assert.equal(resourcePool.inUse(), 3);
+
+  // Cleanup.
+  releases[1]?.();
+  releases[2]?.();
+  fifthAttempt?.();
+  assert.equal(resourcePool.inUse(), 0);
+});
+
+// ── Regression 7 (Phase 2B, Test F): cancellation/termination still ───────
+// releases the slot, exercised through the ACTUAL caller path — the same
+// paired browser+resource tryAcquireSlot()/finally wiring discoveryPlanJob.ts
+// and poolExpandJob.ts use, combined with runAreaWorkerPool's own
+// isTerminal()-driven cancellation — not a simplified stand-in.
+test("REGRESSION: mid-run cancellation (isTerminal) still releases the resource slot through the real paired tryAcquireSlot()/finally caller path", async () => {
+  initResourceWorkerSlotPool(2);
+  const resourcePool = getResourceWorkerSlotPool();
+  const browserPool = createBrowserSlotPool(2);
+  const areas = ["Area1", "Area2", "Area3", "Area4", "Area5"];
+  const claimed = new Set<string>();
+  let cancelAfterFirstCompletion = false;
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 2,
+    totalCuratedAreas: areas.length,
+    availableCapacity: browserPool.available(),
+    claimNextArea: async (used) => {
+      const next = areas.find((a) => !used.has(a) && !claimed.has(a));
+      if (!next) return undefined;
+      claimed.add(next);
+      return next;
+    },
+    // Exactly the production pairing: acquire browser + resource together,
+    // release both together, all-or-nothing — see discoveryPlanJob.ts /
+    // poolExpandJob.ts's own tryAcquireSlot() closures.
+    tryAcquireSlot: () => {
+      const releaseBrowser = browserPool.tryAcquire();
+      if (!releaseBrowser) return undefined;
+      const releaseResource = resourcePool.tryAcquire();
+      if (!releaseResource) {
+        releaseBrowser();
+        return undefined;
+      }
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        releaseResource();
+        releaseBrowser();
+      };
+    },
+    runArea: async () => {
+      cancelAfterFirstCompletion = true; // cancellation "lands" once the first area finishes
+      return outcome({ discovered: 1, accepted: 1 });
+    },
+    // Cancellation/termination signal — mirrors observeTerminalPlan() /
+    // stopOuter||stillNeededNow()<=0||abortController.signal.aborted in the
+    // real callers.
+    isTerminal: () => cancelAfterFirstCompletion,
+  });
+
+  assert.ok(result.startedWorkers >= 1, "at least one area should have started before cancellation landed");
+  assert.equal(resourcePool.inUse(), 0, "cancellation must not leak a held resource slot — the finally-block release must still run");
+  assert.equal(browserPool.inUse(), 0, "cancellation must not leak a held browser slot either");
+  assert.equal(resourcePool.available(), 2, "full resource capacity must be available again after a cancelled pool run");
+});
+
+// ── Regression 8 (Phase 2B, Test F): the legacy (non-pooled) single-search ─
+// path's blocking acquire also releases cleanly when its AbortSignal fires
+// before a slot was ever acquired — no phantom release, no leak.
+test("REGRESSION: legacy blocking acquire aborted before acquiring a slot never leaks — nothing to release, pool stays fully free", async () => {
+  initResourceWorkerSlotPool(1);
+  const resourcePool = getResourceWorkerSlotPool();
+
+  // Saturate the only slot first, so the blocking acquire below has
+  // nothing to acquire and must wait — then abort it, mirroring
+  // requestAbort.signal firing mid-wait in discoveryPlanJob.ts's legacy path.
+  const holder = resourcePool.tryAcquire();
+  assert.ok(holder, "setup: the single slot must be held for this test to exercise the waiting/abort path");
+
+  const controller = new AbortController();
+  const { acquireBrowserSlotBlocking } = await import("../browserSlotPool.js");
+  const acquirePromise = acquireBrowserSlotBlocking(resourcePool, { pollMs: 5, signal: controller.signal });
+  setTimeout(() => controller.abort(), 15);
+  const release = await acquirePromise;
+
+  assert.equal(release, undefined, "an aborted blocking acquire must resolve to undefined, never a phantom release function");
+  assert.equal(resourcePool.inUse(), 1, "the pre-existing holder's slot must be untouched by the aborted waiter");
+
+  holder?.();
+  assert.equal(resourcePool.inUse(), 0, "releasing the original holder returns the pool to fully free — the aborted waiter left nothing behind");
+});

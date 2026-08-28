@@ -862,3 +862,310 @@ test("P37-4: low-yield area rotates if terminal evidence is overwhelmingly low e
   assert.equal(classifyAreaYield(state, 120_000, P36_YIELD_LIMITS), "low_yield");
   assert.equal(evaluateAreaYieldStop(state, 120_000, P36_YIELD_LIMITS), "area_productivity_low_yield");
 });
+
+// =============================================================================
+// PHASE 45 — BOUNDED IN-FLIGHT DEFERRAL FOR THE PRIMARY PRODUCTIVITY TIMEOUT
+//
+// Bug: evaluateAreaProductivity() could fire
+// area_productivity_timeout_before_first_qualified /
+// area_productivity_idle_timeout after productiveIdleMs of no PRODUCTIVE
+// EVENT even while state.inFlightCount > 0 — i.e. even while hundreds of
+// candidates were still actively moving through enrichment/qualification.
+// `evaluateAreaProductivity(...) ?? evaluateAreaYieldStop(...)` in
+// poolExpandJob.ts short-circuited on the FIRST non-null result, so the
+// in-flight-aware protection PHASE 36/37/41 built for the yield classifier
+// never protected this, the primary, timeout at all.
+//
+// Fix: when the idle window has elapsed but inFlightCount > 0, defer —
+// bounded by the SAME shared grace window (`firstInFlightDeferralAt` /
+// `withinBoundedInFlightGrace`) the yield classifier already uses — rather
+// than treating active bounded work as complete silence.
+//
+// Realistic production-shaped values throughout: productiveIdleMs=120s
+// (env default), inFlightGraceMs=60s (env default,
+// AREA_YIELD_INFLIGHT_GRACE_MS), candidate counts in the hundreds,
+// inFlightCount in the 50-200 range, qualified 0-2 — matching the prompt's
+// specified test scenario shape.
+// =============================================================================
+
+const P45_LIMITS: AreaProductivityLimits = {
+  productiveIdleMs: 120_000,
+  maxAreaRuntimeMs: 600_000,
+  inFlightGraceMs: 60_000,
+};
+
+// ── Test A: zero in-flight work still times out exactly as before ──────────
+test("P45-A: an area with zero in-flight work still times out exactly as before", () => {
+  const state = createAreaProductivityState(0);
+  assert.equal(state.inFlightCount, 0);
+  assert.equal(evaluateAreaProductivity(state, 119_999, P45_LIMITS), null, "not yet at the idle window");
+  assert.equal(
+    evaluateAreaProductivity(state, 120_000, P45_LIMITS),
+    "area_productivity_timeout_before_first_qualified",
+    "zero in-flight work -> no deferral -> immediate timeout at productiveIdleMs, unchanged from pre-PHASE-45 behavior",
+  );
+  assert.equal(state.firstInFlightDeferralAt, null, "no deferral was ever needed, so the shared clock is never started");
+});
+
+// ── Test B: inFlightCount > 0 does NOT immediately return the timeout ──────
+test("P45-B: an area with inFlightCount > 0 does NOT immediately return area_productivity_timeout_before_first_qualified", () => {
+  const state = createAreaProductivityState(0);
+  // Hundreds of candidates discovered early; 120 remain in-flight (never
+  // resolved, never qualified) by the time the idle window elapses at 120s.
+  recordDiscoveries(state, 300, 5_000);
+  for (let i = 0; i < 180; i++) {
+    state.terminalCandidateCount += 1;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
+  assert.equal(state.inFlightCount, 120, "120 candidates remain in-flight through enrichment/qualification");
+  assert.equal(state.qualifiedCount, 0);
+
+  // Idle window (120s since the last productive event at t=5s) has
+  // elapsed at t=125s, but the fix must defer rather than terminate.
+  assert.equal(
+    evaluateAreaProductivity(state, 125_000, P45_LIMITS),
+    null,
+    "must NOT immediately terminate while 120 candidates are still in-flight",
+  );
+  assert.equal(state.firstInFlightDeferralAt, 125_000, "the shared bounded-deferral clock starts on first deferral");
+});
+
+// ── Test C: the in-flight deferral is bounded ───────────────────────────────
+test("P45-C: the in-flight deferral is bounded by inFlightGraceMs, not indefinite", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 200, 5_000);
+  for (let i = 0; i < 100; i++) {
+    state.terminalCandidateCount += 1;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
+  assert.equal(state.inFlightCount, 100);
+
+  // t=125s: idle window elapsed, in-flight -> deferred, clock starts.
+  assert.equal(evaluateAreaProductivity(state, 125_000, P45_LIMITS), null);
+  assert.equal(state.firstInFlightDeferralAt, 125_000);
+
+  // t=180s: still within the 60s grace window (125s + 60s = 185s) ->
+  // still deferred. inFlightCount is unchanged (still stuck at 100) and no
+  // new productive activity occurred.
+  assert.equal(evaluateAreaProductivity(state, 180_000, P45_LIMITS), null, "still inside the bounded grace window");
+
+  // t=186s: grace window (125s + 60s = 185s) has elapsed -> no longer
+  // deferred, proving the deferral is bounded, not unbounded/indefinite.
+  assert.equal(
+    evaluateAreaProductivity(state, 186_000, P45_LIMITS),
+    "area_productivity_timeout_before_first_qualified",
+    "grace window must expire -> deferral must end -> area must terminate",
+  );
+});
+
+// ── Test D: grace expires with inFlightCount still > 0 and no new
+//    productive activity -> the existing timeout reason is eventually
+//    returned (both the before/after-first-qualified variants) ───────────
+test("P45-D: bounded grace expiring with inFlightCount still > 0 and no new productive activity returns the existing timeout reasons", () => {
+  // D1 — never qualified anything: pre-first-qualified reason.
+  const preQualified = createAreaProductivityState(0);
+  recordDiscoveries(preQualified, 150, 5_000);
+  for (let i = 0; i < 100; i++) {
+    preQualified.terminalCandidateCount += 1;
+    preQualified.inFlightCount = Math.max(0, preQualified.newlyDiscoveredCount - preQualified.terminalCandidateCount);
+  }
+  assert.equal(preQualified.inFlightCount, 50);
+  assert.equal(evaluateAreaProductivity(preQualified, 125_000, P45_LIMITS), null, "deferred");
+  assert.equal(preQualified.inFlightCount, 50, "still stuck in-flight — grace expires with no resolution");
+  assert.equal(
+    evaluateAreaProductivity(preQualified, 186_000, P45_LIMITS),
+    "area_productivity_timeout_before_first_qualified",
+  );
+
+  // D2 — qualified once, long ago, then went idle with in-flight stuck:
+  // post-first-qualified reason.
+  const postQualified = createAreaProductivityState(0);
+  recordDiscoveries(postQualified, 150, 5_000);
+  recordQualifiedLead(postQualified, 5_000); // resets lastProductiveActivityAt to 5_000 too
+  for (let i = 0; i < 100; i++) {
+    postQualified.terminalCandidateCount += 1;
+    postQualified.inFlightCount = Math.max(0, postQualified.newlyDiscoveredCount - postQualified.terminalCandidateCount);
+  }
+  assert.equal(postQualified.inFlightCount, 49);
+  assert.equal(evaluateAreaProductivity(postQualified, 125_000, P45_LIMITS), null, "deferred");
+  assert.equal(
+    evaluateAreaProductivity(postQualified, 186_000, P45_LIMITS),
+    "area_productivity_idle_timeout",
+    "already qualified once -> idle_timeout, not the before-first-qualified variant",
+  );
+});
+
+// ── Test E: inFlightCount reaching 0 during the grace period is correct
+//    and deterministic ───────────────────────────────────────────────────
+test("P45-E: inFlightCount reaching 0 during the grace period resolves deterministically", () => {
+  // E1 — in-flight drains via non-qualifying terminal outcomes (rejected/
+  // failed/early_pruned): still zero fresh productive activity, so once
+  // inFlightCount hits 0 there is nothing left to defer for and the
+  // timeout fires immediately (does not wait out the rest of the grace
+  // window) — deterministic, and if anything faster/safer than waiting.
+  const drainsToZeroUnproductively = createAreaProductivityState(0);
+  recordDiscoveries(drainsToZeroUnproductively, 80, 5_000);
+  for (let i = 0; i < 60; i++) {
+    drainsToZeroUnproductively.terminalCandidateCount += 1;
+    drainsToZeroUnproductively.inFlightCount = Math.max(
+      0,
+      drainsToZeroUnproductively.newlyDiscoveredCount - drainsToZeroUnproductively.terminalCandidateCount,
+    );
+  }
+  assert.equal(drainsToZeroUnproductively.inFlightCount, 20);
+  assert.equal(evaluateAreaProductivity(drainsToZeroUnproductively, 125_000, P45_LIMITS), null, "deferred while 20 remain in-flight");
+
+  // The remaining 20 all resolve as rejected (not qualified) at t=140s —
+  // inFlightCount now 0, but recordCandidateTerminal-with-rejected does
+  // NOT reset lastProductiveActivityAt, so idleFor is still >= 120s.
+  for (let i = 0; i < 20; i++) {
+    drainsToZeroUnproductively.terminalCandidateCount += 1;
+    drainsToZeroUnproductively.inFlightCount = Math.max(
+      0,
+      drainsToZeroUnproductively.newlyDiscoveredCount - drainsToZeroUnproductively.terminalCandidateCount,
+    );
+  }
+  assert.equal(drainsToZeroUnproductively.inFlightCount, 0);
+  assert.equal(
+    evaluateAreaProductivity(drainsToZeroUnproductively, 141_000, P45_LIMITS),
+    "area_productivity_timeout_before_first_qualified",
+    "no in-flight work left to protect, and no productive activity occurred -> terminate immediately, well before the 185s grace deadline",
+  );
+
+  // E2 — in-flight drains via a qualification (recordCandidateTerminal
+  // with outcome "qualified" — the exact call poolExpandJob.ts's
+  // processLead() makes): this is NOT "inFlightCount reaches 0 with
+  // silence" — it's covered by test F below (a fresh productive event
+  // resets the clock). Verified here only for completeness/determinism of
+  // the inFlightCount bookkeeping itself.
+  const drainsToZeroViaQualification = createAreaProductivityState(0);
+  recordDiscoveries(drainsToZeroViaQualification, 1, 5_000);
+  assert.equal(drainsToZeroViaQualification.inFlightCount, 1);
+  recordCandidateTerminal(drainsToZeroViaQualification, "qualified", 130_000);
+  assert.equal(drainsToZeroViaQualification.inFlightCount, 0);
+  assert.equal(
+    evaluateAreaProductivity(drainsToZeroViaQualification, 130_000, P45_LIMITS),
+    null,
+    "the qualification itself is fresh productive activity -> clock reset -> not idle at all",
+  );
+});
+
+// ── Test F: a new productive event resets the productivity clock
+//    correctly, even mid-deferral ─────────────────────────────────────────
+test("P45-F: a new productive event resets the productivity clock correctly", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 200, 5_000);
+  for (let i = 0; i < 150; i++) {
+    state.terminalCandidateCount += 1;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
+  assert.equal(state.inFlightCount, 50);
+
+  // Deferred at t=125s (grace clock starts).
+  assert.equal(evaluateAreaProductivity(state, 125_000, P45_LIMITS), null);
+  assert.equal(state.firstInFlightDeferralAt, 125_000);
+
+  // Mid-grace-window, at t=150s, one of the in-flight candidates actually
+  // qualifies (recordCandidateTerminal with outcome "qualified" — the
+  // exact call poolExpandJob.ts's processLead() makes) — genuine forward
+  // progress. This MUST reset the clock, same as it always has (PHASE 25
+  // behavior, untouched by this fix).
+  recordCandidateTerminal(state, "qualified", 150_000);
+  assert.equal(state.lastProductiveActivityAt, 150_000);
+  assert.equal(state.inFlightCount, 49);
+
+  // Immediately after, idleFor is ~0 -> not idle at all, regardless of
+  // the still-pending grace-window bookkeeping.
+  assert.equal(evaluateAreaProductivity(state, 150_500, P45_LIMITS), null, "just had fresh productive activity");
+
+  // And the FULL 120s idle window must elapse again from this NEW
+  // reference point (150s), not from the original one (5s) — proving the
+  // reset is a real reset of the IDLE clock specifically.
+  assert.equal(evaluateAreaProductivity(state, 269_999, P45_LIMITS), null, "not yet 120s since the t=150s qualification");
+  // Note: `firstInFlightDeferralAt` (the bounded-deferral clock) itself is
+  // deliberately NOT reset by fresh productive activity — same as PHASE 41
+  // already established for the yield classifier (see that field's doc
+  // comment): it bounds cumulative in-flight-stall exposure across the
+  // area's whole life, not per idle-episode, so a burst of activity every
+  // few minutes can't be used to re-arm an unbounded wait. Its 60s grace
+  // (started at t=125_000) has therefore already expired by t=270_000, so
+  // the now-reset idle clock elapsing again correctly produces the
+  // post-first-qualified reason immediately, with no further deferral.
+  assert.equal(
+    evaluateAreaProductivity(state, 270_000, P45_LIMITS),
+    "area_productivity_idle_timeout",
+    "idle clock genuinely reset by the t=150s qualification, but the (unreset, cumulative) deferral bound had already expired",
+  );
+});
+
+// ── Test G: maxAreaRuntimeMs still terminates the area even if
+//    inFlightCount > 0 ─────────────────────────────────────────────────────
+test("P45-G: maxAreaRuntimeMs still terminates the area even if inFlightCount > 0", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 200, 5_000);
+  for (let i = 0; i < 100; i++) {
+    state.terminalCandidateCount += 1;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
+  assert.equal(state.inFlightCount, 100, "100 candidates still in-flight — the max-runtime check must not care");
+
+  // Even well inside what would otherwise be a bounded in-flight
+  // deferral, maxAreaRuntimeMs (600s) is checked FIRST and unconditionally.
+  assert.equal(
+    evaluateAreaProductivity(state, 600_000, P45_LIMITS),
+    "area_productivity_max_runtime",
+    "max runtime must win regardless of in-flight state or any pending deferral",
+  );
+});
+
+// ── Test H: existing yield-classifier behavior remains unchanged ──────────
+test("P45-H: existing yield-classifier behavior (classifyAreaYield/evaluateAreaYieldStop) is unchanged by the shared-clock refactor", () => {
+  // Re-exercises P36-1's exact scenario against the (now-shared)
+  // withinBoundedInFlightGrace implementation to confirm the refactor from
+  // classifyAreaYield's own inline grace-window logic to the shared helper
+  // preserved its behavior byte-for-byte.
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 50, 100_000);
+  const yieldClass0 = classifyAreaYield(state, 100_000, P36_YIELD_LIMITS);
+  assert.equal(yieldClass0, "productive");
+  assert.equal(evaluateAreaYieldStop(state, 100_000, P36_YIELD_LIMITS), null);
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, true);
+  assert.equal(state.firstInFlightDeferralAt, 100_000);
+
+  recordQualifiedLead(state, 100_000);
+  assert.equal(state.inFlightCount, 49);
+  const yieldClass1 = classifyAreaYield(state, 100_000, P36_YIELD_LIMITS);
+  assert.notEqual(yieldClass1, "low_yield");
+  assert.equal(yieldClass1, "productive");
+});
+
+// ── Test: evaluateAreaProductivity and evaluateAreaYieldStop share ONE
+//    grace window (single source of truth), not two independent ones ─────
+test("P45-I: the primary idle timeout and the yield classifier share ONE bounded grace window, not two independent ones", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 300, 5_000);
+  for (let i = 0; i < 150; i++) {
+    state.terminalCandidateCount += 1;
+    state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
+  }
+  assert.equal(state.inFlightCount, 150);
+  assert.equal(state.qualifiedCount, 0);
+
+  // t=125s: primary idle timeout defers FIRST (poolExpandJob.ts calls it
+  // first) — this starts the shared clock.
+  assert.equal(evaluateAreaProductivity(state, 125_000, P45_LIMITS), null);
+  assert.equal(state.firstInFlightDeferralAt, 125_000);
+
+  // The yield classifier, consulted right after (as poolExpandJob.ts's
+  // `?? evaluateAreaYieldStop(...)` does), must NOT get its own fresh 60s
+  // window starting now — it inherits the SAME deadline (125s + 60s =
+  // 185s) already started by the primary timeout above.
+  assert.equal(evaluateAreaYieldStop(state, 180_000, P36_YIELD_LIMITS), null, "still within the shared window");
+  assert.equal(state.firstInFlightDeferralAt, 125_000, "the yield classifier must not have reset/restarted the shared clock");
+
+  assert.equal(
+    evaluateAreaProductivity(state, 186_000, P45_LIMITS),
+    "area_productivity_timeout_before_first_qualified",
+    "shared window (started at 125s) has expired",
+  );
+});

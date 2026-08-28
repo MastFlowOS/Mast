@@ -95,7 +95,12 @@ from utils.parsing import is_valid_email, is_weak_site
 from engine.acceptance import LeadAcceptanceGate
 from engine.coordinator import EngineCoordinator
 from engine.contracts import QualifiedOpportunity, StoredOpportunity
-from engine.execution_driver import ExecutionDriver, build_seven_stage_pipeline, run_batch_intelligence
+from engine.execution_driver import (
+    ExecutionDriver,
+    build_seven_stage_pipeline,
+    run_batch_intelligence,
+    DEFAULT_STAGE_CONCURRENCY,
+)
 from storage.early_persistent_dedup import PersistentEarlyDedupChecker, PersistentEarlyDedupError
 from providers.google_maps_provider import GoogleMapsProvider, GoogleMapsDiscoveryRequest
 from providers.overpass_provider import OverpassProvider
@@ -325,6 +330,42 @@ class _StreamingStorageBackend:
     result. This is the seam that lets run_query() stream a lead the
     moment it's actually persisted, without StorageWorker/ExecutionDriver
     knowing anything about asyncio, queues, or the Node bridge.
+
+    INCIDENT FIX (qualified-but-never-delivered leads): `self._inner`
+    (SupabaseStorageBackend) writes only an audit-trail row — pipeline_id
+    plus a mint-on-insert id — into the provisional `qualified_opportunities`
+    table (see migrations/021_qualified_opportunities.sql's own "FLAGGED,
+    NOT AN ARCHITECTURE DECISION" header: that table is explicitly NOT the
+    `leads` table the frontend reads). Node/the frontend never read that
+    table directly — user-visible delivery happens entirely through
+    `self._on_persisted` -> `result_q` -> `lead_dict` -> stdout -> Node's
+    `deliverLead()` -> the real `leads` table (see service.py module
+    docstring / run_query()'s drain loop).
+
+    Before this fix, `self._inner.persist()` raising (bad table config,
+    RLS/permission denial, wrong SUPABASE_URL/SERVICE_ROLE_KEY for this
+    process, transient network failure — `SupabaseStorageBackend.persist()`
+    is documented to never catch or retry) propagated out of this method,
+    which `workers/storage_worker.py::StorageWorker.process()` also never
+    catches. `engine/runtime.py::execute_stage()` then treated it as an
+    ORDINARY worker failure — retried once, then silently dead-lettered —
+    so `_on_persisted` was never called for that pipeline_id. The pipeline
+    kept running and kept logging `candidate_qualified` for every later
+    candidate, but zero leads were ever streamed to Node: the audit-row
+    insert had become a single point of failure for delivery it was never
+    supposed to gate.
+
+    Fix: the audit-trail insert and the delivery signal are now
+    independent. `self._inner.persist()` is attempted and its real
+    `StoredOpportunity` is used when it succeeds; if it raises, that is
+    logged loudly (so a real Supabase misconfiguration is visible instead
+    of hiding behind a routine per-item dead-letter) and a fallback
+    `StoredOpportunity` is synthesized from data already fully in hand
+    (`opportunity.pipeline_id` — `opportunity_id` cannot be left None,
+    since `StoredOpportunity.opportunity_id` is a required `str` field;
+    see engine/contracts.py) so `_on_persisted` still fires and the
+    already-qualified lead still reaches Node/the `leads` table. Storage
+    audit-row failures no longer silently block delivery.
     """
 
     def __init__(self, inner: SupabaseStorageBackend, on_persisted) -> None:
@@ -332,7 +373,25 @@ class _StreamingStorageBackend:
         self._on_persisted = on_persisted
 
     def persist(self, opportunity: QualifiedOpportunity) -> StoredOpportunity:
-        stored = self._inner.persist(opportunity)
+        try:
+            stored = self._inner.persist(opportunity)
+        except Exception as exc:  # noqa: BLE001 - audit-row failure must
+            # never silently swallow a qualified lead's delivery; see this
+            # class's own docstring, "INCIDENT FIX", for the full rationale.
+            log.error(
+                "[_StreamingStorageBackend] qualified_opportunities audit "
+                "insert FAILED for pipeline_id=%s — delivering this lead to "
+                "Node anyway from the in-memory QualifiedOpportunity, but "
+                "this audit-trail failure needs investigating (it will "
+                "recur for every subsequent qualified candidate until "
+                "fixed): %s",
+                opportunity.pipeline_id, exc, exc_info=True,
+            )
+            stored = StoredOpportunity(
+                opportunity_id=f"unpersisted:{opportunity.pipeline_id}",
+                pipeline_id=opportunity.pipeline_id,
+                created_at=None,
+            )
         self._on_persisted(opportunity, stored)
         return stored
 
@@ -681,7 +740,16 @@ async def run_query(
         if name not in _latency_marks:
             _latency_marks[name] = time.perf_counter() - _request_started_ts
 
-    def _on_progress(stage: str, event: str, item_id: str | None) -> None:
+    def _on_progress(
+        stage: str,
+        event: str,
+        item_id: str | None,
+        *,
+        terminal: bool = False,
+        dead_lettered: bool = False,
+        pipeline_id: str | None = None,
+        terminal_reason: str | None = None,
+    ) -> None:
         # PART C (Phase 2B — watchdog progress protocol): every one of
         # these events is written to the SAME stdout the lead dicts and
         # the __done__ sentinel already use, as its own one-line JSON
@@ -701,6 +769,14 @@ async def run_query(
                 "stage": stage,
                 "event": event,
                 "item_id": item_id,
+                # PHASE 5B-2 — additive lifecycle-accounting fields. A Node
+                # bridge/consumer built against the pre-5B-2 protocol simply
+                # never reads these keys; nothing about the pre-existing
+                # "type"/"stage"/"event"/"item_id" fields changed.
+                "pipeline_id": pipeline_id,
+                "terminal": terminal,
+                "dead_lettered": dead_lettered,
+                "terminal_reason": terminal_reason,
                 "timestamp": time.time(),
             }, default=str) + "\n")
             sys.stdout.flush()
@@ -1131,6 +1207,20 @@ async def run_query(
             driver = ExecutionDriver(
                 engine_runtime, stages, on_stage_outcome=cleanup_cb,
                 on_stage_wallclock=_on_discovery_wallclock, run_producers_once=True,
+                # PHASE 5C: restore downstream throughput by letting the
+                # Website stage actually use more than one of its already-
+                # configured 8 idle instances (`instance_counts["website"]`
+                # above) at once. Conservative default (2) -- see
+                # engine/execution_driver.py's own
+                # DEFAULT_STAGE_CONCURRENCY docstring for why this
+                # is not instance_counts["website"] itself.
+                # PHASE 5E: same treatment for Contact (also 2, also not
+                # instance_counts["contact"]'s 8) -- see
+                # DEFAULT_STAGE_CONCURRENCY and execution_driver.py's
+                # "Phase 5E" module docstring section. Instagram, Merge,
+                # Qualification, and Storage remain untouched (implicit
+                # concurrency 1).
+                stage_concurrency=DEFAULT_STAGE_CONCURRENCY,
             )
 
             all_input_queue_ids = [

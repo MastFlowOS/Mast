@@ -49,6 +49,24 @@ export const QUEUES = {
   businessEnrich: "business.enrich",
   businessScore: "business.score",
   priorityAging: "priority-aging",
+  /**
+   * INCIDENT FIX (pg-boss "Queue not found" errors): these two names were
+   * previously only ever passed as raw string literals to
+   * `boss.schedule()`/`boss.work()` in src/workers/index.ts and were never
+   * added here — so the `for (const queueName of Object.values(QUEUES))
+   * await boss.createQueue(queueName)` loop below never created them.
+   * pg-boss v10 requires `createQueue()` before `schedule()`/`work()` will
+   * succeed against a queue name, which is exactly what produced "Queue
+   * `metrics-snapshot` not found" / "Queue `stale-scrape-job-sweep` not
+   * found". Both call sites in workers/index.ts already wrap these calls
+   * in try/catch and log them as non-fatal, and neither queue is part of
+   * the discovery/qualification/enrichment/delivery pipeline (metrics-
+   * snapshot feeds the ops dashboard; stale-scrape-job-sweep reclaims
+   * crashed poolExpandJob rows) — this fix only silences the unrelated
+   * scheduler errors, it does not change delivery behavior.
+   */
+  metricsSnapshot: "metrics-snapshot",
+  staleScrapeJobSweep: "stale-scrape-job-sweep",
 } as const;
 
 

@@ -163,6 +163,23 @@ export type EngineProgressEvent = {
   stage: string;
   event: string;
   itemId?: string;
+  /**
+   * PHASE 5B-2 — additive lifecycle-accounting fields (see
+   * mast-lead-engine/service.py's `_on_progress`). `pipelineId` is the
+   * stable per-candidate correlation key (present for every stage —
+   * `itemId` above stays `queue_item_id`/`worker_id` for website/instagram/
+   * contact/merge/qualification/storage stage_completed/stage_failed lines,
+   * unchanged from before this phase). `terminal` is true exactly when this
+   * event is THE one candidate-terminal resolution for `pipelineId` — see
+   * poolExpandJob.ts's onProgress handler for the idempotent (by
+   * pipelineId) consumer of this flag. Absent/undefined on any progress
+   * line from an older engine build that predates this phase — treat as
+   * `terminal: false`.
+   */
+  pipelineId?: string;
+  terminal?: boolean;
+  deadLettered?: boolean;
+  terminalReason?: string;
 };
 
 export type EngineVerifyParams = {
@@ -1029,6 +1046,11 @@ export async function* runEngineQuery(
           stage: typeof parsed.stage === "string" ? parsed.stage : "unknown",
           event: typeof parsed.event === "string" ? parsed.event : "unknown",
           itemId: typeof parsed.item_id === "string" ? parsed.item_id : undefined,
+          // PHASE 5B-2 — additive fields, absent on older engine builds.
+          pipelineId: typeof parsed.pipeline_id === "string" ? parsed.pipeline_id : undefined,
+          terminal: typeof parsed.terminal === "boolean" ? parsed.terminal : false,
+          deadLettered: typeof parsed.dead_lettered === "boolean" ? parsed.dead_lettered : false,
+          terminalReason: typeof parsed.terminal_reason === "string" ? parsed.terminal_reason : undefined,
         });
         continue;
       }

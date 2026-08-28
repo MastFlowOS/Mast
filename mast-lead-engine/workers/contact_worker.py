@@ -436,43 +436,93 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
 
         total_fetches = 0
 
-        for role, url in pages:
-            url_clean = url.strip()
-            tried_urls.add(url_clean)
-            if url_clean.lower().startswith(_MAILTO_PREFIX):
-                address = url_clean[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
-                address = urllib.parse.unquote(address)
-                if address and is_valid_email(address):
-                    emails.setdefault(address.lower(), "mailto")
-                    mailto_extracted = True
-                any_page_recovered = True
-                continue
-            if url_clean.lower().startswith(_TEL_PREFIX):
-                number = url_clean[len(_TEL_PREFIX):].split("?", 1)[0].strip()
-                number = urllib.parse.unquote(number)
-                if number and is_valid_phone(number):
-                    phones.setdefault(number, "tel")
-                    tel_extracted = True
-                elif number:
-                    phones.setdefault(number, "tel")
-                    tel_extracted = True
-                any_page_recovered = True
-                continue
+        # Phase 5D: `contact_page` and `homepage` are independent pages
+        # -- neither's content depends on the other -- so their HTTP
+        # requests are dispatched concurrently through a small, bounded,
+        # per-call ThreadPoolExecutor (<= number of pages that actually
+        # need a network fetch; mailto:/tel: entries need no fetch and
+        # are excluded from it). The executor is created fresh here and
+        # joined via `shutdown(wait=True)` before this call returns --
+        # never persistent across candidates, never the process-wide
+        # default executor. With at most two primary pages this stays
+        # well inside the existing <= 3 fetch-per-candidate budget.
+        #
+        # Results are still merged strictly sequentially, in the same
+        # role-priority order (`contact_page` before `homepage`) the
+        # original loop used, and the same early-exit rule is evaluated
+        # after each page in that order. This reproduces the exact same
+        # final state (merged fields, `total_fetches`, fetch-failed
+        # flags, precedence) the sequential version produces for the
+        # same page responses -- concurrency only removes network wait
+        # time, it changes nothing about which results get merged or in
+        # what order. One consequence: if `contact_page` alone already
+        # satisfies the early-exit condition, `homepage`'s fetch (already
+        # dispatched) is still awaited during executor shutdown so no
+        # thread is left running past this call, but its result is never
+        # consulted -- same merged output as today, just without the
+        # (rare) latency saving that case used to get from never
+        # starting the second request at all.
+        fetch_needed = [
+            (role, url.strip())
+            for role, url in pages
+            if not url.strip().lower().startswith(_MAILTO_PREFIX)
+            and not url.strip().lower().startswith(_TEL_PREFIX)
+        ]
 
-            total_fetches += 1
-            try:
-                html, page_url, elapsed = self._fetch(url_clean)
-                _process_page_content(role, html, page_url, elapsed)
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                if role == "contact_page":
-                    contact_page_fetch_failed = True
-                else:
-                    homepage_fetch_failed = True
+        futures_by_url: "Dict[str, concurrent.futures.Future]" = {}
+        executor: "Optional[concurrent.futures.ThreadPoolExecutor]" = None
+        if len(fetch_needed) > 1:
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(fetch_needed)
+            )
+            futures_by_url = {
+                url: executor.submit(self._fetch, url) for _, url in fetch_needed
+            }
 
-            # Early Exit: if valid email, valid phone, AND Instagram are all present
-            if bool(emails) and bool(phones) and instagram_url is not None:
-                break
+        try:
+            for role, url in pages:
+                url_clean = url.strip()
+                tried_urls.add(url_clean)
+                if url_clean.lower().startswith(_MAILTO_PREFIX):
+                    address = url_clean[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
+                    address = urllib.parse.unquote(address)
+                    if address and is_valid_email(address):
+                        emails.setdefault(address.lower(), "mailto")
+                        mailto_extracted = True
+                    any_page_recovered = True
+                    continue
+                if url_clean.lower().startswith(_TEL_PREFIX):
+                    number = url_clean[len(_TEL_PREFIX):].split("?", 1)[0].strip()
+                    number = urllib.parse.unquote(number)
+                    if number and is_valid_phone(number):
+                        phones.setdefault(number, "tel")
+                        tel_extracted = True
+                    elif number:
+                        phones.setdefault(number, "tel")
+                        tel_extracted = True
+                    any_page_recovered = True
+                    continue
+
+                total_fetches += 1
+                try:
+                    if url_clean in futures_by_url:
+                        html, page_url, elapsed = futures_by_url[url_clean].result()
+                    else:
+                        html, page_url, elapsed = self._fetch(url_clean)
+                    _process_page_content(role, html, page_url, elapsed)
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    if role == "contact_page":
+                        contact_page_fetch_failed = True
+                    else:
+                        homepage_fetch_failed = True
+
+                # Early Exit: if valid email, valid phone, AND Instagram are all present
+                if bool(emails) and bool(phones) and instagram_url is not None:
+                    break
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
 
         # Phase 15 & 39: Bounded Secondary Page Discovery
         secondary_page_fetched = False

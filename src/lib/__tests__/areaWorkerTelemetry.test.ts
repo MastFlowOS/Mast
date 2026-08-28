@@ -88,3 +88,28 @@ test("peakPidDeltaPerArea / peakMemoryDeltaPerAreaMb are null when no clean nume
   assert.equal(summary.peakPidDeltaPerArea, null);
   assert.equal(summary.peakMemoryDeltaPerAreaMb, null);
 });
+
+// ── Phase 2B, Item 3: an isolated single-area-worker lifecycle produces ────
+// exactly the 3 requested phase samples (before_start, after_start,
+// after_cleanup) — nailing down the "before_start → after_start →
+// after_cleanup sample for a single area worker" measurement contract in
+// terms of the raw sample stream, not just the derived delta.
+test("a single isolated area-worker lifecycle records exactly one sample per phase, in order, all non-concurrent", () => {
+  __testing_areaWorkerTelemetry.reset();
+  const runId = newAreaRunId();
+  recordBeforeAreaStart(runId, "isolated-area");
+  recordAfterAreaStart(runId, "isolated-area");
+  recordAfterAreaCleanup(runId, "isolated-area");
+
+  const summary = getAreaWorkerTelemetrySummary();
+  assert.equal(summary.sampleCount, 3, "exactly one sample per lifecycle phase — before_start, after_start, after_cleanup");
+  assert.equal(summary.cleanDeltas.length, 1, "the before_start->after_start delta must be produced and marked clean");
+  assert.equal(summary.contaminatedDeltaCount, 0);
+
+  // The measurement this phase asks for feeds a future PIDS_PER_AREA_WORKER
+  // recalibration decision — confirm it is available but that nothing in
+  // this module writes it back into configuration automatically.
+  const delta = summary.cleanDeltas[0];
+  assert.equal(delta?.area, "isolated-area");
+  assert.equal(delta?.concurrent, false);
+});

@@ -303,12 +303,12 @@ async function main() {
   // Captures a time-series snapshot of active workers, queue depths, and
   // browser metrics into lead_engine_snapshots for the ops dashboard.
   try {
-    await boss.schedule("metrics-snapshot", "*/1 * * * *", {});
+    await boss.schedule(QUEUES.metricsSnapshot, "*/1 * * * *", {});
   } catch (err) {
     console.error("[worker] Optional scheduler failed to schedule metrics-snapshot (non-fatal):", err);
   }
 
-  await boss.work("metrics-snapshot", async () => {
+  await boss.work(QUEUES.metricsSnapshot, async () => {
     // captureSystemSnapshot is itself non-throwing; any error is caught inside.
     await captureSystemSnapshot(workerMetrics);
   });
@@ -319,12 +319,12 @@ async function main() {
   // jobs/staleScrapeJobSweep.ts for the full rationale. Every 5 minutes,
   // matching priority-aging's cadence above.
   try {
-    await boss.schedule("stale-scrape-job-sweep", "*/5 * * * *", {});
+    await boss.schedule(QUEUES.staleScrapeJobSweep, "*/5 * * * *", {});
   } catch (err) {
     console.error("[worker] Optional scheduler failed to schedule stale-scrape-job-sweep (non-fatal):", err);
   }
 
-  await boss.work("stale-scrape-job-sweep", async () => {
+  await boss.work(QUEUES.staleScrapeJobSweep, async () => {
     try {
       await sweepStaleScrapeJobs();
     } catch (err) {

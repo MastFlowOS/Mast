@@ -43,11 +43,11 @@ import {
   recordDeliveredLead,
   recordProductiveActivity,
   recordQualifiedLead,
-  recordCandidateDiscovered,
   recordCandidateQueued,
   recordCandidateRejected,
-  recordCandidateEarlyPruned,
-  recordCandidateFailed,
+  admitCandidate,
+  closeCandidateTerminal,
+  cancelOpenCandidates,
   scopeAreaAbort,
   type AreaProductivityState,
 } from "../discovery/areaProductivity.js";
@@ -803,12 +803,31 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           // narrower way for a single area to stop early.
           const productivity = createAreaProductivityState();
           const { signal: areaSignal, controller: areaAbort } = scopeAreaAbort(abortController.signal);
+          // PHASE 5B-2 — candidate-level lifecycle accounting (Phase 5B-1
+          // audit fix). `inFlightPipelineIds` / `terminalPipelineIds` are
+          // THIS area's own identity-based tracking, keyed by `pipeline_id`
+          // (the engine's stable per-candidate correlation key). They exist
+          // ALONGSIDE `productivity.inFlightCount`/`terminalCandidateCount`
+          // (unchanged arithmetic: newlyDiscoveredCount - terminalCandidateCount)
+          // — these two Sets are what make the increments feeding that
+          // arithmetic CORRECT (each candidate admitted at most once, closed
+          // terminal at most once), not a replacement for it. See
+          // `admitPipelineId`/`closeCandidateTerminal` below.
+          const inFlightPipelineIds = new Set<string>();
+          const terminalPipelineIds = new Set<string>();
           // PHASE 25: shared limits object — see areaProductivity.ts's
           // AreaProductivityLimits and env.ts for where these two knobs
           // come from and why their defaults are safe.
           const productivityLimits = {
             productiveIdleMs: env.AREA_PRODUCTIVITY_IDLE_MS,
             maxAreaRuntimeMs: env.AREA_PRODUCTIVITY_MAX_RUNTIME_MS,
+            // PHASE 45 — bounds how long the primary idle timeout may defer
+            // while state.inFlightCount > 0 (see areaProductivity.ts's
+            // withinBoundedInFlightGrace doc comment). Deliberately the
+            // SAME env knob evaluateAreaYieldStop already uses below, so
+            // there is one shared, single-source-of-truth in-flight grace
+            // window per area, not two independently-tuned ones.
+            inFlightGraceMs: env.AREA_YIELD_INFLIGHT_GRACE_MS,
           };
           // PHASE 30: a SEPARATE, independent check from productivityLimits
           // above — see areaProductivity.ts's classifyAreaYield doc comment
@@ -912,18 +931,31 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 requestId: reqId,
                 areaLabel: area,
                 // PHASE 25 / PHASE 36: live discovery & enrichment progress signal.
+                // PHASE 5B-2 — candidate-level lifecycle accounting fix
+                // (Phase 5B-1 audit). Every branch below that closes a
+                // candidate out goes through `closeCandidateTerminal`, which
+                // is idempotent by `progress.pipelineId` — a candidate can
+                // never be double-counted terminal, no matter how many
+                // terminal-flagged events arrive for it (retries, duplicate
+                // dead-letters, etc.). A stage's mid-pipeline
+                // success/retryable-failure is deliberately NEVER routed
+                // through `closeCandidateTerminal` — see each branch.
                 onProgress: (progress) => {
                   if (progress.stage === "discovery") {
                     if (progress.event === "candidate_discovered") {
-                      recordCandidateDiscovered(productivity);
+                      admitCandidate(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId);
                     } else if (progress.event === "candidate_queued") {
                       recordCandidateQueued(productivity);
                     } else if (
                       progress.event === "candidate_closed_pruned" ||
                       progress.event === "candidate_keyword_pruned" ||
-                      progress.event === "candidate_early_channel_pruned"
+                      progress.event === "candidate_early_channel_pruned" ||
+                      // 5B-1 gap #2 (discovery half): a dedup hit was
+                      // previously silently dropped — never closed out,
+                      // inflating inFlightCount forever for that candidate.
+                      progress.event === "candidate_early_duplicate"
                     ) {
-                      recordCandidateEarlyPruned(productivity);
+                      closeCandidateTerminal(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId, "early_pruned");
                     }
                   } else if (
                     progress.stage === "website" ||
@@ -931,19 +963,59 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                     progress.stage === "contact"
                   ) {
                     if (progress.event === "candidate_early_channel_pruned") {
-                      recordCandidateEarlyPruned(productivity);
+                      closeCandidateTerminal(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId, "early_pruned");
                     } else if (progress.event === "stage_failed") {
-                      recordCandidateFailed(productivity);
+                      // 5B-1 gap #4: only a DEAD-LETTERED failure (retries
+                      // exhausted) is candidate-terminal. A retryable
+                      // failure (`progress.terminal === false`) must not
+                      // close the candidate — it may still succeed on a
+                      // later attempt.
+                      if (progress.terminal) {
+                        closeCandidateTerminal(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId, "failed");
+                      }
                     } else if (progress.event === "stage_completed") {
                       recordProductiveActivity(productivity, "enrichment_completed");
                     }
+                  } else if (progress.stage === "merge") {
+                    // 5B-1 gap #5: merge events were emitted by Python and
+                    // silently dropped by Node. Merge success continues the
+                    // candidate on to qualification (not terminal); only a
+                    // dead-lettered merge failure closes it out.
+                    if (progress.event === "stage_failed" && progress.terminal) {
+                      closeCandidateTerminal(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId, "failed");
+                    }
                   } else if (progress.stage === "qualification") {
-                    if (
-                      progress.event === "candidate_rejected" ||
-                      progress.event === "niche_relevance_mismatch" ||
-                      progress.event === "instagram_followers_over_limit"
-                    ) {
-                      recordCandidateRejected(productivity);
+                    // 5B-1 gaps #1/#2/#3: `candidate_rejected` now covers
+                    // EVERY rejection reason (not just niche mismatch /
+                    // Instagram follower limit), emitted with
+                    // `terminal: true` by the engine. `candidate_qualified`
+                    // is deliberately NOT terminal here — a qualified
+                    // candidate's one authoritative terminal transition is
+                    // its eventual storage outcome (see the "storage"
+                    // branch below), not this event. A `stage_failed` here
+                    // is the QualificationWorker itself crashing/exhausting
+                    // retries (distinct from a business-rule rejection).
+                    if (progress.terminal) {
+                      if (progress.event === "stage_failed") {
+                        closeCandidateTerminal(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId, "failed");
+                      } else {
+                        closeCandidateTerminal(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId, "rejected");
+                      }
+                    }
+                  } else if (progress.stage === "storage") {
+                    // 5B-1 gap #6: storage events were emitted by Python and
+                    // silently dropped by Node. A successful write is the
+                    // candidate's "delivered" resolution; a dead-lettered
+                    // write is its "storage_failed" resolution — either way
+                    // storage is the pipeline's last stage, so both close
+                    // the candidate. Deliberately NOT "qualified" here (that
+                    // would re-trigger `recordQualifiedLead` a second time —
+                    // `processLead()` below already calls it once for this
+                    // same lead's delivery bookkeeping).
+                    if (progress.event === "stage_completed") {
+                      closeCandidateTerminal(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId, "delivered");
+                    } else if (progress.event === "stage_failed" && progress.terminal) {
+                      closeCandidateTerminal(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId, "failed");
                     }
                   }
                 },
@@ -972,6 +1044,17 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             // known-good baseline.
           } finally {
             clearInterval(productivityTimer);
+            // PHASE 5B-2 (5B-1 gap #8) — this area is done, for whatever
+            // reason (batch_done / stop_outer / natural exhaustion / idle
+            // or low-yield rotation / abort). Whatever candidates are still
+            // open (admitted but never closed terminal) at this exact
+            // moment are force-closed as "cancelled", by pipeline_id, so
+            // `inFlightCount` reconciles to 0 instead of being left at
+            // whatever stale nonzero value the last progress event happened
+            // to leave it at. A late duplicate terminal event for one of
+            // these pipeline_ids arriving after this point is a no-op —
+            // `closeCandidateTerminal` already guards on `terminalPipelineIds`.
+            cancelOpenCandidates(productivity, inFlightPipelineIds, terminalPipelineIds);
             accepted = chunk.deliveredThisChunk;
             rejected = Math.max(0, discovered - accepted);
             // PHASE 41 — compact per-area scan-budget and productivity telemetry.

@@ -190,6 +190,97 @@ different `ExecutionDriver`s (two different sessions) already don't
 contend, per that same design; this file adds no new shared state
 between driver instances.
 
+Phase 5C — bounded per-stage concurrency (Website only, default off)
+--------------------------------------------------------------------
+Root cause this phase fixes: every pass above calls `execute_stage()`
+**once** per `StageConfig`, serially, on one thread — even though
+`build_seven_stage_pipeline()`'s own `instance_counts` already lets a
+caller register more than one `BaseWorker` instance per definition
+(`service.py` already registers 8 Website instances). Extra idle
+instances sat unused because nothing ever asked WorkerAllocator for a
+second one before the first had been released.
+
+Fix: an optional `stage_concurrency: Dict[str, int]` constructor
+argument (default `None`, meaning every stage defaults to `1` — byte-
+for-byte the pre-existing single-call-per-pass behavior, no thread
+pool constructed at all, when omitted). For a stage whose configured
+concurrency is `N > 1`, one pass submits up to `N` concurrent
+`execute_stage()` calls for that stage onto one small, bounded
+`concurrent.futures.ThreadPoolExecutor` owned by this driver instance
+(sized to the sum of every stage's configured concurrency — never
+unbounded, never the process-wide asyncio default executor) and waits
+for all `N` to finish before moving on to the next stage in the pass.
+
+This requires no change to `WorkerAllocator`, `WorkerPool`, `Queue`,
+or `EngineRuntime`: `WorkerAllocator.allocate()` already holds a
+single `threading.RLock` around picking the next idle worker (see
+`workers/worker_allocator.py`), so two concurrent `execute_stage()`
+calls for the same stage are already guaranteed two *distinct*
+`BaseWorker` instances and two distinct dequeued `QueueItem`s — that
+guarantee is reused here, not reimplemented. Retry/dead-letter
+semantics are unchanged because they live entirely inside one
+`execute_stage()` call (`_handle_failure()`), which this file still
+only ever invokes through the exact same `_execute_one()` helper,
+now just from more than one thread.
+
+The one new piece of shared state this actually adds is
+`_outcome_lock`, guarding calls to `on_stage_outcome`/
+`on_stage_wallclock`: this module's own pre-existing contract (both
+callbacks' docstrings, above) promises a caller they are "never called
+concurrently with itself". Running `_execute_one()` concurrently would
+break that promise for any stage with concurrency > 1 unless calling
+the two observer callbacks is itself serialized — so it is, via one
+`threading.Lock` held only around those two calls, not around
+`execute_stage()` itself. `FanInRuntime`/`WorkerRegistry`/`QueueManager`
+remain reachable from more than one thread already (two different
+sessions' drivers already do this — see this section's predecessor
+paragraph above); this lock adds nothing new for those.
+
+Default configuration (see `build_seven_stage_pipeline()`'s own
+`DEFAULT_WEBSITE_STAGE_CONCURRENCY`) enables concurrency 2 for Website
+only. Instagram, Contact, Merge, Qualification, and Storage remain at
+the implicit default of 1 — identical to pre-Phase-5C behavior for
+every stage but Website — until a future phase's own production
+measurement justifies raising them.
+
+Phase 5E — bounded Contact stage concurrency (contact=2)
+--------------------------------------------------------------------
+Builds on Phase 5C's mechanism without changing it: `_run_stage_pass()`,
+`_stage_concurrency_for()`, and the bounded `_concurrency_executor` were
+already generic over stage name (see Phase 5C section above — nothing
+there is Website-specific except the `_website_active`/`_completed`/
+`_failed` telemetry counters, which stay Website-only; see TELEMETRY
+below). Enabling Contact concurrency is therefore a configuration-only
+change: `DEFAULT_STAGE_CONCURRENCY` (renamed from
+`DEFAULT_WEBSITE_STAGE_CONCURRENCY`) now also carries `"contact": 2`.
+`service.py`'s `instance_counts["contact"]` was already 8, so two
+concurrent `execute_stage()` calls for Contact always get two distinct
+`ContactWorker` instances and two distinct dequeued `QueueItem`s, via
+the same `WorkerAllocator`/`Queue` locking Phase 5C already relies on.
+
+Resource footprint: each concurrent Contact `execute_stage()` call can
+itself spin up to 2 short-lived fetch threads inside `ContactWorker.
+process()` (Phase 5D's own per-call `ThreadPoolExecutor`, joined via
+`shutdown(wait=True)` before `process()` returns — see
+`workers/contact_worker.py`). At Contact concurrency 2, the worst-case
+simultaneous thread count for the Contact stage is therefore 2 driver-
+side `_execute_one()` threads (drawn from `_concurrency_executor`,
+itself sized to `sum(self._stage_concurrency.values())` — i.e. it grows
+to account for Contact same as it already did for Website) plus up to
+2 × 2 = 4 transient Phase 5D fetch threads = 6 threads at any instant,
+never more, and never the process-wide default executor. This is a
+strictly bounded, conservative footprint, not a modeled optimum — see
+`contact = 2` in the Phase 5E implementation prompt for why 2 (not 8)
+was chosen given the prior `RuntimeError: can't start new thread`
+production incident.
+
+Nothing else about Phase 5C's design changes: `FanInRuntime` correlates
+Contact results by `pipeline_id` exactly as before (untouched); retry/
+dead-letter semantics live entirely inside one `execute_stage()` call,
+unaffected by which stage's calls happen to run concurrently; and
+Website's own concurrency (2), telemetry counters, and behavior are
+byte-for-byte unchanged by this addition.
+
 Post-audit correction (Item 4 — found via execution, not the earlier
 static review)
 --------------------------------------------------------------------
@@ -237,9 +328,13 @@ something that hasn't already been rebuilt).
 from __future__ import annotations
 
 import datetime as _dt
+import inspect
 import json
+import os
+import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -310,7 +405,28 @@ __all__ = [
     "ExecutionDriver",
     "PipelineQueueIds",
     "build_seven_stage_pipeline",
+    "DEFAULT_STAGE_CONCURRENCY",
 ]
+
+# Phase 5C — see module docstring section "Phase 5C — bounded per-stage
+# concurrency (Website only, default off)". Deliberately conservative and
+# deliberately NOT `instance_counts["website"]` (8, in service.py) —
+# concurrency is how many Website `execute_stage()` calls this driver runs
+# at once; instance_count is only how many idle BaseWorker instances exist
+# to be picked from. Using all 8 concurrently, with zero production
+# evidence for that number, is exactly the "blindly use instance_counts=8"
+# outcome Phase 5C's own instructions rule out. 2 is a small, easily
+# doubled-or-halved starting point, not a modeled optimum.
+#
+# Phase 5E — added "contact": 2 to this same dict (module docstring
+# section "Phase 5E — bounded Contact stage concurrency" below). Same
+# reasoning as Website: not instance_counts["contact"] (8, in
+# service.py), conservative, easily adjusted. Renamed from
+# DEFAULT_WEBSITE_STAGE_CONCURRENCY to DEFAULT_STAGE_CONCURRENCY since
+# it is no longer Website-only; still one central dict, not scattered
+# per-file constants. Instagram, Merge, Qualification, and Storage
+# remain at the implicit default of 1.
+DEFAULT_STAGE_CONCURRENCY: Dict[str, int] = {"website": 2, "contact": 2}
 
 
 class ExecutionDriverError(RuntimeError):
@@ -343,6 +459,7 @@ class ExecutionDriver:
         idle_poll_seconds: float = 0.25,
         on_stage_outcome: Optional[Callable[[StageOutcome], None]] = None,
         on_stage_wallclock: Optional[Callable[[str, float], None]] = None,
+        stage_concurrency: Optional[Dict[str, int]] = None,
     ) -> None:
         """
         Parameters
@@ -403,6 +520,17 @@ class ExecutionDriver:
             itself — this driver does not do so on a caller's behalf.
             `None` (the default) is a no-op, identical to
             `on_stage_outcome` immediately above.
+        stage_concurrency:
+            PHASE 5C addition. Optional `{stage_name: concurrency}` map.
+            A stage not present in this dict (or the dict itself being
+            `None`, the default) is concurrency `1` — exactly the
+            pre-existing, single-`execute_stage()`-call-per-pass
+            behavior, with no `ThreadPoolExecutor` constructed at all.
+            See the module docstring's "Phase 5C" and "Phase 5E"
+            sections for the full design and `DEFAULT_STAGE_CONCURRENCY`
+            for this codebase's own conservative default (Website=2,
+            Contact=2, nothing else). Values are clamped to a minimum
+            of 1.
         """
         if not stages:
             raise ValueError("ExecutionDriver requires at least one StageConfig")
@@ -413,6 +541,79 @@ class ExecutionDriver:
         self._idle_poll_seconds = idle_poll_seconds
         self._on_stage_outcome = on_stage_outcome
         self._on_stage_wallclock = on_stage_wallclock
+
+        # PHASE 5C — bounded per-stage concurrency (see module docstring).
+        # Clamp every configured value to >= 1; a stage absent from the
+        # dict defaults to 1 via `_stage_concurrency_for()` below, not by
+        # being pre-populated here, so `stage_concurrency={}`/`None` are
+        # both indistinguishable from "every stage is 1" -- the pre-
+        # Phase-5C behavior.
+        self._stage_concurrency: Dict[str, int] = {
+            name: max(1, int(value))
+            for name, value in (stage_concurrency or {}).items()
+        }
+        # Only construct a thread pool if at least one stage actually
+        # needs more than one concurrent execute_stage() call -- the
+        # common case (stage_concurrency=None, or every value <= 1) has
+        # zero threads and zero new behavior versus pre-Phase-5C. Sized
+        # to the sum of every stage's concurrency: within one pass, only
+        # one stage's batch of concurrent calls is ever in flight at a
+        # time (stages still run in sequence within a pass -- see
+        # `_run_stage_pass` below), so summing is a safe, simple upper
+        # bound, not a tight one -- deliberately not the process-wide
+        # default asyncio executor, and deliberately reusing
+        # WorkerAllocator/WorkerPool for the actual worker selection
+        # rather than bypassing them (this pool only bounds how many
+        # `execute_stage()` calls run at once; WorkerAllocator's own
+        # lock is still what decides which BaseWorker each one gets).
+        self._max_stage_concurrency = max(
+            [1, *self._stage_concurrency.values()]
+        )
+        needs_pool = any(v > 1 for v in self._stage_concurrency.values())
+        self._concurrency_executor: Optional[ThreadPoolExecutor] = (
+            ThreadPoolExecutor(
+                max_workers=sum(self._stage_concurrency.values()) or 1,
+                thread_name_prefix="mast-execution-driver-stage",
+            )
+            if needs_pool
+            else None
+        )
+        # Serializes on_stage_outcome/on_stage_wallclock invocations only
+        # -- never execute_stage() itself. Preserves both callbacks'
+        # pre-existing documented contract ("never called concurrently
+        # with itself") now that a stage with concurrency > 1 can have
+        # more than one execute_stage() call in flight on more than one
+        # thread at once. See module docstring "Phase 5C" section.
+        self._outcome_lock = threading.Lock()
+
+        # PHASE 5C telemetry (low-frequency only -- see module docstring
+        # "TELEMETRY"): counts are cheap ints guarded by the same lock,
+        # logged at most once per idle/active pass boundary in
+        # `_run_loop`, never per item.
+        self._telemetry_lock = threading.Lock()
+        self._website_active = 0
+        self._website_completed = 0
+        self._website_failed = 0
+        self._last_telemetry_log = 0.0
+
+        # PHASE 5G -- generic per-stage telemetry (all six stages, not
+        # just Website). Purely additive to the Website-only counters
+        # above (left untouched, still fed by `_run_stage_pass` exactly
+        # as before -- zero behavior change there). These are written
+        # only from `_execute_one`, the one call path every stage goes
+        # through regardless of configured concurrency (1 or N), and
+        # read only from `_maybe_log_telemetry` below. Never read by
+        # scheduling, retries, or worker allocation -- observational
+        # only, same `_telemetry_lock` as the counters above.
+        self._stage_active: Dict[str, int] = {s.name: 0 for s in self._stages}
+        self._stage_completed: Dict[str, int] = {s.name: 0 for s in self._stages}
+        self._stage_failed: Dict[str, int] = {s.name: 0 for s in self._stages}
+        # Previous sample's totals, so `_maybe_log_telemetry` can report
+        # a delta/rate *since the last sample* rather than a lifetime
+        # average -- lifetime-since-start would flatten out and stop
+        # reflecting what is happening right now the longer a session runs.
+        self._stage_prev_completed: Dict[str, int] = {s.name: 0 for s in self._stages}
+        self._stage_prev_failed: Dict[str, int] = {s.name: 0 for s in self._stages}
 
         self._producer_names = {
             s.name for s in self._stages if s.input_queue_id is None
@@ -545,6 +746,23 @@ class ExecutionDriver:
                     )
                     continue
                 producer_thread.join(timeout=timeout)
+
+        # PHASE 5C: stop accepting new concurrent Website (or any other
+        # concurrency>1 stage) submissions. By the time execution reaches
+        # here, `self._thread` (the main pass loop, the only thing that
+        # calls `_run_stage_pass`/submits onto this executor) has already
+        # been joined above when `wait=True` -- so no submission race is
+        # possible in that case. When `wait=False`, `shutdown(wait=False)`
+        # still immediately refuses any *new* submit() (raises
+        # RuntimeError, caught below) while letting whatever was already
+        # submitted keep running to completion via its own Future --
+        # `_run_stage_pass` always calls `future.result()` on every future
+        # it submits, so those in-flight worker allocations still resolve
+        # (worker.complete()/fail() + allocator.release() still run)
+        # rather than being abandoned mid-`process()`. No-op if no stage
+        # ever needed a pool (`_concurrency_executor is None`).
+        if self._concurrency_executor is not None:
+            self._concurrency_executor.shutdown(wait=wait)
 
     def is_running(self) -> bool:
         """True while the background drive thread is alive."""
@@ -686,10 +904,10 @@ class ExecutionDriver:
                 # stages actually dequeue candidates while discovery is
                 # still streaming more in.
                 continue
-            outcome = self._execute_one(stage)
-            if outcome is None:
+            pass_outcomes = self._run_stage_pass(stage)
+            if pass_outcomes is None:
                 break
-            outcomes.append(outcome)
+            outcomes.extend(pass_outcomes)
         return outcomes
 
     # -- internal ----------------------------------------------------------
@@ -707,14 +925,16 @@ class ExecutionDriver:
                         # producer stages run on their own thread, never
                         # inline in this loop.
                         continue
-                    outcome = self._execute_one(stage)
-                    if outcome is None:
+                    pass_outcomes = self._run_stage_pass(stage)
+                    if pass_outcomes is None:
                         # Fatal error already recorded in self.last_error;
                         # stop this driver rather than spin on the same
                         # structural problem forever.
                         return
-                    if outcome.ran:
+                    if any(o.ran for o in pass_outcomes):
                         any_ran = True
+
+                self._maybe_log_telemetry()
 
                 if self._stop_event.is_set():
                     return
@@ -725,6 +945,218 @@ class ExecutionDriver:
                     self._stop_event.wait(delay)
         finally:
             log.info("ExecutionDriver loop exiting")
+
+    def _stage_concurrency_for(self, stage: StageConfig) -> int:
+        """PHASE 5C: configured concurrency for `stage`, defaulting to 1
+        (identical to pre-Phase-5C behavior) for any stage not named in
+        `self._stage_concurrency`."""
+        return self._stage_concurrency.get(stage.name, 1)
+
+    def _run_stage_pass(self, stage: StageConfig) -> Optional[List[StageOutcome]]:
+        """
+        Run one pass of `stage`. For concurrency 1 (the default for
+        every stage unless explicitly configured otherwise), this is
+        byte-for-byte the pre-Phase-5C behavior: exactly one
+        `_execute_one(stage)` call, no thread pool touched at all.
+
+        For a stage configured with concurrency N > 1, submits up to N
+        concurrent `_execute_one(stage)` calls onto this driver's
+        bounded `_concurrency_executor` and waits for all N to finish
+        before returning -- see module docstring "Phase 5C" section for
+        why this is safe to do without touching WorkerAllocator, Queue,
+        or EngineRuntime: each concurrent `execute_stage()` call
+        independently dequeues (Queue is lock-protected) and
+        independently allocates (WorkerAllocator is lock-protected),
+        which is what guarantees two concurrent calls for the same
+        stage always get two different QueueItems and two distinct
+        BaseWorker instances.
+
+        Returns `None` (mirroring `_execute_one`'s own None-means-fatal
+        contract) if any concurrent call hit a fatal error --
+        `self.last_error`/`self._stop_event` are already set by the
+        time that happens, exactly as in the concurrency-1 path.
+        """
+        concurrency = self._stage_concurrency_for(stage)
+        if concurrency <= 1 or self._concurrency_executor is None:
+            outcome = self._execute_one(stage)
+            return None if outcome is None else [outcome]
+
+        is_website = stage.name == "website"
+        if is_website:
+            with self._telemetry_lock:
+                self._website_active += concurrency
+
+        outcomes: List[StageOutcome] = []
+        try:
+            try:
+                futures = [
+                    self._concurrency_executor.submit(self._execute_one, stage)
+                    for _ in range(concurrency)
+                ]
+            except RuntimeError:
+                # Executor already shut down (stop() in progress) -- no
+                # new submissions, consistent with "cancellation must
+                # stop new submissions" (module docstring, "TESTING").
+                return None
+
+            fatal = False
+            for future in futures:
+                result = future.result()
+                if result is None:
+                    fatal = True
+                    continue
+                outcomes.append(result)
+            return None if fatal else outcomes
+        finally:
+            if is_website:
+                completed = sum(1 for o in outcomes if o.ran and o.success)
+                failed = sum(1 for o in outcomes if o.ran and o.success is False)
+                with self._telemetry_lock:
+                    self._website_active -= concurrency
+                    self._website_completed += completed
+                    self._website_failed += failed
+
+    @staticmethod
+    def _process_rss_mb() -> Optional[float]:
+        """
+        PHASE 5G resource telemetry. Peak resident-set-size of this
+        process in MB, via the stdlib `resource` module only (Linux/
+        macOS) -- no new dependency added, and deliberately not
+        `psutil` (not a requirement anywhere in this codebase today;
+        see requirements.txt). Mirrors the primary code path of the
+        pre-existing `utils.lifecycle_tracker.get_memory_usage()`
+        helper rather than importing that module directly, since that
+        module's own top-level `from playwright.async_api import ...`
+        import would pull Playwright into every process that imports
+        `engine.execution_driver` -- including ones (e.g. this
+        milestone's own quick syntax/import check) that have no
+        business loading a browser automation library just to read a
+        counter. Returns `None` on any platform where `resource` isn't
+        available (e.g. Windows) rather than guessing a value.
+        `ru_maxrss` is a high-water mark, not an instantaneous
+        snapshot -- exactly what "peak memory usage" (see this
+        milestone's own production-usefulness question 7) asks for.
+        """
+        try:
+            import resource  # stdlib; Linux/macOS only, imported lazily
+        except ImportError:
+            return None
+        rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return (rss_kb / 1024.0) if sys.platform != "darwin" else (rss_kb / 1024.0 / 1024.0)
+
+    def _maybe_log_telemetry(self, *, min_interval_s: float = 30.0) -> None:
+        """
+        PHASE 5C/5G low-frequency telemetry (module docstring
+        "TELEMETRY"): at most once every `min_interval_s`, log one
+        `[stage-throughput]` line per configured stage (website,
+        instagram, contact, merge, qualification, storage --
+        whichever `StageConfig`s this driver was actually built with)
+        plus one `[stage-throughput] resource` line. Never per-item --
+        called once per pass, from `_run_loop` only, and internally
+        rate-limited on top of that, so at most ~7 log lines every
+        `min_interval_s` regardless of how many candidates moved
+        through the pipeline in that window.
+
+        PHASE 5C's Website-only `website_active=...` line (fed by
+        `_run_stage_pass`) is left completely untouched below this
+        method for backward compatibility with anything already
+        grepping for it; this method now ALSO emits the generic,
+        all-stage counters (fed by `_execute_one`, see that method's
+        own PHASE 5G note) as separate `[stage-throughput]` lines.
+
+        PHASE 5G note on scope: unlike the PHASE 5C version, this no
+        longer early-returns when `self._stage_concurrency` is empty --
+        Merge/Qualification/Storage/Instagram normally have no
+        configured concurrency at all (concurrency 1 is the default,
+        not an entry in that dict), so gating telemetry on that dict
+        being non-empty would silently produce zero telemetry for
+        exactly the stages this milestone needs visibility into.
+        """
+        now = time.monotonic()
+        with self._telemetry_lock:
+            if now - self._last_telemetry_log < min_interval_s:
+                return
+            elapsed_s = (
+                (now - self._last_telemetry_log)
+                if self._last_telemetry_log
+                else min_interval_s
+            )
+            self._last_telemetry_log = now
+            website_active = self._website_active
+            website_completed = self._website_completed
+            website_failed = self._website_failed
+            # Snapshot every stage's counters + this sample's deltas
+            # under the same lock `_execute_one` writes them under, so
+            # a delta can never straddle a partially-updated counter.
+            stage_rows = []
+            for stage in self._stages:
+                name = stage.name
+                active = self._stage_active.get(name, 0)
+                completed = self._stage_completed.get(name, 0)
+                failed = self._stage_failed.get(name, 0)
+                prev_completed = self._stage_prev_completed.get(name, 0)
+                prev_failed = self._stage_prev_failed.get(name, 0)
+                completed_delta = completed - prev_completed
+                failed_delta = failed - prev_failed
+                self._stage_prev_completed[name] = completed
+                self._stage_prev_failed[name] = failed
+                stage_rows.append(
+                    (name, active, completed, failed, completed_delta, failed_delta)
+                )
+
+        # PHASE 5C: Website's own line -- unchanged in shape from before
+        # PHASE 5G, so anything already grepping `website_active=` keeps
+        # working exactly as it did.
+        total = website_completed + website_failed
+        rate = (website_completed / total) if total else None
+        log.info(
+            "ExecutionDriver telemetry stage_concurrency=%s website_active=%d "
+            "website_completed=%d website_failed=%d website_completion_rate=%s",
+            self._stage_concurrency, website_active, website_completed, website_failed,
+            f"{rate:.2f}" if rate is not None else "n/a",
+        )
+
+        # PHASE 5G: one grep-able [stage-throughput] line per stage,
+        # covering all six (website/instagram/contact/merge/
+        # qualification/storage), not just Website. `queue_depth` is
+        # deliberately reported as "n/a": EngineRuntime does not expose
+        # its RuntimeContext's QueueManager through any public
+        # attribute (only a private `_runtime` reference this module
+        # has no business reaching into -- see engine/runtime.py's own
+        # `_require_services()`), so there is no *cheap and* clean way
+        # to read per-stage queue depth from here today without adding
+        # a new accessor -- out of scope for an observational-only
+        # phase that must not touch ExecutionDriver's/EngineRuntime's
+        # public shape. Flagged here rather than worked around; see
+        # this milestone's final response, item F.
+        for name, active, completed, failed, completed_delta, failed_delta in stage_rows:
+            configured_concurrency = self._stage_concurrency.get(name, 1)
+            delta_rate = (completed_delta / elapsed_s) if elapsed_s else 0.0
+            log.info(
+                "[stage-throughput] %s active=%d concurrency=%d completed=%d "
+                "failed=%d completed_delta=%d failed_delta=%d rate=%.2f/s "
+                "queue_depth=n/a",
+                name, active, configured_concurrency, completed, failed,
+                completed_delta, failed_delta, delta_rate,
+            )
+
+        # PHASE 5G: process-level resource line, once per sample --
+        # thread count via the stdlib `threading.active_count()` (the
+        # same call this codebase already uses for exactly this in
+        # validate_parallel_provider.py), RSS via `_process_rss_mb()`
+        # above, PID via `os.getpid()` (already this codebase's own
+        # idiom -- see service.py's stop-file naming). "PID count" from
+        # this milestone's own question 6 is reported as this process's
+        # own PID for cross-referencing against Railway's per-instance
+        # logs -- this module has no visibility into sibling engine
+        # subprocesses (that view belongs to the Node-side
+        # scraperBridge/pythonBridge.ts, out of this file's scope).
+        rss_mb = self._process_rss_mb()
+        log.info(
+            "[stage-throughput] resource pid=%d threads=%d rss_mb=%s",
+            os.getpid(), threading.active_count(),
+            f"{rss_mb:.1f}" if rss_mb is not None else "n/a",
+        )
 
     def _execute_one(self, stage: StageConfig) -> Optional[StageOutcome]:
         """
@@ -737,25 +1169,55 @@ class ExecutionDriver:
         An ordinary worker failure never reaches this except block —
         `execute_stage()` already converts that into a returned
         `StageOutcome(success=False, ...)`.
+
+        PHASE 5G: also the single point (regardless of a stage's
+        configured concurrency) where the generic per-stage
+        active/completed/failed telemetry counters are updated -- see
+        `self._stage_active` et al. in `__init__` and
+        `_maybe_log_telemetry` below. Purely observational bookkeeping
+        under the existing `_telemetry_lock`; does not affect what this
+        method returns, when it returns it, or anything downstream that
+        reads that return value.
         """
+        with self._telemetry_lock:
+            self._stage_active[stage.name] = self._stage_active.get(stage.name, 0) + 1
         try:
-            _t0 = time.perf_counter()
-            outcome = self._runtime.execute_stage(stage)
-        except Exception as exc:  # noqa: BLE001 - fatal, not a worker failure
+            try:
+                _t0 = time.perf_counter()
+                outcome = self._runtime.execute_stage(stage)
+            except Exception as exc:  # noqa: BLE001 - fatal, not a worker failure
+                if self._on_stage_wallclock is not None:
+                    with self._outcome_lock:
+                        self._on_stage_wallclock(stage.name, (time.perf_counter() - _t0) * 1000.0)
+                self.last_error = exc
+                self._stop_event.set()
+                log.error(
+                    "ExecutionDriver: fatal error executing stage=%s: %s",
+                    stage.name, exc,
+                )
+                return None
+            # PHASE 5C: both observer callbacks are serialized under
+            # `_outcome_lock` -- not `execute_stage()` itself -- so a stage
+            # with concurrency > 1 (more than one `_execute_one()` call
+            # in flight on more than one thread) still preserves each
+            # callback's pre-existing documented contract: "never called
+            # concurrently with itself". See module docstring "Phase 5C".
             if self._on_stage_wallclock is not None:
-                self._on_stage_wallclock(stage.name, (time.perf_counter() - _t0) * 1000.0)
-            self.last_error = exc
-            self._stop_event.set()
-            log.error(
-                "ExecutionDriver: fatal error executing stage=%s: %s",
-                stage.name, exc,
-            )
-            return None
-        if self._on_stage_wallclock is not None:
-            self._on_stage_wallclock(stage.name, (time.perf_counter() - _t0) * 1000.0)
-        if self._on_stage_outcome is not None:
-            self._on_stage_outcome(outcome)
-        return outcome
+                with self._outcome_lock:
+                    self._on_stage_wallclock(stage.name, (time.perf_counter() - _t0) * 1000.0)
+            if self._on_stage_outcome is not None:
+                with self._outcome_lock:
+                    self._on_stage_outcome(outcome)
+            if outcome.ran:
+                with self._telemetry_lock:
+                    if outcome.success is False:
+                        self._stage_failed[stage.name] = self._stage_failed.get(stage.name, 0) + 1
+                    elif outcome.success is True:
+                        self._stage_completed[stage.name] = self._stage_completed.get(stage.name, 0) + 1
+            return outcome
+        finally:
+            with self._telemetry_lock:
+                self._stage_active[stage.name] = max(0, self._stage_active.get(stage.name, 0) - 1)
 
 
 # ===========================================================================
@@ -944,7 +1406,7 @@ def build_seven_stage_pipeline(
     scoring_worker_factory: Optional[Callable[[], BaseWorker]] = None,
     storage_worker_factory: Optional[Callable[[], BaseWorker]] = None,
     instance_counts: Optional[Dict[str, int]] = None,
-    on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None,
+    on_progress: Optional[Callable[..., None]] = None,
     on_stage_timing: Optional[Callable[[StageOutcome], None]] = None,
     early_dedup_checker: Optional[PersistentEarlyDedupChecker] = None,
     scrape_job_id: Optional[str] = None,
@@ -1160,20 +1622,126 @@ def build_seven_stage_pipeline(
     # "Do NOT spam massive payloads" instruction). Never allowed to raise
     # into pipeline code -- an observer failing must never affect
     # discovery/enrichment itself.
-    def _emit(stage: str, event: str, item_id: Optional[str]) -> None:
+    def _progress_callback_accepts_terminal_kwargs(fn: Optional[Callable[..., None]]) -> bool:
+        # PHASE 5B-2 — many existing tests/callers pass a plain
+        # `def cb(stage, event, item_id): ...` 3-arg callback as
+        # `on_progress`. Calling that with the new terminal/dead_lettered/
+        # pipeline_id/terminal_reason keyword args raises TypeError, which
+        # `_emit`'s own try/except below would otherwise swallow SILENTLY —
+        # dropping every progress event for that pipeline instead of just
+        # the new fields. Inspected once per pipeline build (not per call)
+        # so a callback that genuinely wants the richer signature (e.g.
+        # `service.py`'s `_on_progress`, updated to accept **all** of these)
+        # still gets them, while an old-style/test callback is called with
+        # the original 3-arg shape it always understood — the SAME
+        # information those callers always got, this fix's new fields are
+        # simply not forced on them.
+        if fn is None:
+            return False
+        try:
+            sig = inspect.signature(fn)
+        except (TypeError, ValueError):
+            return True
+        params = list(sig.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return True
+        names = {
+            p.name for p in params
+            if p.kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        }
+        return {"terminal", "dead_lettered", "pipeline_id", "terminal_reason"}.issubset(names)
+
+    _on_progress_supports_terminal_kwargs = _progress_callback_accepts_terminal_kwargs(on_progress)
+
+    def _emit(
+        stage: str,
+        event: str,
+        item_id: Optional[str],
+        *,
+        terminal: bool = False,
+        dead_lettered: bool = False,
+        pipeline_id: Optional[str] = None,
+        terminal_reason: Optional[str] = None,
+    ) -> None:
+        # PHASE 5B-2 — widened progress protocol: `terminal`/`dead_lettered`/
+        # `pipeline_id`/`terminal_reason` are additive keyword-only fields.
+        # Every pre-existing `_emit(stage, event, item_id)` call site keeps
+        # working unchanged (terminal defaults False, pipeline_id defaults to
+        # `item_id` -- true for every existing call site, since item_id
+        # already IS the pipeline_id everywhere except `_emit_stage_outcome`,
+        # which now passes pipeline_id explicitly below).
         if on_progress is None:
             return
         try:
-            on_progress(stage, event, item_id)
+            if _on_progress_supports_terminal_kwargs:
+                on_progress(
+                    stage,
+                    event,
+                    item_id,
+                    terminal=terminal,
+                    dead_lettered=dead_lettered,
+                    pipeline_id=pipeline_id if pipeline_id is not None else item_id,
+                    terminal_reason=terminal_reason,
+                )
+            else:
+                on_progress(stage, event, item_id)
         except Exception:
             log.debug("on_progress observer raised — ignored", exc_info=True)
+
+    def _stage_outcome_terminality(outcome: StageOutcome) -> tuple[bool, Optional[str]]:
+        """
+        PHASE 5B-2 — CORE MODEL: a candidate (keyed by pipeline_id) becomes
+        TERMINAL exactly once. This function decides, per stage, whether
+        THIS StageOutcome is the one terminal event for its pipeline_id.
+
+        - website/instagram/contact: only a dead-lettered failure is
+          terminal. A success continues the candidate onward; a retryable
+          failure is not yet known to be final.
+        - merge: only a dead-lettered failure is terminal. A successful
+          merge continues the candidate on to qualification -- it is not
+          itself a candidate-terminal event.
+        - qualification: only a dead-lettered failure (the worker itself
+          crashing/exhausting retries) is terminal here. Business-rule
+          accept/reject decisions are terminal via `_qualification_downstream`
+          below (`candidate_qualified` is NOT terminal -- see gap #2 in the
+          5B-1 audit; a qualified candidate's one terminal transition is its
+          eventual storage outcome), not via this generic stage-outcome path.
+        - storage: terminal either way -- a successful write is the
+          candidate's "delivered" resolution, a dead-lettered write is its
+          "storage_failed" resolution. Either way storage is the last stage,
+          so both are final.
+        """
+        if outcome.stage_name in ("website", "instagram", "contact", "merge"):
+            if outcome.success is False and outcome.dead_lettered:
+                return True, f"{outcome.stage_name}_dead_letter"
+            return False, None
+        if outcome.stage_name == "qualification":
+            if outcome.success is False and outcome.dead_lettered:
+                return True, "qualification_dead_letter"
+            return False, None
+        if outcome.stage_name == "storage":
+            if outcome.success:
+                return True, "delivered"
+            if outcome.dead_lettered:
+                return True, "storage_dead_letter"
+            return False, None
+        return False, None
 
     def _emit_stage_outcome(outcome: StageOutcome) -> None:
         if not outcome.ran:
             return
         item_id = outcome.queue_item_id or outcome.worker_id
         event = "stage_completed" if outcome.success else "stage_failed"
-        _emit(outcome.stage_name, event, item_id)
+        terminal, terminal_reason = _stage_outcome_terminality(outcome)
+        _emit(
+            outcome.stage_name,
+            event,
+            item_id,
+            terminal=terminal,
+            dead_lettered=bool(outcome.dead_lettered),
+            pipeline_id=outcome.pipeline_id,
+            terminal_reason=terminal_reason,
+        )
         # Phase 3B-VALIDATION (observability only): for the two stages the
         # audit is validating (website, contact), also emit a weak/normal
         # site label for this same outcome, keyed by pipeline_id (not
@@ -1300,7 +1868,7 @@ def build_seven_stage_pipeline(
         decision = _early_dedup_decision(candidate)
         log_early_dedup_decision(decision)
         if decision.is_duplicate:
-            _emit("discovery", "candidate_early_duplicate", candidate.pipeline_id)
+            _emit("discovery", "candidate_early_duplicate", candidate.pipeline_id, terminal=True, terminal_reason="candidate_early_duplicate")
             return
 
         # PHASE 4A — SAFE ZERO-COST DISCOVERY FILTERS
@@ -1318,7 +1886,7 @@ def build_seven_stage_pipeline(
         # invented here, this only acts earlier on a value Maps
         # discovery already produced.
         if candidate.closed:
-            _emit("discovery", "candidate_closed_pruned", candidate.pipeline_id)
+            _emit("discovery", "candidate_closed_pruned", candidate.pipeline_id, terminal=True, terminal_reason="candidate_closed_pruned")
             log.info(
                 "discovery: pipeline_id=%s safe-pruned (reason=closed_business)",
                 candidate.pipeline_id,
@@ -1335,7 +1903,7 @@ def build_seven_stage_pipeline(
         # unaffected: this predicate always agreed with scoring's
         # verdict, it just now also gets consulted earlier.
         if _keyword_is_cannabis(candidate.name, candidate.category) or _keyword_is_chain(candidate.name):
-            _emit("discovery", "candidate_keyword_pruned", candidate.pipeline_id)
+            _emit("discovery", "candidate_keyword_pruned", candidate.pipeline_id, terminal=True, terminal_reason="candidate_keyword_pruned")
             log.info(
                 "discovery: pipeline_id=%s safe-pruned (reason=discovery_keyword_pruned)",
                 candidate.pipeline_id,
@@ -1350,7 +1918,7 @@ def build_seven_stage_pipeline(
             has_site = bool(candidate.website)
             for ch in required_channels:
                 if ch == "website" and not has_site:
-                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
+                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                     log.info("discovery: pipeline_id=%s safe-pruned (missing website for website channel)", candidate.pipeline_id)
                     return
                 elif ch == "email" and not has_site:
@@ -1367,16 +1935,16 @@ def build_seven_stage_pipeline(
                     # exactly — this condition is unchanged for every
                     # real input, since has_maps_valid_email was always
                     # False.
-                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
+                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                     log.info("discovery: pipeline_id=%s safe-pruned (no valid email on Maps and no website to discover email)", candidate.pipeline_id)
                     _log_discovery_early_prune(candidate, decision)
                     return
                 elif ch == "phone" and not candidate.phone and not has_site:
-                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
+                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                     log.info("discovery: pipeline_id=%s safe-pruned (no phone on Maps and no website to discover phone)", candidate.pipeline_id)
                     return
                 elif ch == "instagram" and not getattr(candidate, "instagram_url", None) and not has_site:
-                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id)
+                    _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                     log.info("discovery: pipeline_id=%s safe-pruned (no instagram handle and no website to discover instagram)", candidate.pipeline_id)
                     return
 
@@ -1417,11 +1985,11 @@ def build_seven_stage_pipeline(
             business = fan_in.get_business(intel.pipeline_id)
             has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
             if "website" in required_channels and intel.website_reachable is False:
-                _emit("website", "candidate_early_channel_pruned", intel.pipeline_id)
+                _emit("website", "candidate_early_channel_pruned", intel.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                 fan_in.prune_business(intel.pipeline_id, "unreachable_website")
                 return None
             if "email" in required_channels and intel.website_reachable is False and not has_maps_email:
-                _emit("website", "candidate_early_channel_pruned", intel.pipeline_id)
+                _emit("website", "candidate_early_channel_pruned", intel.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                 fan_in.prune_business(intel.pipeline_id, "unreachable_website_no_email")
                 return None
         fan_in.record_website_result(intel.pipeline_id, intel)
@@ -1522,11 +2090,11 @@ def build_seven_stage_pipeline(
             has_contact_phone = bool(intel and intel.phones)
 
             if "email" in required_channels and not (has_contact_email or has_maps_email):
-                _emit("contact", "candidate_early_channel_pruned", intel.pipeline_id)
+                _emit("contact", "candidate_early_channel_pruned", intel.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                 fan_in.prune_business(intel.pipeline_id, "missing_required_channel:email")
                 return None
             if "phone" in required_channels and not (has_contact_phone or has_maps_phone):
-                _emit("contact", "candidate_early_channel_pruned", intel.pipeline_id)
+                _emit("contact", "candidate_early_channel_pruned", intel.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                 fan_in.prune_business(intel.pipeline_id, "missing_required_channel:phone")
                 return None
 
@@ -1716,6 +2284,28 @@ def build_seven_stage_pipeline(
                 except Exception:
                     log.debug("instagram_followers_over_limit log failed — ignored", exc_info=True)
                 _emit("qualification", "instagram_followers_over_limit", result.pipeline_id)
+            # PHASE 5B-2 (fixes 5B-1 gaps #1 / #3) — every qualification
+            # rejection, regardless of reason, is candidate-terminal. This is
+            # the single generic emit that used to be missing entirely for
+            # every reason other than niche_mismatch/instagram_followers_over_limit
+            # (missing website/phone/email/instagram, unreachable website, no
+            # contact methods, unsupported business type, ...). The specific
+            # `niche_relevance_mismatch`/`instagram_followers_over_limit`
+            # emits above remain purely informational; this one is
+            # authoritative for terminal accounting, and is safe to fire
+            # alongside them since a caller's terminal handling must already
+            # be idempotent per pipeline_id (a candidate becomes terminal
+            # exactly once no matter how many terminal-flagged events arrive
+            # for it).
+            _emit(
+                "qualification",
+                "candidate_rejected",
+                result.pipeline_id,
+                terminal=True,
+                dead_lettered=False,
+                pipeline_id=result.pipeline_id,
+                terminal_reason=(result.reasons[0] if result.reasons else "qualification_rejected"),
+            )
             log.info(
                 "qualification: pipeline_id=%s rejected (%s); not "
                 "forwarded to Storage",
@@ -1763,26 +2353,62 @@ def build_seven_stage_pipeline(
         #    below unchanged, so Storage persists it exactly as before --
         #    this integration adds a side channel, it does not gate the
         #    existing Storage path.
-        domain_opportunity = engine_adapters.to_domain_opportunity(qualified_opportunity)
-        domain_qualification = engine_adapters.to_domain_qualification(qualified_opportunity)
-        domain_score = engine_adapters.to_domain_score(qualified_opportunity)
-        if domain_opportunity is not None and domain_qualification is not None and domain_score is not None:
-            policy = PrioritizationPolicy(
-                strategy=PrioritizationStrategy.BALANCED,
-                evaluation_at=_dt.datetime.now(_dt.timezone.utc),
-            )
-            priority = OpportunityPrioritizationService.evaluate_priority(
-                domain_opportunity, domain_qualification, domain_score, policy
-            )
-            coordinator.record_prioritized_opportunity(
-                session_id,
-                (domain_opportunity, domain_qualification, domain_score, priority),
-            )
-        else:
-            log.info(
-                "prioritization: pipeline_id=%s could not be adapted to the "
-                "Engine 2.0 domain layer; excluded from the batch "
-                "intelligence chain (Storage is unaffected)",
+        #
+        # INCIDENT FIX: this whole side-channel block runs AFTER
+        # "candidate_qualified" is already emitted above, and its result
+        # -- unlike a worker's process() call -- is NOT protected by
+        # engine/runtime.py::execute_stage()'s try/except (that guard only
+        # wraps worker.process(); _handle_success() calls
+        # StageConfig.build_downstream(), i.e. this entire function,
+        # outside of it). Before this fix, any exception raised anywhere
+        # in this block (adapters, PrioritizationPolicy construction,
+        # evaluate_priority, or coordinator.record_prioritized_opportunity)
+        # propagated all the way out to
+        # execution_driver.py::ExecutionDriver._execute_one, which treats
+        # it as FATAL: it sets self.last_error, stops the driver, and
+        # service.py's run_query() re-raises it -- silently killing the
+        # entire session AFTER a candidate had already been logged as
+        # qualified but BEFORE this function's `return qualified_opportunity`
+        # ever ran, so the item was never enqueued to Storage either. This
+        # is exactly the class of bug the comment above already promises
+        # can't happen ("does not gate the existing Storage path") but the
+        # code did not actually guarantee. Wrapping it in try/except and
+        # merely logging a failure here restores that guarantee for real:
+        # a batch-intelligence-chain problem can now only ever cost this
+        # one opportunity's Prioritization/Ranking/Mission entry, never
+        # its Storage delivery, and never the rest of the session.
+        try:
+            domain_opportunity = engine_adapters.to_domain_opportunity(qualified_opportunity)
+            domain_qualification = engine_adapters.to_domain_qualification(qualified_opportunity)
+            domain_score = engine_adapters.to_domain_score(qualified_opportunity)
+            if domain_opportunity is not None and domain_qualification is not None and domain_score is not None:
+                policy = PrioritizationPolicy(
+                    strategy=PrioritizationStrategy.BALANCED,
+                    evaluation_at=_dt.datetime.now(_dt.timezone.utc),
+                )
+                priority = OpportunityPrioritizationService.evaluate_priority(
+                    domain_opportunity, domain_qualification, domain_score, policy
+                )
+                coordinator.record_prioritized_opportunity(
+                    session_id,
+                    (domain_opportunity, domain_qualification, domain_score, priority),
+                )
+            else:
+                log.info(
+                    "prioritization: pipeline_id=%s could not be adapted to the "
+                    "Engine 2.0 domain layer; excluded from the batch "
+                    "intelligence chain (Storage is unaffected)",
+                    result.pipeline_id,
+                )
+        except Exception:  # noqa: BLE001 - see "INCIDENT FIX" above: a
+            # batch-intelligence-chain failure must never become a fatal
+            # ExecutionDriver error or block Storage delivery for an
+            # already-qualified opportunity.
+            log.exception(
+                "prioritization: pipeline_id=%s batch-intelligence side "
+                "channel raised — excluded from Prioritization/Ranking/"
+                "Mission Generation for this run, but Storage delivery is "
+                "unaffected and proceeds normally",
                 result.pipeline_id,
             )
 
@@ -1842,13 +2468,13 @@ def build_seven_stage_pipeline(
                 business = fan_in.get_business(pipeline_id)
                 has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
                 if "website" in required_channels or ("email" in required_channels and not has_maps_email):
-                    _emit("website", "candidate_early_channel_pruned", pipeline_id)
+                    _emit("website", "candidate_early_channel_pruned", pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                     fan_in.prune_business(pipeline_id, "website_stage_failed")
                     return
             fan_in.record_website_dead_letter(pipeline_id)
         elif outcome.stage_name == "instagram":
             if required_channels and "instagram" in required_channels:
-                _emit("instagram", "candidate_early_channel_pruned", pipeline_id)
+                _emit("instagram", "candidate_early_channel_pruned", pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                 fan_in.prune_business(pipeline_id, "instagram_stage_failed")
                 return
             fan_in.record_instagram_dead_letter(pipeline_id)
@@ -1858,7 +2484,7 @@ def build_seven_stage_pipeline(
                 has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
                 has_maps_phone = bool(business and getattr(business, "phone", None))
                 if ("email" in required_channels and not has_maps_email) or ("phone" in required_channels and not has_maps_phone):
-                    _emit("contact", "candidate_early_channel_pruned", pipeline_id)
+                    _emit("contact", "candidate_early_channel_pruned", pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                     fan_in.prune_business(pipeline_id, "contact_stage_failed")
                     return
             fan_in.record_contact_dead_letter(pipeline_id)

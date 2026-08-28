@@ -125,6 +125,16 @@ export type AreaProductivityState = {
    * and evaluates yield from whatever terminal evidence exists so far —
    * even with candidates still in-flight — so a genuinely low-yield area
    * can no longer stall a rotation decision forever.
+   *
+   * PHASE 45 — now SHARED with `evaluateAreaProductivity`'s primary idle
+   * timeout via `withinBoundedInFlightGrace`: whichever of the two
+   * classifiers defers first (for a given area) starts this clock, and
+   * both are bound by the same deadline from that point on. Deliberately
+   * still never reset by fresh productive activity (a qualification, a
+   * new candidate, etc.) once set — it bounds CUMULATIVE in-flight-stall
+   * exposure across the area's whole life, not any single idle episode,
+   * so a burst of activity every few minutes cannot be used to re-arm an
+   * unbounded wait for either classifier.
    */
   firstInFlightDeferralAt: number | null;
 };
@@ -203,7 +213,20 @@ export function recordCandidateQueued(state: AreaProductivityState, now: number 
   recordProductiveActivity(state, "candidate_queued", now);
 }
 
-export type CandidateTerminalOutcome = "qualified" | "rejected" | "early_pruned" | "failed";
+/**
+ * PHASE 5B-2 — "delivered" and "cancelled" added (additive, no existing
+ * behavior changed): "delivered" is a candidate closed out via the new
+ * storage-stage success accounting (see poolExpandJob.ts's onProgress
+ * handler) WITHOUT re-triggering `recordQualifiedLead` a second time —
+ * `processLead()` already calls `recordQualifiedLead` directly for its own
+ * delivery bookkeeping, so `recordCandidateTerminal` must not double-bump
+ * `qualifiedCount` for the same candidate via this path. "cancelled" is a
+ * candidate force-closed because its owning area/request aborted while it
+ * was still in-flight (5B-1 gap #8). Both fall through
+ * `recordCandidateTerminal`'s existing generic branch unchanged — only
+ * `"qualified"` gets the special `recordQualifiedLead` call.
+ */
+export type CandidateTerminalOutcome = "qualified" | "rejected" | "early_pruned" | "failed" | "delivered" | "cancelled";
 
 /**
  * PHASE 36 — Record a candidate reaching a terminal lifecycle outcome
@@ -266,6 +289,87 @@ export function recordDeliveredLead(state: AreaProductivityState, now: number = 
   recordProductiveActivity(state, "delivered", now);
 }
 
+/**
+ * PHASE 5B-2 — identity-based (pipeline_id) idempotent admit/close pair.
+ * Fixes the 5B-1 audit's root cause: `inFlightCount`/`terminalCandidateCount`
+ * are correct arithmetic (`newlyDiscoveredCount - terminalCandidateCount`)
+ * driven by INCORRECT inputs — a candidate could be counted discovered
+ * more than once, or counted terminal more than once (retries, duplicate
+ * dead-letters, a business-rule rejection arriving after storage already
+ * closed the same candidate, etc.). These two functions are the SMALLEST
+ * addition that makes the inputs correct: each candidate, identified by its
+ * `pipelineId`, is admitted at most once and closed terminal at most once,
+ * using two caller-owned `Set<string>`s (see poolExpandJob.ts's onProgress
+ * handler, the sole real caller). The underlying counters/arithmetic in
+ * `AreaProductivityState` are completely unchanged.
+ *
+ * A missing `pipelineId` (an older engine build's progress line) falls back
+ * to the pre-5B-2, non-idempotent behavior for that one event only — every
+ * pipelineId-bearing event is fully idempotent.
+ */
+export function admitCandidate(
+  state: AreaProductivityState,
+  inFlightIds: Set<string>,
+  terminalIds: Set<string>,
+  pipelineId: string | undefined,
+  now: number = Date.now(),
+): void {
+  if (!pipelineId) {
+    recordCandidateDiscovered(state, now);
+    return;
+  }
+  if (terminalIds.has(pipelineId) || inFlightIds.has(pipelineId)) return;
+  inFlightIds.add(pipelineId);
+  recordCandidateDiscovered(state, now);
+}
+
+/**
+ * Closes a candidate out exactly once. A second call for the same
+ * `pipelineId` (a retryable-then-dead-lettered double fire, a late/duplicate
+ * terminal event after cancellation, etc.) is a no-op — this is the
+ * idempotency fix for 5B-1 gaps #4 and #8, and what makes 5B-2's tests 8
+ * ("duplicate terminal event does NOT double-decrement") and 14 ("late
+ * event after cancellation is ignored") true by construction.
+ */
+export function closeCandidateTerminal(
+  state: AreaProductivityState,
+  inFlightIds: Set<string>,
+  terminalIds: Set<string>,
+  pipelineId: string | undefined,
+  outcome: CandidateTerminalOutcome,
+  now: number = Date.now(),
+): void {
+  if (!pipelineId) {
+    recordCandidateTerminal(state, outcome, now);
+    return;
+  }
+  if (terminalIds.has(pipelineId)) return;
+  terminalIds.add(pipelineId);
+  inFlightIds.delete(pipelineId);
+  recordCandidateTerminal(state, outcome, now);
+}
+
+/**
+ * PHASE 5B-2 (5B-1 gap #8) — force-closes every still-open (admitted but
+ * never closed terminal) candidate as "cancelled". Intended for the exact
+ * moment an area/request is known to be done (poolExpandJob.ts's existing
+ * per-area `finally` block, which already runs after every stop path —
+ * batch_done, stop_outer, natural exhaustion, idle/low-yield rotation, or
+ * abort). Idempotent by construction (delegates to `closeCandidateTerminal`
+ * per id); any pipeline_id NOT still in `inFlightIds` (already closed some
+ * other way) is left untouched.
+ */
+export function cancelOpenCandidates(
+  state: AreaProductivityState,
+  inFlightIds: Set<string>,
+  terminalIds: Set<string>,
+  now: number = Date.now(),
+): void {
+  for (const pipelineId of Array.from(inFlightIds)) {
+    closeCandidateTerminal(state, inFlightIds, terminalIds, pipelineId, "cancelled", now);
+  }
+}
+
 /** Tunable stop thresholds — see env.ts for where these defaults come from and why they're safe. */
 export type AreaProductivityLimits = {
   /**
@@ -279,7 +383,76 @@ export type AreaProductivityLimits = {
    * cannot run forever" bound.
    */
   maxAreaRuntimeMs: number;
+  /**
+   * PHASE 45 — BOUNDED IN-FLIGHT DEFERRAL FIX.
+   *
+   * Optional, and deliberately OPT-IN, not "on with an infinite bound by
+   * default": unlike `AreaYieldLimits.inFlightGraceMs` (which predates this
+   * phase and falls back to an effectively-unbounded grace when omitted —
+   * see `withinBoundedInFlightGrace`'s doc comment), leaving THIS field
+   * `undefined` means `evaluateAreaProductivity` below skips the in-flight
+   * deferral branch entirely and behaves EXACTLY as it did before PHASE 45
+   * — every pre-existing call site/test that builds an
+   * `AreaProductivityLimits` literal without this field is completely
+   * unaffected by this fix, byte-for-byte. Every real production call site
+   * (poolExpandJob.ts) always supplies it
+   * (`env.AREA_YIELD_INFLIGHT_GRACE_MS`), so this only matters for tests
+   * that don't opt in.
+   *
+   * How long `evaluateAreaProductivity` may defer the primary idle timeout
+   * below (`area_productivity_timeout_before_first_qualified` /
+   * `area_productivity_idle_timeout`) while `state.inFlightCount > 0`, i.e.
+   * while candidates are still moving through enrichment/qualification even
+   * though none of that movement counts as "productive" by the narrow
+   * `ProductiveEventType` allowlist. When configured, deliberately the SAME
+   * knob (`env.AREA_YIELD_INFLIGHT_GRACE_MS`) `evaluateAreaYieldStop`
+   * already uses for the identical purpose — see
+   * `withinBoundedInFlightGrace`'s doc comment for why this is one shared,
+   * single-source-of-truth bound rather than a second independently-tuned
+   * one.
+   */
+  inFlightGraceMs?: number;
 };
+
+/**
+ * PHASE 45 — shared bounded in-flight deferral primitive.
+ *
+ * Both `evaluateAreaProductivity` (the primary idle/max-runtime timeout)
+ * and `classifyAreaYield` (the low-yield rotation check) need the exact
+ * same piece of logic: "we would normally act now, but candidates are
+ * still in-flight — hold off, but only for a bounded amount of time from
+ * the FIRST moment either of us held off." Rather than let each classifier
+ * own its own copy of that logic (and its own clock), both share this one
+ * function and the one `state.firstInFlightDeferralAt` timestamp:
+ *
+ *   - The timestamp is set exactly once, the first time EITHER classifier
+ *     calls this function for a given area (whichever fires first — the
+ *     idle timeout at `productiveIdleMs` or the yield check at
+ *     `minElapsedMsForEvaluation` — starts the shared clock).
+ *   - From that moment, both classifiers get at most `graceMs` of
+ *     deferral, not `graceMs` EACH. This is intentional: both deferrals
+ *     exist for the identical underlying reason (in-flight work might
+ *     still resolve productively), so a single bounded grace window is the
+ *     correct "smallest correct fix" — two independent grace windows would
+ *     let the primary idle timeout and the yield check take turns
+ *     deferring each other indefinitely, recreating the exact unbounded-
+ *     wait failure PHASE 41 already fixed for the yield classifier alone.
+ *   - Once `now - firstInFlightDeferralAt >= graceMs`, this returns
+ *     `false` forever after (short of a brand-new `AreaProductivityState`),
+ *     exactly like PHASE 41's original yield-only bound.
+ *
+ * `graceMs` of `undefined` means "no bound" (`Infinity`) — used only by
+ * callers that don't pass `inFlightGraceMs`/`AreaYieldLimits.inFlightGraceMs`
+ * at all; every production call site (poolExpandJob.ts) always supplies
+ * `env.AREA_YIELD_INFLIGHT_GRACE_MS`.
+ */
+function withinBoundedInFlightGrace(state: AreaProductivityState, now: number, graceMs: number | undefined): boolean {
+  const grace = graceMs ?? Infinity;
+  if (state.firstInFlightDeferralAt === null) {
+    state.firstInFlightDeferralAt = now;
+  }
+  return now - state.firstInFlightDeferralAt < grace;
+}
 
 /**
  * The classifier itself. Pure function of (state, now, limits) — no clock
@@ -289,13 +462,28 @@ export type AreaProductivityLimits = {
  * Precedence (STEP 4 / STEP 5 / "exact stop-order precedence" in the final
  * report):
  *   1. `maxAreaRuntimeMs` — checked FIRST and unconditionally, so a
- *      continuously-productive area is still eventually bounded.
+ *      continuously-productive area is still eventually bounded. This is
+ *      NEVER deferred for in-flight work (PHASE 45 requirement: max
+ *      runtime always wins).
  *   2. `productiveIdleMs` since `lastProductiveActivityAt` — the SAME
  *      check both before and after the first qualified lead now (PHASE 25
  *      unifies what used to be two different reference points). The
  *      returned reason string still distinguishes the two cases (STEP 8:
  *      callers/telemetry still care whether this area ever qualified
  *      anything at all), but the elapsed-time math is identical.
+ *   3. PHASE 45 — BOUNDED IN-FLIGHT DEFERRAL: if the idle window above HAS
+ *      elapsed but `state.inFlightCount > 0` (candidates are still moving
+ *      through enrichment/qualification, just not fast enough to count as
+ *      "productive" by the narrow allowlist), the primary timeout does NOT
+ *      fire immediately. It instead defers, bounded by
+ *      `withinBoundedInFlightGrace` (the same bound `evaluateAreaYieldStop`
+ *      uses — see that function's doc comment), so a stuck-but-still-
+ *      in-flight area is not confused with a genuinely silent one. Once
+ *      the shared grace window expires, or `inFlightCount` drops to 0 with
+ *      still no fresh productive activity, the timeout fires exactly as
+ *      before. This does NOT change what counts as "productive" (no new
+ *      event type resets the clock) and does NOT touch the
+ *      `maxAreaRuntimeMs` check above.
  *
  * Never returns a reason based on a fixed qualified-lead COUNT — only
  * elapsed time, exactly per the "no fixed per-area qualified quota"
@@ -312,6 +500,16 @@ export function evaluateAreaProductivity(
 
   const idleFor = now - state.lastProductiveActivityAt;
   if (idleFor < limits.productiveIdleMs) return null;
+
+  // PHASE 45 — the idle window has elapsed, but candidates still in-flight
+  // through enrichment/qualification are active bounded work, not silence.
+  // Defer the primary timeout (bounded — see withinBoundedInFlightGrace)
+  // rather than mistaking that in-flight work for complete inactivity.
+  // Opt-in via `limits.inFlightGraceMs` (see its doc comment) — omitting it
+  // preserves the exact pre-PHASE-45 behavior with no deferral at all.
+  if (limits.inFlightGraceMs !== undefined && state.inFlightCount > 0 && withinBoundedInFlightGrace(state, now, limits.inFlightGraceMs)) {
+    return null;
+  }
 
   return state.firstQualifiedAt === null
     ? "area_productivity_timeout_before_first_qualified"
@@ -422,12 +620,11 @@ export function classifyAreaYield(
       maxPossibleRate > limits.lowYieldMaxRate || terminalCandidates < limits.minCandidateVolumeForEvaluation;
 
     if (wantsDeferral) {
-      const graceMs = limits.inFlightGraceMs ?? Infinity;
-      if (state.firstInFlightDeferralAt === null) {
-        state.firstInFlightDeferralAt = now;
-      }
-      const withinGraceWindow = now - state.firstInFlightDeferralAt < graceMs;
-      if (withinGraceWindow) {
+      // PHASE 45 — now shares `withinBoundedInFlightGrace` (and the same
+      // `state.firstInFlightDeferralAt` clock) with `evaluateAreaProductivity`
+      // instead of owning its own copy of this bound — see that function's
+      // doc comment for why one shared grace window is correct here.
+      if (withinBoundedInFlightGrace(state, now, limits.inFlightGraceMs)) {
         state.yieldEvaluationDeferredDueToInflight = true;
         return "productive";
       }

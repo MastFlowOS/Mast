@@ -73,6 +73,16 @@ function AuthCallbackPage() {
     // navigate away from the verified page.
     let intentionalSignOut = false;
 
+    // ── Idempotency guard: Supabase can emit more than one truthy-session
+    // auth event in quick succession while this popup is completing (e.g.
+    // INITIAL_SESSION immediately followed by SIGNED_IN, or a TOKEN_REFRESHED
+    // racing in before window.close() actually takes effect). Without this
+    // guard, handleSession() would run again on each extra event, posting a
+    // second "AUTH_SUCCESS" message to the opener before it can remove its
+    // one-shot listener — causing a second invalidateQueries(["mast"]) and a
+    // second, redundant getMe() call on the opener side. Only ever act once.
+    let sessionHandled = false;
+
     let subscription: { unsubscribe: () => void } | null = null;
 
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
@@ -82,6 +92,8 @@ function AuthCallbackPage() {
       }
 
       if (session) {
+        if (sessionHandled) return;
+        sessionHandled = true;
         void handleSession(session.user.id, isEmailConfirmation);
         return;
       }
@@ -113,8 +125,14 @@ function AuthCallbackPage() {
     } else {
       // Non-token_hash flow (OAuth PKCE or implicit): Supabase JS handles it
       // automatically via getSession() in initialization. Check eagerly too.
+      // Guarded by the same sessionHandled flag as the listener above, since
+      // this eager check and onAuthStateChange can both resolve with a
+      // session and would otherwise both call handleSession().
       supabase.auth.getSession().then(({ data: { session } }) => {
-        if (session) void handleSession(session.user.id, isEmailConfirmation);
+        if (session && !sessionHandled) {
+          sessionHandled = true;
+          void handleSession(session.user.id, isEmailConfirmation);
+        }
       });
     }
 

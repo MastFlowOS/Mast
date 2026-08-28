@@ -654,13 +654,112 @@ function isAuthRejection(error: { code?: string; message?: string } | null | und
 }
 
 /**
+ * Safely decodes only the non-secret claims of a JWT's payload segment.
+ * Never call with intent to log the return value's raw input, and never
+ * log `token` itself — only the fields pulled off the returned object.
+ * Returns null if the token isn't a well-formed 3-part JWT.
+ */
+function decodeJwtClaims(token: string): { iss?: string; aud?: string; exp?: number; iat?: number; nbf?: number; sub?: string } | null {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
+    const json = atob(padded);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+/** Extracts the project ref (subdomain) from a Supabase URL, e.g.
+ * "https://jsbxonmlhkrtuiivehwx.supabase.co" -> "jsbxonmlhkrtuiivehwx". */
+function projectRefFromUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.split(".")[0];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Diagnostic-only: on an auth rejection, safely log enough to distinguish a
+ * JWT/project mismatch from every other possible cause, WITHOUT ever
+ * logging the token itself or any other secret. Call this BEFORE signing
+ * out — clearRejectedSession() destroys the very session we need to inspect.
+ */
+function logAuthRejectionDiagnostics(session: { access_token: string; expires_at?: number } | null | undefined, error: { code?: string; message?: string } | null | undefined) {
+  const configuredUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+  const configuredRef = projectRefFromUrl(configuredUrl);
+  const claims = session?.access_token ? decodeJwtClaims(session.access_token) : null;
+  const tokenRef = projectRefFromUrl(claims?.iss);
+
+  // Client-observed "now", in whole seconds, matching JWT numeric-date
+  // convention — needed to compute skew against `iat`/`nbf`. This is the
+  // BROWSER's clock, not the Auth server's or PostgREST's; a mismatch here
+  // only tells us this device's clock disagrees with the token, not which
+  // of the two Supabase-side clocks (Auth issuer vs. PostgREST validator)
+  // is actually off. See the summary string below for that caveat.
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const iatSkewSeconds = typeof claims?.iat === "number" ? claims.iat - nowSeconds : null;
+  const nbfSkewSeconds = typeof claims?.nbf === "number" ? claims.nbf - nowSeconds : null;
+
+  let summary: string | null = null;
+  if (error?.code === "PGRST303") {
+    summary =
+      iatSkewSeconds !== null
+        ? `JWT iat is ${iatSkewSeconds}s ahead of this browser's clock (browser clock is NOT the PostgREST validator — see note below).`
+        : "PGRST303 received but iat claim was unreadable.";
+  }
+
+  console.error("[Mast:authRejection] PostgREST rejected the request's JWT", {
+    postgrestErrorCode: error?.code ?? null,
+    postgrestErrorMessage: error?.message ?? null,
+    tokenPresent: !!session?.access_token,
+    tokenLength: session?.access_token?.length ?? null,
+    tokenIat: claims?.iat ?? null,
+    tokenIatIso: typeof claims?.iat === "number" ? new Date(claims.iat * 1000).toISOString() : null,
+    tokenNbf: claims?.nbf ?? null,
+    tokenExpiresAt: session?.expires_at ? new Date(session.expires_at * 1000).toISOString() : null,
+    browserNowSeconds: nowSeconds,
+    browserNowIso: new Date(nowSeconds * 1000).toISOString(),
+    iatMinusBrowserNowSeconds: iatSkewSeconds,
+    nbfMinusBrowserNowSeconds: nbfSkewSeconds,
+    tokenAud: claims?.aud ?? null,
+    tokenIss: claims?.iss ?? null,
+    tokenProjectRef: tokenRef,
+    clientConfiguredUrl: configuredUrl ?? null,
+    clientConfiguredProjectRef: configuredRef,
+    projectRefsMatch: tokenRef && configuredRef ? tokenRef === configuredRef : null,
+    summary,
+    note:
+      "iatMinusBrowserNowSeconds compares the token to THIS BROWSER's clock only. " +
+      "PGRST303 means PostgREST's own clock (Supabase-managed infra) thinks iat is in " +
+      "the future relative to ITSELF — that comparison happens entirely on Supabase's " +
+      "side, between their Auth issuer and their PostgREST validator, and cannot be " +
+      "observed from the browser or this app's backend. A large browser-vs-iat skew " +
+      "here is suggestive but not proof of which Supabase-side clock is off.",
+  });
+}
+
+/**
  * Clears a session that the server has rejected. Uses local-only sign-out
  * (no network call to revoke, since the token driving that call is itself
  * the thing being rejected) so the next `getSession()` returns null and
  * every existing "if (!user) navigate to /login" guard in the app takes
  * over correctly.
+ *
+ * `session`/`error` are optional and used only to emit the safe diagnostics
+ * above before the session (and thus the evidence) is destroyed.
  */
-async function clearRejectedSession(): Promise<void> {
+async function clearRejectedSession(
+  session?: { access_token: string; expires_at?: number } | null,
+  error?: { code?: string; message?: string } | null,
+): Promise<void> {
+  if (session !== undefined || error !== undefined) {
+    logAuthRejectionDiagnostics(session, error);
+  }
   await supabase?.auth.signOut({ scope: "local" });
 }
 
@@ -804,7 +903,7 @@ export async function getMe() {
       // same as "not logged in" rather than falling through to a default
       // profile — see isAuthRejection's doc comment for why this matters.
       console.error("[Mast:getMe] profiles query → auth rejected, clearing session", { message: error.message, code: error.code });
-      await clearRejectedSession();
+      await clearRejectedSession(session, error);
       return { user: null };
     } else {
       console.error("[Mast:getMe] profiles query → error", { message: error.message, code: error.code });
@@ -1361,7 +1460,8 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
   const userId = await requireUserId();
   const { data: existing, error: readError } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
   if (readError && isAuthRejection(readError)) {
-    await clearRejectedSession();
+    const { data: { session } } = await supabase!.auth.getSession();
+    await clearRejectedSession(session, readError);
     throw new ApiError(401, "Your session has expired. Please sign in again.", readError);
   }
   const merged = { ...(existing?.settings as SettingsMap ?? {}), ...body };
@@ -1374,7 +1474,8 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
   const { error } = await supabase!.from("profiles").update(updateData).eq("id", userId);
   if (error) {
     if (isAuthRejection(error)) {
-      await clearRejectedSession();
+      const { data: { session } } = await supabase!.auth.getSession();
+      await clearRejectedSession(session, error);
       throw new ApiError(401, "Your session has expired. Please sign in again.", error);
     }
     throw new ApiError(500, error.message, error);

@@ -331,8 +331,15 @@ function AuthGate({ queryClient }: { queryClient: QueryClient }) {
     // Listen to subsequent auth state changes
     let subscription: { unsubscribe: () => void } | null = null;
     try {
-      const { data } = client.auth.onAuthStateChange(() => {
-        queryClient.invalidateQueries({ queryKey: ["mast"] });
+      const { data } = client.auth.onAuthStateChange((event) => {
+        // Only invalidate on events that represent an actual identity
+        // change. TOKEN_REFRESHED / INITIAL_SESSION fire routinely
+        // (including repeatedly under clock-skew/PGRST303 conditions)
+        // and were causing invalidateQueries(["mast"]) to re-trigger
+        // useMe -> getMe() on every such event. Do not widen this list.
+        if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
+          queryClient.invalidateQueries({ queryKey: ["mast"] });
+        }
         if (!cancelled) setInitializing(false);
       });
       subscription = data.subscription;

@@ -654,6 +654,23 @@ function isAuthRejection(error: { code?: string; message?: string } | null | und
 }
 
 /**
+ * PGRST303 ("JWT issued at future") is a distinct auth rejection that is
+ * NOT a broken/expired/wrong-project session — it means PostgREST's own
+ * clock currently disagrees with the `iat` Supabase Auth stamped onto the
+ * token (both server-side, both Supabase-managed; nothing the browser or
+ * this app controls). The token itself is fine and the SAME session is
+ * expected to work again once the two clocks re-agree, typically within
+ * seconds. Treating this the same as a genuinely invalid session (i.e.
+ * signing out) destroys a perfectly good session over a transient
+ * condition and throws away the exact evidence needed to diagnose it.
+ */
+function isFutureIatRejection(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false;
+  if (error.code === "PGRST303") return true;
+  return (error.message ?? "").toLowerCase().includes("issued at future");
+}
+
+/**
  * Safely decodes only the non-secret claims of a JWT's payload segment.
  * Never call with intent to log the return value's raw input, and never
  * log `token` itself — only the fields pulled off the returned object.
@@ -744,23 +761,41 @@ function logAuthRejectionDiagnostics(session: { access_token: string; expires_at
 }
 
 /**
- * Clears a session that the server has rejected. Uses local-only sign-out
- * (no network call to revoke, since the token driving that call is itself
- * the thing being rejected) so the next `getSession()` returns null and
- * every existing "if (!user) navigate to /login" guard in the app takes
- * over correctly.
+ * Handles a confirmed PostgREST auth-layer rejection. Always logs the safe
+ * diagnostic snapshot first (before anything below can destroy the
+ * evidence). Then either:
  *
- * `session`/`error` are optional and used only to emit the safe diagnostics
- * above before the session (and thus the evidence) is destroyed.
+ * - PGRST303 ("JWT issued at future" — see isFutureIatRejection doc above):
+ *   preserves the session untouched. No signOut, no local session clear.
+ *   The session is expected to keep working once Supabase's Auth-issuer
+ *   and PostgREST-validator clocks re-agree.
+ * - Every other auth rejection (expired/invalid JWT, revoked token,
+ *   wrong-project token, etc.): unchanged prior behavior — local-only
+ *   sign-out, since those sessions are genuinely bad and retrying with the
+ *   same token will never succeed.
+ *
+ * Returns whether the session was preserved, so callers can pick an
+ * accurate message instead of always saying "session expired".
  */
 async function clearRejectedSession(
   session?: { access_token: string; expires_at?: number } | null,
   error?: { code?: string; message?: string } | null,
-): Promise<void> {
+): Promise<{ sessionPreserved: boolean }> {
   if (session !== undefined || error !== undefined) {
     logAuthRejectionDiagnostics(session, error);
   }
+
+  if (isFutureIatRejection(error)) {
+    console.warn(
+      "[Mast:authRejection] PGRST303 (JWT issued at future) — preserving session, NOT signing out. " +
+        "This is a clock-skew condition between Supabase's Auth issuer and PostgREST validator, not an " +
+        "invalid session. The same session is expected to work again shortly.",
+    );
+    return { sessionPreserved: true };
+  }
+
   await supabase?.auth.signOut({ scope: "local" });
+  return { sessionPreserved: false };
 }
 
 async function enforceCapability(featureId: FeatureId): Promise<void> {
@@ -883,21 +918,67 @@ async function checkAndResetUsage(profile: any): Promise<any> {
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function getMe() {
   if (!supabase) return { user: null };
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return { user: null };
 
   console.log("[Mast:getMe] profiles query → request started", { userId: session.user.id });
-  const { data: profile, error } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", session.user.id)
-    .single();
+
+  // PGRST303 ("JWT issued at future") is a transient Supabase-side clock-skew
+  // condition, not a bad session — the exact same token is expected to
+  // validate again within moments, once PostgREST's clock catches up to the
+  // `iat` Auth stamped on it. Retry a SMALL, BOUNDED number of times with the
+  // untouched session before giving up, instead of either looping forever or
+  // treating the user as logged out on the first hit.
+  const MAX_FUTURE_IAT_ATTEMPTS = 3;
+  let profile: any = null;
+  let error: { code?: string; message?: string } | null = null;
+
+  for (let attempt = 1; attempt <= MAX_FUTURE_IAT_ATTEMPTS; attempt++) {
+    const result = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", session.user.id)
+      .single();
+    profile = result.data;
+    error = result.error;
+
+    if (!error || !isFutureIatRejection(error)) break;
+
+    logAuthRejectionDiagnostics(session, error);
+    if (attempt < MAX_FUTURE_IAT_ATTEMPTS) {
+      console.warn(
+        `[Mast:getMe] profiles query → PGRST303 (JWT issued at future), attempt ${attempt}/${MAX_FUTURE_IAT_ATTEMPTS} — retrying shortly with the SAME session (no sign-out).`,
+      );
+      await sleep(attempt * 600);
+    }
+  }
 
   if (error) {
     if (error.code === "PGRST116") {
       console.warn("[Mast:getMe] profiles query → no row found (PGRST116).", { userId: session.user.id });
+    } else if (isFutureIatRejection(error)) {
+      // Retries above were exhausted and the clock skew still hasn't
+      // cleared. Per the explicit requirement for this condition: do NOT
+      // sign out, do NOT clear the session, do NOT redirect — the session
+      // itself is fine. Surface a clear, distinct error to the caller
+      // instead of silently returning `{ user: null }` (which every
+      // "if (!user) navigate to /login" guard in the app reads as a normal
+      // logged-out state).
+      console.error(
+        "[Mast:getMe] profiles query → PGRST303 persisted past retry budget; session preserved, surfacing error instead of logging out",
+        { message: error.message, code: error.code },
+      );
+      throw new ApiError(
+        401,
+        "We couldn't verify your session yet due to a brief server clock sync issue. Your login is fine — please try again in a moment.",
+        error,
+      );
     } else if (isAuthRejection(error)) {
       // The server rejected this session's token outright. Treat it the
       // same as "not logged in" rather than falling through to a default
@@ -1461,8 +1542,14 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
   const { data: existing, error: readError } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
   if (readError && isAuthRejection(readError)) {
     const { data: { session } } = await supabase!.auth.getSession();
-    await clearRejectedSession(session, readError);
-    throw new ApiError(401, "Your session has expired. Please sign in again.", readError);
+    const { sessionPreserved } = await clearRejectedSession(session, readError);
+    throw new ApiError(
+      401,
+      sessionPreserved
+        ? "We couldn't save this yet due to a brief server clock sync issue. Your login is fine — please try again in a moment."
+        : "Your session has expired. Please sign in again.",
+      readError,
+    );
   }
   const merged = { ...(existing?.settings as SettingsMap ?? {}), ...body };
   
@@ -1475,8 +1562,14 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
   if (error) {
     if (isAuthRejection(error)) {
       const { data: { session } } = await supabase!.auth.getSession();
-      await clearRejectedSession(session, error);
-      throw new ApiError(401, "Your session has expired. Please sign in again.", error);
+      const { sessionPreserved } = await clearRejectedSession(session, error);
+      throw new ApiError(
+        401,
+        sessionPreserved
+          ? "We couldn't save this yet due to a brief server clock sync issue. Your login is fine — please try again in a moment."
+          : "Your session has expired. Please sign in again.",
+        error,
+      );
     }
     throw new ApiError(500, error.message, error);
   }

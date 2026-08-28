@@ -629,6 +629,41 @@ async function requireUserId(): Promise<string> {
   return session.user.id;
 }
 
+/**
+ * Distinguishes a genuine auth-level rejection (PostgREST refused the
+ * request's JWT — wrong/rotated project keys, revoked token, etc.) from an
+ * ordinary query error (network hiccup, RLS-filtered empty row, etc.).
+ *
+ * This matters because `getSession()` only checks the token's local expiry —
+ * it never verifies the signature against the server — so a browser can
+ * hold a session that looks valid locally while every authenticated REST
+ * call to `profiles` is rejected with 401 by PostgREST itself. Without this
+ * check, that failure was being swallowed and the app fell back to a
+ * default "profile missing" user, which onboarding reads as
+ * "onboarding not completed" — trapping the user in an onboarding loop
+ * that can never succeed, instead of prompting them to sign in again.
+ */
+function isAuthRejection(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false;
+  // PGRST301: "JWT expired" / "JWT invalid" — PostgREST's auth-layer codes,
+  // distinct from RLS or query errors (which come back as PGRST1xx/PGRST2xx
+  // for other reasons, or simply an empty/filtered result set).
+  if (error.code === "PGRST301") return true;
+  const message = (error.message ?? "").toLowerCase();
+  return message.includes("jwt") || message.includes("invalid authentication credentials");
+}
+
+/**
+ * Clears a session that the server has rejected. Uses local-only sign-out
+ * (no network call to revoke, since the token driving that call is itself
+ * the thing being rejected) so the next `getSession()` returns null and
+ * every existing "if (!user) navigate to /login" guard in the app takes
+ * over correctly.
+ */
+async function clearRejectedSession(): Promise<void> {
+  await supabase?.auth.signOut({ scope: "local" });
+}
+
 async function enforceCapability(featureId: FeatureId): Promise<void> {
   const userId = await requireUserId();
   const { data: profile } = await supabase!
@@ -764,6 +799,13 @@ export async function getMe() {
   if (error) {
     if (error.code === "PGRST116") {
       console.warn("[Mast:getMe] profiles query → no row found (PGRST116).", { userId: session.user.id });
+    } else if (isAuthRejection(error)) {
+      // The server rejected this session's token outright. Treat it the
+      // same as "not logged in" rather than falling through to a default
+      // profile — see isAuthRejection's doc comment for why this matters.
+      console.error("[Mast:getMe] profiles query → auth rejected, clearing session", { message: error.message, code: error.code });
+      await clearRejectedSession();
+      return { user: null };
     } else {
       console.error("[Mast:getMe] profiles query → error", { message: error.message, code: error.code });
     }
@@ -1317,7 +1359,11 @@ export async function getSettings(): Promise<SettingsMap> {
 
 export async function updateSettings(body: SettingsMap, fullName?: string): Promise<SettingsMap> {
   const userId = await requireUserId();
-  const { data: existing } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
+  const { data: existing, error: readError } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
+  if (readError && isAuthRejection(readError)) {
+    await clearRejectedSession();
+    throw new ApiError(401, "Your session has expired. Please sign in again.", readError);
+  }
   const merged = { ...(existing?.settings as SettingsMap ?? {}), ...body };
   
   const updateData: Record<string, any> = { settings: merged };
@@ -1326,7 +1372,13 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
   }
   
   const { error } = await supabase!.from("profiles").update(updateData).eq("id", userId);
-  if (error) throw new ApiError(500, error.message, error);
+  if (error) {
+    if (isAuthRejection(error)) {
+      await clearRejectedSession();
+      throw new ApiError(401, "Your session has expired. Please sign in again.", error);
+    }
+    throw new ApiError(500, error.message, error);
+  }
   
   if (fullName !== undefined) {
     await supabase!.auth.updateUser({ data: { full_name: fullName } });

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ApiError,
   awardGoalXp,
   bulkDeleteLeads,
   bulkImportLeads,
@@ -350,6 +351,16 @@ export function useSaveSettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.settings });
       queryClient.invalidateQueries({ queryKey: queryKeys.me });
       queryClient.invalidateQueries({ queryKey: queryKeys.account });
+    },
+    onError: (err) => {
+      // A rejected/expired session (see isAuthRejection in lib/api.ts) has
+      // already been cleared locally at this point. Re-fetching `me` picks
+      // up the now-null session so the page's existing
+      // `if (!user) navigate("/login")` guard fires — instead of leaving
+      // the user stuck on a page that will only ever fail the same way.
+      if (err instanceof ApiError && err.status === 401) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.me });
+      }
     },
   });
 }

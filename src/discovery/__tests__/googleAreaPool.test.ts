@@ -490,3 +490,294 @@ test("PHASE 10: multiple SEQUENTIAL pool creations (simulating multiple rounds/a
     console.info = originalInfo;
   }
 });
+
+// ── AREA ADMISSION FIX: shouldAdmitNextArea gates only the NEXT area ───────
+//
+// These tests cover the new, optional `shouldAdmitNextArea` hook added to
+// address small-target over-expansion (target=20 admitting far more areas
+// than the live remaining need justifies) WITHOUT touching streamTarget/
+// child_requested/askFor, concurrency, or any area already in flight.
+
+test("shouldAdmitNextArea omitted: admission behavior is completely unchanged from before this fix", async () => {
+  // Regression safety: existing callers (e.g. discoveryPlanJob.ts, and
+  // every pre-existing test above) that don't pass shouldAdmitNextArea
+  // must keep claiming every distinct area exactly as before.
+  const areas = ["Brooklyn", "Queens", "Manhattan"];
+  const claimed: string[] = [];
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 3,
+    totalCuratedAreas: areas.length,
+    availableCapacity: 3,
+    claimNextArea: async (usedAreas) => {
+      const next = areas.find((a) => !usedAreas.has(a));
+      if (next) claimed.push(next);
+      return next;
+    },
+    runArea: async () => outcome({ discovered: 1, accepted: 1 }),
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+  });
+
+  assert.equal(result.startedWorkers, 3, "all 3 areas should still be claimed with no admission gate supplied");
+  assert.deepEqual(new Set(claimed), new Set(areas));
+});
+
+// ── CRITICMODE STARVATION FIX ───────────────────────────────────────────
+//
+// `usedAreas.size` is monotonic (areas ever claimed, never decreasing).
+// The two tests this replaces asserted the OLD, unsafe behavior of
+// comparing a concurrency-style cap against that monotonic count, which
+// is exactly the bug: once N areas had EVER been claimed, admission
+// stayed refused forever, even after all N finished and 0 were running.
+// `shouldAdmitNextArea` now receives a second, LIVE argument —
+// `inFlightAreaCount` — that shrinks as areas complete, and the pool
+// itself enforces a starvation backstop (never honor a refusal while
+// nothing is in flight AND an unclaimed curated area remains). The tests
+// below (A-F, matching the fix's own lettering) directly exercise both.
+
+function makeDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+/** Polls a condition on the microtask/timer queue until true (or times out). */
+async function waitUntil(conditionFn: () => boolean, label: string, maxTicks = 2000): Promise<void> {
+  for (let i = 0; i < maxTicks; i++) {
+    if (conditionFn()) return;
+    await new Promise<void>((r) => setImmediate(r));
+  }
+  throw new Error(`waitUntil timed out: ${label}`);
+}
+
+test("A+B: cap=4 denies a 5th concurrent admission, then admits again once one of the 4 finishes (live in-flight, not usedAreas.size)", async () => {
+  const areas = ["A1", "A2", "A3", "A4", "A5", "A6"];
+  const cap = 4;
+  const claimed = new Set<string>();
+  const finished = new Set<string>();
+  const admissionChecks: { inFlight: number; admitted: boolean }[] = [];
+  const deferredByArea = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+
+  const poolPromise = runAreaWorkerPool({
+    configuredWorkers: 5,
+    totalCuratedAreas: areas.length,
+    availableCapacity: 5,
+    claimNextArea: async (usedAreas) => {
+      const next = areas.find((a) => !usedAreas.has(a) && !claimed.has(a));
+      if (!next) return undefined;
+      claimed.add(next);
+      return next;
+    },
+    runArea: async (area) => {
+      if (area === "A1") {
+        // A1 completes immediately so its worker is the first to loop
+        // back and attempt a NEW (6th distinct, "5th concurrent") claim
+        // while A2-A5 are still deliberately held open below.
+        finished.add(area);
+        return outcome({ discovered: 1, accepted: 1 });
+      }
+      const d = makeDeferred();
+      deferredByArea.set(area, d);
+      await d.promise;
+      finished.add(area);
+      return outcome({ discovered: 1, accepted: 1 });
+    },
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+    // Test A/B's admission rule under test: live inFlightAreaCount vs cap.
+    shouldAdmitNextArea: (_usedAreasCount, inFlightAreaCount) => {
+      const admitted = inFlightAreaCount < cap;
+      admissionChecks.push({ inFlight: inFlightAreaCount, admitted });
+      return admitted;
+    },
+  });
+
+  // Let the initial round of 5 concurrent claims land, and A1 loop back.
+  await waitUntil(() => claimed.size >= 5, "initial 5 areas claimed");
+  await waitUntil(() => admissionChecks.some((c) => !c.admitted), "a denial has been recorded");
+
+  // Test A: with 4 areas (A2-A5) genuinely still running, the 5th/6th
+  // concurrent slot must be denied — never claimed.
+  const denial = admissionChecks.find((c) => !c.admitted);
+  assert.ok(denial, "an admission check must have been denied while 4 areas were running");
+  assert.equal(denial!.inFlight, cap, "denial must have been evaluated against exactly the cap's worth of live in-flight areas");
+  assert.equal(claimed.has("A6"), false, "the 6th area must not be claimed while the cap is full");
+
+  // Test B: once ONE of the 4 in-flight areas finishes, live in-flight
+  // drops to (cap - 1) and the NEXT distinct area must be admitted.
+  deferredByArea.get("A2")!.resolve();
+  await waitUntil(() => claimed.has("A6"), "A6 gets claimed once in-flight drops below the cap");
+  const admitAfterDrop = admissionChecks.find((c) => c.admitted && c.inFlight === cap - 1);
+  assert.ok(admitAfterDrop, "admission must succeed once live in-flight is one below the cap");
+
+  // Drain everything else so the pool can finish.
+  deferredByArea.get("A3")!.resolve();
+  deferredByArea.get("A4")!.resolve();
+  deferredByArea.get("A5")!.resolve();
+  await waitUntil(() => deferredByArea.has("A6"), "A6's own runArea has started");
+  deferredByArea.get("A6")!.resolve();
+
+  const result = await poolPromise;
+  assert.deepEqual(new Set(result.areasProcessed), new Set(["A1", "A2", "A3", "A4", "A5", "A6"]));
+});
+
+test("C: once all in-flight areas finish, remaining>0 and an unclaimed curated area exists, the pool force-admits despite the gate saying no", async () => {
+  const areas = ["A1", "A2", "A3", "A4", "A5"]; // 4 concurrent + 1 left over, unclaimed
+  const finished: string[] = [];
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 4,
+    totalCuratedAreas: areas.length,
+    availableCapacity: 4,
+    claimNextArea: async (usedAreas) => areas.find((a) => !usedAreas.has(a)),
+    runArea: async (area) => {
+      finished.push(area);
+      return outcome({ discovered: 1, accepted: 1 });
+    },
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false, // never terminal on its own — remaining>0 the whole run
+    // A gate that always refuses — simulating a mis-sized/stale cap. The
+    // pool's own starvation backstop must override this once nothing is
+    // running and an unclaimed area (A5) remains, per Requirement 9/10.
+    shouldAdmitNextArea: () => false,
+  });
+
+  assert.ok(finished.includes("A5"), "the unclaimed 5th curated area must eventually be force-admitted and run");
+  assert.equal(result.startedWorkers, areas.length, "every curated area must eventually run — admission_capped must never permanently strand an unclaimed area");
+});
+
+test("D: with no unclaimed areas left, the pool still stops normally (the backstop never fabricates areas that don't exist)", async () => {
+  const areas = ["A1", "A2", "A3", "A4"];
+  const finished: string[] = [];
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 4,
+    totalCuratedAreas: areas.length,
+    availableCapacity: 4,
+    claimNextArea: async (usedAreas) => areas.find((a) => !usedAreas.has(a)),
+    runArea: async (area) => {
+      finished.push(area);
+      return outcome({ discovered: 1, accepted: 1 });
+    },
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+    shouldAdmitNextArea: () => false, // always refuses; no unclaimed area should ever remain to force-admit
+  });
+
+  assert.deepEqual(new Set(result.areasProcessed), new Set(areas), "all 4 curated areas run exactly once");
+  assert.equal(result.startedWorkers, 4, "the pool stops cleanly once every distinct area is exhausted — no hang, no phantom area");
+});
+
+test("E: remaining<=0 (isTerminal reports terminal) means admission never happens, even with unclaimed areas — the backstop never overrides real termination", async () => {
+  const areas = ["A1", "A2", "A3"];
+  let claimedAny = false;
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 3,
+    totalCuratedAreas: areas.length,
+    availableCapacity: 3,
+    claimNextArea: async (usedAreas) => {
+      claimedAny = true;
+      return areas.find((a) => !usedAreas.has(a));
+    },
+    runArea: async () => outcome({ discovered: 1, accepted: 1 }),
+    tryAcquireSlot: () => () => {},
+    // Mirrors poolExpandJob.ts's real isTerminal(), which folds in
+    // `stillNeededNow() <= 0` — i.e. remaining=0 is caught HERE, before
+    // shouldAdmitNextArea (and therefore before the starvation backstop)
+    // is ever reached.
+    isTerminal: () => true,
+    shouldAdmitNextArea: () => true, // even a permissive gate must never be reached
+  });
+
+  assert.equal(claimedAny, false, "no area may ever be claimed once remaining<=0 (isTerminal) is true from the start");
+  assert.equal(result.startedWorkers, 0);
+});
+
+test("F: usedAreas.size stays at the cap while live in-flight drops to 0 — admission still reopens (the exact bug being fixed)", async () => {
+  // This is the literal regression scenario from the bug report:
+  // cap=4, exactly 4 areas are ever claimed, all 4 finish (0 running),
+  // yet 2 more curated areas remain unclaimed with remaining>0. Under
+  // the OLD behavior (comparing the cap against usedAreas.size) this
+  // would stay admission_capped FOREVER once usedAreas.size reached 4 —
+  // even though nothing was running. Under the fix, comparing against
+  // the live inFlightAreaCount lets admission reopen immediately.
+  const areas = ["A1", "A2", "A3", "A4", "A5", "A6"];
+  const cap = 4;
+  const inFlightSeenAfterAllFinished: number[] = [];
+  let allFourFinished = false;
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 1, // sequential: only ever 0 or 1 area in flight, deterministic
+    totalCuratedAreas: areas.length,
+    availableCapacity: 1,
+    claimNextArea: async (usedAreas) => areas.find((a) => !usedAreas.has(a)),
+    runArea: async () => outcome({ discovered: 1, accepted: 1 }),
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+    shouldAdmitNextArea: (usedAreasCount, inFlightAreaCount) => {
+      if (usedAreasCount >= 4) {
+        allFourFinished = true;
+        inFlightSeenAfterAllFinished.push(inFlightAreaCount);
+      }
+      // The OLD, buggy comparison would have been `usedAreasCount < cap`,
+      // which is permanently false once usedAreasCount reaches 4 (the
+      // exact starvation bug). The FIXED comparison against the live
+      // in-flight count keeps admitting because nothing is running.
+      return inFlightAreaCount < cap;
+    },
+  });
+
+  assert.ok(allFourFinished, "the scenario must reach the point where 4 areas have ever been claimed");
+  assert.ok(
+    inFlightSeenAfterAllFinished.every((v) => v === 0),
+    "with a single sequential worker, live in-flight is 0 every time it loops back for a new area",
+  );
+  assert.deepEqual(new Set(result.areasProcessed), new Set(areas), "all 6 areas run — usedAreas.size sitting at/above the cap never blocks further admission");
+});
+
+test("shouldAdmitNextArea admits every area again when live remaining need is still high (initial-target behavior unchanged)", async () => {
+  // Proves the gate is not a one-time/static cap: it re-reads whatever
+  // live value the caller's closure supplies each time (mirrors
+  // poolExpandJob.ts re-running computeDynamicDiscoveryCapacity against
+  // the live stillNeededNow() on every check).
+  const areas = ["A1", "A2", "A3", "A4"];
+  const liveRemaining = 20; // high remaining -> should behave exactly like "admit everything"
+
+  const result = await runAreaWorkerPool({
+    configuredWorkers: 4,
+    totalCuratedAreas: areas.length,
+    availableCapacity: 4,
+    claimNextArea: async (usedAreas) => areas.find((a) => !usedAreas.has(a)),
+    runArea: async () => outcome({ discovered: 1, accepted: 1 }),
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+    shouldAdmitNextArea: (usedAreasCount) => usedAreasCount < Math.min(areas.length, liveRemaining),
+  });
+
+  assert.equal(result.startedWorkers, areas.length, "with high remaining need, admission must match the unthrottled (pre-fix) behavior exactly");
+});
+
+test("pool_stopped reports reason=admission_capped when the gate (not isTerminal/areas_exhausted) is what stopped further claims", async () => {
+  const areas = ["A1", "A2", "A3"];
+  const events: AreaWorkerLogEvent[] = [];
+
+  await runAreaWorkerPool({
+    configuredWorkers: 1, // sequential, deterministic
+    totalCuratedAreas: areas.length,
+    availableCapacity: 1,
+    claimNextArea: async (usedAreas) => areas.find((a) => !usedAreas.has(a)),
+    runArea: async () => outcome({ discovered: 1, accepted: 1 }),
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false, // never terminal — only the admission gate stops this run
+    shouldAdmitNextArea: (usedAreasCount) => usedAreasCount < 1, // admit exactly one area, then cap
+    onEvent: (event) => events.push(event),
+  });
+
+  const stopped = events.find((e) => e.type === "pool_stopped");
+  assert.ok(stopped && stopped.type === "pool_stopped");
+  assert.equal((stopped as { type: "pool_stopped"; reason: string }).reason, "admission_capped");
+});

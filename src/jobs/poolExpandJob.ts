@@ -715,6 +715,51 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           };
         },
         isTerminal: () => stopOuter || stillNeededNow() <= 0 || abortController.signal.aborted,
+        // AREA ADMISSION FIX (small-target over-expansion): gates only
+        // whether ANOTHER NEW area gets claimed/started — never touches
+        // streamTarget/child_requested/askFor (per-area budget, unchanged),
+        // concurrency, or any area already running. Re-evaluates the SAME
+        // concurrency-sizing formula used to pick the initial fan-out
+        // (`computeDynamicDiscoveryCapacity`), but against the LIVE,
+        // shrinking `stillNeededNow()` (this execution path's existing,
+        // authoritative remaining-need calc — already followUp/newForUser
+        // -aware, see its definition above) instead of the static `target`.
+        // For a small request that's mostly satisfied, this naturally
+        // shrinks the number of areas worth admitting going forward,
+        // without capping/shrinking what any individual admitted area asks
+        // for. `isTerminal()` above already covers "fully satisfied" (0
+        // areas justified); this only refines "how many areas are
+        // justified while > 0 leads are still remaining".
+        shouldAdmitNextArea: (usedAreasCount, inFlightAreaCount) => {
+          const remaining = stillNeededNow();
+          if (remaining <= 0) return false;
+          const admissibleAreaCount = computeDynamicDiscoveryCapacity(
+            remaining,
+            areas.length,
+            browserPool.available(),
+            env.GOOGLE_MAPS_AREA_WORKERS,
+            getResourceCapacity().safeAreaWorkers,
+          );
+          // STARVATION FIX: compare against the LIVE in-flight area count,
+          // not `usedAreasCount` (usedAreas.size is monotonic — areas ever
+          // claimed, never decreasing). Comparing against the monotonic
+          // count meant that once `admissibleAreaCount` areas had EVER
+          // been claimed, admission stayed refused permanently — even
+          // after every one of them finished and 0 workers were running,
+          // producing remaining>0 + 0 running + unclaimed areas with no
+          // way to ever recover. `inFlightAreaCount` shrinks as areas
+          // complete, so admission correctly reopens exactly when live
+          // concurrency headroom exists again.
+          const admit = inFlightAreaCount < admissibleAreaCount;
+          if (!admit) {
+            console.info(
+              `[poolExpandJob][area-admission] city=${city} used_areas=${usedAreasCount} in_flight=${inFlightAreaCount} ` +
+                `parent_remaining=${remaining} admissible_area_count=${admissibleAreaCount} ` +
+                `admitting_next_area=false`,
+            );
+          }
+          return admit;
+        },
         onEvent: (event) => {
           if (event.type === "worker_started") {
             areasStartedCount += 1;

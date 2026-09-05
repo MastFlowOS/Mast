@@ -934,6 +934,10 @@ async def run_query(
     # budget matches actual Maps results and candidate telemetry.
     raw_supply_cap = max_results
 
+    # DETAIL-PANEL WEBSITE FAST-ABORT:
+    # If required_channels contains 'website' or 'email', enable MapsScraper detail website probe
+    require_website = bool(required_channels and any(ch in required_channels for ch in ("website", "email")))
+
     session_id: Optional[str] = None
     driver: Optional[ExecutionDriver] = None
     _stopped_by_shutdown: bool = False
@@ -977,6 +981,7 @@ async def run_query(
                 google_maps_factory=_google_maps_factory,
                 overpass_factory=_overpass_factory,
                 profiler=profiler,
+                require_website=require_website,
             )
             provider, request = composed.provider, composed.request
             log.info(
@@ -1149,6 +1154,7 @@ async def run_query(
                 google_maps_factory=_google_maps_factory,
                 overpass_factory=_overpass_factory,
                 profiler=profiler,
+                require_website=require_website,
             )
             discovery_provider = composed.provider
             discovery_request = composed.request
@@ -1656,6 +1662,13 @@ async def run_query(
             "place_panel_wait_timeout_count": profiler.place_panel_wait_summary()["place_panel_wait_timeout_count"],
             "overpass_requests": profiler.counter("overpass_requests"),
             "overpass_retries": profiler.counter("overpass_retries"),
+            # DETAIL-PANEL WEBSITE FAST-ABORT TELEMETRY
+            "detail_website_probe_ms": profiler._stages["detail_website_probe"].total_ms,
+            "detail_fast_abort_saved_ms": profiler._stages["detail_fast_abort_saved"].total_ms,
+            "maps_detail_website_probe_attempts": profiler.counter("maps_detail_website_probe_attempts"),
+            "maps_detail_website_probe_has_site": profiler.counter("maps_detail_website_probe_has_site"),
+            "maps_detail_website_probe_no_site": profiler.counter("maps_detail_website_probe_no_site"),
+            "maps_detail_fast_abort_no_website": profiler.counter("maps_detail_fast_abort_no_website"),
             "website_ms": profiler._stages["website_worker"].total_ms,
             "instagram_ms": profiler._stages["instagram_worker"].total_ms,
             "contact_ms": profiler._stages["contact_worker"].total_ms,

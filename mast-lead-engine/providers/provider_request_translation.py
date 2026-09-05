@@ -124,6 +124,7 @@ class DiscoveryQueryContext:
     organization_query: Optional[str] = None
     should_stop: Optional[Callable[[], bool]] = None
     on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None
+    require_website: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +192,7 @@ def _translate_google_maps(context: DiscoveryQueryContext) -> GoogleMapsDiscover
         max_results=context.max_results,
         should_stop=context.should_stop,
         on_progress=context.on_progress,
+        require_website=context.require_website,
     )
 
 

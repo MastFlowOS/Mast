@@ -201,6 +201,7 @@ class GoogleMapsDiscoveryRequest:
     # alive and looking at real DOM content"); it never carries a
     # BusinessCandidate and must never be treated as one.
     on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None
+    require_website: bool = False
 
 
 def _or_none(value: str) -> Optional[str]:
@@ -408,27 +409,29 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
             # closed while active generator code can still execute against
             # them" requires, just from the opposite direction: the
             # generator is closed *before* its browser, not after.
-            search_gen = scraper.search(
-                query=request.query,
-                city=request.city,
-                country=request.country,
-                niche=request.niche,
-                region=request.region,
-                max_results=request.max_results,
-                # PHASE 1B: same predicate already consulted below, after
-                # each yielded candidate — also handed to MapsScraper.search()
-                # itself so a crash-triggered retry (scraper/maps_scraper.py's
-                # own internal recovery loop, untouched otherwise) does not
-                # start a new browser attempt once discovery should already
-                # be winding down. See that method's `should_stop` docstring
-                # for exactly which checkpoint this is.
-                should_stop=request.should_stop,
-                # MINIMAL FIX (discovery liveness — forensic audit §9):
-                # same pass-through pattern as should_stop immediately
-                # above — see GoogleMapsDiscoveryRequest.on_progress's
-                # docstring.
-                on_progress=request.on_progress,
-            )
+            try:
+                search_gen = scraper.search(
+                    query=request.query,
+                    city=request.city,
+                    country=request.country,
+                    niche=request.niche,
+                    region=request.region,
+                    max_results=request.max_results,
+                    should_stop=request.should_stop,
+                    on_progress=request.on_progress,
+                    require_website=request.require_website,
+                )
+            except TypeError:
+                search_gen = scraper.search(
+                    query=request.query,
+                    city=request.city,
+                    country=request.country,
+                    niche=request.niche,
+                    region=request.region,
+                    max_results=request.max_results,
+                    should_stop=request.should_stop,
+                    on_progress=request.on_progress,
+                )
             try:
                 async for place in search_gen:
                     yield self._to_business_candidate(

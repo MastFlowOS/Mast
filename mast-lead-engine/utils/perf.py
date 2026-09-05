@@ -373,6 +373,13 @@ class RunProfiler:
             ("maps_candidates_card_closed_skipped", self.counter("maps_candidates_card_closed_skipped")),
             ("overpass_requests", self.counter("overpass_requests")),
             ("overpass_retries", self.counter("overpass_retries")),
+            # DETAIL-PANEL WEBSITE FAST-ABORT TELEMETRY
+            ("detail_website_probe_ms", _sum("detail_website_probe")),
+            ("detail_fast_abort_saved_ms", _sum("detail_fast_abort_saved")),
+            ("maps_detail_website_probe_attempts", self.counter("maps_detail_website_probe_attempts")),
+            ("maps_detail_website_probe_has_site", self.counter("maps_detail_website_probe_has_site")),
+            ("maps_detail_website_probe_no_site", self.counter("maps_detail_website_probe_no_site")),
+            ("maps_detail_fast_abort_no_website", self.counter("maps_detail_fast_abort_no_website")),
             # PHASE 33A (place panel wait telemetry) — compact aggregate
             # summary derived strictly from existing recorded timings and
             # timeout counters.

@@ -1463,6 +1463,45 @@ def _website_from_candidates(candidates: "list[dict | None]") -> str:
     return ""
 
 
+_DETAIL_WEBSITE_PROBE_JS = """
+(selectors) => {
+    const candidates = [];
+    for (const s of selectors) {
+        let el = null;
+        try { el = document.querySelector(s); } catch (e) {}
+        if (!el) { candidates.push(null); continue; }
+        candidates.push({
+            href: el.getAttribute("href") || "",
+            innerText: (el.innerText || "").trim(),
+        });
+    }
+    return candidates;
+}
+"""
+
+
+async def _probe_detail_panel_website(page: Page) -> str:
+    """Authoritative, lightweight detail-panel website probe.
+
+    Evaluates _WEBSITE_SELECTORS on the currently-mounted detail panel and
+    runs candidate URLs through _website_from_candidates() (which preserves
+    clean_url and is_ordering_platform rules).
+    Falls back to per-selector query_selector evaluation if page.evaluate() raises.
+    """
+    try:
+        candidates = await page.evaluate(_DETAIL_WEBSITE_PROBE_JS, _WEBSITE_SELECTORS)
+        if isinstance(candidates, list):
+            return _website_from_candidates(candidates)
+    except Exception:
+        pass
+
+    # Fallback to query_selector
+    try:
+        return await _extract_website(page)
+    except Exception:
+        return ""
+
+
 def _rating_from_raw(raw_rating: str) -> "float | None":
     """Pure port of `_extract_rating`'s rating-parsing half."""
     if not raw_rating:
@@ -1722,16 +1761,22 @@ class MapsScraper:
         max_results: int = 60,
         should_stop: "Callable[[], bool] | None" = None,
         on_progress: "Callable[[str, str, str | None], None] | None" = None,
+        require_website: bool = False,
     ) -> AsyncIterator[RawPlace]:
         """Search Google Maps and yield RawPlace objects.
 
         Args:
-            query:       Search query, e.g. "specialty coffee shops"
-            city:        City name, e.g. "Austin"
-            country:     Country code, e.g. "US"
-            niche:       Niche tag from the niche catalog
-            region:      Region tag from regional config
-            max_results: Stop after yielding this many places
+            query:           Search query, e.g. "specialty coffee shops"
+            city:            City name, e.g. "Austin"
+            country:         Country code, e.g. "US"
+            niche:           Niche tag from the niche catalog
+            region:          Region tag from regional config
+            max_results:     Stop after yielding this many places
+            require_website: DETAIL-PANEL WEBSITE FAST-ABORT: when True,
+                probes the detail panel website signal immediately after
+                panel mount. If no authoritative website exists, aborts
+                expensive full place extraction early and yields a minimal
+                RawPlace(website="") for early channel pruning.
             should_stop: PHASE 1B (target-reached / graceful-shutdown
                 lifecycle propagation) — optional cooperative check,
                 consulted only at the top of the crash-retry loop below,
@@ -2323,40 +2368,77 @@ class MapsScraper:
                                         self._profiler.incr("place_panel_wait_aborted")
                                     raise
 
-                            # Phase 2A / audit §3.1 + §3.3: the rate-limiter
-                            # wait was previously invisible to the profiler
-                            # entirely (it ran before any timer started).
-                            # It's the single highest-estimated bottleneck
-                            # in the Phase 1A audit — now it's measured
-                            # directly instead of reasoned about.
-                            with self._profiler.timer("rate_limit_wait_place"):
-                                await self._limiter.acquire("maps_place")
+                            # DETAIL-PANEL WEBSITE FAST-ABORT:
+                            # If mission requires website/email, probe the authoritative
+                            # detail panel website signal before paying the expensive
+                            # rate limiter wait, place settle sleep, and full DOM extraction.
+                            fast_aborted = False
+                            if require_website:
+                                self._profiler.incr("maps_detail_website_probe_attempts")
+                                with self._profiler.timer("detail_website_probe"):
+                                    site_url = await _probe_detail_panel_website(page)
 
-                            # Phase 2A / audit §3.2 + §3.3: the settle wait
-                            # used to be an unconditional sleep folded
-                            # inside `maps_place_extraction`'s timer. It's
-                            # now its own stage, and event-driven (see
-                            # _wait_for_place_settle) instead of a blind
-                            # fixed sleep — same ceiling, no regression.
-                            with self._profiler.timer("place_settle"):
-                                await _wait_for_place_settle(page, config=self.config)
+                                if site_url:
+                                    self._profiler.incr("maps_detail_website_probe_has_site")
+                                else:
+                                    self._profiler.incr("maps_detail_website_probe_no_site")
+                                    self._profiler.incr("maps_detail_fast_abort_no_website")
+                                    # Conservative estimate of avoided extraction duration
+                                    # (place settle is ~150-300ms + extraction ~200-400ms + rate limiter wait)
+                                    self._profiler.record_stage_duration("detail_fast_abort_saved", 500.0)
 
-                            try:
-                                with self._profiler.timer("maps_place_extraction"):
-                                    place = await _extract_place_data(
-                                        page,
-                                        config=self.config,
-                                        query=full_query,
-                                        niche=niche,
-                                        region=region,
+                                    # Cheap name resolution for diagnostic / minimal RawPlace
+                                    candidate_name = card_signals.get("name") if card_signals else ""
+                                    if not candidate_name:
+                                        candidate_name = await _try_selectors(page, _PLACE_NAME_SELECTORS) or ""
+
+                                    place = RawPlace(
+                                        name=candidate_name or "Unknown Place",
+                                        website="",
+                                        maps_link=page.url,
                                         city=city,
                                         country=country,
+                                        niche=niche,
+                                        region=region,
+                                        query=full_query,
                                     )
-                            except Exception as exc:
-                                log.info(f"[maps][diag] extraction raised, business dropped: {exc}")
-                                log.debug(f"[maps] extraction error: {exc}")
-                                self._stats.errors += 1
-                                continue
+                                    fast_aborted = True
+
+                            if not fast_aborted:
+                                # Phase 2A / audit §3.1 + §3.3: the rate-limiter
+                                # wait was previously invisible to the profiler
+                                # entirely (it ran before any timer started).
+                                # It's the single highest-estimated bottleneck
+                                # in the Phase 1A audit — now it's measured
+                                # directly instead of reasoned about.
+                                with self._profiler.timer("rate_limit_wait_place"):
+                                    await self._limiter.acquire("maps_place")
+
+                                # Phase 2A / audit §3.2 + §3.3: the settle wait
+                                # used to be an unconditional sleep folded
+                                # inside `maps_place_extraction`'s timer. It's
+                                # now its own stage, and event-driven (see
+                                # _wait_for_place_settle) instead of a blind
+                                # fixed sleep — same ceiling, no regression.
+                                with self._profiler.timer("place_settle"):
+                                    await _wait_for_place_settle(page, config=self.config)
+
+                                try:
+                                    with self._profiler.timer("maps_place_extraction"):
+                                        place = await _extract_place_data(
+                                            page,
+                                            config=self.config,
+                                            query=full_query,
+                                            niche=niche,
+                                            region=region,
+                                            city=city,
+                                            country=country,
+                                        )
+                                except Exception as exc:
+                                    log.info(f"[maps][diag] extraction raised, business dropped: {exc}")
+                                    log.debug(f"[maps] extraction error: {exc}")
+                                    self._stats.errors += 1
+                                    continue
 
                             if not place or not place.name:
                                 log.info(

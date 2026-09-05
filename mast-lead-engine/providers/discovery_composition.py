@@ -194,6 +194,7 @@ def compose_discovery(
     google_maps_factory: Optional[Callable[[], DiscoveryProviderInterface]] = None,
     overpass_factory: Optional[Callable[[], DiscoveryProviderInterface]] = None,
     profiler: Any = None,
+    require_website: bool = False,
 ) -> ComposedDiscovery:
     """
     Build the one DiscoveryProviderInterface + request pair
@@ -260,6 +261,7 @@ def compose_discovery(
         organization_query=organization_query,
         should_stop=should_stop,
         on_progress=on_progress,
+        require_website=require_website,
     )
 
     selected_ids: list[str] = []

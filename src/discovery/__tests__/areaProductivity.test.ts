@@ -719,7 +719,16 @@ test("P36-4: 50 terminal / 8 qualified (0 in-flight) is classified productive", 
 // ── Test 5: in-flight candidates defer yield stop TEMPORARILY; a bounded ──
 // grace window (PHASE 41) — not max runtime — is what eventually lets a
 // persistently-in-flight, zero-yield area actually rotate.
-test("P41-1: in-flight candidates defer low-yield only until the grace window elapses, then the area rotates", () => {
+//
+// PHASE 46 UPDATE: grace-window expiry alone no longer produces a
+// definitive "low_yield" verdict while the in-flight backlog is still as
+// large as (or larger than) the terminal evidence gathered — see the
+// backlog-aware guard in classifyAreaYield. This scenario (50 discovered,
+// 0 EVER reaches a terminal outcome) is exactly the production incident
+// pattern the guard targets: it must not be killed on zero terminal
+// evidence just because the fixed 60s grace elapsed. It is still bounded —
+// max runtime remains the hard, independent backstop.
+test("P41-1: in-flight candidates defer low-yield until the grace window elapses, then (PHASE 46) fall back to a non-stopping marginal verdict while the backlog remains unresolved — max runtime is still the eventual backstop", () => {
   const limits: AreaProductivityLimits = { productiveIdleMs: 60_000, maxAreaRuntimeMs: 200_000 };
   const state = createAreaProductivityState(0);
   recordDiscoveries(state, 50, 50_000); // 50 discovered with 0 qualified, 50 in-flight
@@ -735,17 +744,21 @@ test("P41-1: in-flight candidates defer low-yield only until the grace window el
   assert.equal(evaluateAreaYieldStop(state, 150_000, P36_YIELD_LIMITS), null);
   assert.equal(state.yieldEvaluationDeferredDueToInflight, true);
 
-  // At 160s: grace window (100s + 60s) has elapsed. This area never
-  // produced any terminal evidence at all (still 50 in-flight, 0
-  // qualified) — PHASE 41's bound now lets it be evaluated (and, here,
-  // rotated) on that evidence instead of waiting indefinitely for
-  // candidates that may never resolve.
-  assert.equal(classifyAreaYield(state, 160_000, P36_YIELD_LIMITS), "low_yield");
-  assert.equal(evaluateAreaYieldStop(state, 160_000, P36_YIELD_LIMITS), "area_productivity_low_yield");
-  assert.equal(state.yieldEvaluationDeferredDueToInflight, false);
+  // At 160s: grace window (100s + 60s) has elapsed. Under PHASE 41 alone,
+  // this area (0 terminal evidence, 50 still in-flight) would have been
+  // definitively rotated as "low_yield" — but that is precisely the thin-
+  // sample-kills-a-busy-area failure PHASE 46 fixes. Because inFlightCount
+  // (50) is still greater than terminalCandidateCount (0), the verdict is
+  // downgraded to "marginal" — kept alive, not stopped — rather than
+  // "low_yield".
+  assert.equal(classifyAreaYield(state, 160_000, P36_YIELD_LIMITS), "marginal");
+  assert.equal(evaluateAreaYieldStop(state, 160_000, P36_YIELD_LIMITS), null, "marginal never stops the area");
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, true, "still flagged as backlog-deferred, not a definitive verdict");
 
-  // max runtime (200s) is still a hard, independent ceiling regardless —
-  // unchanged from before this phase.
+  // This area's in-flight candidates never resolve in this scenario, so
+  // the yield classifier alone would hold it at "marginal" forever — max
+  // runtime (200s) is still a hard, independent ceiling regardless, and is
+  // what actually rotates it. Unchanged from before this phase.
   assert.equal(evaluateAreaProductivity(state, 200_000, limits), "area_productivity_max_runtime");
 });
 
@@ -754,15 +767,29 @@ test("P41-1: in-flight candidates defer low-yield only until the grace window el
 // never reaches 0) must NOT be able to defer a genuinely low-yield area
 // forever — this is the exact "burns the full max-runtime ceiling"
 // regression the Phase 41 fix targets.
-test("P41-2: continuously-replenished in-flight candidates cannot defer low-yield indefinitely", () => {
+//
+// PHASE 46 UPDATE: the fixed 60s grace window's expiry no longer converts
+// straight into "low_yield" the instant it lapses if the backlog is still
+// as large as the terminal evidence (see the backlog-aware guard in
+// classifyAreaYield) — here the classifier now spends a few extra polls at
+// "marginal" (kept alive, not stopped) while terminalCandidateCount catches
+// up to the constant 50-candidate backlog. But it is STILL bounded: since
+// terminalCandidateCount only grows (5 more resolve every poll) while
+// inFlightCount stays flat, the guard's condition (inFlightCount >
+// terminalCandidateCount) is mechanically guaranteed to stop holding once
+// enough terminal evidence has accumulated — proving this is a bounded
+// delay, not the unbounded Phase-37 deferral Phase 41 originally fixed.
+test("P41-2: continuously-replenished in-flight candidates cannot defer a low-yield verdict indefinitely (bounded, just later, under the PHASE 46 backlog guard)", () => {
   const state = createAreaProductivityState(0);
   recordDiscoveries(state, 50, 50_000); // 50 in-flight, 0 terminal, 0 qualified
 
   // Every 10s a few candidates resolve (all rejected, 0 qualified) but
   // discovery keeps adding just as many new ones — inFlightCount never
   // drains to 0, exactly like a live area whose enrichment pipeline stays
-  // saturated.
-  const pollTimes = [90_000, 100_000, 110_000, 120_000, 130_000, 140_000, 150_000, 160_000];
+  // saturated. Extended two extra polls (170s, 180s) beyond the original
+  // scenario so terminalCandidateCount has time to catch up to the flat
+  // 50-candidate backlog under the new, more conservative guard.
+  const pollTimes = [90_000, 100_000, 110_000, 120_000, 130_000, 140_000, 150_000, 160_000, 170_000, 180_000];
   const classes: string[] = [];
   for (const t of pollTimes) {
     // resolve 5 candidates (rejected) and discover 5 fresh ones — net
@@ -776,10 +803,14 @@ test("P41-2: continuously-replenished in-flight candidates cannot defer low-yiel
     classes.push(classifyAreaYield(state, t, P36_YIELD_LIMITS));
   }
 
-  // It must eventually stop being deferred as "productive" and rotate —
-  // under the old unbounded Phase 37 rule every entry here would be
-  // "productive" forever, since inFlightCount > 0 at every single poll.
-  assert.ok(classes.includes("low_yield"), `expected a low_yield classification once the grace window elapsed, got: ${classes.join(", ")}`);
+  // It must eventually stop being deferred/held-alive and rotate — under
+  // the old unbounded Phase 37 rule every entry here would be "productive"
+  // forever, since inFlightCount > 0 at every single poll. Under PHASE 46,
+  // it passes through "marginal" (once the grace window lapses but the
+  // backlog is still large) before finally reaching "low_yield" once
+  // terminalCandidateCount has caught up to the flat in-flight backlog.
+  assert.ok(classes.includes("marginal"), `expected a marginal (kept-alive, not stopped) classification once the grace window elapsed but backlog was still large, got: ${classes.join(", ")}`);
+  assert.ok(classes.includes("low_yield"), `expected a low_yield classification once terminal evidence caught up to the backlog, got: ${classes.join(", ")}`);
   assert.equal(classes[classes.length - 1], "low_yield");
   assert.equal(evaluateAreaYieldStop(state, pollTimes[pollTimes.length - 1], P36_YIELD_LIMITS), "area_productivity_low_yield");
 });
@@ -861,6 +892,63 @@ test("P37-4: low-yield area rotates if terminal evidence is overwhelmingly low e
   // Even if the 1 remaining in-flight qualifies, max rate is 1/100 = 1% <= 5% -> low_yield!
   assert.equal(classifyAreaYield(state, 120_000, P36_YIELD_LIMITS), "low_yield");
   assert.equal(evaluateAreaYieldStop(state, 120_000, P36_YIELD_LIMITS), "area_productivity_low_yield");
+});
+
+// =============================================================================
+// PHASE 46 — BACKLOG-AWARE LOW-YIELD GUARD
+//
+// Root cause fixed here (see the CRITICMODE audit): the fixed 60s in-flight
+// grace window, once expired, previously let a thin/near-empty terminal
+// sample produce a definitive "low_yield" verdict even while dozens of
+// candidates were still genuinely in-flight and had never had a chance to
+// resolve — the exact "58 in-flight / 0-3 delivered" production incident
+// pattern. The guard: once the grace window has expired, a rate that would
+// otherwise be "low_yield" is downgraded to "marginal" (kept alive, not
+// stopped) for as long as inFlightCount > terminalCandidateCount.
+// =============================================================================
+
+test("P46-1: production incident shape — 58 in-flight, 0 terminal, grace expired — is NOT killed as low_yield", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 66, 60_000); // 66 admitted candidates, 0 ever resolved
+
+  // Drive the shared grace clock to expiry with no terminal evidence at all.
+  assert.equal(classifyAreaYield(state, 150_000, P36_YIELD_LIMITS), "productive", "still inside the 60s grace window");
+  assert.equal(state.firstInFlightDeferralAt, 150_000);
+  const verdict = classifyAreaYield(state, 211_000, P36_YIELD_LIMITS); // grace (150s + 60s = 210s) has now lapsed
+  assert.equal(verdict, "marginal", "grace lapsing must not, by itself, justify a definitive low_yield verdict on zero terminal evidence");
+  assert.equal(evaluateAreaYieldStop(state, 211_000, P36_YIELD_LIMITS), null, "the area must not be stopped");
+  assert.equal(state.inFlightCount, 66);
+});
+
+test("P46-2: once terminal evidence catches up to the backlog, a genuinely poor rate does stop the area", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 60, 60_000);
+  // Grace expires with 58 in-flight, 2 terminal (both rejected) — must not stop yet.
+  state.terminalCandidateCount = 2;
+  state.inFlightCount = 58;
+  assert.equal(classifyAreaYield(state, 150_000, P36_YIELD_LIMITS), "productive");
+  assert.equal(classifyAreaYield(state, 211_000, P36_YIELD_LIMITS), "marginal", "58 in-flight still dwarfs 2 terminal outcomes");
+
+  // Candidates keep draining (all rejected) until terminal evidence is at
+  // least as large as what remains in-flight — the guard then releases and
+  // a genuinely poor rate is free to stop the area, exactly as intended.
+  state.terminalCandidateCount = 60;
+  state.inFlightCount = 0;
+  assert.equal(classifyAreaYield(state, 211_000, P36_YIELD_LIMITS), "low_yield");
+  assert.equal(evaluateAreaYieldStop(state, 211_000, P36_YIELD_LIMITS), "area_productivity_low_yield");
+});
+
+test("P46-3: a small remaining in-flight tail (not a large unresolved backlog) does not block a low_yield verdict", () => {
+  // Mirrors P37-4 but explicitly names this as the PHASE 46 guard's
+  // boundary condition: inFlightCount must be strictly greater than
+  // terminalCandidateCount to hold the verdict back — a small tail (here,
+  // 1 in-flight against 99 terminal) is not a "large outstanding backlog"
+  // and must not prevent a definitive verdict.
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 100, 60_000);
+  state.terminalCandidateCount = 99;
+  state.inFlightCount = 1;
+  assert.equal(classifyAreaYield(state, 120_000, P36_YIELD_LIMITS), "low_yield");
 });
 
 // =============================================================================

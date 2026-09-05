@@ -574,6 +574,10 @@ export type AreaYieldLimits = {
  * 1. If inFlightCount > 0 and within inFlightGraceMs, do not classify LOW_YIELD.
  * 2. When evaluated, calculates yield rate against terminal candidates
  *    (terminalCandidateCount), avoiding dilution by in-flight candidates.
+ * 3. PHASE 46 — even after the grace window expires, a rate that would
+ *    otherwise be LOW_YIELD is downgraded to MARGINAL (not stopped) while
+ *    the in-flight backlog is still at least as large as the terminal
+ *    evidence collected so far — see the inline comment at that branch.
  */
 export function classifyAreaYield(
   state: AreaProductivityState,
@@ -637,6 +641,35 @@ export function classifyAreaYield(
   const rate = denominator > 0 ? yieldCount / denominator : 0;
 
   if (rate <= limits.lowYieldMaxRate) {
+    // PHASE 46 — BACKLOG-AWARE LOW-YIELD GUARD.
+    //
+    // The in-flight grace window above bounds how long we DEFER a verdict —
+    // but its expiry only means "stop waiting indefinitely," not "the
+    // terminal sample gathered so far is representative." If the grace
+    // window expired while a large fraction of this area's admitted
+    // candidates are STILL in-flight (never got a chance to resolve), a
+    // "low_yield" verdict computed from the small terminal sample is not
+    // trustworthy: those in-flight candidates are exactly the population
+    // the verdict is supposed to describe.
+    //
+    // Invariant: do not return a definitive "low_yield" while the
+    // outstanding in-flight backlog is still at least as large as the
+    // terminal evidence collected so far (inFlightCount > terminalCandidates).
+    // In that case, downgrade to "marginal" — kept alive, re-evaluated on
+    // the next poll — instead of stopping the area.
+    //
+    // This is NOT a reintroduction of the unbounded Phase 37 deferral that
+    // Phase 41 fixed: `terminalCandidates` only grows over time (candidates
+    // continually resolve one way or another) and never shrinks, so this
+    // condition is guaranteed to resolve itself in bounded time as evidence
+    // accumulates. And `maxAreaRuntimeMs` (evaluateAreaProductivity, checked
+    // independently of this function) remains the hard, unconditional
+    // ceiling regardless of how long that takes — an area can never run
+    // forever off this guard alone.
+    if (inFlightCount > terminalCandidates) {
+      state.yieldEvaluationDeferredDueToInflight = true;
+      return "marginal";
+    }
     state.yieldEvaluationDeferredDueToInflight = false;
     return "low_yield";
   }

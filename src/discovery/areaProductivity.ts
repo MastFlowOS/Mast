@@ -641,32 +641,29 @@ export function classifyAreaYield(
   const rate = denominator > 0 ? yieldCount / denominator : 0;
 
   if (rate <= limits.lowYieldMaxRate) {
-    // PHASE 46 — BACKLOG-AWARE LOW-YIELD GUARD.
+    // BACKLOG-AWARE OPTIMISTIC YIELD GUARD:
     //
-    // The in-flight grace window above bounds how long we DEFER a verdict —
-    // but its expiry only means "stop waiting indefinitely," not "the
-    // terminal sample gathered so far is representative." If the grace
-    // window expired while a large fraction of this area's admitted
-    // candidates are STILL in-flight (never got a chance to resolve), a
-    // "low_yield" verdict computed from the small terminal sample is not
-    // trustworthy: those in-flight candidates are exactly the population
-    // the verdict is supposed to describe.
+    // The in-flight grace window above bounds how long we blanket-defer a
+    // low-yield evaluation with "productive". But its expiry must not cause us
+    // to blindly classify an area as "low_yield" based solely on early terminal
+    // outcomes when unresolved in-flight candidates can still mathematically
+    // lift the area out of low-yield (maxPossibleRate > lowYieldMaxRate).
     //
-    // Invariant: do not return a definitive "low_yield" while the
-    // outstanding in-flight backlog is still at least as large as the
-    // terminal evidence collected so far (inFlightCount > terminalCandidates).
-    // In that case, downgrade to "marginal" — kept alive, re-evaluated on
-    // the next poll — instead of stopping the area.
+    // Invariant: do not return a definitive "low_yield" while the optimistic
+    // possible yield (yieldCount + inFlightCount) / (terminalCandidates + inFlightCount)
+    // is strictly above lowYieldMaxRate. In that case, downgrade to "marginal"
+    // (kept alive, re-evaluated on subsequent polls as candidates resolve)
+    // rather than terminating a busy and potentially high-yielding area.
     //
-    // This is NOT a reintroduction of the unbounded Phase 37 deferral that
-    // Phase 41 fixed: `terminalCandidates` only grows over time (candidates
-    // continually resolve one way or another) and never shrinks, so this
-    // condition is guaranteed to resolve itself in bounded time as evidence
-    // accumulates. And `maxAreaRuntimeMs` (evaluateAreaProductivity, checked
-    // independently of this function) remains the hard, unconditional
-    // ceiling regardless of how long that takes — an area can never run
-    // forever off this guard alone.
-    if (inFlightCount > terminalCandidates) {
+    // An area is only classified "low_yield" when its optimistic possible yield
+    // has also dropped to or below lowYieldMaxRate (or inFlightCount === 0),
+    // proving mathematically that even if every remaining in-flight candidate
+    // qualifies, the area can never exceed the low-yield threshold.
+    const maxPossibleRate = (terminalCandidates + inFlightCount) > 0
+      ? (yieldCount + inFlightCount) / (terminalCandidates + inFlightCount)
+      : 0;
+
+    if (maxPossibleRate > limits.lowYieldMaxRate) {
       state.yieldEvaluationDeferredDueToInflight = true;
       return "marginal";
     }

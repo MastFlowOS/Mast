@@ -768,51 +768,43 @@ test("P41-1: in-flight candidates defer low-yield until the grace window elapses
 // forever — this is the exact "burns the full max-runtime ceiling"
 // regression the Phase 41 fix targets.
 //
-// PHASE 46 UPDATE: the fixed 60s grace window's expiry no longer converts
-// straight into "low_yield" the instant it lapses if the backlog is still
-// as large as the terminal evidence (see the backlog-aware guard in
-// classifyAreaYield) — here the classifier now spends a few extra polls at
-// "marginal" (kept alive, not stopped) while terminalCandidateCount catches
-// up to the constant 50-candidate backlog. But it is STILL bounded: since
-// terminalCandidateCount only grows (5 more resolve every poll) while
-// inFlightCount stays flat, the guard's condition (inFlightCount >
-// terminalCandidateCount) is mechanically guaranteed to stop holding once
-// enough terminal evidence has accumulated — proving this is a bounded
-// delay, not the unbounded Phase-37 deferral Phase 41 originally fixed.
-test("P41-2: continuously-replenished in-flight candidates cannot defer a low-yield verdict indefinitely (bounded, just later, under the PHASE 46 backlog guard)", () => {
+// OPTIMISTIC-YIELD UPDATE: the fixed 60s grace window's expiry no longer converts
+// straight into "low_yield" the instant it lapses if in-flight candidates can
+// still mathematically rescue the rate (maxPossibleRate > lowYieldMaxRate) —
+// here the classifier spends polls at "marginal" (kept alive, not stopped) while
+// terminalCandidateCount accumulates rejected candidates. But it is STILL bounded:
+// as terminalCandidateCount grows (5 more rejected candidates resolve every poll),
+// maxPossibleRate = inFlightCount / (terminalCandidateCount + inFlightCount)
+// eventually drops to or below lowYieldMaxRate (0.05), at which point it definitively
+// reaches "low_yield" — proving this is a bounded evaluation, not an unbounded deferral.
+test("P41-2: continuously-replenished in-flight candidates cannot defer a low-yield verdict indefinitely (bounded, just later, under the optimistic yield guard)", () => {
   const state = createAreaProductivityState(0);
   recordDiscoveries(state, 50, 50_000); // 50 in-flight, 0 terminal, 0 qualified
 
-  // Every 10s a few candidates resolve (all rejected, 0 qualified) but
-  // discovery keeps adding just as many new ones — inFlightCount never
-  // drains to 0, exactly like a live area whose enrichment pipeline stays
-  // saturated. Extended two extra polls (170s, 180s) beyond the original
-  // scenario so terminalCandidateCount has time to catch up to the flat
-  // 50-candidate backlog under the new, more conservative guard.
-  const pollTimes = [90_000, 100_000, 110_000, 120_000, 130_000, 140_000, 150_000, 160_000, 170_000, 180_000];
+  // Every 10s candidates resolve (all rejected, 0 qualified) while discovery
+  // adds fresh ones. Once terminalCandidateCount reaches ~950 with 50 in-flight
+  // (50 / 1000 = 0.05 <= 0.05), maxPossibleRate reaches low_yield.
+  const pollTimes: number[] = [];
+  for (let t = 90_000; t <= 2_000_000; t += 10_000) {
+    pollTimes.push(t);
+  }
   const classes: string[] = [];
   for (const t of pollTimes) {
-    // resolve 5 candidates (rejected) and discover 5 fresh ones — net
-    // in-flight count is unchanged (still > 0) at every poll.
     for (let i = 0; i < 5; i++) {
       state.terminalCandidateCount += 1;
     }
     state.newlyDiscoveredCount += 5;
     state.inFlightCount = Math.max(0, state.newlyDiscoveredCount - state.terminalCandidateCount);
     assert.ok(state.inFlightCount > 0, `in-flight must stay > 0 at t=${t} for this regression scenario`);
-    classes.push(classifyAreaYield(state, t, P36_YIELD_LIMITS));
+    const c = classifyAreaYield(state, t, P36_YIELD_LIMITS);
+    classes.push(c);
+    if (c === "low_yield") break;
   }
 
-  // It must eventually stop being deferred/held-alive and rotate — under
-  // the old unbounded Phase 37 rule every entry here would be "productive"
-  // forever, since inFlightCount > 0 at every single poll. Under PHASE 46,
-  // it passes through "marginal" (once the grace window lapses but the
-  // backlog is still large) before finally reaching "low_yield" once
-  // terminalCandidateCount has caught up to the flat in-flight backlog.
-  assert.ok(classes.includes("marginal"), `expected a marginal (kept-alive, not stopped) classification once the grace window elapsed but backlog was still large, got: ${classes.join(", ")}`);
-  assert.ok(classes.includes("low_yield"), `expected a low_yield classification once terminal evidence caught up to the backlog, got: ${classes.join(", ")}`);
+  assert.ok(classes.includes("marginal"), `expected a marginal (kept-alive, not stopped) classification once the grace window elapsed but optimistic yield was still high, got: ${classes.slice(0, 10).join(", ")}`);
+  assert.ok(classes.includes("low_yield"), `expected a low_yield classification once optimistic yield dropped to or below lowYieldMaxRate, got: ${classes.slice(-5).join(", ")}`);
   assert.equal(classes[classes.length - 1], "low_yield");
-  assert.equal(evaluateAreaYieldStop(state, pollTimes[pollTimes.length - 1], P36_YIELD_LIMITS), "area_productivity_low_yield");
+  assert.equal(evaluateAreaYieldStop(state, pollTimes[classes.length - 1], P36_YIELD_LIMITS), "area_productivity_low_yield");
 });
 
 // ── Test 6: TARGET_REACHED remains unchanged ───────────────────────────────
@@ -949,6 +941,121 @@ test("P46-3: a small remaining in-flight tail (not a large unresolved backlog) d
   state.terminalCandidateCount = 99;
   state.inFlightCount = 1;
   assert.equal(classifyAreaYield(state, 120_000, P36_YIELD_LIMITS), "low_yield");
+});
+
+// =============================================================================
+// PRODUCTION INCIDENT SHAPES — OPTIMISTIC YIELD BACKLOG PROTECTION
+// =============================================================================
+
+test("Production Manhattan shape: terminal=77, inFlight=49, yield=1 does NOT become low_yield after grace expires", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 126, 60_000);
+  state.terminalCandidateCount = 77;
+  state.inFlightCount = 49;
+  recordQualifiedLead(state, 80_000); // qualifiedCount = 1
+  assert.equal(state.qualifiedCount, 1);
+
+  // At 100s: grace begins.
+  assert.equal(classifyAreaYield(state, 100_000, P36_YIELD_LIMITS), "productive");
+  assert.equal(state.firstInFlightDeferralAt, 100_000);
+
+  // At 170s: grace (100s + 60s = 160s) has expired.
+  // Observed yield is 1/77 = 1.3% <= 5%, but optimistic yield is (1 + 49) / (77 + 49) = 39.7% > 5%.
+  // Must NOT become low_yield solely because grace expired!
+  assert.equal(classifyAreaYield(state, 170_000, P36_YIELD_LIMITS), "marginal");
+  assert.equal(evaluateAreaYieldStop(state, 170_000, P36_YIELD_LIMITS), null, "Manhattan must not be stopped");
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, true);
+});
+
+test("Production Bronx shape: terminal=71, inFlight=53, yield=0 does NOT become low_yield after grace expires", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 124, 60_000);
+  state.terminalCandidateCount = 71;
+  state.inFlightCount = 53;
+  assert.equal(state.qualifiedCount, 0);
+
+  // Grace clock initialized
+  assert.equal(classifyAreaYield(state, 100_000, P36_YIELD_LIMITS), "productive");
+  // Grace expires at 160s. At 170s, optimistic rate is 53 / 124 = 42.7% > 5%.
+  assert.equal(classifyAreaYield(state, 170_000, P36_YIELD_LIMITS), "marginal");
+  assert.equal(evaluateAreaYieldStop(state, 170_000, P36_YIELD_LIMITS), null, "Bronx must not be stopped");
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, true);
+});
+
+test("Production Santa Fe shape: terminal=110, inFlight=67, yield=2 does NOT become low_yield after grace expires", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 177, 60_000);
+  state.terminalCandidateCount = 110;
+  state.inFlightCount = 67;
+  recordQualifiedLead(state, 70_000);
+  recordQualifiedLead(state, 80_000);
+  assert.equal(state.qualifiedCount, 2);
+
+  // Grace clock initialized
+  assert.equal(classifyAreaYield(state, 100_000, P36_YIELD_LIMITS), "productive");
+  // Grace expires at 160s. At 170s, optimistic rate is (2 + 67) / (110 + 67) = 39.0% > 5%.
+  assert.equal(classifyAreaYield(state, 170_000, P36_YIELD_LIMITS), "marginal");
+  assert.equal(evaluateAreaYieldStop(state, 170_000, P36_YIELD_LIMITS), null, "Santa Fe must not be stopped");
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, true);
+});
+
+test("Genuinely exhausted low-yield area: maxPossibleRate <= lowYieldMaxRate IS classified low_yield and stopped", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 100, 60_000);
+  // 98 rejected terminal candidates, 2 in-flight, 1 qualified
+  state.terminalCandidateCount = 98;
+  state.inFlightCount = 2;
+  recordQualifiedLead(state, 80_000);
+  assert.equal(state.qualifiedCount, 1);
+
+  // maxPossibleRate = (1 + 2) / (98 + 2) = 3 / 100 = 3% <= 5% (lowYieldMaxRate)
+  // Even if both remaining in-flight candidates qualify, max yield is 3% <= 5%.
+  // At 170s (after grace expires), must be definitively low_yield!
+  assert.equal(classifyAreaYield(state, 170_000, P36_YIELD_LIMITS), "low_yield");
+  assert.equal(evaluateAreaYieldStop(state, 170_000, P36_YIELD_LIMITS), "area_productivity_low_yield");
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, false);
+});
+
+test("Hard max runtime backstop: area with active in-flight candidates still terminates unconditionally at maxAreaRuntimeMs", () => {
+  const limits: AreaProductivityLimits = {
+    productiveIdleMs: 120_000,
+    maxAreaRuntimeMs: 250_000,
+    inFlightGraceMs: 60_000,
+  };
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 100, 60_000);
+  state.terminalCandidateCount = 50;
+  state.inFlightCount = 50;
+  recordQualifiedLead(state, 80_000);
+
+  // At 200s: before maxAreaRuntimeMs (250s), not stopped
+  assert.equal(evaluateAreaProductivity(state, 200_000, limits), null);
+
+  // At 250s: exactly at maxAreaRuntimeMs, terminates unconditionally
+  assert.equal(evaluateAreaProductivity(state, 250_000, limits), "area_productivity_max_runtime");
+});
+
+test("Existing Coyoacán-style deferral behavior: inFlight=91, terminal=47, qualified=3 defers during grace and continues", () => {
+  const state = createAreaProductivityState(0);
+  recordDiscoveries(state, 138, 60_000);
+  state.terminalCandidateCount = 47;
+  state.inFlightCount = 91;
+  recordQualifiedLead(state, 70_000);
+  recordQualifiedLead(state, 80_000);
+  recordQualifiedLead(state, 90_000);
+  assert.equal(state.qualifiedCount, 3);
+
+  // During grace window (< 60s from first deferral at 100s)
+  assert.equal(classifyAreaYield(state, 100_000, P36_YIELD_LIMITS), "productive");
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, true);
+  assert.equal(evaluateAreaYieldStop(state, 100_000, P36_YIELD_LIMITS), null);
+
+  // After grace window (at 170s):
+  // Observed terminal rate is 3 / 47 = 6.38% (strictly above lowYieldMaxRate 5%, and <= marginalMaxRate 15%).
+  // It naturally evaluates to "marginal" from terminal evidence directly (not deferred from low_yield).
+  assert.equal(classifyAreaYield(state, 170_000, P36_YIELD_LIMITS), "marginal");
+  assert.equal(state.yieldEvaluationDeferredDueToInflight, false);
+  assert.equal(evaluateAreaYieldStop(state, 170_000, P36_YIELD_LIMITS), null);
 });
 
 // =============================================================================

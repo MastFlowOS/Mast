@@ -17,7 +17,7 @@ import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discove
 import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
-import { getResourceCapacity, getResourceWorkerSlotPool } from "../lib/resourceCapacity.js";
+import { getResourceCapacity, getResourceWorkerSlotPool, trySharedPidAdmission, acquireSharedPidAdmissionBlocking } from "../lib/resourceCapacity.js";
 import {
   initJobMetrics,
   finalizeJobMetrics,
@@ -737,10 +737,20 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       const releaseLegacyResourceSlot = sourceId === "google_maps"
         ? await acquireBrowserSlotBlocking(getResourceWorkerSlotPool(), { signal: requestAbort.signal })
         : undefined;
+      // P0 — SHARED LIVE PID ADMISSION: a third gate, on top of the two
+      // static slot pools above, that re-checks REAL live pids.current
+      // (shared with enrichment's own admission calls — see
+      // resourceCapacity.ts's trySharedPidAdmission() doc comment) at the
+      // moment this legacy-path browser is about to spawn, not just once at
+      // process startup.
+      const releaseLegacySharedPid = sourceId === "google_maps"
+        ? await acquireSharedPidAdmissionBlocking(env.PIDS_PER_AREA_WORKER, "area_worker", { signal: requestAbort.signal })
+        : undefined;
       let attempt: AreaAttemptResult;
       try {
         attempt = await runOneAreaAttempt(attemptCtx, claimedArea);
       } finally {
+        releaseLegacySharedPid?.();
         releaseLegacyResourceSlot?.();
         releaseLegacyBrowserSlot?.();
       }
@@ -872,10 +882,24 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
             releaseBrowser();
             return undefined;
           }
+          // P0 — SHARED LIVE PID ADMISSION: third gate, re-checks REAL live
+          // pids.current (shared with enrichment — see resourceCapacity.ts's
+          // trySharedPidAdmission() doc comment) rather than trusting only
+          // the static resourceWorkerSlotPool capacity measured once at
+          // startup. All three gates are acquired together / released
+          // together (all-or-nothing) so a partial acquire never leaks a
+          // held slot.
+          const sharedPidAdmission = trySharedPidAdmission(env.PIDS_PER_AREA_WORKER, "area_worker");
+          if (!sharedPidAdmission.granted) {
+            releaseResource();
+            releaseBrowser();
+            return undefined;
+          }
           let released = false;
           return () => {
             if (released) return;
             released = true;
+            sharedPidAdmission.release();
             releaseResource();
             releaseBrowser();
           };

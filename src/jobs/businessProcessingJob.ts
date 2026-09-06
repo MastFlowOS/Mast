@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { getBoss, QUEUES } from "../lib/queue.js";
 import { runEngineVerify, runEngineEnrich, runEngineScore } from "../scraperBridge/pythonBridge.js";
+import { trySharedPidAdmission } from "../lib/resourceCapacity.js";
 import { isValidEmail, isValidPhone, validateLead } from "../lib/leadValidation.js";
 import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
@@ -13,6 +14,25 @@ import { trackActiveEnrichment, trackActiveIntelligence } from "../lib/enrichmen
 
 export type ProcessingKind = "enrich" | "score";
 export type BusinessProcessingPayload = { taskId: string };
+
+/**
+ * P0 — SHARED LIVE PID ADMISSION: thrown when trySharedPidAdmission()
+ * (resourceCapacity.ts) denies enrichment/score subprocess admission at the
+ * moment of spawn. Deliberately just a plain Error subclass, not a new
+ * retry mechanism — handleBusinessProcessingJob()'s existing `catch` block
+ * below already resets the durable business_processing_tasks row back to
+ * "queued" (never "failed") and rethrows for pg-boss's own retry policy on
+ * ANY thrown error, which is exactly the "preserve queue items, don't mark
+ * a legitimate candidate rejected, let the scheduler retry later" behavior
+ * the P0 admission-control fix requires — reusing it here is the smallest
+ * safe way to get that behavior, not a new one.
+ */
+export class PidAdmissionUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`enrichment subprocess admission unavailable: ${reason}`);
+    this.name = "PidAdmissionUnavailableError";
+  }
+}
 
 /**
  * Finds (or creates) the durable business_processing_tasks row for this
@@ -267,7 +287,22 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
     // `businesses` columns this can and cannot populate.
     let site: any = {};
     if (business.website) {
-      site = await runEngineEnrich({ website: business.website }, signal);
+      // P0 — SHARED LIVE PID ADMISSION: one runEngineEnrich() call here is
+      // exactly the ONE subprocess env.ENRICHMENT_PIDS_PER_WORKER is
+      // calibrated against (see that env var's own doc comment) — gate
+      // right at this spawn point, re-checking REAL live pids.current
+      // shared with the area-worker admission above, rather than trusting
+      // only the static businessEnrichConcurrency batchSize measured once
+      // at worker startup.
+      const admission = trySharedPidAdmission(env.ENRICHMENT_PIDS_PER_WORKER, "enrichment");
+      if (!admission.granted) {
+        throw new PidAdmissionUnavailableError(admission.reason);
+      }
+      try {
+        site = await runEngineEnrich({ website: business.website }, signal);
+      } finally {
+        admission.release();
+      }
     }
 
     // Audit Broken #3 fix
@@ -356,7 +391,18 @@ async function scoreBusiness(businessId: string): Promise<void> {
     // IGIntelligence path runEngineVerify() used to drive here.
     let social: any = {};
     if (business.instagram) {
-      social = await runEngineEnrich({ instagram: business.instagram });
+      // P0 — SHARED LIVE PID ADMISSION: same gate as enrichBusiness() above
+      // — this runEngineEnrich() call is the ONE subprocess
+      // env.ENRICHMENT_PIDS_PER_WORKER budgets for the businessScore queue.
+      const admission = trySharedPidAdmission(env.ENRICHMENT_PIDS_PER_WORKER, "enrichment");
+      if (!admission.granted) {
+        throw new PidAdmissionUnavailableError(admission.reason);
+      }
+      try {
+        social = await runEngineEnrich({ instagram: business.instagram });
+      } finally {
+        admission.release();
+      }
     }
 
     // instagram_last_post_date -> ig_last_post_days is a plain date-math

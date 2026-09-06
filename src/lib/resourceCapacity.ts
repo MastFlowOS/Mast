@@ -694,3 +694,192 @@ export const __testing_enrichmentCapacity = {
   reset: () => { processEnrichmentCapacity = undefined; },
   set: (capacity: EnrichmentCapacity) => { processEnrichmentCapacity = capacity; },
 };
+
+/**
+ * P0 — SHARED LIVE PID ADMISSION (forensic audit: production pids.current
+ * reached ~926 -> 995 -> 1000/1000 followed by Chromium
+ * "pthread_create: Resource temporarily unavailable").
+ *
+ * ROOT CAUSE this closes: `resourceWorkerSlotPool` above (area workers) and
+ * `businessEnrichConcurrency`/`businessScoreConcurrency` (workers/index.ts,
+ * derived from `safeEnrichmentWorkers` above) are BOTH sized from a single
+ * point-in-time `readPidCapacity()` snapshot taken once at process startup.
+ * Neither one re-checks live `pids.current` at the moment it actually admits
+ * a new subprocess-spawning unit of work, and — critically — they are two
+ * INDEPENDENT ceilings computed against the SAME cgroup `pids.max` budget.
+ * A container that has been running a while can have real `pids.current`
+ * drift far above what either ceiling assumed at startup; each system,
+ * checking only its own static number, will keep admitting work well past
+ * the point where the two combined actually exhaust `pids.max`.
+ *
+ * THE FIX: one shared, process-wide, LIVE admission check that BOTH systems
+ * call immediately before spawning their subprocess (pythonBridge.ts's
+ * `runOneAreaAttempt()` path for area workers; `runEngineEnrich()` for
+ * enrichment/score — see businessProcessingJob.ts). This is a SECOND,
+ * independent gate layered on top of (not a replacement for) the existing
+ * `resourceWorkerSlotPool` / enrichment `batchSize` ceilings: those remain
+ * useful, cheap, coarse-grained caps; this adds the live re-check the
+ * forensic audit found missing.
+ *
+ * INVARIANT (enforced by every call to `trySharedPidAdmission`):
+ *
+ *     livePids + reservedFutureCapacity <= pidsMax - reservePids
+ *
+ * where `livePids` is `pids.current` read fresh at the moment of the call,
+ * and `reservedFutureCapacity` is `sharedReservedPidUnits` (every
+ * already-granted, not-yet-released reservation from EITHER area workers OR
+ * enrichment, in PID units, not worker-count units — the two callers pass
+ * different `pidsPerUnit` values, `env.PIDS_PER_AREA_WORKER` vs
+ * `env.ENRICHMENT_PIDS_PER_WORKER`, precisely because one area worker and
+ * one enrichment job do not cost the same number of PIDs — see those env
+ * vars' own doc comments) PLUS the PID cost of the request being admitted
+ * right now.
+ *
+ * RACE SAFETY: `trySharedPidAdmission` is a single, fully synchronous
+ * function — `readPidCapacity()` is a synchronous `fs.readFileSync`, and
+ * the headroom check + `sharedReservedPidUnits +=` reservation happen with
+ * no `await`, no Promise, no callback in between. Node/V8 never interleaves
+ * two calls to a synchronous function on the same event-loop turn, so two
+ * concurrent admission attempts (one from an area worker, one from
+ * enrichment, or two of either) can NEVER both read the same `pidsCurrent`,
+ * both see headroom, and both proceed to spawn — the exact race the P0
+ * prompt calls out (`A reads 600 -> allowed; B reads 600 -> allowed; both
+ * spawn`). This is deliberately NOT an async mutex/semaphore queue: a
+ * synchronous critical section is the smallest correct primitive available
+ * inside a single Node process and needs no new dependency.
+ *
+ * FAIL-SAFE ON UNMEASURABLE PIDS: `pidsMax === null` (non-Linux dev machine,
+ * or a host without the cgroup `pids` controller) means this LIVE layer has
+ * nothing real to check — it grants unconditionally in that case (a no-op
+ * release), leaving the existing static ceilings (`resourceWorkerSlotPool`
+ * capacity / enrichment `batchSize`, both ALSO already degrading to their
+ * own documented `*_FALLBACK` constants when unmeasurable — see
+ * `computeSafePidWorkerCeiling` above) as the only, already-proven-safe gate
+ * in that case. This mirrors that same "can't measure it != safe to go
+ * unbounded, but also != hard-deny" contract everywhere else in this
+ * module, rather than inventing a third, different fallback behavior here.
+ */
+export type SharedPidAdmissionSource = "area_worker" | "enrichment";
+
+export type SharedPidAdmissionOutcome =
+  | { granted: true; release: () => void }
+  | {
+      granted: false;
+      reason: string;
+      pidsCurrent: number | null;
+      pidsMax: number;
+      reservePids: number;
+      reservedSharedPidUnits: number;
+      requestedPids: number;
+    };
+
+/**
+ * Process-wide, in-flight PID reservation total (PID units, not worker
+ * count) shared by every caller of `trySharedPidAdmission` regardless of
+ * `source`. `0` means nothing currently admitted-but-unreleased.
+ */
+let sharedReservedPidUnits = 0;
+
+/**
+ * Test-only seam so `trySharedPidAdmission`'s tests can inject a fabricated
+ * `pids.current`/`pids.max` snapshot instead of depending on this
+ * container's real `/sys/fs/cgroup` — same "mock the host, don't depend on
+ * it" convention the P0 prompt asks for. `undefined` (the default) means
+ * "use the real `readPidCapacity()`", i.e. production behavior is
+ * unaffected unless a test explicitly calls
+ * `__testing_sharedPidAdmission.setPidCapacity(...)`.
+ */
+let pidCapacityOverrideForTesting: PidCapacitySnapshot | undefined;
+
+export function trySharedPidAdmission(pidsPerUnit: number, source: SharedPidAdmissionSource): SharedPidAdmissionOutcome {
+  const requestedPids = Math.max(1, Math.floor(pidsPerUnit));
+  const reservePids = env.PIDS_RESERVE_BUDGET;
+  const pidCapacity = pidCapacityOverrideForTesting ?? readPidCapacity();
+
+  console.log(
+    `[resourceCapacity][sharedPidAdmission] shared_pid_admission_attempt source=${source} requestedPids=${requestedPids} ` +
+      `pidsMax=${pidCapacity.pidsMax ?? "unlimited/unknown"} pidsCurrent=${pidCapacity.pidsCurrent ?? "unknown"} ` +
+      `reservePids=${reservePids} reservedSharedPidUnits=${sharedReservedPidUnits}`,
+  );
+
+  if (pidCapacity.pidsMax === null) {
+    // Genuinely unmeasurable — see this function's own doc comment above
+    // for why this grants (with a no-op release) rather than denying.
+    console.log(
+      `[resourceCapacity][sharedPidAdmission] shared_pid_admission_granted source=${source} requestedPids=${requestedPids} ` +
+        `basis=fallback_unavailable`,
+    );
+    return { granted: true, release: () => {} };
+  }
+
+  const livePidsCurrent = pidCapacity.pidsCurrent ?? 0;
+  const headroom = pidCapacity.pidsMax - reservePids - livePidsCurrent - sharedReservedPidUnits;
+
+  if (headroom < requestedPids) {
+    console.warn(
+      `[resourceCapacity][sharedPidAdmission] shared_pid_admission_denied source=${source} requestedPids=${requestedPids} ` +
+        `pidsMax=${pidCapacity.pidsMax} pidsCurrent=${livePidsCurrent} reservePids=${reservePids} ` +
+        `reservedSharedPidUnits=${sharedReservedPidUnits} headroom=${headroom}`,
+    );
+    return {
+      granted: false,
+      reason: `insufficient live PID headroom (headroom=${headroom}, requestedPids=${requestedPids})`,
+      pidsCurrent: livePidsCurrent,
+      pidsMax: pidCapacity.pidsMax,
+      reservePids,
+      reservedSharedPidUnits: sharedReservedPidUnits,
+      requestedPids,
+    };
+  }
+
+  // Reserve synchronously, in the same tick as the headroom check above —
+  // see the race-safety section of this function's doc comment.
+  sharedReservedPidUnits += requestedPids;
+  let released = false;
+  const release = () => {
+    if (released) return; // idempotent — a double-release must never under-count the shared reservation
+    released = true;
+    sharedReservedPidUnits = Math.max(0, sharedReservedPidUnits - requestedPids);
+  };
+
+  console.log(
+    `[resourceCapacity][sharedPidAdmission] shared_pid_admission_granted source=${source} requestedPids=${requestedPids} ` +
+      `pidsMax=${pidCapacity.pidsMax} pidsCurrent=${livePidsCurrent} reservePids=${reservePids} ` +
+      `reservedSharedPidUnits=${sharedReservedPidUnits} headroom=${headroom}`,
+  );
+
+  return { granted: true, release };
+}
+
+/**
+ * Blocking (polling) variant of `trySharedPidAdmission`, for call sites that
+ * must eventually get to run rather than degrade to "skip for now" — mirrors
+ * `acquireBrowserSlotBlocking()` (browserSlotPool.ts) exactly, including its
+ * default 250ms poll interval and `AbortSignal` support, so the two shared
+ * resources (browser slots, live PID admission) are polled identically by
+ * the legacy single-search Google Maps path (discoveryPlanJob.ts).
+ */
+export async function acquireSharedPidAdmissionBlocking(
+  pidsPerUnit: number,
+  source: SharedPidAdmissionSource,
+  opts: { pollMs?: number; signal?: AbortSignal } = {},
+): Promise<(() => void) | undefined> {
+  const pollMs = opts.pollMs ?? 250;
+  for (;;) {
+    if (opts.signal?.aborted) return undefined;
+    const outcome = trySharedPidAdmission(pidsPerUnit, source);
+    if (outcome.granted) return outcome.release;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+export const __testing_sharedPidAdmission = {
+  reset: () => {
+    sharedReservedPidUnits = 0;
+    pidCapacityOverrideForTesting = undefined;
+  },
+  getReservedPidUnits: () => sharedReservedPidUnits,
+  setPidCapacity: (snapshot: PidCapacitySnapshot | undefined) => {
+    pidCapacityOverrideForTesting = snapshot;
+  },
+};

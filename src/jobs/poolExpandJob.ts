@@ -52,7 +52,7 @@ import {
   type AreaProductivityState,
 } from "../discovery/areaProductivity.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
-import { getResourceCapacity, getResourceWorkerSlotPool } from "../lib/resourceCapacity.js";
+import { getResourceCapacity, getResourceWorkerSlotPool, trySharedPidAdmission } from "../lib/resourceCapacity.js";
 import { env } from "../config/env.js";
 
 export type PoolExpandFollowUp = {
@@ -706,10 +706,25 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             releaseBrowser();
             return undefined;
           }
+          // P0 — SHARED LIVE PID ADMISSION: third gate, re-checks REAL live
+          // pids.current (shared process-wide with discoveryPlanJob.ts's own
+          // area workers AND with enrichment — see resourceCapacity.ts's
+          // trySharedPidAdmission() doc comment) rather than trusting only
+          // the static resourceWorkerSlotPool capacity measured once at
+          // startup. All three gates are acquired together / released
+          // together (all-or-nothing) so a partial acquire never leaks a
+          // held slot.
+          const sharedPidAdmission = trySharedPidAdmission(env.PIDS_PER_AREA_WORKER, "area_worker");
+          if (!sharedPidAdmission.granted) {
+            releaseResource();
+            releaseBrowser();
+            return undefined;
+          }
           let released = false;
           return () => {
             if (released) return;
             released = true;
+            sharedPidAdmission.release();
             releaseResource();
             releaseBrowser();
           };

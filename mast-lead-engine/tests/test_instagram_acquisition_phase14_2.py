@@ -266,7 +266,7 @@ class TestCanonicalization:
 class TestNoNewCrawling:
     def test_only_contact_page_and_final_url_are_fetched(self):
         fetched_urls = []
-        worker = ContactWorker()
+        worker = ContactWorker(required_channels=())
 
         def _fake_fetch(url: str) -> Tuple[str, str, float]:
             fetched_urls.append(url)

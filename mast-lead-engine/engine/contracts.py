@@ -555,6 +555,13 @@ class ContactIntel:
     secondary_page_fetched: bool = False
     secondary_page_fetch_failed: bool = False
 
+    # Metrics — Secondary Fallback telemetry
+    secondary_fallback_attempted: bool = False
+    secondary_fallback_url: Optional[str] = None
+    secondary_fallback_success: bool = False
+    secondary_fallback_fetch_failed: bool = False
+
+
 
 # ---------------------------------------------------------------------------
 # 5. EnrichedBusiness

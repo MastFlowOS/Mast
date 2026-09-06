@@ -252,7 +252,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Set, Tuple
 from urllib.parse import urljoin
 
 from engine.contracts import ContactIntel, WebsiteIntel
@@ -330,6 +330,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         *,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         worker_id: Optional[str] = None,
+        required_channels: Optional[Sequence[str] | Set[str]] = None,
     ) -> None:
         super().__init__(
             worker_type=WORKER_TYPE,
@@ -337,6 +338,34 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             worker_id=worker_id,
         )
         self._timeout = timeout
+        self._required_channels = (
+            tuple(required_channels) if required_channels is not None else None
+        )
+
+    def _is_requirement_unsatisfied(
+        self,
+        emails: "dict[str, str]",
+        phones: "dict[str, str]",
+        instagram_url: Optional[str],
+    ) -> bool:
+        """Check if any required contact/Instagram channel is still missing.
+
+        If required_channels is specified for this worker instance, only those
+        relevant channels ('email', 'phone', 'instagram') are evaluated.
+        If required_channels is None (default / legacy), all three channels are
+        considered unsatisfied until found, preserving existing semantics.
+        """
+        if self._required_channels is not None:
+            req = set(self._required_channels)
+            if "email" in req and not emails:
+                return True
+            if "phone" in req and not phones:
+                return True
+            if "instagram" in req and instagram_url is None:
+                return True
+            return False
+
+        return not bool(emails) or not bool(phones) or instagram_url is None
 
     # -- WorkerInterface -------------------------------------------------
 
@@ -517,22 +546,27 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                     else:
                         homepage_fetch_failed = True
 
-                # Early Exit: if valid email, valid phone, AND Instagram are all present
-                if bool(emails) and bool(phones) and instagram_url is not None:
+                # Early Exit: if valid email, valid phone, AND Instagram are all present (or required channels satisfied)
+                if not self._is_requirement_unsatisfied(emails, phones, instagram_url):
                     break
         finally:
             if executor is not None:
                 executor.shutdown(wait=True)
 
-        # Phase 15 & 39: Bounded Secondary Page Discovery
+        # Phase 15 & 39 & Secondary-Page Fallback Fix: Bounded Secondary Page Discovery
         secondary_page_fetched = False
         secondary_page_fetch_failed = False
         secondary_page_type: Optional[str] = None
+        secondary_fallback_attempted = False
+        secondary_fallback_url: Optional[str] = None
+        secondary_fallback_success = False
+        secondary_fallback_fetch_failed = False
 
-        if (not emails or not phones or instagram_url is None) and total_fetches < 3:
+        if self._is_requirement_unsatisfied(emails, phones, instagram_url) and total_fetches < 3:
             base_url = item.final_url or item.contact_page or (fetched_htmls[0][1] if fetched_htmls else "")
             sec_url: Optional[str] = None
             sec_type: Optional[str] = None
+            is_fallback = False
 
             if fetched_htmls:
                 sec_url, sec_type = find_secondary_contact_link(
@@ -541,38 +575,65 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                     tried_urls=tried_urls,
                 )
 
-            # Fallback to standard contact candidates if initial fetches failed (403/404)
-            if not sec_url and (not fetched_htmls or contact_page_fetch_failed) and base_url:
+            # Fallback to standard contact candidates if no usable secondary link was found in HTML
+            # even when previously fetched pages succeeded.
+            if not sec_url and base_url:
                 std_cands = get_standard_contact_candidates(base_url, tried_urls)
                 if std_cands:
                     sec_type, sec_url = std_cands[0]
+                    is_fallback = True
 
             if sec_url:
                 tried_urls.add(sec_url.strip())
                 total_fetches += 1
                 secondary_page_fetched = True
                 secondary_page_type = sec_type
+                if is_fallback:
+                    secondary_fallback_attempted = True
+                    secondary_fallback_url = sec_url
                 try:
                     sec_html, sec_page_url, sec_elapsed = self._fetch(sec_url)
                     _process_page_content("secondary_page", sec_html, sec_page_url, sec_elapsed)
+                    if is_fallback:
+                        secondary_fallback_success = True
                 except Exception as exc:
                     secondary_page_fetch_failed = True
+                    if is_fallback:
+                        secondary_fallback_fetch_failed = True
                     if last_exc is None:
                         last_exc = exc
-                    # If secondary page 404s/403s, try alternate standard contact candidate if within budget
-                    if (not emails or not phones or instagram_url is None) and total_fetches < 3 and base_url:
-                        alt_cands = get_standard_contact_candidates(base_url, tried_urls)
-                        if alt_cands:
-                            alt_type, alt_url = alt_cands[0]
-                            tried_urls.add(alt_url.strip())
-                            total_fetches += 1
-                            try:
-                                alt_html, alt_page_url, alt_elapsed = self._fetch(alt_url)
-                                secondary_page_fetch_failed = False
-                                secondary_page_type = alt_type
-                                _process_page_content("secondary_page", alt_html, alt_page_url, alt_elapsed)
-                            except Exception as alt_exc:
-                                last_exc = alt_exc
+
+            # Continue trying untried standard fallback candidates while:
+            # - required information remains unsatisfied
+            # - total_fetches < 3
+            # - untried standard candidates exist
+            while (
+                self._is_requirement_unsatisfied(emails, phones, instagram_url)
+                and total_fetches < 3
+                and base_url
+            ):
+                alt_cands = get_standard_contact_candidates(base_url, tried_urls)
+                if not alt_cands:
+                    break
+                alt_type, alt_url = alt_cands[0]
+                tried_urls.add(alt_url.strip())
+                total_fetches += 1
+                secondary_page_fetched = True
+                secondary_fallback_attempted = True
+                secondary_fallback_url = alt_url
+                try:
+                    alt_html, alt_page_url, alt_elapsed = self._fetch(alt_url)
+                    secondary_page_fetch_failed = False
+                    secondary_page_type = alt_type
+                    secondary_fallback_success = True
+                    secondary_fallback_fetch_failed = False
+                    _process_page_content("secondary_page", alt_html, alt_page_url, alt_elapsed)
+                except Exception as alt_exc:
+                    secondary_page_fetch_failed = True
+                    secondary_fallback_success = False
+                    secondary_fallback_fetch_failed = True
+                    last_exc = alt_exc
+
 
         if not any_page_recovered:
             # Phase 42D-2 correction: every candidate page fetch failed
@@ -614,6 +675,10 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                 contact_page_fetch_failed=contact_page_fetch_failed,
                 homepage_fetch_failed=homepage_fetch_failed,
                 secondary_page_fetch_failed=secondary_page_fetch_failed,
+                secondary_fallback_attempted=secondary_fallback_attempted,
+                secondary_fallback_url=secondary_fallback_url,
+                secondary_fallback_success=secondary_fallback_success,
+                secondary_fallback_fetch_failed=secondary_fallback_fetch_failed,
             )
 
         partial_contact_success = bool(
@@ -656,7 +721,12 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             secondary_page_type=secondary_page_type,
             secondary_page_fetched=secondary_page_fetched,
             secondary_page_fetch_failed=secondary_page_fetch_failed,
+            secondary_fallback_attempted=secondary_fallback_attempted,
+            secondary_fallback_url=secondary_fallback_url,
+            secondary_fallback_success=secondary_fallback_success,
+            secondary_fallback_fetch_failed=secondary_fallback_fetch_failed,
         )
+
 
     def timeout_seconds(self) -> float:
         return self._timeout

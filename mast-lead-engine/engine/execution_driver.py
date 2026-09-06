@@ -1569,7 +1569,8 @@ def build_seven_stage_pipeline(
         ),
         StageBlueprint(
             definition=_definition("contact-v1", "contact"),
-            worker_factory=contact_worker_factory or (lambda: ContactWorker()),
+            worker_factory=contact_worker_factory
+            or (lambda: ContactWorker(required_channels=required_channels)),
             instance_count=_count("contact"),
         ),
         StageBlueprint(
@@ -2143,6 +2144,13 @@ def build_seven_stage_pipeline(
 
         if getattr(intel, "secondary_page_fetch_failed", False):
             _emit("contact", "secondary_page_fetch_failures", intel.pipeline_id)
+
+        if getattr(intel, "secondary_fallback_attempted", False):
+            _emit("contact", "secondary_fallback_attempted", intel.pipeline_id)
+            if getattr(intel, "secondary_fallback_success", False):
+                _emit("contact", "secondary_fallback_success", intel.pipeline_id)
+            elif getattr(intel, "secondary_fallback_fetch_failed", False):
+                _emit("contact", "secondary_fallback_fetch_failed", intel.pipeline_id)
 
         fan_in.record_contact_result(intel.pipeline_id, intel)
         return None

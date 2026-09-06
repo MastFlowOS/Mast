@@ -181,7 +181,9 @@ class TestPhase15ContactAcquisition:
         })
         item = WebsiteIntel(pipeline_id="p10", final_url="https://bakery.com")
         worker.process(item)
-        assert worker._fetch.call_count == 2
+        # 1 homepage + 1 discovered /about (no contact info) + 1 fallback candidate (/contact) = 3 fetches.
+        # Discovered non-contact link /team is NOT fetched (bounded, real discovered link priority preserved).
+        assert worker._fetch.call_count == 3
         fetched_urls = [call.args[0] for call in worker._fetch.call_args_list]
         assert "https://bakery.com" in fetched_urls
         assert "https://bakery.com/about" in fetched_urls
@@ -205,17 +207,18 @@ class TestPhase15ContactAcquisition:
         })
         item = WebsiteIntel(pipeline_id="p13", final_url="https://bakery.com", contact_page="https://bakery.com/contact")
         worker.process(item)
-        assert worker._fetch.call_count == 2
+        # 2 primary pages + 1 fallback candidate (e.g. /contact-us) because contact info is still missing.
+        # Crucially, https://bakery.com/contact was NOT fetched twice.
+        assert worker._fetch.call_count == 3
+        fetched_urls = [call.args[0] for call in worker._fetch.call_args_list]
+        assert fetched_urls.count("https://bakery.com/contact") == 1
 
     def test_14_secondary_page_fetched_when_only_instagram_still_missing(self):
-        # Phase 27, Step 2: Instagram is now also a missing-required-
-        # acquisition-target that can justify the one allowed secondary
-        # page — updated from this test's pre-Phase-27 name/assertion
-        # ("...not_fetched_if_email_and_phone_exist" / call_count == 1),
-        # which asserted the exact stop condition Phase 27, Step 1
-        # deliberately changes. Email+phone are present after the first
-        # page, but Instagram is missing and an "about" link is
-        # available, so the bounded secondary-page fetch now fires.
+        # Phase 27 & Secondary Fallback Fix: Instagram is a missing-required
+        # acquisition target. Email+phone are present after the first page,
+        # but Instagram is missing and an "about" link is available, so the
+        # secondary-page fetch fires. Since /about has no Instagram, the remaining
+        # budget allows trying a standard fallback candidate (/contact) up to 3 total fetches.
         worker = _make_worker_with_pages({
             "https://bakery.com": '<html><body><a href="mailto:hello@bakery.com">Email</a> <a href="tel:+12125550199">Phone</a> <a href="/about">About</a></body></html>',
             "https://bakery.com/about": '<html><body>About us</body></html>',
@@ -225,30 +228,26 @@ class TestPhase15ContactAcquisition:
         assert intel.emails == ("hello@bakery.com",)
         assert intel.phones is not None
         assert intel.instagram_url is None
-        assert worker._fetch.call_count == 2
+        assert worker._fetch.call_count == 3
         assert intel.secondary_page_fetched is True
         assert intel.secondary_page_type == "about"
 
     def test_15_no_early_exit_while_instagram_still_missing(self):
-        # Phase 27, Step 1/3: previously renamed from
-        # "...early_exit_after_valid_email_and_phone" — the old
-        # assertion (call_count == 1) was exactly the bug Step 3
-        # describes: a contact page supplying email+phone stopped the
-        # loop before the homepage (which may carry an Instagram icon)
-        # was ever inspected. Neither page here has Instagram, so both
-        # candidate pages are now fetched (still bounded — the existing
-        # two-page (contact_page, final_url) budget is unchanged) before
-        # falling through to qualification with Instagram missing.
+        # Phase 27 / Secondary Fallback Fix: A contact page supplying email+phone
+        # does not early-exit while Instagram is missing; homepage is fetched,
+        # and if Instagram is still missing and budget remains (<3), the standard
+        # fallback candidate is attempted.
         worker = _make_worker_with_pages({
             "https://bakery.com/contact": '<html><body><a href="mailto:hello@bakery.com">Email</a> <a href="tel:+12125550199">Phone</a></body></html>',
             "https://bakery.com": '<html><body>Homepage</body></html>',
         })
         item = WebsiteIntel(pipeline_id="p15", final_url="https://bakery.com", contact_page="https://bakery.com/contact")
         intel = worker.process(item)
-        assert worker._fetch.call_count == 2
+        assert worker._fetch.call_count == 3
         assert intel.emails == ("hello@bakery.com",)
         assert intel.phones is not None
         assert intel.instagram_url is None
+
 
     def test_16_mailto_percent_decoded_and_params_stripped(self):
         worker = _make_worker_with_pages({
@@ -368,7 +367,9 @@ class TestPhase15ContactAcquisition:
         })
         item = WebsiteIntel(pipeline_id="p25", final_url="https://bakery.com")
         worker.process(item)
-        assert worker._fetch.call_count == 2
+        # 1 homepage + 1 /about + 1 standard fallback candidate (/contact) = 3 fetches.
+        # Crucially, discovered link /about/subpage is NEVER fetched recursively.
+        assert worker._fetch.call_count == 3
         assert "https://bakery.com/about/subpage" not in [c.args[0] for c in worker._fetch.call_args_list]
 
     def test_26_qualification_behavior_preservation(self):
@@ -461,7 +462,7 @@ class TestPhase15ContactAcquisition:
     def test_36_telemetry_fields_populated(self):
         worker = _make_worker_with_pages({
             "https://bakery.com": '<html><body><a href="/about">About</a></body></html>',
-            "https://bakery.com/about": '<html><body><a href="mailto:info@bakery.com">Email</a> Call (212) 555-0199</body></html>',
+            "https://bakery.com/about": '<html><body><a href="mailto:info@bakery.com">Email</a> <a href="https://instagram.com/bakery">IG</a> Call (212) 555-0199</body></html>',
         })
         item = WebsiteIntel(pipeline_id="p36", final_url="https://bakery.com")
         intel = worker.process(item)

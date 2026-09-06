@@ -110,7 +110,7 @@ def test_contact_page_and_homepage_fetch_concurrently(monkeypatch):
 
     monkeypatch.setattr("workers.contact_worker.urllib.request.urlopen", _fake_urlopen)
 
-    worker = ContactWorker()
+    worker = ContactWorker(required_channels=("email",))
     item = _website_intel(
         contact_page="https://kettl.co/contact", final_url="https://kettl.co/"
     )

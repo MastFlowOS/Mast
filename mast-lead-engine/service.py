@@ -858,6 +858,12 @@ async def run_query(
             profiler.incr("phone_missing_after_scan")
         elif stage == "contact" and event == "secondary_page_fetch_failures":
             profiler.incr("secondary_page_fetch_failures")
+        elif stage == "contact" and event == "secondary_fallback_attempted":
+            profiler.incr("secondary_fallback_attempted")
+        elif stage == "contact" and event == "secondary_fallback_success":
+            profiler.incr("secondary_fallback_success")
+        elif stage == "contact" and event == "secondary_fallback_fetch_failed":
+            profiler.incr("secondary_fallback_fetch_failed")
         # Phase 9.1 (audit follow-up) — additive, observational only:
         # which broadened contact-page hint keyword WebsiteWorker's
         # secondary-page match used (contact/help/support/about/press/
@@ -1700,6 +1706,9 @@ async def run_query(
             "phone_acquired": profiler.counter("phone_acquired"),
             "phone_missing_after_scan": profiler.counter("phone_missing_after_scan"),
             "secondary_page_fetch_failures": profiler.counter("secondary_page_fetch_failures"),
+            "secondary_fallback_attempted": profiler.counter("secondary_fallback_attempted"),
+            "secondary_fallback_success": profiler.counter("secondary_fallback_success"),
+            "secondary_fallback_fetch_failed": profiler.counter("secondary_fallback_fetch_failed"),
             "qualified": profiler.counter("qualified"),
             "delivered": profiler.counter("delivered"),
         }

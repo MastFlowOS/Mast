@@ -700,6 +700,15 @@ class Queue:
             self._record.pending_count += 1
             return item
 
+    def re_enqueue(self, item: QueueItem) -> None:
+        """
+        Re-enqueue an existing QueueItem (e.g. after a retryable worker failure).
+        Preserves the item's existing queue_item_id, pipeline_id, and retry bookkeeping.
+        """
+        with self._lock:
+            self._items.append(item)
+            self._record.pending_count += 1
+
     def dequeue(self) -> Optional[QueueItem]:
         """
         Remove and return the QueueItem at the front of this queue

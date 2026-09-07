@@ -534,6 +534,7 @@ class EngineRuntime:
                 registry=registry,
                 allocator=allocator,
                 input_queue=input_queue,
+                item=item,
                 queue_item_id=queue_item_id,
                 pipeline_id=pipeline_id,
                 duration_ms=duration_ms,
@@ -618,7 +619,8 @@ class EngineRuntime:
         registry: Any,
         allocator: Any,
         input_queue: Any,
-        queue_item_id: Optional[str],
+        item: Optional[QueueItem] = None,
+        queue_item_id: Optional[str] = None,
         pipeline_id: Optional[str] = None,
         duration_ms: Optional[float] = None,
         queue_wait_ms: Optional[float] = None,
@@ -633,12 +635,14 @@ class EngineRuntime:
             # this block is skipped entirely and only worker.fail() /
             # release() run, exactly as the general flow does once
             # there is no QueueItem left to retry or dead-letter.
+            input_queue.record_attempt(queue_item_id)
             if input_queue.can_retry(queue_item_id):
-                input_queue.record_attempt(queue_item_id)
+                if item is not None and hasattr(input_queue, "re_enqueue"):
+                    input_queue.re_enqueue(item)
             else:
                 reason = (
                     DeadLetterReason.RETRY_EXHAUSTED
-                    if input_queue.attempt_count(queue_item_id) > 0
+                    if input_queue.attempt_count(queue_item_id) > 1
                     else DeadLetterReason.WORKER_FAILURE
                 )
                 input_queue.dead_letter(queue_item_id, reason=reason, detail=str(exc))

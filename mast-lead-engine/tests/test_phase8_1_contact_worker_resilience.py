@@ -215,8 +215,11 @@ def test_both_pages_fail_existing_failure_behavior_remains(monkeypatch):
     item = _website_intel(
         contact_page="https://kettl.co/contact", final_url="https://kettl.co/"
     )
-    with pytest.raises(urllib.error.URLError):
-        worker.process(item)
+    # Phase 42D-2: when all pages fail to fetch, ContactWorker returns ContactIntel
+    # with fetch failed flags rather than raising, allowing downstream Maps fallback.
+    result = worker.process(item)
+    assert result.contact_page_fetch_failed is True
+    assert result.homepage_fetch_failed is True
 
 
 def test_partial_email_and_phone_evidence_is_preserved(monkeypatch):

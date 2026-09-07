@@ -371,7 +371,7 @@ from workers.scoring_worker import _is_cannabis as _keyword_is_cannabis
 from workers.scoring_worker import _is_chain as _keyword_is_chain
 from workers.storage_worker import StorageWorker
 from opportunity_qualification.niche_relevance import evaluate_niche_relevance
-from utils.parsing import is_valid_email, is_weak_site
+from utils.parsing import is_valid_email, is_weak_site, is_ordering_platform, is_social_platform, clean_ig_url
 
 # -- Batch intelligence chain (Part 3, MAST Lead Engine 2.0 continuation) --
 # The domain-layer subsystems Prioritization/Ranking/Mission Generation/
@@ -1866,6 +1866,40 @@ def build_seven_stage_pipeline(
         """
         _emit("discovery", "candidate_discovered", candidate.pipeline_id)
 
+        # Safely handle social and ordering URLs arriving in candidate.website:
+        # 1) If candidate.website is an Instagram URL and candidate.instagram_url is unset,
+        #    extract/normalize the Instagram handle and populate candidate.instagram_url so social info is preserved.
+        # 2) Do NOT let social networks or 3rd-party ordering platforms masquerade as company websites.
+        if candidate.website:
+            cleaned_site = candidate.website.strip()
+            if is_social_platform(cleaned_site) or is_ordering_platform(cleaned_site):
+                new_ig_url = candidate.instagram_url
+                if ("instagram.com" in cleaned_site.lower() or "instagr.am" in cleaned_site.lower()) and not new_ig_url:
+                    normalized_ig = clean_ig_url(cleaned_site)
+                    if normalized_ig:
+                        new_ig_url = normalized_ig
+                candidate = BusinessCandidate(
+                    pipeline_id=candidate.pipeline_id,
+                    session_id=candidate.session_id,
+                    provider=candidate.provider,
+                    provider_business_id=candidate.provider_business_id,
+                    maps_url=candidate.maps_url,
+                    name=candidate.name,
+                    category=candidate.category,
+                    address=candidate.address,
+                    city=candidate.city,
+                    country=candidate.country,
+                    website=None,
+                    phone=candidate.phone,
+                    rating=candidate.rating,
+                    review_count=candidate.review_count,
+                    coordinates=candidate.coordinates,
+                    discovered_at=candidate.discovered_at,
+                    instagram_url=new_ig_url,
+                    closed=candidate.closed,
+                    requested_niche=candidate.requested_niche,
+                )
+
         decision = _early_dedup_decision(candidate)
         log_early_dedup_decision(decision)
         if decision.is_duplicate:
@@ -2237,6 +2271,28 @@ def build_seven_stage_pipeline(
                 "without it)",
                 result.pipeline_id,
             )
+            # OBSERVABILITY FIX (Phase 1 follow-up) — this branch previously
+            # returned None with no _emit call at all, making the candidate
+            # invisible to both PipelineTracer (§1) and Node's
+            # inFlightCount arithmetic (§3 of the Phase 1 audit): it never
+            # closes out via the normal event stream and is only ever
+            # swept up by cancelOpenCandidates()/sweep_incomplete() at
+            # end-of-run as an indistinguishable generic cancellation.
+            # This emit makes the loss visible and attributable without
+            # changing behavior: the stash/return-None path above is
+            # untouched, this is the same generic terminal emit shape as
+            # the `candidate_rejected` emit below (terminal=True,
+            # dead_lettered=False), just with its own terminal_reason so
+            # it isn't conflated with a business-rule rejection.
+            _emit(
+                "qualification",
+                "candidate_dropped",
+                result.pipeline_id,
+                terminal=True,
+                dead_lettered=False,
+                pipeline_id=result.pipeline_id,
+                terminal_reason="qualification_stash_miss",
+            )
             return None
         effective_niche = (
             getattr(enriched.business, "requested_niche", None)
@@ -2462,8 +2518,16 @@ def build_seven_stage_pipeline(
         """
         Guarantees failed/dead-lettered enrichment branches (website, instagram, contact)
         are reported to FanInRuntime so correlation state is not orphaned forever.
+
+        CRITICAL FIX: Only permanently dead-lettered attempts (outcome.dead_lettered is True)
+        are recorded or pruned. A transient/retryable failure attempt must NEVER prune
+        or record dead-letter in FanInRuntime, which would prematurely terminate the candidate
+        while retries are still pending in the queue!
         """
         if not outcome.ran or outcome.success:
+            return
+        if not outcome.dead_lettered:
+            # Transient/retryable failure attempt — queue will retry; do not prune or close fan-in
             return
         pipeline_id = outcome.pipeline_id
         if not pipeline_id:

@@ -147,6 +147,205 @@ engine_coordinator = EngineCoordinator()
 # run_query's public async-generator signature.
 _last_perf_summary: dict = {}
 
+# P1-A FIX — decouple outcome/progress IPC from the stage execution hot
+# path. Root cause (see the accompanying fix report): `_on_progress()`
+# below used to call `sys.stdout.write()` + `sys.stdout.flush()`
+# synchronously, and it is invoked from inside
+# `ExecutionDriver._execute_one()` (via `on_stage_outcome` ->
+# `_combined_on_stage_outcome` -> `_emit_stage_outcome` -> `_emit` ->
+# `on_progress`), under that method's own `_outcome_lock`.
+# `_run_stage_pass()` calls `future.result()` on every `_execute_one()`
+# future before advancing to the next pass, so stdout/pipe backpressure
+# could gate Future resolution and therefore pass-to-pass throughput —
+# even with real Website/Contact worker concurrency configured (=2).
+#
+# Fix: `_on_progress()` no longer touches stdout itself. It builds the
+# exact same payload dict it always has (and still does all of its
+# profiler.incr()/_mark() bookkeeping inline, synchronously, exactly as
+# before — none of that is IO-bound, so none of it was ever part of the
+# problem) and hands the payload to one dedicated `_ProgressEventWriter`
+# per `run_query()` call, which owns every stdout write for that run on
+# its own background thread. See that class's own docstring for the
+# full ordering / overflow / shutdown / failure-handling design.
+#
+# Nothing in engine/execution_driver.py changes: `_execute_one()`,
+# `_outcome_lock`, `_run_stage_pass()`, stage concurrency, PID/resource
+# admission, and required-channel semantics are all untouched — this is
+# a service.py-only fix, exactly matching "do not redesign the
+# pipeline."
+_PROGRESS_WRITER_QUEUE_MAXSIZE = 4096
+_PROGRESS_WRITER_CRITICAL_ENQUEUE_TIMEOUT_S = 5.0
+_PROGRESS_WRITER_SHUTDOWN_JOIN_TIMEOUT_S = 5.0
+_PROGRESS_WRITER_DROP_LOG_INTERVAL = 200  # log 1 warning per N drops, not per drop
+_PROGRESS_WRITER_STOP = object()  # sentinel; distinct from the pre-existing _SENTINEL below
+
+
+class _ProgressEventWriter:
+    """
+    Dedicated single-writer thread that owns every `"type":"progress"`
+    stdout write for one `run_query()` call (see the module-level
+    comment above for why this exists). `_on_progress()` calls
+    `enqueue()` instead of writing to stdout itself; `enqueue()`
+    returns immediately in the overwhelmingly common case.
+
+    Ordering
+    --------
+    One `queue.Queue`, one drainer thread: events are written in the
+    exact order `enqueue()` was called, across every calling thread.
+    This matches pre-fix behavior — each `_on_progress()` call fully
+    completed its own write+flush before returning, so two events
+    could never interleave mid-line, and the relative order between
+    two DIFFERENT calling threads (e.g. a concurrent Website worker vs.
+    the heartbeat ticker) was already whatever order they happened to
+    call `_on_progress` in, same as `queue.Queue.put`/`get` preserves
+    now. `ExecutionDriver._outcome_lock` still serializes
+    `on_stage_outcome`/`on_stage_wallclock` calls for concurrent
+    `_execute_one()` invocations of the same stage (unchanged, in
+    execution_driver.py), so outcome-event ordering within a stage is
+    exactly as deterministic as it was before this fix.
+
+    Overflow behavior (bounded queue)
+    ----------------------------------
+    The queue is bounded (`maxsize=4096` — generous relative to any
+    realistic per-run in-flight event count, so this path is not
+    expected to trigger under normal load). Two enqueue paths,
+    matching the fix's "distinguish telemetry-only from
+    correctness-critical" requirement:
+
+    * Telemetry-only events (ordinary non-terminal stage_completed/
+      stage_failed, heartbeats, discovery round/panel telemetry,
+      contact/instagram sub-event counters, site_class_* labels —
+      i.e. anything with `terminal=False`): `put_nowait()`. On
+      `queue.Full`, the event is dropped and a counter incremented; a
+      warning logs every `_PROGRESS_WRITER_DROP_LOG_INTERVAL` drops
+      (not per-drop, so sustained overflow can't itself become a new
+      source of IO-bound backpressure via the logger). Safe because
+      overflow only happens while a lot of OTHER traffic is already
+      flowing through this same queue — the Node bridge's watchdog
+      inactivity timer and `progressMarks` (first-occurrence only;
+      see pythonBridge.ts ~L1018-1053) are already being fed by
+      whichever events DID get through.
+
+    * Correctness-critical events (`terminal=True` — the single
+      candidate-terminal resolution per `pipeline_id`; see
+      `_stage_outcome_terminality()` in engine/execution_driver.py):
+      NEVER silently dropped. `enqueue()` first tries `put_nowait()`;
+      on `queue.Full` it retries with a bounded blocking
+      `put(timeout=5.0)` to absorb a transient writer stall. If still
+      full after that, it falls back to writing this one event
+      directly/synchronously on the calling thread — the same thing
+      `_on_progress` always did pre-fix — logged as a degraded-mode
+      fallback. This trades away this fix's throughput benefit for
+      exactly one event, in an already-pathological situation, rather
+      than ever losing a terminal event or blocking indefinitely (the
+      5s timeout bounds the wait; this is never an untimed `put()`).
+
+    Shutdown
+    --------
+    `stop()` enqueues a sentinel after every real event already
+    enqueued (FIFO, so nothing queued ahead of it is skipped) and
+    joins the drainer thread with a bounded timeout — every event
+    queued before `stop()` was called is written before `stop()`
+    returns, unless the drainer thread had already died (see below).
+
+    Writer failure
+    ---------------
+    The drainer wraps each item's write in its own try/except:
+    `BrokenPipeError`/`IOError`/`OSError` are swallowed exactly as
+    `_on_progress` always swallowed them (a gone consumer is not this
+    process's problem); any other unexpected exception is logged once
+    and the loop continues with the next item, so one bad event can't
+    silently kill the whole drainer (which would otherwise turn every
+    later `enqueue()` into the 5s-timeout-then-direct-write fallback
+    for critical events, and pure drops for telemetry ones). This
+    degrades gracefully — never a deadlock, never a silently lost
+    terminal event.
+    """
+
+    def __init__(self, *, maxsize: int = _PROGRESS_WRITER_QUEUE_MAXSIZE) -> None:
+        self._queue: "thread_queue.Queue" = thread_queue.Queue(maxsize=maxsize)
+        self._dropped_telemetry = 0
+        self._drop_count_lock = threading.Lock()  # guards _dropped_telemetry only
+        self._thread = threading.Thread(
+            target=self._run, name="progress-event-writer", daemon=True,
+        )
+        self._thread.start()
+
+    @staticmethod
+    def _write_now(payload: dict) -> None:
+        try:
+            sys.stdout.write(json.dumps(payload, default=str) + "\n")
+            sys.stdout.flush()
+        except (BrokenPipeError, IOError, OSError):
+            pass
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is _PROGRESS_WRITER_STOP:
+                return
+            try:
+                self._write_now(item)
+            except Exception:
+                log.debug(
+                    "progress-event-writer: unexpected error writing one "
+                    "queued event -- dropping just this event, drainer "
+                    "thread continues", exc_info=True,
+                )
+
+    def enqueue(self, payload: dict, *, critical: bool) -> None:
+        try:
+            self._queue.put_nowait(payload)
+            return
+        except thread_queue.Full:
+            pass
+        if not critical:
+            with self._drop_count_lock:
+                self._dropped_telemetry += 1
+                dropped = self._dropped_telemetry
+            if dropped % _PROGRESS_WRITER_DROP_LOG_INTERVAL == 1:
+                log.warning(
+                    "progress-event-writer: queue full, dropped %d "
+                    "telemetry-only progress event(s) so far this run "
+                    "(correctness-critical/terminal events are never "
+                    "dropped)", dropped,
+                )
+            return
+        # Correctness-critical (terminal=True): give the writer a short
+        # window to catch up before falling back to a direct write.
+        try:
+            self._queue.put(payload, timeout=_PROGRESS_WRITER_CRITICAL_ENQUEUE_TIMEOUT_S)
+            return
+        except thread_queue.Full:
+            log.warning(
+                "progress-event-writer: queue still full after %.1fs for "
+                "a correctness-critical (terminal) event -- writing it "
+                "directly/synchronously as a last-resort fallback rather "
+                "than dropping it or blocking indefinitely",
+                _PROGRESS_WRITER_CRITICAL_ENQUEUE_TIMEOUT_S,
+            )
+            self._write_now(payload)
+
+    def stop(self, *, timeout: float = _PROGRESS_WRITER_SHUTDOWN_JOIN_TIMEOUT_S) -> None:
+        try:
+            self._queue.put(_PROGRESS_WRITER_STOP, timeout=timeout)
+        except thread_queue.Full:
+            log.warning(
+                "progress-event-writer: could not enqueue shutdown "
+                "sentinel within %.1fs (queue still full) -- joining the "
+                "drainer thread anyway; any events still queued behind "
+                "it will not be written before process exit", timeout,
+            )
+        self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            log.warning(
+                "progress-event-writer: drainer thread did not stop "
+                "within %.1fs -- leaving it running as a daemon thread "
+                "(process exit will reap it; no worker thread is "
+                "blocked on this)", timeout,
+            )
+
+
 _SENTINEL = object()
 
 # LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
@@ -740,6 +939,12 @@ async def run_query(
         if name not in _latency_marks:
             _latency_marks[name] = time.perf_counter() - _request_started_ts
 
+    # P1-A FIX: one dedicated stdout-writer thread for this run_query()
+    # call's entire `"type":"progress"` protocol -- see
+    # `_ProgressEventWriter`'s own docstring above. `_on_progress()`
+    # below enqueues onto this instead of writing to stdout itself.
+    _progress_writer = _ProgressEventWriter()
+
     def _on_progress(
         stage: str,
         event: str,
@@ -762,26 +967,33 @@ async def run_query(
         # sys.stdout redirection (that only happens for the separate
         # `enrich`/`score`/... JSON-CLI modes — see the top of this
         # file — never for this, the default search/production mode).
-        try:
-            sys.stdout.write(json.dumps({
-                "type": "progress",
-                "session_id": session_id,
-                "stage": stage,
-                "event": event,
-                "item_id": item_id,
-                # PHASE 5B-2 — additive lifecycle-accounting fields. A Node
-                # bridge/consumer built against the pre-5B-2 protocol simply
-                # never reads these keys; nothing about the pre-existing
-                # "type"/"stage"/"event"/"item_id" fields changed.
-                "pipeline_id": pipeline_id,
-                "terminal": terminal,
-                "dead_lettered": dead_lettered,
-                "terminal_reason": terminal_reason,
-                "timestamp": time.time(),
-            }, default=str) + "\n")
-            sys.stdout.flush()
-        except (BrokenPipeError, IOError, OSError):
-            pass
+        # P1-A FIX: this used to be a synchronous `sys.stdout.write()` +
+        # `sys.stdout.flush()` right here -- see the module-level
+        # `_ProgressEventWriter` docstring for why that was gating
+        # `ExecutionDriver._execute_one()` Future resolution and
+        # therefore pass-to-pass throughput. The payload contents and
+        # shape are byte-for-byte unchanged; only the delivery
+        # mechanism (enqueue-and-return vs. write-and-flush-inline) is
+        # different. `critical=terminal` is what lets the writer never
+        # silently drop the one candidate-terminal event per
+        # pipeline_id even under queue backpressure -- see that
+        # docstring's "Overflow behavior" section.
+        _progress_writer.enqueue({
+            "type": "progress",
+            "session_id": session_id,
+            "stage": stage,
+            "event": event,
+            "item_id": item_id,
+            # PHASE 5B-2 — additive lifecycle-accounting fields. A Node
+            # bridge/consumer built against the pre-5B-2 protocol simply
+            # never reads these keys; nothing about the pre-existing
+            # "type"/"stage"/"event"/"item_id" fields changed.
+            "pipeline_id": pipeline_id,
+            "terminal": terminal,
+            "dead_lettered": dead_lettered,
+            "terminal_reason": terminal_reason,
+            "timestamp": time.time(),
+        }, critical=terminal)
 
         if stage == "discovery" and event == "candidate_discovered":
             _mark("first_candidate_discovered")
@@ -1476,6 +1688,14 @@ async def run_query(
                 tracer.sweep_incomplete("run_ended_before_business_finished (cancelled/aborted)")
     finally:
         log.info("[run_query] entering outer cleanup (store close, profiler report)")
+        # P1-A FIX: flush/stop the dedicated progress-event writer before
+        # anything else in this cleanup block. By this point `driver.stop()`
+        # (nested finally above, production path) and `hb_task.cancel()`
+        # have already run, so no further `_on_progress()` calls are
+        # expected -- `stop()` drains whatever is still queued (FIFO, so
+        # nothing enqueued before it is skipped) and joins the drainer
+        # thread with a bounded timeout, never hanging this cleanup.
+        _progress_writer.stop()
         store.close()
         if session_id is not None:
             try:

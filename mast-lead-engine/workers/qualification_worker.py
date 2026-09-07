@@ -192,41 +192,18 @@ class QualificationWorker(BaseWorker[EnrichedBusiness, QualificationResult]):
         rejected = False
 
         if self._required_channels is not None:
-            # Dynamic Channel Rules
-            for ch in self._required_channels:
-                if ch == "website":
-                    has_website = bool(business and business.website) and (
-                        website_intel is None or website_intel.website_reachable is not False
-                    )
-                    if not has_website:
-                        reasons.append("missing required channel: website")
-                        rejected = True
-                        break
-                elif ch == "phone":
-                    has_phone = bool(
-                        (business and business.phone)
-                        or (contact_intel and contact_intel.phones)
-                    )
-                    if not has_phone:
-                        reasons.append("missing required channel: phone")
-                        rejected = True
-                        break
-                elif ch == "email":
-                    has_email = bool(contact_intel and contact_intel.emails)
-                    if not has_email:
-                        reasons.append("missing required channel: email")
-                        rejected = True
-                        break
-                elif ch == "instagram":
-                    has_ig = bool(
-                        (business and getattr(business, "instagram_url", None))
-                        or (instagram_intel and instagram_intel.profile_reachable is True)
-                        or (contact_intel and getattr(contact_intel, "instagram_url", None))
-                    )
-                    if not has_ig:
-                        reasons.append("missing required channel: instagram")
-                        rejected = True
-                        break
+            # Dynamic Channel Rules via authoritative evaluator
+            from engine.prune_reason_taxonomy import evaluate_required_channels
+            satisfied, missing_reasons = evaluate_required_channels(
+                required_channels=self._required_channels,
+                business=business,
+                website_intel=website_intel,
+                instagram_intel=instagram_intel,
+                contact_intel=contact_intel,
+            )
+            if not satisfied:
+                reasons.extend(missing_reasons)
+                rejected = True
         else:
             # Default / Legacy Rules (when no required_channels specified)
             # Rule 1 — no website at all.

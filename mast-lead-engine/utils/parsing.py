@@ -606,6 +606,17 @@ def is_ordering_platform(url: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in _ORDERING)
 
 
+def is_social_platform(url: str) -> bool:
+    """Return True if URL belongs to a social network or link-in-bio platform."""
+    _SOCIAL = frozenset({
+        "instagram.com", "instagr.am", "facebook.com", "fb.com", "fb.me",
+        "twitter.com", "x.com", "tiktok.com", "linkedin.com", "linktr.ee",
+        "linktree.com", "youtube.com", "pinterest.com",
+    })
+    host = domain_of(url)
+    return any(host == d or host.endswith("." + d) for d in _SOCIAL)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Instagram URL helpers
 # ──────────────────────────────────────────────────────────────────────────────

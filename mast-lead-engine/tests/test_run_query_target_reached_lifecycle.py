@@ -477,6 +477,7 @@ class TestConsumerStoppedShutdownSemantics:
                     time.sleep(0.01)
                 service._shutdown_event.set()
 
+            service._shutdown_event.clear()
             threading.Thread(target=_stop_after_5, daemon=True).start()
             await service._main_cli()
 

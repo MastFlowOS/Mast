@@ -115,6 +115,7 @@ from __future__ import annotations
 
 import re
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -122,7 +123,7 @@ from typing import List, Optional
 from urllib.parse import urljoin, urlparse
 
 from engine.contracts import BusinessCandidate, WebsiteIntel
-from utils.parsing import strip_control_characters
+from utils.parsing import is_ordering_platform, is_social_platform, strip_control_characters
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
 
@@ -222,7 +223,7 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
         translated into fields versus left to propagate.
         """
         raw_website = strip_control_characters((item.website or "").strip())
-        if not raw_website:
+        if not raw_website or is_social_platform(raw_website) or is_ordering_platform(raw_website):
             return WebsiteIntel(pipeline_id=item.pipeline_id, website_reachable=False)
 
         if not re.match(r"^https?://", raw_website, re.IGNORECASE):
@@ -264,10 +265,27 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
                 response_time=elapsed,
                 crawl_duration=elapsed,
             )
-        except (urllib.error.URLError, socket.timeout, ConnectionError, ValueError):
-            if fallback_http_url:
+        except (urllib.error.URLError, socket.timeout, ConnectionError, ValueError) as exc:
+            # Check if this failure qualifies for HTTP fallback:
+            # 1) If URL had no scheme, fallback_http_url was set unconditionally.
+            # 2) If target was an explicit HTTPS URL, fall back to HTTP ONLY for TLS/certificate verification errors.
+            effective_fallback_url = fallback_http_url
+            if not effective_fallback_url and target_url.startswith("https://"):
+                is_tls_error = False
+                if isinstance(exc, urllib.error.URLError) and getattr(exc, "reason", None) is not None:
+                    reason = exc.reason
+                    if isinstance(reason, ssl.SSLError):
+                        is_tls_error = True
+                    else:
+                        reason_str = str(reason).lower()
+                        if "certificate" in reason_str or "ssl" in reason_str or "tls" in reason_str:
+                            is_tls_error = True
+                if is_tls_error:
+                    effective_fallback_url = "http://" + target_url[len("https://"):]
+
+            if effective_fallback_url:
                 try:
-                    fallback_req = urllib.request.Request(fallback_http_url, headers=headers)
+                    fallback_req = urllib.request.Request(effective_fallback_url, headers=headers)
                     with opener.open(fallback_req, timeout=self._timeout) as response:
                         elapsed = time.monotonic() - start
                         final_url = response.geturl()
@@ -280,7 +298,7 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
                         pipeline_id=item.pipeline_id,
                         website_reachable=True,
                         https=False,
-                        final_url=exc.url or fallback_http_url,
+                        final_url=exc.url or effective_fallback_url,
                         http_status=exc.code,
                         redirect_chain=tuple(redirect_tracker.chain) or None,
                         response_time=elapsed,

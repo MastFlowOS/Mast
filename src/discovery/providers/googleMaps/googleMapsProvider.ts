@@ -44,7 +44,10 @@ export class GoogleMapsProvider implements DiscoveryProvider {
         country: target.countryCode,
         region: target.region,
         niche: target.niche,
-        area: target.area,
+        // The engine's geographic field is also used by its OSM-side
+        // scoping. Prefer the narrower street when one was atomically
+        // claimed; Maps itself receives the street in queryString.
+        area: target.street ?? target.area,
         max_results: options.maxResults,
         discovery_only: options.discoveryOnly,
         require_viability: false,
@@ -52,7 +55,7 @@ export class GoogleMapsProvider implements DiscoveryProvider {
       },
       signal,
       onDone,
-      { requestId: options.requestId, areaLabel: target.area },
+      { requestId: options.requestId, areaLabel: target.street ?? target.area },
     );
   }
 }

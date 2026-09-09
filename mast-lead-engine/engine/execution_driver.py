@@ -1411,6 +1411,15 @@ def build_seven_stage_pipeline(
     early_dedup_checker: Optional[PersistentEarlyDedupChecker] = None,
     scrape_job_id: Optional[str] = None,
     required_channels: Optional[Tuple[str, ...] | list[str]] = None,
+    # Phase 1A — the real requesting user_id for live discovery, threaded
+    # through purely so the early dedup decision below can be user-scoped
+    # (checker.is_duplicate(..., user_id=...)) instead of the pre-Phase-1A
+    # global-businesses-only check. Optional and defaults to None so every
+    # existing caller (pool-building, tests) keeps its exact prior global
+    # behavior with zero changes required on their part — see
+    # storage/early_persistent_dedup.py's module docstring, "User-scoped
+    # ownership (Phase 1A)".
+    requesting_user_id: Optional[str] = None,
 ) -> "tuple[List[StageConfig], PipelineQueueIds, FanInRuntime, Callable[[StageOutcome], None]]":
     """
     Composition root wiring every already-implemented worker
@@ -1781,7 +1790,15 @@ def build_seven_stage_pipeline(
             phone=candidate.phone,
         )
         checked = early_dedup_checker is not None and bool(keys)
-        is_dup = checked and early_dedup_checker.is_duplicate(keys)
+        # Phase 1A: pass the real requesting user_id (closure var, from
+        # build_seven_stage_pipeline's own `requesting_user_id` param)
+        # through to the checker so it can distinguish "exists globally"
+        # from "this user already owns it" — see
+        # storage/early_persistent_dedup.py::is_duplicate. None here
+        # preserves the exact prior global-only behavior unchanged.
+        is_dup = checked and early_dedup_checker.is_duplicate(
+            keys, user_id=requesting_user_id
+        )
         return EarlyDedupDecision(
             pipeline_id=candidate.pipeline_id,
             session_id=candidate.session_id,
@@ -1790,6 +1807,7 @@ def build_seven_stage_pipeline(
             fingerprint_keys=tuple(sorted(keys)),
             is_duplicate=is_dup,
             checked=checked,
+            user_id=requesting_user_id,
         )
 
     def _log_discovery_early_prune(

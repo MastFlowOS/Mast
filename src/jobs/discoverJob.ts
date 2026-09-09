@@ -206,6 +206,11 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
             max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
             required_channels: payload.channels,
             db_path: `data/leads-${payload.userId}.db`,
+            // PHASE 1A: real requesting user, for user-scoped early dedup
+            // ownership on the Python side (see pythonBridge.ts's
+            // EngineQueryParams.user_id doc comment). Live discovery
+            // always has a real user — this is not the pool-building path.
+            user_id: payload.userId,
           },
           abortController.signal,
           (info) => {

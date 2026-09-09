@@ -29,8 +29,8 @@ import type { SearchGenerator, SearchQuery, SearchTarget } from "../../searchGen
 export class GoogleMapsSearchGenerator implements SearchGenerator {
   readonly providerId = "google_maps";
 
-  generate({ niche, city, countryCode, area }: SearchTarget): SearchQuery[] {
-    const location = area ? `in ${area}, ${city}` : city;
+  generate({ niche, city, countryCode, area, street }: SearchTarget): SearchQuery[] {
+    const location = street ? `on ${street}, ${city}` : area ? `in ${area}, ${city}` : city;
     return splitNicheQuery(niche).map((n) => ({
       queryString: `${n} ${location}`,
       providerParams: { country: countryCode },

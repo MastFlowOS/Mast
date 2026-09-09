@@ -30,6 +30,11 @@ export type SearchTarget = {
    * generating the exact same query they always have.
    */
   area?: string;
+  /**
+   * A claimed inventory street. Providers that support street-qualified
+   * search use this ahead of the broader optional area qualifier.
+   */
+  street?: string;
 };
 
 export type SearchQuery = {

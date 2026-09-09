@@ -18,6 +18,7 @@ import test from "node:test";
 
 import { selectAreaFromStats, hasCuratedAreas, DEFAULT_AREA_COOLDOWN_MS, type AreaStat } from "../areaRotation.js";
 import { GoogleMapsSearchGenerator } from "../providers/googleMaps/googleMapsSearchGenerator.js";
+import { discoveryModeForStreetInventory } from "../streetDiscovery.js";
 import { getAreasForCity } from "../../lib/geo/cityAreas.js";
 
 const NOW = Date.parse("2026-08-12T12:00:00.000Z");
@@ -118,4 +119,23 @@ test("H: a city with no claimed area produces the exact same query as before thi
     region: "North America",
   });
   assert.equal(query.queryString, "Coffee Shop New York");
+});
+
+test("H: a claimed street is scoped ahead of the broader area qualifier", () => {
+  const generator = new GoogleMapsSearchGenerator();
+  const [query] = generator.generate({
+    niche: "Coffee Shop",
+    city: "Queens",
+    countryCode: "US",
+    region: "New York",
+    area: "Long Island City",
+    street: "Jackson Ave",
+  });
+  assert.equal(query.queryString, "Coffee Shop on Jackson Ave, Queens");
+});
+
+test("Phase 3: a city uses street mode only when Google Maps has inventory", () => {
+  assert.equal(discoveryModeForStreetInventory("google_maps", 1), "street");
+  assert.equal(discoveryModeForStreetInventory("google_maps", 0), "area");
+  assert.equal(discoveryModeForStreetInventory("other_provider", 5), "area");
 });

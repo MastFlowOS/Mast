@@ -97,22 +97,42 @@ class InMemoryStorageBackend:
 
 class FakeEarlyDedupChecker:
     """Test double for storage.early_persistent_dedup.PersistentEarlyDedupChecker.
-    Same `is_duplicate(fingerprint_keys) -> bool` contract, backed by an
-    in-memory set instead of a real Supabase lookup. Records every call so
-    tests can assert whether (and how often) a lookup was even attempted —
-    e.g. Test C asserts it's never called for a candidate with no usable
-    early identity."""
+    Same `is_duplicate(fingerprint_keys, *, user_id=None) -> bool` contract
+    (Phase 1A added the keyword-only `user_id`), backed by in-memory state
+    instead of a real Supabase lookup. Records every call (keys + user_id)
+    so tests can assert whether (and how, and for whom) a lookup was even
+    attempted — e.g. Test C asserts it's never called for a candidate with
+    no usable early identity.
 
-    def __init__(self, duplicate_keys: Iterable[str] = ()) -> None:
-        self.duplicate_keys = set(duplicate_keys)
-        self.calls: List[set] = []
+    Phase 1A ownership model: `owned_by` maps a fingerprint key to the set
+    of user_ids that own a business matching that key (mirrors the real
+    `leads(user_id, business_id)` semantics). `global_duplicate_keys` is
+    the pre-Phase-1A "exists globally, no matter who owns it" set, used
+    only when `user_id` is None — exactly like
+    `PersistentEarlyDedupChecker._is_duplicate_global`.
+    """
+
+    def __init__(
+        self,
+        duplicate_keys: Iterable[str] = (),
+        *,
+        owned_by: Optional[dict] = None,
+    ) -> None:
+        self.global_duplicate_keys = set(duplicate_keys)
+        self.owned_by: dict = {k: set(v) for k, v in (owned_by or {}).items()}
+        self.calls: List[tuple] = []
         self._lock = threading.Lock()
 
-    def is_duplicate(self, fingerprint_keys) -> bool:
+    def is_duplicate(self, fingerprint_keys, *, user_id: Optional[str] = None) -> bool:
         keys = set(fingerprint_keys)
         with self._lock:
-            self.calls.append(keys)
-        return bool(keys & self.duplicate_keys)
+            self.calls.append((keys, user_id))
+        if user_id:
+            owning_users: set = set()
+            for k in keys:
+                owning_users |= self.owned_by.get(k, set())
+            return user_id in owning_users
+        return bool(keys & self.global_duplicate_keys)
 
 
 def _counting(counter: List[str]):
@@ -187,6 +207,7 @@ def _run(
     candidates: List[BusinessCandidate],
     *,
     checker=None,
+    requesting_user_id: Optional[str] = None,
     timeout_s: float = 5.0,
     poll_s: float = 0.01,
 ):
@@ -224,6 +245,7 @@ def _run(
         contact_worker_factory=lambda: CountingContactWorker(contact_calls),
         early_dedup_checker=checker,
         scrape_job_id="test-scrape-job",
+        requesting_user_id=requesting_user_id,
     )
     engine_runtime = coordinator.get_engine_runtime(session_id)
     driver = ExecutionDriver(
@@ -423,3 +445,114 @@ def test_f_early_duplicates_never_reach_storage_so_never_overshoot():
     assert stored_ids == {"pid-f-new-1", "pid-f-new-2"}
     assert "pid-f-dup-1" not in result["website_calls"]
     assert "pid-f-dup-2" not in result["website_calls"]
+
+
+# ---------------------------------------------------------------------------
+# PHASE 1A — user-scoped early dedup ownership
+#
+# Product invariant (see Phase 1A task): `businesses` is a GLOBAL
+# identity/enrichment pool; `leads(user_id, business_id)` is the PER-USER
+# ownership table. A business existing globally must never, by itself,
+# early-reject it for a user who doesn't yet own it.
+# ---------------------------------------------------------------------------
+
+
+def test_g_same_user_same_business_is_duplicate():
+    """Requirement 1: same user + same business -> duplicate."""
+    keys = early_fingerprint_keys(maps_url=MAPS_URL_WITH_PLACE, website=None, phone=None)
+    checker = FakeEarlyDedupChecker(owned_by={k: {"user-a"} for k in keys})
+    cand = _candidate("pid-g", "s7", maps_url=MAPS_URL_WITH_PLACE)
+
+    result = _run([cand], checker=checker, requesting_user_id="user-a")
+
+    assert result["website_calls"] == [], "owning user's repeat discovery must be rejected before enrichment"
+    assert result["backend"].stored == []
+    assert len(checker.calls) == 1 and checker.calls[0][1] == "user-a"
+
+
+def test_h_different_user_same_business_is_not_duplicate():
+    """Requirement 2: different user + same business -> NOT duplicate.
+
+    This is the exact regression Phase 1A fixes: User A already owns the
+    business (so `businesses` has a matching row AND a `leads` row for
+    user-a), but User B discovering the same business must NOT be
+    early-rejected.
+    """
+    keys = early_fingerprint_keys(maps_url=MAPS_URL_WITH_PLACE, website=None, phone=None)
+    checker = FakeEarlyDedupChecker(owned_by={k: {"user-a"} for k in keys})
+    cand = _candidate("pid-h", "s8", maps_url=MAPS_URL_WITH_PLACE)
+
+    result = _run([cand], checker=checker, requesting_user_id="user-b")
+
+    assert result["website_calls"] == ["pid-h"], "a non-owning user must still reach enrichment"
+    assert len(result["backend"].stored) == 1
+    assert len(checker.calls) == 1 and checker.calls[0][1] == "user-b"
+
+
+def test_i_global_exists_but_requesting_user_does_not_own_it_is_not_duplicate():
+    """Requirement 3: business exists globally but requesting user does not
+    own it -> NOT duplicate. Same scenario as Test H, phrased from the
+    "global existence must not leak into user-scoped rejection" angle:
+    the SAME key set is a known GLOBAL duplicate (would reject under the
+    pre-Phase-1A / no-user_id path — see Test A) but must NOT reject once
+    a real, non-owning user_id is supplied.
+    """
+    keys = early_fingerprint_keys(maps_url=MAPS_URL_WITH_PLACE, website=None, phone=None)
+    checker = FakeEarlyDedupChecker(duplicate_keys=keys, owned_by={})  # globally known, owned by no one
+    cand = _candidate("pid-i", "s9", maps_url=MAPS_URL_WITH_PLACE)
+
+    result = _run([cand], checker=checker, requesting_user_id="user-c")
+
+    assert result["website_calls"] == ["pid-i"], "global existence alone must never early-reject a specific user"
+    assert len(result["backend"].stored) == 1
+
+
+def test_j_no_user_id_preserves_existing_global_fingerprint_behavior():
+    """Requirement 4: no user_id / pool-building path -> preserve existing
+    global fingerprint behavior, unchanged. Exercises `requesting_user_id`
+    left at its default (None) — exactly how poolExpandJob.ts's callers
+    reach this pipeline (see execution_driver.py / service.py comments) —
+    against a checker configured with the SAME globally-known key set as
+    Test I, but this time expecting the pre-Phase-1A global reject.
+    """
+    keys = early_fingerprint_keys(maps_url=MAPS_URL_WITH_PLACE, website=None, phone=None)
+    checker = FakeEarlyDedupChecker(duplicate_keys=keys)
+    cand = _candidate("pid-j", "s10", maps_url=MAPS_URL_WITH_PLACE)
+
+    result = _run([cand], checker=checker)  # requesting_user_id defaults to None
+
+    assert result["website_calls"] == [], "pool-building path must keep rejecting on global existence"
+    assert result["backend"].stored == []
+    assert len(checker.calls) == 1 and checker.calls[0][1] is None
+
+
+def test_k_early_lookup_failure_preserves_fail_open_semantics():
+    """Requirement 5: early lookup failure -> preserve fail-open semantics,
+    in BOTH the global (`_is_duplicate_global`) and user-scoped
+    (`_is_duplicate_for_user`) code paths. Exercises the REAL
+    `PersistentEarlyDedupChecker` (not the fake), with `urllib.request.
+    urlopen` monkeypatched to raise -- the exact exception classes
+    `is_duplicate()` catches -- so both branches are proven to return
+    False (never raise) rather than a re-implementation.
+    """
+    import urllib.error
+
+    from storage.early_persistent_dedup import PersistentEarlyDedupChecker
+
+    checker = PersistentEarlyDedupChecker(
+        supabase_url="https://example.invalid", supabase_key="test-key"
+    )
+
+    def _boom(*args, **kwargs):
+        raise urllib.error.URLError("simulated network failure")
+
+    import storage.early_persistent_dedup as mod
+
+    original_urlopen = mod.urllib.request.urlopen
+    mod.urllib.request.urlopen = _boom
+    try:
+        keys = {"place:doesnotmatter"}
+        assert checker.is_duplicate(keys) is False, "global path must fail open"
+        assert checker.is_duplicate(keys, user_id="user-x") is False, "user-scoped path must fail open"
+    finally:
+        mod.urllib.request.urlopen = original_urlopen

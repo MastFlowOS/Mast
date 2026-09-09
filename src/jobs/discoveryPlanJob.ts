@@ -16,6 +16,15 @@ import { cityTransitionFor } from "../discovery/cityScheduling.js";
 import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
+import {
+  claimDiscoveryStreet,
+  completeDiscoveryStreetClaim,
+  heartbeatDiscoveryStreetClaim,
+  discoveryModeForStreetInventory,
+  streetInventoryCount,
+  type StreetClaim,
+  type StreetScope,
+} from "../discovery/streetDiscovery.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
 import { getResourceCapacity, getResourceWorkerSlotPool, trySharedPidAdmission, acquireSharedPidAdmissionBlocking } from "../lib/resourceCapacity.js";
 import {
@@ -65,6 +74,7 @@ const CONCURRENCY_RECHECK_DELAY_SECONDS = 5;
  */
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const REQUEST_TERMINAL_POLL_MS = 500;
+const STREET_HEARTBEAT_INTERVAL_MS = 60_000;
 
 // PROCESS REGISTRY EXPLOSION FIX (log-volume half): the per-candidate
 // pipeline trace below (PIPELINE/DISCOVERED/EXITED HERE/reason=/etc, ~10-15
@@ -223,6 +233,7 @@ async function runOneAreaAttempt(
     startedAt: number;
   },
   area: string | undefined,
+  street?: string,
 ): Promise<AreaAttemptResult> {
   const { db, task, payload, profiler, provider, generator, requestAbort, observeTerminalPlan, startedAt } = ctx;
 
@@ -243,6 +254,7 @@ async function runOneAreaAttempt(
     countryCode: task.country_code,
     region: payload.request.region,
     area,
+    street,
   };
   const searchQueries = generator.generate(searchTarget);
   const pythonTimer = profiler.timer("python_subprocess_total");
@@ -480,6 +492,62 @@ async function runOneAreaAttempt(
   return { discovered, accepted, rejected, duplicates, exhausted, cityReason, terminalReason, shouldRetryTask, pythonPerfData, bridgeTimings, progressMarks, engineTerminationReason };
 }
 
+/** Atomically reserves the same browser/resource/PID capacity gates used by area workers. */
+function acquireDiscoveryWorkerSlots(browserSlotPool: ReturnType<typeof getBrowserSlotPool>): (() => void) | undefined {
+  const releaseBrowser = browserSlotPool.tryAcquire();
+  if (!releaseBrowser) return undefined;
+  const releaseResource = getResourceWorkerSlotPool().tryAcquire();
+  if (!releaseResource) {
+    releaseBrowser();
+    return undefined;
+  }
+  const sharedPidAdmission = trySharedPidAdmission(env.PIDS_PER_AREA_WORKER, "area_worker");
+  if (!sharedPidAdmission.granted) {
+    releaseResource();
+    releaseBrowser();
+    return undefined;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    sharedPidAdmission.release();
+    releaseResource();
+    releaseBrowser();
+  };
+}
+
+/** Street-mode logging translates the generic pool event back to street identity. */
+function logStreetPoolEvent(
+  payload: DiscoveryTaskPayload,
+  task: any,
+  claims: ReadonlyMap<string, StreetClaim>,
+  event: AreaWorkerLogEvent,
+): void {
+  const street = "area" in event ? claims.get(event.area) : undefined;
+  const label = street?.streetName ?? street?.streetKey ?? "n/a";
+  switch (event.type) {
+    case "pool_start":
+      console.info(`[street-pool] task=${payload.taskId} city=${task.city} inventory=${event.availableAreas} started=${event.poolSize}`);
+      break;
+    case "worker_started":
+      console.info(`[street-worker] task=${payload.taskId} street=${label} started`);
+      break;
+    case "worker_finished":
+      console.info(`[street-worker] task=${payload.taskId} street=${label} finished accepted=${event.outcome.accepted} failed=${event.outcome.failed}`);
+      break;
+    case "worker_skipped_no_slot":
+      console.info(`[street-pool] task=${payload.taskId} city=${task.city} skipped reason=no_capacity`);
+      break;
+    case "worker_skipped_no_area":
+      console.info(`[street-pool] task=${payload.taskId} city=${task.city} stopped reason=no_eligible_street`);
+      break;
+    case "pool_stopped":
+      console.info(`[street-pool] task=${payload.taskId} city=${task.city} stopped reason=${event.reason}`);
+      break;
+  }
+}
+
 /** Worker Pools B Step 11 — concise, grep-able pool/worker log lines. */
 function logAreaPoolEvent(payload: DiscoveryTaskPayload, task: any, event: AreaWorkerLogEvent): void {
   switch (event.type) {
@@ -684,10 +752,17 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     const provider = getProvider(sourceId);
     const generator = getGenerator(sourceId);
 
-    // ── Phase 3C-4C-B / Worker Pools B: curated/sub areas for this city ──────
+    // ── Street-first discovery, with the established area fallback ──────────
     const curatedAreas = getAreasForCity(task.country_code, task.city) ?? getAreasForCityOrDefault(task.country_code, task.city);
+    const streetCount = sourceId === "google_maps"
+      ? await streetInventoryCount(db, task.country_code, task.city)
+      : 0;
+    const useStreetPool = discoveryModeForStreetInventory(sourceId, streetCount) === "street";
 
-    // Worker Pools B — Google Maps area worker pool.
+    // Worker Pools B — Google Maps area worker pool. Street inventory takes
+    // precedence only when it actually exists. No inventory means this exact
+    // area path remains the fallback, including default areas for uncurated
+    // cities.
     // Every Google Maps task runs through the dynamic area worker pool to satisfy
     // requested quantity with dynamic concurrency (e.g. 2 workers for 10 leads).
     const useGoogleAreaPool = sourceId === "google_maps" && curatedAreas.length > 0;
@@ -700,8 +775,128 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     // an async callback closure — always overwritten before use either way.
     let cityReason: string = "";
     let poolResult: AreaWorkerPoolResult | undefined;
+    const effectiveRequested = payload.request?.quantity ?? (
+      await db.from("discovery_plans").select("requested_count").eq("id", payload.planId).maybeSingle()
+    ).data?.requested_count;
 
-    if (!useGoogleAreaPool) {
+    if (useStreetPool) {
+      // Never infer or manufacture an owner for coverage. The request user
+      // and persisted task owner must agree before a per-user RPC is used.
+      if (!task.user_id || task.user_id !== payload.request.userId) {
+        throw new Error(`street discovery requires the task's real request user (task=${payload.taskId})`);
+      }
+
+      const streetScope: StreetScope = {
+        userId: payload.request.userId,
+        niche: task.niche,
+        professionSlug: payload.request.professionSlug,
+        countryCode: task.country_code,
+        city: task.city,
+        source: sourceId,
+      };
+      const streetClaims = new Map<string, StreetClaim>();
+      const browserSlotPool = getBrowserSlotPool();
+
+      console.info(
+        `[street-discovery] task=${payload.taskId} city=${task.city} inventory=${streetCount} mode=street`,
+      );
+      poolResult = await runAreaWorkerPool({
+        configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
+        safeResourceWorkers: getResourceCapacity().safeAreaWorkers,
+        totalCuratedAreas: streetCount,
+        availableCapacity: browserSlotPool.available(),
+        requestedQuantity: effectiveRequested,
+        // This calls the Phase 2B RPC once per worker iteration. The pool's
+        // `usedAreas` guard merely protects this invocation from a malformed
+        // duplicate response; it is not coverage state and is never queried
+        // to decide what is eligible.
+        claimNextArea: async (usedClaims) => {
+          const claim = await claimDiscoveryStreet(db, streetScope, workerLabel, payload.planId);
+          if (!claim) return undefined;
+          if (usedClaims.has(claim.stateId)) {
+            throw new Error(`claim_discovery_street returned a duplicate active claim (${claim.stateId})`);
+          }
+          streetClaims.set(claim.stateId, claim);
+          return claim.stateId;
+        },
+        runArea: async (claimId) => {
+          const claim = streetClaims.get(claimId);
+          if (!claim) {
+            return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: false, failed: true, error: "missing street claim" };
+          }
+
+          let heartbeatStopped = false;
+          const renew = () => {
+            void heartbeatDiscoveryStreetClaim(db, claim, streetScope.userId, workerLabel)
+              .then((renewed) => {
+                if (!renewed) {
+                  heartbeatStopped = true;
+                  console.warn(`[street-discovery] claim heartbeat lost task=${payload.taskId} street=${claim.streetKey}`);
+                }
+              })
+              .catch((err: unknown) => console.warn(`[street-discovery] claim heartbeat failed street=${claim.streetKey}`, err));
+          };
+          const heartbeatTimer = setInterval(renew, STREET_HEARTBEAT_INTERVAL_MS);
+          heartbeatTimer.unref?.();
+
+          try {
+            const attempt = await runOneAreaAttempt(attemptCtx, undefined, claim.streetName);
+            pythonPerfData = attempt.pythonPerfData ?? pythonPerfData;
+            bridgeTimings = attempt.bridgeTimings ?? bridgeTimings;
+            progressMarks = attempt.progressMarks ?? progressMarks;
+            engineTerminationReason = attempt.engineTerminationReason ?? engineTerminationReason;
+            cityReason = attempt.cityReason;
+            terminalReason = attempt.terminalReason ?? terminalReason;
+
+            // A street is complete only after its entire provider operation
+            // reached natural exhaustion. Target/cancel/consumer stops and
+            // all failures leave its lease recoverable instead.
+            const completed = !heartbeatStopped
+              && !attempt.shouldRetryTask
+              && !attempt.terminalReason
+              && attempt.engineTerminationReason === "SUCCESS_EXHAUSTED"
+              && await completeDiscoveryStreetClaim(db, claim, streetScope.userId, workerLabel);
+            if (!completed) {
+              console.info(
+                `[street-discovery] claim left recoverable task=${payload.taskId} street=${claim.streetKey} ` +
+                  `termination=${attempt.engineTerminationReason ?? "unknown"} terminal=${attempt.terminalReason ?? "none"}`,
+              );
+            }
+
+            return {
+              discovered: attempt.discovered,
+              accepted: attempt.accepted,
+              rejected: attempt.rejected,
+              duplicates: attempt.duplicates,
+              exhausted: attempt.exhausted,
+              failed: !completed,
+            };
+          } finally {
+            clearInterval(heartbeatTimer);
+          }
+        },
+        tryAcquireSlot: () => acquireDiscoveryWorkerSlots(browserSlotPool),
+        isTerminal: async () => Boolean(await observeTerminalPlan()),
+        onEvent: (event) => logStreetPoolEvent(payload, task, streetClaims, event),
+      });
+
+      discovered = poolResult.totals.discovered;
+      accepted = poolResult.totals.accepted;
+      rejected = poolResult.totals.rejected;
+      duplicates = poolResult.totals.duplicates;
+      exhausted = poolResult.perArea.length > 0 && poolResult.perArea.every((p) => p.outcome.exhausted);
+
+      if (poolResult.allFailed && poolResult.perArea.length > 0 && !terminalReason) {
+        throw new EngineTerminationRetryError(
+          "SCRAPER_FAILURE",
+          `street pool could not complete any claimed street for task=${payload.taskId} city=${task.city}`,
+        );
+      }
+      const { data: finalPlanAfterStreetPool } = await db.from("discovery_plans")
+        .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
+      terminalReason = terminalReasonForPlan(finalPlanAfterStreetPool);
+      cityReason = terminalReason ?? (cityReason || (poolResult.perArea.length === 0 ? "CITY_NO_STREET_WORK" : "CITY_EXHAUSTED"));
+    } else if (!useGoogleAreaPool) {
       // ── Legacy / non-pooled path (non-Google providers or empty areas) ──
       if (hasCuratedAreas(curatedAreas)) {
         claimedArea = await claimAreaForCity(db, {
@@ -784,10 +979,6 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     } else {
       // ── Worker Pools B: Google Maps area worker pool ────────────────────
       const browserSlotPool = getBrowserSlotPool();
-
-      const effectiveRequested = payload.request?.quantity ?? (
-        await db.from("discovery_plans").select("requested_count").eq("id", payload.planId).maybeSingle()
-      ).data?.requested_count;
 
       poolResult = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,

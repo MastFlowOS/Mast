@@ -56,6 +56,22 @@ matching — even city-qualified — is not one of them. Skipping it costs
 nothing: `findExistingBusiness` still applies the full fingerprint set,
 name+city included, as the final safety net.
 
+User-scoped ownership (Phase 1A)
+---------------------------------
+`is_duplicate()` originally only ever answered "does a matching
+`businesses` row exist anywhere" — correct for the global `businesses`
+pool, but wrong as an early-reject signal for a specific live user: two
+different users independently discovering the same real-world business
+must both be able to receive it (see `leads(user_id, business_id)`, the
+per-user ownership table). Phase 1A adds an optional `user_id` to
+`is_duplicate()`: when present, a match only counts as a duplicate if
+THIS user already has a `leads` row for the matching business (see
+`_is_duplicate_for_user`). When absent (pool-building — no live-user
+context), the original global-existence check is preserved exactly
+(`_is_duplicate_global`). The checker itself stays a single
+process-wide/cacheable instance either way — `user_id` is purely
+request-time input to `is_duplicate()`, never part of construction.
+
 Fail-open, by design
 ---------------------
 `PersistentEarlyDedupChecker.is_duplicate()` never raises out to the
@@ -153,6 +169,11 @@ class EarlyDedupDecision:
     # configured at all — i.e. this candidate always falls through to
     # normal enrichment + the final dedup safety net, per Test C.
     checked: bool
+    # Phase 1A — the requesting user_id this decision was scoped to, purely
+    # for log correlation (see log_early_dedup_decision). None means the
+    # pre-Phase-1A global-businesses lookup was used (no live-user context,
+    # e.g. pool-building), never that ownership was ignored for a real user.
+    user_id: Optional[str] = None
 
 
 def maps_place_id_from_keys(keys: Iterable[str]) -> Optional[str]:
@@ -184,6 +205,7 @@ def log_early_dedup_decision(decision: EarlyDedupDecision) -> None:
             "scrapeJobId": decision.scrape_job_id,
             "pipelineId": decision.pipeline_id,
             "sessionId": decision.session_id,
+            "userId": decision.user_id,
             "mapsPlaceId": decision.maps_place_id,
             "fingerprint": list(decision.fingerprint_keys),
             "early_duplicate": decision.is_duplicate,
@@ -236,21 +258,81 @@ class PersistentEarlyDedupChecker:
         self._key = resolved_key
         self._timeout_seconds = timeout_seconds
 
-    def is_duplicate(self, fingerprint_keys: Iterable[str]) -> bool:
-        """Return True only when a `businesses` row already exists whose
-        `fingerprints` array overlaps `fingerprint_keys`. Fails open (False)
-        on any config/network/parsing problem — see class + module
-        docstrings. Never performs a lookup for an empty key set (there is
-        nothing safe to match on): Test C's "no usable early identity"
-        candidates simply fall straight through to enrichment."""
+    def is_duplicate(
+        self, fingerprint_keys: Iterable[str], *, user_id: Optional[str] = None
+    ) -> bool:
+        """Return True only when this candidate is already owned.
+
+        Two distinct modes, selected purely by whether `user_id` is passed
+        — see module/class docstrings and Phase 1A's product invariant
+        (GLOBAL `businesses` vs PER-USER `leads(user_id, business_id)`):
+
+          user_id is None (pool-building / no live-user context, e.g.
+          poolExpandJob.ts's callers):
+              preserves the exact pre-Phase-1A behavior — True whenever a
+              `businesses` row already exists whose `fingerprints` array
+              overlaps `fingerprint_keys`, regardless of who (if anyone)
+              owns it. This is deliberately NOT "this user owns it"; see
+              `_is_duplicate_global`.
+
+          user_id is a real requesting user (live discovery,
+          discoverJob.ts):
+              True only when a matching `businesses` row exists AND that
+              SAME user already has a `leads` row for it — i.e. genuine
+              per-user ownership, via `_is_duplicate_for_user`. A business
+              that exists globally but that this user does not yet own is
+              NOT a duplicate for them (Phase 1A's core fix).
+
+        Both modes fail open (False) on any config/network/parsing
+        problem — see class + module docstrings. Neither performs a
+        lookup for an empty key set (there is nothing safe to match on):
+        Test C's "no usable early identity" candidates simply fall
+        straight through to enrichment."""
         keys = sorted({k for k in fingerprint_keys if k})
         if not keys:
             return False
 
-        overlap_literal = "{" + ",".join(_pg_array_element(k) for k in keys) + "}"
+        if user_id:
+            return self._is_duplicate_for_user(keys, user_id)
+        return self._is_duplicate_global(keys)
+
+    def _is_duplicate_global(self, keys: list[str]) -> bool:
+        """Pre-Phase-1A behavior, preserved unchanged: does a matching
+        `businesses` row exist at all, owned by anyone or no one. Used
+        when there is no requesting-user context (pool-building)."""
         query = urllib.parse.urlencode(
-            {"select": "id", "fingerprints": f"ov.{overlap_literal}", "limit": "1"}
+            {"select": "id", "fingerprints": f"ov.{self._overlap_literal(keys)}", "limit": "1"}
         )
+        rows = self._get(query)
+        return bool(rows)
+
+    def _is_duplicate_for_user(self, keys: list[str], user_id: str) -> bool:
+        """User-scoped ownership lookup (Phase 1A). One PostgREST round
+        trip: an inner-embed of `leads` on `businesses` (via the existing
+        `leads.business_id -> businesses.id` foreign key — see
+        migrations/001_opportunity_engine.sql) filtered to this user, so a
+        `businesses` row only survives the query if it also has a matching
+        `leads` row for `user_id`. A single request, no N+1 — matches
+        `pool_lookup()`'s own single-round-trip shape on the Node side.
+
+        Deliberately does NOT reuse `_is_duplicate_global`'s query (that
+        would answer "does X exist globally", not "does THIS USER own
+        X" — Phase 1A's explicit anti-goal, see module docstring)."""
+        query = urllib.parse.urlencode(
+            {
+                "select": "id,leads!inner(id)",
+                "fingerprints": f"ov.{self._overlap_literal(keys)}",
+                "leads.user_id": f"eq.{user_id}",
+                "limit": "1",
+            }
+        )
+        rows = self._get(query)
+        return bool(rows)
+
+    def _overlap_literal(self, keys: list[str]) -> str:
+        return "{" + ",".join(_pg_array_element(k) for k in keys) + "}"
+
+    def _get(self, query: str) -> list:
         request = urllib.request.Request(
             f"{self._endpoint}?{query}",
             method="GET",
@@ -262,11 +344,10 @@ class PersistentEarlyDedupChecker:
         )
         try:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-                rows = json.loads(response.read().decode("utf-8"))
+                return json.loads(response.read().decode("utf-8"))
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, OSError):
             log.debug("early dedup lookup failed — failing open (treated as NEW)", exc_info=True)
-            return False
-        return bool(rows)
+            return []
 
 
 def _pg_array_element(value: str) -> str:

@@ -133,6 +133,17 @@ export type EngineQueryParams = {
   discovery_only?: boolean;
   required_channels?: string[];
   db_path?: string;
+  /**
+   * PHASE 1A — the real requesting user, for user-scoped early dedup
+   * ownership (see mast-lead-engine/storage/early_persistent_dedup.py).
+   * Threaded straight through to Python as `run_query(user_id=...)` via
+   * the stdin JSON (params are forwarded verbatim — see `runEngineQuery`
+   * below). Pass this for live user discovery (discoverJob.ts); omit it
+   * for pool-building callers (poolExpandJob.ts) that intentionally have
+   * no single-user delivery context — omitting preserves the exact prior
+   * global `businesses` existence check on the Python side.
+   */
+  user_id?: string;
 };
 
 export type EngineRunOptions = {

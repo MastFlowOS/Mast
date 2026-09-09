@@ -746,6 +746,14 @@ async def run_query(
     discovery_only: bool = False,
     db_path: str = "data/leads.db",
     required_channels: Optional[list[str] | tuple[str, ...]] = None,
+    # Phase 1A — the real requesting user_id for live discovery (threaded
+    # from discoverJob.ts's `payload.userId` through pythonBridge.ts's
+    # stdin JSON, via `_main_cli`'s `run_query(**params, ...)`). Optional
+    # and defaults to None: any caller that doesn't pass it (pool-building,
+    # tests, library use) gets the exact prior global-dedup behavior
+    # unchanged. See build_seven_stage_pipeline's own `requesting_user_id`
+    # param and storage/early_persistent_dedup.py's module docstring.
+    user_id: Optional[str] = None,
     # LIFECYCLE FIX (bridge delivery / watchdog / graceful shutdown phase):
     # optional cooperative shutdown flag — see the module-level
     # `_shutdown_event` docstring above for why this replaced hard task
@@ -1320,6 +1328,15 @@ async def run_query(
                         "reached its target or genuinely exhausted its search space",
                     )
         else:
+            # NOTE (Phase 1A scope): this session-identity `user_id` is a
+            # separate, pre-existing placeholder unrelated to early-dedup
+            # ownership — DiscoverySession bookkeeping, not read by
+            # `is_duplicate()` anywhere. Phase 1A's target flow threads the
+            # real user id straight from `run_query(user_id=...)` to
+            # `build_seven_stage_pipeline(requesting_user_id=...)` below,
+            # bypassing this call entirely (see TARGET FLOW). Left
+            # unchanged here deliberately, to keep this fix scoped to
+            # early-dedup ownership only.
             ctx = engine_coordinator.create_session(
                 user_id="service.run_query",
                 provider="google_maps",
@@ -1407,6 +1424,12 @@ async def run_query(
                 early_dedup_checker=_build_early_dedup_checker(),
                 required_channels=tuple(required_channels) if required_channels else None,
                 instance_counts=instance_counts,
+                # Phase 1A — thread the real requesting user_id through so
+                # the early dedup decision is user-scoped ownership, not
+                # global existence. None (the default, e.g. pool-building
+                # callers that never pass user_id to run_query()) preserves
+                # the exact prior global-only behavior.
+                requesting_user_id=user_id,
             )
             engine_coordinator.mark_running(session_id)
             engine_runtime = engine_coordinator.get_engine_runtime(session_id)

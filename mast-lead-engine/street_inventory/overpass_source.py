@@ -93,6 +93,59 @@ drop real streets whose class this codebase's authors didn't happen to
 enumerate, which is exactly the kind of "hard-coded street list"
 this phase's instructions rule out — just phrased as OSM highway
 classes instead of a Queens street list.
+
+CRITMODE — street inventory geography bug (114,103-row New York run)
+----------------------------------------------------------------------
+Root cause: `area["name"="<area_name>"]` is an EXACT STRING match
+against every OSM area's `name` tag — it has no concept of "the city
+the caller meant". When `area_name` is resolved automatically from a
+bare `city` string that has no curated entry in
+`provider_request_translation.py:_OSM_AREA_NORMALIZATIONS`, that
+resolver's own "Fallback to exact cleaned string" branch returns the
+city string unchanged. For city="New York" this produced the literal
+area name "New York" — which in OSM is the boundary relation for New
+York STATE (`admin_level=4`), NOT the city (whose own, separately-
+named relation is "New York City", `admin_level=8`). The resulting
+query silently enumerated every named road in the entire state,
+including Warwick/Orange County ("1/2 Mile Trail", "1/2 Mile Plungis
+Road", the bare-digit "1") — none of which are wrong data, they are
+simply not New York City.
+
+This is fixed in two layers, per this phase's own "fail explicit
+rather than silently generate a broad inventory" instruction:
+
+    1. A curated `_OSM_AREA_NORMALIZATIONS["new york"] = "New York
+       City"` entry (the actual, correct fix for this specific city —
+       see that module).
+    2. `_verify_resolved_boundary()` below: a lightweight safety net
+       that ALSO catches the general shape of this bug for any city
+       whose auto-resolved area name happens to collide with a
+       broader OSM boundary, WITHOUT hard-coding a per-city list. It
+       runs a second, tiny Overpass query (`.a out tags;` on the
+       matched area(s), no ways) whenever `area_name` was NOT supplied
+       explicitly by the caller — an explicit `area_name` means a
+       human already curated/vetted that exact OSM boundary name (the
+       same trust this codebase already places in the curated borough/
+       neighborhood table), so re-verifying it would be redundant, not
+       safer. It rejects (returns `status="unavailable"` with an
+       explicit reason, never silently proceeds) when:
+         - zero areas match the resolved name (the boundary doesn't
+           exist — currently un-checked before this fix; the old code
+           would silently run the ways query against a non-existent
+           `.searchArea` and just get zero streets back),
+         - more than one area matches (an ambiguous name — which OSM
+           area was actually queried would depend on Overpass's
+           internal union-of-matches behavior, not on caller intent),
+         - or the single matched area's own `admin_level` tag is `<=
+           4` — the OSM convention for country (`2`) or first-level
+           subdivision / state / province (`4`), i.e. an order of
+           magnitude broader than any single city, regardless of
+           country. `<= 4` is deliberately conservative (not `<= 6`,
+           `<= 7`, etc.): city-level admin_level varies by country (US
+           city ~8, but some countries legitimately use 6 for a city/
+           district), so this only refuses the boundary levels that
+           are unambiguously "not a city" everywhere OSM is used —
+           see this function's own docstring for that trade-off.
 """
 
 from __future__ import annotations
@@ -167,6 +220,125 @@ def build_street_ql(area_name: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECON
     )
 
 
+#: OSM admin_level values at or below this are unambiguously broader
+#: than any single city, in every country OSM covers (2 = country,
+#: 4 = state/province/first-level subdivision). See module docstring,
+#: "CRITMODE — street inventory geography bug", for why this is `<= 4`
+#: and not a higher, country-varying "city" cutoff.
+_MAX_BROAD_ADMIN_LEVEL = 4
+
+
+def build_boundary_check_ql(area_name: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> str:
+    """
+    Builds the (tiny, tags-only, no ways) Overpass QL query text used
+    by `_verify_resolved_boundary()` to inspect exactly which OSM
+    area(s) `area_name` matches before trusting it to scope the real
+    street query. See module docstring for why this exists.
+    """
+    escaped_area = area_name.replace('"', '\\"')
+    return (
+        f"[out:json][timeout:{timeout_seconds}];\n"
+        f'area["name"="{escaped_area}"]->.a;\n'
+        f".a out tags;"
+    )
+
+
+def _verify_resolved_boundary(
+    poster: HttpPost,
+    endpoint_url: str,
+    resolved_area: str,
+    city: str,
+    timeout_seconds: int,
+    hard_deadline: float,
+) -> Optional[StreetInventoryResult]:
+    """
+    Confirms `resolved_area` names exactly one OSM boundary, and that
+    boundary is not itself a country/state-level administrative area
+    (see module docstring). Returns `None` when the boundary checks
+    out (caller proceeds with the real street query); returns a
+    populated `StreetInventoryResult(status="unavailable", ...)` when
+    it does not — the caller returns that result directly rather than
+    silently running the street query against an unverified area.
+
+    Only called for the auto-resolved-from-`city` path (see
+    `fetch_city_street_inventory`'s own `area_name` handling) — an
+    `area_name` the caller supplied explicitly is treated as already
+    vetted, exactly like the existing curated borough/neighborhood
+    table.
+    """
+    query = build_boundary_check_ql(resolved_area, timeout_seconds=timeout_seconds)
+    try:
+        payload = call_with_hard_deadline(
+            poster, endpoint_url, query, _HEADERS, float(timeout_seconds),
+            deadline_seconds=hard_deadline,
+        )
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+        log.warning(
+            "[street-inventory] boundary verification transport error for city=%r area=%r: %s",
+            city, resolved_area, exc,
+        )
+        return StreetInventoryResult(
+            status="unavailable", reason=f"boundary verification failed: {exc}"
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        log.warning(
+            "[street-inventory] malformed boundary verification response for city=%r area=%r: %s",
+            city, resolved_area, exc,
+        )
+        return StreetInventoryResult(
+            status="unavailable", reason=f"malformed boundary verification response: {exc}"
+        )
+
+    elements = payload.get("elements") if isinstance(payload, dict) else None
+    if not elements:
+        log.warning(
+            "[street-inventory] no OSM boundary named %r for city=%r — refusing to query an "
+            "unverified/nonexistent area",
+            resolved_area, city,
+        )
+        return StreetInventoryResult(
+            status="unavailable",
+            reason=f"no OSM boundary found named {resolved_area!r} for city={city!r}",
+        )
+    if len(elements) > 1:
+        log.warning(
+            "[street-inventory] ambiguous OSM area name %r for city=%r matched %d distinct "
+            "boundaries — refusing to silently pick one",
+            resolved_area, city, len(elements),
+        )
+        return StreetInventoryResult(
+            status="unavailable",
+            reason=(
+                f"ambiguous OSM area name {resolved_area!r} for city={city!r} matched "
+                f"{len(elements)} distinct boundaries"
+            ),
+        )
+
+    tags = elements[0].get("tags") or {}
+    admin_level_raw = tags.get("admin_level")
+    if admin_level_raw is not None:
+        try:
+            admin_level = int(admin_level_raw)
+        except (TypeError, ValueError):
+            admin_level = None
+        if admin_level is not None and admin_level <= _MAX_BROAD_ADMIN_LEVEL:
+            log.warning(
+                "[street-inventory] OSM area %r for city=%r resolved to a country/state-level "
+                "boundary (admin_level=%s) — refusing to generate a city street inventory from it",
+                resolved_area, city, admin_level_raw,
+            )
+            return StreetInventoryResult(
+                status="unavailable",
+                reason=(
+                    f"OSM area {resolved_area!r} for city={city!r} resolved to a "
+                    f"country/state-level boundary (admin_level={admin_level_raw}), "
+                    f"not a city"
+                ),
+            )
+
+    return None
+
+
 def fetch_city_street_inventory(
     *,
     country_code: str,
@@ -208,16 +380,36 @@ def fetch_city_street_inventory(
     # future reader of the logs never has to guess whether this stage was
     # the slow one.
     _t_boundary_start = time.monotonic()
+    area_name_was_explicit = bool(area_name and area_name.strip())
     resolved_area = area_name if area_name else normalize_osm_area(city)
     log.info(
-        "[street-inventory] boundary resolved city=%r area=%r elapsed=%.3fs",
-        city, resolved_area, time.monotonic() - _t_boundary_start,
+        "[street-inventory] boundary resolved city=%r area=%r explicit=%s elapsed=%.3fs",
+        city, resolved_area, area_name_was_explicit, time.monotonic() - _t_boundary_start,
     )
     if not resolved_area:
         return StreetInventoryResult(
             status="unavailable",
             reason=f"no resolvable OSM area name for city={city!r}",
         )
+
+    hard_deadline = float(timeout_seconds) + HARD_DEADLINE_BUFFER_SECONDS
+
+    # STAGE 1b/4: boundary VERIFICATION — see module docstring, "CRITMODE
+    # — street inventory geography bug". Only for the auto-resolved-from-
+    # `city` path: an explicit `area_name` is caller-vetted (same trust
+    # already placed in the curated borough/neighborhood table) and is
+    # used as-is, exactly as before this fix.
+    if not area_name_was_explicit:
+        _t_verify_start = time.monotonic()
+        verification_failure = _verify_resolved_boundary(
+            poster, endpoint_url, resolved_area, city, timeout_seconds, hard_deadline,
+        )
+        log.info(
+            "[street-inventory] boundary verification city=%r area=%r ok=%s elapsed=%.3fs",
+            city, resolved_area, verification_failure is None, time.monotonic() - _t_verify_start,
+        )
+        if verification_failure is not None:
+            return verification_failure
 
     query = build_street_ql(resolved_area, timeout_seconds=timeout_seconds)
 
@@ -226,7 +418,6 @@ def fetch_city_street_inventory(
     # (b) the hard wall-clock deadline below, which is what actually
     # guarantees this call returns (or raises) in bounded time — see
     # `_deadline.py` for why (a) alone is not sufficient.
-    hard_deadline = float(timeout_seconds) + HARD_DEADLINE_BUFFER_SECONDS
     log.info(
         "[street-inventory] overpass request start city=%r area=%r endpoint=%s timeout=%ss hard_deadline=%ss",
         city, resolved_area, endpoint_url, timeout_seconds, hard_deadline,

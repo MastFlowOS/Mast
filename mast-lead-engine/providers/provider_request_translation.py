@@ -240,6 +240,26 @@ def _translate_azure_maps(context: DiscoveryQueryContext) -> AzureMapsDiscoveryR
 # sub-city areas (Phase 17).
 # ---------------------------------------------------------------------------
 _OSM_AREA_NORMALIZATIONS: Mapping[str, str] = {
+    # New York City — CRITMODE street-inventory geography bug: the bare
+    # string "New York" is NOT the city. In OSM, the boundary relation
+    # literally named "New York" (exact `name` tag match, admin_level=4)
+    # is New York STATE — a completely different, vastly larger polygon
+    # that contains Warwick, Orange County, and everywhere else in the
+    # state. The city's own boundary relation is separately named
+    # "New York City" (admin_level=8). Before this entry existed,
+    # `normalize_osm_area("New York")` fell through to the "Fallback to
+    # exact cleaned string" branch below and returned "New York"
+    # unchanged, which `overpass_source.py`'s
+    # `area["name"="<area>"]->.searchArea;` then matched against the
+    # STATE boundary — this is the exact root cause of the 114,103-row,
+    # Warwick-contaminated street inventory this entry fixes. See
+    # `street_inventory/overpass_source.py` module docstring, "CRITMODE
+    # — street inventory geography bug", for the companion admin_level
+    # safety net that now also catches any *other* city name that turns
+    # out to collide with a state/country-level OSM boundary name.
+    "new york": "New York City",
+    "new york city": "New York City",
+    "nyc": "New York City",
     # New York boroughs
     "the bronx": "The Bronx",
     "bronx": "The Bronx",

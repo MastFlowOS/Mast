@@ -6,6 +6,8 @@
  * select/update claim sequence.
  */
 
+import { runEngineStreetInventory, type EngineStreetInventoryResult } from "../scraperBridge/pythonBridge.js";
+
 export const STREET_CLAIM_LEASE_SECONDS = 300;
 
 /** The hybrid-mode decision is deliberately tiny and independently testable. */
@@ -44,6 +46,130 @@ export async function streetInventoryCount(db: any, countryCode: string, city: s
     .eq("city", city);
   if (error) throw error;
   return count ?? 0;
+}
+
+/**
+ * CRITMODE Phase 4 — PART A: the smallest safe way to give
+ * `street_inventory/build.py`'s real OSM/Overpass builder a production
+ * caller, for one (country, city) at a time.
+ *
+ * Idempotent by construction:
+ *   - If `discovery_streets` already has rows for this exact
+ *     (country_code, city), the build is skipped entirely — this function
+ *     NEVER re-fetches or re-upserts inventory that already exists (the
+ *     "must not recreate/delete existing valid inventory unnecessarily"
+ *     requirement). The underlying builder is itself upsert-on-`street_key`
+ *     (see repository.py), so even a forced re-run would be safe, but the
+ *     count-first check avoids the network/CPU cost of a redundant
+ *     Overpass fetch for a city this process has already warmed.
+ *   - A per-process in-flight map collapses concurrent callers for the
+ *     SAME (country_code, city) — e.g. two area workers racing into the
+ *     same city in the same poolExpandJob run — into exactly one
+ *     subprocess spawn, not one per caller.
+ *
+ * Never throws: a transport failure, an unresolved OSM area, or any other
+ * builder-reported problem becomes an explicit `mode: "area"` outcome with
+ * `fallbackReason` set, per the "must not silently fall back to area mode"
+ * requirement — the caller is expected to log `fallbackReason`, not
+ * swallow it.
+ */
+export type StreetInventoryOutcome =
+  | { mode: "street"; count: number }
+  | { mode: "area"; count: number; fallbackReason: string };
+
+const inFlightInventoryBuilds = new Map<string, Promise<EngineStreetInventoryResult | undefined>>();
+
+export async function ensureStreetInventory(
+  db: any,
+  countryCode: string,
+  city: string,
+  opts?: { countryName?: string; region?: string },
+  // Test-only injection point (mirrors build.py's own `repository`
+  // constructor-injection convention for the same reason): defaults to the
+  // real subprocess bridge for both production call sites, which never
+  // pass this argument.
+  buildFn: typeof runEngineStreetInventory = runEngineStreetInventory,
+): Promise<StreetInventoryOutcome> {
+  const existing = await streetInventoryCount(db, countryCode, city);
+  if (existing > 0) {
+    return { mode: "street", count: existing };
+  }
+
+  const key = `${countryCode}:${city}`;
+  console.info(`[street-inventory] check country=${countryCode} city=${city} existing=0 — starting build`);
+
+  let buildPromise = inFlightInventoryBuilds.get(key);
+  if (!buildPromise) {
+    buildPromise = buildFn({
+      country_code: countryCode,
+      city,
+      country_name: opts?.countryName,
+      region: opts?.region,
+    }).catch((err) => {
+      console.warn(`[street-inventory] build errored country=${countryCode} city=${city}`, err);
+      return undefined;
+    });
+    inFlightInventoryBuilds.set(key, buildPromise);
+    // Removed once settled (success, unavailable, or error) so a later,
+    // independent call for the same city — e.g. after a transient Overpass
+    // outage — gets its own fresh attempt instead of being permanently
+    // pinned to this run's outcome.
+    void buildPromise.finally(() => inFlightInventoryBuilds.delete(key));
+  }
+
+  const result = await buildPromise;
+
+  if (!result) {
+    return { mode: "area", count: 0, fallbackReason: "build_error" };
+  }
+  if (result.status === "unavailable") {
+    console.info(`[street-inventory] result country=${countryCode} city=${city} status=unavailable reason=${result.reason}`);
+    return { mode: "area", count: 0, fallbackReason: `unavailable:${result.reason}` };
+  }
+
+  console.info(
+    `[street-inventory] result country=${countryCode} city=${city} status=ok fetched=${result.fetched} upserted=${result.upserted}`,
+  );
+  const count = await streetInventoryCount(db, countryCode, city);
+  if (count === 0) {
+    // The builder reported success but the city's real OSM inventory was
+    // empty (e.g. zero named highways for that boundary) — a genuine,
+    // observable "no usable inventory", not a bug in this function.
+    return { mode: "area", count: 0, fallbackReason: "empty_after_build" };
+  }
+  return { mode: "street", count };
+}
+
+export type StreetInitResult = {
+  stateId: string;
+};
+
+/**
+ * Thin wrapper for `initialize_user_discovery_street_state` — the fourth
+ * RPC migration 029 already deploys, exposed here the exact same way
+ * claimDiscoveryStreet/heartbeatDiscoveryStreetClaim/
+ * completeDiscoveryStreetClaim already are. Not part of the hot claim path
+ * (claim_discovery_street already lazily materialises a row on first
+ * claim — see that RPC's own comment) — this exists so a caller that wants
+ * an explicit, pre-claim UNSEEN row (e.g. the validation harness's Step 2,
+ * or a future pre-seeding job) doesn't have to hand-roll the RPC call.
+ */
+export async function initializeUserDiscoveryStreetState(
+  db: any,
+  scope: StreetScope,
+  streetId: string,
+): Promise<StreetInitResult> {
+  const { data, error } = await db.rpc("initialize_user_discovery_street_state", {
+    p_user_id: scope.userId,
+    p_street_id: streetId,
+    p_niche: scope.niche,
+    p_profession_slug: scope.professionSlug,
+    p_country_code: scope.countryCode,
+    p_city: scope.city,
+    p_source: scope.source,
+  });
+  if (error) throw error;
+  return { stateId: data as string };
 }
 
 export async function claimDiscoveryStreet(

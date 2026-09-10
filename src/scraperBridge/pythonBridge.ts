@@ -256,6 +256,34 @@ export type EngineEnrichResult = {
   instagram_last_post_date: string | null;
 };
 
+/**
+ * CRITMODE Phase 4 — PART A: input to `service.py street_inventory`, the
+ * subprocess entrypoint onto the existing (unchanged)
+ * `street_inventory/build.py:build_city_street_inventory()`. `city`/
+ * `country_code` are the only required fields — mirrors
+ * `StreetScope`/`streetInventoryCount()`'s own (country_code, city) scope
+ * in streetDiscovery.ts, so the inventory this builds is keyed exactly the
+ * way claimDiscoveryStreet() will look it up.
+ */
+export type EngineStreetInventoryParams = {
+  country_code: string;
+  city: string;
+  country_name?: string;
+  region?: string;
+  area_name?: string;
+};
+
+/**
+ * Mirrors `build_city_street_inventory()`'s own return shape field-for-
+ * field (see that function's docstring). `status: "unavailable"` is an
+ * expected, non-error outcome (unresolved OSM area, no real inventory
+ * obtainable for this city) — callers must treat it as "stay on the area
+ * fallback", not as a failure.
+ */
+export type EngineStreetInventoryResult =
+  | { status: "ok"; fetched: number; upserted: number; batches: number }
+  | { status: "unavailable"; reason: string };
+
 export type EngineVerifyResult = {
   website_ok: boolean | null;
   website_data: {
@@ -599,6 +627,89 @@ export async function runEngineEnrich(params: EngineEnrichParams, signal?: Abort
     }
 
     return JSON.parse(stdout) as EngineEnrichResult;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (child.exitCode === null && child.signalCode === null) {
+      killProcessTree(child);
+    }
+  }
+}
+
+/**
+ * CRITMODE Phase 4 — PART A: spawns `service.py street_inventory`, the
+ * one-shot (non-streaming) subprocess entrypoint onto
+ * `street_inventory/build.py:build_city_street_inventory()`. Identical
+ * spawn/pipe/kill lifecycle to runEngineVerify/runEngineEnrich above — only
+ * the CLI mode argument and payload/result types differ. Never called from
+ * the hot per-lead path; see streetDiscovery.ts's ensureStreetInventory()
+ * for the one call site (once per city, gated so a warm city never re-
+ * triggers this).
+ */
+export async function runEngineStreetInventory(
+  params: EngineStreetInventoryParams,
+  signal?: AbortSignal,
+): Promise<EngineStreetInventoryResult> {
+  const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
+
+  const child = spawn(PYTHON_CMD, ["service.py", "street_inventory"], {
+    cwd: enginePath,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+  });
+
+  child.on("error", (err) => {
+    console.warn(`[scraper-bridge:street_inventory] child process error (PID: ${child.pid})`, err);
+  });
+  child.stdin.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge:street_inventory] stdin error (PID: ${child.pid})`, err);
+    }
+  });
+  child.stdout.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge:street_inventory] stdout error (PID: ${child.pid})`, err);
+    }
+  });
+  child.stderr.on("error", (err: any) => {
+    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+      console.warn(`[scraper-bridge:street_inventory] stderr error (PID: ${child.pid})`, err);
+    }
+  });
+
+  const onAbort = () => {
+    console.log(`[scraper-bridge:street_inventory] Abort signal triggered for PID: ${child.pid}`);
+    killProcessTree(child);
+  };
+  signal?.addEventListener("abort", onAbort);
+
+  try {
+    try {
+      child.stdin.write(JSON.stringify(params), (err) => {
+        if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
+          console.warn(`[scraper-bridge:street_inventory] stdin write callback error (PID: ${child.pid})`, err);
+        }
+      });
+      child.stdin.end();
+    } catch (writeErr: any) {
+      if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
+        console.warn(`[scraper-bridge:street_inventory] stdin write error (PID: ${child.pid})`, writeErr);
+      }
+    }
+
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      console.debug(`[scraper-bridge:street_inventory] ${chunk.toString().trimEnd()}`);
+    });
+
+    const exitCode: number = await new Promise((resolve) => child.on("close", resolve));
+    if (exitCode !== 0) {
+      throw new Error(`street_inventory subprocess exited with code ${exitCode}`);
+    }
+
+    return JSON.parse(stdout) as EngineStreetInventoryResult;
   } finally {
     signal?.removeEventListener("abort", onAbort);
     if (child.exitCode === null && child.signalCode === null) {

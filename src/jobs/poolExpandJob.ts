@@ -25,6 +25,19 @@ import { registerRequestAbortController, terminateRequest, isRequestActive } fro
 import { getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { runAreaWorkerPool, computeDynamicDiscoveryCapacity, type AreaRunOutcome } from "../discovery/googleAreaPool.js";
+// CRITMODE Phase 4 — PART B: same street-discovery primitives
+// discoveryPlanJob.ts's task-queue path already uses (claim/heartbeat/
+// complete RPC wrappers, unchanged) plus ensureStreetInventory() (PART A —
+// the one new addition, gating real inventory population per city). See
+// runGoogleAreaPoolForCity() below for the actual pool-path wiring.
+import {
+  claimDiscoveryStreet,
+  completeDiscoveryStreetClaim,
+  heartbeatDiscoveryStreetClaim,
+  ensureStreetInventory,
+  type StreetClaim,
+  type StreetScope,
+} from "../discovery/streetDiscovery.js";
 import { areaStreamTarget, cityStreamTarget, computeAskFor } from "../discovery/roundSizing.js";
 import {
   createAreaScanBudgetCoordinator,
@@ -172,6 +185,12 @@ export type PoolExpandJobPayload = {
 // it gets the identical fix: a streaming batch floor decoupled from the
 // per-round fairness accounting.
 const STREAM_BATCH_FLOOR = 5;
+
+// CRITMODE Phase 4 — PART B: same heartbeat cadence discoveryPlanJob.ts's
+// street branch uses for STREET_CLAIM_LEASE_SECONDS (300s) leases — long
+// enough not to hammer the RPC, short enough that a crashed worker's lease
+// still expires and becomes reclaimable well within one lease window.
+const STREET_HEARTBEAT_INTERVAL_MS = 60_000;
 
 // PHASE 12D (still true under PHASE 25): how often each area's own
 // adaptive-productivity timer polls the pure evaluateAreaProductivity()
@@ -631,6 +650,61 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       const browserPool = getBrowserSlotPool();
       stability.startWave();
 
+      // CRITMODE Phase 4 — PART B: street-first discovery through the REAL
+      // production pool path (this function IS the fix — see this file's
+      // own header comment / the forensic audit for why the old
+      // area-pool-only version of this function was the root cause).
+      //
+      // Gated on `followUp?.userId` ONLY: street coverage is a genuinely
+      // per-user RPC-enforced resource (user_discovery_street_state), and
+      // this integration must never manufacture an owner for it — the
+      // exact same rule discoveryPlanJob.ts's own street branch already
+      // enforces for `task.user_id`. A bare pool-growth run (no followUp)
+      // has no real requesting user to scope that state against, so it
+      // stays on the existing area path unchanged, exactly as before this
+      // phase.
+      let streetScope: StreetScope | undefined;
+      let streetInventoryCountForCity = 0;
+      if (followUp?.userId) {
+        const inventoryOutcome = await ensureStreetInventory(supabaseAdmin, country.code, city, {
+          countryName: country.name,
+        });
+        if (inventoryOutcome.mode === "street") {
+          streetInventoryCountForCity = inventoryOutcome.count;
+          streetScope = {
+            userId: followUp.userId,
+            niche: singleNiche,
+            professionSlug: followUp.professionSlug,
+            countryCode: country.code,
+            city,
+            source: "google_maps",
+          };
+          console.info(
+            `[poolExpandJob][street-discovery] city=${city} country=${country.code} inventory=${inventoryOutcome.count} mode=street`,
+          );
+        } else {
+          console.info(
+            `[poolExpandJob][street-discovery] city=${city} country=${country.code} mode=area ` +
+              `fallback_reason=${inventoryOutcome.fallbackReason}`,
+          );
+        }
+      }
+      const useStreetPool = Boolean(streetScope);
+      // Keyed by the street claim's own state_id (the id runAreaWorkerPool's
+      // generic claimNextArea/runArea plumbing treats as the opaque "area"
+      // string) — same pattern discoveryPlanJob.ts's street branch already
+      // uses, so a claim's real street name/key is always resolved through
+      // this map, never guessed from the id.
+      const streetClaims = new Map<string, StreetClaim>();
+      const streetWorkerId = `poolExpand:${(followUp?.scrapeJobId ?? reqId ?? "unknown").slice(0, 24)}`;
+      // Total distinct claim targets for THIS city, for pool-sizing
+      // purposes only (see runAreaWorkerPool's totalCuratedAreas doc
+      // comment) — the real street inventory count when street mode is
+      // active, the curated/default area list length otherwise. Concurrency
+      // WORKER COUNT logic itself (computeDynamicDiscoveryCapacity) is
+      // completely unchanged by this phase.
+      const totalClaimTargets = useStreetPool ? streetInventoryCountForCity : areas.length;
+
       // PHASE 32 — AREA SCAN-BUDGET OPTIMIZATION. One shared budget for
       // THIS city's area-pool run (STEP 5: sibling isolation — a fresh
       // coordinator per runGoogleAreaPoolForCity() call, never reused
@@ -647,7 +721,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         1,
         computeDynamicDiscoveryCapacity(
           target,
-          areas.length,
+          totalClaimTargets,
           browserPool.available(),
           env.GOOGLE_MAPS_AREA_WORKERS,
           getResourceCapacity().safeAreaWorkers,
@@ -676,17 +750,27 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         // Phase 6: resource-aware (cgroup PID/thread) ceiling — see
         // resourceCapacity.ts and discoveryPlanJob.ts's matching call site.
         safeResourceWorkers: getResourceCapacity().safeAreaWorkers,
-        totalCuratedAreas: areas.length,
+        totalCuratedAreas: totalClaimTargets,
         availableCapacity: browserPool.available(),
         requestedQuantity: target,
-        claimNextArea: (usedAreas) =>
-          claimAreaForCity(supabaseAdmin, {
+        claimNextArea: async (usedAreas) => {
+          if (useStreetPool && streetScope) {
+            const claim = await claimDiscoveryStreet(supabaseAdmin, streetScope, streetWorkerId, reqId ?? streetWorkerId);
+            if (!claim) return undefined;
+            if (usedAreas.has(claim.stateId)) {
+              throw new Error(`claim_discovery_street returned a duplicate active claim (${claim.stateId})`);
+            }
+            streetClaims.set(claim.stateId, claim);
+            return claim.stateId;
+          }
+          return claimAreaForCity(supabaseAdmin, {
             niche: singleNiche,
             countryCode: country.code,
             city,
             source: "google_maps",
             areas: areas.filter((a) => !usedAreas.has(a)),
-          }),
+          });
+        },
         // PHASE 42A — ROOT-CAUSE FIX: a browser-memory slot alone is not
         // enough. Also require a PID/thread-budget slot from the SAME
         // process-wide semaphore every OTHER concurrently-running area
@@ -750,7 +834,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           if (remaining <= 0) return false;
           const admissibleAreaCount = computeDynamicDiscoveryCapacity(
             remaining,
-            areas.length,
+            totalClaimTargets,
             browserPool.available(),
             env.GOOGLE_MAPS_AREA_WORKERS,
             getResourceCapacity().safeAreaWorkers,
@@ -779,8 +863,23 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           if (event.type === "worker_started") {
             areasStartedCount += 1;
             areaWorkerNumbers.set(event.area, event.slot + 1);
+            if (useStreetPool) {
+              const claim = streetClaims.get(event.area);
+              console.info(
+                `[poolExpandJob][street-discovery] claim city=${city} country=${country.code} ` +
+                  `street_key=${claim?.streetKey ?? "unknown"} street_name=${claim?.streetName ?? "unknown"}`,
+              );
+            }
           }
           if (event.type === "worker_finished") {
+            if (useStreetPool) {
+              // discovery_area_stats (recordAreaOutcome) is curated-area-
+              // specific bookkeeping — street completion state lives
+              // entirely in user_discovery_street_state, already written by
+              // claimDiscoveryStreet/completeDiscoveryStreetClaim inside
+              // runArea() below. Nothing further to persist here.
+              return;
+            }
             recordAreaOutcome(supabaseAdmin, {
               niche: singleNiche,
               countryCode: country.code,
@@ -793,6 +892,12 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           }
         },
         runArea: async (area): Promise<AreaRunOutcome> => {
+          // CRITMODE Phase 4 — PART B: resolve this claim's real street
+          // (undefined in area mode) once, up front — every place below
+          // that needs a human-readable label or the street-scoped query
+          // reads from here rather than re-deriving it.
+          const streetClaim = useStreetPool ? streetClaims.get(area) : undefined;
+          const areaLabel = streetClaim?.streetName ?? area;
           let discovered = 0;
           let accepted = 0;
           let rejected = 0;
@@ -832,7 +937,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           // existing per-city telemetry log line; it is no longer consulted
           // to size or grow this area's `askFor`.
           const askFor = computeAskFor(streamTarget);
-          const areaRecorder = stability.startArea(area, areaWorkerNumbers.get(area) ?? 0, streamTarget);
+          const areaRecorder = stability.startArea(areaLabel, areaWorkerNumbers.get(area) ?? 0, streamTarget);
           let lastPerf: Record<string, unknown> | undefined;
           // PHASE 11.1: the bridge's own termination classification for
           // THIS area's engine invocation (see EngineDoneInfo.terminationReason
@@ -952,20 +1057,53 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           }, AREA_PRODUCTIVITY_CHECK_INTERVAL_MS);
           productivityTimer.unref?.();
 
+          // CRITMODE Phase 4 — PART B (requirement 7 — heartbeat active
+          // claims): renews this street's lease periodically for the
+          // duration of this area's whole runEngineQuery() call, exactly
+          // like discoveryPlanJob.ts's own street branch. No-op in area
+          // mode (streetClaim undefined).
+          let streetHeartbeatStopped = false;
+          let streetHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
+          if (streetClaim && streetScope) {
+            const renewStreetClaim = () => {
+              void heartbeatDiscoveryStreetClaim(supabaseAdmin, streetClaim, streetScope!.userId, streetWorkerId)
+                .then((renewed) => {
+                  if (!renewed) {
+                    streetHeartbeatStopped = true;
+                    console.warn(
+                      `[poolExpandJob][street-discovery] claim heartbeat lost city=${city} street=${streetClaim.streetKey}`,
+                    );
+                  }
+                })
+                .catch((err: unknown) =>
+                  console.warn(`[poolExpandJob][street-discovery] claim heartbeat failed street=${streetClaim.streetKey}`, err),
+                );
+            };
+            streetHeartbeatTimer = setInterval(renewStreetClaim, STREET_HEARTBEAT_INTERVAL_MS);
+            streetHeartbeatTimer.unref?.();
+          }
+
           try {
             // PHASE 41 — restored: exactly ONE runEngineQuery() invocation
             // for this area's entire scan allocation (see `askFor` above).
             // No expansion loop, no second engine/browser/subprocess
             // launch for the same area — that repeated cold-start work was
             // the confirmed regression (see the `askFor` comment above).
+            //
+            // CRITMODE Phase 4 — PART B (requirement 6 — street-scoped
+            // query): a claimed street uses "[niche] on [street], [city]";
+            // area mode keeps the existing "[niche] in [area], [city]"
+            // query unchanged.
             for await (const lead of runEngineQuery(
               {
-                query: `${singleNiche} in ${area}, ${city}`,
+                query: streetClaim
+                  ? `${singleNiche} on ${areaLabel}, ${city}`
+                  : `${singleNiche} in ${areaLabel}, ${city}`,
                 city,
                 country: country.code,
                 niche: singleNiche,
                 region: payload.region,
-                area,
+                area: areaLabel,
                 max_results: askFor,        // scan budget — raw Maps supply cap (intentional over-fetch)
                 deliver_target: streamTarget,
                 required_channels: followUp?.channels ?? [],
@@ -1156,9 +1294,51 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 { terminationReason: effectiveTerminationReason, perfReceived: doneInfoReceived },
               ),
             );
+
+            if (streetHeartbeatTimer) clearInterval(streetHeartbeatTimer);
+            // CRITMODE Phase 4 — PART B (requirements 8/10 — completion
+            // semantics): a street is marked COMPLETED only when this
+            // area's ENTIRE engine operation reached genuine exhaustion —
+            // never merely because one lead was found (`accepted > 0` is
+            // irrelevant here), and never while its lease was already lost
+            // to another worker. Every other outcome (target reached,
+            // cancelled, idle/low-yield rotation, failure) leaves the claim
+            // to expire naturally so a later run — this user's or, after
+            // completion, a different user's — can still pick it up. Exact
+            // same completion gate as discoveryPlanJob.ts's own street
+            // branch (`engineTerminationReason === "SUCCESS_EXHAUSTED"`).
+            if (streetClaim && streetScope) {
+              const streetCompleted = !streetHeartbeatStopped
+                && effectiveTerminationReason === "SUCCESS_EXHAUSTED"
+                && await completeDiscoveryStreetClaim(supabaseAdmin, streetClaim, streetScope.userId, streetWorkerId);
+              if (streetCompleted) {
+                console.info(
+                  `[poolExpandJob][street-discovery] completed city=${city} country=${country.code} street=${streetClaim.streetKey}`,
+                );
+              } else {
+                console.info(
+                  `[poolExpandJob][street-discovery] claim left recoverable city=${city} street=${streetClaim.streetKey} ` +
+                    `termination=${effectiveTerminationReason ?? "unknown"}`,
+                );
+              }
+            }
           }
 
-          return { discovered, accepted, rejected, duplicates: 0, exhausted: areaExhausted, failed: false };
+          return {
+            discovered,
+            accepted,
+            rejected,
+            duplicates: 0,
+            exhausted: areaExhausted,
+            // A claimed-but-not-completed street is not a hard failure of
+            // this area worker (leads may still have been delivered) — it
+            // only means the claim itself stays recoverable for a future
+            // run. `failed` here only ever gates
+            // AreaWorkerPoolResult.allFailed (task-level retry decision,
+            // area mode only); street mode's own retry/recovery lives in
+            // the RPC lease, not this flag.
+            failed: false,
+          };
         },
       });
 

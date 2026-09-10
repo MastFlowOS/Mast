@@ -48,7 +48,7 @@ import sys as _sys
 # redirected sys.stdout. Search/verify mode (no "enrich" argv) are
 # unaffected — this only swaps sys.stdout under `enrich`.
 _REAL_STDOUT = _sys.stdout
-_JSON_CLI_MODES = ("enrich", "score", "qualify", "prioritize", "workflow", "crm", "analytics", "ai_coach", "mission_intelligence", "feedback")
+_JSON_CLI_MODES = ("enrich", "score", "qualify", "prioritize", "workflow", "crm", "analytics", "ai_coach", "mission_intelligence", "feedback", "street_inventory")
 if len(_sys.argv) > 1 and _sys.argv[1] in _JSON_CLI_MODES:
     _sys.stdout = _sys.stderr
 
@@ -2229,6 +2229,42 @@ async def _enrich_cli() -> None:
     _REAL_STDOUT.flush()
 
 
+async def build_street_inventory_v2(payload: dict) -> dict:
+    """
+    CRITMODE Phase 4 — PART A: the only Node-callable entrypoint onto the
+    existing (Phase 2A) `street_inventory/build.py` pipeline. Wraps the
+    already-implemented, already-tested `build_city_street_inventory()`
+    (real OSM/Overpass source, idempotent upsert-on-`street_key`
+    persistence — see that module and `street_inventory/repository.py`
+    for the actual fetch/persist logic, both UNCHANGED by this phase).
+    This function adds no new inventory logic of its own; it only gives
+    poolExpandJob.ts (via runEngineStreetInventory() in pythonBridge.ts)
+    a subprocess entrypoint onto it, the same way `enrich`/`verify`
+    already expose other library functions as CLI modes.
+    """
+    from street_inventory.build import build_city_street_inventory
+
+    return build_city_street_inventory(
+        country_code=payload["country_code"],
+        city=payload["city"],
+        country_name=payload.get("country_name"),
+        region=payload.get("region"),
+        area_name=payload.get("area_name"),
+    )
+
+
+async def _street_inventory_cli() -> None:
+    # Same _REAL_STDOUT convention as _enrich_cli() above — sys.stdout is
+    # redirected to stderr for every _JSON_CLI_MODES entry (see the top of
+    # this module), so this writes its one JSON result line to the real
+    # stdout pythonBridge.ts's runEngineStreetInventory() reads.
+    raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+    params = json.loads(raw_args)
+    result = await build_street_inventory_v2(params)
+    _REAL_STDOUT.write(json.dumps(result, default=str))
+    _REAL_STDOUT.flush()
+
+
 async def _run_with_graceful_shutdown(coro_fn) -> None:
     """
     BUG FIX (missing profiler report): the Node bridge (pythonBridge.ts /
@@ -3062,6 +3098,8 @@ if __name__ == "__main__":
         asyncio.run(_run_with_graceful_shutdown(_mission_intelligence_cli))
     elif len(sys.argv) > 1 and sys.argv[1] == "feedback":
         asyncio.run(_run_with_graceful_shutdown(_feedback_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "street_inventory":
+        asyncio.run(_run_with_graceful_shutdown(_street_inventory_cli))
     else:
         asyncio.run(_run_with_graceful_shutdown(_main_cli))
 

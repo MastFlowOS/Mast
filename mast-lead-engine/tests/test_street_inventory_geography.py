@@ -327,3 +327,180 @@ class TestUnambiguousCitiesStillWork:
         # resolves exactly as before this fix (fallback path, verified
         # and passed).
         assert normalize_osm_area("Clean City") == "Clean City"
+
+
+# ---------------------------------------------------------------------------
+# 6. CRITMODE follow-up -- region="NY" alone did not disambiguate the real
+#    "New York City" name collision (2 distinct OSM boundaries share that
+#    exact name). See overpass_source.py module docstring, "CRITMODE
+#    follow-up", and _resolve_area_scope() for the fix these tests
+#    exercise: region + country_code now build a real OSM ISO3166-2
+#    subdivision code ("US-NY") used to narrow an ambiguous name match to
+#    the boundary actually inside the caller's own state/province --
+#    generically, with no per-city table.
+# ---------------------------------------------------------------------------
+def _fake_osm_transport_with_region_collision(url, query, headers, timeout):
+    """
+    A second fake OSM world: "New York City" (unlike the module's other
+    fake world above) matches TWO distinct real boundaries by name alone
+    -- id 2, the genuine NYC relation, actually contained in NY state
+    (ISO3166-2="US-NY"); and id 9, an unrelated same-named boundary that
+    is NOT inside NY state. Narrowing the match to "US-NY" must yield
+    exactly boundary 2.
+    """
+    is_check = ".a out tags;" in query
+    has_ny_subdivision = 'ISO3166-2"="US-NY"' in query
+
+    if 'area["name"="New York City"]' in query:
+        if has_ny_subdivision:
+            # Narrowed to NY state: only the genuine city boundary lies
+            # inside it.
+            if is_check:
+                return {"elements": [{"type": "area", "id": 2, "tags": {"admin_level": "8", "boundary": "administrative"}}]}
+            return {"elements": [{"type": "way", "id": 100, "tags": {"highway": "residential", "name": "Broadway"}}]}
+        # Flat name match (no region narrowing): genuinely 2 distinct
+        # real-world boundaries share this exact name.
+        if is_check:
+            return {
+                "elements": [
+                    {"type": "area", "id": 2, "tags": {"admin_level": "8", "boundary": "administrative"}},
+                    {"type": "area", "id": 9, "tags": {"admin_level": "8", "boundary": "administrative"}},
+                ]
+            }
+        return {"elements": []}
+
+    return {"elements": []}
+
+
+class TestRegionDisambiguatesGenuineNameCollision:
+    def test_us_ny_new_york_resolves_to_correct_nyc_boundary(self):
+        # The exact reported failure: country=US city="New York" region=NY
+        # must no longer be rejected as ambiguous -- it must deterministically
+        # select the NYC boundary contained in NY state.
+        result = fetch_city_street_inventory(
+            country_code="US",
+            city="New York",
+            region="NY",
+            http_post=_fake_osm_transport_with_region_collision,
+        )
+        assert result.status == "ok"
+        assert {s.street_name for s in result.streets} == {"Broadway"}
+
+    def test_without_region_the_same_collision_is_still_rejected(self):
+        # No region supplied -> no disambiguation is even attempted;
+        # behavior must fall back to the pre-existing ambiguity rejection,
+        # never silently pick one of the two boundaries.
+        result = fetch_city_street_inventory(
+            country_code="US",
+            city="New York",
+            http_post=_fake_osm_transport_with_region_collision,
+        )
+        assert result.status == "unavailable"
+        assert "ambiguous" in result.reason.lower()
+        assert result.streets == ()
+
+    def test_genuinely_ambiguous_city_is_still_rejected_even_with_region(self):
+        # A city whose two same-named boundaries are BOTH inside the
+        # supplied region -- narrowing by subdivision cannot disambiguate
+        # a real, unresolved ambiguity, and must not paper over it.
+        def transport(url, query, headers, timeout):
+            is_check = ".a out tags;" in query
+            if 'area["name"="Twin City"]' in query:
+                # Same 2-element response regardless of whether the
+                # ISO3166-2 narrowing clause is present -- both boundaries
+                # are genuinely inside the same state.
+                if is_check:
+                    return {
+                        "elements": [
+                            {"type": "area", "id": 30, "tags": {"admin_level": "8"}},
+                            {"type": "area", "id": 31, "tags": {"admin_level": "8"}},
+                        ]
+                    }
+                return {"elements": []}
+            return {"elements": []}
+
+        result = fetch_city_street_inventory(
+            country_code="US",
+            city="Twin City",
+            region="MN",
+            http_post=transport,
+        )
+        assert result.status == "unavailable"
+        assert "ambiguous" in result.reason.lower()
+        assert result.streets == ()
+
+    def test_region_narrowed_match_still_rejects_state_level_boundary(self):
+        # Even after region-based narrowing produces exactly one match,
+        # the existing admin_level safety net still applies -- narrowing
+        # must not become a way to bypass the state/country-level check.
+        def transport(url, query, headers, timeout):
+            is_check = ".a out tags;" in query
+            has_subdivision = 'ISO3166-2"="US-NY"' in query
+            if 'area["name"="Some Region City"]' in query:
+                if has_subdivision:
+                    if is_check:
+                        # Narrowing "succeeds" (exactly one match) but that
+                        # match is itself a state-level boundary.
+                        return {"elements": [{"type": "area", "id": 40, "tags": {"admin_level": "4"}}]}
+                    return {"elements": []}
+                # Flat match: ambiguous, forcing the narrowing attempt.
+                if is_check:
+                    return {
+                        "elements": [
+                            {"type": "area", "id": 40, "tags": {"admin_level": "4"}},
+                            {"type": "area", "id": 41, "tags": {"admin_level": "8"}},
+                        ]
+                    }
+                return {"elements": []}
+            return {"elements": []}
+
+        result = fetch_city_street_inventory(
+            country_code="US",
+            city="Some Region City",
+            region="NY",
+            http_post=transport,
+        )
+        assert result.status == "unavailable"
+        assert "4" in result.reason
+        assert result.streets == ()
+
+    def test_explicit_area_name_is_unaffected_by_region_disambiguation(self):
+        # Explicit area_name still skips verification entirely, region or
+        # not -- an explicit area_name is caller-vetted (unchanged from
+        # before this fix). Confirm no ISO3166-2 narrowing query is ever
+        # issued for this path.
+        calls = []
+
+        def transport(url, query, headers, timeout):
+            calls.append(query)
+            return {
+                "elements": [
+                    {"type": "way", "id": 1, "tags": {"highway": "residential", "name": "Main St"}},
+                ]
+            }
+
+        result = fetch_city_street_inventory(
+            country_code="US",
+            city="New York",
+            region="NY",
+            area_name="New York City",
+            http_post=transport,
+        )
+        assert result.status == "ok"
+        assert len(result.streets) == 1
+        assert len(calls) == 1  # only the real street fetch -- no verification call at all
+        assert "ISO3166-2" not in calls[0]
+
+    def test_region_that_is_a_full_name_not_a_code_skips_disambiguation(self):
+        # A region value that looks like a full subdivision name rather
+        # than a short code ("New York" instead of "NY") must not be
+        # guessed into a bogus ISO3166-2 filter -- disambiguation is
+        # skipped and the original ambiguity rejection still applies.
+        result = fetch_city_street_inventory(
+            country_code="US",
+            city="New York",
+            region="New York",  # full name, not a code
+            http_post=_fake_osm_transport_with_region_collision,
+        )
+        assert result.status == "unavailable"
+        assert "ambiguous" in result.reason.lower()

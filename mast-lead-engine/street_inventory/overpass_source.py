@@ -146,6 +146,39 @@ rather than silently generate a broad inventory" instruction:
            district), so this only refuses the boundary levels that
            are unambiguously "not a city" everywhere OSM is used —
            see this function's own docstring for that trade-off.
+
+CRITMODE follow-up — `region="NY"` alone did not fix the NYC case
+----------------------------------------------------------------------
+The layer 2 safety net above (v1) treated ANY multi-match as simply
+ambiguous and refused it — correct for a truly ambiguous name, but it
+turned out "New York City" itself is `area["name"="New York City"]`
+against 2 distinct real-world OSM boundaries (not the state; the
+curated mapping already prevents that collision). The caller
+(`rebuildNewYorkStreetInventory.ts`) already supplied `region="NY"`
+expecting it to disambiguate this — but v1 never read `region` at
+all; it reached `fetch_city_street_inventory()` and was used only for
+`StreetRecord.region` / `street_key` construction, never for boundary
+resolution or verification. Passing `region` did nothing to fix the
+ambiguity because nothing downstream looked at it.
+
+The fix (`_resolve_area_scope()`, v2, this section) is generic — no
+per-city table: when a name match is ambiguous AND the caller supplied
+both `region` and `country_code`, it builds a real, standard OSM
+`ISO3166-2` subdivision code (e.g. "US" + "NY" -> "US-NY" — the exact
+tag OSM already puts on the New York STATE boundary relation, and on
+every other country's first-level-subdivision relations) and retries
+the same name match narrowed to boundaries contained within that
+subdivision (`area["ISO3166-2"="US-NY"]->.searchRegion; area["name"=
+"New York City"](area.searchRegion)->.a;`). If that narrows the match
+to exactly one boundary, THAT boundary is used — for both the
+(re-verified) admin_level check and, critically, the real street
+query, which is built with the identical `ISO3166-2`-narrowed shape
+(see `build_street_ql()`'s own `iso3166_2` parameter) so the ways
+fetch cannot re-introduce the same collision the flat name would.
+Region-based narrowing to anything other than exactly one boundary
+(zero, or still more than one) falls back to the original "reject as
+ambiguous" outcome — this is a resolution path, not a new way to
+suppress a genuine ambiguity.
 """
 
 from __future__ import annotations
@@ -206,12 +239,36 @@ def _http_post_urllib(url: str, query: str, headers: dict[str, str], timeout: fl
         return json.loads(response.read().decode("utf-8"))
 
 
-def build_street_ql(area_name: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> str:
+def build_street_ql(
+    area_name: str,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    iso3166_2: Optional[str] = None,
+) -> str:
     """
     Builds the Overpass QL query text for enumerating named streets
     inside `area_name`. See module docstring, "Query shape".
+
+    When `iso3166_2` is given (e.g. "US-NY"), the area lookup is first
+    constrained to the boundary carrying that `ISO3166-2` tag (a real,
+    standard OSM tag on first-level-subdivision — state/province —
+    relations) before matching `area_name` inside it. This is how
+    `_resolve_area_scope()` disambiguates a name that matches more than
+    one same-named OSM boundary nationwide: narrow to the one inside
+    the caller's own state/province first, THEN match by name — see
+    that function's docstring. When `iso3166_2` is None (the common,
+    unambiguous case), this is byte-for-byte the original flat
+    `area["name"=...]` query.
     """
     escaped_area = area_name.replace('"', '\\"')
+    if iso3166_2:
+        escaped_iso = iso3166_2.replace('"', '\\"')
+        return (
+            f"[out:json][timeout:{timeout_seconds}];\n"
+            f'area["ISO3166-2"="{escaped_iso}"]->.searchRegion;\n'
+            f'area["name"="{escaped_area}"](area.searchRegion)->.searchArea;\n'
+            f'way["highway"]["name"](area.searchArea);\n'
+            f"out tags;"
+        )
     return (
         f"[out:json][timeout:{timeout_seconds}];\n"
         f'area["name"="{escaped_area}"]->.searchArea;\n'
@@ -247,22 +304,40 @@ _MAX_BROAD_ADMIN_LEVEL = 4
 #:
 #: This value specifically marks the fix described in this module's own
 #: "CRITMODE — street inventory geography bug" section: the curated
-#: "New York" -> "New York City" mapping plus `_verify_resolved_boundary()`.
-#: Any row still carrying an older value (or the `StreetRecord` default,
-#: `"unversioned"` — real for every row inserted before this constant
-#: existed) was produced before that fix existed and must not be trusted
-#: as proof a city's inventory is current, no matter its row count.
-BOUNDARY_VERSION = "admin-level-verified-v1"
+#: "New York" -> "New York City" mapping plus `_resolve_area_scope()`
+#: (formerly `_verify_resolved_boundary()`), including its region-based
+#: same-name-collision disambiguation (see that function's docstring —
+#: "New York City" itself turned out to match 2 distinct real-world OSM
+#: boundaries by name alone, which the v1 admin_level-only check could
+#: only reject, not resolve). Any row still carrying an older value (or
+#: the `StreetRecord` default, `"unversioned"` — real for every row
+#: inserted before this constant existed) was produced before that fix
+#: existed and must not be trusted as proof a city's inventory is
+#: current, no matter its row count.
+BOUNDARY_VERSION = "admin-level-verified-v2-region-disambiguated"
 
 
-def build_boundary_check_ql(area_name: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> str:
+def build_boundary_check_ql(
+    area_name: str,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    iso3166_2: Optional[str] = None,
+) -> str:
     """
     Builds the (tiny, tags-only, no ways) Overpass QL query text used
-    by `_verify_resolved_boundary()` to inspect exactly which OSM
-    area(s) `area_name` matches before trusting it to scope the real
-    street query. See module docstring for why this exists.
+    by `_resolve_area_scope()` to inspect exactly which OSM area(s)
+    `area_name` matches before trusting it to scope the real street
+    query. See module docstring for why this exists, and
+    `build_street_ql()` for what `iso3166_2` narrows the match to.
     """
     escaped_area = area_name.replace('"', '\\"')
+    if iso3166_2:
+        escaped_iso = iso3166_2.replace('"', '\\"')
+        return (
+            f"[out:json][timeout:{timeout_seconds}];\n"
+            f'area["ISO3166-2"="{escaped_iso}"]->.searchRegion;\n'
+            f'area["name"="{escaped_area}"](area.searchRegion)->.a;\n'
+            f".a out tags;"
+        )
     return (
         f"[out:json][timeout:{timeout_seconds}];\n"
         f'area["name"="{escaped_area}"]->.a;\n'
@@ -270,30 +345,71 @@ def build_boundary_check_ql(area_name: str, timeout_seconds: int = DEFAULT_TIMEO
     )
 
 
-def _verify_resolved_boundary(
+#: ISO 3166-2 subdivision codes ("US-NY", "CA-ON", "GB-LND", ...) are
+#: short — almost always 2-3 characters after the country prefix — and
+#: alphanumeric, never containing a space. A `region` value that is
+#: longer than this or contains whitespace is almost certainly a full
+#: subdivision NAME ("New York", "Ontario"), not the CODE the OSM
+#: `ISO3166-2` tag actually stores, and guessing a code out of a name
+#: would silently fabricate a filter that matches nothing (or, worse,
+#: something unrelated) rather than degrading safely.
+_MAX_ISO3166_2_SUBDIVISION_CODE_LENGTH = 3
+
+
+def _resolve_iso3166_2(country_code: Optional[str], region: Optional[str]) -> Optional[str]:
+    """
+    Builds a best-effort ISO 3166-2 subdivision code (e.g. "US" + "NY"
+    -> "US-NY") from the caller-supplied `country_code` + `region`,
+    for use as a *disambiguating* containment filter — see
+    `_resolve_area_scope()`.
+
+    This is deliberately generic (no per-country/per-city table): ISO
+    3166-2 is the real, standard tag OSM already puts on first-level-
+    subdivision (state/province) boundary relations, and `region` is
+    already the same kind of short subdivision code this codebase
+    passes to every other provider (see `DiscoveryQueryContext.region`
+    and `GoogleMapsDiscoveryRequest.region`) — so no new caller-facing
+    concept is introduced, only a new consumer of the existing one.
+
+    Returns `None` — meaning "don't attempt containment-based
+    disambiguation" — when either piece is missing, or `region`
+    doesn't look like a code (see
+    `_MAX_ISO3166_2_SUBDIVISION_CODE_LENGTH`). A skipped disambiguation
+    degrades to the pre-existing "reject as ambiguous" behavior; it
+    never fabricates a guessed code.
+    """
+    if not country_code or not region:
+        return None
+    cc = country_code.strip().upper()
+    rc = region.strip().upper()
+    if not cc or not rc:
+        return None
+    if " " in rc or len(rc) > _MAX_ISO3166_2_SUBDIVISION_CODE_LENGTH:
+        return None
+    return f"{cc}-{rc}"
+
+
+def _run_boundary_check_query(
     poster: HttpPost,
     endpoint_url: str,
-    resolved_area: str,
-    city: str,
+    query: str,
     timeout_seconds: int,
     hard_deadline: float,
-) -> Optional[StreetInventoryResult]:
+    city: str,
+    resolved_area: str,
+) -> tuple[Optional[list], Optional[StreetInventoryResult]]:
     """
-    Confirms `resolved_area` names exactly one OSM boundary, and that
-    boundary is not itself a country/state-level administrative area
-    (see module docstring). Returns `None` when the boundary checks
-    out (caller proceeds with the real street query); returns a
-    populated `StreetInventoryResult(status="unavailable", ...)` when
-    it does not — the caller returns that result directly rather than
-    silently running the street query against an unverified area.
-
-    Only called for the auto-resolved-from-`city` path (see
-    `fetch_city_street_inventory`'s own `area_name` handling) — an
-    `area_name` the caller supplied explicitly is treated as already
-    vetted, exactly like the existing curated borough/neighborhood
-    table.
+    Runs one boundary-check query (either the flat `build_boundary_check_ql`
+    shape or its `iso3166_2`-narrowed variant) and returns
+    `(elements, None)` on a well-formed transport response — `elements`
+    may legitimately be an empty list, meaning zero OSM boundaries
+    matched — or `(None, failure_result)` on a transport/parse error,
+    which the caller must return as-is. Factored out of
+    `_resolve_area_scope()` because that function now runs this same
+    request/error-handling shape up to twice (an initial flat check,
+    and — only when that one comes back ambiguous and a region is
+    available — a second, region-narrowed retry).
     """
-    query = build_boundary_check_ql(resolved_area, timeout_seconds=timeout_seconds)
     try:
         payload = call_with_hard_deadline(
             poster, endpoint_url, query, _HEADERS, float(timeout_seconds),
@@ -304,7 +420,7 @@ def _verify_resolved_boundary(
             "[street-inventory] boundary verification transport error for city=%r area=%r: %s",
             city, resolved_area, exc,
         )
-        return StreetInventoryResult(
+        return None, StreetInventoryResult(
             status="unavailable", reason=f"boundary verification failed: {exc}"
         )
     except (ValueError, json.JSONDecodeError) as exc:
@@ -312,11 +428,71 @@ def _verify_resolved_boundary(
             "[street-inventory] malformed boundary verification response for city=%r area=%r: %s",
             city, resolved_area, exc,
         )
-        return StreetInventoryResult(
+        return None, StreetInventoryResult(
             status="unavailable", reason=f"malformed boundary verification response: {exc}"
         )
 
     elements = payload.get("elements") if isinstance(payload, dict) else None
+    return (elements or []), None
+
+
+def _resolve_area_scope(
+    poster: HttpPost,
+    endpoint_url: str,
+    resolved_area: str,
+    city: str,
+    timeout_seconds: int,
+    hard_deadline: float,
+    region: Optional[str] = None,
+    country_code: Optional[str] = None,
+) -> tuple[Optional[StreetInventoryResult], Optional[str]]:
+    """
+    Confirms `resolved_area` names exactly one OSM boundary — resolving
+    a same-named collision generically via `region`/`country_code` when
+    one exists — and that the (single, resolved) boundary is not
+    itself a country/state-level administrative area (see module
+    docstring). Returns `(None, iso3166_2_used)` when the boundary
+    checks out, where `iso3166_2_used` tells the caller which query
+    shape actually identified a unique boundary — `None` for the plain
+    `area["name"=...]` match, or e.g. `"US-NY"` when disambiguation via
+    `region` was needed — so `build_street_ql()` can be called with the
+    IDENTICAL scope for the real street fetch (using the flat name
+    again after an `ISO3166-2`-narrowed disambiguation would just
+    re-introduce the same collision in the ways query). Returns
+    `(populated_result, None)` when the boundary does not check out —
+    the caller returns that result directly.
+
+    Only called for the auto-resolved-from-`city` path (see
+    `fetch_city_street_inventory`'s own `area_name` handling) — an
+    `area_name` the caller supplied explicitly is treated as already
+    vetted, exactly like the existing curated borough/neighborhood
+    table.
+
+    Disambiguation strategy (why `region=NY` alone didn't fix the NYC
+    case before this function existed): the ORIGINAL verification only
+    ever asked Overpass "how many boundaries are named X" — `region`
+    was collected from the caller but never reached the Overpass query
+    at all, so two distinct real-world OSM boundaries sharing the exact
+    name "New York City" (a genuine same-name collision, the same
+    *shape* of bug as the state/city collision this safety net already
+    catches, just between two same-level names instead of a state and
+    a city) still triggered the ambiguity rejection. Given a `region` +
+    `country_code`, this function builds a real, standard OSM
+    `ISO3166-2` code (e.g. "US-NY") and retries the SAME name match
+    narrowed to boundaries contained within that subdivision. This is
+    generic — it uses no per-city table — so it applies equally to any
+    other city whose name happens to collide nationwide but not within
+    its own state/province.
+    """
+    elements, failure = _run_boundary_check_query(
+        poster, endpoint_url, build_boundary_check_ql(resolved_area, timeout_seconds=timeout_seconds),
+        timeout_seconds, hard_deadline, city, resolved_area,
+    )
+    if failure is not None:
+        return failure, None
+
+    iso3166_2_used: Optional[str] = None
+
     if not elements:
         log.warning(
             "[street-inventory] no OSM boundary named %r for city=%r — refusing to query an "
@@ -326,20 +502,54 @@ def _verify_resolved_boundary(
         return StreetInventoryResult(
             status="unavailable",
             reason=f"no OSM boundary found named {resolved_area!r} for city={city!r}",
-        )
+        ), None
+
     if len(elements) > 1:
-        log.warning(
-            "[street-inventory] ambiguous OSM area name %r for city=%r matched %d distinct "
-            "boundaries — refusing to silently pick one",
-            resolved_area, city, len(elements),
-        )
-        return StreetInventoryResult(
-            status="unavailable",
-            reason=(
-                f"ambiguous OSM area name {resolved_area!r} for city={city!r} matched "
-                f"{len(elements)} distinct boundaries"
-            ),
-        )
+        iso3166_2 = _resolve_iso3166_2(country_code, region)
+        if iso3166_2:
+            log.info(
+                "[street-inventory] area name %r for city=%r matched %d boundaries — retrying "
+                "narrowed to subdivision %r before rejecting as ambiguous",
+                resolved_area, city, len(elements), iso3166_2,
+            )
+            narrowed_elements, failure = _run_boundary_check_query(
+                poster, endpoint_url,
+                build_boundary_check_ql(resolved_area, timeout_seconds=timeout_seconds, iso3166_2=iso3166_2),
+                timeout_seconds, hard_deadline, city, resolved_area,
+            )
+            if failure is not None:
+                return failure, None
+            if narrowed_elements and len(narrowed_elements) == 1:
+                elements = narrowed_elements
+                iso3166_2_used = iso3166_2
+            else:
+                log.warning(
+                    "[street-inventory] ambiguous OSM area name %r for city=%r matched %d distinct "
+                    "boundaries and narrowing to subdivision %r matched %d — refusing to silently "
+                    "pick one",
+                    resolved_area, city, len(elements), iso3166_2, len(narrowed_elements),
+                )
+                return StreetInventoryResult(
+                    status="unavailable",
+                    reason=(
+                        f"ambiguous OSM area name {resolved_area!r} for city={city!r} matched "
+                        f"{len(elements)} distinct boundaries (narrowing to subdivision "
+                        f"{iso3166_2!r} matched {len(narrowed_elements)})"
+                    ),
+                ), None
+        else:
+            log.warning(
+                "[street-inventory] ambiguous OSM area name %r for city=%r matched %d distinct "
+                "boundaries — refusing to silently pick one",
+                resolved_area, city, len(elements),
+            )
+            return StreetInventoryResult(
+                status="unavailable",
+                reason=(
+                    f"ambiguous OSM area name {resolved_area!r} for city={city!r} matched "
+                    f"{len(elements)} distinct boundaries"
+                ),
+            ), None
 
     tags = elements[0].get("tags") or {}
     admin_level_raw = tags.get("admin_level")
@@ -361,9 +571,9 @@ def _verify_resolved_boundary(
                     f"country/state-level boundary (admin_level={admin_level_raw}), "
                     f"not a city"
                 ),
-            )
+            ), None
 
-    return None
+    return None, iso3166_2_used
 
 
 def fetch_city_street_inventory(
@@ -426,19 +636,22 @@ def fetch_city_street_inventory(
     # `city` path: an explicit `area_name` is caller-vetted (same trust
     # already placed in the curated borough/neighborhood table) and is
     # used as-is, exactly as before this fix.
+    resolved_iso3166_2: Optional[str] = None
     if not area_name_was_explicit:
         _t_verify_start = time.monotonic()
-        verification_failure = _verify_resolved_boundary(
+        verification_failure, resolved_iso3166_2 = _resolve_area_scope(
             poster, endpoint_url, resolved_area, city, timeout_seconds, hard_deadline,
+            region=region, country_code=country_code,
         )
         log.info(
-            "[street-inventory] boundary verification city=%r area=%r ok=%s elapsed=%.3fs",
-            city, resolved_area, verification_failure is None, time.monotonic() - _t_verify_start,
+            "[street-inventory] boundary verification city=%r area=%r ok=%s iso3166_2=%r elapsed=%.3fs",
+            city, resolved_area, verification_failure is None, resolved_iso3166_2,
+            time.monotonic() - _t_verify_start,
         )
         if verification_failure is not None:
             return verification_failure
 
-    query = build_street_ql(resolved_area, timeout_seconds=timeout_seconds)
+    query = build_street_ql(resolved_area, timeout_seconds=timeout_seconds, iso3166_2=resolved_iso3166_2)
 
     # STAGE 2/4: the actual Overpass network call. Bounded twice: (a) the
     # per-socket-operation `timeout_seconds` urllib itself enforces, and

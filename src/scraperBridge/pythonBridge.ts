@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { env } from "../config/env.js";
 import { workerMetrics } from "../lib/observability.js";
 import {
@@ -318,6 +319,86 @@ export type EngineVerifyResult = {
 const PYTHON_CMD = process.platform === "win32" ? "python" : "python3";
 
 /**
+ * ROOT CAUSE FIX (CRITMODE — `spawn python ENOENT` inside
+ * `runEngineStreetInventory()` and every other `runEngine*` call): each of
+ * these builds its subprocess's `cwd` via
+ * `path.resolve(env.SCRAPER_ENGINE_PATH)`. Two independent problems compound
+ * here, and confirming both against the actual checkout is what pinned this
+ * down (not just PYTHON_CMD/PATH, which every raw-spawn control in the
+ * CRITMODE report already showed were fine):
+ *
+ * 1. `SCRAPER_ENGINE_PATH` defaults (see config/env.ts, unset in this
+ *    project's `.env`) to the *relative* string `"../mast-lead-engine"` —
+ *    documented as "sibling checkout" in .env.example. A bare
+ *    `path.resolve()` on a relative path resolves against `process.cwd()`,
+ *    i.e. wherever the Node process happened to be *launched* from — not
+ *    a stable stand-in for "where this repo lives on disk". `npm run
+ *    dev:worker` from the project root happens to make the two coincide,
+ *    but a compiled `dist/` entry point, a Windows service/scheduled-task
+ *    wrapper, or PM2 with its own working directory does not.
+ *
+ * 2. More directly: this checkout does NOT follow the documented
+ *    sibling-repo layout at all — `mast-lead-engine/` is vendored INSIDE
+ *    this project (`<project-root>/mast-lead-engine/service.py`), not one
+ *    level above it. So even resolved against the correct project root,
+ *    `"../mast-lead-engine"` points at a directory that simply does not
+ *    exist on disk for this repo — confirmed directly against the
+ *    uploaded tree. That is exactly why a raw `spawn` given the literal,
+ *    already-verified engine directory succeeds while the real function,
+ *    deriving that same directory from the sibling-repo default, does
+ *    not: on Windows, `CreateProcess` fails outright when handed a
+ *    nonexistent `cwd`, and Node reports that as `spawn <cmd> ENOENT`
+ *    with `child.pid === undefined` — indistinguishable, from the
+ *    caller's side, from "python isn't installed".
+ *
+ * Fix (handles both problems, without hardcoding any machine-specific
+ * path or touching PATH/Python/Supabase/the Python builder):
+ *   - Anchor relative-path resolution to this file's own location (via
+ *     `import.meta.url`, stable across dev/compiled/any launcher) instead
+ *     of `process.cwd()`.
+ *   - If the configured path (sibling-default or an operator override)
+ *     doesn't exist, fall back to the vendored-inside-the-project layout
+ *     (`<project-root>/mast-lead-engine`) actually present in this repo,
+ *     before giving up. An operator's explicit, *valid* SCRAPER_ENGINE_PATH
+ *     (absolute or relative) is always honored unchanged — the fallback
+ *     only ever fires when the configured path is missing, so deployments
+ *     that DO follow the sibling convention are completely unaffected.
+ */
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function resolveEnginePath(): string {
+  const configured = path.isAbsolute(env.SCRAPER_ENGINE_PATH)
+    ? env.SCRAPER_ENGINE_PATH
+    : path.resolve(PROJECT_ROOT, env.SCRAPER_ENGINE_PATH);
+
+  if (fs.existsSync(configured)) return configured;
+
+  const vendoredInside = path.resolve(PROJECT_ROOT, "mast-lead-engine");
+  if (vendoredInside !== configured && fs.existsSync(vendoredInside)) return vendoredInside;
+
+  // Neither exists — return the originally configured path so the ENOENT
+  // (now accompanied by describeSpawnError's diagnostics below) still
+  // points at what was actually tried, rather than masking a genuine
+  // misconfiguration.
+  return configured;
+}
+
+/**
+ * Diagnostic-only (no behavior change): on a spawn `"error"`, report the
+ * exact `cwd` that was used and whether it actually exists on disk. An
+ * ENOENT caused by a missing/misresolved engine directory looks identical
+ * to "python isn't on PATH" from the raw error alone — this line is what
+ * makes the two distinguishable in logs going forward.
+ */
+function describeSpawnError(mode: string, enginePath: string, err: unknown): string {
+  const exists = fs.existsSync(enginePath);
+  return (
+    `[scraper-bridge:${mode}] spawn failed. cwd=${enginePath} (exists on disk: ${exists}) ` +
+    `PYTHON_CMD=${PYTHON_CMD} platform=${process.platform} process.cwd()=${process.cwd()} — ${String(err)}`
+  );
+}
+
+/**
  * LIFECYCLE FIX (race condition — child-process exit has exactly ONE
  * authoritative listener): a Node `ChildProcess` only ever emits `"close"`
  * once, and EventEmitter does NOT replay past events to listeners added
@@ -488,7 +569,7 @@ export const __testing = { watchChildClose, gracefulKillProcessTree, killProcess
  * response, not a stream of many results.
  */
 export async function runEngineVerify(params: EngineVerifyParams, signal?: AbortSignal): Promise<EngineVerifyResult> {
-  const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
+  const enginePath = resolveEnginePath();
 
   const child = spawn(PYTHON_CMD, ["service.py", "verify"], {
     cwd: enginePath,
@@ -497,6 +578,7 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
   });
 
   child.on("error", (err) => {
+    console.warn(describeSpawnError("verify", enginePath, err));
     console.warn(`[scraper-bridge:verify] child process error (PID: ${child.pid})`, err);
   });
   child.stdin.on("error", (err: any) => {
@@ -566,7 +648,7 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
  * argument and result type differ.
  */
 export async function runEngineEnrich(params: EngineEnrichParams, signal?: AbortSignal): Promise<EngineEnrichResult> {
-  const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
+  const enginePath = resolveEnginePath();
 
   const child = spawn(PYTHON_CMD, ["service.py", "enrich"], {
     cwd: enginePath,
@@ -575,6 +657,7 @@ export async function runEngineEnrich(params: EngineEnrichParams, signal?: Abort
   });
 
   child.on("error", (err) => {
+    console.warn(describeSpawnError("enrich", enginePath, err));
     console.warn(`[scraper-bridge:enrich] child process error (PID: ${child.pid})`, err);
   });
   child.stdin.on("error", (err: any) => {
@@ -649,7 +732,7 @@ export async function runEngineStreetInventory(
   params: EngineStreetInventoryParams,
   signal?: AbortSignal,
 ): Promise<EngineStreetInventoryResult> {
-  const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
+  const enginePath = resolveEnginePath();
 
   const child = spawn(PYTHON_CMD, ["service.py", "street_inventory"], {
     cwd: enginePath,
@@ -658,6 +741,7 @@ export async function runEngineStreetInventory(
   });
 
   child.on("error", (err) => {
+    console.warn(describeSpawnError("street_inventory", enginePath, err));
     console.warn(`[scraper-bridge:street_inventory] child process error (PID: ${child.pid})`, err);
   });
   child.stdin.on("error", (err: any) => {
@@ -883,7 +967,7 @@ export async function* runEngineQuery(
   onDone?: (info: EngineDoneInfo) => void,
   options: EngineRunOptions = {},
 ): AsyncGenerator<EngineLead> {
-  const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
+  const enginePath = resolveEnginePath();
 
   // Phase 2: spawn timing
   const _t0 = process.hrtime.bigint();
@@ -904,6 +988,7 @@ export async function* runEngineQuery(
   const spawnMs = hrElapsedMs();
 
   child.on("error", (err) => {
+    console.warn(describeSpawnError("query", enginePath, err));
     console.warn(`[scraper-bridge] child process error (PID: ${child.pid})`, err);
   });
   child.stdin.on("error", (err: any) => {
@@ -1602,7 +1687,7 @@ export type EngineAICoachResult = {
  * to runEngineVerify / runEngineEnrich.
  */
 async function runEngineRPC<T>(mode: string, payload: unknown, signal?: AbortSignal): Promise<T> {
-  const enginePath = path.resolve(env.SCRAPER_ENGINE_PATH);
+  const enginePath = resolveEnginePath();
 
   const child = spawn(PYTHON_CMD, ["service.py", mode], {
     cwd: enginePath,

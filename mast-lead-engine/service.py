@@ -2260,7 +2260,26 @@ async def _street_inventory_cli() -> None:
     # stdout pythonBridge.ts's runEngineStreetInventory() reads.
     raw_args = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
     params = json.loads(raw_args)
+    # DEBUG (street-inventory hang investigation): this is the ONLY log
+    # line that previously existed between the Node-side "starting build"
+    # log and the (possibly much later) result line — there was no
+    # confirmation the CLI had even parsed its stdin and begun calling
+    # into build_city_street_inventory(). Cheap, stays permanently: it's
+    # the anchor every downstream stage timestamp below is measured from.
+    _cli_start = _time.monotonic()
+    log.info(
+        "[street-inventory-cli] begin country=%s city=%s",
+        params.get("country_code"),
+        params.get("city"),
+    )
     result = await build_street_inventory_v2(params)
+    log.info(
+        "[street-inventory-cli] done country=%s city=%s status=%s elapsed=%.1fs",
+        params.get("country_code"),
+        params.get("city"),
+        result.get("status"),
+        _time.monotonic() - _cli_start,
+    )
     _REAL_STDOUT.write(json.dumps(result, default=str))
     _REAL_STDOUT.flush()
 

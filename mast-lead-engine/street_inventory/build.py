@@ -66,6 +66,12 @@ def build_city_street_inventory(
         log.info("[street-inventory] unavailable for city=%r: %s", city, result.reason)
         return {"status": "unavailable", "reason": result.reason}
 
+    # STAGE 4/4: persistence. See repository.py's own upsert_streets() for
+    # per-batch progress/timing logs — this line just marks the boundary
+    # between "fetched from Overpass" and "handed to the DB layer" so a
+    # reader of the logs can tell which side of that line execution was
+    # on when it stalled.
+    log.info("[street-inventory] persisting city=%r fetched=%d", city, len(result.streets))
     repo = repository or SupabaseStreetInventoryRepository()
     upsert_summary = repo.upsert_streets(list(result.streets))
 

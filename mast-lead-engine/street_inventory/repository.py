@@ -36,16 +36,30 @@ section rules out.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Sequence
 
+from street_inventory._deadline import call_with_hard_deadline
 from street_inventory.models import StreetRecord
+
+log = logging.getLogger(__name__)
 
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 DEFAULT_TABLE = "discovery_streets"
 DEFAULT_BATCH_SIZE = 500
+
+# CRITMODE — street-inventory hang investigation: same rationale as
+# overpass_source.py's HARD_DEADLINE_BUFFER_SECONDS — `timeout=` on
+# `urlopen` bounds individual socket operations, not the whole call
+# (see `_deadline.py`). This is the hard ceiling PER BATCH, not for the
+# whole upsert; `upsert_streets()` logs progress per batch below so a
+# stall is attributable to a specific batch, not just "DB write" as a
+# whole.
+HARD_DEADLINE_BUFFER_SECONDS = 15.0
 
 
 def _street_record_to_row(record: StreetRecord) -> dict[str, Any]:
@@ -123,14 +137,29 @@ class SupabaseStreetInventoryRepository:
         if not records:
             return {"upserted": 0, "batches": 0}
 
+        total_batches = (len(records) + self._batch_size - 1) // self._batch_size
+        log.info(
+            "[street-inventory] db upsert start records=%d batch_size=%d total_batches=%d",
+            len(records), self._batch_size, total_batches,
+        )
+        _t_upsert_start = time.monotonic()
         batches = 0
         upserted = 0
         for start in range(0, len(records), self._batch_size):
             chunk = records[start : start + self._batch_size]
             rows = [_street_record_to_row(r) for r in chunk]
+            _t_batch_start = time.monotonic()
             self._upsert_batch(rows)
             batches += 1
             upserted += len(rows)
+            log.info(
+                "[street-inventory] db upsert batch %d/%d done rows=%d elapsed=%.1fs",
+                batches, total_batches, len(rows), time.monotonic() - _t_batch_start,
+            )
+        log.info(
+            "[street-inventory] db upsert done batches=%d upserted=%d elapsed=%.1fs",
+            batches, upserted, time.monotonic() - _t_upsert_start,
+        )
         return {"upserted": upserted, "batches": batches}
 
     def _upsert_batch(self, rows: list[dict[str, Any]]) -> None:
@@ -147,9 +176,23 @@ class SupabaseStreetInventoryRepository:
         }
         data = json.dumps(rows).encode("utf-8")
         request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-            status = response.getcode()
-            if status not in (200, 201, 204):
-                raise StreetInventoryRepositoryError(
-                    f"Supabase upsert into discovery_streets returned unexpected status {status}"
-                )
+
+        # HARD wall-clock ceiling on top of (not instead of) `timeout=`
+        # below — see repository.py's own HARD_DEADLINE_BUFFER_SECONDS
+        # and `_deadline.py` for why `timeout=` alone does not bound the
+        # whole call (DNS stall / slow-trickle response). A batch that
+        # exceeds this raises `TimeoutError`, which this method — per its
+        # own docstring's "never catch or retry" convention — does not
+        # catch; it propagates to the caller unmodified, exactly like any
+        # other network failure here.
+        def _do_post() -> int:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+                return response.getcode()
+
+        status = call_with_hard_deadline(
+            _do_post, deadline_seconds=self._timeout_seconds + HARD_DEADLINE_BUFFER_SECONDS,
+        )
+        if status not in (200, 201, 204):
+            raise StreetInventoryRepositoryError(
+                f"Supabase upsert into discovery_streets returned unexpected status {status}"
+            )

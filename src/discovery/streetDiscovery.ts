@@ -10,6 +10,27 @@ import { runEngineStreetInventory, type EngineStreetInventoryResult } from "../s
 
 export const STREET_CLAIM_LEASE_SECONDS = 300;
 
+/**
+ * CRITMODE — street-inventory hang investigation (requirement 8: "the
+ * Node caller must not wait forever for the Python subprocess"). Before
+ * this fix, `ensureStreetInventory()` called `buildFn(params)` with NO
+ * signal at all — unlike every other subprocess-bridge call site in this
+ * codebase (see `businessProcessingJob.ts`'s `ENRICH_SELF_CLAIM_TIMEOUT_MS`
+ * / `timeoutController` pattern, which this mirrors), so a stuck
+ * `service.py street_inventory` child process could hold this `await`
+ * open indefinitely — `runEngineStreetInventory()`'s own `await new
+ * Promise((resolve) => child.on("close", resolve))` has no timeout of
+ * its own; it only reacts to an externally supplied AbortSignal.
+ *
+ * Sized generously above the Python-side worst case: boundary resolution
+ * (instant) + Overpass fetch (60s soft timeout + 30s hard-deadline buffer,
+ * see overpass_source.py) + DB upsert (a handful of batches at up to 30s
+ * soft timeout + 15s hard-deadline buffer each, see repository.py). 3
+ * minutes covers a large city's worth of batches with real headroom
+ * without masking a genuine hang for many minutes.
+ */
+export const STREET_INVENTORY_BUILD_TIMEOUT_MS = 180_000;
+
 /** The hybrid-mode decision is deliberately tiny and independently testable. */
 export function discoveryModeForStreetInventory(source: string, inventoryCount: number): "street" | "area" {
   return source === "google_maps" && inventoryCount > 0 ? "street" : "area";
@@ -100,15 +121,45 @@ export async function ensureStreetInventory(
 
   let buildPromise = inFlightInventoryBuilds.get(key);
   if (!buildPromise) {
-    buildPromise = buildFn({
-      country_code: countryCode,
-      city,
-      country_name: opts?.countryName,
-      region: opts?.region,
-    }).catch((err) => {
-      console.warn(`[street-inventory] build errored country=${countryCode} city=${city}`, err);
-      return undefined;
-    });
+    // CRITMODE — street-inventory hang investigation: bound the
+    // subprocess call with a real wall-clock timeout (see
+    // STREET_INVENTORY_BUILD_TIMEOUT_MS above for sizing/rationale).
+    // Without this, a stuck `service.py street_inventory` child holds
+    // this promise open indefinitely, and every future caller for this
+    // (country, city) piles onto the same never-settling in-flight
+    // promise via the map below.
+    const timeoutController = new AbortController();
+    const timeoutHandle = setTimeout(
+      () => timeoutController.abort(),
+      STREET_INVENTORY_BUILD_TIMEOUT_MS,
+    );
+    const buildStartedAt = Date.now();
+    buildPromise = buildFn(
+      {
+        country_code: countryCode,
+        city,
+        country_name: opts?.countryName,
+        region: opts?.region,
+      },
+      timeoutController.signal,
+    )
+      .catch((err) => {
+        const timedOut = timeoutController.signal.aborted;
+        const elapsedMs = Date.now() - buildStartedAt;
+        if (timedOut) {
+          console.warn(
+            `[street-inventory] build TIMED OUT country=${countryCode} city=${city} after ${elapsedMs}ms ` +
+              `(limit=${STREET_INVENTORY_BUILD_TIMEOUT_MS}ms) — Python subprocess killed, never returned a result`,
+          );
+        } else {
+          console.warn(
+            `[street-inventory] build errored country=${countryCode} city=${city} after ${elapsedMs}ms`,
+            err,
+          );
+        }
+        return undefined;
+      })
+      .finally(() => clearTimeout(timeoutHandle));
     inFlightInventoryBuilds.set(key, buildPromise);
     // Removed once settled (success, unavailable, or error) so a later,
     // independent call for the same city — e.g. after a transient Overpass

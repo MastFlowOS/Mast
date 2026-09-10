@@ -99,11 +99,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
 
 from providers.provider_request_translation import normalize_osm_area
+from street_inventory._deadline import call_with_hard_deadline
 from street_inventory.models import StreetInventoryResult, StreetRecord
 from street_inventory.normalization import build_street_key, normalize_street_name
 
@@ -111,6 +113,15 @@ log = logging.getLogger(__name__)
 
 DEFAULT_ENDPOINT_URL = "https://overpass-api.de/api/interpreter"
 DEFAULT_TIMEOUT_SECONDS = 60
+
+# CRITMODE — street-inventory hang investigation: a HARD wall-clock
+# ceiling on the whole Overpass POST call, on top of (not instead of)
+# `timeout_seconds`'s own per-socket-operation bound — see
+# `_deadline.py` module docstring for exactly which hang this closes
+# (DNS stall / slow-trickle response) that `timeout_seconds` alone does
+# not. Deliberately generous headroom over `DEFAULT_TIMEOUT_SECONDS` so
+# a normal, slightly-slow-but-healthy request is never cut off early.
+HARD_DEADLINE_BUFFER_SECONDS = 30
 
 #: Same discipline as overpass_provider.py's own
 #: `_DEFAULT_TRANSPORT_HEADERS` — a real, identifying User-Agent and an
@@ -191,7 +202,17 @@ def fetch_city_street_inventory(
     """
     poster = http_post or _http_post_urllib
 
+    # STAGE 1/4: boundary resolution — pure in-memory lookup
+    # (`normalize_osm_area`), no network involved, so it cannot hang; the
+    # timestamps below still bracket it for diagnostic completeness so a
+    # future reader of the logs never has to guess whether this stage was
+    # the slow one.
+    _t_boundary_start = time.monotonic()
     resolved_area = area_name if area_name else normalize_osm_area(city)
+    log.info(
+        "[street-inventory] boundary resolved city=%r area=%r elapsed=%.3fs",
+        city, resolved_area, time.monotonic() - _t_boundary_start,
+    )
     if not resolved_area:
         return StreetInventoryResult(
             status="unavailable",
@@ -200,21 +221,54 @@ def fetch_city_street_inventory(
 
     query = build_street_ql(resolved_area, timeout_seconds=timeout_seconds)
 
+    # STAGE 2/4: the actual Overpass network call. Bounded twice: (a) the
+    # per-socket-operation `timeout_seconds` urllib itself enforces, and
+    # (b) the hard wall-clock deadline below, which is what actually
+    # guarantees this call returns (or raises) in bounded time — see
+    # `_deadline.py` for why (a) alone is not sufficient.
+    hard_deadline = float(timeout_seconds) + HARD_DEADLINE_BUFFER_SECONDS
+    log.info(
+        "[street-inventory] overpass request start city=%r area=%r endpoint=%s timeout=%ss hard_deadline=%ss",
+        city, resolved_area, endpoint_url, timeout_seconds, hard_deadline,
+    )
+    _t_overpass_start = time.monotonic()
     try:
-        payload = poster(endpoint_url, query, _HEADERS, float(timeout_seconds))
+        payload = call_with_hard_deadline(
+            poster, endpoint_url, query, _HEADERS, float(timeout_seconds),
+            deadline_seconds=hard_deadline,
+        )
     except urllib.error.HTTPError as exc:
-        log.warning("[street-inventory] Overpass HTTP error for city=%r area=%r: %s", city, resolved_area, exc)
+        log.warning(
+            "[street-inventory] Overpass HTTP error for city=%r area=%r after %.1fs: %s",
+            city, resolved_area, time.monotonic() - _t_overpass_start, exc,
+        )
         return StreetInventoryResult(status="unavailable", reason=f"overpass http error: {exc}")
     except urllib.error.URLError as exc:
-        log.warning("[street-inventory] Overpass network error for city=%r area=%r: %s", city, resolved_area, exc)
+        log.warning(
+            "[street-inventory] Overpass network error for city=%r area=%r after %.1fs: %s",
+            city, resolved_area, time.monotonic() - _t_overpass_start, exc,
+        )
         return StreetInventoryResult(status="unavailable", reason=f"overpass network error: {exc}")
     except (TimeoutError, OSError) as exc:
-        log.warning("[street-inventory] Overpass timeout/OS error for city=%r area=%r: %s", city, resolved_area, exc)
+        log.warning(
+            "[street-inventory] Overpass timeout/OS error for city=%r area=%r after %.1fs (hard_deadline=%ss): %s",
+            city, resolved_area, time.monotonic() - _t_overpass_start, hard_deadline, exc,
+        )
         return StreetInventoryResult(status="unavailable", reason=f"overpass timeout/error: {exc}")
     except (ValueError, json.JSONDecodeError) as exc:
-        log.warning("[street-inventory] malformed Overpass response for city=%r area=%r: %s", city, resolved_area, exc)
+        log.warning(
+            "[street-inventory] malformed Overpass response for city=%r area=%r after %.1fs: %s",
+            city, resolved_area, time.monotonic() - _t_overpass_start, exc,
+        )
         return StreetInventoryResult(status="unavailable", reason=f"malformed overpass response: {exc}")
+    _overpass_elapsed = time.monotonic() - _t_overpass_start
+    log.info(
+        "[street-inventory] overpass request done city=%r area=%r elapsed=%.1fs",
+        city, resolved_area, _overpass_elapsed,
+    )
 
+    # STAGE 3/4: parsing the response.
+    _t_parse_start = time.monotonic()
     elements = payload.get("elements") if isinstance(payload, dict) else None
     if elements is None:
         return StreetInventoryResult(status="unavailable", reason="overpass response missing 'elements'")
@@ -267,4 +321,8 @@ def fetch_city_street_inventory(
             )
         )
 
+    log.info(
+        "[street-inventory] parsed city=%r elements=%d streets=%d elapsed=%.3fs",
+        city, len(elements), len(streets), time.monotonic() - _t_parse_start,
+    )
     return StreetInventoryResult(status="ok", streets=tuple(streets))

@@ -970,6 +970,21 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 deliver_target: streamTarget,
                 required_channels: followUp?.channels ?? [],
                 db_path: `data/leads-pool-expand.db`,
+                // ROOT CAUSE FIX (CRITMODE — user-scoped dedup bug): a
+                // followUp run DOES have a real requesting user
+                // (followUp.userId) waiting on this delivery — this was
+                // previously omitted here, so the Python side always saw
+                // user_id=None and silently fell back to the GLOBAL
+                // businesses-existence check (PersistentEarlyDedupChecker
+                // ._is_duplicate_global) even for a followUp user, instead
+                // of the per-user ownership check
+                // (._is_duplicate_for_user) Phase 1A intended. A bare
+                // pool-growth run (no followUp) still omits user_id
+                // entirely (followUp?.userId is undefined), preserving
+                // the exact prior global pool-building behavior — see
+                // EngineQueryParams.user_id's doc comment in
+                // pythonBridge.ts.
+                user_id: followUp?.userId,
               },
               // PHASE 12D: this area's own scoped signal, not the shared
               // job-level abortController.signal directly.
@@ -1206,6 +1221,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               deliver_target: streamTarget,
               required_channels: followUp?.channels ?? [],
               db_path: `data/leads-pool-expand.db`,
+              // ROOT CAUSE FIX (CRITMODE — user-scoped dedup bug): same
+              // fix as the area-pooled runEngineQuery() call above — see
+              // that call's comment for the full explanation. Legacy
+              // (no curated areas) sequential path was equally affected.
+              user_id: followUp?.userId,
             },
             abortController.signal,
             (info) => {

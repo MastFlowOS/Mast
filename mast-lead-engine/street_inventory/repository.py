@@ -79,6 +79,9 @@ def _street_record_to_row(record: StreetRecord) -> dict[str, Any]:
         "source": record.source,
         "source_id": record.source_id,
         "metadata": dict(record.metadata),
+        # CRITMODE — contaminated New York inventory follow-up: see
+        # models.py:StreetRecord.boundary_version and migration 032.
+        "boundary_version": record.boundary_version,
     }
 
 

@@ -11,6 +11,30 @@ import { runEngineStreetInventory, type EngineStreetInventoryResult } from "../s
 export const STREET_CLAIM_LEASE_SECONDS = 300;
 
 /**
+ * CRITMODE — contaminated New York street inventory follow-up.
+ *
+ * Companion constant to `street_inventory/overpass_source.py:
+ * BOUNDARY_VERSION` (Python). The two are one logical version, kept in
+ * two files only because the Node and Python runtimes don't share a
+ * module — bump BOTH together, to the same new string, whenever the
+ * Python side's boundary resolution/verification logic changes in any
+ * way that could change which streets a city's inventory contains.
+ *
+ * Why this exists: `ensureStreetInventory()` previously treated
+ * `streetInventoryCount(db, countryCode, city) > 0` as sufficient proof
+ * that a city already has usable inventory. That is exactly how New
+ * York's 114,103-row STATE-wide (not city) inventory survived the real
+ * geography fix in `overpass_source.py` undetected in production for as
+ * long as the row count stayed positive — the count check has no way to
+ * tell "correct, boundary-verified inventory" apart from "inventory
+ * built before that verification existed". This constant, checked via
+ * `streetInventoryFreshCount()` below, is what makes that distinction:
+ * an existing row only counts as "inventory this scope can use" if it
+ * was built under boundary logic that is still current.
+ */
+export const CURRENT_STREET_BOUNDARY_VERSION = "admin-level-verified-v1";
+
+/**
  * CRITMODE — street-inventory hang investigation (requirement 8: "the
  * Node caller must not wait forever for the Python subprocess"). Before
  * this fix, `ensureStreetInventory()` called `buildFn(params)` with NO
@@ -70,6 +94,42 @@ export async function streetInventoryCount(db: any, countryCode: string, city: s
 }
 
 /**
+ * CRITMODE — contaminated New York street inventory follow-up.
+ *
+ * The freshness-aware counterpart to `streetInventoryCount()` above.
+ * Counts only rows whose `boundary_version` matches
+ * `CURRENT_STREET_BOUNDARY_VERSION` — i.e. rows the CURRENT
+ * boundary-resolution/verification logic actually produced, not merely
+ * any row that happens to exist for this (country, city).
+ *
+ * `ensureStreetInventory()` uses THIS, not the raw count, to decide
+ * whether a rebuild is needed (see that function below). A scope with
+ * only stale (`unversioned`, or an older version string) rows reports
+ * 0 here even though `streetInventoryCount()` would report the full
+ * legacy row count — which is exactly the signal needed to trigger a
+ * rebuild instead of trusting stale data forever, per the New York
+ * incident this exists to prevent from recurring silently (see
+ * migration 032's own header for the one-time data-side fix, and
+ * `CURRENT_STREET_BOUNDARY_VERSION`'s own docstring for the full
+ * mechanism).
+ */
+export async function streetInventoryFreshCount(
+  db: any,
+  countryCode: string,
+  city: string,
+  boundaryVersion: string = CURRENT_STREET_BOUNDARY_VERSION,
+): Promise<number> {
+  const { count, error } = await db
+    .from("discovery_streets")
+    .select("id", { count: "exact", head: true })
+    .eq("country_code", countryCode)
+    .eq("city", city)
+    .eq("boundary_version", boundaryVersion);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/**
  * CRITMODE Phase 4 — PART A: the smallest safe way to give
  * `street_inventory/build.py`'s real OSM/Overpass builder a production
  * caller, for one (country, city) at a time.
@@ -111,13 +171,29 @@ export async function ensureStreetInventory(
   // pass this argument.
   buildFn: typeof runEngineStreetInventory = runEngineStreetInventory,
 ): Promise<StreetInventoryOutcome> {
-  const existing = await streetInventoryCount(db, countryCode, city);
+  // CRITMODE — contaminated New York street inventory follow-up: a bare
+  // "does this scope have ANY rows" check (the old `existing > 0` below)
+  // cannot distinguish real, boundary-verified inventory from inventory
+  // built before the current boundary-resolution logic existed — that
+  // gap is exactly how New York's 114,103-row state-wide inventory
+  // survived the geography fix in overpass_source.py undetected in
+  // production. `streetInventoryFreshCount()` only counts rows tagged
+  // with the CURRENT `CURRENT_STREET_BOUNDARY_VERSION`, so a scope stuck
+  // on stale/pre-fix rows reports 0 here and falls through to a real
+  // rebuild below, exactly like a scope with no inventory at all — see
+  // `CURRENT_STREET_BOUNDARY_VERSION`'s own docstring for the full
+  // mechanism and migration 032 for the one-time data purge this
+  // complements.
+  const existing = await streetInventoryFreshCount(db, countryCode, city);
   if (existing > 0) {
     return { mode: "street", count: existing };
   }
 
   const key = `${countryCode}:${city}`;
-  console.info(`[street-inventory] check country=${countryCode} city=${city} existing=0 — starting build`);
+  console.info(
+    `[street-inventory] check country=${countryCode} city=${city} fresh_existing=0 — starting build ` +
+      `(boundary_version=${CURRENT_STREET_BOUNDARY_VERSION})`,
+  );
 
   let buildPromise = inFlightInventoryBuilds.get(key);
   if (!buildPromise) {
@@ -181,7 +257,12 @@ export async function ensureStreetInventory(
   console.info(
     `[street-inventory] result country=${countryCode} city=${city} status=ok fetched=${result.fetched} upserted=${result.upserted}`,
   );
-  const count = await streetInventoryCount(db, countryCode, city);
+  // Fresh count, not the raw count: after a rebuild, this scope's "usable
+  // inventory" is specifically the rows the current boundary logic just
+  // wrote, never any leftover stale/unversioned rows that a prior
+  // migration/purge step for this scope has not yet removed (see
+  // streetInventoryFreshCount()'s own docstring and migration 032).
+  const count = await streetInventoryFreshCount(db, countryCode, city);
   if (count === 0) {
     // The builder reported success but the city's real OSM inventory was
     // empty (e.g. zero named highways for that boundary) — a genuine,

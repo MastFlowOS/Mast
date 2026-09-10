@@ -227,6 +227,33 @@ def build_street_ql(area_name: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECON
 #: and not a higher, country-varying "city" cutoff.
 _MAX_BROAD_ADMIN_LEVEL = 4
 
+#: CRITMODE — contaminated New York inventory follow-up.
+#:
+#: A durable identifier for "the boundary-resolution/verification logic
+#: that produced this row", stamped onto every `StreetRecord` this
+#: module returns (see bottom of `fetch_city_street_inventory`).
+#: Persisted as `discovery_streets.boundary_version` (migration 032).
+#:
+#: Bump this string — to a new, never-reused value — every time this
+#: module's boundary resolution or verification behavior changes in any
+#: way that could change which streets a city's inventory contains
+#: (e.g. a new curated `_OSM_AREA_NORMALIZATIONS` entry, a change to
+#: `_verify_resolved_boundary()`'s admin_level cutoff, a new safety
+#: check). The Node-side freshness check
+#: (`streetDiscovery.ts:CURRENT_STREET_BOUNDARY_VERSION`) MUST be bumped
+#: to the same value in the same change — the two constants are one
+#: logical version, kept in two files only because the two runtimes
+#: don't share a module.
+#:
+#: This value specifically marks the fix described in this module's own
+#: "CRITMODE — street inventory geography bug" section: the curated
+#: "New York" -> "New York City" mapping plus `_verify_resolved_boundary()`.
+#: Any row still carrying an older value (or the `StreetRecord` default,
+#: `"unversioned"` — real for every row inserted before this constant
+#: existed) was produced before that fix existed and must not be trusted
+#: as proof a city's inventory is current, no matter its row count.
+BOUNDARY_VERSION = "admin-level-verified-v1"
+
 
 def build_boundary_check_ql(area_name: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> str:
     """
@@ -509,6 +536,7 @@ def fetch_city_street_inventory(
                 source="overpass",
                 source_id=(f"way/{way_ids[0]}" if way_ids else None),
                 metadata={"osm_way_ids": way_ids, "osm_area_name": resolved_area},
+                boundary_version=BOUNDARY_VERSION,
             )
         )
 

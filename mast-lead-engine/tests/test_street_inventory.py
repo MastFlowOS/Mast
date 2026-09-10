@@ -34,7 +34,7 @@ import pytest
 from street_inventory.build import build_city_street_inventory
 from street_inventory.models import StreetInventoryResult, StreetRecord
 from street_inventory.normalization import build_street_key, normalize_street_name
-from street_inventory.overpass_source import build_street_ql, fetch_city_street_inventory
+from street_inventory.overpass_source import build_street_ql, fetch_city_street_inventory, BOUNDARY_VERSION
 from street_inventory.repository import _street_record_to_row
 
 
@@ -233,6 +233,80 @@ class TestSerialIndependence:
         )
         row = _street_record_to_row(record)
         assert "street_serial" not in row
+
+
+# ---------------------------------------------------------------------------
+# CRITMODE — contaminated New York street inventory follow-up.
+#
+# `boundary_version` is the freshness mechanism the Node side
+# (`ensureStreetInventory()` / `streetInventoryFreshCount()` in
+# streetDiscovery.ts) relies on to tell "this row was built under the
+# current, boundary-verified logic" apart from "this row merely exists".
+# These tests prove the Python side actually stamps that value onto
+# every record it produces, and that the value is a stable constant this
+# module owns (not silently omitted or defaulted per-record).
+# ---------------------------------------------------------------------------
+class TestBoundaryVersionStamping:
+    def test_fetched_records_carry_the_current_boundary_version(self):
+        def transport(url, query, headers, timeout):
+            return {
+                "elements": [
+                    {"type": "way", "id": 1, "tags": {"highway": "residential", "name": "Jackson Ave"}},
+                ]
+            }
+
+        result = fetch_city_street_inventory(
+            country_code="US", city="Queens", region="NY", area_name="Queens", http_post=transport
+        )
+        assert len(result.streets) == 1
+        assert result.streets[0].boundary_version == BOUNDARY_VERSION
+
+    def test_boundary_version_is_persisted_to_the_row(self):
+        record = StreetRecord(
+            street_key="us:ny:queens:jackson-avenue",
+            street_name="Jackson Ave",
+            normalized_name="jackson avenue",
+            country_code="US",
+            city="Queens",
+            boundary_version=BOUNDARY_VERSION,
+        )
+        row = _street_record_to_row(record)
+        assert row["boundary_version"] == BOUNDARY_VERSION
+
+    def test_default_boundary_version_is_the_explicit_legacy_sentinel(self):
+        # A StreetRecord constructed without an explicit boundary_version
+        # (e.g. hand-built in a test, or by code that predates this field)
+        # must default to a value the current builder will NEVER write —
+        # so "produced before this concept existed" stays distinguishable
+        # from "produced by the current, verified pipeline". See
+        # models.py:StreetRecord.boundary_version's own docstring.
+        record = StreetRecord(
+            street_key="us:ny:queens:jackson-avenue",
+            street_name="Jackson Ave",
+            normalized_name="jackson avenue",
+            country_code="US",
+            city="Queens",
+        )
+        assert record.boundary_version == "unversioned"
+        assert record.boundary_version != BOUNDARY_VERSION
+
+    def test_new_york_specifically_is_stamped_with_the_current_version(self):
+        # Regression guard tied directly to the incident: a corrected
+        # New York fetch must produce rows tagged with the CURRENT
+        # version, not silently fall back to the legacy sentinel.
+        def transport(url, query, headers, timeout):
+            is_boundary_check = ".a out tags;" in query
+            if 'area["name"="New York City"]' in query:
+                if is_boundary_check:
+                    return {"elements": [{"type": "area", "id": 1, "tags": {"admin_level": "8"}}]}
+                return {"elements": [{"type": "way", "id": 1, "tags": {"highway": "residential", "name": "Broadway"}}]}
+            return {"elements": []}
+
+        result = fetch_city_street_inventory(country_code="US", city="New York", http_post=transport)
+        assert result.status == "ok"
+        assert len(result.streets) == 1
+        assert result.streets[0].boundary_version == BOUNDARY_VERSION
+        assert result.streets[0].boundary_version != "unversioned"
 
 
 # ---------------------------------------------------------------------------

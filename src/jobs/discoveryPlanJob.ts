@@ -21,7 +21,7 @@ import {
   completeDiscoveryStreetClaim,
   heartbeatDiscoveryStreetClaim,
   discoveryModeForStreetInventory,
-  streetInventoryCount,
+  streetInventoryFreshCount,
   type StreetClaim,
   type StreetScope,
 } from "../discovery/streetDiscovery.js";
@@ -754,8 +754,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
     // ── Street-first discovery, with the established area fallback ──────────
     const curatedAreas = getAreasForCity(task.country_code, task.city) ?? getAreasForCityOrDefault(task.country_code, task.city);
+    // CRITMODE — contaminated New York street inventory follow-up: use the
+    // boundary-version-aware count, not the raw row count, so a scope
+    // still holding only stale/pre-fix rows (see migration 032 and
+    // streetDiscovery.ts:CURRENT_STREET_BOUNDARY_VERSION) is correctly
+    // treated as having no usable street inventory here too, not just in
+    // ensureStreetInventory()'s own build-triggering check.
     const streetCount = sourceId === "google_maps"
-      ? await streetInventoryCount(db, task.country_code, task.city)
+      ? await streetInventoryFreshCount(db, task.country_code, task.city)
       : 0;
     const useStreetPool = discoveryModeForStreetInventory(sourceId, streetCount) === "street";
 

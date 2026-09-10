@@ -55,6 +55,19 @@ class StreetRecord:
     region: Optional[str] = None
     source_id: Optional[str] = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    #: CRITMODE — contaminated New York inventory follow-up. Stamped by
+    #: `overpass_source.py` with the boundary-resolution/verification
+    #: logic's own version identifier (see that module's
+    #: `BOUNDARY_VERSION`), NOT left to default here, so every row this
+    #: package ever produces carries proof of which boundary-safety
+    #: logic produced it. This is what lets `ensureStreetInventory()`
+    #: (Node side) tell "existing rows" apart from "existing rows built
+    #: under boundary logic that has since been fixed" — a bare
+    #: `count(*) > 0` cannot make that distinction, which is exactly how
+    #: the 114,103-row New York STATE inventory survived the original
+    #: geography fix undetected. See `street_inventory/overpass_source.py`
+    #: module docstring, "CRITMODE — street inventory geography bug".
+    boundary_version: str = "unversioned"
 
 
 # ---------------------------------------------------------------------------

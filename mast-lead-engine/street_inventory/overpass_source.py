@@ -61,11 +61,17 @@ list"):
       codebase's own docstrings warn against (see also
       `normalization.py`'s "Why this is a NEW, small normalizer"
       section for the identical reasoning applied to text
-      normalization instead of HTTP transport). On failure, this
-      module's transport simply raises — the caller
-      (`fetch_city_street_inventory` below) converts that into the
-      "unavailable" result this phase's instructions require, rather
-      than retrying/failing-over.
+      normalization instead of HTTP transport). On failure, this raw
+      transport simply raises — retry/backoff and mirror-fallover for
+      TRANSIENT failures now happen one layer above it
+      (`_post_with_retry_and_fallback`, added for the 429-handling fix
+      below), reusing that provider's already-configured mirror list
+      and retryable-status-code set as DATA, still without importing
+      its transport machinery. A non-transient failure (a genuine,
+      non-retryable error, or every retry/mirror attempt exhausted)
+      still simply propagates to the caller
+      (`fetch_city_street_inventory` below), which converts it into
+      the "unavailable" result this phase's instructions require.
 
 Query shape
 -----------
@@ -179,18 +185,121 @@ Region-based narrowing to anything other than exactly one boundary
 (zero, or still more than one) falls back to the original "reject as
 ambiguous" outcome — this is a resolution path, not a new way to
 suppress a genuine ambiguity.
+
+CRITMODE — Overpass 429 handling
+----------------------------------------------------------------------
+Root cause: with the geography bug above fixed and boundary
+verification working, a real street query now reaches Overpass
+successfully — and can now receive Overpass's own `HTTP Error 429: Too
+Many Requests` when the shared public `overpass-api.de` endpoint is
+rate-limiting. Before this fix, `_http_post_urllib` made exactly ONE
+POST attempt and raised immediately on any failure, transient or not
+— so a single 429 sent an otherwise-valid, already-boundary-verified
+city straight to `status="unavailable"` on the very first rate-limit
+response, no differently than a genuinely nonexistent city or a dead
+endpoint. This module's own transport was doing exactly what its
+docstring said it would ("why a new small module ... does not retry,
+fail over across mirrors, or catch anything") — this was a correct
+description of a real gap, not a bug in that description.
+
+Fix: `_post_with_retry_and_fallback()` (see its own docstring) wraps
+the transport with a small, BOUNDED retry-with-backoff loop for
+transient failures (429/502/503/504, network/timeout errors), and
+falls over to the next mirror in `providers/overpass_provider.py`'s
+already-configured `_DEFAULT_MIRRORS` list once one endpoint's retries
+are exhausted — reusing that list and `_RETRYABLE_STATUS_CODES` as
+DATA (see this module's import section), not importing that provider's
+retry/mirror transport itself, for the same "hidden coupling" reason
+the module docstring above already gives for not reusing its HTTP
+machinery wholesale. Both call sites that hit the network
+(`_run_boundary_check_query`'s boundary-verification query, and the
+real street query in `fetch_city_street_inventory`) route through this
+wrapper — not just the street query the original incident report
+named — because boundary verification hits the exact same rate-limited
+endpoint, usually first (it runs before the street query, see STAGE
+1b/4 below): leaving it unretried would still send a valid city to
+"unavailable" on a 429 raised one stage earlier than before.
+
+Explicitly NOT changed by this fix: geography resolution
+(`normalize_osm_area`) and boundary verification (`_resolve_area_scope`
+/ `_verify_resolved_boundary`) are untouched — this fix is purely
+about how many times, and against how many endpoints, this module is
+willing to ask Overpass the same already-correct question before
+giving up. The existing hard wall-clock deadline
+(`call_with_hard_deadline` / `hard_deadline`) still bounds the ENTIRE
+retry-and-fallback attempt as a single call, so retries never make a
+slow city hang longer than before — they make a rate-limited-but-
+otherwise-healthy city more likely to succeed within the SAME existing
+deadline instead of giving up after one HTTP response. Retries are
+bounded (never infinite — see `_MAX_RETRIES_PER_ENDPOINT`), and the
+"unavailable" result for a city that fails every attempt against every
+endpoint is byte-for-byte the same shape it was before this fix.
+
+CRITMODE — NYC region-disambiguated fetch returning 0 streets
+----------------------------------------------------------------------
+Root cause: with geography resolution AND boundary verification both
+succeeding (`boundary resolved ... area='New York City'`, `narrowed to
+subdivision 'US-NY'`, `boundary verification ... ok=True
+iso3166_2='US-NY'`), the real street fetch still came back with
+`elements=0 streets=0`. The verification query and the street query
+used the IDENTICAL name+region filter chain
+(`area["ISO3166-2"="US-NY"]->.searchRegion;
+area["name"="New York City"](area.searchRegion)->.<set>;`) — but as
+two SEPARATE Overpass requests. The verification request only ever
+does `.a out tags;` on the result, which needs just that area's id/
+tags and succeeds regardless of whether Overpass has the area's full
+polygon geometry materialized; the street request's
+`way["highway"]["name"](area.searchArea);` additionally needs that
+real geometry to do spatial containment, and re-deriving the same
+name+region match a second time, in a fresh request, is not guaranteed
+to attach it — which is exactly what happened for New York City. This
+is a mismatched-boundary-identifier bug in the narrow sense that the
+street query was scoping to "whatever `area["name"=...](area.<region>)`
+happens to resolve to this time", not to the specific, concrete
+boundary verification had already confirmed.
+
+Fix: `_resolve_area_scope()` now also returns the concrete Overpass
+numeric area id of the boundary the narrowed match identified
+(`area_id_used`, read from the verification response's own `"id"`
+field), and `fetch_city_street_inventory()` passes it to
+`build_street_ql(area_id=...)`, which — when given — scopes the street
+fetch directly by that id (`area(<id>)->.searchArea;`) instead of
+re-deriving the boundary via `area["name"=...](area["ISO3166-2"=...])`
+a second time. This applies ONLY to the region-narrowed disambiguation
+path (`iso3166_2_used` set); the flat, unambiguous `area["name"=...]`
+case (the overwhelming majority of cities) and the explicit-`area_name`
+case are both untouched — see `build_street_ql()`'s own docstring.
+Geography resolution, verification's ambiguity/admin_level checks, and
+retry/fallback behavior are all unchanged by this fix.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
 
 from providers.provider_request_translation import normalize_osm_area
+
+# CRITMODE — Overpass 429 handling. Reused here: ONLY the already-
+# configured, already-vetted list of known-good public Overpass
+# mirrors (`_DEFAULT_MIRRORS`) and the retryable-status-code set
+# (`_RETRYABLE_STATUS_CODES`) `providers/overpass_provider.py` already
+# defines and uses for its own (unrelated, live-discovery-path) retry/
+# mirror-failover transport. This is data, not behavior — the same
+# "what IS reused" precedent this module's own docstring already
+# establishes for `normalize_osm_area` below, not a new coupling to
+# that provider's retry machinery (see this module's docstring, "why a
+# new small module instead of reusing OverpassProvider", for why this
+# module still does not import that provider's HTTP transport itself).
+# `tests/test_phase42_overpass_wall_clock.py` already imports
+# `_DEFAULT_MIRRORS` the same way, so this is an established pattern,
+# not a new one.
+from providers.overpass_provider import _DEFAULT_MIRRORS, _RETRYABLE_STATUS_CODES
 from street_inventory._deadline import call_with_hard_deadline
 from street_inventory.models import StreetInventoryResult, StreetRecord
 from street_inventory.normalization import build_street_key, normalize_street_name
@@ -239,27 +348,295 @@ def _http_post_urllib(url: str, query: str, headers: dict[str, str], timeout: fl
         return json.loads(response.read().decode("utf-8"))
 
 
+#: CRITMODE — Overpass 429 handling.
+#:
+#: Bounded number of attempts against any ONE Overpass endpoint before
+#: `_post_with_retry_and_fallback` moves on to the next configured
+#: mirror. Deliberately small — the outer `call_with_hard_deadline`
+#: (both call sites below) is what actually bounds worst-case total
+#: time; this only avoids treating a single transient 429/5xx as fatal
+#: after exactly one attempt. Same value `overpass_provider.py`'s own
+#: `_http_post_urllib` defaults to (`max_retries_per_endpoint=2`) —
+#: not copied for its own sake, just no reason to pick a different
+#: number for the same kind of transient failure.
+_MAX_RETRIES_PER_ENDPOINT = 2
+
+#: Same base backoff factor `overpass_provider.py`'s own transport
+#: uses (`backoff_factor=0.5`) for `delay = factor * (2 ** attempt) +
+#: jitter` — exponential backoff with a small random jitter, applied
+#: only when Overpass did not tell us how long to wait itself (see
+#: `_retry_delay` below).
+_RETRY_BACKOFF_FACTOR_SECONDS = 0.5
+
+
+def _retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:
+    """
+    Seconds to wait before the next attempt. Prefers Overpass's own
+    `Retry-After` response header when present (the server telling us
+    exactly how long it wants us to back off, which is more accurate
+    than any guess this module could make) — otherwise falls back to
+    exponential backoff with jitter, same shape as
+    `overpass_provider.py`'s own retry loop.
+    """
+    if retry_after:
+        try:
+            return float(retry_after)
+        except ValueError:
+            pass
+    return _RETRY_BACKOFF_FACTOR_SECONDS * (2 ** attempt) + random.uniform(0, 0.25)
+
+
+def _post_with_retry_and_fallback(
+    poster: HttpPost,
+    endpoint_url: str,
+    query: str,
+    headers: dict[str, str],
+    timeout_seconds: float,
+    deadline: Optional[float] = None,
+) -> dict[str, Any]:
+    """
+    CRITMODE — Overpass 429 handling.
+
+    Root cause this closes: `poster` (by default `_http_post_urllib`
+    above) previously made exactly one POST and raised immediately on
+    ANY failure — correct for a genuine, permanent failure, but it
+    meant a single transient 429 from the primary public mirror
+    (`overpass-api.de`) sent an otherwise-valid, boundary-verified city
+    straight to `status="unavailable"` (and, one layer up, whatever
+    caller-side area-mode fallback treats "unavailable" as its signal)
+    on the very first rate-limit response, with no attempt to wait it
+    out or try another known-good mirror. The geography fix (module
+    docstring, "CRITMODE — street inventory geography bug") was
+    already correct and is untouched by this change; this closes a
+    separate, purely transport-level failure mode that only became
+    reachable once that fix let real street queries actually reach
+    Overpass.
+
+    Wraps `poster` with a small, BOUNDED retry-with-backoff loop for
+    transient failures — HTTP 429/502/503/504
+    (`_RETRYABLE_STATUS_CODES`, imported from
+    `providers/overpass_provider.py` — see this module's import
+    section for why reusing that set specifically is safe) plus
+    network/timeout errors — and, once `endpoint_url`'s own retries
+    are exhausted, fails over to the next candidate drawn from that
+    SAME provider's already-configured, already-vetted mirror list
+    (`_DEFAULT_MIRRORS`). A non-retryable HTTP error (any code NOT in
+    `_RETRYABLE_STATUS_CODES` — e.g. a malformed query, a genuine 4xx)
+    is raised immediately, with no retry and no fallover: a different
+    attempt or a different mirror would not succeed where the query
+    itself is the problem. This is the exact same distinction
+    `overpass_provider.py`'s own transport already makes.
+
+    CRITMODE — retry/fallback deadline interaction fix:
+
+    `deadline` (an absolute `time.monotonic()` timestamp) makes this
+    function deadline-aware. Before every attempt, the remaining wall-
+    clock budget is checked; if exhausted, a `TimeoutError` is raised
+    immediately instead of starting another attempt. The per-attempt
+    urllib timeout passed to `poster` is `min(timeout_seconds,
+    remaining)` — so a late attempt never outlives the overall budget.
+    Backoff sleeps are capped at the remaining budget. No new endpoint
+    is started if the budget is exhausted.
+
+    This closes the gap where the outer `call_with_hard_deadline`
+    (both call sites below) would fire its `Future.result(timeout=...)`
+    while the worker thread was still inside a retry/backoff/fallback
+    cycle — producing log lines and socket activity AFTER the caller
+    had already returned "deadline exceeded". With `deadline` set, the
+    worker thread self-terminates within budget, so the
+    `Future.result(timeout=...)` should never fire under normal
+    operation — but if it does (e.g. a DNS stall that
+    `time.monotonic()` cannot interrupt), the hard deadline still
+    catches it. This is defense-in-depth, not a redesign.
+
+    `deadline=None` (the default) preserves the original behavior:
+    no budget checks, the full `timeout_seconds` on every attempt.
+    This keeps backward compatibility for direct callers and existing
+    tests that exercise the retry loop without a deadline.
+
+    One deliberate difference from `overpass_provider.py`'s own loop:
+    this one does not sleep after an endpoint's LAST attempt (only
+    between same-endpoint retries) — there is no reason to pay a
+    backoff delay for a mirror hop, only for retrying the same,
+    possibly-still-limited server.
+
+    Bounded on purpose, never infinite: at most
+    `_MAX_RETRIES_PER_ENDPOINT` attempts per candidate URL, across at
+    most `len(candidate_urls)` candidates (`endpoint_url` plus any of
+    `_DEFAULT_MIRRORS` not already equal to it — never a fresh,
+    unbounded list; see this phase's own "do not hardcode a giant
+    endpoint list" instruction).
+
+    Exhausting every attempt against every candidate re-raises the
+    LAST exception seen, unmodified. Both call sites below already
+    convert that into `status="unavailable"` with a `reason` — this
+    change does not touch that conversion, only how much genuine
+    effort happens before it's reached.
+    """
+    candidate_urls = [endpoint_url]
+    for mirror in _DEFAULT_MIRRORS:
+        if mirror not in candidate_urls:
+            candidate_urls.append(mirror)
+
+    last_exception: BaseException | None = None
+    for target_url in candidate_urls:
+        # ── Budget check 4: before starting a new endpoint ──
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.warning(
+                    "[street-inventory] deadline expired before starting endpoint %s — stopping",
+                    target_url,
+                )
+                break
+
+        for attempt in range(_MAX_RETRIES_PER_ENDPOINT):
+            # ── Budget check 1: before every attempt ──
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    log.warning(
+                        "[street-inventory] deadline expired before attempt %d/%d against %s — stopping",
+                        attempt + 1, _MAX_RETRIES_PER_ENDPOINT, target_url,
+                    )
+                    break
+
+            # ── Budget check 2: cap per-attempt timeout ──
+            effective_timeout = timeout_seconds
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                effective_timeout = min(timeout_seconds, max(remaining, 0.1))
+
+            try:
+                return poster(target_url, query, headers, effective_timeout)
+            except urllib.error.HTTPError as exc:
+                last_exception = exc
+                if exc.code not in _RETRYABLE_STATUS_CODES:
+                    raise
+                if attempt < _MAX_RETRIES_PER_ENDPOINT - 1:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    delay = _retry_delay(attempt, retry_after)
+                    # ── Budget check 3: cap backoff sleep ──
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            log.warning(
+                                "[street-inventory] deadline expired after HTTP %d from %s "
+                                "(attempt %d/%d) — not retrying",
+                                exc.code, target_url, attempt + 1, _MAX_RETRIES_PER_ENDPOINT,
+                            )
+                            break
+                        delay = min(delay, remaining)
+                    log.warning(
+                        "[street-inventory] HTTP %d from %s (attempt %d/%d) — "
+                        "retrying in %.2fs",
+                        exc.code, target_url, attempt + 1, _MAX_RETRIES_PER_ENDPOINT, delay,
+                    )
+                    time.sleep(delay)
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                last_exception = exc
+                if attempt < _MAX_RETRIES_PER_ENDPOINT - 1:
+                    delay = _retry_delay(attempt)
+                    # ── Budget check 3 (network errors): cap backoff sleep ──
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            log.warning(
+                                "[street-inventory] deadline expired after network error from %s "
+                                "(attempt %d/%d) — not retrying",
+                                target_url, attempt + 1, _MAX_RETRIES_PER_ENDPOINT,
+                            )
+                            break
+                        delay = min(delay, remaining)
+                    log.warning(
+                        "[street-inventory] network error (%s) connecting to %s "
+                        "(attempt %d/%d) — retrying in %.2fs",
+                        exc, target_url, attempt + 1, _MAX_RETRIES_PER_ENDPOINT, delay,
+                    )
+                    time.sleep(delay)
+        else:
+            # Inner loop completed without break — all attempts for this
+            # endpoint exhausted normally (not by deadline).
+            log.warning(
+                "[street-inventory] exhausted %d attempt(s) against %s — trying next "
+                "Overpass endpoint if one remains",
+                _MAX_RETRIES_PER_ENDPOINT, target_url,
+            )
+            continue
+        # Inner loop broke (deadline expired) — stop the outer loop too.
+        break
+
+    # When breaking due to a deadline, raise TimeoutError so the caller
+    # sees the same exception shape `call_with_hard_deadline` would have
+    # produced — not the last transient 429/network error.
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError(
+            f"_post_with_retry_and_fallback deadline expired "
+            f"(budget exhausted across {len(candidate_urls)} endpoint(s))"
+        )
+
+    # candidate_urls always has at least one entry (endpoint_url), and
+    # every loop iteration that reaches the bottom without returning
+    # has already assigned last_exception — so this is always bound by
+    # the time every candidate is exhausted, never raised as unset.
+    if last_exception is not None:
+        raise last_exception
+    # Should be unreachable — candidate_urls is never empty and every
+    # iteration either returns or sets last_exception — but satisfy the
+    # type checker.
+    raise RuntimeError("_post_with_retry_and_fallback: no attempts made")
+
+
 def build_street_ql(
     area_name: str,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     iso3166_2: Optional[str] = None,
+    area_id: Optional[int] = None,
 ) -> str:
     """
     Builds the Overpass QL query text for enumerating named streets
     inside `area_name`. See module docstring, "Query shape".
 
-    When `iso3166_2` is given (e.g. "US-NY"), the area lookup is first
-    constrained to the boundary carrying that `ISO3166-2` tag (a real,
-    standard OSM tag on first-level-subdivision — state/province —
-    relations) before matching `area_name` inside it. This is how
-    `_resolve_area_scope()` disambiguates a name that matches more than
-    one same-named OSM boundary nationwide: narrow to the one inside
-    the caller's own state/province first, THEN match by name — see
-    that function's docstring. When `iso3166_2` is None (the common,
-    unambiguous case), this is byte-for-byte the original flat
-    `area["name"=...]` query.
+    CRITMODE — NYC region-disambiguated fetch returning 0 streets:
+    when `area_id` is given (the concrete Overpass numeric area
+    pseudo-id — e.g. `3600175905` — that `_resolve_area_scope()`
+    already confirmed, via a SEPARATE verification request, to be the
+    single correct boundary), the street fetch targets that exact area
+    by id (`area(<id>)->.searchArea;`) instead of re-deriving it a
+    second time from `area_name`/`iso3166_2`. This is used ONLY for the
+    region-narrowed disambiguation path (see `iso3166_2` below): asking
+    Overpass to re-resolve `area["name"=...](area["ISO3166-2"=...])`
+    from scratch, in a brand-new independent request, does not
+    reliably reproduce the exact same fully-materialized boundary the
+    verification request found (`out tags;` on an "area" match needs
+    only that area's tags/id and succeeds regardless; the follow-on
+    `way[...](area.searchArea)` spatial fetch additionally needs that
+    area's real polygon geometry, which is not guaranteed to be
+    identically available when the same name+region filter chain is
+    re-evaluated a second time) — this was confirmed in production:
+    `overpass request ... elements=0 streets=0` for New York, with
+    boundary verification (`ok=True iso3166_2='US-NY'`) having already
+    succeeded. Passing the concrete, already-verified id removes this
+    re-derivation entirely for the one path that needs it.
+
+    When `iso3166_2` is given (e.g. "US-NY") and `area_id` is NOT, the
+    area lookup is constrained to the boundary carrying that
+    `ISO3166-2` tag before matching `area_name` inside it — this shape
+    is kept for callers/tests that still want it, but
+    `fetch_city_street_inventory` itself always supplies `area_id`
+    whenever `_resolve_area_scope()` narrowed via `iso3166_2`, so this
+    branch is not reached on that path anymore. When neither is given
+    (the common, unambiguous case), this is byte-for-byte the original
+    flat `area["name"=...]` query.
     """
     escaped_area = area_name.replace('"', '\\"')
+    if area_id is not None:
+        return (
+            f"[out:json][timeout:{timeout_seconds}];\n"
+            f"area({area_id})->.searchArea;\n"
+            f'way["highway"]["name"](area.searchArea);\n'
+            f"out tags;"
+        )
     if iso3166_2:
         escaped_iso = iso3166_2.replace('"', '\\"')
         return (
@@ -283,6 +660,21 @@ def build_street_ql(
 #: "CRITMODE — street inventory geography bug", for why this is `<= 4`
 #: and not a higher, country-varying "city" cutoff.
 _MAX_BROAD_ADMIN_LEVEL = 4
+
+#: CRITMODE — way-derived area ID fix.
+#:
+#: Overpass computes area pseudo-IDs for OSM relations as:
+#:     area_id = 3600000000 + relation_id
+#: Way-derived areas use a lower offset range and — critically — their
+#: area pseudo-elements lack the closed polygon geometry that Overpass's
+#: `way[...](area.searchArea)` spatial containment operator requires.
+#: An `area["name"="..."]` query can return BOTH relation-derived AND
+#: way-derived areas; only the former are usable for city-level street
+#: containment. See forensic diagnosis: area_id 1107357380 (a way-derived
+#: area for a small polygon tagged "New York City") returned 0 streets;
+#: area_id 3600175905 (the relation-derived area for the real NYC
+#: administrative boundary, relation/175905) returned tens of thousands.
+_OVERPASS_RELATION_AREA_ID_OFFSET = 3_600_000_000
 
 #: CRITMODE — contaminated New York inventory follow-up.
 #:
@@ -314,7 +706,15 @@ _MAX_BROAD_ADMIN_LEVEL = 4
 #: inserted before this constant existed) was produced before that fix
 #: existed and must not be trusted as proof a city's inventory is
 #: current, no matter its row count.
-BOUNDARY_VERSION = "admin-level-verified-v2-region-disambiguated"
+#: CRITMODE — NYC region-disambiguated fetch returning 0 streets: the
+#: region-narrowed disambiguation path (`iso3166_2_used` set) now fetches
+#: via the verified boundary's concrete `area_id` instead of re-deriving
+#: the same name+region filter chain a second time for the real street
+#: query — see `build_street_ql()`'s docstring. This can change the
+#: resulting street set for any city that previously fell into that
+#: narrowed path (previously: silently 0 streets), so the version is
+#: bumped again.
+BOUNDARY_VERSION = "admin-level-verified-v4-relation-area-id"
 
 
 def build_boundary_check_ql(
@@ -342,6 +742,65 @@ def build_boundary_check_ql(
         f"[out:json][timeout:{timeout_seconds}];\n"
         f'area["name"="{escaped_area}"]->.a;\n'
         f".a out tags;"
+    )
+
+
+def build_relation_boundary_ql(
+    area_name: str,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    iso3166_2: Optional[str] = None,
+) -> str:
+    """
+    CRITMODE — way-derived area ID fix.
+
+    Builds an Overpass QL query to find the actual administrative boundary
+    RELATION for `area_name`, as opposed to `build_boundary_check_ql()`
+    which searches Overpass's `area` pseudo-elements (and may return
+    way-derived areas that lack polygon geometry for spatial containment).
+
+    Used by `_resolve_area_scope()` as a fallback when the area-based
+    boundary check returns only way-derived IDs (< 3600000000). The
+    returned relation's OSM id is converted to an Overpass area id via
+    `_OVERPASS_RELATION_AREA_ID_OFFSET + relation_id`.
+
+    CRITMODE — alt_name fix: matches on `name` OR `alt_name`, not `name`
+    alone. Root cause this closes: a city's `area_name` (e.g. "New York
+    City", the value `_OSM_AREA_NORMALIZATIONS`/`normalize_osm_area`
+    resolve to and that `area["name"=...]` therefore matched a way-
+    derived area under) is not always the SAME string the real
+    administrative boundary RELATION carries in its own `name` tag —
+    that relation's `name` can instead hold the more formal/official
+    value (e.g. "New York", with "New York City" only present as
+    `alt_name`), a real, common OSM tagging pattern, not specific to any
+    one city. A `name`-only relation filter silently matched 0 relations
+    for exactly this reason, live in production, even though the correct
+    administrative relation genuinely exists in OSM with the expected
+    `admin_level`/`boundary=administrative` tags. Querying `name` OR
+    `alt_name` against `area_name` catches both tagging shapes generically
+    — no per-city table, no hardcoded city name — while every existing
+    constraint (the `boundary=administrative` filter, and the
+    `ISO3166-2` subdivision containment when `iso3166_2` is given) still
+    applies to both branches identically.
+    """
+    escaped_area = area_name.replace('"', '\\"')
+    if iso3166_2:
+        escaped_iso = iso3166_2.replace('"', '\\"')
+        return (
+            f"[out:json][timeout:{timeout_seconds}];\n"
+            f'area["ISO3166-2"="{escaped_iso}"]->.searchRegion;\n'
+            f"(\n"
+            f'  relation["name"="{escaped_area}"]["boundary"="administrative"](area.searchRegion);\n'
+            f'  relation["alt_name"="{escaped_area}"]["boundary"="administrative"](area.searchRegion);\n'
+            f");\n"
+            f"out tags;"
+        )
+    return (
+        f"[out:json][timeout:{timeout_seconds}];\n"
+        f"(\n"
+        f'  relation["name"="{escaped_area}"]["boundary"="administrative"];\n'
+        f'  relation["alt_name"="{escaped_area}"]["boundary"="administrative"];\n'
+        f");\n"
+        f"out tags;"
     )
 
 
@@ -411,8 +870,10 @@ def _run_boundary_check_query(
     available — a second, region-narrowed retry).
     """
     try:
+        _deadline_abs = time.monotonic() + hard_deadline
         payload = call_with_hard_deadline(
-            poster, endpoint_url, query, _HEADERS, float(timeout_seconds),
+            _post_with_retry_and_fallback, poster, endpoint_url, query, _HEADERS, float(timeout_seconds),
+            _deadline_abs,
             deadline_seconds=hard_deadline,
         )
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -445,22 +906,28 @@ def _resolve_area_scope(
     hard_deadline: float,
     region: Optional[str] = None,
     country_code: Optional[str] = None,
-) -> tuple[Optional[StreetInventoryResult], Optional[str]]:
+) -> tuple[Optional[StreetInventoryResult], Optional[str], Optional[int]]:
     """
     Confirms `resolved_area` names exactly one OSM boundary — resolving
     a same-named collision generically via `region`/`country_code` when
     one exists — and that the (single, resolved) boundary is not
     itself a country/state-level administrative area (see module
-    docstring). Returns `(None, iso3166_2_used)` when the boundary
-    checks out, where `iso3166_2_used` tells the caller which query
-    shape actually identified a unique boundary — `None` for the plain
-    `area["name"=...]` match, or e.g. `"US-NY"` when disambiguation via
-    `region` was needed — so `build_street_ql()` can be called with the
-    IDENTICAL scope for the real street fetch (using the flat name
-    again after an `ISO3166-2`-narrowed disambiguation would just
-    re-introduce the same collision in the ways query). Returns
-    `(populated_result, None)` when the boundary does not check out —
-    the caller returns that result directly.
+    docstring). Returns `(None, iso3166_2_used, area_id)` when the
+    boundary checks out, where `iso3166_2_used` tells the caller which
+    query shape actually identified a unique boundary — `None` for the
+    plain `area["name"=...]` match, or e.g. `"US-NY"` when
+    disambiguation via `region` was needed — and `area_id` is the
+    concrete Overpass numeric area id of that single matched boundary
+    (from the verification response's own `"id"` field) whenever
+    `iso3166_2_used` is set, `None` otherwise. `build_street_ql()` is
+    called with `area_id` (when set) so the real street fetch targets
+    the EXACT boundary verification already confirmed, rather than
+    re-deriving `area["name"=...](area["ISO3166-2"=...])` a second time
+    — see `build_street_ql()`'s own docstring, "CRITMODE — NYC
+    region-disambiguated fetch returning 0 streets", for why
+    re-deriving it a second time is not reliable. Returns
+    `(populated_result, None, None)` when the boundary does not check
+    out — the caller returns that result directly.
 
     Only called for the auto-resolved-from-`city` path (see
     `fetch_city_street_inventory`'s own `area_name` handling) — an
@@ -489,9 +956,10 @@ def _resolve_area_scope(
         timeout_seconds, hard_deadline, city, resolved_area,
     )
     if failure is not None:
-        return failure, None
+        return failure, None, None
 
     iso3166_2_used: Optional[str] = None
+    area_id_used: Optional[int] = None
 
     if not elements:
         log.warning(
@@ -502,7 +970,86 @@ def _resolve_area_scope(
         return StreetInventoryResult(
             status="unavailable",
             reason=f"no OSM boundary found named {resolved_area!r} for city={city!r}",
-        ), None
+        ), None, None
+
+    # CRITMODE — way-derived area ID fix, single-match gap.
+    #
+    # Root cause of "geography/relation/area all verified correct, real
+    # Overpass control queries return 69k+ ways, yet production still
+    # gets elements=0": this fallback (originally written, and tested,
+    # only for the len(elements) > 1 narrowing path below) was never
+    # reached when the FLAT, unqualified `area["name"=resolved_area]`
+    # check matches exactly one boundary and that one match is itself
+    # way-derived. In that shape, `area_id_used` was left `None` all the
+    # way through this function, `build_street_ql()` was called without
+    # `area_id`, and it silently re-derived `area["name"=...]` a SECOND
+    # time inside the real street-fetch query — which can (and, for the
+    # NYC case, does) resolve to the same way-derived pseudo-area again,
+    # so `way[...](area.searchArea)` has no polygon to test containment
+    # against and returns 0 elements. No geography, retry, or deadline
+    # logic is touched: this only widens the SAME existing way-derived
+    # check + relation-lookup fallback to run whenever exactly one
+    # candidate area remains — whether that's because the flat query was
+    # never ambiguous in the first place, or because region-narrowing
+    # below reduced it to one.
+    def _use_relation_fallback_if_way_derived(
+        candidate_elements: list, iso3166_2_for_lookup: Optional[str],
+    ) -> tuple[Optional[int], Optional[list], Optional[StreetInventoryResult]]:
+        """
+        Returns `(None, None, None)` when `candidate_elements[0]` is NOT
+        way-derived (id missing, or >= the relation-area-id offset) —
+        callers must decide for themselves what to do in that case,
+        exactly as they did before this helper existed for their own
+        path (the narrowed-ambiguity path already set `area_id_used =
+        raw_area_id` itself in that case; the flat/unambiguous path
+        left it `None` and let `build_street_ql()` re-derive by name,
+        which is untouched, already-working behavior this fix does not
+        change). This helper's only job is the way-derived case.
+        """
+        raw_area_id = candidate_elements[0].get("id")
+        if raw_area_id is None or raw_area_id >= _OVERPASS_RELATION_AREA_ID_OFFSET:
+            return None, None, None
+        log.info(
+            "[street-inventory] area_id %d for %r is way-derived (not a relation "
+            "boundary) — querying for the actual administrative boundary relation",
+            raw_area_id, resolved_area,
+        )
+        rel_elements, rel_failure = _run_boundary_check_query(
+            poster, endpoint_url,
+            build_relation_boundary_ql(
+                resolved_area, timeout_seconds=timeout_seconds, iso3166_2=iso3166_2_for_lookup,
+            ),
+            timeout_seconds, hard_deadline, city, resolved_area,
+        )
+        if rel_failure is None and rel_elements and len(rel_elements) == 1:
+            rel_id = rel_elements[0].get("id")
+            if rel_id is not None:
+                resolved_id = _OVERPASS_RELATION_AREA_ID_OFFSET + rel_id
+                log.info(
+                    "[street-inventory] found administrative boundary "
+                    "relation %d for %r — using area_id %d",
+                    rel_id, resolved_area, resolved_id,
+                )
+                # Use the relation's tags for the admin_level check below —
+                # relations carry admin_level, way-derived areas typically
+                # do not.
+                return resolved_id, rel_elements, None
+            return raw_area_id, None, None
+        matched = len(rel_elements) if rel_elements is not None else 0
+        log.warning(
+            "[street-inventory] could not find a unique administrative "
+            "boundary relation for %r (iso3166_2=%r, matched=%d) — "
+            "way-derived area_id %d will not support spatial containment",
+            resolved_area, iso3166_2_for_lookup, matched, raw_area_id,
+        )
+        return None, None, StreetInventoryResult(
+            status="unavailable",
+            reason=(
+                f"area name {resolved_area!r} for city={city!r} matched only "
+                f"way-derived areas (area_id={raw_area_id}), not an "
+                f"administrative boundary relation usable for spatial containment"
+            ),
+        )
 
     if len(elements) > 1:
         iso3166_2 = _resolve_iso3166_2(country_code, region)
@@ -518,10 +1065,25 @@ def _resolve_area_scope(
                 timeout_seconds, hard_deadline, city, resolved_area,
             )
             if failure is not None:
-                return failure, None
+                return failure, None, None
             if narrowed_elements and len(narrowed_elements) == 1:
                 elements = narrowed_elements
                 iso3166_2_used = iso3166_2
+                fallback_area_id, replaced_elements, fallback_failure = (
+                    _use_relation_fallback_if_way_derived(elements, iso3166_2)
+                )
+                if fallback_failure is not None:
+                    return fallback_failure, None, None
+                if replaced_elements is not None:
+                    # Way-derived: relation fallback found the real
+                    # boundary relation and its computed area id.
+                    area_id_used = fallback_area_id
+                    elements = replaced_elements
+                else:
+                    # Not way-derived (the common case for this
+                    # narrowed-to-one path) — same as before this fix,
+                    # use the matched area's own id directly.
+                    area_id_used = elements[0].get("id")
             else:
                 log.warning(
                     "[street-inventory] ambiguous OSM area name %r for city=%r matched %d distinct "
@@ -536,7 +1098,7 @@ def _resolve_area_scope(
                         f"{len(elements)} distinct boundaries (narrowing to subdivision "
                         f"{iso3166_2!r} matched {len(narrowed_elements)})"
                     ),
-                ), None
+                ), None, None
         else:
             log.warning(
                 "[street-inventory] ambiguous OSM area name %r for city=%r matched %d distinct "
@@ -549,7 +1111,28 @@ def _resolve_area_scope(
                     f"ambiguous OSM area name {resolved_area!r} for city={city!r} matched "
                     f"{len(elements)} distinct boundaries"
                 ),
-            ), None
+            ), None, None
+
+    # CRITMODE — way-derived area ID fix, single-match gap (see above):
+    # this is the flat, never-ambiguous case — `elements` still has its
+    # original single entry from the very first boundary check, and
+    # `area_id_used` has not been touched yet. Apply the SAME way-derived
+    # check here so a way-derived single match falls back to the
+    # relation lookup too, instead of silently proceeding to
+    # `build_street_ql()` with no `area_id`, which then re-derives the
+    # (possibly still way-derived) area by name a second time. When the
+    # match is NOT way-derived, this changes nothing — `area_id_used`
+    # stays `None` and the existing, already-working flat re-derivation
+    # is used exactly as before this fix.
+    if area_id_used is None:
+        fallback_area_id, replaced_elements, fallback_failure = (
+            _use_relation_fallback_if_way_derived(elements, iso3166_2_used)
+        )
+        if fallback_failure is not None:
+            return fallback_failure, None, None
+        if replaced_elements is not None:
+            area_id_used = fallback_area_id
+            elements = replaced_elements
 
     tags = elements[0].get("tags") or {}
     admin_level_raw = tags.get("admin_level")
@@ -571,9 +1154,9 @@ def _resolve_area_scope(
                     f"country/state-level boundary (admin_level={admin_level_raw}), "
                     f"not a city"
                 ),
-            ), None
+            ), None, None
 
-    return None, iso3166_2_used
+    return None, iso3166_2_used, area_id_used
 
 
 def fetch_city_street_inventory(
@@ -637,21 +1220,28 @@ def fetch_city_street_inventory(
     # already placed in the curated borough/neighborhood table) and is
     # used as-is, exactly as before this fix.
     resolved_iso3166_2: Optional[str] = None
+    resolved_area_id: Optional[int] = None
     if not area_name_was_explicit:
         _t_verify_start = time.monotonic()
-        verification_failure, resolved_iso3166_2 = _resolve_area_scope(
+        verification_failure, resolved_iso3166_2, resolved_area_id = _resolve_area_scope(
             poster, endpoint_url, resolved_area, city, timeout_seconds, hard_deadline,
             region=region, country_code=country_code,
         )
         log.info(
-            "[street-inventory] boundary verification city=%r area=%r ok=%s iso3166_2=%r elapsed=%.3fs",
+            "[street-inventory] boundary verification city=%r area=%r ok=%s iso3166_2=%r "
+            "area_id=%r elapsed=%.3fs",
             city, resolved_area, verification_failure is None, resolved_iso3166_2,
-            time.monotonic() - _t_verify_start,
+            resolved_area_id, time.monotonic() - _t_verify_start,
         )
         if verification_failure is not None:
             return verification_failure
 
-    query = build_street_ql(resolved_area, timeout_seconds=timeout_seconds, iso3166_2=resolved_iso3166_2)
+    query = build_street_ql(
+        resolved_area,
+        timeout_seconds=timeout_seconds,
+        iso3166_2=resolved_iso3166_2,
+        area_id=resolved_area_id,
+    )
 
     # STAGE 2/4: the actual Overpass network call. Bounded twice: (a) the
     # per-socket-operation `timeout_seconds` urllib itself enforces, and
@@ -664,8 +1254,10 @@ def fetch_city_street_inventory(
     )
     _t_overpass_start = time.monotonic()
     try:
+        _deadline_abs = time.monotonic() + hard_deadline
         payload = call_with_hard_deadline(
-            poster, endpoint_url, query, _HEADERS, float(timeout_seconds),
+            _post_with_retry_and_fallback, poster, endpoint_url, query, _HEADERS, float(timeout_seconds),
+            _deadline_abs,
             deadline_seconds=hard_deadline,
         )
     except urllib.error.HTTPError as exc:

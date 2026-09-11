@@ -1,0 +1,1 @@
+[out:json][timeout:25]; way["highway"]["name"](area(3600175905)); out tags;

@@ -1,0 +1,1 @@
+[out:json][timeout:25]; rel(175905)->.r; .r map_to_area->.a; .a out ids;

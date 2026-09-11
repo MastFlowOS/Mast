@@ -32,7 +32,7 @@ export const STREET_CLAIM_LEASE_SECONDS = 300;
  * an existing row only counts as "inventory this scope can use" if it
  * was built under boundary logic that is still current.
  */
-export const CURRENT_STREET_BOUNDARY_VERSION = "admin-level-verified-v2-region-disambiguated";
+export const CURRENT_STREET_BOUNDARY_VERSION = "admin-level-verified-v4-relation-area-id";
 
 /**
  * CRITMODE — street-inventory hang investigation (requirement 8: "the

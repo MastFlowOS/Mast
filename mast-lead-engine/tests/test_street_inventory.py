@@ -298,7 +298,12 @@ class TestBoundaryVersionStamping:
             is_boundary_check = ".a out tags;" in query
             if 'area["name"="New York City"]' in query:
                 if is_boundary_check:
-                    return {"elements": [{"type": "area", "id": 1, "tags": {"admin_level": "8"}}]}
+                    # CRITMODE — way-derived area ID fix, single-match gap:
+                    # this id must be a realistic relation-derived area id
+                    # (>= 3600000000), not a small arbitrary integer — the
+                    # way-derived check now runs on this flat/unambiguous
+                    # path too (see overpass_source.py).
+                    return {"elements": [{"type": "area", "id": 3_600_000_001, "tags": {"admin_level": "8"}}]}
                 return {"elements": [{"type": "way", "id": 1, "tags": {"highway": "residential", "name": "Broadway"}}]}
             return {"elements": []}
 
@@ -374,7 +379,20 @@ class TestUnavailableFallback:
         assert result.status == "unavailable"
         assert result.streets == ()
 
-    def test_transport_http_error_is_unavailable(self):
+    def test_transport_http_error_is_unavailable(self, monkeypatch):
+        # CRITMODE — Overpass 429 handling: 503 is now one of the
+        # retryable status codes `_post_with_retry_and_fallback` backs
+        # off and retries/fails-over on (see that function) before
+        # this module gives up — this fake still fails on every
+        # candidate endpoint, so the end result is unchanged
+        # ("unavailable"), just reached after genuine bounded retry
+        # effort instead of one attempt. `time.sleep` is patched out
+        # so that bounded retry effort doesn't cost real wall-clock
+        # time in the test suite — same pattern
+        # tests/test_overpass_should_stop.py already uses for
+        # providers/overpass_provider.py's own retry loop.
+        monkeypatch.setattr("street_inventory.overpass_source.time.sleep", lambda _s: None)
+
         def failing(url, query, headers, timeout):
             raise urllib.error.HTTPError(url, 503, "Service Unavailable", hdrs=None, fp=None)  # type: ignore[arg-type]
 
@@ -384,7 +402,12 @@ class TestUnavailableFallback:
         assert result.status == "unavailable"
         assert result.reason
 
-    def test_transport_network_error_is_unavailable(self):
+    def test_transport_network_error_is_unavailable(self, monkeypatch):
+        # See test_transport_http_error_is_unavailable above: network
+        # errors are also retried/failed-over now before this module
+        # gives up, so time.sleep is patched out for the same reason.
+        monkeypatch.setattr("street_inventory.overpass_source.time.sleep", lambda _s: None)
+
         def failing(url, query, headers, timeout):
             raise urllib.error.URLError("simulated DNS failure")
 
@@ -408,7 +431,10 @@ class TestUnavailableFallback:
         )
         assert result.status == "unavailable"
 
-    def test_orchestration_reports_unavailable_without_raising(self):
+    def test_orchestration_reports_unavailable_without_raising(self, monkeypatch):
+        # See test_transport_http_error_is_unavailable above.
+        monkeypatch.setattr("street_inventory.overpass_source.time.sleep", lambda _s: None)
+
         def failing(url, query, headers, timeout):
             raise OSError("boom")
 

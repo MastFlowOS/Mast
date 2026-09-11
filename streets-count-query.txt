@@ -1,0 +1,1 @@
+[out:json][timeout:25]; area(3600175905)->.a; way["highway"]["name"](area.a); out count;

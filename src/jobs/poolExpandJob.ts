@@ -76,6 +76,28 @@ import { env } from "../config/env.js";
 // never independently drift from each other again.
 import { remainingTarget, isTargetReached, reportedDelivered } from "../discovery/targetAccounting.js";
 
+/**
+ * CRITMODE — "10 requested, 9 shown" bug (see migrations/033 for the full
+ * root-cause writeup). Concurrent area workers each deliver leads and each
+ * independently write scrape_jobs.results_count off a local snapshot of the
+ * shared `newForUser` counter; because these are separate async round
+ * trips, a worker whose snapshot was taken EARLIER (a lower value) can
+ * still WIN the race and land its write AFTER a later, higher one —
+ * silently regressing the counter the frontend is watching. This RPC
+ * (migrations/033_bump_scrape_job_results_count.sql) makes the write
+ * atomic and order-independent: `results_count` can only ever move up
+ * (`GREATEST(existing, p_count)`), so no matter which of several
+ * concurrent/out-of-order writes lands last, the column always reflects
+ * the true maximum ever reported for this job.
+ */
+async function bumpResultsCount(jobId: string, count: number): Promise<void> {
+  const { error } = await (supabaseAdmin as any).rpc("bump_scrape_job_results_count", {
+    p_job_id: jobId,
+    p_count: count,
+  });
+  if (error) throw error;
+}
+
 export type PoolExpandFollowUp = {
   userId: string;
   professionSlug: string | null;
@@ -587,10 +609,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             return "stop_outer";
           }
 
-          await supabaseAdmin.from("scrape_jobs")
-            .update({ results_count: resultsCountBase + newForUser })
-            .eq("id", followUp.scrapeJobId)
-            .not("status", "eq", "cancelled");
+          // CRITMODE FIX: was a plain unconditional `.update({ results_count:
+          // resultsCountBase + newForUser })`, which lets an out-of-order
+          // (stale, lower) write from a slower concurrent area worker
+          // overwrite a fresher (higher) one that already landed — see
+          // bumpResultsCount()'s doc comment / migrations/033 for the full
+          // root-cause writeup. This is the exact place the 10th
+          // newForUser lead's progress could get silently erased from
+          // what the frontend displays, even though the lead itself was
+          // correctly persisted and charged.
+          await bumpResultsCount(followUp.scrapeJobId, resultsCountBase + newForUser);
 
           if (result.limitReached) {
             console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
@@ -1488,6 +1516,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           ? "completed"
           : "completed_partial";
 
+      // CRITMODE FIX: fold the final results_count into this SAME atomic
+      // write as the terminal status flip (via the monotonic RPC, not a
+      // plain `.update()`), instead of relying on whatever the last
+      // per-lead bumpResultsCount() call happened to leave behind. This
+      // closes the remaining race window between that last per-lead write
+      // and this completion write, and guarantees the exact row version
+      // the frontend's realtime subscription reacts to (status===
+      // "completed") always carries the correct, final count — never a
+      // stale one from an earlier, since-superseded snapshot.
+      await bumpResultsCount(followUp.scrapeJobId, resultsCountBase + newForUser);
       await supabaseAdmin.from("scrape_jobs").update({
         status: finalStatus,
         completed_at: new Date().toISOString(),

@@ -67,6 +67,14 @@ import {
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
 import { getResourceCapacity, getResourceWorkerSlotPool, trySharedPidAdmission } from "../lib/resourceCapacity.js";
 import { env } from "../config/env.js";
+// CRITMODE — user-scoped target accounting fix: see targetAccounting.ts's
+// doc comment for the full production root-cause writeup. Every place
+// below that used to compare `delivered` (pool-wide) or a
+// `newForUser > 0 ? ... : ...delivered` ternary against `payload.shortfall`
+// now goes through these three pure functions instead, so the stop
+// condition, the live remaining-need calc, and the reported outcome can
+// never independently drift from each other again.
+import { remainingTarget, isTargetReached, reportedDelivered } from "../discovery/targetAccounting.js";
 
 export type PoolExpandFollowUp = {
   userId: string;
@@ -379,7 +387,13 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     // deliberately decoupled.
     const target = payload.shortfall;
 
-    const stillNeededNow = () => (followUp && newForUser > 0 ? payload.shortfall - newForUser : payload.shortfall - delivered);
+    // ROOT CAUSE FIX (CRITMODE — user-scoped target accounting bug): see
+    // targetAccounting.ts for the full writeup. Every caller below that
+    // asks "how many more do we still need" goes through this single pure
+    // function so it can never independently disagree with the stop
+    // condition in processLead() (which uses isTargetReached() from the
+    // same module).
+    const stillNeededNow = () => remainingTarget({ shortfall: payload.shortfall, delivered, newForUser, hasFollowUp: Boolean(followUp) });
 
     // PHASE 5 — TARGET-AWARE DISCOVERY STOPPING (telemetry).
     //
@@ -586,13 +600,29 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             return "stop_outer";
           }
 
-          if (newForUser >= payload.shortfall || delivered >= payload.shortfall) {
+          // ROOT CAUSE FIX (CRITMODE — user-scoped target accounting bug):
+          // this is the exact accounting bug from the production incident
+          // (parent_delivered=10, newForUser=9, frontend correctly showed
+          // 9 — but the run had already stopped). The old `|| delivered >=
+          // payload.shortfall` clause let the pool-wide (non-user-scoped)
+          // counter satisfy a followUp run's target on its own — so the
+          // moment 10 businesses had been added to the pool (one of which
+          // this user already owned, i.e. wasNewForUser=false and no
+          // target slot consumed by design — see insertLeadForUser()),
+          // the run stopped one genuinely-new lead short of what the user
+          // actually requested. isTargetReached() (targetAccounting.ts)
+          // now enforces: for a followUp run the ONLY thing that can
+          // satisfy "the requested target has been reached" is
+          // `newForUser` — the count of NEW user-owned lead records
+          // actually prepared for the requesting user. `delivered` (pool
+          // growth) is irrelevant to whether THIS user's request is done.
+          if (isTargetReached({ shortfall: payload.shortfall, delivered, newForUser, hasFollowUp: true })) {
             targetReachedAtMs = Date.now();
             if (reqId) terminateRequest(reqId, "TARGET_REACHED");
             abortController.abort("TARGET_REACHED");
             return "stop_outer";
           }
-        } else if (delivered >= payload.shortfall) {
+        } else if (isTargetReached({ shortfall: payload.shortfall, delivered, newForUser, hasFollowUp: false })) {
           targetReachedAtMs = Date.now();
           if (reqId) terminateRequest(reqId, "TARGET_REACHED");
           abortController.abort("TARGET_REACHED");
@@ -1504,7 +1534,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     // satisfied" — see logChildTelemetry()'s doc comment above for what
     // candidatesAfterParentTarget/mapsOperationsAfterParentTarget actually
     // measure (an upper bound, not an exact per-candidate count).
-    const finalParentDelivered = followUp && newForUser > 0 ? newForUser : delivered;
+    // ROOT CAUSE FIX (same accounting bug as stillNeededNow()/the
+    // stop-condition above): a followUp run's reported "parent_delivered"
+    // must always be the user-scoped newForUser count, for the whole run —
+    // not `delivered` (pool-wide) whenever newForUser happens to still be 0.
+    const finalParentDelivered = reportedDelivered({ shortfall: payload.shortfall, delivered, newForUser, hasFollowUp: Boolean(followUp) });
     console.log(
       `[poolExpandJob][telemetry] SUMMARY parent_target=${payload.shortfall} ` +
         `parent_delivered=${finalParentDelivered} parent_remaining=${Math.max(0, payload.shortfall - finalParentDelivered)} ` +

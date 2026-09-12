@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { runEngineQuery } from "../scraperBridge/pythonBridge.js";
-import type { EngineLead } from "../scraperBridge/pythonBridge.js";
+import type { EngineLead, EngineDoneInfo } from "../scraperBridge/pythonBridge.js";
 import { deliverLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
@@ -8,6 +8,7 @@ import { validateLead } from "../lib/leadValidation.js";
 import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
 import type { CountryInfo } from "../lib/geo/countries.js";
 import { PipelineTracer } from "../lib/pipelineTrace.js";
+import { createStreetLifecycleTracer, emitRunSummary, type StreetLifecycleTracer } from "../lib/streetLifecycleTrace.js";
 import { registerRequestAbortController, terminateRequest, isRequestActive } from "../discovery/requestLifecycle.js";
 // AREA POOL FIX (issue 3): poolExpandJob is what actually runs for
 // Starter/Pro/Premium plans (instant_pool/instant_pool_ranked — this is
@@ -512,6 +513,12 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       // intentionally untouched by this phase, exactly as the phase prompt
       // scopes it ("isolating this change").
       productivity?: AreaProductivityState,
+      // CRITMODE — diagnostics only: optional per-street counters/marks,
+      // supplied ONLY by the street-pooled path's runArea() below. Every
+      // call here is a plain side-effecting callback whose return value is
+      // never consulted — it cannot influence delivery, dedup, or target
+      // accounting.
+      streetDiagnostics?: { onDelivered: () => void; onNewForUser: () => void },
     ): Promise<"continue" | "batch_done" | "stop_outer"> {
       const pid = tracer.receive(lead._pipeline_id, lead.name);
       // PHASE 10 telemetry: every lead the engine yields counts as a
@@ -597,7 +604,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         chunk.deliveredThisChunk += 1;
         areaRecorder?.recordDelivered();
         if (productivity) recordDeliveredLead(productivity);
-        if (result.wasNewForUser) newForUser += 1;
+        streetDiagnostics?.onDelivered(); // CRITMODE — diagnostics only
+        if (result.wasNewForUser) {
+          newForUser += 1;
+          streetDiagnostics?.onNewForUser(); // CRITMODE — diagnostics only
+        }
 
         if (followUp) {
           // Guard: if the job was cancelled while we were running, stop.
@@ -754,6 +765,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       // uses, so a claim's real street name/key is always resolved through
       // this map, never guessed from the id.
       const streetClaims = new Map<string, StreetClaim>();
+      // CRITMODE — diagnostics only: one lifecycle tracer per claimed
+      // street (state_id -> tracer), mirroring `streetClaims` exactly.
+      // Never read by any decision logic — purely additive.
+      const streetLifecycleTracers = new Map<string, StreetLifecycleTracer>();
       const streetWorkerId = `poolExpand:${(followUp?.scrapeJobId ?? reqId ?? "unknown").slice(0, 24)}`;
       // Total distinct claim targets for THIS city, for pool-sizing
       // purposes only (see runAreaWorkerPool's totalCuratedAreas doc
@@ -819,6 +834,18 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               throw new Error(`claim_discovery_street returned a duplicate active claim (${claim.stateId})`);
             }
             streetClaims.set(claim.stateId, claim);
+            // CRITMODE — diagnostics only: mint this street's own lifecycle
+            // tracer the instant its claim RPC resolves (street_claimed).
+            // Purely additive bookkeeping — does not affect the claim,
+            // pool admission, or anything downstream.
+            const tracerHandle = createStreetLifecycleTracer({
+              streetKey: claim.streetKey,
+              streetName: claim.streetName,
+              runId: reqId ?? streetWorkerId,
+              workerId: streetWorkerId,
+            });
+            tracerHandle.markClaimed();
+            streetLifecycleTracers.set(claim.stateId, tracerHandle);
             return claim.stateId;
           }
           return claimAreaForCity(supabaseAdmin, {
@@ -956,6 +983,21 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           // reads from here rather than re-deriving it.
           const streetClaim = useStreetPool ? streetClaims.get(area) : undefined;
           const areaLabel = streetClaim?.streetName ?? area;
+          // CRITMODE — diagnostics only. `undefined` in area mode (no
+          // street claim, no tracer) — every use below is optional-chained
+          // so this is a complete no-op outside the street-pool path.
+          const streetTrace = streetClaim ? streetLifecycleTracers.get(area) : undefined;
+          // CRITMODE — diagnostics only, per-street counters. `raw`/
+          // `admitted`/`qualified` are read from the EXISTING `productivity`
+          // counters at finalize time below (newlyDiscoveredCount/
+          // newlyQueuedCount/qualifiedCount) rather than re-counted here —
+          // only `new_for_user`/`delivered` (not tracked per-area anywhere
+          // today; the existing `delivered`/`newForUser` vars are job-wide,
+          // not per-street) and `enrichment_attempts` (no existing counter
+          // at all) are new, purely additive local counters.
+          let streetNewForUser = 0;
+          let streetDelivered = 0;
+          const streetEnrichmentAttemptIds = new Set<string>();
           let discovered = 0;
           let accepted = 0;
           let rejected = 0;
@@ -1006,6 +1048,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           // from "we never got a completion callback at all" (unknown).
           let lastTerminationReason: AreaTerminationReason | undefined;
           let doneInfoReceived = false;
+          // CRITMODE — diagnostics only: the raw EngineDoneInfo from the
+          // most recent onDone callback, read (never re-measured) by
+          // streetTrace.finalize() below for its bridgeTimings/progressMarks.
+          let lastDoneInfoForTrace: EngineDoneInfo | undefined;
 
           // PHASE 12D — HYBRID ADAPTIVE AREA STOPPING (PHASE 25: upgraded
           // to key off PRODUCTIVE ACTIVITY, not just qualified leads — see
@@ -1142,6 +1188,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           }
 
           try {
+            // CRITMODE — diagnostics only: engine_spawn_started, recorded
+            // immediately before the call that ultimately invokes
+            // child_process.spawn() inside pythonBridge.ts.
+            streetTrace?.markSpawnStarted();
             // PHASE 41 — restored: exactly ONE runEngineQuery() invocation
             // for this area's entire scan allocation (see `askFor` above).
             // No expansion loop, no second engine/browser/subprocess
@@ -1190,6 +1240,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 lastPerf = info.perf;
                 lastTerminationReason = info.terminationReason;
                 doneInfoReceived = true;
+                // CRITMODE — diagnostics only: engine_done, plus stash the
+                // done-info for finalize() below (bridgeTimings/progressMarks
+                // are already computed by pythonBridge.ts — read, not re-measured).
+                streetTrace?.markEngineDone();
+                lastDoneInfoForTrace = info;
                 logChildTelemetry(`area=${area} city=${city}`, streamTarget, info);
                 if (info.success === false) {
                   console.warn(
@@ -1212,6 +1267,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 // success/retryable-failure is deliberately NEVER routed
                 // through `closeCandidateTerminal` — see each branch.
                 onProgress: (progress) => {
+                  // CRITMODE — diagnostics only: count distinct candidates
+                  // that reached ANY enrichment-stage progress event (no
+                  // existing counter for this). Never gates anything —
+                  // purely additive to the Set below.
+                  if (
+                    (progress.stage === "website" || progress.stage === "instagram" || progress.stage === "contact") &&
+                    progress.pipelineId
+                  ) {
+                    streetEnrichmentAttemptIds.add(progress.pipelineId);
+                  }
                   if (progress.stage === "discovery") {
                     if (progress.event === "candidate_discovered") {
                       admitCandidate(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId);
@@ -1292,8 +1357,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 },
               },
             )) {
+              streetTrace?.markFirstForwarded(); // CRITMODE — diagnostics only, idempotent
               discovered += 1;
-              const outcome = await processLead(lead, streamTarget, chunk, areaRecorder, productivity);
+              const outcome = await processLead(lead, streamTarget, chunk, areaRecorder, productivity, streetTrace
+                ? { onDelivered: () => { streetDelivered += 1; }, onNewForUser: () => { streetNewForUser += 1; streetTrace.markFirstNewForUser(); } }
+                : undefined);
               if (outcome === "stop_outer") {
                 stopOuter = true;
                 accepted = chunk.deliveredThisChunk;
@@ -1379,6 +1447,25 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                     `termination=${effectiveTerminationReason ?? "unknown"}`,
                 );
               }
+              // CRITMODE — diagnostics only: emit this street's full
+              // lifecycle summary line exactly once, at the same point its
+              // completion/recoverable state is already decided above.
+              // Reads productivity's EXISTING counters (never re-counts)
+              // for raw/admitted/qualified.
+              streetTrace?.finalize({
+                info: lastDoneInfoForTrace,
+                counts: {
+                  raw_candidates: productivity.newlyDiscoveredCount,
+                  yielded_candidates: discovered,
+                  admitted_candidates: productivity.newlyQueuedCount,
+                  enrichment_attempts: streetEnrichmentAttemptIds.size,
+                  qualified: productivity.qualifiedCount,
+                  new_for_user: streetNewForUser,
+                  delivered: streetDelivered,
+                },
+                terminationReason: effectiveTerminationReason ?? null,
+              });
+              streetLifecycleTracers.delete(area);
             }
           }
 
@@ -1563,6 +1650,16 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
     // terminal outcome instead of silently falling out of the report.
     tracer.sweepIncomplete("job_ended_before_business_finished");
     console.log(`[poolExpandJob] pipeline reconciliation:\n${tracer.reconcile()}`);
+
+    // CRITMODE — diagnostics only: run-level street timing rollup, on
+    // every exit path, same rationale as the pipeline reconciliation
+    // above. `reqId` is recomputed here identically to how it was derived
+    // inside the try block (discoveryPlanId is the same outer-scope `let`
+    // that call site reads) since `reqId` itself is block-scoped to the
+    // try. A run with no street-pool streets (area mode, or an early
+    // return before any street was ever claimed) simply emits zero rows.
+    const diagnosticsRunId = discoveryPlanId ?? followUp?.scrapeJobId;
+    if (diagnosticsRunId) emitRunSummary(diagnosticsRunId);
 
     // PHASE 5 — TARGET-AWARE DISCOVERY STOPPING (job-level telemetry
     // summary). Logged on every exit path (normal completion, early

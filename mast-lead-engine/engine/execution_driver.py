@@ -460,6 +460,7 @@ class ExecutionDriver:
         on_stage_outcome: Optional[Callable[[StageOutcome], None]] = None,
         on_stage_wallclock: Optional[Callable[[str, float], None]] = None,
         stage_concurrency: Optional[Dict[str, int]] = None,
+        external_stop_event: Optional[threading.Event] = None,
     ) -> None:
         """
         Parameters
@@ -531,6 +532,21 @@ class ExecutionDriver:
             for this codebase's own conservative default (Website=2,
             Contact=2, nothing else). Values are clamped to a minimum
             of 1.
+        external_stop_event:
+            STOP-PROPAGATION FIX. Optional caller-owned `threading.Event`
+            (e.g. service.py's module-level `_shutdown_event`, set from
+            the SIGTERM handler) that this driver treats as an
+            additional, read-only stop signal alongside its own
+            internal `_stop_event` — checked at the exact same
+            per-stage checkpoints (see `run_once()`/`_run_loop()`),
+            never written to by this class. This is what lets a
+            shutdown requested by the caller while a `run_once()` pass
+            is already in progress (mid multi-stage loop, not yet
+            returned to the caller) stop that pass from starting its
+            next stage, instead of only taking effect on the *next*
+            `run_once()` call. `None` (the default) preserves prior
+            behavior exactly — only this driver's own `_stop_event`
+            (via `stop()`) is consulted.
         """
         if not stages:
             raise ValueError("ExecutionDriver requires at least one StageConfig")
@@ -621,6 +637,10 @@ class ExecutionDriver:
         self._producers_done: set = set()
 
         self._stop_event = threading.Event()
+        # STOP-PROPAGATION FIX: read-only reference to a caller-owned
+        # Event, if provided -- see the constructor docstring above.
+        # Never set/cleared by this class.
+        self._external_stop_event = external_stop_event
         self._thread: Optional[threading.Thread] = None
         self._lifecycle_lock = threading.Lock()
         self.last_error: Optional[BaseException] = None
@@ -902,6 +922,21 @@ class ExecutionDriver:
         with self._producer_lock:
             return self._producer_names <= self._producers_finished
 
+    def _stop_requested(self) -> bool:
+        """
+        STOP-PROPAGATION FIX. True if either this driver's own
+        `_stop_event` (set via `stop()`) or the caller-owned
+        `external_stop_event` passed into the constructor (if any) is
+        set. Centralizes the two checks so `run_once()` and
+        `_run_loop()` use one identical definition of "should the next
+        stage in this pass be skipped".
+        """
+        if self._stop_event.is_set():
+            return True
+        if self._external_stop_event is not None and self._external_stop_event.is_set():
+            return True
+        return False
+
     def run_once(self) -> List[StageOutcome]:
         """
         Synchronously run exactly one pass over every stage (skipping
@@ -920,6 +955,20 @@ class ExecutionDriver:
         self._ensure_producers_started()
         outcomes = []
         for stage in self._stages:
+            if self._stop_requested():
+                # STOP-PROPAGATION FIX: mirrors the identical guard in
+                # _run_loop() (see below). A stop requested during, or
+                # immediately after, a previous stage's pass -- via
+                # this driver's own _stop_event OR the caller's
+                # external_stop_event (e.g. service.py's SIGTERM-driven
+                # shutdown_event) -- must not let the next stage in
+                # this same run_once() call start. An already-running
+                # _run_stage_pass() is never interrupted -- this only
+                # prevents the *next* stage from beginning -- so at
+                # most one more already-started item per stage can
+                # still complete, never a whole additional six-stage
+                # sequential pass.
+                break
             if self._run_producers_once and stage.name in self._producer_names:
                 # PHASE 2B FIX: producer stages are driven by their own
                 # dedicated thread (`_ensure_producers_started` above),
@@ -940,10 +989,10 @@ class ExecutionDriver:
     def _run_loop(self) -> None:
         self._ensure_producers_started()
         try:
-            while not self._stop_event.is_set():
+            while not self._stop_requested():
                 any_ran = False
                 for stage in self._stages:
-                    if self._stop_event.is_set():
+                    if self._stop_requested():
                         break
                     if stage.name in self._producer_names and self._run_producers_once:
                         # PHASE 2B FIX: see run_once()'s identical skip --
@@ -961,7 +1010,7 @@ class ExecutionDriver:
 
                 self._maybe_log_telemetry()
 
-                if self._stop_event.is_set():
+                if self._stop_requested():
                     return
                 delay = (
                     self._active_poll_seconds if any_ran else self._idle_poll_seconds

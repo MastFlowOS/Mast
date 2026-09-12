@@ -1468,6 +1468,22 @@ async def run_query(
                 # Qualification, and Storage remain untouched (implicit
                 # concurrency 1).
                 stage_concurrency=DEFAULT_STAGE_CONCURRENCY,
+                # STOP-PROPAGATION FIX: give the driver a read-only view
+                # of this call's own `shutdown_event` (set from the
+                # SIGTERM handler -- see _on_sigterm / the module-level
+                # _shutdown_event docstring) so a shutdown requested
+                # while a `driver.run_once()` pass is already in
+                # progress (mid multi-stage loop, on the asyncio.to_thread
+                # worker thread, not yet returned to this coroutine) can
+                # stop that pass from starting its next stage -- instead
+                # of only taking effect on the *next* run_once() call,
+                # which is all the `if shutdown_event is not None and
+                # shutdown_event.is_set(): break` checkpoint below (and
+                # the identical one above) could ever guarantee on their
+                # own. Reuses the existing shutdown_event/_stop_event
+                # mechanism unchanged; does not add any new cancellation
+                # framework or alter what shutdown_event itself means.
+                external_stop_event=shutdown_event,
             )
 
             all_input_queue_ids = [

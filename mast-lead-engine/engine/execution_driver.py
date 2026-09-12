@@ -424,9 +424,21 @@ __all__ = [
 # service.py), conservative, easily adjusted. Renamed from
 # DEFAULT_WEBSITE_STAGE_CONCURRENCY to DEFAULT_STAGE_CONCURRENCY since
 # it is no longer Website-only; still one central dict, not scattered
-# per-file constants. Instagram, Merge, Qualification, and Storage
-# remain at the implicit default of 1.
-DEFAULT_STAGE_CONCURRENCY: Dict[str, int] = {"website": 2, "contact": 2}
+# per-file constants. Merge, Qualification, and Storage remain at the
+# implicit default of 1.
+#
+# Instagram added (same treatment as Website/Contact): InstagramWorker.
+# process() (workers/instagram_worker.py) is a real blocking network
+# fetch (urllib.request.urlopen, 6s timeout) for every candidate with
+# an instagram_url, exactly like Website and Contact -- and, like
+# those two, service.py already provisions idle instances beyond 1
+# (instance_counts["instagram"] = 4) that concurrency 1 left unused.
+# 2 is the same small, easily doubled-or-halved starting point used
+# for Website/Contact, not a modeled optimum. Uses the identical
+# generic mechanism (_stage_concurrency_for(), the bounded
+# _concurrency_executor, and WorkerAllocator/Queue's own locking) --
+# no Instagram-specific code path was added or needed.
+DEFAULT_STAGE_CONCURRENCY: Dict[str, int] = {"website": 2, "contact": 2, "instagram": 2}
 
 
 class ExecutionDriverError(RuntimeError):

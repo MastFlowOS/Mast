@@ -60,9 +60,11 @@ def _website_intel(i: int) -> WebsiteIntel:
 
 
 def test_default_stage_concurrency_includes_website_and_contact_only():
-    """Sanity check on the central config itself: exactly Website and
-    Contact are configured to 2; nothing else was touched."""
-    assert DEFAULT_STAGE_CONCURRENCY == {"website": 2, "contact": 2}
+    """Sanity check on the central config itself: Website and Contact
+    are configured to 2 (unchanged by the later Instagram addition --
+    see tests/test_instagram_stage_concurrency.py for that entry)."""
+    assert DEFAULT_STAGE_CONCURRENCY["website"] == 2
+    assert DEFAULT_STAGE_CONCURRENCY["contact"] == 2
 
 
 class _ProbeContactWorker(BaseWorker):

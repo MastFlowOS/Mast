@@ -1896,6 +1896,18 @@ class MapsScraper:
                 page = await ctx.new_page()
             crashed = False
 
+            # CRITMODE PART 2 -- PRE-FIRST-CANDIDATE instrumentation: the
+            # freshly-created page is a real, usable Playwright page object
+            # at this exact point (context + page both already succeeded
+            # above) -- before ANY network I/O (goto) happens on it. This
+            # is the earliest "browser/page ready" evidence available; it
+            # reuses the same _emit_progress()/stage="discovery" protocol
+            # maps_navigation_start/panel_resolved already use, not a new
+            # event channel. Emitted every attempt (including retries) so
+            # a slow post-crash context rebuild is visible too. Diagnostic
+            # only -- no control-flow change.
+            _emit_progress("browser_page_ready", str(attempt))
+
             try:
                 with self._profiler.timer("rate_limit_wait_search"):
                     await self._limiter.acquire("maps_search")
@@ -2577,6 +2589,17 @@ class MapsScraper:
                 # SUCCESS (either TARGET_REACHED or genuine EXHAUSTED — the
                 # caller distinguishes those two from `yielded` vs
                 # `max_results`), never a disguised failure.
+                #
+                # CRITMODE PART 2 -- PRE-FIRST-CANDIDATE instrumentation:
+                # this IS the "search exhausted" moment for this street's
+                # scan -- whether that's genuine EOL, max_results, or a
+                # scroll-cap stop, the caller (service.py) can't
+                # distinguish those from this signal alone, but Node CAN
+                # already tell TARGET_REACHED apart via bridgeTimings/
+                # __done__'s own fields -- this event only marks WHEN
+                # scanning stopped, carrying how many places were yielded
+                # as item_id. Diagnostic only.
+                _emit_progress("search_exhausted", str(yielded))
                 return
 
             except DiscoveryFailure as exc:
@@ -2598,6 +2621,15 @@ class MapsScraper:
                     f"{full_query!r} (attempt {attempt}/{max_attempts}, "
                     f"{yielded} place(s) already yielded): {exc.detail}"
                 )
+                # CRITMODE PART 2 -- PRE-FIRST-CANDIDATE instrumentation:
+                # a typed DiscoveryFailure (panel not found, consent/block,
+                # nav timeout) about to be retried (or, on the last
+                # attempt, re-raised). Distinct from the generic
+                # crash_detected event below (which is only the
+                # unclassified except-Exception branch) -- this is
+                # specifically "a real DiscoveryFailure just fired", with
+                # the reason carried as item_id. Diagnostic only.
+                _emit_progress("panel_failure_retry", f"{exc.reason.value}:{attempt}")
                 if proxy:
                     self._proxy_manager.report_failure(proxy)
                 if is_last_attempt:

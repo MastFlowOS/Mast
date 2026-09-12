@@ -148,6 +148,15 @@ class PipelineTracer:
 
     # ── End-of-run safety net ───────────────────────────────────────────
 
+    def pending_count(self) -> int:
+        """Read-only count of records that have NOT yet reached a terminal
+        outcome (DELIVERED/REJECTED/FAILED). CRITMODE PART 2 —
+        POST-USEFUL-WORK instrumentation: lets a caller report "pending
+        work at drain" the instant a stop is requested, without touching
+        `_records` itself or changing when/how outcomes get set. Purely a
+        read of existing state — no new bookkeeping, no side effects."""
+        return sum(1 for r in self._records.values() if r.outcome is None)
+
     def sweep_incomplete(self, reason: str) -> int:
         """Force-close every record that never reached a terminal outcome
         as REJECTED with the given reason. Used when a run intentionally

@@ -685,7 +685,22 @@ class ExecutionDriver:
                 len(self._stages), sorted(self._producer_names),
             )
 
-    def stop(self, *, wait: bool = True, timeout: Optional[float] = None) -> None:
+    def stop(
+        self,
+        *,
+        wait: bool = True,
+        timeout: Optional[float] = None,
+        # CRITMODE PART 2 -- POST-USEFUL-WORK instrumentation: an
+        # optional, purely-observational callback invoked at named
+        # phase boundaries inside this method ("drain_begin" right as
+        # the stop signal is set and threads start winding down,
+        # "worker_shutdown_begin" right before the concurrency
+        # executor itself is told to shut down). Defaults to None, so
+        # every existing caller is byte-for-byte unaffected. Exceptions
+        # raised by the callback are swallowed -- this method never
+        # fails or changes its own timing because of an observer.
+        on_phase: Optional[Callable[[str], None]] = None,
+    ) -> None:
         """
         Signal the drive loop to stop after its current
         `execute_stage()` call (if any) returns, and, if `wait` is
@@ -708,6 +723,11 @@ class ExecutionDriver:
         returns control to it; the caller just does not block waiting
         for a join that could never legally happen.
         """
+        if on_phase is not None:
+            try:
+                on_phase("drain_begin")
+            except Exception:
+                log.debug("on_phase(\"drain_begin\") observer raised -- ignored", exc_info=True)
         self._stop_event.set()
         thread = self._thread
         if wait and thread is not None:
@@ -762,6 +782,11 @@ class ExecutionDriver:
         # rather than being abandoned mid-`process()`. No-op if no stage
         # ever needed a pool (`_concurrency_executor is None`).
         if self._concurrency_executor is not None:
+            if on_phase is not None:
+                try:
+                    on_phase("worker_shutdown_begin")
+                except Exception:
+                    log.debug("on_phase(\"worker_shutdown_begin\") observer raised -- ignored", exc_info=True)
             self._concurrency_executor.shutdown(wait=wait)
 
     def is_running(self) -> bool:

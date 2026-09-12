@@ -1640,8 +1640,16 @@ async def run_query(
                             "[run_query] requested quantity reached — delivered=%d deliver_target=%d",
                             gate.accepted, _deliver_target,
                         )
+                        # CRITMODE PART 2 -- POST-USEFUL-WORK
+                        # instrumentation: reuses the SAME _on_progress
+                        # protocol as discovery's stage="discovery"
+                        # events, just stage="engine" -- carries the
+                        # current pending (non-terminal) pipeline record
+                        # count as item_id so Node can see how much work
+                        # was still in flight the instant target was hit.
+                        _on_progress("engine", "target_reached", str(tracer.pending_count()))
                         if driver is not None:
-                            driver.stop()
+                            driver.stop(on_phase=lambda phase: _on_progress("engine", phase, str(tracer.pending_count())))
                         break
 
                     if not any_ran and not drained_any:
@@ -1707,7 +1715,18 @@ async def run_query(
                 except (asyncio.CancelledError, Exception):
                     pass
                 if driver is not None:
-                    await asyncio.to_thread(driver.stop)
+                    # CRITMODE PART 2 -- POST-USEFUL-WORK instrumentation:
+                    # same on_phase wiring as the target-reached path above,
+                    # for the other exit paths (watchdog/cancel/exhaustion)
+                    # that reach this cleanup finally instead. Safe even if
+                    # driver.stop() already ran once above -- stop() is
+                    # documented as safe to call more than once, and Node's
+                    # progressMarks are first-occurrence-only so a second
+                    # emit here is a harmless no-op if it already fired.
+                    await asyncio.to_thread(
+                        driver.stop,
+                        on_phase=lambda phase: _on_progress("engine", phase, str(tracer.pending_count())),
+                    )
                 tracer.sweep_incomplete("run_ended_before_business_finished (cancelled/aborted)")
     finally:
         log.info("[run_query] entering outer cleanup (store close, profiler report)")

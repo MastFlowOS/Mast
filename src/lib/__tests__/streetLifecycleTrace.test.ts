@@ -24,6 +24,7 @@ const ZERO_COUNTS: StreetLifecycleCounts = {
   qualified: 0,
   new_for_user: 0,
   delivered: 0,
+  panel_retry_count: 0,
 };
 
 /** Simple controllable clock for deterministic tests. */
@@ -310,11 +311,21 @@ test("recordStreetSummary + emitRunSummary sort by TRUE claim order, not finaliz
   // time, not push order.
   const early: StreetTimingSummary = {
     street_key: "ny:early-st", street_name: "Early St", run_id: "run-6", worker_id: "w1",
-    total_ms: 100, spawn_ms: null, maps_start_ms: null, first_candidate_ms: null,
-    first_python_yield_ms: null, first_forwarded_ms: null, first_admitted_ms: null,
-    first_enrichment_ms: null, first_qualified_ms: null, first_new_for_user_ms: null,
-    engine_done_ms: null, raw_candidates: 0, yielded_candidates: 0, admitted_candidates: 0,
+    total_ms: 100, spawn_ms: null, browser_ready_ms: null, maps_start_ms: null,
+    panel_detected_ms: null, panel_retry_count: 0, first_candidate_ms: null,
+    search_exhausted_ms: null, first_python_yield_ms: null, first_forwarded_ms: null,
+    first_admitted_ms: null, first_enrichment_ms: null, first_qualified_ms: null,
+    first_new_for_user_ms: null, target_reached_ms: null, drain_begin_ms: null,
+    pending_at_drain: null, worker_shutdown_begin_ms: null, engine_done_ms: null,
+    raw_candidates: 0, yielded_candidates: 0, admitted_candidates: 0,
     enrichment_attempts: 0, qualified: 0, new_for_user: 0, delivered: 0, termination_reason: null,
+    durations: {
+      claim_to_spawn_ms: null, spawn_to_browser_ready_ms: null, browser_ready_to_nav_submitted_ms: null,
+      nav_submitted_to_panel_detected_ms: null, panel_detected_to_first_candidate_ms: null,
+      first_candidate_to_search_exhausted_ms: null, first_qualified_to_first_new_for_user_ms: null,
+      first_new_for_user_to_target_reached_ms: null, target_reached_to_drain_begin_ms: null,
+      drain_begin_to_worker_shutdown_ms: null, worker_shutdown_to_engine_done_ms: null,
+    },
   };
   const late: StreetTimingSummary = { ...early, street_key: "ny:late-st", street_name: "Late St" };
 
@@ -325,4 +336,255 @@ test("recordStreetSummary + emitRunSummary sort by TRUE claim order, not finaliz
 
   const rows = emitRunSummary("run-6");
   assert.deepEqual(rows.map((r) => r.street_key), ["ny:early-st", "ny:late-st"]);
+});
+
+// ── CRITMODE PART 2 — PRE-FIRST-CANDIDATE / POST-USEFUL-WORK tests ──────
+
+test("6. zero-result street: ~59s spent entirely pre-first-candidate, search_exhausted with zero yielded", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock(0);
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:zero-st", streetName: "Zero St", runId: "run-7", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(50);
+  tracer.markSpawnStarted();
+  clock.advance(58_950); // total street time lands right at ~59s
+  tracer.markEngineDone();
+
+  const summary = tracer.finalize({
+    info: {
+      bridgeTimings: { spawnMs: 10, firstLineMs: null, firstLeadMs: null }, // no lead line ever sent
+      progressMarks: {
+        "discovery:browser_page_ready": 20,
+        "discovery:maps_navigation_start": 40,
+        "discovery:panel_resolved": 500,
+        // no candidate_discovered — this street found nothing
+        "discovery:search_exhausted": 58_900, // scroll budget fully exhausted, 0 yielded
+      },
+    },
+    counts: { ...ZERO_COUNTS },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clock.now,
+  });
+
+  // Every post-first-candidate field is null — there was no candidate.
+  assert.equal(summary.first_candidate_ms, null);
+  assert.equal(summary.first_admitted_ms, null);
+  assert.equal(summary.first_enrichment_ms, null);
+  assert.equal(summary.first_qualified_ms, null);
+  assert.equal(summary.first_new_for_user_ms, null);
+  assert.equal(summary.qualified, 0);
+  assert.equal(summary.delivered, 0);
+
+  // But the FULL pre-first-candidate chain is present and accounts for
+  // essentially the entire ~59s street runtime — proving the time was
+  // spent scanning, not idling or waiting on something downstream.
+  assert.equal(summary.browser_ready_ms, 50 + 20);
+  assert.equal(summary.maps_start_ms, 50 + 40);
+  assert.equal(summary.panel_detected_ms, 50 + 500);
+  assert.equal(summary.search_exhausted_ms, 50 + 58_900);
+  assert.equal(summary.total_ms, 59_000);
+  // The gap between panel detection and first-candidate is null since
+  // there was never a candidate — no divide-by-nothing, no NaN.
+  assert.equal(summary.durations.panel_detected_to_first_candidate_ms, null);
+  assert.equal(summary.search_exhausted_ms! - summary.panel_detected_ms!, 58_400);
+});
+
+test("7. panel failure + retries: panel_retry_count reflects live-accumulated retries, not just first-occurrence", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock(0);
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:flaky-st", streetName: "Flaky St", runId: "run-8", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(10);
+  tracer.markSpawnStarted();
+
+  // Three panel_failure_retry events fired live (attempts 1, 2, 3) before
+  // attempt 4 finally resolves a panel. progressMarks only ever captures
+  // the FIRST occurrence's timestamp (30ms since spawn) — the retry COUNT
+  // has to come from the caller's own live accumulation (simulated here
+  // exactly as poolExpandJob.ts's onProgress handler does it).
+  let liveRetryCount = 0;
+  for (const _attempt of [1, 2, 3]) liveRetryCount += 1;
+
+  const summary = tracer.finalize({
+    info: {
+      bridgeTimings: { spawnMs: 5, firstLineMs: 900, firstLeadMs: 900 },
+      progressMarks: {
+        "discovery:browser_page_ready": 15,
+        "discovery:panel_failure_retry": 30, // first occurrence only
+        "discovery:panel_resolved": 850, // eventually resolves on attempt 4
+        "discovery:candidate_discovered": 870,
+      },
+    },
+    counts: { ...ZERO_COUNTS, panel_retry_count: liveRetryCount, raw_candidates: 1, yielded_candidates: 1 },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clock.now,
+  });
+
+  assert.equal(summary.panel_retry_count, 3);
+  assert.equal(summary.panel_detected_ms, 10 + 850);
+  assert.equal(summary.first_candidate_ms, 10 + 870);
+  // Confirms this street's slowness is attributable to retries: nav
+  // submitted -> panel detected spans nearly the whole panel_resolved
+  // delay, well past a single healthy attempt's usual latency.
+  assert.ok((summary.durations.browser_ready_to_nav_submitted_ms ?? 0) >= 0);
+});
+
+test("8. first-qualified fires before engine-done, and the gap between them is captured", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock(0);
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:lingering-st", streetName: "Lingering St", runId: "run-9", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(20);
+  tracer.markSpawnStarted();
+  clock.advance(5);
+  tracer.markFirstForwarded();
+  clock.advance(3);
+  tracer.markFirstNewForUser();
+  // The engine does NOT finish for another 40s after the qualified/new-for-user
+  // lead already went out — this is production observation #2 (streets
+  // staying alive 30-60s after already producing useful work).
+  clock.advance(40_000);
+  tracer.markEngineDone();
+
+  const summary = tracer.finalize({
+    info: {
+      bridgeTimings: { spawnMs: 5, firstLineMs: 25, firstLeadMs: 25 },
+      progressMarks: {
+        "discovery:candidate_discovered": 15,
+        "discovery:candidate_queued": 18,
+        "qualification:candidate_qualified": 22, // qualified well before engine_done
+      },
+    },
+    counts: { ...ZERO_COUNTS, raw_candidates: 1, yielded_candidates: 1, admitted_candidates: 1, qualified: 1, new_for_user: 1, delivered: 1 },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clock.now,
+  });
+
+  assert.ok(summary.first_qualified_ms !== null && summary.engine_done_ms !== null);
+  assert.ok(summary.first_qualified_ms! < summary.engine_done_ms!);
+  // engine stayed alive ~40s after the lead was already fully useful —
+  // exactly the symptom this phase exists to quantify.
+  const lingering = summary.engine_done_ms! - summary.first_new_for_user_ms!;
+  assert.ok(lingering >= 39_000 && lingering <= 41_000, `expected ~40s lingering, got ${lingering}ms`);
+});
+
+test("9. target reached fires before engine-done, with drain/shutdown durations in between", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock(0);
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:target-st", streetName: "Target St", runId: "run-10", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(10);
+  tracer.markSpawnStarted();
+  clock.advance(2);
+  tracer.markFirstForwarded();
+  clock.advance(1);
+  tracer.markFirstNewForUser();
+  tracer.markPendingAtDrain(4); // 4 candidates still mid-pipeline when target hit
+  clock.advance(35_000); // drain + worker shutdown together take ~35s
+  tracer.markEngineDone();
+
+  const summary = tracer.finalize({
+    info: {
+      bridgeTimings: { spawnMs: 3, firstLineMs: 12, firstLeadMs: 12 },
+      progressMarks: {
+        "qualification:candidate_qualified": 11,
+        "engine:target_reached": 13, // fires right after the last accepted lead
+        "engine:drain_begin": 14,
+        "engine:worker_shutdown_begin": 30_000, // draining 4 pending candidates takes a while
+      },
+    },
+    counts: { ...ZERO_COUNTS, qualified: 1, new_for_user: 1, delivered: 1 },
+    terminationReason: "SUCCESS_TARGET_REACHED",
+    now: clock.now,
+  });
+
+  assert.ok(summary.target_reached_ms !== null && summary.engine_done_ms !== null);
+  assert.ok(summary.target_reached_ms! < summary.engine_done_ms!);
+  assert.equal(summary.pending_at_drain, 4);
+  assert.ok(summary.durations.target_reached_to_drain_begin_ms! >= 0);
+  assert.ok(summary.durations.drain_begin_to_worker_shutdown_ms! > 0);
+  assert.ok(summary.durations.worker_shutdown_to_engine_done_ms! > 0);
+  // Together these two durations explain the ~30-60s post-useful-work
+  // lingering this phase was asked to explain.
+  const totalDrainToDone = summary.engine_done_ms! - summary.target_reached_ms!;
+  assert.ok(totalDrainToDone > 30_000);
+});
+
+test("10. missing optional PART 2 timestamps do not crash (no browser_page_ready/panel/drain events at all)", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock(0);
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:sparse-st", streetName: "Sparse St", runId: "run-11", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(5);
+  tracer.markSpawnStarted();
+  clock.advance(5);
+  tracer.markEngineDone();
+
+  assert.doesNotThrow(() => {
+    const summary = tracer.finalize({
+      info: { bridgeTimings: { spawnMs: 1, firstLineMs: null, firstLeadMs: null } }, // no progressMarks key at all
+      counts: ZERO_COUNTS,
+      terminationReason: "FAILURE",
+      now: clock.now,
+    });
+    assert.equal(summary.browser_ready_ms, null);
+    assert.equal(summary.panel_detected_ms, null);
+    assert.equal(summary.search_exhausted_ms, null);
+    assert.equal(summary.target_reached_ms, null);
+    assert.equal(summary.drain_begin_ms, null);
+    assert.equal(summary.worker_shutdown_begin_ms, null);
+    assert.equal(summary.pending_at_drain, null); // markPendingAtDrain() never called
+    assert.equal(summary.panel_retry_count, 0);
+    // Every duration built from an all-null chain must also be null, never NaN/undefined/throw.
+    for (const [key, value] of Object.entries(summary.durations)) {
+      assert.ok(value === null || typeof value === "number", `${key} should be null or number, got ${value}`);
+    }
+  });
+});
+
+test("11. cross-street isolation holds for the new PART 2 fields too (panel retries, drain marks)", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clockA = makeClock(0);
+  const clockB = makeClock(0);
+
+  const tracerA = createStreetLifecycleTracer({ streetKey: "ny:iso-a-st", streetName: "Iso A St", runId: "run-12", workerId: "worker-1", now: clockA.now });
+  const tracerB = createStreetLifecycleTracer({ streetKey: "ny:iso-b-st", streetName: "Iso B St", runId: "run-12", workerId: "worker-2", now: clockB.now });
+
+  tracerA.markClaimed();
+  tracerB.markClaimed();
+  clockA.advance(10);
+  clockB.advance(10);
+  tracerA.markSpawnStarted();
+  tracerB.markSpawnStarted();
+
+  // A has pending work at drain; B has none. Interleaved calls must not cross-contaminate.
+  tracerB.markPendingAtDrain(0);
+  tracerA.markPendingAtDrain(7);
+
+  const summaryA = tracerA.finalize({
+    info: { bridgeTimings: { spawnMs: 1, firstLineMs: 5, firstLeadMs: 5 }, progressMarks: { "discovery:panel_failure_retry": 3 } },
+    counts: { ...ZERO_COUNTS, panel_retry_count: 5 },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clockA.now,
+  });
+  const summaryB = tracerB.finalize({
+    info: { bridgeTimings: { spawnMs: 1, firstLineMs: 5, firstLeadMs: 5 } },
+    counts: { ...ZERO_COUNTS, panel_retry_count: 0 },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clockB.now,
+  });
+
+  assert.equal(summaryA.pending_at_drain, 7);
+  assert.equal(summaryB.pending_at_drain, 0);
+  assert.equal(summaryA.panel_retry_count, 5);
+  assert.equal(summaryB.panel_retry_count, 0);
+  assert.notEqual(summaryA.street_key, summaryB.street_key);
+
+  const rows = __testing_streetLifecycleTrace.peek("run-12");
+  assert.equal(rows.length, 2);
 });

@@ -998,6 +998,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           let streetNewForUser = 0;
           let streetDelivered = 0;
           const streetEnrichmentAttemptIds = new Set<string>();
+          // CRITMODE PART 2 — diagnostics only. `discovery:panel_failure_retry`
+          // events carry no `pipeline_id` (they're per-attempt, not
+          // per-candidate), so a plain counter is enough — no dedup Set needed.
+          let streetPanelRetryCount = 0;
           let discovered = 0;
           let accepted = 0;
           let rejected = 0;
@@ -1277,6 +1281,20 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                   ) {
                     streetEnrichmentAttemptIds.add(progress.pipelineId);
                   }
+                  // CRITMODE PART 2 — diagnostics only. `stage="engine"`
+                  // events (target_reached/drain_begin/worker_shutdown_begin)
+                  // are new (see execution_driver.py/service.py), but travel
+                  // through the exact same onProgress callback as every
+                  // other stage — no new wiring needed beyond these two
+                  // additive branches.
+                  if (progress.stage === "engine") {
+                    if (progress.event === "drain_begin" && progress.itemId !== undefined) {
+                      const pending = Number.parseInt(progress.itemId, 10);
+                      if (Number.isFinite(pending)) streetTrace?.markPendingAtDrain(pending);
+                    }
+                  } else if (progress.stage === "discovery" && progress.event === "panel_failure_retry") {
+                    streetPanelRetryCount += 1;
+                  }
                   if (progress.stage === "discovery") {
                     if (progress.event === "candidate_discovered") {
                       admitCandidate(productivity, inFlightPipelineIds, terminalPipelineIds, progress.pipelineId);
@@ -1459,6 +1477,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                   yielded_candidates: discovered,
                   admitted_candidates: productivity.newlyQueuedCount,
                   enrichment_attempts: streetEnrichmentAttemptIds.size,
+                  panel_retry_count: streetPanelRetryCount,
                   qualified: productivity.qualifiedCount,
                   new_for_user: streetNewForUser,
                   delivered: streetDelivered,

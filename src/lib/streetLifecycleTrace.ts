@@ -159,6 +159,54 @@ function firstMarkMatching(
   return min;
 }
 
+// CRITMODE — the three downstream enrichment stages (website/instagram/
+// contact). Every `progressMarks` key is `${stage}:${event}` (see
+// pythonBridge.ts's `key = \`${parsed.stage}:${parsed.event}\``); event
+// itself can contain further colons (e.g. `website:contact_page_hint:foo`),
+// so the stage is only ever the substring before the FIRST colon.
+const ENRICHMENT_STAGES = new Set(["website", "instagram", "contact"]);
+
+/**
+ * True only for a stage/event pair that represents that enrichment
+ * stage's worker having actually run to completion for a candidate —
+ * i.e. `stage:stage_completed`, the one success event `_emit_stage_outcome()`
+ * in execution_driver.py emits for every StageConfig-driven stage
+ * (`event = "stage_completed" if outcome.success else "stage_failed"`).
+ * Deliberately excludes everything else website/instagram/contact emit:
+ * `candidate_early_channel_pruned` (a business-rule prune, decided in
+ * `build_downstream` — happens AFTER the worker already succeeded, so it
+ * is not itself a completion signal and must not be mistaken for one),
+ * `stage_failed` (the same generic mechanism's failure twin),
+ * `candidate_queued`/other admission bookkeeping, and the purely
+ * observational sub-events (`contact_page_hint:*`, `email_acquired`,
+ * `instagram_profile_reachable`, `site_class_*`, etc.) that describe what
+ * the stage found, not whether it completed.
+ */
+function isEnrichmentStageCompleted(key: string): boolean {
+  const colonIdx = key.indexOf(":");
+  if (colonIdx === -1) return false;
+  const stage = key.slice(0, colonIdx);
+  const event = key.slice(colonIdx + 1);
+  return ENRICHMENT_STAGES.has(stage) && event === "stage_completed";
+}
+
+/**
+ * True only for the exact successful-qualification event
+ * (`qualification:candidate_qualified`, emitted once at
+ * execution_driver.py's `_emit("qualification", "candidate_qualified", ...)`
+ * after a candidate has cleared every qualification check). Deliberately
+ * NOT `startsWith("qualification:")` — that prefix also matches
+ * observational/in-progress events on the same stage that do not mean
+ * the candidate qualified, e.g. `qualification:niche_relevance_checked`
+ * (fires for every candidate the moment niche relevance is *evaluated*,
+ * pass or fail), `niche_relevance_passed/ambiguous/mismatch`,
+ * `instagram_followers_over_limit`, and the terminal rejection events
+ * `candidate_rejected`/`candidate_dropped`.
+ */
+function isCandidateQualified(key: string): boolean {
+  return key === "qualification:candidate_qualified";
+}
+
 /**
  * One row per street. `streetKey`/`streetName`/`runId`/`workerId` are
  * fixed for the lifetime of this recorder — every mark below is relative
@@ -231,9 +279,14 @@ export function createStreetLifecycleTracer(opts: {
    *   first_forwarded_ms       — markFirstForwarded() (Node's own for-await loop)
    *   first_admitted_ms        — markSpawnStarted() + progressMarks["discovery:candidate_queued"]
    *   first_enrichment_ms      — markSpawnStarted() + earliest progressMarks
-   *                              key on the website/instagram/contact stages
-   *   first_qualified_ms       — markSpawnStarted() + earliest progressMarks
-   *                              key on the qualification stage
+   *                              `stage:stage_completed` key on the
+   *                              website/instagram/contact stages (the
+   *                              worker actually finished for that
+   *                              candidate — not a prune, not a sub-event)
+   *   first_qualified_ms       — markSpawnStarted() + progressMarks
+   *                              `qualification:candidate_qualified` key
+   *                              (the candidate actually qualified — not
+   *                              any other qualification-stage event)
    *   first_new_for_user_ms    — markFirstNewForUser() (Node's own processLead())
    *   target_reached_ms        — markSpawnStarted() + progressMarks["engine:target_reached"]
    *   drain_begin_ms           — markSpawnStarted() + progressMarks["engine:drain_begin"]
@@ -272,7 +325,7 @@ export function createStreetLifecycleTracer(opts: {
     const panelDetectedMs = sinceSpawn(firstMarkMatching(marks, (k) => k === "discovery:panel_resolved"));
     const firstCandidateMs = sinceSpawn(firstMarkMatching(marks, (k) => k === "discovery:candidate_discovered"));
     const searchExhaustedMs = sinceSpawn(firstMarkMatching(marks, (k) => k === "discovery:search_exhausted"));
-    const firstQualifiedMs = sinceSpawn(firstMarkMatching(marks, (k) => k.startsWith("qualification:")));
+    const firstQualifiedMs = sinceSpawn(firstMarkMatching(marks, isCandidateQualified));
     const firstNewForUserMs = relativeToClaim(firstNewForUserAt);
     const targetReachedMs = sinceSpawn(firstMarkMatching(marks, (k) => k === "engine:target_reached"));
     const drainBeginMs = sinceSpawn(firstMarkMatching(marks, (k) => k === "engine:drain_begin"));
@@ -295,9 +348,7 @@ export function createStreetLifecycleTracer(opts: {
       first_python_yield_ms: sinceSpawn(bridge?.firstLeadMs ?? null),
       first_forwarded_ms: relativeToClaim(firstForwardedAt),
       first_admitted_ms: sinceSpawn(firstMarkMatching(marks, (k) => k === "discovery:candidate_queued")),
-      first_enrichment_ms: sinceSpawn(
-        firstMarkMatching(marks, (k) => k.startsWith("website:") || k.startsWith("instagram:") || k.startsWith("contact:")),
-      ),
+      first_enrichment_ms: sinceSpawn(firstMarkMatching(marks, isEnrichmentStageCompleted)),
       first_qualified_ms: firstQualifiedMs,
       first_new_for_user_ms: firstNewForUserMs,
       target_reached_ms: targetReachedMs,

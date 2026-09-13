@@ -1,13 +1,19 @@
 """
 Instagram stage concurrency — targeted regression test.
 
-Scope: DEFAULT_STAGE_CONCURRENCY now includes "instagram": 2 (same
+Scope: DEFAULT_STAGE_CONCURRENCY briefly included "instagram": 2 (same
 treatment already given to Website in Phase 5C and Contact in Phase
-5E). This file adds only the minimum test needed to prove that the
-existing, generic bounded-concurrency mechanism in
-engine/execution_driver.py (`_stage_concurrency_for()`, the bounded
-`_concurrency_executor`, and WorkerAllocator/Queue's own locking)
-behaves for Instagram exactly as it already does for Website/Contact:
+5E), but that entry produced no observable production speedup and has
+since been reverted -- Instagram is back at the implicit default of 1
+in DEFAULT_STAGE_CONCURRENCY (see execution_driver.py's own comment
+above that dict). Website and Contact are unaffected and remain at 2.
+
+This file still proves that the existing, generic bounded-concurrency
+mechanism in engine/execution_driver.py (`_stage_concurrency_for()`,
+the bounded `_concurrency_executor`, and WorkerAllocator/Queue's own
+locking) is capable of running Instagram at concurrency 2 when a
+caller explicitly requests it via `ExecutionDriver(stage_concurrency=
+{"instagram": 2})` -- it just isn't the default anymore:
 
     1. Instagram concurrency limit (2) is enforced and never exceeded.
     2. Two different Instagram candidates provably run concurrently
@@ -99,11 +105,13 @@ class _ProbeInstagramWorker(BaseWorker):
         return self._probe.process(self, item)
 
 
-def test_default_stage_concurrency_now_includes_instagram():
-    """DEFAULT_STAGE_CONCURRENCY carries the new "instagram": 2 entry,
-    while leaving website/contact untouched -- the exact, minimal diff
-    described in the audit."""
-    assert DEFAULT_STAGE_CONCURRENCY == {"website": 2, "contact": 2, "instagram": 2}
+def test_default_stage_concurrency_reverted_instagram_to_default():
+    """DEFAULT_STAGE_CONCURRENCY no longer carries an "instagram" entry
+    (implicit default of 1), while website/contact remain untouched at
+    2 -- the exact, minimal revert-diff of the earlier Instagram
+    concurrency experiment."""
+    assert DEFAULT_STAGE_CONCURRENCY == {"website": 2, "contact": 2}
+    assert "instagram" not in DEFAULT_STAGE_CONCURRENCY
 
 
 def test_instagram_concurrency_limit_is_enforced_and_overlaps_without_duplicate_allocation():

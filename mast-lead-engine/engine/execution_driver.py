@@ -427,18 +427,20 @@ __all__ = [
 # per-file constants. Merge, Qualification, and Storage remain at the
 # implicit default of 1.
 #
-# Instagram added (same treatment as Website/Contact): InstagramWorker.
-# process() (workers/instagram_worker.py) is a real blocking network
-# fetch (urllib.request.urlopen, 6s timeout) for every candidate with
-# an instagram_url, exactly like Website and Contact -- and, like
-# those two, service.py already provisions idle instances beyond 1
-# (instance_counts["instagram"] = 4) that concurrency 1 left unused.
-# 2 is the same small, easily doubled-or-halved starting point used
-# for Website/Contact, not a modeled optimum. Uses the identical
-# generic mechanism (_stage_concurrency_for(), the bounded
-# _concurrency_executor, and WorkerAllocator/Queue's own locking) --
-# no Instagram-specific code path was added or needed.
-DEFAULT_STAGE_CONCURRENCY: Dict[str, int] = {"website": 2, "contact": 2, "instagram": 2}
+# Instagram was briefly raised to concurrency 2 (same treatment as
+# Website/Contact: InstagramWorker.process() in workers/instagram_worker.py
+# is a real blocking network fetch via urllib.request.urlopen with a 6s
+# timeout for every candidate with an instagram_url, and service.py already
+# provisions idle instances beyond 1 via instance_counts["instagram"] = 4).
+# That change produced no observable end-to-end speed improvement in
+# production and has been reverted back to the implicit default of 1 --
+# see the diagnostic audit for why (Instagram concurrency was never the
+# gating factor on street completion time). Website and Contact remain at
+# 2, unchanged. Uses the identical generic mechanism (_stage_concurrency_for(),
+# the bounded _concurrency_executor, and WorkerAllocator/Queue's own
+# locking) -- no Instagram-specific code path was added, and none needs
+# removing now that Instagram is back at the default.
+DEFAULT_STAGE_CONCURRENCY: Dict[str, int] = {"website": 2, "contact": 2}
 
 
 class ExecutionDriverError(RuntimeError):

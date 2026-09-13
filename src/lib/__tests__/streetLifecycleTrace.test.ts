@@ -588,3 +588,153 @@ test("11. cross-street isolation holds for the new PART 2 fields too (panel retr
   const rows = __testing_streetLifecycleTrace.peek("run-12");
   assert.equal(rows.length, 2);
 });
+
+// ── CRITMODE telemetry-correctness regressions ──────────────────────────
+//
+// first_qualified_ms used to be "earliest progressMarks key starting with
+// qualification:" (any event on that stage), and first_enrichment_ms used
+// to be "earliest progressMarks key starting with website:/instagram:/
+// contact:" (any event on those stages) — both far too broad, since those
+// prefixes also match events that are reached WITHOUT the candidate
+// actually qualifying / a stage actually completing (evaluation-in-
+// progress events, early prunes, sub-event bookkeeping). These tests pin
+// down the corrected, narrower semantics.
+
+test("13. first_qualified_ms uses candidate_qualified, not an earlier qualification-stage mark", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock();
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:q-narrow-1", streetName: "Q Narrow St", runId: "run-13", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(10);
+  tracer.markSpawnStarted();
+
+  const summary = tracer.finalize({
+    info: {
+      bridgeTimings: { spawnMs: 1, firstLineMs: 5, firstLeadMs: 5 },
+      progressMarks: {
+        // niche_relevance_checked fires first, well before the candidate
+        // is actually qualified — must NOT be picked up.
+        "qualification:niche_relevance_checked": 10,
+        "qualification:candidate_qualified": 40,
+      },
+    },
+    counts: { ...ZERO_COUNTS, qualified: 1 },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clock.now,
+  });
+
+  // spawn_started at +10ms from claim; progressMarks are ms-since-spawn.
+  assert.equal(summary.first_qualified_ms, 10 + 40);
+});
+
+test("14. first_qualified_ms is null when the candidate never actually qualified", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock();
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:q-narrow-2", streetName: "Q Narrow St 2", runId: "run-14", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(10);
+  tracer.markSpawnStarted();
+
+  const summary = tracer.finalize({
+    info: {
+      bridgeTimings: { spawnMs: 1, firstLineMs: 5, firstLeadMs: 5 },
+      // Only the evaluation-in-progress event is present — no
+      // candidate_qualified anywhere in this lifecycle.
+      progressMarks: { "qualification:niche_relevance_checked": 10 },
+    },
+    counts: { ...ZERO_COUNTS, qualified: 0 },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clock.now,
+  });
+
+  assert.equal(summary.first_qualified_ms, null);
+});
+
+test("15. first_enrichment_ms is null when a candidate is only ever early-pruned", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock();
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:e-narrow-1", streetName: "E Narrow St", runId: "run-15", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(10);
+  tracer.markSpawnStarted();
+
+  const summary = tracer.finalize({
+    info: {
+      bridgeTimings: { spawnMs: 1, firstLineMs: 5, firstLeadMs: 5 },
+      // The candidate is pruned before the website stage ever completes —
+      // no stage_completed event for website/instagram/contact exists.
+      progressMarks: { "website:candidate_early_channel_pruned": 12 },
+    },
+    counts: { ...ZERO_COUNTS },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clock.now,
+  });
+
+  assert.equal(summary.first_enrichment_ms, null);
+});
+
+test("16. first_enrichment_ms uses the successful stage_completed timestamp, ignoring an earlier prune/queue mark on another candidate", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock();
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:e-narrow-2", streetName: "E Narrow St 2", runId: "run-16", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(10);
+  tracer.markSpawnStarted();
+
+  const summary = tracer.finalize({
+    info: {
+      bridgeTimings: { spawnMs: 1, firstLineMs: 5, firstLeadMs: 5 },
+      progressMarks: {
+        "discovery:candidate_queued": 8,
+        // A different candidate down this street gets pruned early...
+        "website:candidate_early_channel_pruned": 12,
+        // ...but another candidate makes it all the way through a real
+        // successful stage completion — that's the timestamp we want.
+        "contact:stage_completed": 45,
+      },
+    },
+    counts: { ...ZERO_COUNTS, enrichment_attempts: 2 },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clock.now,
+  });
+
+  assert.equal(summary.first_enrichment_ms, 10 + 45);
+});
+
+test("17. first_qualified_to_first_new_for_user_ms is derived from the corrected first_qualified_ms", () => {
+  __testing_streetLifecycleTrace.reset();
+  const clock = makeClock();
+  const tracer = createStreetLifecycleTracer({ streetKey: "ny:derived-1", streetName: "Derived St", runId: "run-17", workerId: "worker-1", now: clock.now });
+
+  tracer.markClaimed();
+  clock.advance(10);
+  tracer.markSpawnStarted();
+  clock.advance(2);
+  tracer.markFirstForwarded();
+  clock.advance(100);
+  tracer.markFirstNewForUser(); // +112ms from claim
+
+  const summary = tracer.finalize({
+    info: {
+      bridgeTimings: { spawnMs: 1, firstLineMs: 5, firstLeadMs: 5 },
+      progressMarks: {
+        // The old startsWith("qualification:") match would have picked
+        // this one up (at +10+5=15ms from claim) instead of the real
+        // candidate_qualified mark below, understating the gap.
+        "qualification:niche_relevance_checked": 5,
+        "qualification:candidate_qualified": 30, // -> 10+30 = 40ms from claim
+      },
+    },
+    counts: { ...ZERO_COUNTS, qualified: 1, new_for_user: 1, delivered: 1 },
+    terminationReason: "SUCCESS_EXHAUSTED",
+    now: clock.now,
+  });
+
+  assert.equal(summary.first_qualified_ms, 40);
+  assert.equal(summary.first_new_for_user_ms, 112);
+  assert.equal(summary.durations.first_qualified_to_first_new_for_user_ms, 112 - 40);
+});

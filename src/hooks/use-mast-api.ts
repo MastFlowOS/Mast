@@ -29,6 +29,7 @@ import {
   getSettings,
   getXp,
   getOpportunityExplanation,
+  getLeadTrust,
   getOpportunityInsight,
   getExecutiveBriefing,
   getWeeklyIntelligence,
@@ -62,6 +63,7 @@ import {
   type SettingsMap,
   type UpdateLeadBody,
   type OpportunityExplanation,
+  type LeadTrust,
   type OpportunityInsight,
   type ExecutiveBriefing,
   type WeeklyIntelligence,
@@ -89,6 +91,7 @@ export const queryKeys = {
   pipeline: ["mast", "analytics", "pipeline"] as const,
   activity: ["mast", "analytics", "activity"] as const,
   opportunityExplanation: (leadId: number | string | undefined) => ["mast", "intelligence", "explain", String(leadId)] as const,
+  leadTrust: (leadId: number | string | undefined) => ["mast", "intelligence", "trust", String(leadId)] as const,
   opportunityInsight: (businessId: string | undefined) => ["mast", "intelligence", "opportunity", businessId ?? ""] as const,
   executiveBriefing: ["mast", "intelligence", "briefing"] as const,
   weeklyIntelligence: ["mast", "intelligence", "weekly"] as const,
@@ -714,6 +717,17 @@ export function useOpportunityExplanation(leadId: number | string | undefined, e
   return useQuery<OpportunityExplanation>({
     queryKey: queryKeys.opportunityExplanation(leadId),
     queryFn: () => getOpportunityExplanation(leadId!),
+    enabled: enabled && leadId !== undefined,
+    retry: false,
+    staleTime: 60_000,
+  });
+}
+
+/** Deterministic Trust/Business Health readout (Priority 2/3/7) — field provenance/confidence + health score, no gating needed here. */
+export function useLeadTrust(leadId: number | string | undefined, enabled = true) {
+  return useQuery<LeadTrust>({
+    queryKey: queryKeys.leadTrust(leadId),
+    queryFn: () => getLeadTrust(leadId!),
     enabled: enabled && leadId !== undefined,
     retry: false,
     staleTime: 60_000,

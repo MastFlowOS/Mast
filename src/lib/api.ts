@@ -1400,6 +1400,59 @@ export async function getOpportunityExplanation(leadId: number | string): Promis
   return backendFetch<OpportunityExplanation>(`/v1/intelligence/explain/${leadId}`);
 }
 
+// ─── Trust / Business Health (Priority 2/3/7) ──────────────────────────────────
+// Mirrors mast-backend src/server/routes/intelligence.ts's GET /v1/intelligence/trust/:leadId
+// response body exactly — see fieldTrust.ts / businessHealth.ts for how these
+// are computed server-side. Deterministic, no AI, available on every plan.
+
+export type FieldTrustMethod = "google_maps" | "google_business" | "website_crawl" | "instagram_bio" | "schema_org" | "unknown";
+
+export type FieldTrustEntry = {
+  value: string | null;
+  source: string;
+  method: FieldTrustMethod;
+  confidence: number;
+  verifiedAt: string;
+};
+
+export type BusinessHealthBreakdown = {
+  website: number;
+  brand: number;
+  seo: number;
+  social: number;
+  reviews: number;
+  trust: number;
+  tech: number;
+  freshness: number;
+};
+
+export type LeadTrust = {
+  overallConfidence: number | null;
+  lastVerifiedAt: string | null;
+  lastVerificationKind: string | null;
+  fieldTrust: Record<string, FieldTrustEntry>;
+  contacts: {
+    emails: string[];
+    phones: string[];
+    linkedin: string | null;
+  };
+  businessHealth: {
+    score: number;
+    breakdown: BusinessHealthBreakdown;
+    computedAt: string;
+  } | null;
+  // Disqualification transparency — passthrough of businesses.is_disqualified /
+  // businesses.disqualify_reason, already computed by the existing
+  // qualification/scoring logic. Never fabricated on the frontend.
+  isDisqualified: boolean;
+  disqualifyReason: string | null;
+};
+
+/** Deterministic — reads stored field provenance/confidence + the Business Health Score. Available on every plan. */
+export async function getLeadTrust(leadId: number | string): Promise<LeadTrust> {
+  return backendFetch<LeadTrust>(`/v1/intelligence/trust/${leadId}`);
+}
+
 export type OpportunityInsight = {
   headline: string;
   talking_points: string[];

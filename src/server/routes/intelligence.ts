@@ -141,6 +141,10 @@ intelligenceRouter.get("/explain/:leadId", requireAuth, readLimiter, async (req,
  * Source: Google Business" per field, and "Business Health: 82/100" as its
  * own independent number — never blended into the Opportunity Score (see
  * businessHealth.ts's doc comment for why the two are kept apart).
+ *
+ * Also passes through `is_disqualified` / `disqualify_reason` from the
+ * business row as-is (disqualification transparency) — this is a straight
+ * read of the existing qualification verdict, not a new computation.
  */
 intelligenceRouter.get("/trust/:leadId", requireAuth, readLimiter, async (req, res, next) => {
   try {
@@ -163,7 +167,7 @@ intelligenceRouter.get("/trust/:leadId", requireAuth, readLimiter, async (req, r
 
     const { data: business, error: bizError } = await supabaseAdmin
       .from("businesses")
-      .select("confidence, field_provenance, emails, phones, linkedin, last_verified_at, last_verification_kind")
+      .select("confidence, field_provenance, emails, phones, linkedin, last_verified_at, last_verification_kind, is_disqualified, disqualify_reason")
       .eq("id", lead.business_id)
       .single();
     if (bizError) throw bizError;
@@ -187,6 +191,11 @@ intelligenceRouter.get("/trust/:leadId", requireAuth, readLimiter, async (req, r
       businessHealth: health
         ? { score: health.health_score, breakdown: health.breakdown, computedAt: health.computed_at }
         : null,
+      // Disqualification transparency: straight passthrough of the existing
+      // qualification/scoring verdict already stored on the business row —
+      // no new computation, no invented reason text.
+      isDisqualified: Boolean(business.is_disqualified),
+      disqualifyReason: business.disqualify_reason ?? null,
     });
   } catch (err) {
     next(err);

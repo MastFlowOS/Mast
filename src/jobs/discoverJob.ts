@@ -265,6 +265,20 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
             }
             console.log(`[discoverJob] [trace] ${leadName} \u2193 PASSED validation`);
 
+            // CRITMODE FIX: disqualified candidates (lead.is_disqualified)
+            // must never reach deliverLead() — no leads row, no target
+            // increment, no credit consumption. Mirrors
+            // validateDiscoveryCandidate()'s existing gate in
+            // discoveryPlanJob.ts, applied here at the same point in the
+            // pipeline (right before delivery), since this file's own
+            // validateLead() doesn't check disqualification.
+            if (lead.is_disqualified) {
+              recordRejection("disqualified");
+              tracer.reject(pid, "disqualified");
+              console.log(`[discoverJob] [trace] ${leadName} \u2193 REJECTED — disqualified`);
+              continue; // not counted, keep streaming
+            }
+
             tracer.transition(pid, "DATABASE_INSERT_STARTED");
             let result: DeliveryResult;
             try {

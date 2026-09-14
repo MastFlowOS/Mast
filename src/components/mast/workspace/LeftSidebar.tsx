@@ -1,14 +1,25 @@
-import { Mail, Phone, Globe, Instagram, MapPin, Tag, ExternalLink, Copy, Check, Sparkles, Zap, Lightbulb, MessageCircle } from "lucide-react";
+import { Mail, Phone, Globe, Instagram, MapPin, Tag, ExternalLink, Copy, Check, Sparkles, Zap, Lightbulb, MessageCircle, ShieldCheck, AlertTriangle } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import type { Lead } from "@/lib/api";
+import type { Lead, FieldTrustEntry } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
 import { ChannelAvailabilityCard } from "./components/ChannelAvailabilityCard";
 import { NICHES, stripActivityMarkers } from "@/lib/lead-workspace";
 import { staggerDelay } from "@/lib/motion";
-import { useOpportunityExplanation, useOpportunityInsight } from "@/hooks/use-mast-api";
+import { useOpportunityExplanation, useOpportunityInsight, useLeadTrust } from "@/hooks/use-mast-api";
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { normalizeInstagram } from "@/lib/instagram";
+import { resolveTrustPanelState, getFieldTrustEntry, formatVerificationLine, resolveDisqualificationDisplay } from "@/lib/trustPanel";
+
+// Fields the Trust panel exposes per-lead — matches the field keys the
+// engine attaches provenance to (see fieldTrust.ts). Fields with no
+// provenance entry are shown as "no trust data", never fabricated.
+const TRUST_FIELDS: Array<{ key: string; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+  { key: "email", label: "Email", icon: Mail },
+  { key: "phone", label: "Phone", icon: Phone },
+  { key: "website", label: "Website", icon: Globe },
+  { key: "instagram", label: "Instagram", icon: Instagram },
+];
 
 function formatSourceLabel(source: string | null | undefined): string {
   if (!source) return "Mast Opportunity Engine";
@@ -52,6 +63,16 @@ export function LeftSidebar({
   // (i.e. delivered via Discover) have one to explain.
   const { data: explanation, isLoading: explanationLoading } = useOpportunityExplanation(lead.id, Boolean(lead.businessId));
 
+  // Trust / Business Health (Priority 2/3/7) — field-level provenance/confidence
+  // plus the independent Business Health Score. Deterministic, no gating.
+  const { data: trust, isLoading: trustLoading, isError: trustError } = useLeadTrust(lead.id, Boolean(lead.businessId));
+
+  // Disqualification transparency — straight readout of the existing
+  // businesses.is_disqualified / disqualify_reason values already computed
+  // by qualification/scoring. Null (nothing rendered) for the normal,
+  // non-disqualified case; only surfaces once the Trust data has loaded.
+  const disqualification = resolveDisqualificationDisplay(trust);
+
   // AI Opportunity Insight (Premium) — headline/talking points/opening line
   // grounded in the same explanation, gated below with <FeatureGate>.
   const { data: insight, isLoading: insightLoading } = useOpportunityInsight(lead.businessId);
@@ -93,6 +114,19 @@ export function LeftSidebar({
           </div>
         </div>
 
+        {/* Disqualification transparency — compact warning when this lead's
+            business is disqualified, with the exact stored reason. Nothing
+            renders for the normal (non-disqualified) case. */}
+        {lead.businessId && disqualification && (
+          <div className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/5 p-3 animate-fade-up">
+            <AlertTriangle className="size-4 text-destructive shrink-0 mt-0.5" />
+            <div className="space-y-0.5 min-w-0">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-destructive">{disqualification.label}</p>
+              <p className="text-[11px] text-foreground leading-relaxed">{disqualification.reason}</p>
+            </div>
+          </div>
+        )}
+
         {/* Opportunity Explanation — why MAST surfaced this business, from the
             real Opportunity Score breakdown (Part 3 Phase 8). Deterministic,
             available on every plan. */}
@@ -120,6 +154,78 @@ export function LeftSidebar({
             ) : null}
           </section>
         )}
+
+        {/* Trust / Business Health — field-level provenance/confidence plus
+            the independent Business Health Score (Priority 2/3/7). Never
+            blended into the Opportunity Score above. Only leads with a
+            linked business have trust data to show. */}
+        {lead.businessId && (() => {
+          const panelState = resolveTrustPanelState({ isLoading: trustLoading, isError: trustError, data: trust });
+          const verificationLine = trust ? formatVerificationLine(trust.lastVerifiedAt, trust.lastVerificationKind) : null;
+          return (
+            <section className={`space-y-3 animate-fade-up ${staggerDelay(1)}`}>
+              <SectionHeading>Trust &amp; Health</SectionHeading>
+              {panelState === "loading" && <div className="h-24 rounded-xl bg-muted/30 animate-pulse" />}
+              {panelState === "error" && <p className="text-[11px] text-muted-foreground">Trust data unavailable.</p>}
+              {panelState === "empty" && <p className="text-[11px] text-muted-foreground">Trust data unavailable.</p>}
+              {panelState === "data" && trust && (
+                <div className="space-y-2.5">
+                  {/* Business Health */}
+                  {trust.businessHealth ? (
+                    <div className="space-y-1.5 rounded-xl border border-border bg-background p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                          <ShieldCheck className="size-4 text-brand" />
+                          <span>Business Health</span>
+                        </div>
+                        <span className="text-xs font-bold font-mono text-foreground">{Math.round(trust.businessHealth.score)}%</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-brand/70 to-brand rounded-full"
+                          style={{ width: `${Math.round(trust.businessHealth.score)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">Health score unavailable.</p>
+                  )}
+
+                  {/* Field Trust */}
+                  <div className="space-y-1.5">
+                    {TRUST_FIELDS.map(({ key, label, icon: Icon }) => {
+                      const entry: FieldTrustEntry | undefined = getFieldTrustEntry(trust.fieldTrust, key);
+                      return (
+                        <div key={key} className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-background border border-border">
+                          <Icon className="size-4 text-muted-foreground shrink-0" />
+                          <span className="text-xs text-foreground flex-1 truncate">{label}</span>
+                          {entry ? (
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="text-[10px] font-semibold text-brand">{entry.confidence}%</span>
+                              <span className="text-[10px] text-muted-foreground truncate max-w-[88px]">{entry.source}</span>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground shrink-0">No trust data</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Verification */}
+                  {verificationLine ? (
+                    <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-background border border-border text-[11px]">
+                      <span className="text-muted-foreground">Last verified</span>
+                      <span className="font-medium text-foreground">{verificationLine}</span>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">No verification recorded yet.</p>
+                  )}
+                </div>
+              )}
+            </section>
+          );
+        })()}
 
         {/* AI Opportunity Insight — Premium. Headline + talking points +
             suggested opening line, grounded in the explanation above, cached

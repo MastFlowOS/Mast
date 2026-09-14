@@ -543,6 +543,20 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           return "continue";
         }
 
+        // CRITMODE FIX: disqualified candidates (lead.is_disqualified)
+        // must never reach deliverLead() — no leads row, no target
+        // increment, no credit consumption. Mirrors
+        // validateDiscoveryCandidate()'s existing gate in
+        // discoveryPlanJob.ts, applied here at the same point in the
+        // pipeline (right before delivery), since this file's own
+        // validateLead() doesn't check disqualification.
+        if (lead.is_disqualified) {
+          console.log(`[poolExpandJob] skipping disqualified lead name=${JSON.stringify(lead.name)}`);
+          tracer.reject(pid, "disqualified");
+          if (productivity) recordCandidateRejected(productivity);
+          return "continue"; // not counted, keep streaming
+        }
+
         // PHASE 10 telemetry: reaching here means this lead already
         // passed the engine's own strict qualification gate (website+
         // email+phone+instagram, enforced via `required_channels`/

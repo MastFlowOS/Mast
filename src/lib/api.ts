@@ -375,6 +375,16 @@ export type LeadGenerationResponse = {
   };
   /** The scrape_jobs id — pass to subscribeToDiscoverJob() to watch it resolve. */
   jobId: string;
+  /**
+   * The discovery_plans id — only present for Free's Live Discovery (the
+   * backend's `plan.discoveryMode === "live"` path in
+   * src/server/routes/discover.ts). Pass to useLiveDiscoveryState() to
+   * render the real 3-Scout live UI. Undefined for Instant Discovery
+   * (Starter/Pro/Premium pool lookups, including a pool-shortfall
+   * backfill) — those never create a discovery_plans row, so there is no
+   * Scout-level live event stream for them.
+   */
+  planId?: string;
   /** The ACTUAL mode the backend used, derived server-side from the user's real plan — not necessarily what was requested. */
   mode: GenerationMode;
   /**
@@ -388,6 +398,8 @@ export type LeadGenerationResponse = {
 
 type DiscoverBackendResponse = {
   jobId: string;
+  /** Only present when POST /v1/discover took the live-discovery branch (see discover.ts). */
+  planId?: string;
   mode: GenerationMode;
   status: "queued" | "streaming" | "completed" | "failed";
   requested: number;
@@ -1342,6 +1354,7 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
       source: "live_scrape",
       credits,
       jobId: backendResponse.jobId,
+      planId: backendResponse.planId,
       mode,
       pending: true,
     };

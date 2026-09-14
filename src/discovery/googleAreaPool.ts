@@ -40,7 +40,7 @@ export type PoolStopReason = "cancelled" | "target_reached" | "areas_exhausted" 
 export type AreaWorkerLogEvent =
   | { type: "pool_start"; configured: number; availableAreas: number; capacity: number; poolSize: number }
   | { type: "worker_started"; area: string; slot: number }
-  | { type: "worker_finished"; area: string; outcome: AreaRunOutcome }
+  | { type: "worker_finished"; area: string; outcome: AreaRunOutcome; slot: number }
   | { type: "worker_skipped_no_slot"; slot: number }
   | { type: "worker_skipped_no_area" }
   | { type: "pool_stopped"; reason: PoolStopReason };
@@ -168,8 +168,22 @@ export type RunAreaWorkerPoolParams = {
    * fallback/cooldown behavior of claim_discovery_area()).
    */
   claimNextArea: (usedAreas: ReadonlySet<string>) => Promise<string | undefined>;
-  /** Runs one complete area search. Must not throw for area-local failures — catch and return { failed: true } instead so siblings are unaffected (Step 8). */
-  runArea: (area: string) => Promise<AreaRunOutcome>;
+  /**
+   * Runs one complete area search. Must not throw for area-local failures — catch and return { failed: true } instead so siblings are unaffected (Step 8).
+   *
+   * TASK 1 (live discovery event infrastructure) — additive `slotIndex`
+   * param: the same 0-indexed value already passed to `workerLoop()` below
+   * and already carried on `worker_started`/`worker_finished`
+   * AreaWorkerLogEvent.slot, now also handed to the caller's `runArea`
+   * closure so it can be threaded into runOneAreaAttempt() and tagged onto
+   * that area's live events as a stable "scout id" (see
+   * liveDiscoveryEvent.ts's module doc comment for why this is the
+   * deterministic identity source — assigned once per worker loop, never
+   * based on emission order). Purely additive: every existing `runArea`
+   * closure in this codebase's test suite takes 0 or 1 params, so this
+   * second argument is simply ignored by callers that don't need it.
+   */
+  runArea: (area: string, slotIndex: number) => Promise<AreaRunOutcome>;
   /** Non-blocking: attempts to reserve one browser slot. Returns a release fn, or undefined if none free right now. */
   tryAcquireSlot: () => (() => void) | undefined;
   /** Polled before starting each new area claim; true once the plan is cancelled/target-reached. */
@@ -343,7 +357,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
 
       let outcome: AreaRunOutcome;
       try {
-        outcome = await runArea(area);
+        outcome = await runArea(area, slotIndex);
       } catch (err) {
         // Defensive only — runArea's own contract is to never throw for
         // area-local failures (Step 8). If it does anyway, isolate it here
@@ -359,7 +373,14 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
       }
 
       perArea.push({ area, outcome });
-      onEvent?.({ type: "worker_finished", area, outcome });
+      // TASK 2 (live scout state) — additive: `slot` was already this
+      // loop's own parameter (identical value `worker_started` above
+      // already reports), just not previously copied onto this event too.
+      // No behavior changes; this only lets a `worker_finished` listener
+      // (see discoveryPlanJob.ts's publishAreaPoolLifecycleEvent) attribute
+      // area completion to the correct scout, the same way it already can
+      // for `worker_started`.
+      onEvent?.({ type: "worker_finished", area, outcome, slot: slotIndex });
     }
   }
 

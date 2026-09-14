@@ -34,6 +34,17 @@ import {
   incrementDiscoveryMetrics,
   incrementFailureMetrics,
 } from "../lib/observability.js";
+import {
+  publishDiscoveryLiveEvent,
+  scoutStartedEvent,
+  areaStartedEvent,
+  areaCompletedEvent,
+  candidateDiscoveredEvent,
+  candidateRejectedEvent,
+  leadDeliveredEvent,
+  discoveryCompletedEvent,
+  discoveryFailedEvent,
+} from "../discovery/liveDiscoveryEvent.js";
 
 
 const db = supabaseAdmin as any;
@@ -234,8 +245,18 @@ async function runOneAreaAttempt(
   },
   area: string | undefined,
   street?: string,
+  /**
+   * TASK 1 (live discovery event infrastructure) — 1-indexed worker-slot
+   * identity (see googleAreaPool.ts's workerLoop/runArea doc comments).
+   * `undefined` on the legacy single-area path (no pool — legacy callers
+   * pass nothing), normalized to scout 1 below since that path is, by
+   * construction, the only worker running for this task.
+   */
+  scoutId?: number,
 ): Promise<AreaAttemptResult> {
   const { db, task, payload, profiler, provider, generator, requestAbort, observeTerminalPlan, startedAt } = ctx;
+  const effectiveScoutId = scoutId ?? 1;
+  const areaLabel = street ?? area;
 
   let discovered = 0;
   let accepted = 0;
@@ -321,6 +342,7 @@ async function runOneAreaAttempt(
     const pid = lead._pipeline_id ?? `local:${discovered}`;
     traceLog(`PIPELINE ${pid}`);
     traceLog(`DISCOVERED name=${JSON.stringify(lead.name)}`);
+    publishDiscoveryLiveEvent(candidateDiscoveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
 
     const validation = validateDiscoveryCandidate(lead);
     if (!validation.valid) {
@@ -328,6 +350,7 @@ async function runOneAreaAttempt(
       traceLog(`PIPELINE ${pid}`);
       traceLog(`EXITED HERE`);
       traceLog(`reason=validateDiscoveryCandidate:${validation.reason}`);
+      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `validateDiscoveryCandidate:${validation.reason}`, areaLabel));
       continue;
     }
 
@@ -356,6 +379,7 @@ async function runOneAreaAttempt(
       traceLog(`PIPELINE ${pid}`);
       traceLog(`EXITED HERE`);
       traceLog(`reason=maps_channel_gate:requested=${JSON.stringify(mapsCheckableChannels)},phone=${JSON.stringify(lead.phone)},website=${JSON.stringify(lead.website)}`);
+      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `maps_channel_gate:requested=${JSON.stringify(mapsCheckableChannels)}`, areaLabel));
       continue;
     }
 
@@ -385,6 +409,7 @@ async function runOneAreaAttempt(
         traceLog(`PIPELINE ${pid}`);
         traceLog(`EXITED HERE`);
         traceLog(`reason=ensureEnriched_threw:businessId=${businessId},error=${JSON.stringify(message)}`);
+        publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "ensureEnriched_threw", areaLabel));
         continue;
       }
       const { data: enriched } = await db.from("businesses")
@@ -397,6 +422,7 @@ async function runOneAreaAttempt(
         traceLog(`PIPELINE ${pid}`);
         traceLog(`EXITED HERE`);
         traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},row=${JSON.stringify(enriched)}`);
+        publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
         continue;
       }
     }
@@ -428,6 +454,7 @@ async function runOneAreaAttempt(
       traceLog(`PIPELINE ${pid}`);
       traceLog(`EXITED HERE`);
       traceLog(`reason=plan_limit_reached:no leads row inserted,delivery=${JSON.stringify(delivery)}`);
+      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "plan_limit_reached", areaLabel));
       await observeTerminalPlan();
       break outer;
     }
@@ -435,6 +462,7 @@ async function runOneAreaAttempt(
       traceLog(`PIPELINE ${pid}`);
       traceLog(`EXITED HERE`);
       traceLog(`reason=duplicate_already_owned_by_user:businessId=${businessId},no new leads row inserted`);
+      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "duplicate_already_owned_by_user", areaLabel));
       duplicates += 1;
       continue;
     }
@@ -451,6 +479,7 @@ async function runOneAreaAttempt(
     const elapsedMs = Date.now() - startedAt;
     recordTimeToFirstLead(payload.planId, elapsedMs);
     accepted += 1;
+    publishDiscoveryLiveEvent(leadDeliveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
     const elapsedSec = elapsedMs / 1000;
     const leadsPerMin = elapsedSec > 0 ? ((accepted / elapsedSec) * 60).toFixed(1) : "0.0";
     const rawPerMin = elapsedSec > 0 ? ((discovered / elapsedSec) * 60).toFixed(1) : "0.0";
@@ -517,12 +546,58 @@ function acquireDiscoveryWorkerSlots(browserSlotPool: ReturnType<typeof getBrows
   };
 }
 
+/**
+ * TASK 1 (live discovery event infrastructure) — every AreaWorkerLogEvent
+ * already carries a real `slot` (0-indexed worker-loop identity, see
+ * googleAreaPool.ts's own doc comment) on worker_started/worker_finished/
+ * worker_skipped_no_slot. This translates those two lifecycle points into
+ * the canonical DiscoveryLiveEvent stream — `scout_started` fires once per
+ * slot (first area claim only, tracked via `startedScoutSlots`), and
+ * `area_started`/`area_completed` fire for every area, real area/street
+ * label included, real outcome included. No new data invented; the log
+ * lines below (pre-existing) are untouched, this just ALSO publishes.
+ */
+function publishAreaPoolLifecycleEvent(
+  planId: string,
+  startedScoutSlots: Set<number>,
+  event: AreaWorkerLogEvent,
+  label: (area: string) => string | undefined,
+): void {
+  // TASK 2 (live scout state) — `worker_finished` now also carries `slot`
+  // (see googleAreaPool.ts), so this no longer needs the `scoutId ?? 0`
+  // fallback that previously left every area_completed event unattributed
+  // (scoutId 0 does not correspond to any real scout in the 1-indexed
+  // scheme `scoutStartedEvent`/`areaStartedEvent` already use). Both
+  // branches below now read the same real slotIndex.
+  const scoutId = "slot" in event ? event.slot + 1 : undefined;
+  if (event.type === "worker_started") {
+    if (scoutId !== undefined && !startedScoutSlots.has(event.slot)) {
+      startedScoutSlots.add(event.slot);
+      publishDiscoveryLiveEvent(scoutStartedEvent(planId, scoutId, label(event.area)));
+    }
+    publishDiscoveryLiveEvent(areaStartedEvent(planId, scoutId ?? 0, label(event.area)));
+  } else if (event.type === "worker_finished") {
+    publishDiscoveryLiveEvent(
+      areaCompletedEvent(planId, scoutId ?? 0, label(event.area), {
+        discovered: event.outcome.discovered,
+        accepted: event.outcome.accepted,
+        rejected: event.outcome.rejected,
+        duplicates: event.outcome.duplicates,
+        exhausted: event.outcome.exhausted,
+        failed: event.outcome.failed,
+        error: event.outcome.error,
+      }),
+    );
+  }
+}
+
 /** Street-mode logging translates the generic pool event back to street identity. */
 function logStreetPoolEvent(
   payload: DiscoveryTaskPayload,
   task: any,
   claims: ReadonlyMap<string, StreetClaim>,
   event: AreaWorkerLogEvent,
+  startedScoutSlots: Set<number>,
 ): void {
   const street = "area" in event ? claims.get(event.area) : undefined;
   const label = street?.streetName ?? street?.streetKey ?? "n/a";
@@ -546,10 +621,11 @@ function logStreetPoolEvent(
       console.info(`[street-pool] task=${payload.taskId} city=${task.city} stopped reason=${event.reason}`);
       break;
   }
+  publishAreaPoolLifecycleEvent(payload.planId, startedScoutSlots, event, (area) => claims.get(area)?.streetName ?? claims.get(area)?.streetKey);
 }
 
 /** Worker Pools B Step 11 — concise, grep-able pool/worker log lines. */
-function logAreaPoolEvent(payload: DiscoveryTaskPayload, task: any, event: AreaWorkerLogEvent): void {
+function logAreaPoolEvent(payload: DiscoveryTaskPayload, task: any, event: AreaWorkerLogEvent, startedScoutSlots: Set<number>): void {
   switch (event.type) {
     case "pool_start":
       console.info(
@@ -577,6 +653,7 @@ function logAreaPoolEvent(payload: DiscoveryTaskPayload, task: any, event: AreaW
       console.info(`[google-area-pool] task=${payload.taskId} city=${task.city} stopped reason=${event.reason}`);
       break;
   }
+  publishAreaPoolLifecycleEvent(payload.planId, startedScoutSlots, event, (area) => area);
 }
 
 export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promise<void> {
@@ -742,6 +819,11 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   // undefined for the (large majority of) cities without one, which take
   // the exact same single-cluster search path as before this phase.
   let claimedArea: string | undefined;
+  // TASK 1 (live discovery event infrastructure) — tracks which worker
+  // slots have already had a scout_started event published for this task
+  // attempt, so a slot claiming its 2nd/3rd/... area within the same pool
+  // run does not re-announce "started" (see publishAreaPoolLifecycleEvent).
+  const startedScoutSlots = new Set<number>();
 
   try {
     // ── Provider registry routing (Phase 5 Refinement 3) ─────────────────
@@ -825,7 +907,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           streetClaims.set(claim.stateId, claim);
           return claim.stateId;
         },
-        runArea: async (claimId) => {
+        runArea: async (claimId, slotIndex) => {
           const claim = streetClaims.get(claimId);
           if (!claim) {
             return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: false, failed: true, error: "missing street claim" };
@@ -846,7 +928,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           heartbeatTimer.unref?.();
 
           try {
-            const attempt = await runOneAreaAttempt(attemptCtx, undefined, claim.streetName);
+            const attempt = await runOneAreaAttempt(attemptCtx, undefined, claim.streetName, slotIndex + 1);
             pythonPerfData = attempt.pythonPerfData ?? pythonPerfData;
             bridgeTimings = attempt.bridgeTimings ?? bridgeTimings;
             progressMarks = attempt.progressMarks ?? progressMarks;
@@ -883,7 +965,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         },
         tryAcquireSlot: () => acquireDiscoveryWorkerSlots(browserSlotPool),
         isTerminal: async () => Boolean(await observeTerminalPlan()),
-        onEvent: (event) => logStreetPoolEvent(payload, task, streetClaims, event),
+        onEvent: (event) => logStreetPoolEvent(payload, task, streetClaims, event, startedScoutSlots),
       });
 
       discovered = poolResult.totals.discovered;
@@ -1013,12 +1095,12 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           if (!claimed || usedAreas.has(claimed)) return undefined;
           return claimed;
         },
-        runArea: async (area) => {
+        runArea: async (area, slotIndex) => {
           // Step 5: a brand-new runOneAreaAttempt() call per area means a
           // brand-new provider.search() stream — a fresh service.py /
           // MapsScraper / Playwright / Chromium process per area, never a
           // shared or reused browser.
-          const attempt = await runOneAreaAttempt(attemptCtx, area);
+          const attempt = await runOneAreaAttempt(attemptCtx, area, undefined, slotIndex + 1);
 
           // Step 10: exactly one terminal accounting update per claimed
           // area, recorded immediately here (independent of any sibling
@@ -1118,7 +1200,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         // and the SIGTERM it triggers reach every currently-registered
         // child immediately, not just on the next unrelated timer tick.
         isTerminal: async () => Boolean(await observeTerminalPlan()),
-        onEvent: (event) => logAreaPoolEvent(payload, task, event),
+        onEvent: (event) => logAreaPoolEvent(payload, task, event, startedScoutSlots),
       });
 
       discovered = poolResult.totals.discovered;
@@ -1399,6 +1481,11 @@ async function completePlanIfDrained(planId: string) {
       completed_at: new Date().toISOString(),
       job_summary: buildJobSummary(plan, "cancelled"),
     }).eq("id", plan.scrape_job_id);
+    // TASK 1 (live discovery event infrastructure) — real, already-fetched
+    // plan-row counts; not a new counter. "cancelled" is reported via
+    // discovery_failed's failureReason string (there is no dedicated
+    // cancelled event type in this pass — see the final report).
+    publishDiscoveryLiveEvent(discoveryFailedEvent(planId, "cancelled"));
     return;
   }
 
@@ -1425,6 +1512,11 @@ async function completePlanIfDrained(planId: string) {
     deliveredCount: plan.delivered_count,
     completionStatus: planFinalStatus as "completed" | "completed_partial",
   });
+
+  // TASK 1 (live discovery event infrastructure) — same delivered_count/
+  // requested_count this function already fetched and wrote above; no
+  // second counter.
+  publishDiscoveryLiveEvent(discoveryCompletedEvent(planId, plan.delivered_count, plan.requested_count));
 }
 
 function buildJobSummary(plan: any, completionReason: string) {

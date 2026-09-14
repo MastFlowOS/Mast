@@ -33,6 +33,8 @@ import {
 import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead } from "@/lib/api";
 
 import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings, queryKeys } from "@/hooks/use-mast-api";
+import { useLiveDiscoveryState } from "@/hooks/use-live-discovery";
+import { LiveDiscoveryScreen } from "@/components/mast/LiveDiscoveryScreen";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildDiscoverInsights, type DiscoverInsight } from "@/lib/discover-insights";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -440,9 +442,8 @@ function GetLeads() {
   // requirement is ever silently assumed on their behalf.
   const [channels, setChannels] = useState<ChannelId[]>(DEFAULT_CHANNELS as ChannelId[]);
 
-  // Staged loading & completion states
+  // Loading & completion states
   const [isGenerating, setIsGenerating] = useState(false);
-  const [currentStageIndex, setCurrentStageIndex] = useState(0);
   const [showCompletion, setShowCompletion] = useState(false);
   const [newOpportunities, setNewOpportunities] = useState<Lead[]>([]);
   const [firstOpportunityId, setFirstOpportunityId] = useState<number | null>(null);
@@ -450,6 +451,13 @@ function GetLeads() {
   // Tracks the active scrapeJobId so the Cancel button can reference it
   // even after the discovery subscription has been removed.
   const activeJobIdRef = useRef<string | null>(null);
+  // The discovery_plans.id for the CURRENT live-mode (Free tier) run, if
+  // any — only present when the backend actually created a plan (queued
+  // live discovery). Drives the real live Discovery screen below; null for
+  // Instant Discovery (Starter/Pro/Premium pool lookups), which has no
+  // Scout-level live events to show.
+  const [planId, setPlanId] = useState<string | null>(null);
+  const liveDiscoveryState = useLiveDiscoveryState(planId, quantity);
 
 
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
@@ -474,15 +482,6 @@ function GetLeads() {
   useEffect(() => {
     setQtyIndex((prev) => Math.min(prev, maxSliderIndex));
   }, [maxSliderIndex]);
-
-  // Staged Loading Text Definitions
-  const loadingStages = [
-    { title: "Scanning Market Verticals", desc: "Searching business registries and directories..." },
-    { title: "Analyzing Digital Presence", desc: "Evaluating website performance and branding cohesion..." },
-    { title: "Verifying Contact Pathways", desc: "Verifying active emails, phones, and social handles..." },
-    { title: "Seeding Intelligence Workspace", desc: "Constructing company summary and personalized audits..." },
-    { title: "Preparing Action Plans", desc: "Drafting custom outreach angles for your pipeline..." }
-  ];
 
   // Close niche dropdown on outside click.
   // The dropdown is portaled to document.body, so it's no longer a DOM
@@ -639,18 +638,11 @@ function GetLeads() {
     seenLeadIdsRef.current = new Set();
     activeJobIdRef.current = null;
     setIsCancelling(false);
-
+    setPlanId(null);
 
     setIsGenerating(true);
-    setCurrentStageIndex(0);
     setShowCompletion(false);
     setNewOpportunities([]);
-
-    // Cosmetic stage-text rotation — purely visual, decoupled from actual
-    // completion (which now waits for the real job, not a fixed timer).
-    const stageInterval = setInterval(() => {
-      setCurrentStageIndex((prev) => (prev < loadingStages.length - 1 ? prev + 1 : prev));
-    }, 1200);
 
     const startTime = Date.now();
 
@@ -660,7 +652,6 @@ function GetLeads() {
     const MIN_VISIBLE_MS = 700;
 
     const finish = (finalCount: number) => {
-      clearInterval(stageInterval);
       unsubscribeJobRef.current?.();
       unsubscribeJobRef.current = null;
 
@@ -735,6 +726,10 @@ function GetLeads() {
       // Discovery shortfall still being backfilled — either way, watch the
       // SAME job id until it resolves. The UI never needs to know which.
       activeJobIdRef.current = result.jobId;
+      // Only Free's Live Discovery has a discovery_plans row (and therefore
+      // real Scout-level live events) — result.planId is undefined for the
+      // Instant Discovery pool-backfill path.
+      if (result.planId) setPlanId(result.planId);
       unsubscribeJobRef.current = subscribeToDiscoverJob(
         result.jobId,
         {
@@ -744,8 +739,7 @@ function GetLeads() {
               finish(seenLeadIdsRef.current.size);
             } else if (status === "completed_partial") {
               // Engine reached genuine exhaustion before hitting the full count.
-              clearInterval(stageInterval);
-              unsubscribeJobRef.current?.();
+                      unsubscribeJobRef.current?.();
               unsubscribeJobRef.current = null;
               activeJobIdRef.current = null;
               setIsGenerating(false);
@@ -760,8 +754,7 @@ function GetLeads() {
               queryClient.invalidateQueries({ queryKey: queryKeys.account });
               queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
             } else if (status === "cancelled") {
-              clearInterval(stageInterval);
-              unsubscribeJobRef.current?.();
+                      unsubscribeJobRef.current?.();
               unsubscribeJobRef.current = null;
               activeJobIdRef.current = null;
               setIsGenerating(false);
@@ -776,8 +769,7 @@ function GetLeads() {
                 toast.info("Search cancelled.");
               }
             } else if (status === "failed") {
-              clearInterval(stageInterval);
-              unsubscribeJobRef.current?.();
+                      unsubscribeJobRef.current?.();
               unsubscribeJobRef.current = null;
               activeJobIdRef.current = null;
               setIsGenerating(false);
@@ -790,7 +782,6 @@ function GetLeads() {
       );
 
     } catch (err) {
-      clearInterval(stageInterval);
       setIsGenerating(false);
       if (err instanceof ApiError) {
         if (err.message.includes("LIMIT_EXCEEDED_DAILY")) {
@@ -824,87 +815,51 @@ function GetLeads() {
     }
   };
 
-  // ─── 1. Staged Loading State ────────────────────────────────────────────────
+  const handleCancelSearch = async () => {
+    const jobId = activeJobIdRef.current;
+    if (!jobId || isCancelling) return;
+    setIsCancelling(true);
+    try {
+      await cancelDiscoverJob(jobId);
+      // UI update comes via the Realtime subscription's
+      // onStatusChange('cancelled') callback; we don't need to tear down
+      // state here.
+    } catch (err) {
+      setIsCancelling(false);
+      if (err instanceof ApiError && err.status === 409) {
+        // Already terminal — treat as if we'd received the callback.
+        toast.info("Search already completed.");
+      } else {
+        toast.error("Failed to cancel search. Please try again.");
+      }
+    }
+  };
+
+  // ─── 1. Live Discovery State ────────────────────────────────────────────────
+  // Free's Live Discovery: a real discovery_plans row exists, so real Scout
+  // events are streaming in — render the real live UI, driven entirely by
+  // Task 2's DiscoveryLiveState (see useLiveDiscoveryState / LiveDiscoveryScreen).
+  if (isGenerating && planId) {
+    return <LiveDiscoveryScreen state={liveDiscoveryState} onCancel={handleCancelSearch} isCancelling={isCancelling} />;
+  }
+
+  // Instant Discovery (Starter/Pro/Premium) pool-shortfall backfill: no
+  // discovery_plans row exists for this path, so there is no Scout-level
+  // live event stream to show — a truthful minimal waiting state instead of
+  // a 3-Scout screen with nothing real to drive it. newOpportunities here is
+  // real (each one landed via an actual `leads` INSERT), not a fabricated count.
   if (isGenerating) {
-    const percent = Math.round(((currentStageIndex + 1) / loadingStages.length) * 100);
     return (
       <div className="flex min-h-[75vh] items-center justify-center p-6">
-        <div className="w-full max-w-lg rounded-2xl border border-border bg-card/40 p-8 shadow-2xl backdrop-blur-md space-y-8 relative overflow-hidden">
-          {/* Top glowing gradient line */}
+        <div className="w-full max-w-lg rounded-2xl border border-border bg-card/40 p-8 shadow-2xl backdrop-blur-md space-y-6 text-center relative overflow-hidden">
           <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-brand/20 via-brand to-brand/20 animate-pulse" />
-
-          {/* Glowing Scanner Animation */}
           <div className="flex justify-center">
-            <div className="relative size-24">
-              <div className="absolute inset-0 rounded-full bg-brand/10 border border-brand/20 animate-ping" />
-              <div className="absolute inset-2 rounded-full bg-brand/20 border border-brand/30 animate-pulse" />
-              <div className="absolute inset-4 rounded-full bg-brand/30 border border-brand/50 flex items-center justify-center">
-                <Sparkles className="size-8 text-brand animate-spin [animation-duration:8s]" />
-              </div>
-            </div>
+            <Sparkles className="size-8 text-brand animate-spin [animation-duration:8s]" />
           </div>
-
-          {/* Stage Wording */}
-          <div className="text-center space-y-2">
-            <h2 className="text-xl font-bold text-foreground tracking-tight">
-              {loadingStages[currentStageIndex].title}
-            </h2>
-            <p className="text-sm text-muted-foreground animate-pulse">
-              {loadingStages[currentStageIndex].desc}
-            </p>
+          <div className="space-y-1.5">
+            <h2 className="text-xl font-bold text-foreground tracking-tight">Finding your opportunities</h2>
+            <p className="text-sm text-muted-foreground">Pulling the best matches for you right now.</p>
           </div>
-
-          {/* Progress Bar */}
-          <div className="space-y-2">
-            <div className="h-2 w-full bg-border rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-brand/60 to-brand transition-all duration-500 rounded-full"
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-xs font-mono text-muted-foreground">
-              <span>Analysis Progress</span>
-              <span>{percent}%</span>
-            </div>
-          </div>
-
-          {/* Checklist */}
-          <div className="space-y-3 pt-2">
-            {loadingStages.map((stage, idx) => {
-              const isCompleted = idx < currentStageIndex;
-              const isActive = idx === currentStageIndex;
-              return (
-                <div
-                  key={stage.title}
-                  className={`flex items-center gap-3 text-xs transition-opacity duration-300 ${
-                    isCompleted || isActive ? "opacity-100" : "opacity-30"
-                  }`}
-                >
-                  <div
-                    className={`size-5 rounded-full border flex items-center justify-center shrink-0 ${
-                      isCompleted
-                        ? "bg-brand/10 border-brand text-brand"
-                        : isActive
-                        ? "border-brand/40 text-brand animate-pulse"
-                        : "border-border text-muted-foreground"
-                    }`}
-                  >
-                    {isCompleted ? (
-                      <span className="font-bold">✓</span>
-                    ) : isActive ? (
-                      <div className="size-1.5 rounded-full bg-brand animate-ping" />
-                    ) : (
-                      <span>{idx + 1}</span>
-                    )}
-                  </div>
-                  <span className={`font-medium ${isActive ? "text-foreground font-semibold" : "text-muted-foreground"}`}>
-                    {stage.title}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-
           {newOpportunities.length > 0 && (
             <div className="flex items-center justify-center gap-2 text-sm font-semibold text-brand animate-in fade-in">
               <span className="relative flex size-2">
@@ -914,39 +869,11 @@ function GetLeads() {
               {newOpportunities.length} opportunit{newOpportunities.length === 1 ? "y" : "ies"} found so far...
             </div>
           )}
-
-          {/* Decorative status log */}
-          <div className="rounded-lg bg-black/40 border border-border/60 p-3.5 font-mono text-[10px] text-muted-foreground space-y-1 overflow-hidden h-24 select-none">
-            <p className="text-brand/60">[SYSTEM] Booting discovery engine...</p>
-            {currentStageIndex >= 1 && <p className="text-blue-400/80">[SCANNER] Parsing geo-coordinates for {regions.join(", ")}...</p>}
-            {currentStageIndex >= 2 && <p className="text-cyan-400/80">[ANALYZER] Found active {niches.length > 0 ? niches[0] : "business"} structures...</p>}
-            {currentStageIndex >= 3 && <p className="text-indigo-400/80">[SMTP] Verifying mail server connection handles...</p>}
-            {currentStageIndex >= 4 && <p className="text-brand/80">[INTELLIGENCE] Seeding workspace dashboards & initial draft copies...</p>}
-          </div>
-          {/* Cancel Search button */}
           <button
             type="button"
             disabled={isCancelling}
-            onClick={async () => {
-              const jobId = activeJobIdRef.current;
-              if (!jobId || isCancelling) return;
-              setIsCancelling(true);
-              try {
-                await cancelDiscoverJob(jobId);
-                // UI update comes via the Realtime subscription's
-                // onStatusChange('cancelled') callback; we don't need to
-                // tear down state here.
-              } catch (err) {
-                setIsCancelling(false);
-                if (err instanceof ApiError && err.status === 409) {
-                  // Already terminal — treat as if we'd received the callback.
-                  toast.info("Search already completed.");
-                } else {
-                  toast.error("Failed to cancel search. Please try again.");
-                }
-              }
-            }}
-            className="mt-2 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleCancelSearch}
+            className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isCancelling ? "Cancelling..." : "Cancel Search"}
           </button>

@@ -781,3 +781,102 @@ test("pool_stopped reports reason=admission_capped when the gate (not isTerminal
   assert.ok(stopped && stopped.type === "pool_stopped");
   assert.equal((stopped as { type: "pool_stopped"; reason: string }).reason, "admission_capped");
 });
+
+// ── TASK 1 (live discovery event infrastructure) — scout identity ─────────
+// runArea() now receives a second `slotIndex` argument: the same 0-indexed
+// identity already carried on AreaWorkerLogEvent.slot. These tests cover
+// test list items #14/#15 from the Task 1 prompt ("Scout identity remains
+// deterministic across events" / "simultaneous events from Scout 1/2/3
+// stay associated with the correct Scout"), adapted to this codebase's
+// real pool implementation.
+
+test("scout identity: runArea receives the same slotIndex that worker_started/worker_finished report for that area", async () => {
+  const areas = ["Brooklyn", "Queens", "Manhattan"];
+  const claimed = new Set<string>();
+  const seenSlotByArea = new Map<string, number>();
+  const events: AreaWorkerLogEvent[] = [];
+
+  await runAreaWorkerPool({
+    configuredWorkers: 3,
+    totalCuratedAreas: areas.length,
+    availableCapacity: 3,
+    claimNextArea: async (usedAreas) => {
+      const next = areas.find((a) => !usedAreas.has(a) && !claimed.has(a));
+      if (!next) return undefined;
+      claimed.add(next);
+      return next;
+    },
+    runArea: async (area, slotIndex) => {
+      seenSlotByArea.set(area, slotIndex);
+      return outcome({ discovered: 1, accepted: 1 });
+    },
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+    onEvent: (event) => events.push(event),
+  });
+
+  // Every area's runArea-observed slotIndex matches the slot the pool's own
+  // worker_started event reported for that same area — one identity, two
+  // observation points, never disagreeing.
+  for (const event of events) {
+    if (event.type === "worker_started") {
+      assert.equal(seenSlotByArea.get(event.area), event.slot);
+    }
+  }
+  // And the three areas landed on three distinct slots (0, 1, 2) — never
+  // collapsed onto one slot by an arrival-order race.
+  assert.deepEqual(new Set(seenSlotByArea.values()), new Set([0, 1, 2]));
+});
+
+test("scout identity: a single worker slot keeps the SAME slotIndex across multiple areas it claims sequentially", async () => {
+  const areas = ["A1", "A2", "A3"];
+  const slotsSeen: number[] = [];
+
+  await runAreaWorkerPool({
+    configuredWorkers: 1, // exactly one worker loop, claims all 3 areas in sequence
+    totalCuratedAreas: areas.length,
+    availableCapacity: 1,
+    claimNextArea: async (usedAreas) => areas.find((a) => !usedAreas.has(a)),
+    runArea: async (_area, slotIndex) => {
+      slotsSeen.push(slotIndex);
+      return outcome({ discovered: 1, accepted: 1 });
+    },
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+  });
+
+  assert.deepEqual(slotsSeen, [0, 0, 0], "the same worker loop must report the same slotIndex for every area it claims");
+});
+
+test("scout identity: concurrent workers never observe each other's slotIndex, even racing to finish at nearly the same time", async () => {
+  const areas = ["A1", "A2", "A3"];
+  const claimed = new Set<string>();
+  const observed: { area: string; slotIndex: number }[] = [];
+
+  await runAreaWorkerPool({
+    configuredWorkers: 3,
+    totalCuratedAreas: areas.length,
+    availableCapacity: 3,
+    claimNextArea: async (usedAreas) => {
+      const next = areas.find((a) => !usedAreas.has(a) && !claimed.has(a));
+      if (!next) return undefined;
+      claimed.add(next);
+      return next;
+    },
+    runArea: async (area, slotIndex) => {
+      // Deliberately reverse the finishing order (last-claimed finishes
+      // first) so a naive "first event I saw = Scout 1" implementation
+      // would misattribute — slotIndex must still be correct because it
+      // was assigned at claim time, not at completion time.
+      const delayMs = area === "A3" ? 1 : area === "A2" ? 5 : 10;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      observed.push({ area, slotIndex });
+      return outcome({ discovered: 1, accepted: 1 });
+    },
+    tryAcquireSlot: () => () => {},
+    isTerminal: () => false,
+  });
+
+  const bySlot = new Map(observed.map((o) => [o.slotIndex, o.area]));
+  assert.equal(bySlot.size, 3, "three distinct areas must map to three distinct slots regardless of completion order");
+});

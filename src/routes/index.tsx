@@ -4,7 +4,7 @@ import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { SignatureGlobe } from "@/components/mast/landing/SignatureGlobe";
-import { LandingAtmosphere, LandingGoldStreams } from "@/components/mast/landing/LandingAtmosphere";
+import { LandingAtmosphere } from "@/components/mast/landing/LandingAtmosphere";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -34,10 +34,8 @@ function LandingPage() {
       <LandingAtmosphere />
       {/* SiteNav must be OUTSIDE any overflow-hidden ancestor — that breaks sticky */}
       <SiteNav disableBackdropBlur />
-      {/* Page content wrapper — relative z-10 so gold streams can be absolute inside it, and it sits above atmosphere */}
+      {/* Page content wrapper sits above atmosphere */}
       <div className="mast-landing relative z-10 min-h-screen text-foreground">
-        {/* Gold streams scroll WITH the page so they wind down all sections */}
-        <LandingGoldStreams />
         <Hero />
         <Workflow />
         <ProductShowcase />

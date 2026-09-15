@@ -1,133 +1,163 @@
 import { useEffect, useState } from "react";
 
-// ─── Fixed backdrop: stars, nebulae, deep sky ─────────────────────────────────
-// This sits fixed behind everything and covers the full viewport as you scroll.
+type Star = {
+  id: number;
+  x: number;
+  y: number;
+  size: number;
+  opacity: number;
+  twinkle: boolean;
+  delay: number;
+};
+
+// ─── Fixed backdrop: realistic deep space night atmosphere ─────────────────────
+// Sits fixed behind the entire landing page, establishing a serene, quiet,
+// premium night environment with high-altitude atmospheric formations and
+// a sparse scattering of distant stars.
 export function LandingAtmosphere() {
-  const [stars, setStars] = useState<{ id: number; x: number; y: number; size: number; delay: number; duration: number }[]>([]);
+  const [stars, setStars] = useState<Star[]>([]);
 
   useEffect(() => {
-    // Generate organic star positions only once on mount
-    const starList = Array.from({ length: 60 }).map((_, i) => ({
-      id: i,
-      x: Math.random() * 100,
-      y: Math.random() * 100,
-      size: Math.random() * 1.6 + 0.6, // sizes 0.6px to 2.2px
-      delay: Math.random() * 4,
-      duration: Math.random() * 3 + 3, // 3s to 6s twinkle cycle
-    }));
+    // Generate deterministic sparse starfield avoiding text clutter
+    // Seeded distribution to preserve stable star positions
+    const starList: Star[] = [];
+    const count = 56;
+    let s = 42;
+    const rand = () => {
+      s = (s * 16807) % 2147483647;
+      return (s - 1) / 2147483646;
+    };
+
+    for (let i = 0; i < count; i++) {
+      let x = rand() * 100;
+      let y = rand() * 100;
+
+      // Keep star density sparse directly over the main hero headline (x: 5-45%, y: 12-42%)
+      if (x > 6 && x < 42 && y > 12 && y < 44) {
+        if (rand() > 0.18) {
+          // Push outward toward the margins or upper sky
+          x = (x + 48) % 100;
+        }
+      }
+
+      const size = 0.65 + rand() * 0.75; // Fine points: 0.65px - 1.4px
+      const opacity = 0.12 + rand() * 0.32; // Subtle brightness: 0.12 - 0.44
+      const twinkle = rand() < 0.2; // Only 20% have gentle slow twinkle
+      const delay = rand() * 6;
+
+      starList.push({ id: i, x, y, size, opacity, twinkle, delay });
+    }
+
     setStars(starList);
   }, []);
 
   return (
-    <div className="fixed inset-0 overflow-hidden pointer-events-none z-0 w-screen h-screen">
-      {/* Deep sky base color */}
-      <div className="absolute inset-0 bg-[#02040c]" />
+    <div
+      className="fixed inset-0 overflow-hidden pointer-events-none z-0 w-screen h-screen select-none"
+      aria-hidden="true"
+    >
+      {/* Deep night sky base: extremely dark navy/black gradient from top to bottom */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "linear-gradient(180deg, #020512 0%, #01030b 45%, #010207 75%, #000104 100%)",
+        }}
+      />
 
-      {/* Cloudy nebula vibe: extremely soft, drifting colored blobs of extremely low opacity */}
-      <div className="absolute top-[8%] left-[10%] w-[70vw] h-[70vw] rounded-full bg-indigo-950/8 blur-[130px] mix-blend-screen animate-cloud-drift-1" />
-      <div className="absolute bottom-[25%] right-[5%] w-[65vw] h-[65vw] rounded-full bg-purple-950/8 blur-[110px] mix-blend-screen animate-cloud-drift-2" />
-      <div className="absolute top-[45%] right-[20%] w-[50vw] h-[50vw] rounded-full bg-amber-950/4 blur-[110px] mix-blend-screen animate-cloud-drift-3" />
+      {/* Very faint high-altitude atmospheric gradient (horizon glow) */}
+      <div
+        className="absolute inset-0 opacity-[0.035]"
+        style={{
+          background:
+            "radial-gradient(ellipse 90% 60% at 75% 35%, rgba(100, 145, 230, 0.4) 0%, rgba(30, 58, 138, 0.1) 50%, transparent 80%)",
+        }}
+      />
 
-      {/* Stars twinkle overlay */}
+      {/* Realistic high-altitude cloud formations — organic fractal vapor field */}
+      {/* Placed behind and around the Earth globe on the right side of the hero */}
+      <div className="absolute inset-0 overflow-hidden">
+        {/* Layer 1: High-altitude cirrus / aerosol texture generated via SVG fractal noise */}
+        <svg
+          className="absolute right-[-10%] top-[-5%] w-[85vw] h-[95vh] opacity-[0.038] mix-blend-screen animate-atmo-cloud-1"
+          viewBox="0 0 1000 1000"
+          preserveAspectRatio="none"
+        >
+          <defs>
+            <filter id="atmo-cirrus-noise" x="0%" y="0%" width="100%" height="100%">
+              <feTurbulence
+                type="fractalNoise"
+                baseFrequency="0.0055 0.0035"
+                numOctaves="4"
+                result="noise"
+                seed="88"
+              />
+              <feColorMatrix
+                type="matrix"
+                values="
+                  0 0 0 0 0.62
+                  0 0 0 0 0.74
+                  0 0 0 0 0.92
+                  1 0 0 0 0"
+              />
+            </filter>
+            <radialGradient id="atmo-cirrus-mask" cx="62%" cy="42%" r="52%">
+              <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
+              <stop offset="45%" stopColor="#ffffff" stopOpacity="0.6" />
+              <stop offset="75%" stopColor="#ffffff" stopOpacity="0.15" />
+              <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+            </radialGradient>
+            <mask id="atmo-mask">
+              <rect width="1000" height="1000" fill="url(#atmo-cirrus-mask)" />
+            </mask>
+          </defs>
+          <rect
+            width="1000"
+            height="1000"
+            filter="url(#atmo-cirrus-noise)"
+            mask="url(#atmo-mask)"
+          />
+        </svg>
+
+        {/* Layer 2: Soft, diffuse stratospheric veil hugging behind the globe */}
+        {/* Ultra-low contrast, huge blur, no sharp edges, no cartoon appearance */}
+        <div
+          className="absolute right-[5%] top-[10%] w-[55vw] h-[55vw] max-w-[750px] max-h-[750px] rounded-full blur-[100px] mix-blend-screen opacity-[0.024] animate-atmo-cloud-2"
+          style={{
+            background:
+              "radial-gradient(circle at 45% 45%, rgba(135, 175, 235, 0.9) 0%, rgba(70, 110, 190, 0.4) 50%, transparent 80%)",
+          }}
+        />
+
+        {/* Layer 3: Gentle atmospheric shelf stretching horizontally across the mid-hero */}
+        <div
+          className="absolute right-[0%] top-[30%] w-[65vw] h-[25vw] max-h-[320px] blur-[90px] mix-blend-screen opacity-[0.018]"
+          style={{
+            background:
+              "radial-gradient(ellipse at 55% 50%, rgba(110, 155, 225, 0.8) 0%, rgba(45, 80, 160, 0.3) 55%, transparent 80%)",
+          }}
+        />
+      </div>
+
+      {/* Stars: sparse, tiny, restrained points of light */}
       <div className="absolute inset-0">
-        {stars.map((star) => (
+        {stars.map((star: Star) => (
           <div
             key={star.id}
-            className="absolute bg-white rounded-full animate-twinkle"
+            className={`absolute bg-[#e4ecfa] rounded-full ${
+              star.twinkle ? "animate-atmo-twinkle" : ""
+            }`}
             style={{
               left: `${star.x}%`,
               top: `${star.y}%`,
               width: `${star.size}px`,
               height: `${star.size}px`,
+              opacity: star.opacity,
               animationDelay: `${star.delay}s`,
-              animationDuration: `${star.duration}s`,
-              opacity: 0.1 + Math.random() * 0.45,
             }}
           />
         ))}
       </div>
-    </div>
-  );
-}
-
-// ─── Scrolling liquid gold streams ─────────────────────────────────────────
-// This scrolls WITH the page content. Thin, semi-transparent flowing threads
-// with a soft blur (no bevel/specular lighting) so the texture reads as a
-// faint, elegant wash of light rather than a physical 3D object. It's
-// strongest near the top of the page (around the globe) and gently fades
-// out as it moves further down through the content.
-export function LandingGoldStreams() {
-  return (
-    <div
-      className="absolute inset-0 overflow-hidden pointer-events-none z-0"
-      aria-hidden="true"
-    >
-      <svg
-        className="absolute inset-0 w-full h-full opacity-[0.4]"
-        viewBox="0 0 1440 5000"
-        fill="none"
-        preserveAspectRatio="none"
-      >
-        <defs>
-          {/* Delicate gold colour stops — soft, translucent, no hard metallic highlight */}
-          <linearGradient id="gold-stream-grad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%"   stopColor="#8a6f27" stopOpacity="0" />
-            <stop offset="20%"  stopColor="#b08a3e" stopOpacity="0.28" />
-            <stop offset="45%"  stopColor="#e8c77a" stopOpacity="0.5" />
-            <stop offset="55%"  stopColor="#fdf0cf" stopOpacity="0.55" />
-            <stop offset="70%"  stopColor="#e8c77a" stopOpacity="0.45" />
-            <stop offset="88%"  stopColor="#b08a3e" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#8a6f27" stopOpacity="0" />
-          </linearGradient>
-
-          {/* Soft feather — a gentle blur only, no bevel/specular/3D lighting */}
-          <filter id="liquid-gold-glow" x="-60%" y="-60%" width="220%" height="220%">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" />
-          </filter>
-
-          {/* Vertical fade so the texture lives mostly behind/around the globe
-              at the top of the page, and quietly recedes further down */}
-          <linearGradient id="gold-fade" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%"   stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="16%"  stopColor="#ffffff" stopOpacity="0.85" />
-            <stop offset="32%"  stopColor="#ffffff" stopOpacity="0.45" />
-            <stop offset="55%"  stopColor="#ffffff" stopOpacity="0.2" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0.08" />
-          </linearGradient>
-          <mask id="gold-fade-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1440" height="5000">
-            <rect x="0" y="0" width="1440" height="5000" fill="url(#gold-fade)" />
-          </mask>
-        </defs>
-
-        <g mask="url(#gold-fade-mask)" filter="url(#liquid-gold-glow)">
-          {/* Stream 1 — left side winding flow */}
-          <path
-            d="M 120,0 C 350,800 -100,1600 250,2400 C 600,3200 50,4000 180,5000"
-            stroke="url(#gold-stream-grad)"
-            strokeWidth="1.4"
-            strokeLinecap="round"
-            className="liquid-gold-path-1"
-          />
-
-          {/* Stream 2 — right side winding flow */}
-          <path
-            d="M 1320,300 C 1000,1100 1450,1900 1100,2700 C 700,3500 1350,4300 1200,5000"
-            stroke="url(#gold-stream-grad)"
-            strokeWidth="1.7"
-            strokeLinecap="round"
-            className="liquid-gold-path-2"
-          />
-
-          {/* Stream 3 — centre lower flow */}
-          <path
-            d="M 600,1500 C 850,2300 300,3100 750,4100 C 1000,4600 650,4800 720,5000"
-            stroke="url(#gold-stream-grad)"
-            strokeWidth="1.1"
-            strokeLinecap="round"
-            className="liquid-gold-path-3"
-          />
-        </g>
-      </svg>
     </div>
   );
 }

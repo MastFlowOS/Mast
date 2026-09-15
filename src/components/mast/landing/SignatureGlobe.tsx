@@ -1,40 +1,21 @@
 import { useEffect, useRef } from "react";
-import { WORLD_DOTS, TARGET_COUNTRIES } from "./worldDots";
+import { WORLD_DOTS } from "./worldDots";
 
-type Phase = "rotate" | "settle" | "focus" | "release";
+// Fixed Earth axial tilt: 23.44 degrees in radians
+const TILT = 0.409;
+// Cinematic slow planetary rotation (radians per second)
+// ~4.5 minutes for a complete rotation — calm, hypnotic, dignified
+const ROTATION_SPEED = 0.024;
+// Visually substantial globe scale within the hero column
+const SPHERE_FRACTION = 0.44;
 
-const DURATIONS: Record<Phase, number> = {
-  rotate: 3400,
-  settle: 1800,
-  focus: 4200,
-  release: 1600,
-};
-const CYCLE_MS = DURATIONS.rotate + DURATIONS.settle + DURATIONS.focus + DURATIONS.release;
-const BASE_SPEED = 0.045; // radians / second, freely rotating — very slow
-const TILT = 0.36; // radians, fixed axial tilt
-const SPHERE_FRACTION = 0.42; // bigger, more visible base globe
-const ZOOM_MAX = 1.2; // subtle — the globe itself barely grows
-const PAN_STRENGTH = 0.92; // camera push toward the target country's latitude
-
-function easeInOutCubic(t: number) {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-function easeOutBack(t: number) {
-  const c1 = 1.5;
-  const c3 = c1 + 1;
-  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
-}
-// Deterministic 0..1 pseudo-random from an index, so dot pop-in order is
-// stable across renders instead of reshuffling every mount.
-function hash01(i: number) {
-  const x = Math.sin(i * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
-}
+// Directional celestial light vector (subtle lunar / solar grazing angle)
+const LIGHT_X = -0.42;
+const LIGHT_Y = 0.48;
+const LIGHT_Z = 0.77;
 
 export function SignatureGlobe({ className = "" }: { className?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const labelRef = useRef<HTMLDivElement>(null);
-  const subLabelRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,266 +48,145 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     ro.observe(container);
 
     let visible = true;
-    const io = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; }, { threshold: 0.05 });
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        visible = entry.isIntersecting;
+      },
+      { threshold: 0.05 }
+    );
     io.observe(container);
 
     let running = true;
-    const onVisChange = () => { running = !document.hidden; };
+    const onVisChange = () => {
+      running = !document.hidden;
+    };
     document.addEventListener("visibilitychange", onVisChange);
 
     let rafId = 0;
     let last = performance.now();
-    let elapsed = 0;
-    let rotation = 0.6;
-
-    // Which country we're rotating toward, and the rotation bookkeeping
-    // used to land exactly on it during the "settle" phase.
-    const order = TARGET_COUNTRIES;
-    let countryIdx = -1;
-    let prevPhase: Phase | null = null;
-    let rotationAtSettleStart = rotation;
-    let targetRotation = rotation;
-
-    // The country's own sparse 7–8 "opportunity" points double as the
-    // nodes for the gold connection lines drawn between them.
-    let connectionNodes: { lat: number; lon: number }[] = [];
-
-    const project = (lat: number, lon: number, scale: number, cx: number, cy: number, r: number, rot: number) => {
-      const phi = (lat * Math.PI) / 180;
-      const lambda = (lon * Math.PI) / 180;
-      const x = Math.cos(phi) * Math.sin(lambda - rot);
-      const y0 = Math.sin(phi);
-      const z0 = Math.cos(phi) * Math.cos(lambda - rot);
-      const y = y0 * Math.cos(TILT) - z0 * Math.sin(TILT);
-      const z = y0 * Math.sin(TILT) + z0 * Math.cos(TILT);
-      return {
-        sx: cx + x * r * scale,
-        sy: cy - y * r * scale,
-        z,
-        x,
-        y,
-      };
-    };
-
-    // Unit-sphere "y" (before cx/cy/r scaling) — used to pan the camera
-    // vertically toward a country's latitude instead of inflating the
-    // whole sphere in place.
-    const unitY = (lat: number, lon: number, rot: number) => {
-      const phi = (lat * Math.PI) / 180;
-      const lambda = (lon * Math.PI) / 180;
-      const y0 = Math.sin(phi);
-      const z0 = Math.cos(phi) * Math.cos(lambda - rot);
-      return y0 * Math.cos(TILT) - z0 * Math.sin(TILT);
-    };
+    // Start angle angled toward Europe / Americas / Africa
+    let rotation = 0.85;
 
     const draw = (dt: number) => {
-      if (!reduceMotion) elapsed += dt;
       ctx.clearRect(0, 0, width, height);
       if (width === 0 || height === 0) return;
+
+      if (!reduceMotion) {
+        rotation += ROTATION_SPEED * (dt / 1000);
+      }
 
       const cx = width / 2;
       const cy = height / 2;
       const r = Math.min(width, height) * SPHERE_FRACTION;
 
-      const t = reduceMotion ? 0 : elapsed % CYCLE_MS;
-      let phase: Phase = "rotate";
-      let p = 0;
-      if (t < DURATIONS.rotate) {
-        phase = "rotate"; p = t / DURATIONS.rotate;
-      } else if (t < DURATIONS.rotate + DURATIONS.settle) {
-        phase = "settle"; p = (t - DURATIONS.rotate) / DURATIONS.settle;
-      } else if (t < DURATIONS.rotate + DURATIONS.settle + DURATIONS.focus) {
-        phase = "focus"; p = (t - DURATIONS.rotate - DURATIONS.settle) / DURATIONS.focus;
-      } else {
-        phase = "release"; p = (t - DURATIONS.rotate - DURATIONS.settle - DURATIONS.focus) / DURATIONS.release;
-      }
+      // 1. Outer atmospheric limb scattering (subtle cool blue haze fading into deep space)
+      // Realistic Rayleigh scattering: thin, faint, perfectly hugging the planetary horizon
+      const atmoGlow = ctx.createRadialGradient(cx, cy, r * 0.94, cx, cy, r * 1.055);
+      atmoGlow.addColorStop(0, "rgba(56, 96, 192, 0.14)");
+      atmoGlow.addColorStop(0.35, "rgba(42, 78, 168, 0.09)");
+      atmoGlow.addColorStop(0.7, "rgba(30, 58, 138, 0.03)");
+      atmoGlow.addColorStop(1, "rgba(15, 23, 42, 0)");
 
-      // Phase transitions: pick the next country as we enter "rotate", and
-      // lock in the exact rotation angle that centers it as we enter "settle".
-      if (phase !== prevPhase) {
-        if (phase === "rotate") {
-          countryIdx = (countryIdx + 1) % order.length;
-          connectionNodes = order[countryIdx]?.dots ?? [];
-        }
-        if (phase === "settle") {
-          rotationAtSettleStart = rotation;
-          const country = order[countryIdx] ?? order[0];
-          const targetLambda = (country.lon * Math.PI) / 180;
-          const delta = (((targetLambda - rotationAtSettleStart) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-          targetRotation = rotationAtSettleStart + delta;
-        }
-        prevPhase = phase;
-      }
-
-      const country = order[countryIdx] ?? order[0];
-
-      // Rotation: free-spin while rotating; precisely interpolate onto the
-      // target country during settle; hold while focused; spin away on release.
-      if (!reduceMotion) {
-        if (phase === "rotate") {
-          rotation += BASE_SPEED * (dt / 1000);
-        } else if (phase === "settle") {
-          rotation = rotationAtSettleStart + (targetRotation - rotationAtSettleStart) * easeInOutCubic(p);
-        } else if (phase === "focus") {
-          rotation = targetRotation;
-        } else if (phase === "release") {
-          rotation = targetRotation;
-          rotation += BASE_SPEED * easeInOutCubic(p) * (dt / 1000);
-        }
-      }
-
-      // Zoom: the globe itself only grows a little (ZOOM_MAX ~1.2) — the
-      // "zoom in on a country" feeling instead comes from panning the
-      // camera toward that country's latitude (see panDelta below).
-      let zoom = 1;
-      if (phase === "settle") zoom = 1 + (ZOOM_MAX - 1) * easeInOutCubic(p);
-      else if (phase === "focus") zoom = ZOOM_MAX;
-      else if (phase === "release") zoom = 1 + (ZOOM_MAX - 1) * (1 - easeInOutCubic(p));
-
-      const panProgress = ZOOM_MAX > 1 ? Math.max(0, Math.min(1, (zoom - 1) / (ZOOM_MAX - 1))) : 0;
-      const targetUnitY = country ? unitY(country.lat, country.lon, rotation) : 0;
-      const panDelta = targetUnitY * r * zoom * panProgress * PAN_STRENGTH;
-      const ecy = cy + panDelta; // effective vertical center used by every projection below
-
-      // Glow / reveal strength for the country's opportunity dots + label.
-      let glow = 0;
-      if (phase === "settle") glow = Math.max(0, p - 0.55) / 0.45;
-      else if (phase === "focus") glow = p < 0.1 ? p / 0.1 : p > 0.88 ? (1 - p) / 0.12 : 1;
-      else if (phase === "release") glow = Math.max(0, 1 - easeInOutCubic(p) * 1.5);
-
-      // ---- backdrop sphere shading — kept subtle/matte, not a glowing orb ----
-      const sphereR = r * zoom;
-      const bg = ctx.createRadialGradient(
-        cx - sphereR * 0.35, ecy - sphereR * 0.4, sphereR * 0.1,
-        cx, ecy, sphereR * 1.05,
-      );
-      bg.addColorStop(0, "rgba(58, 68, 116, 0.22)");
-      bg.addColorStop(0.55, "rgba(16, 19, 48, 0.40)");
-      bg.addColorStop(1, "rgba(3, 4, 20, 0.04)");
       ctx.beginPath();
-      ctx.arc(cx, ecy, sphereR, 0, Math.PI * 2);
-      ctx.fillStyle = bg;
+      ctx.arc(cx, cy, r * 1.055, 0, Math.PI * 2);
+      ctx.fillStyle = atmoGlow;
       ctx.fill();
 
-      // meridian ring (the "stand" cue of a desk globe) — behind the dots
+      // 2. Base planetary ocean body (pitch-dark oceanic obsidian with subtle celestial curvature shading)
+      // Preserves clean spherical boundary without generic neon glow
       ctx.save();
-      ctx.translate(cx, ecy);
-      ctx.scale(1, 0.34);
       ctx.beginPath();
-      ctx.arc(0, 0, sphereR * 1.14, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(201, 166, 107, 0.16)";
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-      ctx.restore();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.clip();
 
-      // ---- project + draw base land dots (quiet, unlit) ----
-      for (const d of WORLD_DOTS) {
-        const pr = project(d.lat, d.lon, zoom, cx, ecy, r, rotation);
-        if (pr.z <= -0.02) continue;
-        const alpha = Math.max(0, Math.min(1, pr.z)) * 0.65 + 0.05;
+      const oceanBg = ctx.createRadialGradient(
+        cx - r * 0.28,
+        cy - r * 0.32,
+        r * 0.1,
+        cx,
+        cy,
+        r * 1.02
+      );
+      oceanBg.addColorStop(0, "rgba(4, 9, 24, 0.96)");
+      oceanBg.addColorStop(0.55, "rgba(2, 5, 16, 0.98)");
+      oceanBg.addColorStop(0.92, "rgba(1, 3, 10, 1)");
+      oceanBg.addColorStop(1, "rgba(0, 2, 7, 1)");
+
+      ctx.fillStyle = oceanBg;
+      ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+
+      // Inner limb atmospheric rim (thin twilight arc grazing the edge)
+      const innerRim = ctx.createRadialGradient(cx, cy, r * 0.86, cx, cy, r);
+      innerRim.addColorStop(0, "rgba(0, 0, 0, 0)");
+      innerRim.addColorStop(0.8, "rgba(30, 58, 138, 0.08)");
+      innerRim.addColorStop(1, "rgba(70, 110, 205, 0.22)");
+      ctx.fillStyle = innerRim;
+      ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+
+      // 3. Geographically accurate continental land dots with 3D directional lighting
+      const dots = WORLD_DOTS;
+      const dotCount = dots.length;
+
+      const cosTilt = Math.cos(TILT);
+      const sinTilt = Math.sin(TILT);
+
+      for (let i = 0; i < dotCount; i++) {
+        const d = dots[i];
+        const phi = (d.lat * Math.PI) / 180;
+        const lambda = (d.lon * Math.PI) / 180;
+
+        // 3D Unit sphere coordinates
+        const cosPhi = Math.cos(phi);
+        const sinPhi = Math.sin(phi);
+        const theta = lambda - rotation;
+        const cosTheta = Math.cos(theta);
+        const sinTheta = Math.sin(theta);
+
+        const x0 = cosPhi * sinTheta;
+        const y0 = sinPhi;
+        const z0 = cosPhi * cosTheta;
+
+        // Apply axial tilt
+        const x = x0;
+        const y = y0 * cosTilt - z0 * sinTilt;
+        const z = y0 * sinTilt + z0 * cosTilt;
+
+        // Occlusion culling: strictly skip points on the reverse side of Earth
+        if (z <= -0.01) continue;
+
+        // Screen projection
+        const sx = cx + x * r;
+        const sy = cy - y * r;
+
+        // Natural directional lighting calculation
+        // Dot product with celestial light vector
+        const dotLight = x * LIGHT_X + y * LIGHT_Y + z * LIGHT_Z;
+        const sunFactor = Math.max(0, dotLight);
+
+        // Curvature depth factor: dots slightly fade toward the silhouette horizon
+        const zDepth = Math.max(0, Math.min(1, z));
+
+        // Dimensionality & Night Visibility:
+        // Continents remain recognizable in dark regions (base ambient 0.22),
+        // catching delicate cool atmospheric sheen on the sunlit/grazing quadrant
+        const luminosity = (0.22 + sunFactor * 0.48) * (0.75 + 0.25 * zDepth);
+
+        // Fine, precise dots: non-oversized, scaled naturally with spherical depth
+        const dotRadius = Math.max(0.7, 0.82 + 0.28 * zDepth);
+
+        // Cool, quiet palette: pale silvery-blue in light, deep nocturnal slate in shadow
+        // Completely free of gold or neon purple
+        const rVal = Math.round(135 + sunFactor * 75);
+        const gVal = Math.round(165 + sunFactor * 65);
+        const bVal = Math.round(215 + sunFactor * 40);
+
         ctx.beginPath();
-        ctx.arc(pr.sx, pr.sy, 1.05, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(196, 204, 240, ${alpha * 0.4})`;
+        ctx.arc(sx, sy, dotRadius, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${rVal}, ${gVal}, ${bVal}, ${luminosity})`;
         ctx.fill();
       }
 
-      // ---- gold outline of the target country — same hue as its
-      // opportunity dots, traced in as we settle/focus on it ----
-      if (glow > 0.03 && country?.outline?.length) {
-        ctx.beginPath();
-        let started = false;
-        for (const v of country.outline) {
-          const pr = project(v.lat, v.lon, zoom, cx, ecy, r, rotation);
-          if (pr.z <= 0.02) { started = false; continue; }
-          if (!started) { ctx.moveTo(pr.sx, pr.sy); started = true; }
-          else ctx.lineTo(pr.sx, pr.sy);
-        }
-        ctx.strokeStyle = `rgba(238, 205, 140, ${glow * 0.85})`;
-        ctx.lineWidth = 1.4;
-        ctx.lineJoin = "round";
-        ctx.stroke();
-      }
-
-      // ---- the "discovery" moment: 7–8 gold opportunity dots blooming
-      // across the target country as we settle into it ----
-      if (glow > 0.005 && country) {
-        const dots = country.dots;
-        for (let i = 0; i < dots.length; i++) {
-          const d = dots[i];
-          const pr = project(d.lat, d.lon, zoom, cx, ecy, r, rotation);
-          if (pr.z <= 0.05) continue;
-
-          const dotDelay = (hash01(i + 1) * 0.55);
-          const popRaw = phase === "release"
-            ? 1
-            : Math.max(0, Math.min(1, (p - dotDelay) / 0.35));
-          if (popRaw <= 0) continue;
-          const pop = easeOutBack(popRaw);
-          const localAlpha = glow * Math.max(0, Math.min(1, popRaw * 1.4));
-          if (localAlpha <= 0.01) continue;
-
-          const rad = Math.max(0.15, 2.6 * pop);
-          ctx.beginPath();
-          ctx.arc(pr.sx, pr.sy, rad * 2.2, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(224, 184, 110, ${0.1 * localAlpha})`;
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(pr.sx, pr.sy, rad, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(238, 205, 140, ${0.95 * localAlpha})`;
-          ctx.fill();
-        }
-      }
-
-      // ---- subtle gold connection lines between opportunity nodes ----
-      if (glow > 0.08 && connectionNodes.length > 1) {
-        const pts = connectionNodes
-          .map((d) => project(d.lat, d.lon, zoom, cx, ecy, r, rotation))
-          .filter((pr) => pr.z > 0.05);
-        const lineAlpha = glow * 0.4;
-        for (let i = 0; i < pts.length; i++) {
-          const a = pts[i];
-          const b = pts[(i + 1) % pts.length];
-          if (!a || !b) continue;
-          const mx = (a.sx + b.sx) / 2;
-          const my = (a.sy + b.sy) / 2 - 14; // gentle arc lift
-          ctx.beginPath();
-          ctx.moveTo(a.sx, a.sy);
-          ctx.quadraticCurveTo(mx, my, b.sx, b.sy);
-          ctx.strokeStyle = `rgba(232, 199, 126, ${lineAlpha})`;
-          ctx.lineWidth = 0.9;
-          ctx.stroke();
-
-          // a small pulse of light traveling along the arc
-          const travel = ((elapsed % 2200) / 2200 + i * 0.17) % 1;
-          const tt = travel;
-          const px = (1 - tt) * (1 - tt) * a.sx + 2 * (1 - tt) * tt * mx + tt * tt * b.sx;
-          const py = (1 - tt) * (1 - tt) * a.sy + 2 * (1 - tt) * tt * my + tt * tt * b.sy;
-          ctx.beginPath();
-          ctx.arc(px, py, 1.4, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(246, 222, 170, ${lineAlpha * 1.8})`;
-          ctx.fill();
-        }
-      }
-
-      // front meridian arc gleam (subtle, sells the "metal ring" cue)
-      ctx.save();
-      ctx.translate(cx, ecy);
-      ctx.scale(1, 0.34);
-      ctx.beginPath();
-      ctx.arc(0, 0, sphereR * 1.14, Math.PI * 0.08, Math.PI * 0.42);
-      ctx.strokeStyle = "rgba(226, 194, 133, 0.22)";
-      ctx.lineWidth = 1.3;
-      ctx.stroke();
       ctx.restore();
-
-      if (labelRef.current && subLabelRef.current) {
-        const showLabel = phase === "focus" || (phase === "settle" && p > 0.7) || (phase === "release" && glow > 0.15);
-        const labelOpacity = showLabel ? Math.max(glow, phase === "settle" ? (p - 0.7) / 0.3 : 0) : 0;
-        labelRef.current.style.opacity = String(Math.max(0, Math.min(1, labelOpacity)) * 0.95);
-        labelRef.current.textContent = country ? country.name : "";
-        subLabelRef.current.style.opacity = String(Math.max(0, Math.min(1, labelOpacity)) * 0.7);
-        subLabelRef.current.textContent = country ? `${country.dots.length} opportunities found` : "";
-      }
     };
 
     const loop = (now: number) => {
@@ -351,20 +211,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
   }, []);
 
   return (
-    <div ref={containerRef} className={`relative ${className}`}>
+    <div ref={containerRef} className={`relative select-none pointer-events-none ${className}`}>
       <canvas ref={canvasRef} className="block w-full h-full" aria-hidden="true" />
-      <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 translate-y-[calc(50%+0.9rem)] flex flex-col items-center gap-1">
-        <div
-          ref={labelRef}
-          className="text-[11px] font-bold tracking-[0.28em] uppercase text-[color:var(--landing-gold-bright,#e8c77e)] transition-opacity duration-300"
-          style={{ opacity: 0 }}
-        />
-        <div
-          ref={subLabelRef}
-          className="text-[10px] font-medium tracking-[0.08em] text-muted-foreground transition-opacity duration-300"
-          style={{ opacity: 0 }}
-        />
-      </div>
     </div>
   );
 }

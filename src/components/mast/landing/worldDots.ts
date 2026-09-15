@@ -1,275 +1,40 @@
-// Stylised, low-fidelity world dot map used to render the signature globe.
-// Coordinates are intentionally approximate — this is an art asset, not a
-// mapping tool — but read clearly as continents once rotating on a sphere.
+// Geographically accurate continental landmass points derived from Natural Earth 110m data.
+// Sampled via Fibonacci sphere lattice (~2,880 uniform points) for true-to-life
+// continental silhouettes without polar distortion or uneven grid clustering.
+// Stored as packed int16 base64 [lat * 100, lon * 100] for optimal load and cache performance.
+
+const PACKED_LAND_DATA = "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";
 
 export type LatLon = { lat: number; lon: number };
 
-type Poly = [number, number][]; // [lon, lat][]
-
-const CONTINENTS: Poly[] = [
-  // North America
-  [
-    [-165, 68], [-145, 70], [-120, 68], [-95, 68], [-75, 62], [-65, 50],
-    [-60, 45], [-70, 40], [-75, 35], [-80, 26], [-97, 20], [-105, 16],
-    [-92, 14], [-84, 9], [-79, 8], [-83, 22], [-97, 26], [-110, 31],
-    [-117, 33], [-124, 40], [-124, 49], [-135, 58], [-165, 68],
-  ],
-  // South America
-  [
-    [-79, 8], [-77, 0], [-80, -5], [-81, -15], [-75, -20], [-70, -30],
-    [-71, -40], [-68, -52], [-65, -55], [-58, -52], [-53, -34], [-48, -25],
-    [-40, -10], [-48, 0], [-60, 5], [-70, 8], [-79, 8],
-  ],
-  // Europe
-  [
-    [-9, 43], [-9, 52], [-5, 58], [5, 62], [12, 66], [20, 70], [28, 70],
-    [30, 60], [27, 52], [35, 45], [28, 41], [19, 40], [13, 38], [3, 43], [-9, 43],
-  ],
-  // Africa
-  [
-    [-17, 15], [-16, 21], [-10, 30], [0, 37], [10, 37], [20, 32], [32, 31],
-    [34, 27], [43, 12], [51, 12], [45, 2], [40, -5], [35, -15], [33, -24],
-    [27, -33], [18, -34], [12, -18], [10, -6], [9, 5], [-5, 5], [-17, 15],
-  ],
-  // Middle East
-  [
-    [34, 27], [48, 30], [56, 26], [60, 22], [52, 15], [43, 12], [36, 20], [34, 27],
-  ],
-  // Asia (broad)
-  [
-    [27, 70], [60, 70], [90, 72], [130, 72], [145, 60], [140, 45], [130, 35],
-    [122, 30], [110, 18], [103, 6], [100, 2], [95, 15], [88, 22], [80, 20],
-    [72, 20], [68, 25], [60, 30], [50, 40], [45, 45], [35, 48], [27, 55], [27, 70],
-  ],
-  // Australia
-  [
-    [113, -22], [122, -18], [130, -12], [136, -12], [142, -11], [145, -16],
-    [153, -28], [150, -35], [140, -38], [135, -35], [131, -32], [122, -34],
-    [114, -30], [113, -22],
-  ],
-];
-
-// Small archipelagos / islands too small to rasterise reliably — listed directly.
-const ISLAND_SCATTER: LatLon[] = [
-  // Japan
-  { lat: 43.5, lon: 142.5 }, { lat: 40.5, lon: 140.8 }, { lat: 37.5, lon: 139.5 },
-  { lat: 35.6, lon: 139.8 }, { lat: 34.5, lon: 135.4 }, { lat: 33.5, lon: 131.5 },
-  // UK & Ireland
-  { lat: 53.5, lon: -2.5 }, { lat: 51.5, lon: -0.1 }, { lat: 55.9, lon: -3.2 },
-  { lat: 53.3, lon: -6.3 }, { lat: 57.1, lon: -4.0 },
-  // Indonesia / Philippines / SE Asia islands
-  { lat: 3.6, lon: 98.7 }, { lat: -6.2, lon: 106.8 }, { lat: -7.5, lon: 110.4 },
-  { lat: -8.4, lon: 115.2 }, { lat: 1.3, lon: 103.8 }, { lat: 14.6, lon: 121.0 },
-  { lat: 10.3, lon: 123.9 }, { lat: -2.5, lon: 118.0 }, { lat: 0.8, lon: 127.4 },
-  // Madagascar
-  { lat: -18.9, lon: 47.5 }, { lat: -23.4, lon: 43.7 }, { lat: -15.7, lon: 46.3 },
-  // New Zealand
-  { lat: -41.3, lon: 174.8 }, { lat: -36.8, lon: 174.8 }, { lat: -45.0, lon: 170.5 },
-  // Caribbean
-  { lat: 18.5, lon: -70.0 }, { lat: 23.1, lon: -82.4 }, { lat: 18.0, lon: -76.8 },
-];
-
-export function pointInPolygon(lon: number, lat: number, poly: Poly): boolean {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [xi, yi] = poly[i];
-    const [xj, yj] = poly[j];
-    const intersect =
-      yi > lat !== yj > lat &&
-      lon < ((xj - xi) * (lat - yi)) / (yj - yi + 1e-9) + xi;
-    if (intersect) inside = !inside;
-  }
-  return inside;
-}
-
-function generateLandDots(): LatLon[] {
-  const dots: LatLon[] = [...ISLAND_SCATTER];
-  const step = 2.4;
-  for (let lat = -58; lat <= 76; lat += step) {
-    for (let lon = -180; lon <= 180; lon += step) {
-      for (const poly of CONTINENTS) {
-        if (pointInPolygon(lon, lat, poly)) {
-          const jitter = () => (Math.random() - 0.5) * step * 0.55;
-          dots.push({ lat: lat + jitter(), lon: lon + jitter() });
-          break;
-        }
-      }
-    }
-  }
-  return dots;
-}
-
-export const WORLD_DOTS: LatLon[] = generateLandDots();
-
-export const HUB_CITIES: (LatLon & { name: string })[] = [
-  { name: "New York", lat: 40.7, lon: -74.0 },
-  { name: "London", lat: 51.5, lon: -0.1 },
-  { name: "Dubai", lat: 25.2, lon: 55.3 },
-  { name: "Singapore", lat: 1.35, lon: 103.8 },
-  { name: "São Paulo", lat: -23.5, lon: -46.6 },
-  { name: "Sydney", lat: -33.9, lon: 151.2 },
-  { name: "Tokyo", lat: 35.7, lon: 139.7 },
-  { name: "Lagos", lat: 6.5, lon: 3.4 },
-  { name: "Toronto", lat: 43.6, lon: -79.4 },
-  { name: "Mumbai", lat: 19.1, lon: 72.9 },
-];
-
-// ---------------------------------------------------------------------------
-// Target countries — the globe rotates through these and "zooms in" to
-// reveal 7-8 gold opportunity dots scattered across the country's landmass.
-// Outlines are intentionally low-fidelity (same art style as CONTINENTS
-// above), just detailed enough to read as the country once traced in gold.
-// ---------------------------------------------------------------------------
-export const COUNTRY_POLYS: Record<string, Poly> = {
-  "United States": [
-    [-124.7, 48.4], [-123, 49], [-95, 49], [-83, 42.5], [-79, 43.5],
-    [-71, 45], [-67, 45], [-70, 41], [-75, 38.5], [-77, 34], [-80, 26],
-    [-82, 25], [-88, 30], [-94, 29.5], [-97, 26], [-100, 29], [-104, 29],
-    [-106, 31.8], [-109, 31.3], [-114.7, 32.5], [-117, 32.5], [-122, 37],
-    [-124, 40], [-124.7, 48.4],
-  ],
-  Canada: [
-    [-141, 69.5], [-125, 55], [-130, 52], [-125, 49], [-95, 49],
-    [-84, 46], [-79.5, 43.5], [-76, 44.5], [-70, 45], [-64, 46],
-    [-60, 46.5], [-55, 47.5], [-53, 47], [-56, 52], [-65, 58],
-    [-75, 62], [-85, 67], [-95, 68], [-110, 68], [-125, 69], [-141, 69.5],
-  ],
-  Brazil: [
-    [-50, 5], [-44, 0], [-35, -8], [-38, -13], [-40, -20], [-48, -25],
-    [-53, -33], [-58, -33], [-57, -25], [-62, -22], [-66, -18], [-70, -10],
-    [-73, -5], [-70, 0], [-67, 2], [-60, 4], [-50, 5],
-  ],
-  Egypt: [
-    [25, 31.5], [33.2, 31.7], [34.9, 29.9], [34.3, 27.9],
-    [36.9, 22.0], [24.7, 22.0], [25, 31.5],
-  ],
-  Germany: [
-    [6, 51.5], [7, 53.5], [8.5, 55], [11, 54.5], [13.5, 54.3],
-    [14.5, 52.5], [15, 51], [14.5, 50], [12.5, 48], [13, 47.5],
-    [10, 47.3], [8.5, 47.6], [7.5, 48.9], [6, 49.5], [6, 51.5],
-  ],
-  Italy: [
-    [7, 45], [9, 46.5], [12, 46.6], [13.7, 46.5], [13.9, 45.6],
-    [12.3, 44.2], [14, 42.3], [16, 41.9], [17.2, 40.1], [16, 39.8],
-    [15.7, 38.2], [15.1, 37.5], [13.4, 38.1], [12.4, 37.9], [13.7, 37.5],
-    [15.6, 38], [16.5, 38.2], [18.4, 40.1], [18.5, 40.7], [17, 41.9],
-    [15, 41.9], [14, 42.5], [13.6, 43.6], [12.3, 44.1], [10.5, 43.9],
-    [9, 44.4], [7.5, 44], [7, 45],
-  ],
-  Spain: [
-    [-9, 43.5], [-8, 43.7], [-1.5, 43.4], [3, 42.4], [3, 41],
-    [0, 40.5], [-0.5, 38.5], [0.2, 38], [-1.5, 37], [-4, 36.7],
-    [-6, 37], [-7.5, 37.2], [-7, 38.5], [-9, 39.5], [-9.3, 41.9], [-9, 43.5],
-  ],
-  China: [
-    [75, 40], [80, 45], [87, 49], [97, 52], [110, 53], [120, 50],
-    [125, 48], [130, 46], [131, 43], [126, 42], [124, 40], [121, 38],
-    [119, 34], [121, 31], [122, 29], [120, 27], [117, 23], [113, 22],
-    [108, 21], [106, 22], [102, 22], [99, 25], [97, 28], [92, 28],
-    [88, 28], [80, 30], [76, 34], [75, 40],
-  ],
-  Australia: CONTINENTS[6],
-};
-
-function centroidOf(poly: Poly): LatLon {
-  let sLat = 0;
-  let sLon = 0;
-  for (const [lon, lat] of poly) { sLat += lat; sLon += lon; }
-  return { lat: sLat / poly.length, lon: sLon / poly.length };
-}
-
-// A sparse, well-spread scatter of 7–8 "opportunity" points across a
-// country's landmass — not a dense fill grid. Deterministic per-country
-// (seeded by name) so the same country always reveals the same points.
-function seededRandom(seed: number) {
-  let s = seed % 2147483647;
-  if (s <= 0) s += 2147483646;
-  return () => {
-    s = (s * 16807) % 2147483647;
-    return (s - 1) / 2147483646;
-  };
-}
-
-function generateCountryDots(poly: Poly, seed: number): LatLon[] {
-  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
-  for (const [lon, lat] of poly) {
-    minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon);
-    minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
-  }
-  const target = 7 + (seed % 2); // 7 or 8 points
-  const minSep = Math.max(maxLon - minLon, maxLat - minLat) * 0.11;
-  const rand = seededRandom(seed + 1);
-  const dots: LatLon[] = [];
-  let attempts = 0;
-  while (dots.length < target && attempts < 2500) {
-    attempts++;
-    const lon = minLon + rand() * (maxLon - minLon);
-    const lat = minLat + rand() * (maxLat - minLat);
-    if (!pointInPolygon(lon, lat, poly)) continue;
-    const tooClose = dots.some((d) => {
-      const dLon = d.lon - lon, dLat = d.lat - lat;
-      return Math.sqrt(dLon * dLon + dLat * dLat) < minSep;
-    });
-    if (tooClose) continue;
-    dots.push({ lat, lon });
-  }
-  // Fallback for very thin shapes (e.g. Italy's boot) that can starve the
-  // rejection sampler — relax spacing until we hit the target count.
-  let relax = minSep;
-  while (dots.length < target && relax > 0.1) {
-    relax *= 0.7;
-    let guard = 0;
-    while (dots.length < target && guard < 2500) {
-      guard++;
-      const lon = minLon + rand() * (maxLon - minLon);
-      const lat = minLat + rand() * (maxLat - minLat);
-      if (!pointInPolygon(lon, lat, poly)) continue;
-      const tooClose = dots.some((d) => {
-        const dLon = d.lon - lon, dLat = d.lat - lat;
-        return Math.sqrt(dLon * dLon + dLat * dLat) < relax;
-      });
-      if (tooClose) continue;
-      dots.push({ lat, lon });
-    }
-  }
-  return dots;
-}
-
-export type CountryTarget = {
-  name: string;
-  lat: number;
-  lon: number;
-  dots: LatLon[];
-  /** Raw polygon vertices ({lat, lon}) for drawing the gold country outline. */
-  outline: LatLon[];
-};
-
-export const TARGET_COUNTRIES: CountryTarget[] = Object.entries(COUNTRY_POLYS).map(
-  ([name, poly], i) => {
-    const c = centroidOf(poly);
-    return {
-      name,
-      lat: c.lat,
-      lon: c.lon,
-      dots: generateCountryDots(poly, i * 97 + 13),
-      outline: poly.map(([lon, lat]) => ({ lat, lon })),
+function unpackLandDots(): LatLon[] {
+  if (typeof atob === "undefined") return [];
+  const bin = atob(PACKED_LAND_DATA);
+  const len = bin.length;
+  const count = len / 4;
+  const dots: LatLon[] = new Array(count);
+  
+  for (let i = 0; i < count; i++) {
+    const offset = i * 4;
+    const b0 = bin.charCodeAt(offset);
+    const b1 = bin.charCodeAt(offset + 1);
+    const b2 = bin.charCodeAt(offset + 2);
+    const b3 = bin.charCodeAt(offset + 3);
+    
+    // Little-endian signed 16-bit
+    let rawLat = b0 | (b1 << 8);
+    if (rawLat & 0x8000) rawLat -= 0x10000;
+    
+    let rawLon = b2 | (b3 << 8);
+    if (rawLon & 0x8000) rawLon -= 0x10000;
+    
+    dots[i] = {
+      lat: rawLat / 100,
+      lon: rawLon / 100,
     };
-  },
-);
-
-export function nearestHub(lat: number, lon: number) {
-  let best = HUB_CITIES[0];
-  let bestD = Infinity;
-  for (const hub of HUB_CITIES) {
-    const dLat = hub.lat - lat;
-    let dLon = hub.lon - lon;
-    if (dLon > 180) dLon -= 360;
-    if (dLon < -180) dLon += 360;
-    const d = dLat * dLat + dLon * dLon;
-    if (d < bestD) {
-      bestD = d;
-      best = hub;
-    }
   }
-  return best;
+  
+  return dots;
 }
+
+export const WORLD_DOTS: LatLon[] = unpackLandDots();

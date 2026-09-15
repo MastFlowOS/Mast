@@ -19,7 +19,7 @@ import path from "node:path";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(path.join(__dirname, "../poolExpandJob.ts"), "utf8");
 
-function sliceFunction(marker: string, approxLength = 45000): string {
+function sliceFunction(marker: string, approxLength = 60000): string {
   const start = src.indexOf(marker);
   assert.ok(start !== -1, `expected to find "${marker}" in poolExpandJob.ts`);
   return src.slice(start, start + approxLength);
@@ -85,8 +85,19 @@ test("recordAreaOutcome (curated-area bookkeeping) is skipped for street-mode wo
   const fn = sliceFunction("async function runGoogleAreaPoolForCity(");
   const onEventBlock = fn.slice(fn.indexOf("onEvent: (event) => {"), fn.indexOf("runArea: async"));
   const finishedBranch = onEventBlock.slice(onEventBlock.indexOf('event.type === "worker_finished"'));
-  assert.match(finishedBranch, /if \(useStreetPool\) \{/);
-  assert.match(finishedBranch, /return;/);
+  // PAID-TIER LIVE SCRAPING BRIDGE: recordAreaOutcome is now gated with a
+  // combined condition (`worker_finished && !useStreetPool`) rather than an
+  // early `return` inside a nested `if` — the early return was replaced so
+  // this same onEvent callback can still fall through to publish the live
+  // discovery event for BOTH area and street mode. The actual guarantee
+  // under test (recordAreaOutcome never runs for a street-mode completion)
+  // is unchanged.
+  assert.match(finishedBranch, /event\.type === "worker_finished" && !useStreetPool/);
+  assert.doesNotMatch(
+    finishedBranch.slice(0, finishedBranch.indexOf("recordAreaOutcome(supabaseAdmin")),
+    /if \(useStreetPool\)/,
+    "recordAreaOutcome must be reached only when !useStreetPool — no separate nested street-mode branch guarding it anymore",
+  );
 });
 
 test("pool sizing (totalCuratedAreas) uses the real street inventory count in street mode, not the curated-area list length", () => {

@@ -556,8 +556,13 @@ function acquireDiscoveryWorkerSlots(browserSlotPool: ReturnType<typeof getBrows
  * `area_started`/`area_completed` fire for every area, real area/street
  * label included, real outcome included. No new data invented; the log
  * lines below (pre-existing) are untouched, this just ALSO publishes.
+ *
+ * POOL-EXPAND LIVE EVENTS — exported so poolExpandJob.ts's own
+ * runAreaWorkerPool onEvent wiring can reuse this EXACT translation
+ * (same scoutId derivation, same scout_started/area_started/area_completed
+ * semantics) instead of a second, independently-maintained copy.
  */
-function publishAreaPoolLifecycleEvent(
+export function publishAreaPoolLifecycleEvent(
   planId: string,
   startedScoutSlots: Set<number>,
   event: AreaWorkerLogEvent,

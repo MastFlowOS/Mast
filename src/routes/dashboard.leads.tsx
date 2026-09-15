@@ -457,7 +457,13 @@ function GetLeads() {
   // Instant Discovery (Starter/Pro/Premium pool lookups), which has no
   // Scout-level live events to show.
   const [planId, setPlanId] = useState<string | null>(null);
-  const liveDiscoveryState = useLiveDiscoveryState(planId, quantity);
+  // Seeds the live-state's running delivered count for the paid-tier
+  // pool-shortfall backfill case, where some results may already have been
+  // delivered synchronously (from the pool) before this plan existed — see
+  // useLiveDiscoveryState's doc comment. Always 0 for Free's Live
+  // Discovery, which never has synchronous pool results.
+  const [initialDeliveredForPlan, setInitialDeliveredForPlan] = useState(0);
+  const liveDiscoveryState = useLiveDiscoveryState(planId, quantity, initialDeliveredForPlan);
 
 
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
@@ -639,6 +645,7 @@ function GetLeads() {
     activeJobIdRef.current = null;
     setIsCancelling(false);
     setPlanId(null);
+    setInitialDeliveredForPlan(0);
 
     setIsGenerating(true);
     setShowCompletion(false);
@@ -726,10 +733,20 @@ function GetLeads() {
       // Discovery shortfall still being backfilled — either way, watch the
       // SAME job id until it resolves. The UI never needs to know which.
       activeJobIdRef.current = result.jobId;
-      // Only Free's Live Discovery has a discovery_plans row (and therefore
-      // real Scout-level live events) — result.planId is undefined for the
-      // Instant Discovery pool-backfill path.
-      if (result.planId) setPlanId(result.planId);
+      // Both Free's Live Discovery AND a paid-tier Instant Discovery
+      // request whose pool fell short (and is now backfilling live) have a
+      // real discovery_plans row — result.planId is only undefined when no
+      // live scraping is happening at all (a pure pool hit, or a
+      // background-only expansion with no user waiting). `result.generated`
+      // is whatever the pool already delivered synchronously by the time
+      // this response landed (0 for Live Discovery, which never has
+      // synchronous pool results) — seeding the live state's delivered
+      // count with it is what keeps the backfill's progress from
+      // momentarily resetting to 0 once the Scout screen takes over.
+      if (result.planId) {
+        setInitialDeliveredForPlan(result.generated);
+        setPlanId(result.planId);
+      }
       unsubscribeJobRef.current = subscribeToDiscoverJob(
         result.jobId,
         {

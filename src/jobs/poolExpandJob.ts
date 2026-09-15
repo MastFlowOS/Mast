@@ -68,6 +68,21 @@ import {
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
 import { getResourceCapacity, getResourceWorkerSlotPool, trySharedPidAdmission } from "../lib/resourceCapacity.js";
 import { env } from "../config/env.js";
+// PAID-TIER LIVE SCRAPING BRIDGE — reuse the EXISTING Task 1 live-event
+// infrastructure (event builders + process-local/persisted pub/sub) and
+// Task 1's own area-pool-lifecycle translation (worker_started/
+// worker_finished -> scout_started/area_started/area_completed), instead
+// of inventing a second, parallel event system for this job. See this
+// file's own doc comment additions below for exactly where each is used.
+import {
+  publishDiscoveryLiveEvent,
+  candidateDiscoveredEvent,
+  candidateRejectedEvent,
+  leadDeliveredEvent,
+  discoveryCompletedEvent,
+  discoveryFailedEvent,
+} from "../discovery/liveDiscoveryEvent.js";
+import { publishAreaPoolLifecycleEvent } from "./discoveryPlanJob.js";
 // CRITMODE — user-scoped target accounting fix: see targetAccounting.ts's
 // doc comment for the full production root-cause writeup. Every place
 // below that used to compare `delivered` (pool-wide) or a
@@ -129,8 +144,15 @@ export type PoolExpandFollowUp = {
  * (whatever `delivered_count` the first worker has already claimed), not a
  * fresh one — so the durable cap holds across both workers, not just
  * within one.
+ *
+ * PAID-TIER LIVE SCRAPING BRIDGE — exported so discover.ts can create/get
+ * this SAME plan row synchronously, before queuing the follow-up job, so
+ * the HTTP response can hand the frontend a real planId to subscribe to
+ * immediately. Idempotent per scrapeJobId (see above), so discover.ts's
+ * call and this file's own later call always resolve to the identical
+ * row/id — never a second plan.
  */
-async function getOrCreatePoolExpandPlanId(followUp: PoolExpandFollowUp, payload: PoolExpandJobPayload): Promise<string> {
+export async function getOrCreatePoolExpandPlanId(followUp: PoolExpandFollowUp, payload: PoolExpandJobPayload): Promise<string> {
   const { data, error } = await (supabaseAdmin as any).rpc("get_or_create_pool_expand_plan", {
     p_scrape_job_id: followUp.scrapeJobId,
     p_user_id: followUp.userId,
@@ -349,6 +371,13 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
   let areasStartedCount = 0;
   const areaWorkerNumbers = new Map<string, number>();
 
+  // PAID-TIER LIVE SCRAPING BRIDGE — mirrors discoveryPlanJob.ts's own
+  // `startedScoutSlots` exactly: shared across every runGoogleAreaPoolForCity()
+  // call this invocation makes (one per niche/country/city round), so a
+  // slot's `scout_started` fires only once for the lifetime of this run,
+  // not once per city.
+  const startedScoutSlots = new Set<number>();
+
   try {
     if (followUp) {
       discoveryPlanId = await getOrCreatePoolExpandPlanId(followUp, payload);
@@ -384,6 +413,12 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           completed_at: new Date().toISOString(),
           job_summary: { requested: payload.shortfall, delivered: 0, shortfall: payload.shortfall, completion_reason: "no_countries", runtime_ms: 0 },
         }).eq("id", followUp.scrapeJobId);
+        // PAID-TIER LIVE SCRAPING BRIDGE — genuine early-terminal exit;
+        // still a real, already-computed outcome (no countries to search),
+        // not an invented one.
+        if (discoveryPlanId) {
+          publishDiscoveryLiveEvent(discoveryCompletedEvent(discoveryPlanId, resultsCountBase + newForUser, resultsCountBase + payload.shortfall));
+        }
       }
       return;
     }
@@ -519,8 +554,18 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       // never consulted — it cannot influence delivery, dedup, or target
       // accounting.
       streetDiagnostics?: { onDelivered: () => void; onNewForUser: () => void },
+      // PAID-TIER LIVE SCRAPING BRIDGE — 1-indexed scout identity + real
+      // area/street label for this lead's live events, supplied by the
+      // caller (runArea() below, via areaWorkerNumbers — the SAME map
+      // populated by the onEvent worker_started handler's `event.slot + 1`,
+      // never re-derived). `undefined` on the legacy sequential (no curated
+      // areas) path, normalized to scout 1 below — mirrors
+      // discoveryPlanJob.ts's runOneAreaAttempt's `effectiveScoutId = scoutId ?? 1`.
+      liveEventCtx?: { scoutId?: number; areaLabel?: string },
     ): Promise<"continue" | "batch_done" | "stop_outer"> {
       const pid = tracer.receive(lead._pipeline_id, lead.name);
+      const effectiveScoutId = liveEventCtx?.scoutId ?? 1;
+      const eventAreaLabel = liveEventCtx?.areaLabel;
       // PHASE 10 telemetry: every lead the engine yields counts as a
       // "candidate seen" for this area, regardless of what happens to it
       // next — and whether email/instagram are present on arrival is
@@ -528,10 +573,23 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       // a pure observation and never changes what gets delivered (item 5:
       // no quality/qualification semantics change).
       areaRecorder?.recordCandidateSeen({ hasEmail: Boolean(lead.email), hasInstagram: Boolean(lead.instagram) });
+      // PAID-TIER LIVE SCRAPING BRIDGE — real candidate-admission point,
+      // same checkpoint discoveryPlanJob.ts's own candidateDiscoveredEvent
+      // uses (pid assigned, before any validation/rejection decision).
+      // Only emitted for a real user-facing followUp run — see this file's
+      // onEvent wiring above for the matching gate/comment.
+      if (discoveryPlanId) {
+        publishDiscoveryLiveEvent(candidateDiscoveredEvent(discoveryPlanId, effectiveScoutId, pid, lead.name, eventAreaLabel));
+      }
       try {
         if (followUp && !channelsSatisfied(lead, followUp.channels)) {
           tracer.reject(pid, `channel_filter:${JSON.stringify(followUp.channels)}`);
           if (productivity) recordCandidateRejected(productivity);
+          if (discoveryPlanId) {
+            publishDiscoveryLiveEvent(
+              candidateRejectedEvent(discoveryPlanId, effectiveScoutId, pid, `channel_filter:${JSON.stringify(followUp.channels)}`, eventAreaLabel),
+            );
+          }
           return "continue"; // doesn't satisfy every requested channel for the waiting user — not counted
         }
 
@@ -540,6 +598,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           console.log(`[poolExpandJob] skipping invalid lead name=${JSON.stringify(lead.name)} reason=${validation.reason}`);
           tracer.reject(pid, `validation:${validation.reason}`);
           if (productivity) recordCandidateRejected(productivity);
+          if (discoveryPlanId) {
+            publishDiscoveryLiveEvent(
+              candidateRejectedEvent(discoveryPlanId, effectiveScoutId, pid, `validation:${validation.reason}`, eventAreaLabel),
+            );
+          }
           return "continue";
         }
 
@@ -554,6 +617,9 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           console.log(`[poolExpandJob] skipping disqualified lead name=${JSON.stringify(lead.name)}`);
           tracer.reject(pid, "disqualified");
           if (productivity) recordCandidateRejected(productivity);
+          if (discoveryPlanId) {
+            publishDiscoveryLiveEvent(candidateRejectedEvent(discoveryPlanId, effectiveScoutId, pid, "disqualified", eventAreaLabel));
+          }
           return "continue"; // not counted, keep streaming
         }
 
@@ -622,6 +688,23 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         if (result.wasNewForUser) {
           newForUser += 1;
           streetDiagnostics?.onNewForUser(); // CRITMODE — diagnostics only
+          // PAID-TIER LIVE SCRAPING BRIDGE — the authoritative "this user
+          // got a new lead" point, mirroring discoveryPlanJob.ts's own
+          // `accepted += 1; publishDiscoveryLiveEvent(leadDeliveredEvent(...))`
+          // (that file's `accepted`/this file's `newForUser` are the same
+          // concept — a genuinely new CRM row for the requesting user).
+          if (discoveryPlanId) {
+            publishDiscoveryLiveEvent(leadDeliveredEvent(discoveryPlanId, effectiveScoutId, pid, lead.name, eventAreaLabel));
+          }
+        } else if (discoveryPlanId) {
+          // Business was added to (or already existed in) the shared pool,
+          // but this specific followUp user already owns it — same real
+          // condition, same reason string, discoveryPlanJob.ts's own
+          // `duplicate_already_owned_by_user` rejection already uses for
+          // the identical DeliveryResult.wasNewForUser===false case.
+          publishDiscoveryLiveEvent(
+            candidateRejectedEvent(discoveryPlanId, effectiveScoutId, pid, "duplicate_already_owned_by_user", eventAreaLabel),
+          );
         }
 
         if (followUp) {
@@ -648,6 +731,12 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           if (result.limitReached) {
             console.log(`[poolExpandJob] user=${followUp.userId} hit their plan limit mid-run — stopping early`);
             userPlanLimitHit = true;
+            // Same real reason string discoveryPlanJob.ts's own
+            // `delivery.limitReached` branch already uses for the
+            // identical DeliveryResult field.
+            if (discoveryPlanId) {
+              publishDiscoveryLiveEvent(candidateRejectedEvent(discoveryPlanId, effectiveScoutId, pid, "plan_limit_reached", eventAreaLabel));
+            }
             if (reqId) terminateRequest(reqId, "EXHAUSTED");
             abortController.abort("EXHAUSTED");
             return "stop_outer";
@@ -970,15 +1059,13 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               );
             }
           }
-          if (event.type === "worker_finished") {
-            if (useStreetPool) {
-              // discovery_area_stats (recordAreaOutcome) is curated-area-
-              // specific bookkeeping — street completion state lives
-              // entirely in user_discovery_street_state, already written by
-              // claimDiscoveryStreet/completeDiscoveryStreetClaim inside
-              // runArea() below. Nothing further to persist here.
-              return;
-            }
+          if (event.type === "worker_finished" && !useStreetPool) {
+            // discovery_area_stats (recordAreaOutcome) is curated-area-
+            // specific bookkeeping — street completion state lives
+            // entirely in user_discovery_street_state, already written by
+            // claimDiscoveryStreet/completeDiscoveryStreetClaim inside
+            // runArea() below. Nothing further to persist here in street
+            // mode (fall through below to still publish the live event).
             recordAreaOutcome(supabaseAdmin, {
               niche: singleNiche,
               countryCode: country.code,
@@ -988,6 +1075,24 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               discovered: event.outcome.discovered,
               accepted: event.outcome.accepted,
             }).catch((err) => console.warn(`[poolExpandJob] recordAreaOutcome failed for area=${event.area}`, err));
+          }
+
+          // PAID-TIER LIVE SCRAPING BRIDGE — Task 1's own worker_started/
+          // worker_finished -> scout_started/area_started/area_completed
+          // translation (real slot -> scoutId, real area/street label, real
+          // outcome), reused VERBATIM — see publishAreaPoolLifecycleEvent's
+          // doc comment in discoveryPlanJob.ts. `discoveryPlanId` is only
+          // ever set for a real user-facing followUp run (see
+          // getOrCreatePoolExpandPlanId() above); a bare background
+          // pool-growth run never has one, so it never reaches this branch
+          // — satisfies "only emit for the user-facing follow-up".
+          if (discoveryPlanId) {
+            publishAreaPoolLifecycleEvent(
+              discoveryPlanId,
+              startedScoutSlots,
+              event,
+              (a) => (useStreetPool ? streetClaims.get(a)?.streetName ?? streetClaims.get(a)?.streetKey : a),
+            );
           }
         },
         runArea: async (area): Promise<AreaRunOutcome> => {
@@ -1393,7 +1498,12 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               discovered += 1;
               const outcome = await processLead(lead, streamTarget, chunk, areaRecorder, productivity, streetTrace
                 ? { onDelivered: () => { streetDelivered += 1; }, onNewForUser: () => { streetNewForUser += 1; streetTrace.markFirstNewForUser(); } }
-                : undefined);
+                : undefined,
+                // PAID-TIER LIVE SCRAPING BRIDGE — same areaWorkerNumbers
+                // map the onEvent worker_started handler above populates
+                // from the real `event.slot + 1`, keyed by this same
+                // `area` — never re-derived independently.
+                { scoutId: areaWorkerNumbers.get(area), areaLabel });
               if (outcome === "stop_outer") {
                 stopOuter = true;
                 accepted = chunk.deliveredThisChunk;
@@ -1657,6 +1767,28 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           runtime_ms: Date.now() - jobStartedAt,
         },
       }).eq("id", followUp.scrapeJobId);
+
+      // PAID-TIER LIVE SCRAPING BRIDGE — plan-level terminal event, at the
+      // actual end of this run, using the SAME accounting just written
+      // above (never a second counter). `fullRequestedTarget` reconstructs
+      // the user's ORIGINAL requested quantity (what the frontend's
+      // useLiveDiscoveryState(planId, quantity) was seeded with) —
+      // `resultsCountBase` (whatever scrape_jobs.results_count already was
+      // when this run's plan was created — the pool-hit count) plus
+      // `payload.shortfall` (this run's own target, i.e. what was still
+      // needed). `payload.shortfall` ALONE would be wrong here: it would
+      // shrink the frontend's target away from the real requested quantity
+      // once this event's `target` overwrites state.target (see
+      // liveDiscoveryState.ts's discovery_completed handling).
+      if (discoveryPlanId) {
+        const finalDeliveredCount = resultsCountBase + newForUser;
+        const fullRequestedTarget = resultsCountBase + payload.shortfall;
+        if (wasCancelled) {
+          publishDiscoveryLiveEvent(discoveryFailedEvent(discoveryPlanId, "cancelled"));
+        } else {
+          publishDiscoveryLiveEvent(discoveryCompletedEvent(discoveryPlanId, finalDeliveredCount, fullRequestedTarget));
+        }
+      }
     }
 
   } catch (err) {
@@ -1666,6 +1798,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         .update({ status: "failed", error: err instanceof Error ? err.message : String(err), completed_at: new Date().toISOString() })
         .eq("id", followUp.scrapeJobId)
         .not("status", "eq", "cancelled"); // preserve cancellation even on error
+      // PAID-TIER LIVE SCRAPING BRIDGE — real, already-computed error
+      // message; only emitted when a plan actually exists for this run.
+      if (discoveryPlanId) {
+        publishDiscoveryLiveEvent(discoveryFailedEvent(discoveryPlanId, err instanceof Error ? err.message : String(err)));
+      }
     }
     throw err;
   } finally {

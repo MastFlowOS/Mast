@@ -29,11 +29,20 @@ const TERMINAL_STATUSES: DiscoveryLiveState["status"][] = ["completed", "exhaust
 
 /**
  * `planId` is null until the backend has actually created a discovery plan
- * (Free tier / live-mode discovery only — see dashboard.leads.tsx). Returns
- * null until then; the caller renders its own truthful pre-plan state.
+ * — Free tier's Live Discovery, or a paid-tier Instant Discovery request
+ * whose pool lookup fell short and is now backfilling live (see
+ * dashboard.leads.tsx). Returns null until then; the caller renders its
+ * own truthful pre-plan state.
+ *
+ * `initialDelivered` (default 0) seeds the running delivered count — see
+ * createInitialLiveDiscoveryState()'s doc comment. Used by the paid-tier
+ * backfill case, where some results may already have been delivered
+ * synchronously (from the pool) before this plan/event stream existed;
+ * Free's Live Discovery always starts at 0 since nothing has been
+ * delivered yet by the time its plan is created.
  */
-export function useLiveDiscoveryState(planId: string | null, target: number): DiscoveryLiveState | null {
-  const [state, setState] = useState<DiscoveryLiveState | null>(() => (planId ? createInitialLiveDiscoveryState(target) : null));
+export function useLiveDiscoveryState(planId: string | null, target: number, initialDelivered = 0): DiscoveryLiveState | null {
+  const [state, setState] = useState<DiscoveryLiveState | null>(() => (planId ? createInitialLiveDiscoveryState(target, initialDelivered) : null));
 
   // Applied-id guard: independent of the reducer's own internal dedup
   // (which only covers counted event types — see liveDiscoveryState.ts),
@@ -50,7 +59,7 @@ export function useLiveDiscoveryState(planId: string | null, target: number): Di
       setState(null);
       return;
     }
-    setState(createInitialLiveDiscoveryState(target));
+    setState(createInitialLiveDiscoveryState(target, initialDelivered));
 
     if (!supabase) return; // matches every other subscribeTo*'s `if (!supabase) return () => {}` guard
 

@@ -376,13 +376,15 @@ export type LeadGenerationResponse = {
   /** The scrape_jobs id — pass to subscribeToDiscoverJob() to watch it resolve. */
   jobId: string;
   /**
-   * The discovery_plans id — only present for Free's Live Discovery (the
-   * backend's `plan.discoveryMode === "live"` path in
-   * src/server/routes/discover.ts). Pass to useLiveDiscoveryState() to
-   * render the real 3-Scout live UI. Undefined for Instant Discovery
-   * (Starter/Pro/Premium pool lookups, including a pool-shortfall
-   * backfill) — those never create a discovery_plans row, so there is no
-   * Scout-level live event stream for them.
+   * The discovery_plans id — present whenever real live scraping is
+   * actually happening for this request: Free's Live Discovery (the
+   * backend's `plan.discoveryMode === "live"` path), AND a paid-tier
+   * Instant Discovery request whose pool lookup fell short and is now
+   * backfilling live (`instant_pool`/`instant_pool_ranked` with a
+   * shortfall — see src/server/routes/discover.ts). Pass to
+   * useLiveDiscoveryState() to render the real 3-Scout live UI. Undefined
+   * only when no live scraping occurs at all — a pure pool hit, or a
+   * background-only pool expansion with no user waiting on it.
    */
   planId?: string;
   /** The ACTUAL mode the backend used, derived server-side from the user's real plan — not necessarily what was requested. */
@@ -398,7 +400,13 @@ export type LeadGenerationResponse = {
 
 type DiscoverBackendResponse = {
   jobId: string;
-  /** Only present when POST /v1/discover took the live-discovery branch (see discover.ts). */
+  /**
+   * Present when POST /v1/discover took the live-discovery branch, OR the
+   * instant-pool branch queued a real live pool-expand backfill for this
+   * request (shortfall > 0, plan limit not already reached — see
+   * discover.ts). Absent for a pure pool hit (no live scraping) and for a
+   * shortfall that hit the plan limit before any backfill was queued.
+   */
   planId?: string;
   mode: GenerationMode;
   status: "queued" | "streaming" | "completed" | "failed";
@@ -1380,6 +1388,11 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
     source: backendResponse.mode,
     credits,
     jobId: backendResponse.jobId,
+    // Present exactly when the backend actually queued a live pool-expand
+    // backfill for this request (see the DiscoverBackendResponse.planId
+    // doc comment) — undefined for a pure pool hit, so the caller never
+    // renders a Scout screen with nothing real behind it.
+    planId: backendResponse.planId,
     mode,
     // status "streaming" means the pool fell short and a follow-up scrape
     // is running under this same job id — more leads may still arrive.

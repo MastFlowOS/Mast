@@ -9,6 +9,11 @@ import { lookupAndDeliverFromPool } from "../../lib/poolLookup.js";
 import { professionSlugForLabel } from "../../lib/professions.js";
 import { enqueueDiscoveryPlan } from "../../discovery/planner.js";
 import { terminateRequest } from "../../discovery/requestLifecycle.js";
+// PAID-TIER LIVE SCRAPING BRIDGE — reuse poolExpandJob.ts's own idempotent
+// plan-creation primitive so the pool-expand follow-up run and this HTTP
+// response resolve to the SAME discovery_plans row/id (never a second
+// plan) — see getOrCreatePoolExpandPlanId's doc comment in poolExpandJob.ts.
+import { getOrCreatePoolExpandPlanId, type PoolExpandJobPayload } from "../../jobs/poolExpandJob.js";
 
 export const discoverRouter = Router();
 
@@ -192,14 +197,19 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
       shortfall > 0 && !limitReached ? "streaming" : delivered.length >= quantity ? "completed" : "completed_partial";
 
     let backgroundExpansionQueued = false;
+    // PAID-TIER LIVE SCRAPING BRIDGE — undefined unless a real live
+    // pool-expand backfill is actually queued for THIS user's request
+    // below. Included in the JSON response so the frontend can render the
+    // exact same LiveDiscoveryScreen (Task 1-3's live event stream) for a
+    // paid-tier backfill it already renders for Free's Live Discovery.
+    let poolExpandPlanId: string | undefined;
 
     if (shortfall > 0 && !limitReached) {
       // Leave the job "streaming" — poolExpandJob (with a followUp attached)
       // flips it to completed / completed_partial once it finishes.
       await supabaseAdmin.from("scrape_jobs").update({ status: "streaming", results_count: delivered.length }).eq("id", job.id);
 
-      const boss = await getBoss();
-      await boss.send(QUEUES.poolExpand, {
+      const poolExpandPayload: PoolExpandJobPayload = {
         region: body.region,
         niche: body.niche,
         shortfall,
@@ -213,7 +223,19 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
           monthlyLimit: plan.monthlyLeadLimit,
           channels: body.channels,
         },
-      });
+      };
+
+      // Create/get the SAME idempotent pool-expand discovery plan
+      // poolExpandJob.ts's own getOrCreatePoolExpandPlanId() will later
+      // resolve to (get_or_create_pool_expand_plan is idempotent per
+      // scrape_job_id — see migrations/024) BEFORE queuing the follow-up,
+      // so the response below can hand the frontend a real planId to
+      // subscribe to immediately, instead of only after the worker picks
+      // the job up.
+      poolExpandPlanId = await getOrCreatePoolExpandPlanId(poolExpandPayload.followUp!, poolExpandPayload);
+
+      const boss = await getBoss();
+      await boss.send(QUEUES.poolExpand, poolExpandPayload);
       backgroundExpansionQueued = true;
     } else if (shortfall > 0 && limitReached) {
       await supabaseAdmin
@@ -233,6 +255,10 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
 
     res.status(200).json({
       jobId: job.id,
+      // Undefined unless a real live pool-expand backfill was actually
+      // queued above (shortfall > 0 && !limitReached) — never a fake id
+      // for a pure pool hit, which has no live scraping to show.
+      planId: poolExpandPlanId,
       mode: plan.discoveryMode,
       status: finalInstantStatus,
       requested: quantity,

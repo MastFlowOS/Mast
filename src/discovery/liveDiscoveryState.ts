@@ -72,14 +72,27 @@ function idleScout(scoutId: ScoutId): ScoutLiveState {
   return { scoutId, status: "idle", sentence: "Waiting to start..." };
 }
 
-/** Fresh state for a brand-new discovery plan. `target` is `discovery_plans.requested_count`. */
-export function createInitialLiveDiscoveryState(target: number): DiscoveryLiveState {
+/**
+ * Fresh state for a brand-new discovery plan. `target` is
+ * `discovery_plans.requested_count`.
+ *
+ * `initialDelivered` (default 0) seeds the running delivered count for a
+ * plan that starts life already partway to its target — e.g. a paid-tier
+ * Instant Discovery request whose pool lookup already delivered some
+ * results synchronously, before the live pool-expand backfill (and its
+ * plan/event stream) even existed. Every subsequent `lead_delivered` event
+ * still increments from here by exactly 1 (reduceLiveDiscoveryEvent is
+ * unchanged) — this only fixes the starting point, never the increment
+ * logic, so a mid-flight paid backfill correctly shows e.g. 5/100 instead
+ * of resetting to 0/100.
+ */
+export function createInitialLiveDiscoveryState(target: number, initialDelivered = 0): DiscoveryLiveState {
   return {
     scouts: { 1: idleScout(1), 2: idleScout(2), 3: idleScout(3) },
-    delivered: 0,
+    delivered: initialDelivered,
     rejected: 0,
     target,
-    progressPercent: 0,
+    progressPercent: computeProgressPercent(initialDelivered, target),
     status: "starting",
     _internal: { processedEventIds: [] },
   };

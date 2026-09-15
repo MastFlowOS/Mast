@@ -166,8 +166,9 @@ export type RunAreaWorkerPoolParams = {
    * task). `usedAreas` is supplied so the injected claim function can
    * apply this rule itself (it owns the actual DB call and knows the
    * fallback/cooldown behavior of claim_discovery_area()).
+   * `slotIndex` is the 0-indexed worker loop index (Worker 1 = 0, Worker 2 = 1, etc.).
    */
-  claimNextArea: (usedAreas: ReadonlySet<string>) => Promise<string | undefined>;
+  claimNextArea: (usedAreas: ReadonlySet<string>, slotIndex?: number) => Promise<string | undefined>;
   /**
    * Runs one complete area search. Must not throw for area-local failures — catch and return { failed: true } instead so siblings are unaffected (Step 8).
    *
@@ -337,7 +338,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
 
       let area: string | undefined;
       try {
-        area = await claimNextArea(usedAreas);
+        area = await claimNextArea(usedAreas, slotIndex);
       } catch (err) {
         release();
         throw err; // a claim-mechanism error (e.g. DB unreachable) is not area-local — propagate

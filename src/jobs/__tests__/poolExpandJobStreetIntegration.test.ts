@@ -53,7 +53,7 @@ test("street scope never manufactures an owner and is scoped to the current (cou
 
 test("claimNextArea calls claimDiscoveryStreet in street mode, claimAreaForCity otherwise (no jumping city/queue)", () => {
   const fn = sliceFunction("async function runGoogleAreaPoolForCity(");
-  const claimBlock = fn.slice(fn.indexOf("claimNextArea: async"), fn.indexOf("claimNextArea: async") + 900);
+  const claimBlock = fn.slice(fn.indexOf("claimNextArea: async"), fn.indexOf("claimNextArea: async") + 1500);
   assert.match(claimBlock, /if \(useStreetPool && streetScope\)/);
   assert.match(claimBlock, /claimDiscoveryStreet\(supabaseAdmin, streetScope,/);
   assert.match(claimBlock, /claimAreaForCity\(supabaseAdmin, \{/);
@@ -67,7 +67,7 @@ test("a claimed street produces an 'on {street}, {city}' query; area mode keeps 
 
 test("street claims are heartbeated while their engine call is running", () => {
   const fn = sliceFunction("async function runGoogleAreaPoolForCity(");
-  assert.match(fn, /heartbeatDiscoveryStreetClaim\(supabaseAdmin, streetClaim, streetScope!\.userId, streetWorkerId\)/);
+  assert.match(fn, /heartbeatDiscoveryStreetClaim\(supabaseAdmin, streetClaim, streetScope!\.userId, (?:slotWorkerId|streetWorkerId)\)/);
   assert.match(fn, /streetHeartbeatTimer = setInterval\(renewStreetClaim, STREET_HEARTBEAT_INTERVAL_MS\)/);
 });
 
@@ -76,7 +76,7 @@ test("a street is completed only on genuine exhaustion (SUCCESS_EXHAUSTED) and a
   const completeBlock = fn.slice(fn.indexOf("const streetCompleted ="), fn.indexOf("const streetCompleted =") + 300);
   assert.match(completeBlock, /!streetHeartbeatStopped/);
   assert.match(completeBlock, /effectiveTerminationReason === "SUCCESS_EXHAUSTED"/);
-  assert.match(completeBlock, /completeDiscoveryStreetClaim\(supabaseAdmin, streetClaim, streetScope\.userId, streetWorkerId\)/);
+  assert.match(completeBlock, /completeDiscoveryStreetClaim\(supabaseAdmin, streetClaim, streetScope\.userId, (?:slotWorkerId|streetWorkerId)\)/);
   // Must NOT gate completion on accepted/discovered count anywhere in this block.
   assert.doesNotMatch(completeBlock, /accepted > 0/);
 });

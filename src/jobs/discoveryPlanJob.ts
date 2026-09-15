@@ -612,6 +612,7 @@ function logStreetPoolEvent(
       break;
     case "worker_started":
       console.info(`[street-worker] task=${payload.taskId} street=${label} started`);
+      console.info(`[street-claim] city=${task.city} street=${label} worker_slot=worker_${event.slot + 1} result=CLAIMED`);
       break;
     case "worker_finished":
       console.info(`[street-worker] task=${payload.taskId} street=${label} finished accepted=${event.outcome.accepted} failed=${event.outcome.failed}`);
@@ -903,8 +904,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         // `usedAreas` guard merely protects this invocation from a malformed
         // duplicate response; it is not coverage state and is never queried
         // to decide what is eligible.
-        claimNextArea: async (usedClaims) => {
-          const claim = await claimDiscoveryStreet(db, streetScope, workerLabel, payload.planId);
+        claimNextArea: async (usedClaims, slotIndex = 0) => {
+          const slotWorkerLabel = `${workerLabel}-w${slotIndex + 1}`;
+          const claim = await claimDiscoveryStreet(db, streetScope, slotWorkerLabel, payload.planId, slotIndex);
           if (!claim) return undefined;
           if (usedClaims.has(claim.stateId)) {
             throw new Error(`claim_discovery_street returned a duplicate active claim (${claim.stateId})`);
@@ -917,10 +919,11 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           if (!claim) {
             return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: false, failed: true, error: "missing street claim" };
           }
+          const slotWorkerLabel = `${workerLabel}-w${slotIndex + 1}`;
 
           let heartbeatStopped = false;
           const renew = () => {
-            void heartbeatDiscoveryStreetClaim(db, claim, streetScope.userId, workerLabel)
+            void heartbeatDiscoveryStreetClaim(db, claim, streetScope.userId, slotWorkerLabel)
               .then((renewed) => {
                 if (!renewed) {
                   heartbeatStopped = true;
@@ -948,7 +951,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
               && !attempt.shouldRetryTask
               && !attempt.terminalReason
               && attempt.engineTerminationReason === "SUCCESS_EXHAUSTED"
-              && await completeDiscoveryStreetClaim(db, claim, streetScope.userId, workerLabel);
+              && await completeDiscoveryStreetClaim(db, claim, streetScope.userId, slotWorkerLabel);
             if (!completed) {
               console.info(
                 `[street-discovery] claim left recoverable task=${payload.taskId} street=${claim.streetKey} ` +

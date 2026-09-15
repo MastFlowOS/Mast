@@ -309,6 +309,7 @@ export async function claimDiscoveryStreet(
   scope: StreetScope,
   workerId: string,
   runId: string,
+  slotIndex?: number,
 ): Promise<StreetClaim | undefined> {
   const { data, error } = await db.rpc("claim_discovery_street", {
     p_user_id: scope.userId,
@@ -323,8 +324,14 @@ export async function claimDiscoveryStreet(
   });
   if (error) throw error;
   const row = Array.isArray(data) ? data[0] : data;
-  if (!row) return undefined;
-  return {
+  const slotLabel = slotIndex !== undefined ? `worker_${slotIndex + 1}` : workerId;
+  if (!row) {
+    console.info(
+      `[street-claim] city=${scope.city} street=none worker_slot=${slotLabel} result=NONE_AVAILABLE`,
+    );
+    return undefined;
+  }
+  const claim: StreetClaim = {
     stateId: row.state_id,
     streetId: row.street_id,
     streetKey: row.street_key,
@@ -333,6 +340,10 @@ export async function claimDiscoveryStreet(
     claimedAt: row.claimed_at,
     leaseExpiresAt: row.lease_expires_at,
   };
+  console.info(
+    `[street-claim] city=${scope.city} street=${claim.streetName ?? claim.streetKey} worker_slot=${slotLabel} result=CLAIMED`,
+  );
+  return claim;
 }
 
 export async function completeDiscoveryStreetClaim(

@@ -929,9 +929,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         totalCuratedAreas: totalClaimTargets,
         availableCapacity: browserPool.available(),
         requestedQuantity: target,
-        claimNextArea: async (usedAreas) => {
+        claimNextArea: async (usedAreas, slotIndex = 0) => {
           if (useStreetPool && streetScope) {
-            const claim = await claimDiscoveryStreet(supabaseAdmin, streetScope, streetWorkerId, reqId ?? streetWorkerId);
+            const slotWorkerId = `${streetWorkerId}-w${slotIndex + 1}`;
+            const claim = await claimDiscoveryStreet(supabaseAdmin, streetScope, slotWorkerId, reqId ?? streetWorkerId, slotIndex);
             if (!claim) return undefined;
             if (usedAreas.has(claim.stateId)) {
               throw new Error(`claim_discovery_street returned a duplicate active claim (${claim.stateId})`);
@@ -945,7 +946,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               streetKey: claim.streetKey,
               streetName: claim.streetName,
               runId: reqId ?? streetWorkerId,
-              workerId: streetWorkerId,
+              workerId: slotWorkerId,
             });
             tracerHandle.markClaimed();
             streetLifecycleTracers.set(claim.stateId, tracerHandle);
@@ -1057,6 +1058,9 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 `[poolExpandJob][street-discovery] claim city=${city} country=${country.code} ` +
                   `street_key=${claim?.streetKey ?? "unknown"} street_name=${claim?.streetName ?? "unknown"}`,
               );
+              console.info(
+                `[street-claim] city=${city} street=${claim?.streetName ?? claim?.streetKey ?? "unknown"} worker_slot=worker_${event.slot + 1} result=CLAIMED`,
+              );
             }
           }
           if (event.type === "worker_finished" && !useStreetPool) {
@@ -1095,13 +1099,14 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             );
           }
         },
-        runArea: async (area): Promise<AreaRunOutcome> => {
+        runArea: async (area, slotIndex = 0): Promise<AreaRunOutcome> => {
           // CRITMODE Phase 4 — PART B: resolve this claim's real street
           // (undefined in area mode) once, up front — every place below
           // that needs a human-readable label or the street-scoped query
           // reads from here rather than re-deriving it.
           const streetClaim = useStreetPool ? streetClaims.get(area) : undefined;
           const areaLabel = streetClaim?.streetName ?? area;
+          const slotWorkerId = `${streetWorkerId}-w${slotIndex + 1}`;
           // CRITMODE — diagnostics only. `undefined` in area mode (no
           // street claim, no tracer) — every use below is optional-chained
           // so this is a complete no-op outside the street-pool path.
@@ -1293,7 +1298,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           let streetHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
           if (streetClaim && streetScope) {
             const renewStreetClaim = () => {
-              void heartbeatDiscoveryStreetClaim(supabaseAdmin, streetClaim, streetScope!.userId, streetWorkerId)
+              void heartbeatDiscoveryStreetClaim(supabaseAdmin, streetClaim, streetScope!.userId, slotWorkerId)
                 .then((renewed) => {
                   if (!renewed) {
                     streetHeartbeatStopped = true;
@@ -1578,7 +1583,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             if (streetClaim && streetScope) {
               const streetCompleted = !streetHeartbeatStopped
                 && effectiveTerminationReason === "SUCCESS_EXHAUSTED"
-                && await completeDiscoveryStreetClaim(supabaseAdmin, streetClaim, streetScope.userId, streetWorkerId);
+                && await completeDiscoveryStreetClaim(supabaseAdmin, streetClaim, streetScope.userId, slotWorkerId);
               if (streetCompleted) {
                 console.info(
                   `[poolExpandJob][street-discovery] completed city=${city} country=${country.code} street=${streetClaim.streetKey}`,

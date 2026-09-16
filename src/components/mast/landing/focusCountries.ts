@@ -1087,12 +1087,13 @@ export function selectCycleOpportunities(
   const prng = createPRNG(seed);
 
   const isLarge = ["USA", "RUS", "BRA", "CAN", "CHN", "AUS"].includes(country.iso);
-  const minCount = isLarge ? 8 : 5;
-  const maxCount = isLarge ? 14 : 10;
-  const targetCount = minCount + Math.floor(prng() * (maxCount - minCount + 1));
+  // Opportunity count strictly clamped between 5 and 10 for all nations
+  const minCount = isLarge ? 6 : 5;
+  const maxCount = 10;
+  const targetCount = Math.max(5, Math.min(10, minCount + Math.floor(prng() * (maxCount - minCount + 1))));
 
   // Soft minimum distance to prevent direct stacking while allowing organic varied spacing
-  const minSepDeg = isLarge ? 3.2 : 1.4;
+  const minSepDeg = isLarge ? 3.6 : 1.4;
   const minSepSq = minSepDeg * minSepDeg;
 
   const pool = country.candidatePool;
@@ -1106,7 +1107,7 @@ export function selectCycleOpportunities(
   }
 
   const selectedIndices: number[] = [];
-  for (let i = 0; i < indices.length && selectedIndices.length < targetCount; i++) {
+  for (let i = 0; i < indices.length && selectedIndices.length < targetCount && selectedIndices.length < 10; i++) {
     const idx = indices[i];
     const pt = pool[idx];
     let tooClose = false;
@@ -1122,7 +1123,7 @@ export function selectCycleOpportunities(
     }
   }
 
-  // Ensure at least 5 points (clamped between 5 and 15)
+  // Ensure at least 5 points (strictly clamped between 5 and 10)
   while (selectedIndices.length < 5 && pool.length >= 5) {
     let bestIdx = -1;
     let bestDist = -1;
@@ -1140,7 +1141,7 @@ export function selectCycleOpportunities(
         bestIdx = idx;
       }
     }
-    if (bestIdx >= 0) selectedIndices.push(bestIdx);
+    if (bestIdx >= 0 && selectedIndices.length < 10) selectedIndices.push(bestIdx);
     else break;
   }
 

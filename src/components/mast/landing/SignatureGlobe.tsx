@@ -98,7 +98,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     let rotateDuration = 4500;
     let focusDuration = 4200;
     const settleDuration = 2200;
-    const releaseDuration = 1800;
+    const releaseDuration = 1500;
 
     const unitY = (lat: number, lon: number, rot: number) => {
       const phi = (lat * Math.PI) / 180;
@@ -318,30 +318,36 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         // Check if dot belongs to the active focus country
         const isTargetCountry = currentTarget && targetIdx >= 0 && DOT_COUNTRY_IDS[i] === targetIdx;
 
-        if (isTargetCountry && countryBaseGold > 0.01) {
-          // Strong light gold #c9a66b (rgb: 201, 166, 107) land field
-          // The country silhouette clearly emerges from the dotted Earth!
-          const tGold = countryBaseGold;
+        if (isTargetCountry && countryBaseGold > 0.001) {
+          const tGold = countryBaseGold; // 1.0 (peak focus) -> 0.0 (end of release)
+
+          // Continuous color interpolation from normal nocturnal Earth directly to full MAST gold #c9a66b:
+          // releaseProgress = 0 (tGold = 1.0) -> full MAST gold #c9a66b (201, 166, 107)
+          // releaseProgress = 0.5 (tGold = 0.5) -> soft desaturated pale gold / blue-gold midpoint
+          // releaseProgress = 1.0 (tGold = 0.0) -> exact normal nocturnal Earth land color (rVal, gVal, bVal)
           const goldR = Math.round(rVal * (1 - tGold) + 201 * tGold);
           const goldG = Math.round(gVal * (1 - tGold) + 166 * tGold);
           const goldB = Math.round(bVal * (1 - tGold) + 107 * tGold);
 
-          // Suggested luminance range: 0.45 - 0.65
+          // Continuous luminance interpolation: NEVER dims to 0 or becomes transparent!
+          // Country always maintains normal geographic visibility, smoothly transitioning between gold and nocturnal Earth
           const isSmallCountry = ["EGY", "FRA", "DEU", "JPN", "NZL"].includes(currentTarget.iso);
-          const baseLum = isSmallCountry ? 0.60 : 0.52;
-          const goldLum = (baseLum + 0.10 * zDepth) * tGold;
+          const targetCountryLum = (isSmallCountry ? 0.60 : 0.52) + 0.10 * zDepth;
+          const dotLum = luminosity * (1 - tGold) + targetCountryLum * tGold;
 
-          const countryDotR = isSmallCountry
+          // Continuous radius interpolation
+          const targetCountryDotR = isSmallCountry
             ? Math.max(1.05, dotRadius * 1.30)
             : Math.max(0.85, dotRadius * 1.15);
+          const curDotR = dotRadius * (1 - tGold) + targetCountryDotR * tGold;
 
           ctx.beginPath();
-          ctx.arc(sx, sy, countryDotR, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${goldR}, ${goldG}, ${goldB}, ${goldLum})`;
+          ctx.arc(sx, sy, curDotR, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${goldR}, ${goldG}, ${goldB}, ${dotLum})`;
           ctx.fill();
         } else {
           // Normal nocturnal continent point outside the focus country
-          // Slightly dimmed during active country focus to create strong hierarchy without a spotlight
+          // Quietened slightly during active country focus; returns smoothly to full brightness as countryBaseGold drops to 0
           const nonTargetDim = 1 - 0.22 * countryBaseGold;
           const quietLum = luminosity * nonTargetDim;
 
@@ -387,7 +393,9 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
               }
             }
           } else if (phase === "release") {
-            const rp = Math.min(1, phaseElapsed / releaseDuration);
+            // Opportunity dots fade out cleanly over the first ~1100ms of release
+            const oppFadeDuration = Math.min(releaseDuration, 1100);
+            const rp = Math.min(1, phaseElapsed / oppFadeDuration);
             alpha = Math.max(0, 1 - easeInOutCubic(rp));
             scale = 1.0;
             flashAmount = 0;

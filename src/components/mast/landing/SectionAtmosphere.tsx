@@ -155,15 +155,8 @@ function generateStars(variant: SectionAtmosphereVariant): Star[] {
   const stars: Star[] = [];
 
   for (let i = 0; i < count; i++) {
-    let x = rand() * 100;
-    let y = rand() * 100;
-
-    // For hero, keep headline area sparse (x: 4-48%, y: 10-65%)
-    if (variant === "hero" && x > 4 && x < 48 && y > 10 && y < 65) {
-      if (rand() > 0.12) {
-        x = (x + 48) % 100;
-      }
-    }
+    const x = rand() * 100;
+    const y = rand() * 100;
 
     const roll = rand();
     let type: Star["type"] = "drift-a";
@@ -233,13 +226,24 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
     >
       {/* 1. Atmospheric Haze & Ambient Depth (Autonomous, time-based) */}
       {variant === "hero" && (
-        <div
-          className="absolute right-[2%] top-[6%] w-[60vw] h-[60vw] max-w-[760px] max-h-[760px] rounded-full blur-[110px] mix-blend-screen opacity-[0.034] animate-atmo-haze"
-          style={{
-            background:
-              "radial-gradient(circle at 50% 48%, rgba(95, 140, 220, 0.85) 0%, rgba(40, 75, 160, 0.3) 55%, transparent 80%)",
-          }}
-        />
+        <>
+          {/* Full-width continuous night sky depth across the entire hero width */}
+          <div
+            className="absolute inset-0 blur-[130px] mix-blend-screen opacity-[0.028] animate-atmo-haze pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(ellipse 95% 65% at 50% 45%, rgba(70, 110, 200, 0.75) 0%, rgba(35, 65, 140, 0.25) 60%, transparent 85%)",
+            }}
+          />
+          {/* Soft planetary back-glow framing the Earth on the right */}
+          <div
+            className="absolute right-[4%] top-[10%] w-[52vw] h-[52vw] max-w-[680px] max-h-[680px] rounded-full blur-[120px] mix-blend-screen opacity-[0.032] pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(circle at 50% 50%, rgba(85, 130, 225, 0.8) 0%, rgba(40, 70, 160, 0.25) 55%, transparent 80%)",
+            }}
+          />
+        </>
       )}
 
       {variant === "solutions" && (
@@ -264,10 +268,10 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
 
       {variant === "platform" && (
         <div
-          className="absolute left-[20%] top-[30%] w-[60vw] h-[45vh] blur-[125px] mix-blend-screen opacity-[0.022] animate-atmo-haze"
+          className="absolute inset-0 blur-[125px] mix-blend-screen opacity-[0.030] animate-atmo-haze"
           style={{
             background:
-              "radial-gradient(ellipse at 50% 50%, rgba(65, 100, 185, 0.7) 0%, transparent 75%)",
+              "radial-gradient(ellipse 90% 50% at 50% 45%, rgba(65, 100, 185, 0.7) 0%, transparent 75%)",
           }}
         />
       )}
@@ -282,25 +286,40 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
         />
       )}
 
-      {/* 2. Autonomous Horizontally Moving Cloud Belts (Behind Earth / Content) */}
+      {/* 2. Autonomous Horizontally Moving Cloud Formations */}
+      {/* HERO: Full-width continuous atmospheric field spanning entire viewport + overscan */}
       {variant === "hero" && (
-        <div className="absolute right-[-6%] top-[-8%] w-[100vw] lg:w-[64vw] h-[115%] overflow-hidden pointer-events-none">
-          {/* Macro Belt: Translates Left -> Right (115s loop) */}
-          <div className="flex w-[200%] h-full animate-cloud-belt-macro">
-            <HeroCloudTileA idSuffix="a1" />
-            <HeroCloudTileA idSuffix="a2" />
+        <div
+          className="absolute inset-0 overflow-hidden pointer-events-none"
+          style={{
+            maskImage:
+              "linear-gradient(to right, rgba(0,0,0,0.32) 0%, rgba(0,0,0,0.48) 35%, rgba(0,0,0,0.80) 65%, rgba(0,0,0,0.95) 85%, rgba(0,0,0,0.85) 100%)",
+            WebkitMaskImage:
+              "linear-gradient(to right, rgba(0,0,0,0.32) 0%, rgba(0,0,0,0.48) 35%, rgba(0,0,0,0.80) 65%, rgba(0,0,0,0.95) 85%, rgba(0,0,0,0.85) 100%)",
+          }}
+        >
+          {/* Formation A (Macro Elongated Belt): Translates Left -> Right (115s loop) - mid sky */}
+          <div className="absolute top-[16%] inset-x-0 h-[52%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-macro">
+              <HeroCloudTileA idSuffix="a1" />
+              <HeroCloudTileA idSuffix="a2" />
+            </div>
           </div>
 
-          {/* Secondary Belt: Translates Right -> Left (82s loop) */}
-          <div className="absolute inset-0 flex w-[200%] h-full animate-cloud-belt-secondary">
-            <HeroCloudTileB idSuffix="b1" />
-            <HeroCloudTileB idSuffix="b2" />
+          {/* Formation B (Secondary Drift): Translates Right -> Left (82s loop) - upper sky */}
+          <div className="absolute top-[-2%] inset-x-0 h-[48%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-secondary">
+              <HeroCloudTileB idSuffix="b1" />
+              <HeroCloudTileB idSuffix="b2" />
+            </div>
           </div>
 
-          {/* Fine Cirrus: Translates Left -> Right (50s loop) */}
-          <div className="absolute inset-0 flex w-[200%] h-full animate-cloud-belt-cirrus">
-            <HeroCloudTileC idSuffix="c1" />
-            <HeroCloudTileC idSuffix="c2" />
+          {/* Formation C (Cirrus Ribbons): Translates Left -> Right (50s loop) - lower/mid sky */}
+          <div className="absolute top-[42%] inset-x-0 h-[44%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-cirrus">
+              <HeroCloudTileC idSuffix="c1" />
+              <HeroCloudTileC idSuffix="c2" />
+            </div>
           </div>
         </div>
       )}
@@ -315,7 +334,7 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
       )}
 
       {variant === "features" && (
-        <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.065]">
+        <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.068]">
           <div className="flex w-[200%] h-full animate-cloud-belt-features">
             <FeaturesCloudTile idSuffix="f1" />
             <FeaturesCloudTile idSuffix="f2" />
@@ -325,18 +344,18 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
 
       {/* Platform Section: Upper thin wisps + Middle depth + Lower entering formation */}
       {variant === "platform" && (
-        <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.06]">
-          {/* Upper thin wisps (45s loop) */}
-          <div className="absolute top-0 inset-x-0 h-[45%] overflow-hidden">
+        <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.085]">
+          {/* Upper thin wisps (45s loop LTR) */}
+          <div className="absolute top-[4%] inset-x-0 h-[46%] overflow-hidden">
             <div className="flex w-[200%] h-full animate-cloud-belt-platform-c">
               <PlatformCloudTileUpper idSuffix="p-up1" />
               <PlatformCloudTileUpper idSuffix="p-up2" />
             </div>
           </div>
 
-          {/* Lower entering cloud bank (95s loop) */}
-          <div className="absolute bottom-0 inset-x-0 h-[55%] overflow-hidden">
-            <div className="flex w-[200%] h-full animate-cloud-belt-platform-a">
+          {/* Lower entering cloud bank (70s loop RTL) */}
+          <div className="absolute bottom-[4%] inset-x-0 h-[52%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-platform-b">
               <PlatformCloudTileLower idSuffix="p-dn1" />
               <PlatformCloudTileLower idSuffix="p-dn2" />
             </div>
@@ -345,7 +364,7 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
       )}
 
       {variant === "customers" && (
-        <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.038]">
+        <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.045]">
           <div className="flex w-[200%] h-full animate-cloud-belt-customers">
             <CustomersCloudTile idSuffix="cu1" />
             <CustomersCloudTile idSuffix="cu2" />
@@ -385,37 +404,44 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
   );
 }
 
-// ─── Cloud SVG Tiles (Deterministic procedural clouds) ────────────────────────
+// ─── Cloud SVG Tiles (Deterministic elongated procedural atmospheric formations) ──
 
 function HeroCloudTileA({ idSuffix }: { idSuffix: string }) {
   const filterId = `hero-cloud-a-${idSuffix}`;
   const maskId = `hero-mask-a-${idSuffix}`;
   return (
-    <div className="w-1/2 h-full shrink-0 relative opacity-[0.10] mix-blend-screen">
-      <svg className="w-full h-full" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+    <div className="w-1/2 h-full shrink-0 relative opacity-[0.11] mix-blend-screen">
+      <svg className="w-full h-full" viewBox="0 0 1600 400" preserveAspectRatio="none">
         <defs>
           <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.0038 0.0022" numOctaves="4" result="noise" seed="42" />
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0018 0.008"
+              numOctaves="4"
+              result="noise"
+              seed="42"
+              stitchTiles="stitch"
+            />
             <feColorMatrix
               type="matrix"
               values="
                 0 0 0 0 0.22
                 0 0 0 0 0.32
                 0 0 0 0 0.54
-                2.6 0 0 0 -1.0"
+                2.4 0 0 0 -0.85"
             />
           </filter>
-          <radialGradient id={maskId} cx="65%" cy="42%" r="50%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="45%" stopColor="#ffffff" stopOpacity="0.75" />
-            <stop offset="75%" stopColor="#ffffff" stopOpacity="0.2" />
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="22%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="78%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
+          </linearGradient>
           <mask id={`m-${maskId}`}>
-            <rect width="1000" height="1000" fill={`url(#${maskId})`} />
+            <rect width="1600" height="400" fill={`url(#${maskId})`} />
           </mask>
         </defs>
-        <rect width="1000" height="1000" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+        <rect width="1600" height="400" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );
@@ -425,31 +451,38 @@ function HeroCloudTileB({ idSuffix }: { idSuffix: string }) {
   const filterId = `hero-cloud-b-${idSuffix}`;
   const maskId = `hero-mask-b-${idSuffix}`;
   return (
-    <div className="w-1/2 h-full shrink-0 relative opacity-[0.07] mix-blend-screen">
-      <svg className="w-full h-full" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+    <div className="w-1/2 h-full shrink-0 relative opacity-[0.085] mix-blend-screen">
+      <svg className="w-full h-full" viewBox="0 0 1600 360" preserveAspectRatio="none">
         <defs>
           <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.0055 0.0028" numOctaves="4" result="noise" seed="91" />
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0024 0.009"
+              numOctaves="4"
+              result="noise"
+              seed="91"
+              stitchTiles="stitch"
+            />
             <feColorMatrix
               type="matrix"
               values="
                 0 0 0 0 0.24
                 0 0 0 0 0.34
                 0 0 0 0 0.58
-                2.3 0 0 0 -0.9"
+                2.2 0 0 0 -0.85"
             />
           </filter>
-          <radialGradient id={maskId} cx="60%" cy="45%" r="48%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="46%" stopColor="#ffffff" stopOpacity="0.7" />
-            <stop offset="78%" stopColor="#ffffff" stopOpacity="0.15" />
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="25%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="75%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
+          </linearGradient>
           <mask id={`m-${maskId}`}>
-            <rect width="1000" height="1000" fill={`url(#${maskId})`} />
+            <rect width="1600" height="360" fill={`url(#${maskId})`} />
           </mask>
         </defs>
-        <rect width="1000" height="1000" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+        <rect width="1600" height="360" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );
@@ -459,11 +492,18 @@ function HeroCloudTileC({ idSuffix }: { idSuffix: string }) {
   const filterId = `hero-cloud-c-${idSuffix}`;
   const maskId = `hero-mask-c-${idSuffix}`;
   return (
-    <div className="w-1/2 h-full shrink-0 relative opacity-[0.05] mix-blend-screen">
-      <svg className="w-full h-full" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+    <div className="w-1/2 h-full shrink-0 relative opacity-[0.065] mix-blend-screen">
+      <svg className="w-full h-full" viewBox="0 0 1600 320" preserveAspectRatio="none">
         <defs>
           <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.008 0.0035" numOctaves="3" result="noise" seed="77" />
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0032 0.012"
+              numOctaves="3"
+              result="noise"
+              seed="77"
+              stitchTiles="stitch"
+            />
             <feColorMatrix
               type="matrix"
               values="
@@ -473,17 +513,17 @@ function HeroCloudTileC({ idSuffix }: { idSuffix: string }) {
                 2.0 0 0 0 -0.8"
             />
           </filter>
-          <radialGradient id={maskId} cx="56%" cy="50%" r="45%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="50%" stopColor="#ffffff" stopOpacity="0.6" />
-            <stop offset="82%" stopColor="#ffffff" stopOpacity="0.1" />
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="30%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="70%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
+          </linearGradient>
           <mask id={`m-${maskId}`}>
-            <rect width="1000" height="1000" fill={`url(#${maskId})`} />
+            <rect width="1600" height="320" fill={`url(#${maskId})`} />
           </mask>
         </defs>
-        <rect width="1000" height="1000" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+        <rect width="1600" height="320" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );
@@ -494,29 +534,37 @@ function SolutionsCloudTile({ idSuffix }: { idSuffix: string }) {
   const maskId = `sol-mask-${idSuffix}`;
   return (
     <div className="w-1/2 h-full shrink-0 relative mix-blend-screen">
-      <svg className="w-full h-full" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+      <svg className="w-full h-full" viewBox="0 0 1600 400" preserveAspectRatio="none">
         <defs>
           <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.0048 0.0024" numOctaves="3" result="noise" seed="12" />
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0022 0.0085"
+              numOctaves="3"
+              result="noise"
+              seed="12"
+              stitchTiles="stitch"
+            />
             <feColorMatrix
               type="matrix"
               values="
                 0 0 0 0 0.20
                 0 0 0 0 0.30
                 0 0 0 0 0.50
-                2.2 0 0 0 -0.9"
+                2.1 0 0 0 -0.85"
             />
           </filter>
-          <radialGradient id={maskId} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="50%" stopColor="#ffffff" stopOpacity="0.5" />
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="20%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="80%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
+          </linearGradient>
           <mask id={`m-${maskId}`}>
-            <rect width="1000" height="1000" fill={`url(#${maskId})`} />
+            <rect width="1600" height="400" fill={`url(#${maskId})`} />
           </mask>
         </defs>
-        <rect width="1000" height="1000" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+        <rect width="1600" height="400" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );
@@ -527,10 +575,17 @@ function FeaturesCloudTile({ idSuffix }: { idSuffix: string }) {
   const maskId = `feat-mask-${idSuffix}`;
   return (
     <div className="w-1/2 h-full shrink-0 relative mix-blend-screen">
-      <svg className="w-full h-full" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+      <svg className="w-full h-full" viewBox="0 0 1600 400" preserveAspectRatio="none">
         <defs>
           <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.006 0.002" numOctaves="3" result="noise" seed="64" />
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0020 0.0075"
+              numOctaves="3"
+              result="noise"
+              seed="64"
+              stitchTiles="stitch"
+            />
             <feColorMatrix
               type="matrix"
               values="
@@ -540,16 +595,17 @@ function FeaturesCloudTile({ idSuffix }: { idSuffix: string }) {
                 2.0 0 0 0 -0.85"
             />
           </filter>
-          <radialGradient id={maskId} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="60%" stopColor="#ffffff" stopOpacity="0.4" />
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="25%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="75%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
+          </linearGradient>
           <mask id={`m-${maskId}`}>
-            <rect width="1000" height="1000" fill={`url(#${maskId})`} />
+            <rect width="1600" height="400" fill={`url(#${maskId})`} />
           </mask>
         </defs>
-        <rect width="1000" height="1000" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+        <rect width="1600" height="400" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );
@@ -560,29 +616,37 @@ function PlatformCloudTileUpper({ idSuffix }: { idSuffix: string }) {
   const maskId = `plat-up-mask-${idSuffix}`;
   return (
     <div className="w-1/2 h-full shrink-0 relative mix-blend-screen">
-      <svg className="w-full h-full" viewBox="0 0 1000 600" preserveAspectRatio="none">
+      <svg className="w-full h-full" viewBox="0 0 1600 350" preserveAspectRatio="none">
         <defs>
           <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.0075 0.0028" numOctaves="3" result="noise" seed="53" />
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0026 0.010"
+              numOctaves="3"
+              result="noise"
+              seed="53"
+              stitchTiles="stitch"
+            />
             <feColorMatrix
               type="matrix"
               values="
                 0 0 0 0 0.22
                 0 0 0 0 0.32
                 0 0 0 0 0.52
-                1.9 0 0 0 -0.82"
+                2.0 0 0 0 -0.82"
             />
           </filter>
-          <radialGradient id={maskId} cx="50%" cy="40%" r="48%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="50%" stopColor="#ffffff" stopOpacity="0.5" />
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="22%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="78%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
+          </linearGradient>
           <mask id={`m-${maskId}`}>
-            <rect width="1000" height="600" fill={`url(#${maskId})`} />
+            <rect width="1600" height="350" fill={`url(#${maskId})`} />
           </mask>
         </defs>
-        <rect width="1000" height="600" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+        <rect width="1600" height="350" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );
@@ -593,29 +657,37 @@ function PlatformCloudTileLower({ idSuffix }: { idSuffix: string }) {
   const maskId = `plat-dn-mask-${idSuffix}`;
   return (
     <div className="w-1/2 h-full shrink-0 relative mix-blend-screen">
-      <svg className="w-full h-full" viewBox="0 0 1000 700" preserveAspectRatio="none">
+      <svg className="w-full h-full" viewBox="0 0 1600 420" preserveAspectRatio="none">
         <defs>
           <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.0045 0.0022" numOctaves="3" result="noise" seed="82" />
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0019 0.008"
+              numOctaves="3"
+              result="noise"
+              seed="82"
+              stitchTiles="stitch"
+            />
             <feColorMatrix
               type="matrix"
               values="
                 0 0 0 0 0.20
                 0 0 0 0 0.28
                 0 0 0 0 0.48
-                2.1 0 0 0 -0.88"
+                2.1 0 0 0 -0.85"
             />
           </filter>
-          <radialGradient id={maskId} cx="55%" cy="60%" r="50%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="55%" stopColor="#ffffff" stopOpacity="0.5" />
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="25%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="75%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
+          </linearGradient>
           <mask id={`m-${maskId}`}>
-            <rect width="1000" height="700" fill={`url(#${maskId})`} />
+            <rect width="1600" height="420" fill={`url(#${maskId})`} />
           </mask>
         </defs>
-        <rect width="1000" height="700" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+        <rect width="1600" height="420" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );
@@ -626,10 +698,17 @@ function CustomersCloudTile({ idSuffix }: { idSuffix: string }) {
   const maskId = `cust-mask-${idSuffix}`;
   return (
     <div className="w-1/2 h-full shrink-0 relative mix-blend-screen">
-      <svg className="w-full h-full" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+      <svg className="w-full h-full" viewBox="0 0 1600 350" preserveAspectRatio="none">
         <defs>
           <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.009 0.003" numOctaves="3" result="noise" seed="88" />
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0028 0.011"
+              numOctaves="3"
+              result="noise"
+              seed="88"
+              stitchTiles="stitch"
+            />
             <feColorMatrix
               type="matrix"
               values="
@@ -639,16 +718,17 @@ function CustomersCloudTile({ idSuffix }: { idSuffix: string }) {
                 1.8 0 0 0 -0.8"
             />
           </filter>
-          <radialGradient id={maskId} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="50%" stopColor="#ffffff" stopOpacity="0.4" />
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="30%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="70%" stopColor="#ffffff" stopOpacity="1" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
+          </linearGradient>
           <mask id={`m-${maskId}`}>
-            <rect width="1000" height="1000" fill={`url(#${maskId})`} />
+            <rect width="1600" height="350" fill={`url(#${maskId})`} />
           </mask>
         </defs>
-        <rect width="1000" height="1000" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+        <rect width="1600" height="350" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );

@@ -102,23 +102,19 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
 
   return (
     <nav
-      className={`sticky top-0 z-50 transition-all duration-300 overflow-hidden ${
-        disableBackdropBlur
-          ? scrolled
-            ? "border-b border-brand/20 shadow-[0_4px_30px_rgba(201,166,107,0.05)] bg-[#02040c]/85"
-            : "border-b border-transparent bg-transparent"
-          : scrolled
-            ? "border-b border-brand/20 bg-background/80 backdrop-blur-md shadow-[0_4px_30px_rgba(201,166,107,0.05)]"
-            : "border-b border-transparent bg-transparent backdrop-blur-none"
+      className={`sticky top-0 z-50 transition-all duration-300 ${
+        scrolled
+          ? "border-b border-brand/15 bg-[#010309]/80 backdrop-blur-md shadow-[0_4px_30px_rgba(0,0,0,0.6)]"
+          : "border-b border-transparent bg-transparent"
       }`}
     >
-      {disableBackdropBlur && scrolled && (
+      {scrolled && (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 opacity-90"
+          className="pointer-events-none absolute inset-0 opacity-80"
           style={{
             backgroundImage:
-              "linear-gradient(115deg, transparent 15%, color-mix(in oklab, var(--brand, #c9a66b) 16%, transparent) 48%, transparent 82%)",
+              "linear-gradient(115deg, transparent 15%, color-mix(in oklab, var(--brand, #c9a66b) 12%, transparent) 48%, transparent 82%)",
             backgroundSize: "220% 100%",
             backgroundPositionX: `${-sheenOffset}px`,
           }}

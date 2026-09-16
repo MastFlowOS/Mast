@@ -11,7 +11,7 @@ type Star = {
   delay: number;
 };
 
-export type SectionAtmosphereVariant = "hero" | "solutions" | "features" | "platform" | "customers" | "footer";
+export type SectionAtmosphereVariant = "hero" | "solutions" | "features" | "platform" | "customers" | "cta" | "footer";
 
 // ─── Global Night World Foundation (Continuous backdrop beneath all sections) ──
 // Prevents any atmospheric vacuums: ensures every section has faint global night tone,
@@ -67,16 +67,16 @@ export function GlobalAtmosphereFoundation() {
         }}
       />
 
-      {/* 2. Global faint atmospheric depth veils (never a dead black void) */}
+      {/* 2. Global faint atmospheric depth veils (percentage widths avoid scrollbar vw mismatch) */}
       <div
-        className="absolute right-[5%] top-[12%] w-[75vw] h-[65vh] blur-[150px] mix-blend-screen opacity-[0.024] animate-atmo-haze"
+        className="absolute right-[5%] top-[12%] w-[75%] max-w-[960px] h-[65vh] blur-[150px] mix-blend-screen opacity-[0.024] animate-atmo-haze"
         style={{
           background:
             "radial-gradient(ellipse at 50% 50%, rgba(70, 110, 200, 0.75) 0%, transparent 75%)",
         }}
       />
       <div
-        className="absolute left-[8%] top-[55%] w-[80vw] h-[55vh] blur-[140px] mix-blend-screen opacity-[0.018]"
+        className="absolute left-[8%] top-[55%] w-[80%] max-w-[1000px] h-[55vh] blur-[140px] mix-blend-screen opacity-[0.018]"
         style={{
           background:
             "radial-gradient(ellipse at 50% 50%, rgba(55, 90, 175, 0.65) 0%, transparent 75%)",
@@ -141,8 +141,12 @@ function generateStars(variant: SectionAtmosphereVariant): Star[] {
       count = 18;
       seed = 479;
       break;
+    case "cta":
+      count = 20;
+      seed = 541;
+      break;
     case "footer":
-      count = 14;
+      count = 18;
       seed = 601;
       break;
   }
@@ -201,26 +205,26 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
     setStars(generateStars(variant));
   }, [variant]);
 
-  // Soft vertical feathering on section atmospheres prevents rectangular boundary cutoffs
+  // Soft vertical feathering with spatial overlap prevents rectangular boundary cutoffs
   const maskStyle: React.CSSProperties =
     variant === "hero"
       ? {
-          WebkitMaskImage: "linear-gradient(to bottom, black 0%, black 85%, transparent 100%)",
-          maskImage: "linear-gradient(to bottom, black 0%, black 85%, transparent 100%)",
+          WebkitMaskImage: "linear-gradient(to bottom, black 0%, black 82%, transparent 100%)",
+          maskImage: "linear-gradient(to bottom, black 0%, black 82%, transparent 100%)",
         }
       : variant === "footer"
       ? {
-          WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 15%, black 100%)",
-          maskImage: "linear-gradient(to bottom, transparent 0%, black 15%, black 100%)",
+          WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 18%, black 100%)",
+          maskImage: "linear-gradient(to bottom, transparent 0%, black 18%, black 100%)",
         }
       : {
-          WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)",
-          maskImage: "linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)",
+          WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 16%, black 84%, transparent 100%)",
+          maskImage: "linear-gradient(to bottom, transparent 0%, black 16%, black 84%, transparent 100%)",
         };
 
   return (
     <div
-      className="absolute inset-0 pointer-events-none overflow-hidden select-none z-0"
+      className="absolute -inset-y-24 inset-x-0 pointer-events-none overflow-hidden select-none z-0"
       style={maskStyle}
       aria-hidden="true"
     >
@@ -237,7 +241,7 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
           />
           {/* Soft planetary back-glow framing the Earth on the right */}
           <div
-            className="absolute right-[4%] top-[10%] w-[52vw] h-[52vw] max-w-[680px] max-h-[680px] rounded-full blur-[120px] mix-blend-screen opacity-[0.032] pointer-events-none"
+            className="absolute right-[4%] top-[10%] w-[52%] max-w-[680px] aspect-square rounded-full blur-[120px] mix-blend-screen opacity-[0.032] pointer-events-none"
             style={{
               background:
                 "radial-gradient(circle at 50% 50%, rgba(85, 130, 225, 0.8) 0%, rgba(40, 70, 160, 0.25) 55%, transparent 80%)",
@@ -248,7 +252,7 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
 
       {variant === "solutions" && (
         <div
-          className="absolute left-[10%] top-[20%] w-[65vw] h-[40vh] blur-[120px] mix-blend-screen opacity-[0.024]"
+          className="absolute left-[10%] top-[20%] w-[65%] max-w-[800px] h-[40vh] blur-[120px] mix-blend-screen opacity-[0.024]"
           style={{
             background:
               "radial-gradient(ellipse at 50% 50%, rgba(85, 125, 205, 0.7) 0%, transparent 75%)",
@@ -258,7 +262,7 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
 
       {variant === "features" && (
         <div
-          className="absolute right-[15%] top-[25%] w-[60vw] h-[40vh] blur-[115px] mix-blend-screen opacity-[0.022]"
+          className="absolute right-[15%] top-[25%] w-[60%] max-w-[760px] h-[40vh] blur-[115px] mix-blend-screen opacity-[0.022]"
           style={{
             background:
               "radial-gradient(ellipse at 50% 50%, rgba(70, 105, 190, 0.65) 0%, transparent 75%)",
@@ -278,10 +282,30 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
 
       {variant === "customers" && (
         <div
-          className="absolute right-[12%] top-[25%] w-[55vw] h-[35vh] blur-[110px] mix-blend-screen opacity-[0.016]"
+          className="absolute right-[12%] top-[25%] w-[55%] max-w-[700px] h-[35vh] blur-[110px] mix-blend-screen opacity-[0.016]"
           style={{
             background:
               "radial-gradient(ellipse at 50% 50%, rgba(60, 95, 180, 0.6) 0%, transparent 75%)",
+          }}
+        />
+      )}
+
+      {variant === "cta" && (
+        <div
+          className="absolute inset-0 blur-[125px] mix-blend-screen opacity-[0.024] pointer-events-none"
+          style={{
+            background:
+              "radial-gradient(ellipse 85% 55% at 50% 50%, rgba(65, 100, 185, 0.7) 0%, transparent 75%)",
+          }}
+        />
+      )}
+
+      {variant === "footer" && (
+        <div
+          className="absolute inset-0 blur-[130px] mix-blend-screen opacity-[0.020] pointer-events-none"
+          style={{
+            background:
+              "radial-gradient(ellipse 85% 60% at 50% 40%, rgba(60, 95, 175, 0.65) 0%, transparent 75%)",
           }}
         />
       )}
@@ -368,6 +392,38 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
           <div className="flex w-[200%] h-full animate-cloud-belt-customers">
             <CustomersCloudTile idSuffix="cu1" />
             <CustomersCloudTile idSuffix="cu2" />
+          </div>
+        </div>
+      )}
+
+      {/* CTA Section: Quiet, late-night atmospheric presence with subtle horizontal motion */}
+      {variant === "cta" && (
+        <div
+          className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.055]"
+          style={{
+            maskImage:
+              "radial-gradient(ellipse 70% 55% at 50% 50%, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.85) 70%, rgba(0,0,0,0.95) 100%)",
+            WebkitMaskImage:
+              "radial-gradient(ellipse 70% 55% at 50% 50%, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.85) 70%, rgba(0,0,0,0.95) 100%)",
+          }}
+        >
+          <div className="absolute top-[10%] inset-x-0 h-[80%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-cta">
+              <CTACloudTile idSuffix="cta1" />
+              <CTACloudTile idSuffix="cta2" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Footer: Quietest late-night sky with sparse subtle wisps */}
+      {variant === "footer" && (
+        <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.028]">
+          <div className="absolute top-[15%] inset-x-0 h-[70%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-footer">
+              <FooterCloudTile idSuffix="ft1" />
+              <FooterCloudTile idSuffix="ft2" />
+            </div>
           </div>
         </div>
       )}
@@ -729,6 +785,88 @@ function CustomersCloudTile({ idSuffix }: { idSuffix: string }) {
           </mask>
         </defs>
         <rect width="1600" height="350" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+      </svg>
+    </div>
+  );
+}
+
+function CTACloudTile({ idSuffix }: { idSuffix: string }) {
+  const filterId = `cta-cloud-${idSuffix}`;
+  const maskId = `cta-mask-${idSuffix}`;
+  return (
+    <div className="w-1/2 h-full shrink-0 relative mix-blend-screen">
+      <svg className="w-full h-full" viewBox="0 0 1600 380" preserveAspectRatio="none">
+        <defs>
+          <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0022 0.0085"
+              numOctaves="3"
+              result="noise"
+              seed="37"
+              stitchTiles="stitch"
+            />
+            <feColorMatrix
+              type="matrix"
+              values="
+                0 0 0 0 0.20
+                0 0 0 0 0.30
+                0 0 0 0 0.50
+                2.1 0 0 0 -0.85"
+            />
+          </filter>
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="25%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="75%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </linearGradient>
+          <mask id={`m-${maskId}`}>
+            <rect width="1600" height="380" fill={`url(#${maskId})`} />
+          </mask>
+        </defs>
+        <rect width="1600" height="380" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+      </svg>
+    </div>
+  );
+}
+
+function FooterCloudTile({ idSuffix }: { idSuffix: string }) {
+  const filterId = `foot-cloud-${idSuffix}`;
+  const maskId = `foot-mask-${idSuffix}`;
+  return (
+    <div className="w-1/2 h-full shrink-0 relative mix-blend-screen">
+      <svg className="w-full h-full" viewBox="0 0 1600 320" preserveAspectRatio="none">
+        <defs>
+          <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0028 0.010"
+              numOctaves="3"
+              result="noise"
+              seed="95"
+              stitchTiles="stitch"
+            />
+            <feColorMatrix
+              type="matrix"
+              values="
+                0 0 0 0 0.18
+                0 0 0 0 0.26
+                0 0 0 0 0.44
+                1.9 0 0 0 -0.85"
+            />
+          </filter>
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="30%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="70%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </linearGradient>
+          <mask id={`m-${maskId}`}>
+            <rect width="1600" height="320" fill={`url(#${maskId})`} />
+          </mask>
+        </defs>
+        <rect width="1600" height="320" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );

@@ -142,7 +142,9 @@
 @layer base {
   * {
     border-color: var(--color-border);
-    /* Prevent layout shift from scrollbar appearing */
+  }
+
+  html {
     scrollbar-gutter: stable;
   }
 
@@ -162,6 +164,8 @@
   }
 
   html, body {
+    overflow-x: clip;
+    width: 100%;
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-family: var(--font-sans);
@@ -864,6 +868,14 @@
   animation: cloud-wrap-ltr 45s linear infinite;
 }
 
+.animate-cloud-belt-cta {
+  animation: cloud-wrap-ltr 110s linear infinite;
+}
+
+.animate-cloud-belt-footer {
+  animation: cloud-wrap-ltr 85s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-atmo-cloud-macro,
   .animate-atmo-cloud-secondary,
@@ -877,6 +889,8 @@
   .animate-cloud-belt-platform-a,
   .animate-cloud-belt-platform-b,
   .animate-cloud-belt-platform-c,
+  .animate-cloud-belt-cta,
+  .animate-cloud-belt-footer,
   .animate-atmo-haze,
   .animate-star-breathe,
   .animate-star-twinkle,

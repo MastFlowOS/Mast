@@ -33,9 +33,9 @@ function LandingPage() {
       {/* Global night world foundation: continuous deep space across all sections */}
       <GlobalAtmosphereFoundation />
       {/* SiteNav must be OUTSIDE any overflow-hidden ancestor — that breaks sticky */}
-      <SiteNav disableBackdropBlur />
+      <SiteNav />
       {/* Page content wrapper sits above deep space */}
-      <div className="mast-landing relative z-10 min-h-screen text-foreground">
+      <div className="mast-landing relative z-10 min-h-screen text-foreground overflow-x-clip w-full">
         <Hero />
         <Workflow />
         <ProductShowcase />
@@ -78,7 +78,7 @@ const heroStats = [
 
 function Hero() {
   return (
-    <header className="relative pt-20 pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-hidden">
+    <header className="relative -mt-16 pt-28 pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-x-clip">
       {/* Autonomous section-specific atmosphere: moving clouds behind Earth, stars, subtle haze */}
       <SectionAtmosphere variant="hero" />
       <div className="relative z-10 max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
@@ -623,7 +623,7 @@ function ProductShowcase() {
   const Panel = showcasePanels[tab.id];
 
   return (
-    <section className="relative px-6 pb-16 md:pb-20 overflow-hidden">
+    <section className="relative px-6 pb-16 md:pb-20 overflow-x-clip">
       <SectionAtmosphere variant="solutions" />
       <div className="relative z-10 max-w-5xl mx-auto">
         {/* Tab pills */}
@@ -739,7 +739,7 @@ function Problem() {
   ];
 
   return (
-    <section id="solutions" className="relative py-16 px-6 overflow-hidden">
+    <section id="solutions" className="relative py-16 px-6 overflow-x-clip">
       <SectionAtmosphere variant="features" />
       <div className="relative z-10 max-w-5xl mx-auto grid md:grid-cols-2 gap-12 items-center">
         <div className="animate-fade-up">
@@ -863,7 +863,7 @@ const features = [
 
 function Features() {
   return (
-    <section className="relative py-16 px-6 border-t border-border/50 overflow-hidden">
+    <section className="relative py-16 px-6 border-t border-border/50 overflow-x-clip">
       <SectionAtmosphere variant="platform" />
       <div className="relative z-10 max-w-5xl mx-auto">
         <div className="text-center mb-12 max-w-2xl mx-auto animate-fade-up">
@@ -1039,7 +1039,7 @@ export function PlanCard({ name, price, forWho, outcome, features, cta, popular 
 
 function PricingPreview() {
   return (
-    <section className="relative py-16 px-6 border-t border-border/50 overflow-hidden">
+    <section id="testimonials" className="relative py-16 px-6 border-t border-border/50 overflow-x-clip">
       <SectionAtmosphere variant="customers" />
       <div className="relative z-10 max-w-5xl mx-auto">
         <div className="text-center mb-10 animate-fade-up">
@@ -1075,8 +1075,10 @@ function PricingPreview() {
 // ─── CTA ──────────────────────────────────────────────────────────────────────
 function CTA() {
   return (
-    <section className="relative py-16 px-6">
-      <div className="max-w-4xl mx-auto relative rounded-2xl overflow-hidden border border-border/60 p-10 text-center gradient-border">
+    <section className="relative py-20 px-6 overflow-x-clip">
+      {/* Quiet late-night atmosphere: moving clouds and sparse stars framing the CTA */}
+      <SectionAtmosphere variant="cta" />
+      <div className="max-w-4xl mx-auto relative rounded-2xl overflow-hidden border border-border/60 p-10 text-center gradient-border z-10">
         <div className="absolute inset-0 bg-card" />
         <div
           className="pointer-events-none absolute inset-0 opacity-40"

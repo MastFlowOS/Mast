@@ -64,8 +64,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
     const resize = () => {
       const rect = container.getBoundingClientRect();
-      width = rect.width;
-      height = rect.height;
+      width = rect.width || container.clientWidth || 360;
+      height = rect.height || container.clientHeight || 360;
       dpr = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
@@ -119,9 +119,40 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       return y0 * Math.cos(TILT) - z0 * Math.sin(TILT);
     };
 
-    const draw = (dt: number) => {
+    const drawFallback = () => {
+      if (width === 0 || height === 0) return;
+      ctx.clearRect(0, 0, width, height);
+      const cx = width / 2;
+      const cy = height / 2;
+      const r = Math.min(width, height) * SPHERE_FRACTION;
+      
+      const atmoGlow = ctx.createRadialGradient(cx, cy, r * 0.94, cx, cy, r * 1.055);
+      atmoGlow.addColorStop(0, "rgba(56, 96, 192, 0.16)");
+      atmoGlow.addColorStop(0.35, "rgba(42, 78, 168, 0.09)");
+      atmoGlow.addColorStop(1, "rgba(15, 23, 42, 0)");
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 1.055, 0, Math.PI * 2);
+      ctx.fillStyle = atmoGlow;
+      ctx.fill();
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.clip();
+      const oceanBg = ctx.createRadialGradient(cx - r * 0.25, cy - r * 0.28, r * 0.12, cx, cy, r * 1.01);
+      oceanBg.addColorStop(0, "rgba(8, 22, 54, 0.98)");
+      oceanBg.addColorStop(0.42, "rgba(6, 16, 42, 0.98)");
+      oceanBg.addColorStop(0.82, "rgba(4, 11, 28, 0.99)");
+      oceanBg.addColorStop(1, "rgba(3, 8, 22, 1)");
+      ctx.fillStyle = oceanBg;
+      ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+      ctx.restore();
+    };
+
+    const draw = (dt: number, timeMs?: number) => {
       ctx.clearRect(0, 0, width, height);
       if (width === 0 || height === 0) return;
+      const currentNow = timeMs ?? performance.now();
 
       if (!reduceMotion) {
         phaseElapsed += dt;
@@ -196,7 +227,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
       // 1. Outer atmospheric limb scattering (Rayleigh haze hugging the outer edge)
       // Very slow environmental ambient breath over time (20s cycle) so the planet feels alive
-      const envLimbBreath = 1 + Math.sin(now * 0.00032) * 0.04;
+      const envLimbBreath = 1 + Math.sin(currentNow * 0.00032) * 0.04;
       const atmoGlow = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.94, cx, effectiveCY, effectiveR * 1.055);
       atmoGlow.addColorStop(0, `rgba(56, 96, 192, ${0.16 * envLimbBreath})`);
       atmoGlow.addColorStop(0.35, `rgba(42, 78, 168, ${0.09 * envLimbBreath})`);
@@ -372,13 +403,25 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     const loop = (now: number) => {
       const dt = Math.min(now - last, 48);
       last = now;
-      if (running && visible) draw(dt);
+      if (running && visible) {
+        try {
+          draw(dt, now);
+        } catch (err) {
+          console.error("SignatureGlobe error:", err);
+          drawFallback();
+        }
+      }
       rafId = requestAnimationFrame(loop);
     };
 
-    if (reduceMotion) {
-      draw(0);
-    } else {
+    // Immediate initial frame so Earth is visible on first render
+    try {
+      draw(0, performance.now());
+    } catch {
+      drawFallback();
+    }
+
+    if (!reduceMotion) {
       rafId = requestAnimationFrame(loop);
     }
 

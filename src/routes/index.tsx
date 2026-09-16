@@ -4,7 +4,7 @@ import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { SignatureGlobe } from "@/components/mast/landing/SignatureGlobe";
-import { LandingAtmosphere } from "@/components/mast/landing/LandingAtmosphere";
+import { SectionAtmosphere } from "@/components/mast/landing/SectionAtmosphere";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -30,11 +30,18 @@ export const Route = createFileRoute("/")({
 function LandingPage() {
   return (
     <>
-      {/* Fixed backdrop: stars, nebulae, deep sky — always covers full viewport */}
-      <LandingAtmosphere />
+      {/* Deep space base gradient: seamless night across full viewport */}
+      <div
+        className="fixed inset-0 pointer-events-none -z-10 select-none"
+        aria-hidden="true"
+        style={{
+          background:
+            "linear-gradient(180deg, #020512 0%, #01030c 38%, #010208 70%, #000104 100%)",
+        }}
+      />
       {/* SiteNav must be OUTSIDE any overflow-hidden ancestor — that breaks sticky */}
       <SiteNav disableBackdropBlur />
-      {/* Page content wrapper sits above atmosphere */}
+      {/* Page content wrapper sits above deep space */}
       <div className="mast-landing relative z-10 min-h-screen text-foreground">
         <Hero />
         <Workflow />
@@ -78,8 +85,10 @@ const heroStats = [
 
 function Hero() {
   return (
-    <header className="relative pt-20 pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-visible">
-      <div className="relative max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
+    <header className="relative pt-20 pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-hidden">
+      {/* Autonomous section-specific atmosphere: moving clouds behind Earth, stars, subtle haze */}
+      <SectionAtmosphere variant="hero" />
+      <div className="relative z-10 max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">
           {/* Heading */}
@@ -136,8 +145,8 @@ function Hero() {
           </div>
         </div>
 
-        {/* Globe column — overflow-visible so zoom animations never clip */}
-        <div className="relative h-[280px] sm:h-[340px] md:h-[420px] lg:h-[480px] animate-scale-in delay-150 lg:-mr-4 xl:-mr-6 overflow-visible">
+        {/* Globe column — overflow-visible so zoom animations never clip, z-20 above background atmosphere */}
+        <div className="relative h-[280px] sm:h-[340px] md:h-[420px] lg:h-[480px] lg:-mr-4 xl:-mr-6 overflow-visible z-20">
           <SignatureGlobe className="w-full h-full overflow-visible" />
         </div>
       </div>
@@ -621,8 +630,9 @@ function ProductShowcase() {
   const Panel = showcasePanels[tab.id];
 
   return (
-    <section className="relative px-6 pb-16 md:pb-20">
-      <div className="max-w-5xl mx-auto">
+    <section className="relative px-6 pb-16 md:pb-20 overflow-hidden">
+      <SectionAtmosphere variant="solutions" />
+      <div className="relative z-10 max-w-5xl mx-auto">
         {/* Tab pills */}
         <div className="flex flex-wrap items-center justify-center gap-1.5 mb-8 animate-fade-up">
           {showcaseTabs.map((t) => (
@@ -736,8 +746,9 @@ function Problem() {
   ];
 
   return (
-    <section id="solutions" className="relative py-16 px-6">
-      <div className="max-w-5xl mx-auto grid md:grid-cols-2 gap-12 items-center">
+    <section id="solutions" className="relative py-16 px-6 overflow-hidden">
+      <SectionAtmosphere variant="features" />
+      <div className="relative z-10 max-w-5xl mx-auto grid md:grid-cols-2 gap-12 items-center">
         <div className="animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Why MAST</span>
           <h2 className="mt-3 text-[clamp(1.5rem,3.2vw,2.1rem)] font-bold tracking-tight leading-tight">
@@ -1034,8 +1045,9 @@ export function PlanCard({ name, price, forWho, outcome, features, cta, popular 
 
 function PricingPreview() {
   return (
-    <section className="relative py-16 px-6 border-t border-border/50">
-      <div className="max-w-5xl mx-auto">
+    <section className="relative py-16 px-6 border-t border-border/50 overflow-hidden">
+      <SectionAtmosphere variant="customers" />
+      <div className="relative z-10 max-w-5xl mx-auto">
         <div className="text-center mb-10 animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Pricing</span>
           <h2 className="mt-3 text-[clamp(1.5rem,3.2vw,2.1rem)] font-bold text-foreground">

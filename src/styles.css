@@ -817,10 +817,51 @@
   animation: star-drift-b 85s ease-in-out infinite var(--star-delay, 0s);
 }
 
+/* Continuous autonomous horizontal cloud wrapping (mathematically seamless) */
+@keyframes cloud-wrap-ltr {
+  0% { transform: translate3d(-50%, 0, 0); }
+  100% { transform: translate3d(0%, 0, 0); }
+}
+
+@keyframes cloud-wrap-rtl {
+  0% { transform: translate3d(0%, 0, 0); }
+  100% { transform: translate3d(-50%, 0, 0); }
+}
+
+.animate-cloud-belt-macro {
+  animation: cloud-wrap-ltr 115s linear infinite;
+}
+
+.animate-cloud-belt-secondary {
+  animation: cloud-wrap-rtl 82s linear infinite;
+}
+
+.animate-cloud-belt-cirrus {
+  animation: cloud-wrap-ltr 50s linear infinite;
+}
+
+.animate-cloud-belt-solutions {
+  animation: cloud-wrap-rtl 90s linear infinite;
+}
+
+.animate-cloud-belt-features {
+  animation: cloud-wrap-ltr 100s linear infinite;
+}
+
+.animate-cloud-belt-customers {
+  animation: cloud-wrap-ltr 68s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-atmo-cloud-macro,
   .animate-atmo-cloud-secondary,
   .animate-atmo-cloud-cirrus,
+  .animate-cloud-belt-macro,
+  .animate-cloud-belt-secondary,
+  .animate-cloud-belt-cirrus,
+  .animate-cloud-belt-solutions,
+  .animate-cloud-belt-features,
+  .animate-cloud-belt-customers,
   .animate-atmo-haze,
   .animate-star-breathe,
   .animate-star-twinkle,

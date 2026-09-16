@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { BrandMark } from "./BrandMark";
 import { Mail, Twitter, Github } from "lucide-react";
+import { SectionAtmosphere } from "./landing/SectionAtmosphere";
 
 // ─── Social link constants ────────────────────────────────────────────────────
 // Set these to real URLs or leave as empty string ("") to hide the icon.
@@ -19,8 +20,9 @@ const socialButtons = [
 export function SiteFooter() {
   return (
     <footer className="border-t border-border/40 pt-10 pb-6 px-6 mt-4 relative overflow-hidden">
+      <SectionAtmosphere variant="footer" />
 
-      <div className="max-w-7xl mx-auto relative">
+      <div className="max-w-7xl mx-auto relative z-10">
         <div className="grid md:grid-cols-5 gap-6 mb-8">
           {/* Brand col */}
           <div className="md:col-span-2">

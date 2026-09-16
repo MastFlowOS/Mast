@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { WORLD_DOTS } from "./worldDots";
-import { FOCUS_COUNTRIES, DOT_COUNTRY_IDS, DOT_OPPORTUNITY_DENSITIES } from "./focusCountries";
+import { FOCUS_COUNTRIES, DOT_COUNTRY_IDS } from "./focusCountries";
 
 // Fixed Earth axial tilt: 23.44 degrees in radians
 const TILT = 0.409;
@@ -146,6 +146,9 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           const targetLambda = (target.lon * Math.PI) / 180;
           const delta = (((targetLambda - rotationAtSettleStart) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
           targetRotation = rotationAtSettleStart + delta;
+          const opps = target.opportunityPoints;
+          const lastDotDelay = opps && opps.length > 0 ? opps[opps.length - 1].delayMs : 2000;
+          focusDuration = lastDotDelay + 3800;
         } else if (phase === "settle" && phaseElapsed >= settleDuration) {
           phase = "focus";
           phaseElapsed = 0;
@@ -156,9 +159,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         } else if (phase === "release" && phaseElapsed >= releaseDuration) {
           phase = "rotate";
           phaseElapsed = 0;
-          // Randomize subsequent cycle lengths subtly
-          rotateDuration = 5200 + Math.random() * 1400;
-          focusDuration = 4000 + Math.random() * 800;
+          // Randomize subsequent free-spin duration subtly (10–14s)
+          rotateDuration = 10000 + Math.random() * 4000;
         }
 
         // Rotation updates
@@ -178,28 +180,24 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       const currentTarget = targetIdx >= 0 ? FOCUS_COUNTRIES[targetIdx] : null;
       const targetZoom = currentTarget ? currentTarget.zoom : 1.08;
 
-      // Smooth zoom and layered MAST gold illumination interpolation
+      // Country base light and smooth zoom interpolation
       let zoom = 1.0;
-      let goldProgress = 0;
+      let countryBaseGold = 0;
 
       if (phase === "settle") {
         const p = Math.min(1, phaseElapsed / settleDuration);
         const ep = easeInOutCubic(p);
         zoom = 1.0 + (targetZoom - 1.0) * ep;
-        // Phasing requirement: settle transitions 0% -> 70% gold
-        goldProgress = ep * 0.70;
+        // Country base light gently shifts from cool blue -> soft light gold (0% -> 70%)
+        countryBaseGold = ep * 0.70;
       } else if (phase === "focus") {
         zoom = targetZoom;
-        const p = Math.min(1, phaseElapsed / focusDuration);
-        // Phasing requirement: focus transitions 70% -> 100% peak gold
-        const ramp = Math.min(1, p / 0.35);
-        goldProgress = 0.70 + 0.30 * easeInOutCubic(ramp);
+        countryBaseGold = 0.70 + 0.30 * Math.min(1, phaseElapsed / 800);
       } else if (phase === "release") {
         const p = Math.min(1, phaseElapsed / releaseDuration);
         const ep = easeInOutCubic(p);
         zoom = 1.0 + (targetZoom - 1.0) * (1 - ep);
-        // Phasing requirement: release transitions 100% -> 0% back to nocturnal cool palette
-        goldProgress = Math.max(0, 1.0 - ep);
+        countryBaseGold = Math.max(0, 0.70 * (1 - ep));
       }
 
       const targetUY = currentTarget ? unitY(currentTarget.lat, currentTarget.lon, rotation) : 0;
@@ -257,8 +255,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       const cosTilt = Math.cos(TILT);
       const sinTilt = Math.sin(TILT);
 
-      // Layer 3: Subtle national ambient gold radiance (cradling the country landmass)
-      if (goldProgress > 0.01 && currentTarget) {
+      // Subtle atmospheric search aura cradling the country landmass
+      if (countryBaseGold > 0.01 && currentTarget) {
         const tPhi = (currentTarget.lat * Math.PI) / 180;
         const tLambda = (currentTarget.lon * Math.PI) / 180;
         const tTheta = tLambda - rotation;
@@ -271,10 +269,10 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         if (tz > 0.1) {
           const tsx = cx + tx * effectiveR;
           const tsy = effectiveCY - ty * effectiveR;
-          const countryRad = effectiveR * 0.38;
+          const countryRad = effectiveR * 0.35;
           const countryBloom = ctx.createRadialGradient(tsx, tsy, 0, tsx, tsy, countryRad);
-          countryBloom.addColorStop(0, `rgba(201, 166, 107, ${0.08 * goldProgress * Math.min(1, tz * 1.2)})`);
-          countryBloom.addColorStop(0.55, `rgba(181, 141, 69, ${0.03 * goldProgress * Math.min(1, tz * 1.2)})`);
+          countryBloom.addColorStop(0, `rgba(201, 166, 107, ${0.06 * countryBaseGold * Math.min(1, tz * 1.2)})`);
+          countryBloom.addColorStop(0.6, `rgba(181, 141, 69, ${0.02 * countryBaseGold * Math.min(1, tz * 1.2)})`);
           countryBloom.addColorStop(1, "rgba(181, 141, 69, 0)");
           ctx.fillStyle = countryBloom;
           ctx.beginPath();
@@ -283,7 +281,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         }
       }
 
-      // 3. Continental land dots with natural 3D lighting + country discovery illumination
+      // 3. Continental land dots: fine, nocturnal Earth dots
+      // Country under search receives subtle light gold (#c9a66b) at restrained luminance
       const dots = WORLD_DOTS;
       const dotCount = dots.length;
 
@@ -331,59 +330,19 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
         // Check if dot belongs to the active focus country
         const isTargetCountry = currentTarget && targetIdx >= 0 && DOT_COUNTRY_IDS[i] === targetIdx;
-        const oppDensity = isTargetCountry ? DOT_OPPORTUNITY_DENSITIES[i] : 0;
 
-        if (isTargetCountry && goldProgress > 0.01) {
-          // Layer 1: Geographically accurate national landmass in MAST Brand Gold
-          // MAST Brand Gold #c9a66b (rgb: 201, 166, 107)
-          const goldR = Math.round(rVal + (201 - rVal) * goldProgress);
-          const goldG = Math.round(gVal + (166 - gVal) * goldProgress);
-          const goldB = Math.round(bVal + (107 - bVal) * goldProgress);
-          const goldLum = Math.min(1, luminosity * (1 + 0.44 * goldProgress));
-          const goldRadius = dotRadius * (1 + 0.15 * goldProgress);
+        if (isTargetCountry && countryBaseGold > 0.01) {
+          // Subtle light gold #c9a66b (rgb: 201, 166, 107) at restrained luminance
+          // Keeps existing fine Earth dots — NOT a solid gold map or dense field
+          const goldR = Math.round(rVal + (201 - rVal) * countryBaseGold * 0.70);
+          const goldG = Math.round(gVal + (166 - gVal) * countryBaseGold * 0.70);
+          const goldB = Math.round(bVal + (107 - bVal) * countryBaseGold * 0.70);
+          const goldLum = Math.min(0.50, luminosity * (1 + 0.18 * countryBaseGold));
 
-          if (oppDensity > 0.05 && goldProgress > 0.03) {
-            // Layer 2: Brighter gold activity / opportunity lights at major economic nodes
-            if (oppDensity >= 0.35) {
-              // Primary economic & opportunity hub (Tier 1)
-              // Outer bloom: MAST Deep Gold #b58d45 (rgb: 181, 141, 69)
-              ctx.beginPath();
-              ctx.arc(sx, sy, goldRadius * 3.5, 0, Math.PI * 2);
-              ctx.fillStyle = `rgba(181, 141, 69, ${0.25 * oppDensity * goldProgress})`;
-              ctx.fill();
-
-              // Middle halo: MAST Brand Gold #c9a66b (rgb: 201, 166, 107)
-              ctx.beginPath();
-              ctx.arc(sx, sy, goldRadius * 2.15, 0, Math.PI * 2);
-              ctx.fillStyle = `rgba(201, 166, 107, ${0.64 * oppDensity * goldProgress})`;
-              ctx.fill();
-
-              // Brilliant core: MAST Highlight Gold #e8c77e (rgb: 232, 199, 126)
-              ctx.beginPath();
-              ctx.arc(sx, sy, goldRadius * 1.38, 0, Math.PI * 2);
-              ctx.fillStyle = `rgba(232, 199, 126, ${0.98 * goldProgress})`;
-              ctx.fill();
-            } else {
-              // Secondary opportunity node / regional corridor (Tier 2)
-              // Secondary halo: MAST Brand Gold #c9a66b
-              ctx.beginPath();
-              ctx.arc(sx, sy, goldRadius * 1.9, 0, Math.PI * 2);
-              ctx.fillStyle = `rgba(201, 166, 107, ${0.48 * oppDensity * goldProgress})`;
-              ctx.fill();
-
-              // Core: MAST Highlight Gold #e8c77e
-              ctx.beginPath();
-              ctx.arc(sx, sy, goldRadius * 1.15, 0, Math.PI * 2);
-              ctx.fillStyle = `rgba(232, 199, 126, ${0.90 * goldProgress})`;
-              ctx.fill();
-            }
-          } else {
-            // Rural / national border terrain dots defining the exact sovereign landmass shape
-            ctx.beginPath();
-            ctx.arc(sx, sy, goldRadius, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(${goldR}, ${goldG}, ${goldB}, ${goldLum})`;
-            ctx.fill();
-          }
+          ctx.beginPath();
+          ctx.arc(sx, sy, dotRadius, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${goldR}, ${goldG}, ${goldB}, ${goldLum})`;
+          ctx.fill();
         } else {
           // Normal nocturnal continent point outside the focus country
           ctx.beginPath();
@@ -393,16 +352,111 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         }
       }
 
+      // 4. Sequential Opportunity Dots (The Main Focus: One-by-One Lead Discovery)
+      if (currentTarget && currentTarget.opportunityPoints && (phase === "focus" || phase === "release")) {
+        const opps = currentTarget.opportunityPoints;
+        const oppCount = opps.length;
+
+        for (let k = 0; k < oppCount; k++) {
+          const opp = opps[k];
+          let alpha = 0;
+          let scale = 0.5;
+
+          if (phase === "focus") {
+            const age = phaseElapsed - opp.delayMs;
+            if (age >= 0) {
+              const prog = Math.min(1, age / 360);
+              const ep = easeInOutCubic(prog);
+              scale = 0.5 + 0.5 * ep;
+              alpha = ep;
+            }
+          } else if (phase === "release") {
+            const rp = Math.min(1, phaseElapsed / releaseDuration);
+            alpha = Math.max(0, 1 - easeInOutCubic(rp));
+            scale = 1.0;
+          }
+
+          if (alpha <= 0.01) continue;
+
+          // 3D sphere projection for opportunity point
+          const oppPhi = (opp.lat * Math.PI) / 180;
+          const oppLambda = (opp.lon * Math.PI) / 180;
+          const oppTheta = oppLambda - rotation;
+          const ox0 = Math.cos(oppPhi) * Math.sin(oppTheta);
+          const oy0 = Math.sin(oppPhi);
+          const oz0 = Math.cos(oppPhi) * Math.cos(oppTheta);
+
+          const ox = ox0;
+          const oy = oy0 * cosTilt - oz0 * sinTilt;
+          const oz = oy0 * sinTilt + oz0 * cosTilt;
+
+          // Strictly front hemisphere
+          if (oz <= 0.01) continue;
+
+          const osx = cx + ox * effectiveR;
+          const osy = effectiveCY - oy * effectiveR;
+
+          // Very subtle bloom #b58d45 (rgb: 181, 141, 69)
+          ctx.beginPath();
+          ctx.arc(osx, osy, 5.2 * scale, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(181, 141, 69, ${0.18 * alpha})`;
+          ctx.fill();
+
+          // Tiny soft halo #c9a66b (rgb: 201, 166, 107)
+          ctx.beginPath();
+          ctx.arc(osx, osy, 3.2 * scale, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(201, 166, 107, ${0.52 * alpha})`;
+          ctx.fill();
+
+          // Crisp bright-gold core #e8c77e (rgb: 232, 199, 126)
+          ctx.beginPath();
+          ctx.arc(osx, osy, 1.75 * scale, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(232, 199, 126, ${0.98 * alpha})`;
+          ctx.fill();
+        }
+      }
+
       ctx.restore();
 
-      // Editorial country name + opportunity count indicator
-      if (labelRef.current && nameRef.current && countRef.current) {
-        if (goldProgress > 0.04 && currentTarget) {
-          labelRef.current.style.opacity = String(Math.min(1, goldProgress * 0.95));
+      // Editorial country name + opportunity count confirmation
+      if (currentTarget && nameRef.current && countRef.current) {
+        const opps = currentTarget.opportunityPoints;
+        const lastDotDelay = opps && opps.length > 0 ? opps[opps.length - 1].delayMs : 2000;
+        const countRevealTime = lastDotDelay + 380;
+
+        if (phase === "settle") {
+          // Country name gently fades and slides in
+          const np = Math.min(1, phaseElapsed / 650);
+          const ne = easeInOutCubic(np);
+          nameRef.current.style.opacity = String(ne);
+          nameRef.current.style.transform = `translateY(${(6 * (1 - ne)).toFixed(1)}px)`;
           nameRef.current.textContent = currentTarget.name;
-          countRef.current.textContent = `${currentTarget.opportunities.toLocaleString()} OPPORTUNITIES DISCOVERED`;
+          countRef.current.style.opacity = "0";
+          countRef.current.style.transform = "translateY(4px)";
+        } else if (phase === "focus") {
+          nameRef.current.style.opacity = "1";
+          nameRef.current.style.transform = "translateY(0px)";
+          nameRef.current.textContent = currentTarget.name;
+
+          if (phaseElapsed < countRevealTime) {
+            countRef.current.style.opacity = "0";
+            countRef.current.style.transform = "translateY(4px)";
+          } else {
+            // Count smoothly slides in after the final dot appears
+            const cp = Math.min(1, (phaseElapsed - countRevealTime) / 500);
+            const ce = easeInOutCubic(cp);
+            countRef.current.style.opacity = String(ce);
+            countRef.current.style.transform = `translateY(${(4 * (1 - ce)).toFixed(1)}px)`;
+            countRef.current.textContent = `${currentTarget.opportunityPoints.length} OPPORTUNITIES FOUND`;
+          }
+        } else if (phase === "release") {
+          const rp = Math.min(1, phaseElapsed / releaseDuration);
+          const fe = 1 - easeInOutCubic(rp);
+          nameRef.current.style.opacity = String(fe);
+          countRef.current.style.opacity = String(fe);
         } else {
-          labelRef.current.style.opacity = "0";
+          nameRef.current.style.opacity = "0";
+          countRef.current.style.opacity = "0";
         }
       }
     };
@@ -447,16 +501,17 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       <div className="pointer-events-none absolute left-1/2 bottom-2 -translate-x-1/2 flex flex-col items-center">
         <div
           ref={labelRef}
-          className="flex flex-col items-center gap-1 transition-opacity duration-500 pointer-events-none text-center"
-          style={{ opacity: 0 }}
+          className="flex flex-col items-center gap-1 pointer-events-none text-center"
         >
           <div
             ref={nameRef}
-            className="text-[11px] font-semibold tracking-[0.28em] uppercase text-[#e8c77e] drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)]"
+            className="text-[11px] font-semibold tracking-[0.28em] uppercase text-[#e8c77e] drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)] transition-all duration-300 ease-out"
+            style={{ opacity: 0, transform: "translateY(6px)" }}
           />
           <div
             ref={countRef}
-            className="text-[9px] font-medium tracking-[0.22em] uppercase text-[#c9a66b]/90 font-mono drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
+            className="text-[9px] font-medium tracking-[0.22em] uppercase text-foreground/90 font-mono drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)] transition-all duration-300 ease-out"
+            style={{ opacity: 0, transform: "translateY(4px)" }}
           />
         </div>
       </div>

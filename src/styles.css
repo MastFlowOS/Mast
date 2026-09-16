@@ -852,6 +852,18 @@
   animation: cloud-wrap-ltr 68s linear infinite;
 }
 
+.animate-cloud-belt-platform-a {
+  animation: cloud-wrap-ltr 95s linear infinite;
+}
+
+.animate-cloud-belt-platform-b {
+  animation: cloud-wrap-rtl 70s linear infinite;
+}
+
+.animate-cloud-belt-platform-c {
+  animation: cloud-wrap-ltr 45s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-atmo-cloud-macro,
   .animate-atmo-cloud-secondary,
@@ -862,6 +874,9 @@
   .animate-cloud-belt-solutions,
   .animate-cloud-belt-features,
   .animate-cloud-belt-customers,
+  .animate-cloud-belt-platform-a,
+  .animate-cloud-belt-platform-b,
+  .animate-cloud-belt-platform-c,
   .animate-atmo-haze,
   .animate-star-breathe,
   .animate-star-twinkle,

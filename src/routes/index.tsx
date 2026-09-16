@@ -4,7 +4,7 @@ import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { SignatureGlobe } from "@/components/mast/landing/SignatureGlobe";
-import { SectionAtmosphere } from "@/components/mast/landing/SectionAtmosphere";
+import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -30,15 +30,8 @@ export const Route = createFileRoute("/")({
 function LandingPage() {
   return (
     <>
-      {/* Deep space base gradient: seamless night across full viewport */}
-      <div
-        className="fixed inset-0 pointer-events-none -z-10 select-none"
-        aria-hidden="true"
-        style={{
-          background:
-            "linear-gradient(180deg, #020512 0%, #01030c 38%, #010208 70%, #000104 100%)",
-        }}
-      />
+      {/* Global night world foundation: continuous deep space across all sections */}
+      <GlobalAtmosphereFoundation />
       {/* SiteNav must be OUTSIDE any overflow-hidden ancestor — that breaks sticky */}
       <SiteNav disableBackdropBlur />
       {/* Page content wrapper sits above deep space */}
@@ -870,8 +863,9 @@ const features = [
 
 function Features() {
   return (
-    <section className="relative py-16 px-6 border-t border-border/50">
-      <div className="max-w-5xl mx-auto">
+    <section className="relative py-16 px-6 border-t border-border/50 overflow-hidden">
+      <SectionAtmosphere variant="platform" />
+      <div className="relative z-10 max-w-5xl mx-auto">
         <div className="text-center mb-12 max-w-2xl mx-auto animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Platform</span>
           <h2 className="mt-3 text-[clamp(1.5rem,3.2vw,2.1rem)] font-bold tracking-tight">

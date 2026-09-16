@@ -77,9 +77,53 @@ export function LandingAtmosphere() {
       {/* Realistic high-altitude cloud formations — organic fractal vapor field */}
       {/* Placed behind and around the Earth globe on the right side of the hero */}
       <div className="absolute inset-0 overflow-hidden">
-        {/* Layer 1: High-altitude cirrus / aerosol texture generated via SVG fractal noise */}
+        {/* Layer 1: Macro atmospheric vapor sheets with irregular contours and clear dark sky gaps */}
         <svg
-          className="absolute right-[-10%] top-[-5%] w-[85vw] h-[95vh] opacity-[0.038] mix-blend-screen animate-atmo-cloud-1"
+          className="absolute right-[-12%] top-[-8%] w-[90vw] h-[105vh] opacity-[0.14] mix-blend-screen animate-atmo-cloud-1"
+          viewBox="0 0 1000 1000"
+          preserveAspectRatio="none"
+        >
+          <defs>
+            <filter id="atmo-macro-noise" x="0%" y="0%" width="100%" height="100%">
+              <feTurbulence
+                type="fractalNoise"
+                baseFrequency="0.0042 0.0026"
+                numOctaves="4"
+                result="noise"
+                seed="42"
+              />
+              {/* Thresholding transfer curve: cuts off below 0.38 to create dark voids,
+                  ramps up to 1.0 for dense cloud banks in deep atmospheric slate-blue */}
+              <feColorMatrix
+                type="matrix"
+                values="
+                  0 0 0 0 0.26
+                  0 0 0 0 0.38
+                  0 0 0 0 0.62
+                  3.4 0 0 0 -1.25"
+              />
+            </filter>
+            <radialGradient id="atmo-macro-mask" cx="68%" cy="40%" r="56%">
+              <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
+              <stop offset="42%" stopColor="#ffffff" stopOpacity="0.75" />
+              <stop offset="72%" stopColor="#ffffff" stopOpacity="0.2" />
+              <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+            </radialGradient>
+            <mask id="atmo-mask-1">
+              <rect width="1000" height="1000" fill="url(#atmo-macro-mask)" />
+            </mask>
+          </defs>
+          <rect
+            width="1000"
+            height="1000"
+            filter="url(#atmo-macro-noise)"
+            mask="url(#atmo-mask-1)"
+          />
+        </svg>
+
+        {/* Layer 2: Stratified high-altitude cirrus filaments and density variations */}
+        <svg
+          className="absolute right-[-5%] top-[2%] w-[80vw] h-[85vh] opacity-[0.10] mix-blend-screen animate-atmo-cloud-2"
           viewBox="0 0 1000 1000"
           preserveAspectRatio="none"
         >
@@ -87,27 +131,27 @@ export function LandingAtmosphere() {
             <filter id="atmo-cirrus-noise" x="0%" y="0%" width="100%" height="100%">
               <feTurbulence
                 type="fractalNoise"
-                baseFrequency="0.0055 0.0035"
-                numOctaves="4"
-                result="noise"
-                seed="88"
+                baseFrequency="0.0078 0.0038"
+                numOctaves="3"
+                result="cirrus"
+                seed="77"
               />
               <feColorMatrix
                 type="matrix"
                 values="
-                  0 0 0 0 0.62
-                  0 0 0 0 0.74
-                  0 0 0 0 0.92
-                  1 0 0 0 0"
+                  0 0 0 0 0.30
+                  0 0 0 0 0.44
+                  0 0 0 0 0.70
+                  2.8 0 0 0 -1.05"
               />
             </filter>
-            <radialGradient id="atmo-cirrus-mask" cx="62%" cy="42%" r="52%">
+            <radialGradient id="atmo-cirrus-mask" cx="62%" cy="46%" r="50%">
               <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
-              <stop offset="45%" stopColor="#ffffff" stopOpacity="0.6" />
-              <stop offset="75%" stopColor="#ffffff" stopOpacity="0.15" />
+              <stop offset="48%" stopColor="#ffffff" stopOpacity="0.65" />
+              <stop offset="80%" stopColor="#ffffff" stopOpacity="0.1" />
               <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
             </radialGradient>
-            <mask id="atmo-mask">
+            <mask id="atmo-mask-2">
               <rect width="1000" height="1000" fill="url(#atmo-cirrus-mask)" />
             </mask>
           </defs>
@@ -115,26 +159,16 @@ export function LandingAtmosphere() {
             width="1000"
             height="1000"
             filter="url(#atmo-cirrus-noise)"
-            mask="url(#atmo-mask)"
+            mask="url(#atmo-mask-2)"
           />
         </svg>
 
-        {/* Layer 2: Soft, diffuse stratospheric veil hugging behind the globe */}
-        {/* Ultra-low contrast, huge blur, no sharp edges, no cartoon appearance */}
+        {/* Layer 3: Soft ambient atmospheric haze hugging the upper planetary horizon */}
         <div
-          className="absolute right-[5%] top-[10%] w-[55vw] h-[55vw] max-w-[750px] max-h-[750px] rounded-full blur-[100px] mix-blend-screen opacity-[0.024] animate-atmo-cloud-2"
+          className="absolute right-[6%] top-[8%] w-[58vw] h-[58vw] max-w-[760px] max-h-[760px] rounded-full blur-[110px] mix-blend-screen opacity-[0.032]"
           style={{
             background:
-              "radial-gradient(circle at 45% 45%, rgba(135, 175, 235, 0.9) 0%, rgba(70, 110, 190, 0.4) 50%, transparent 80%)",
-          }}
-        />
-
-        {/* Layer 3: Gentle atmospheric shelf stretching horizontally across the mid-hero */}
-        <div
-          className="absolute right-[0%] top-[30%] w-[65vw] h-[25vw] max-h-[320px] blur-[90px] mix-blend-screen opacity-[0.018]"
-          style={{
-            background:
-              "radial-gradient(ellipse at 55% 50%, rgba(110, 155, 225, 0.8) 0%, rgba(45, 80, 160, 0.3) 55%, transparent 80%)",
+              "radial-gradient(circle at 48% 46%, rgba(120, 160, 230, 0.9) 0%, rgba(55, 95, 180, 0.35) 55%, transparent 80%)",
           }}
         />
       </div>

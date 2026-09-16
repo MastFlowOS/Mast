@@ -19,7 +19,7 @@ const socialButtons = [
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-border/40 pt-10 pb-6 px-6 mt-4 relative overflow-x-clip">
+    <footer className="border-t border-border/40 pt-10 pb-6 px-6 mt-4 relative overflow-hidden">
       <SectionAtmosphere variant="footer" />
 
       <div className="max-w-7xl mx-auto relative z-10">

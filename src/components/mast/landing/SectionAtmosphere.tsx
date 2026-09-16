@@ -214,17 +214,24 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
         }
       : variant === "footer"
       ? {
-          WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 18%, black 100%)",
-          maskImage: "linear-gradient(to bottom, transparent 0%, black 18%, black 100%)",
+          WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 20%, black 100%)",
+          maskImage: "linear-gradient(to bottom, transparent 0%, black 20%, black 100%)",
         }
       : {
           WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 16%, black 84%, transparent 100%)",
           maskImage: "linear-gradient(to bottom, transparent 0%, black 16%, black 84%, transparent 100%)",
         };
 
+  const verticalPositionClass =
+    variant === "hero"
+      ? "top-0 -bottom-24"
+      : variant === "footer"
+      ? "-top-24 bottom-0"
+      : "-inset-y-24";
+
   return (
     <div
-      className="absolute -inset-y-24 inset-x-0 pointer-events-none overflow-hidden select-none z-0"
+      className={`absolute inset-x-0 pointer-events-none overflow-hidden select-none z-0 ${verticalPositionClass}`}
       style={maskStyle}
       aria-hidden="true"
     >

@@ -6,7 +6,7 @@ type Star = {
   y: number;
   size: number;
   opacity: number;
-  type: "drift-a" | "drift-b" | "breathe" | "shimmer";
+  type: "drift-a" | "drift-b" | "breathe" | "twinkle";
   duration: number;
   delay: number;
 };
@@ -14,17 +14,18 @@ type Star = {
 // ─── Fixed backdrop: living deep-space night atmosphere ───────────────────────
 // Sits fixed behind the entire landing page, establishing a continuous,
 // quiet, organic night environment that extends down all sections.
-// Cloud layers drift asynchronously, stars breathe gently, and atmospheric
-// haze moves independently without freezing during focus.
+// Cloud layers drift with perceptible displacement, stars breathe and twinkle
+// unsynchronized, and atmospheric haze moves independently without freezing.
 export function LandingAtmosphere() {
   const [stars, setStars] = useState<Star[]>([]);
   const hazeParallaxRef = useRef<HTMLDivElement>(null);
+  const cloudsParallaxRef = useRef<HTMLDivElement>(null);
   const starsParallaxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Generate deterministic starfield with diverse, unsynchronized behaviors
+    // Generate deterministic starfield with 3 distinct behavioral tiers
     const starList: Star[] = [];
-    const count = 58;
+    const count = 66;
     let s = 107;
     const rand = () => {
       s = (s * 16807) % 2147483647;
@@ -42,28 +43,35 @@ export function LandingAtmosphere() {
         }
       }
 
-      const size = 0.65 + rand() * 0.75; // Fine points: 0.65px - 1.4px
-      const opacity = 0.14 + rand() * 0.32; // Subtle brightness: 0.14 - 0.46
       const roll = rand();
-
       let type: Star["type"] = "drift-a";
-      let duration = 70 + rand() * 30; // Default slow drift 70s-100s
+      let duration = 70;
+      let size = 0.75 + rand() * 0.65;
+      let opacity = 0.22;
+      let delay = 0;
 
-      if (roll < 0.38) {
-        type = "drift-a";
-        duration = 65 + rand() * 30;
-      } else if (roll < 0.74) {
-        type = "drift-b";
-        duration = 80 + rand() * 30;
-      } else if (roll < 0.93) {
+      if (roll < 0.60) {
+        // GROUP A (~60%): Mostly stable with slow micro-drift (0.15–0.35 opacity)
+        type = rand() > 0.5 ? "drift-a" : "drift-b";
+        duration = 65 + rand() * 25; // 65s - 90s slow drift
+        opacity = 0.18 + rand() * 0.16; // 0.18 - 0.34
+        size = 0.7 + rand() * 0.55;
+        delay = -(rand() * 35);
+      } else if (roll < 0.85) {
+        // GROUP B (~25%): Gentle breathing (0.12–0.50 opacity)
         type = "breathe";
-        duration = 9 + rand() * 8; // 9s - 17s gentle breathing cycle
+        duration = 5.5 + rand() * 4.0; // 5.5s - 9.5s breathing cycle
+        opacity = 0.14 + rand() * 0.20;
+        size = 0.85 + rand() * 0.55;
+        delay = -(rand() * 12);
       } else {
-        type = "shimmer";
-        duration = 7 + rand() * 5; // 7s - 12s subtle accent shimmer
+        // GROUP C (~15%): Twinkling accents (0.15–0.70 opacity)
+        type = "twinkle";
+        duration = 3.5 + rand() * 3.2; // 3.5s - 6.7s twinkling cycle
+        opacity = 0.16 + rand() * 0.26;
+        size = 0.95 + rand() * 0.55;
+        delay = -(rand() * 8);
       }
-
-      const delay = -(rand() * 15); // Negative random delay so they are out-of-phase on load
 
       starList.push({ id: i, x, y, size, opacity, type, duration, delay });
     }
@@ -81,10 +89,13 @@ export function LandingAtmosphere() {
         requestAnimationFrame(() => {
           const sy = window.scrollY;
           if (starsParallaxRef.current) {
-            starsParallaxRef.current.style.transform = `translate3d(0, ${sy * 0.02}px, 0)`;
+            starsParallaxRef.current.style.transform = `translate3d(0, ${sy * 0.025}px, 0)`;
+          }
+          if (cloudsParallaxRef.current) {
+            cloudsParallaxRef.current.style.transform = `translate3d(0, ${sy * 0.05}px, 0)`;
           }
           if (hazeParallaxRef.current) {
-            hazeParallaxRef.current.style.transform = `translate3d(0, ${sy * 0.045}px, 0)`;
+            hazeParallaxRef.current.style.transform = `translate3d(0, ${sy * 0.08}px, 0)`;
           }
           ticking = false;
         });
@@ -130,11 +141,11 @@ export function LandingAtmosphere() {
       </div>
 
       {/* Asynchronous multi-layer cloud formations */}
-      {/* Never loop or reset simultaneously; continuous, slow, organic drift */}
-      <div className="absolute inset-0 overflow-hidden">
-        {/* Layer 1: Macro atmospheric vapor sheets (150s continuous cycle) */}
+      {/* Never loop or reset simultaneously; continuous, slow, organic drift with noticeable displacement */}
+      <div ref={cloudsParallaxRef} className="absolute inset-0 overflow-hidden will-change-transform">
+        {/* Layer 1: Macro atmospheric vapor sheets (105s continuous cycle) */}
         <svg
-          className="absolute right-[-12%] top-[-8%] w-[92vw] h-[105vh] opacity-[0.14] mix-blend-screen animate-atmo-cloud-macro"
+          className="absolute right-[-10%] top-[-6%] w-[90vw] h-[100vh] opacity-[0.11] mix-blend-screen animate-atmo-cloud-macro"
           viewBox="0 0 1000 1000"
           preserveAspectRatio="none"
         >
@@ -150,13 +161,13 @@ export function LandingAtmosphere() {
               <feColorMatrix
                 type="matrix"
                 values="
-                  0 0 0 0 0.26
-                  0 0 0 0 0.38
-                  0 0 0 0 0.62
-                  3.4 0 0 0 -1.25"
+                  0 0 0 0 0.22
+                  0 0 0 0 0.32
+                  0 0 0 0 0.54
+                  2.8 0 0 0 -1.05"
               />
             </filter>
-            <radialGradient id="atmo-macro-mask" cx="68%" cy="40%" r="56%">
+            <radialGradient id="atmo-macro-mask" cx="66%" cy="40%" r="52%">
               <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
               <stop offset="42%" stopColor="#ffffff" stopOpacity="0.75" />
               <stop offset="72%" stopColor="#ffffff" stopOpacity="0.2" />
@@ -174,9 +185,9 @@ export function LandingAtmosphere() {
           />
         </svg>
 
-        {/* Layer 2: Secondary atmospheric cloud bank (110s cycle, phased -35s) */}
+        {/* Layer 2: Secondary atmospheric cloud bank (74s cycle, phased -24s) */}
         <svg
-          className="absolute right-[-8%] top-[0%] w-[84vw] h-[90vh] opacity-[0.11] mix-blend-screen animate-atmo-cloud-secondary"
+          className="absolute right-[-6%] top-[2%] w-[82vw] h-[88vh] opacity-[0.08] mix-blend-screen animate-atmo-cloud-secondary"
           viewBox="0 0 1000 1000"
           preserveAspectRatio="none"
         >
@@ -192,13 +203,13 @@ export function LandingAtmosphere() {
               <feColorMatrix
                 type="matrix"
                 values="
-                  0 0 0 0 0.28
-                  0 0 0 0 0.40
-                  0 0 0 0 0.66
-                  3.1 0 0 0 -1.15"
+                  0 0 0 0 0.24
+                  0 0 0 0 0.34
+                  0 0 0 0 0.58
+                  2.5 0 0 0 -0.95"
               />
             </filter>
-            <radialGradient id="atmo-sec-mask" cx="64%" cy="44%" r="52%">
+            <radialGradient id="atmo-sec-mask" cx="62%" cy="44%" r="48%">
               <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
               <stop offset="46%" stopColor="#ffffff" stopOpacity="0.7" />
               <stop offset="78%" stopColor="#ffffff" stopOpacity="0.15" />
@@ -216,9 +227,9 @@ export function LandingAtmosphere() {
           />
         </svg>
 
-        {/* Layer 3: Fine high-altitude cirrus filaments (85s cycle, phased -18s) */}
+        {/* Layer 3: Fine high-altitude cirrus filaments (46s cycle, phased -15s) */}
         <svg
-          className="absolute right-[-4%] top-[4%] w-[78vw] h-[80vh] opacity-[0.08] mix-blend-screen animate-atmo-cloud-cirrus"
+          className="absolute right-[-2%] top-[5%] w-[76vw] h-[78vh] opacity-[0.06] mix-blend-screen animate-atmo-cloud-cirrus"
           viewBox="0 0 1000 1000"
           preserveAspectRatio="none"
         >
@@ -234,13 +245,13 @@ export function LandingAtmosphere() {
               <feColorMatrix
                 type="matrix"
                 values="
-                  0 0 0 0 0.32
-                  0 0 0 0 0.46
-                  0 0 0 0 0.72
-                  2.7 0 0 0 -1.00"
+                  0 0 0 0 0.26
+                  0 0 0 0 0.38
+                  0 0 0 0 0.62
+                  2.2 0 0 0 -0.85"
               />
             </filter>
-            <radialGradient id="atmo-cirrus-mask" cx="60%" cy="48%" r="48%">
+            <radialGradient id="atmo-cirrus-mask" cx="58%" cy="48%" r="44%">
               <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
               <stop offset="50%" stopColor="#ffffff" stopOpacity="0.6" />
               <stop offset="82%" stopColor="#ffffff" stopOpacity="0.1" />
@@ -259,14 +270,14 @@ export function LandingAtmosphere() {
         </svg>
       </div>
 
-      {/* Living stars: asynchronous micro-drift, gentle breathing, subtle shimmer */}
+      {/* Living stars: asynchronous micro-drift, gentle breathing, perceptible twinkling */}
       <div ref={starsParallaxRef} className="absolute inset-0 will-change-transform">
         {stars.map((star: Star) => {
           let animClass = "";
           if (star.type === "drift-a") animClass = "animate-star-drift-a";
           else if (star.type === "drift-b") animClass = "animate-star-drift-b";
           else if (star.type === "breathe") animClass = "animate-star-breathe";
-          else if (star.type === "shimmer") animClass = "animate-star-shimmer";
+          else if (star.type === "twinkle") animClass = "animate-star-twinkle";
 
           return (
             <div

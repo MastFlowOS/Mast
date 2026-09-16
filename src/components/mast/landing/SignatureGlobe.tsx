@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { WORLD_DOTS } from "./worldDots";
+import { FOCUS_TARGETS, DOT_REGIONS, DOT_DENSITIES } from "./focusRegions";
 
 // Fixed Earth axial tilt: 23.44 degrees in radians
 const TILT = 0.409;
@@ -16,31 +17,10 @@ const LIGHT_X = -0.42;
 const LIGHT_Y = 0.48;
 const LIGHT_Z = 0.77;
 
-type FocusTarget = {
-  name: string;
-  lat: number;
-  lon: number;
-  radiusDeg: number;
-};
-
-const FOCUS_TARGETS: FocusTarget[] = [
-  { name: "North America", lat: 38, lon: -97, radiusDeg: 28 },
-  { name: "Western Europe", lat: 48, lon: 12, radiusDeg: 20 },
-  { name: "East Asia", lat: 34, lon: 132, radiusDeg: 22 },
-  { name: "Middle East", lat: 26, lon: 50, radiusDeg: 18 },
-  { name: "Asia-Pacific", lat: -26, lon: 135, radiusDeg: 24 },
-];
-
 type Phase = "rotate" | "settle" | "focus" | "release";
 
 function easeInOutCubic(t: number) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-// Deterministic pseudo-random helper for clustering city night lights
-function hash01(n: number) {
-  const x = Math.sin(n * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
 }
 
 export function SignatureGlobe({ className = "" }: { className?: string }) {
@@ -95,7 +75,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     let rafId = 0;
     let last = performance.now();
     // Initial orientation: strong, recognizable continental composition on load
-    // Angled toward the Atlantic / Western Europe / Africa / Eastern Americas
+    // Angled toward the Atlantic / Western Europe / Eastern Americas
     let rotation = 0.85;
 
     // Focus system bookkeeping
@@ -105,8 +85,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     let rotationAtSettleStart = rotation;
     let targetRotation = rotation;
 
-    // Subtle randomized durations per cycle so animation does not feel rigid
-    let rotateDuration = 6800;
+    // Balanced durations: smooth free spin -> gentle settle -> vivid focus -> clean release
+    let rotateDuration = 4500;
     let focusDuration = 4200;
     const settleDuration = 2200;
     const releaseDuration = 1800;
@@ -157,7 +137,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       if (!reduceMotion) {
         phaseElapsed += dt;
 
-        // Phase progression with randomized durations
+        // Phase progression with calibrated durations
         if (phase === "rotate" && phaseElapsed >= rotateDuration) {
           phase = "settle";
           phaseElapsed = 0;
@@ -177,9 +157,9 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         } else if (phase === "release" && phaseElapsed >= releaseDuration) {
           phase = "rotate";
           phaseElapsed = 0;
-          // Randomize next cycle lengths subtly
-          rotateDuration = 6000 + Math.random() * 1800;
-          focusDuration = 3600 + Math.random() * 1200;
+          // Randomize subsequent cycle lengths subtly
+          rotateDuration = 5500 + Math.random() * 1500;
+          focusDuration = 4000 + Math.random() * 800;
         }
 
         // Rotation updates
@@ -196,23 +176,28 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         }
       }
 
-      // Smooth zoom and pan interpolation
+      // Smooth zoom and layered MAST gold illumination interpolation
       let zoom = 1.0;
-      let focusGlow = 0;
+      let goldProgress = 0;
 
       if (phase === "settle") {
         const p = Math.min(1, phaseElapsed / settleDuration);
         const ep = easeInOutCubic(p);
         zoom = 1.0 + (ZOOM_MAX - 1.0) * ep;
-        focusGlow = Math.max(0, (p - 0.35) / 0.65);
+        // Phasing requirement: settle transitions 0% -> 70% gold
+        goldProgress = ep * 0.70;
       } else if (phase === "focus") {
         zoom = ZOOM_MAX;
-        focusGlow = 1.0;
+        const p = Math.min(1, phaseElapsed / focusDuration);
+        // Phasing requirement: focus transitions 70% -> 100% peak gold
+        const ramp = Math.min(1, p / 0.35);
+        goldProgress = 0.70 + 0.30 * easeInOutCubic(ramp);
       } else if (phase === "release") {
         const p = Math.min(1, phaseElapsed / releaseDuration);
         const ep = easeInOutCubic(p);
         zoom = 1.0 + (ZOOM_MAX - 1.0) * (1 - ep);
-        focusGlow = Math.max(0, 1 - ep * 1.3);
+        // Phasing requirement: release transitions 100% -> 0% back to nocturnal cool palette
+        goldProgress = Math.max(0, 1.0 - ep);
       }
 
       const currentTarget = targetIdx >= 0 ? FOCUS_TARGETS[targetIdx] : null;
@@ -226,7 +211,6 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       const effectiveCY = cy + targetUY * r * panProgress * PAN_STRENGTH;
 
       // 1. Outer atmospheric limb scattering (Rayleigh haze hugging the outer edge)
-      // Very slow environmental ambient breath over time (20s cycle) so the planet feels alive
       const envLimbBreath = 1 + Math.sin(currentNow * 0.00032) * 0.04;
       const atmoGlow = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.94, cx, effectiveCY, effectiveR * 1.055);
       atmoGlow.addColorStop(0, `rgba(56, 96, 192, ${0.16 * envLimbBreath})`);
@@ -240,7 +224,6 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       ctx.fill();
 
       // 2. Base planetary ocean body with enhanced 3D curvature visibility
-      // Desired progression: Deep black -> barely visible midnight-blue planetary body -> subtle atmospheric edge
       ctx.save();
       ctx.beginPath();
       ctx.arc(cx, effectiveCY, effectiveR, 0, Math.PI * 2);
@@ -254,7 +237,6 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         effectiveCY,
         effectiveR * 1.01
       );
-      // Perceptible midnight-blue ocean body that remains distinct from space across all 360 degrees
       oceanBg.addColorStop(0, "rgba(8, 22, 54, 0.98)");
       oceanBg.addColorStop(0.42, "rgba(6, 16, 42, 0.98)");
       oceanBg.addColorStop(0.82, "rgba(4, 11, 28, 0.99)");
@@ -271,16 +253,38 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       ctx.fillStyle = innerRim;
       ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
 
-      // 3. Continental land dots with natural 3D lighting + irregular civilization night light clusters
-      const dots = WORLD_DOTS;
-      const dotCount = dots.length;
-
       const cosTilt = Math.cos(TILT);
       const sinTilt = Math.sin(TILT);
 
-      const targetLatRad = currentTarget ? (currentTarget.lat * Math.PI) / 180 : 0;
-      const targetLonRad = currentTarget ? (currentTarget.lon * Math.PI) / 180 : 0;
-      const maxDistRad = currentTarget ? (currentTarget.radiusDeg * Math.PI) / 180 : 1;
+      // Layer 3: Subtle territory ambient gold radiance (cradling the focused landmass)
+      if (goldProgress > 0.01 && currentTarget) {
+        const tPhi = (currentTarget.lat * Math.PI) / 180;
+        const tLambda = (currentTarget.lon * Math.PI) / 180;
+        const tTheta = tLambda - rotation;
+        const tx0 = Math.cos(tPhi) * Math.sin(tTheta);
+        const ty0 = Math.sin(tPhi);
+        const tz0 = Math.cos(tPhi) * Math.cos(tTheta);
+        const tx = tx0;
+        const ty = ty0 * cosTilt - tz0 * sinTilt;
+        const tz = ty0 * sinTilt + tz0 * cosTilt;
+        if (tz > 0.1) {
+          const tsx = cx + tx * effectiveR;
+          const tsy = effectiveCY - ty * effectiveR;
+          const regionRad = effectiveR * 0.42;
+          const regionBloom = ctx.createRadialGradient(tsx, tsy, 0, tsx, tsy, regionRad);
+          regionBloom.addColorStop(0, `rgba(201, 166, 107, ${0.075 * goldProgress * Math.min(1, tz * 1.2)})`);
+          regionBloom.addColorStop(0.55, `rgba(181, 141, 69, ${0.03 * goldProgress * Math.min(1, tz * 1.2)})`);
+          regionBloom.addColorStop(1, "rgba(181, 141, 69, 0)");
+          ctx.fillStyle = regionBloom;
+          ctx.beginPath();
+          ctx.arc(tsx, tsy, regionRad, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // 3. Continental land dots with natural 3D lighting + geographically accurate gold illumination
+      const dots = WORLD_DOTS;
+      const dotCount = dots.length;
 
       for (let i = 0; i < dotCount; i++) {
         const d = dots[i];
@@ -319,67 +323,68 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         let luminosity = (0.24 + sunFactor * 0.48) * (0.76 + 0.24 * zDepth);
         let dotRadius = Math.max(0.7, 0.82 + 0.28 * zDepth);
 
-        // Palette: pale silvery-blue in light, deep nocturnal slate in shadow
+        // Base nocturnal palette: pale silvery-blue in light, deep nocturnal slate in shadow
         let rVal = Math.round(135 + sunFactor * 75);
         let gVal = Math.round(165 + sunFactor * 65);
         let bVal = Math.round(215 + sunFactor * 40);
 
-        // Check for civilization lights in the focused geographic region
-        // Pure cool-white / pale-blue palette: Core rgba(240,245,255), Glow rgba(190,215,255), Bloom rgba(120,165,235)
-        let clusterTier = 0; // 0 = unlit, 1 = major metro hub, 2 = urban corridor, 3 = sparse town
-        let lightIntensity = 0;
+        // Check if dot belongs to the active focus region
+        const isTargetRegion = currentTarget && targetIdx >= 0 && DOT_REGIONS[i] === targetIdx;
+        const cityDensity = isTargetRegion ? DOT_DENSITIES[i] : 0;
 
-        if (focusGlow > 0.005 && currentTarget) {
-          // Great-circle angular distance
-          const cosDist = Math.sin(phi) * Math.sin(targetLatRad) + Math.cos(phi) * Math.cos(targetLatRad) * Math.cos(lambda - targetLonRad);
-          const dist = Math.acos(Math.max(-1, Math.min(1, cosDist)));
+        if (isTargetRegion && goldProgress > 0.01) {
+          // Layer 1: Geographically accurate continental gold landmass tint
+          // MAST Brand Gold #c9a66b (rgb: 201, 166, 107)
+          const goldR = Math.round(rVal + (201 - rVal) * goldProgress);
+          const goldG = Math.round(gVal + (166 - gVal) * goldProgress);
+          const goldB = Math.round(bVal + (107 - bVal) * goldProgress);
+          const goldLum = Math.min(1, luminosity * (1 + 0.42 * goldProgress));
+          const goldRadius = dotRadius * (1 + 0.14 * goldProgress);
 
-          if (dist < maxDistRad) {
-            const prox = 1 - dist / maxDistRad;
-            // Multi-tier deterministic spatial hash creates irregular organic clustering (dense hubs, sparse towns, dark wilds)
-            const h1 = hash01(Math.round((d.lat + 90) * 137 + (d.lon + 180) * 283));
-            const h2 = hash01(Math.round((d.lat + 90) * 311 + (d.lon + 180) * 59));
+          if (cityDensity > 0.06 && goldProgress > 0.03) {
+            // Layer 2: Real population & metropolitan civilization nodes
+            if (cityDensity >= 0.38) {
+              // Major metropolitan hub (Tier 1: London, Paris, Madrid, Berlin, Rome, Amsterdam, Milan, etc.)
+              // Outer bloom: MAST Deep Gold #b58d45 (rgb: 181, 141, 69)
+              ctx.beginPath();
+              ctx.arc(sx, sy, goldRadius * 3.4, 0, Math.PI * 2);
+              ctx.fillStyle = `rgba(181, 141, 69, ${0.24 * cityDensity * goldProgress})`;
+              ctx.fill();
 
-            if (h1 > 0.80) {
-              // Tier 1: Major Metropolitan Cluster (~20% of region)
-              clusterTier = 1;
-              lightIntensity = Math.pow(prox, 0.75) * (0.85 + 0.15 * h2) * focusGlow;
-            } else if (h1 > 0.56) {
-              // Tier 2: Urban corridor / secondary cluster (~24% of region)
-              clusterTier = 2;
-              lightIntensity = Math.pow(prox, 1.05) * 0.72 * focusGlow;
-            } else if (h1 > 0.44 && h2 > 0.60) {
-              // Tier 3: Isolated town / outpost (~12% of region)
-              clusterTier = 3;
-              lightIntensity = Math.pow(prox, 1.3) * 0.48 * focusGlow;
+              // Middle halo: MAST Brand Gold #c9a66b (rgb: 201, 166, 107)
+              ctx.beginPath();
+              ctx.arc(sx, sy, goldRadius * 2.1, 0, Math.PI * 2);
+              ctx.fillStyle = `rgba(201, 166, 107, ${0.62 * cityDensity * goldProgress})`;
+              ctx.fill();
+
+              // Brilliant core: MAST Highlight Gold #e8c77e (rgb: 232, 199, 126)
+              ctx.beginPath();
+              ctx.arc(sx, sy, goldRadius * 1.35, 0, Math.PI * 2);
+              ctx.fillStyle = `rgba(232, 199, 126, ${0.96 * goldProgress})`;
+              ctx.fill();
+            } else {
+              // Urban corridor / secondary cluster (Tier 2)
+              // Secondary halo: MAST Brand Gold #c9a66b
+              ctx.beginPath();
+              ctx.arc(sx, sy, goldRadius * 1.85, 0, Math.PI * 2);
+              ctx.fillStyle = `rgba(201, 166, 107, ${0.46 * cityDensity * goldProgress})`;
+              ctx.fill();
+
+              // Core: MAST Highlight Gold #e8c77e
+              ctx.beginPath();
+              ctx.arc(sx, sy, goldRadius * 1.15, 0, Math.PI * 2);
+              ctx.fillStyle = `rgba(232, 199, 126, ${0.88 * goldProgress})`;
+              ctx.fill();
             }
-          }
-        }
-
-        if (clusterTier > 0 && lightIntensity > 0.02) {
-          // Tier 1: Soft atmospheric bloom
-          if (clusterTier === 1) {
+          } else {
+            // Rural / topography dots defining the unmistakable landmass shape
             ctx.beginPath();
-            ctx.arc(sx, sy, dotRadius * 3.4, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(120, 165, 235, ${0.18 * lightIntensity})`;
+            ctx.arc(sx, sy, goldRadius, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${goldR}, ${goldG}, ${goldB}, ${goldLum})`;
             ctx.fill();
           }
-
-          // Tier 1 & 2: Secondary pale-blue glow
-          if (clusterTier <= 2) {
-            ctx.beginPath();
-            ctx.arc(sx, sy, dotRadius * 2.0, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(190, 215, 255, ${0.55 * lightIntensity})`;
-            ctx.fill();
-          }
-
-          // All tiers: Crisp cool-white city light core
-          ctx.beginPath();
-          ctx.arc(sx, sy, dotRadius * 1.3, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(240, 245, 255, ${0.95 * Math.min(1, lightIntensity * 1.25)})`;
-          ctx.fill();
         } else {
-          // Normal nocturnal continent point
+          // Normal nocturnal continent point outside the focus region
           ctx.beginPath();
           ctx.arc(sx, sy, dotRadius, 0, Math.PI * 2);
           ctx.fillStyle = `rgba(${rVal}, ${gVal}, ${bVal}, ${luminosity})`;
@@ -391,8 +396,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
       // Minimal editorial region label: appears only during focus state and fades afterward
       if (labelRef.current) {
-        if (focusGlow > 0.04 && currentTarget) {
-          labelRef.current.style.opacity = String(Math.min(1, focusGlow * 0.85));
+        if (goldProgress > 0.04 && currentTarget) {
+          labelRef.current.style.opacity = String(Math.min(1, goldProgress * 0.9));
           labelRef.current.textContent = currentTarget.name;
         } else {
           labelRef.current.style.opacity = "0";
@@ -440,7 +445,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       <div className="pointer-events-none absolute left-1/2 bottom-2 -translate-x-1/2 flex flex-col items-center">
         <div
           ref={labelRef}
-          className="text-[10px] font-semibold tracking-[0.28em] uppercase text-foreground/75 transition-opacity duration-500 text-center"
+          className="text-[10px] font-medium tracking-[0.28em] uppercase text-[#e8c77e]/85 transition-opacity duration-500 text-center drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]"
           style={{ opacity: 0 }}
         />
       </div>

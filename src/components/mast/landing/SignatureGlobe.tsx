@@ -337,7 +337,9 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           const goldR = Math.round(rVal + (201 - rVal) * countryBaseGold * 0.70);
           const goldG = Math.round(gVal + (166 - gVal) * countryBaseGold * 0.70);
           const goldB = Math.round(bVal + (107 - bVal) * countryBaseGold * 0.70);
-          const goldLum = Math.min(0.50, luminosity * (1 + 0.18 * countryBaseGold));
+          // Slightly restrain base luminance during discovery so bright opportunity dots pop unmistakably
+          const maxBaseLum = phase === "focus" ? 0.38 : 0.44;
+          const goldLum = Math.min(maxBaseLum, luminosity * (0.88 + 0.12 * countryBaseGold));
 
           ctx.beginPath();
           ctx.arc(sx, sy, dotRadius, 0, Math.PI * 2);
@@ -353,27 +355,44 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       }
 
       // 4. Sequential Opportunity Dots (The Main Focus: One-by-One Lead Discovery)
+      // Level 3 in visual hierarchy: Unmistakably bright MAST gold, crisp core, visible halo & atmospheric bloom
       if (currentTarget && currentTarget.opportunityPoints && (phase === "focus" || phase === "release")) {
         const opps = currentTarget.opportunityPoints;
         const oppCount = opps.length;
 
+        // Screen-space responsive sizing with strict minimum clamps:
+        // Ensures opportunity dots never shrink to invisibility on small countries or high DPR
+        const scaleRef = Math.max(0.85, Math.min(1.30, effectiveR / 290));
+        const baseCoreR = Math.max(2.4, Math.min(3.0, 2.65 * scaleRef));
+        const baseHaloR = Math.max(5.5, Math.min(7.2, 6.2 * scaleRef));
+        const baseBloomR = Math.max(9.5, Math.min(13.0, 11.2 * scaleRef));
+
         for (let k = 0; k < oppCount; k++) {
           const opp = opps[k];
           let alpha = 0;
-          let scale = 0.5;
+          let scale = 0.45;
+          let flashAmount = 0;
 
           if (phase === "focus") {
             const age = phaseElapsed - opp.delayMs;
             if (age >= 0) {
-              const prog = Math.min(1, age / 360);
-              const ep = easeInOutCubic(prog);
-              scale = 0.5 + 0.5 * ep;
-              alpha = ep;
+              // Smooth cubic ease-out entrance (~420ms)
+              const enterProgress = Math.min(1, age / 420);
+              const enterEase = 1 - Math.pow(1 - enterProgress, 3);
+              scale = 0.45 + 0.55 * enterEase;
+              alpha = enterEase;
+
+              // Brief optical discovery flash (~220ms): subtle brightness bump & bloom expansion ("FOUND.")
+              if (age < 220) {
+                const fp = age / 220;
+                flashAmount = Math.sin(fp * Math.PI);
+              }
             }
           } else if (phase === "release") {
             const rp = Math.min(1, phaseElapsed / releaseDuration);
             alpha = Math.max(0, 1 - easeInOutCubic(rp));
             scale = 1.0;
+            flashAmount = 0;
           }
 
           if (alpha <= 0.01) continue;
@@ -396,23 +415,41 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           const osx = cx + ox * effectiveR;
           const osy = effectiveCY - oy * effectiveR;
 
-          // Very subtle bloom #b58d45 (rgb: 181, 141, 69)
+          const curBloomR = baseBloomR * scale * (1 + 0.28 * flashAmount);
+          const curHaloR = baseHaloR * scale * (1 + 0.16 * flashAmount);
+          const curCoreR = baseCoreR * scale * (1 + 0.18 * flashAmount);
+
+          // Layer 1: Atmospheric Warm Bloom #b58d45 (rgb: 181, 141, 69)
           ctx.beginPath();
-          ctx.arc(osx, osy, 5.2 * scale, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(181, 141, 69, ${0.18 * alpha})`;
+          ctx.arc(osx, osy, curBloomR, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(181, 141, 69, ${(0.22 + 0.12 * flashAmount) * alpha})`;
           ctx.fill();
 
-          // Tiny soft halo #c9a66b (rgb: 201, 166, 107)
+          // Layer 2: Outer Soft Gold Halo #c9a66b (rgb: 201, 166, 107)
           ctx.beginPath();
-          ctx.arc(osx, osy, 3.2 * scale, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(201, 166, 107, ${0.52 * alpha})`;
+          ctx.arc(osx, osy, curHaloR, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(201, 166, 107, ${(0.45 + 0.15 * flashAmount) * alpha})`;
           ctx.fill();
 
-          // Crisp bright-gold core #e8c77e (rgb: 232, 199, 126)
+          // Layer 3: Secondary Bright Gold Mid-Halo #e8c77e (rgb: 232, 199, 126)
           ctx.beginPath();
-          ctx.arc(osx, osy, 1.75 * scale, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(232, 199, 126, ${0.98 * alpha})`;
+          ctx.arc(osx, osy, curHaloR * 0.62, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(232, 199, 126, ${(0.72 + 0.18 * flashAmount) * alpha})`;
           ctx.fill();
+
+          // Layer 4: Primary Crisp Core #f3d27a (rgb: 243, 210, 122) — Visibly brighter than every land dot
+          ctx.beginPath();
+          ctx.arc(osx, osy, curCoreR, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(243, 210, 122, ${0.98 * alpha})`;
+          ctx.fill();
+
+          // Layer 5: Discovery Flash Pinpoint (brief ~220ms optical gleam)
+          if (flashAmount > 0.04) {
+            ctx.beginPath();
+            ctx.arc(osx, osy, curCoreR * 0.65, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, 250, 235, ${0.85 * flashAmount * alpha})`;
+            ctx.fill();
+          }
         }
       }
 

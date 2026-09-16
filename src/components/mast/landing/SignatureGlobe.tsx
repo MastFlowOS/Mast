@@ -195,9 +195,11 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       const effectiveCY = cy + targetUY * r * panProgress * PAN_STRENGTH;
 
       // 1. Outer atmospheric limb scattering (Rayleigh haze hugging the outer edge)
+      // Very slow environmental ambient breath over time (20s cycle) so the planet feels alive
+      const envLimbBreath = 1 + Math.sin(now * 0.00032) * 0.04;
       const atmoGlow = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.94, cx, effectiveCY, effectiveR * 1.055);
-      atmoGlow.addColorStop(0, "rgba(56, 96, 192, 0.16)");
-      atmoGlow.addColorStop(0.35, "rgba(42, 78, 168, 0.09)");
+      atmoGlow.addColorStop(0, `rgba(56, 96, 192, ${0.16 * envLimbBreath})`);
+      atmoGlow.addColorStop(0.35, `rgba(42, 78, 168, ${0.09 * envLimbBreath})`);
       atmoGlow.addColorStop(0.7, "rgba(30, 58, 138, 0.03)");
       atmoGlow.addColorStop(1, "rgba(15, 23, 42, 0)");
 
@@ -291,44 +293,62 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         let gVal = Math.round(165 + sunFactor * 65);
         let bVal = Math.round(215 + sunFactor * 40);
 
-        // Check if point falls within the focused geographic region
-        let isCivilizationLight = false;
+        // Check for civilization lights in the focused geographic region
+        // Pure cool-white / pale-blue palette: Core rgba(240,245,255), Glow rgba(190,215,255), Bloom rgba(120,165,235)
+        let clusterTier = 0; // 0 = unlit, 1 = major metro hub, 2 = urban corridor, 3 = sparse town
         let lightIntensity = 0;
 
-        if (focusGlow > 0.01 && currentTarget) {
+        if (focusGlow > 0.005 && currentTarget) {
           // Great-circle angular distance
           const cosDist = Math.sin(phi) * Math.sin(targetLatRad) + Math.cos(phi) * Math.cos(targetLatRad) * Math.cos(lambda - targetLonRad);
           const dist = Math.acos(Math.max(-1, Math.min(1, cosDist)));
 
           if (dist < maxDistRad) {
-            // Irregular clustering: only selected population nodes catch night lights
-            const clusterHash = hash01(Math.round((d.lat + 90) * 43 + (d.lon + 180) * 89));
-            if (clusterHash > 0.58) {
-              const prox = 1 - dist / maxDistRad;
-              const densityFactor = (clusterHash - 0.58) / 0.42;
-              lightIntensity = Math.pow(prox, 1.2) * densityFactor * focusGlow;
-              if (lightIntensity > 0.02) {
-                isCivilizationLight = true;
-              }
+            const prox = 1 - dist / maxDistRad;
+            // Multi-tier deterministic spatial hash creates irregular organic clustering (dense hubs, sparse towns, dark wilds)
+            const h1 = hash01(Math.round((d.lat + 90) * 137 + (d.lon + 180) * 283));
+            const h2 = hash01(Math.round((d.lat + 90) * 311 + (d.lon + 180) * 59));
+
+            if (h1 > 0.80) {
+              // Tier 1: Major Metropolitan Cluster (~20% of region)
+              clusterTier = 1;
+              lightIntensity = Math.pow(prox, 0.75) * (0.85 + 0.15 * h2) * focusGlow;
+            } else if (h1 > 0.56) {
+              // Tier 2: Urban corridor / secondary cluster (~24% of region)
+              clusterTier = 2;
+              lightIntensity = Math.pow(prox, 1.05) * 0.72 * focusGlow;
+            } else if (h1 > 0.44 && h2 > 0.60) {
+              // Tier 3: Isolated town / outpost (~12% of region)
+              clusterTier = 3;
+              lightIntensity = Math.pow(prox, 1.3) * 0.48 * focusGlow;
             }
           }
         }
 
-        if (isCivilizationLight) {
-          // Delicate starlight bloom around civilization cluster node
-          const bloomAlpha = lightIntensity * 0.35;
-          ctx.beginPath();
-          ctx.arc(sx, sy, dotRadius * 2.2, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(185, 215, 255, ${bloomAlpha})`;
-          ctx.fill();
+        if (clusterTier > 0 && lightIntensity > 0.02) {
+          // Tier 1: Soft atmospheric bloom
+          if (clusterTier === 1) {
+            ctx.beginPath();
+            ctx.arc(sx, sy, dotRadius * 3.4, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(120, 165, 235, ${0.18 * lightIntensity})`;
+            ctx.fill();
+          }
 
-          // Crisp tiny warm-pale city light core
-          const coreAlpha = Math.min(1, luminosity + lightIntensity * 0.75);
+          // Tier 1 & 2: Secondary pale-blue glow
+          if (clusterTier <= 2) {
+            ctx.beginPath();
+            ctx.arc(sx, sy, dotRadius * 2.0, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(190, 215, 255, ${0.55 * lightIntensity})`;
+            ctx.fill();
+          }
+
+          // All tiers: Crisp cool-white city light core
           ctx.beginPath();
-          ctx.arc(sx, sy, dotRadius * 1.15, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(252, 250, 242, ${coreAlpha})`;
+          ctx.arc(sx, sy, dotRadius * 1.3, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(240, 245, 255, ${0.95 * Math.min(1, lightIntensity * 1.25)})`;
           ctx.fill();
         } else {
+          // Normal nocturnal continent point
           ctx.beginPath();
           ctx.arc(sx, sy, dotRadius, 0, Math.PI * 2);
           ctx.fillStyle = `rgba(${rVal}, ${gVal}, ${bVal}, ${luminosity})`;

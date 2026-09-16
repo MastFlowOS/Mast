@@ -48,7 +48,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
       if (!ticking) {
         ticking = true;
         requestAnimationFrame(() => {
-          // Slow, subtle gold sheen that drifts across the header as you
+          // Slow, subtle celestial sheen that drifts across the header as you
           // scroll — gives the bar a sense of moving with the page instead
           // of sitting as a static, flat-colored strip.
           setSheenOffset(window.scrollY * 0.25);
@@ -105,20 +105,20 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
       className={`sticky top-0 z-50 transition-all duration-300 overflow-hidden ${
         disableBackdropBlur
           ? scrolled
-            ? "border-b border-brand/20 shadow-[0_4px_30px_rgba(201,166,107,0.05)] bg-[#02040c]/85"
+            ? "border-b border-white/[0.08] shadow-[0_4px_30px_rgba(2,5,16,0.8)] bg-[#01030b]/85"
             : "border-b border-transparent bg-transparent"
           : scrolled
-            ? "border-b border-brand/20 bg-background/80 backdrop-blur-md shadow-[0_4px_30px_rgba(201,166,107,0.05)]"
+            ? "border-b border-white/[0.08] bg-background/80 backdrop-blur-md shadow-[0_4px_30px_rgba(2,5,16,0.8)]"
             : "border-b border-transparent bg-transparent backdrop-blur-none"
       }`}
     >
       {disableBackdropBlur && scrolled && (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 opacity-90"
+          className="pointer-events-none absolute inset-0 opacity-80"
           style={{
             backgroundImage:
-              "linear-gradient(115deg, transparent 15%, color-mix(in oklab, var(--brand, #c9a66b) 16%, transparent) 48%, transparent 82%)",
+              "linear-gradient(115deg, transparent 15%, rgba(91, 118, 184, 0.08) 48%, transparent 82%)",
             backgroundSize: "220% 100%",
             backgroundPositionX: `${-sheenOffset}px`,
           }}

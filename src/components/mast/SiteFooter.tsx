@@ -18,12 +18,7 @@ const socialButtons = [
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-border/50 pt-10 pb-6 px-6 mt-4 relative overflow-hidden">
-      {/* Subtle glow */}
-      <div
-        className="pointer-events-none absolute bottom-0 left-1/2 -translate-x-1/2 size-[300px] opacity-10 rounded-full"
-        style={{ background: "radial-gradient(closest-side, var(--brand), transparent)" }}
-      />
+    <footer className="border-t border-border/40 pt-10 pb-6 px-6 mt-4 relative overflow-hidden">
 
       <div className="max-w-7xl mx-auto relative">
         <div className="grid md:grid-cols-5 gap-6 mb-8">

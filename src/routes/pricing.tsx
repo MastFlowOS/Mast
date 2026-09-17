@@ -312,7 +312,7 @@ function PricingPage() {
       {/* SiteNav sits outside the atmosphere wrapper so the sky flows behind it, not as a hard strip */}
       <SiteNav />
 
-      <div className="relative z-10 min-h-screen text-foreground overflow-x-clip w-full">
+      <div className="mast-landing relative z-10 min-h-screen text-foreground overflow-x-clip w-full">
         {/* TOP: Hero + Plan cards share one full-width atmosphere (stronger clouds/haze behind the heading) */}
         <div className="relative overflow-x-clip">
           <SectionAtmosphere variant="pricingHero" />
@@ -655,13 +655,14 @@ function PricingPage() {
 
       {/* CTA */}
       <section className="relative z-10 px-6 pb-24">
-        <div className="max-w-4xl mx-auto relative rounded-3xl overflow-hidden border border-border/60 p-16 text-center animate-fade-up">
+        <div className="max-w-4xl mx-auto relative rounded-2xl overflow-hidden border border-border/60 p-10 md:p-16 text-center gradient-border animate-fade-up">
           <div className="absolute inset-0 bg-card" />
           <div
-            className="absolute inset-0 opacity-35"
+            className="pointer-events-none absolute inset-0 opacity-40"
             style={{ background: "radial-gradient(ellipse at center, color-mix(in oklab, var(--brand) 20%, transparent), transparent 70%)" }}
           />
           <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/50 to-transparent" />
+          <div className="absolute bottom-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/20 to-transparent" />
           <div className="relative">
             <p className="text-[11px] font-bold text-brand uppercase tracking-[0.2em] mb-5">Get started today</p>
             <h2 className="text-2xl md:text-3xl font-bold tracking-tight">

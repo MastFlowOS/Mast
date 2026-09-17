@@ -47,6 +47,21 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     let height = 0;
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
 
+    // Imperative CanvasGradient cache — avoids rebuilding gradients on every
+    // animation frame when the geometry they depend on hasn't changed.
+    // Each entry is invalidated independently based on the exact values used
+    // to construct it, so cached gradients remain visually identical to
+    // freshly-created ones; nothing here changes appearance.
+    type GradientCacheEntry = { key: string; gradient: CanvasGradient };
+    let atmoGlowCache: GradientCacheEntry | null = null;
+    let oceanBgCache: GradientCacheEntry | null = null;
+    let innerRimCache: GradientCacheEntry | null = null;
+    const invalidateGradientCaches = () => {
+      atmoGlowCache = null;
+      oceanBgCache = null;
+      innerRimCache = null;
+    };
+
     const resize = () => {
       const rect = container.getBoundingClientRect();
       width = rect.width || container.clientWidth || 360;
@@ -57,6 +72,9 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // Canvas dimensions changed — cached gradients are keyed on geometry
+      // derived from width/height, but invalidate explicitly to be safe.
+      invalidateGradientCaches();
     };
     resize();
     const ro = new ResizeObserver(resize);
@@ -223,11 +241,31 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
       // 1. Outer atmospheric limb scattering (Rayleigh haze hugging the outer edge)
       const envLimbBreath = 1 + Math.sin(currentNow * 0.00032) * 0.04;
-      const atmoGlow = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.94, cx, effectiveCY, effectiveR * 1.055);
-      atmoGlow.addColorStop(0, `rgba(56, 96, 192, ${0.16 * envLimbBreath})`);
-      atmoGlow.addColorStop(0.35, `rgba(42, 78, 168, ${0.09 * envLimbBreath})`);
-      atmoGlow.addColorStop(0.7, "rgba(30, 58, 138, 0.03)");
-      atmoGlow.addColorStop(1, "rgba(15, 23, 42, 0)");
+
+      // Geometry-only key — shared by the two gradients whose color stops
+      // never change (oceanBg, innerRim). During the "rotate" and "focus"
+      // phases (the large majority of runtime) cx/effectiveCY/effectiveR are
+      // frame-to-frame constant, so those gradients are reused as-is instead
+      // of being rebuilt every animation frame.
+      const geometryKey = `${cx}|${effectiveCY}|${effectiveR}`;
+      // atmoGlow's color stops depend on envLimbBreath, which drifts every
+      // frame (a slow continuous sine breathing effect), so it is included
+      // in its cache key. This preserves the exact per-frame breathing
+      // animation — atmoGlow will still be rebuilt whenever that value
+      // actually changes, same as before.
+      const atmoGlowKey = `${geometryKey}|${envLimbBreath}`;
+
+      let atmoGlow: CanvasGradient;
+      if (atmoGlowCache && atmoGlowCache.key === atmoGlowKey) {
+        atmoGlow = atmoGlowCache.gradient;
+      } else {
+        atmoGlow = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.94, cx, effectiveCY, effectiveR * 1.055);
+        atmoGlow.addColorStop(0, `rgba(56, 96, 192, ${0.16 * envLimbBreath})`);
+        atmoGlow.addColorStop(0.35, `rgba(42, 78, 168, ${0.09 * envLimbBreath})`);
+        atmoGlow.addColorStop(0.7, "rgba(30, 58, 138, 0.03)");
+        atmoGlow.addColorStop(1, "rgba(15, 23, 42, 0)");
+        atmoGlowCache = { key: atmoGlowKey, gradient: atmoGlow };
+      }
 
       ctx.beginPath();
       ctx.arc(cx, effectiveCY, effectiveR * 1.055, 0, Math.PI * 2);
@@ -240,27 +278,39 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       ctx.arc(cx, effectiveCY, effectiveR, 0, Math.PI * 2);
       ctx.clip();
 
-      const oceanBg = ctx.createRadialGradient(
-        cx - effectiveR * 0.25,
-        effectiveCY - effectiveR * 0.28,
-        effectiveR * 0.12,
-        cx,
-        effectiveCY,
-        effectiveR * 1.01
-      );
-      oceanBg.addColorStop(0, "rgba(8, 22, 54, 0.98)");
-      oceanBg.addColorStop(0.42, "rgba(6, 16, 42, 0.98)");
-      oceanBg.addColorStop(0.82, "rgba(4, 11, 28, 0.99)");
-      oceanBg.addColorStop(1, "rgba(3, 8, 22, 1)");
+      let oceanBg: CanvasGradient;
+      if (oceanBgCache && oceanBgCache.key === geometryKey) {
+        oceanBg = oceanBgCache.gradient;
+      } else {
+        oceanBg = ctx.createRadialGradient(
+          cx - effectiveR * 0.25,
+          effectiveCY - effectiveR * 0.28,
+          effectiveR * 0.12,
+          cx,
+          effectiveCY,
+          effectiveR * 1.01
+        );
+        oceanBg.addColorStop(0, "rgba(8, 22, 54, 0.98)");
+        oceanBg.addColorStop(0.42, "rgba(6, 16, 42, 0.98)");
+        oceanBg.addColorStop(0.82, "rgba(4, 11, 28, 0.99)");
+        oceanBg.addColorStop(1, "rgba(3, 8, 22, 1)");
+        oceanBgCache = { key: geometryKey, gradient: oceanBg };
+      }
 
       ctx.fillStyle = oceanBg;
       ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
 
       // Complete 360-degree spherical horizon definition ring
-      const innerRim = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.86, cx, effectiveCY, effectiveR);
-      innerRim.addColorStop(0, "rgba(0, 0, 0, 0)");
-      innerRim.addColorStop(0.72, "rgba(36, 68, 148, 0.10)");
-      innerRim.addColorStop(1, "rgba(68, 112, 210, 0.26)");
+      let innerRim: CanvasGradient;
+      if (innerRimCache && innerRimCache.key === geometryKey) {
+        innerRim = innerRimCache.gradient;
+      } else {
+        innerRim = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.86, cx, effectiveCY, effectiveR);
+        innerRim.addColorStop(0, "rgba(0, 0, 0, 0)");
+        innerRim.addColorStop(0.72, "rgba(36, 68, 148, 0.10)");
+        innerRim.addColorStop(1, "rgba(68, 112, 210, 0.26)");
+        innerRimCache = { key: geometryKey, gradient: innerRim };
+      }
       ctx.fillStyle = innerRim;
       ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
 

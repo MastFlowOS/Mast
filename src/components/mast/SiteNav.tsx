@@ -1,6 +1,6 @@
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
 import { Logo } from "./Logo";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Crosshair, Menu, X } from "lucide-react";
 import { useMe, useLogout } from "@/hooks/use-mast-api";
 
@@ -41,23 +41,33 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   const user = auth?.user ?? null;
   const logout = useLogout();
 
+  const scrolledRef = useRef(false);
+
   useEffect(() => {
-    let ticking = false;
+    let rafId = 0;
     const handler = () => {
-      setScrolled(window.scrollY > 12);
-      if (!ticking) {
-        ticking = true;
-        requestAnimationFrame(() => {
-          // Slow, subtle celestial sheen that drifts across the header as you
-          // scroll — gives the bar a sense of moving with the page instead
-          // of sitting as a static, flat-colored strip.
-          setSheenOffset(window.scrollY * 0.25);
-          ticking = false;
-        });
-      }
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        const scrollY = window.scrollY;
+
+        const nextScrolled = scrollY > 12;
+        if (nextScrolled !== scrolledRef.current) {
+          scrolledRef.current = nextScrolled;
+          setScrolled(nextScrolled);
+        }
+
+        // Slow, subtle celestial sheen that drifts across the header as you
+        // scroll — gives the bar a sense of moving with the page instead
+        // of sitting as a static, flat-colored strip.
+        setSheenOffset(scrollY * 0.25);
+      });
     };
     window.addEventListener("scroll", handler, { passive: true });
-    return () => window.removeEventListener("scroll", handler);
+    return () => {
+      window.removeEventListener("scroll", handler);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, []);
 
   /**

@@ -313,15 +313,17 @@ function PricingPage() {
       <SiteNav />
 
       <div className="mast-landing relative z-10 min-h-screen text-foreground overflow-x-clip w-full">
-        {/* TOP: Hero + Plan cards share one full-width atmosphere (stronger clouds/haze behind the heading) */}
-        <div className="relative overflow-x-clip">
+        {/* TOP: Hero + Plan cards share one full-width atmosphere (stronger clouds/haze behind the heading).
+            The -mt-16 lives here — on the same element that holds SectionAtmosphere — so the
+            atmosphere layer and the content both get pulled up under the sticky navbar together.
+            (Previously this margin was on the inner <section> only, which left the atmosphere
+            starting 64px lower than the content — the visible seam right under the navbar.) */}
+        <div className="relative overflow-x-clip -mt-16">
           <SectionAtmosphere variant="pricingHero" />
 
-          {/* Hero — pulled up under the sticky navbar (same as landing page) so the
-              navbar's own in-flow height doesn't stack with this section's top padding,
-              and trimmed further so the badge/heading sit closer to the navbar instead
-              of leaving a dead zone at the top of the first viewport. */}
-          <section className="relative z-10 -mt-16 pt-20 pb-20 px-6 text-center">
+          {/* Hero content — no margin of its own now; the wrapper above already sits flush
+              with the top of the viewport, behind the transparent navbar. */}
+          <section className="relative z-10 pt-20 pb-20 px-6 text-center">
             <div className="relative max-w-3xl mx-auto">
               <span className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[10px] font-bold uppercase tracking-wider mb-6">
                 Simple pricing · No contracts

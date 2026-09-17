@@ -317,8 +317,10 @@ function PricingPage() {
         <div className="relative overflow-x-clip">
           <SectionAtmosphere variant="pricingHero" />
 
-          {/* Hero */}
-          <section className="relative z-10 pt-28 pb-20 px-6 text-center">
+          {/* Hero — pulled up under the sticky navbar (same as landing page) so the
+              navbar's own in-flow height doesn't stack with this section's top padding
+              and create an oversized gap before the viewport's first frame. */}
+          <section className="relative z-10 -mt-16 pt-28 pb-20 px-6 text-center">
             <div className="relative max-w-3xl mx-auto">
               <span className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[10px] font-bold uppercase tracking-wider mb-6">
                 Simple pricing · No contracts

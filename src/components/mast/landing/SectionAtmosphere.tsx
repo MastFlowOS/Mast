@@ -9,6 +9,13 @@ type Star = {
   type: "drift-a" | "drift-b" | "breathe" | "twinkle";
   duration: number;
   delay: number;
+  // Only used for "breathe"/"twinkle" — per-star opacity floor/peaks fed to the
+  // keyframes as CSS vars, so each star's brightness range can differ from the
+  // site-wide default baked into the keyframes.
+  opMin?: number;
+  opMid1?: number;
+  opMax?: number;
+  opMid2?: number;
 };
 
 export type SectionAtmosphereVariant =
@@ -160,18 +167,27 @@ function generateStars(variant: SectionAtmosphereVariant): Star[] {
       seed = 601;
       break;
     case "pricingHero":
-      count = 30;
+      // Clearly-visible night sky over the Pricing hero — the first thing the
+      // page shows, so the star field needs real presence, not a hint of one.
+      count = 88;
       seed = 733;
       break;
     case "pricingMid":
-      count = 20;
+      // Comparison table + trust section: still an unmistakable star field,
+      // just a step down from the hero.
+      count = 50;
       seed = 811;
       break;
     case "pricingLower":
-      count = 14;
+      // AI tiers / credits / FAQ: sparser, but never an empty stretch of sky.
+      count = 34;
       seed = 877;
       break;
   }
+
+  // Pricing sections get a brighter baseline than the rest of the site so the
+  // stars read as an actual night sky rather than a barely-there texture.
+  const isPricing = variant === "pricingHero" || variant === "pricingMid" || variant === "pricingLower";
 
   const rand = () => {
     seed = (seed * 16807) % 2147483647;
@@ -190,31 +206,43 @@ function generateStars(variant: SectionAtmosphereVariant): Star[] {
     let size = 0.75 + rand() * 0.6;
     let opacity = 0.22;
     let delay = 0;
+    let opMin: number | undefined;
+    let opMid1: number | undefined;
+    let opMax: number | undefined;
+    let opMid2: number | undefined;
 
     if (roll < 0.65) {
-      // Group A (~65%): Mostly stable with slow micro-drift (0.15–0.35 opacity)
+      // Group A (~65%): Mostly stable with slow micro-drift — this is a static
+      // opacity (no opacity keyframes), so it's what actually reads as the
+      // baseline brightness of the sky.
       type = rand() > 0.5 ? "drift-a" : "drift-b";
       duration = 60 + rand() * 30;
-      opacity = 0.16 + rand() * 0.16;
+      opacity = isPricing ? 0.22 + rand() * 0.20 : 0.16 + rand() * 0.16;
       size = 0.7 + rand() * 0.5;
       delay = -(rand() * 35);
     } else if (roll < 0.90) {
-      // Group B (~25%): Gentle breathing (0.12–0.48 opacity)
+      // Group B (~25%): Gentle breathing between a floor and a peak.
       type = "breathe";
       duration = 5.5 + rand() * 4.0;
-      opacity = 0.14 + rand() * 0.20;
       size = 0.85 + rand() * 0.5;
       delay = -(rand() * 12);
+      opMin = isPricing ? 0.18 + rand() * 0.05 : 0.10 + rand() * 0.04;
+      opMax = isPricing ? 0.46 + rand() * 0.09 : 0.42 + rand() * 0.10;
+      opacity = opMax;
     } else {
-      // Group C (~10%): Noticeable twinkling (0.15–0.70 opacity)
+      // Group C (~10%): Noticeable twinkling, four-stop cycle.
       type = "twinkle";
       duration = 3.5 + rand() * 3.0;
-      opacity = 0.18 + rand() * 0.28;
       size = 0.95 + rand() * 0.55;
       delay = -(rand() * 8);
+      opMin = isPricing ? 0.20 + rand() * 0.05 : 0.13 + rand() * 0.04;
+      opMid1 = isPricing ? 0.36 + rand() * 0.08 : 0.30 + rand() * 0.08;
+      opMax = isPricing ? 0.58 + rand() * 0.12 : 0.62 + rand() * 0.10;
+      opMid2 = isPricing ? 0.34 + rand() * 0.08 : 0.32 + rand() * 0.08;
+      opacity = opMax;
     }
 
-    stars.push({ id: i, x, y, size, opacity, type, duration, delay });
+    stars.push({ id: i, x, y, size, opacity, type, duration, delay, opMin, opMid1, opMax, opMid2 });
   }
 
   return stars;
@@ -566,6 +594,10 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
                   opacity: star.opacity,
                   "--star-duration": `${star.duration}s`,
                   "--star-delay": `${star.delay}s`,
+                  ...(star.opMin !== undefined ? { "--star-op-min": star.opMin } : {}),
+                  ...(star.opMid1 !== undefined ? { "--star-op-mid1": star.opMid1 } : {}),
+                  ...(star.opMax !== undefined ? { "--star-op-max": star.opMax } : {}),
+                  ...(star.opMid2 !== undefined ? { "--star-op-mid2": star.opMid2 } : {}),
                 } as React.CSSProperties
               }
             />

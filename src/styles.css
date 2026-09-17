@@ -778,15 +778,15 @@
 }
 
 @keyframes star-breathe {
-  0%, 100% { opacity: 0.12; transform: scale(0.92); }
-  50% { opacity: 0.50; transform: scale(1.1); }
+  0%, 100% { opacity: var(--star-op-min, 0.12); transform: scale(0.92); }
+  50% { opacity: var(--star-op-max, 0.50); transform: scale(1.1); }
 }
 
 @keyframes star-twinkle {
-  0%, 100% { opacity: 0.15; transform: scale(0.85); }
-  25% { opacity: 0.35; transform: scale(1.0); }
-  55% { opacity: 0.70; transform: scale(1.25); }
-  75% { opacity: 0.38; transform: scale(1.02); }
+  0%, 100% { opacity: var(--star-op-min, 0.15); transform: scale(0.85); }
+  25% { opacity: var(--star-op-mid1, 0.35); transform: scale(1.0); }
+  55% { opacity: var(--star-op-max, 0.70); transform: scale(1.25); }
+  75% { opacity: var(--star-op-mid2, 0.38); transform: scale(1.02); }
 }
 
 .animate-atmo-cloud-macro {

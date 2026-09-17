@@ -803,6 +803,7 @@
 
 .animate-atmo-haze {
   animation: atmo-haze-pulse 90s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .animate-star-breathe {
@@ -821,6 +822,15 @@
   animation: star-drift-b 85s ease-in-out infinite var(--star-delay, 0s);
 }
 
+/*
+  Deliberately no `will-change` on the star classes above: with 150-200+ star
+  elements per page, promoting each to its own compositor layer would trade
+  the current (cheap: opacity+transform on ~1px circles, no filter) paint cost
+  for a much larger number of GPU layers/textures, which is a net loss. The
+  cloud-belt and haze layers below are the ones actually worth promoting —
+  there are only a handful of them and each carries real filter/blur cost.
+*/
+
 /* Continuous autonomous horizontal cloud wrapping (mathematically seamless) */
 @keyframes cloud-wrap-ltr {
   0% { transform: translate3d(-50%, 0, 0); }
@@ -834,63 +844,78 @@
 
 .animate-cloud-belt-macro {
   animation: cloud-wrap-ltr 115s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-secondary {
   animation: cloud-wrap-rtl 82s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-cirrus {
   animation: cloud-wrap-ltr 50s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-solutions {
   animation: cloud-wrap-rtl 90s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-features {
   animation: cloud-wrap-ltr 100s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-customers {
   animation: cloud-wrap-ltr 68s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-platform-a {
   animation: cloud-wrap-ltr 95s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-platform-b {
   animation: cloud-wrap-rtl 70s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-platform-c {
   animation: cloud-wrap-ltr 45s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-cta {
   animation: cloud-wrap-ltr 110s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-footer {
   animation: cloud-wrap-ltr 85s linear infinite;
+  will-change: transform;
 }
 
 /* Pricing page — dedicated atmosphere loops (time-based, never scroll-linked) */
 .animate-cloud-belt-pricing-macro {
   animation: cloud-wrap-ltr 118s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-pricing-secondary {
   animation: cloud-wrap-rtl 88s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-pricing-cirrus {
   animation: cloud-wrap-ltr 58s linear infinite;
+  will-change: transform;
 }
 
 .animate-cloud-belt-pricing-mid {
   animation: cloud-wrap-rtl 96s linear infinite;
+  will-change: transform;
 }
 
 @media (prefers-reduced-motion: reduce) {

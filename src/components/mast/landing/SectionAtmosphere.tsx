@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 
 type Star = {
   id: number;
@@ -33,10 +33,15 @@ export type SectionAtmosphereVariant =
 // ─── Global Night World Foundation (Continuous backdrop beneath all sections) ──
 // Prevents any atmospheric vacuums: ensures every section has faint global night tone,
 // sparse distant stars, and subtle ambient depth behind the entire page.
+// Star fields are generated once, synchronously, with useMemo rather than
+// useEffect+setState. The previous pattern rendered an empty star field on
+// first paint, then generated ~48-96 stars and re-rendered a moment later —
+// an extra unnecessary render pass (and a visible pop-in) on every mount.
+// useMemo computes the list during the initial render itself, so there is
+// only ever one render, and (since the deps are stable) the list is never
+// regenerated on re-render either.
 export function GlobalAtmosphereFoundation() {
-  const [globalStars, setGlobalStars] = useState<Star[]>([]);
-
-  useEffect(() => {
+  const globalStars = useMemo<Star[]>(() => {
     let seed = 42;
     const rand = () => {
       seed = (seed * 16807) % 2147483647;
@@ -67,7 +72,7 @@ export function GlobalAtmosphereFoundation() {
       list.push({ id: i, x, y, size, opacity, type, duration, delay });
     }
 
-    setGlobalStars(list);
+    return list;
   }, []);
 
   return (
@@ -257,11 +262,10 @@ function generateStars(variant: SectionAtmosphereVariant, starBoost = false): St
 }
 
 export function SectionAtmosphere({ variant, starBoost = false }: { variant: SectionAtmosphereVariant; starBoost?: boolean }) {
-  const [stars, setStars] = useState<Star[]>([]);
-
-  useEffect(() => {
-    setStars(generateStars(variant, starBoost));
-  }, [variant, starBoost]);
+  // See the comment on GlobalAtmosphereFoundation above: computed once via
+  // useMemo instead of useEffect+setState, so mounting a section (there are
+  // up to 10 of these on a single page) costs one render, not two.
+  const stars = useMemo(() => generateStars(variant, starBoost), [variant, starBoost]);
 
   // Soft vertical feathering with spatial overlap prevents rectangular boundary cutoffs
   const maskStyle: React.CSSProperties =

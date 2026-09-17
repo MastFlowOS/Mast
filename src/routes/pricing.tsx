@@ -318,9 +318,10 @@ function PricingPage() {
           <SectionAtmosphere variant="pricingHero" />
 
           {/* Hero — pulled up under the sticky navbar (same as landing page) so the
-              navbar's own in-flow height doesn't stack with this section's top padding
-              and create an oversized gap before the viewport's first frame. */}
-          <section className="relative z-10 -mt-16 pt-28 pb-20 px-6 text-center">
+              navbar's own in-flow height doesn't stack with this section's top padding,
+              and trimmed further so the badge/heading sit closer to the navbar instead
+              of leaving a dead zone at the top of the first viewport. */}
+          <section className="relative z-10 -mt-16 pt-20 pb-20 px-6 text-center">
             <div className="relative max-w-3xl mx-auto">
               <span className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[10px] font-bold uppercase tracking-wider mb-6">
                 Simple pricing · No contracts
@@ -644,9 +645,13 @@ function PricingPage() {
       </section>
       </div>
 
-      {/* FOOTER: same quiet, late-night treatment as the landing page footer */}
+      {/* CTA: the page's final atmospheric centerpiece — bright stars, slow clouds, and
+          haze that concentrate in the empty space around the card (not directly behind
+          the text) via the "cta" variant's radial mask, boosted to match the rest of
+          this page's brighter night sky. The card itself, its border, and its own
+          internal brand-tinted glow are unchanged. */}
       <div className="relative overflow-x-clip">
-        <SectionAtmosphere variant="footer" />
+        <SectionAtmosphere variant="cta" starBoost />
 
       {/* CTA */}
       <section className="relative z-10 px-6 pb-24">
@@ -686,9 +691,12 @@ function PricingPage() {
           </div>
         </div>
       </section>
-
-      <SiteFooter />
       </div>
+
+      {/* FOOTER: SiteFooter renders its own quiet, sparse-star "footer" atmosphere —
+          deepest night on the page, so the CTA's brighter sky fades into it naturally
+          rather than being doubled up on top of it. */}
+      <SiteFooter />
       </div>
     </>
   );

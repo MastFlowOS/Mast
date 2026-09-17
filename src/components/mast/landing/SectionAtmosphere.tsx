@@ -133,7 +133,7 @@ export function GlobalAtmosphereFoundation() {
 
 // ─── Section-Specific Atmosphere (Local Environmental Conditions) ─────────────
 
-function generateStars(variant: SectionAtmosphereVariant): Star[] {
+function generateStars(variant: SectionAtmosphereVariant, starBoost = false): Star[] {
   let count = 20;
   let seed = 100;
 
@@ -159,7 +159,9 @@ function generateStars(variant: SectionAtmosphereVariant): Star[] {
       seed = 479;
       break;
     case "cta":
-      count = 20;
+      // Boosted on the Pricing page (its CTA is the page's final atmospheric
+      // centerpiece); left at its original, quieter count on the landing page.
+      count = starBoost ? 42 : 20;
       seed = 541;
       break;
     case "footer":
@@ -169,25 +171,28 @@ function generateStars(variant: SectionAtmosphereVariant): Star[] {
     case "pricingHero":
       // Clearly-visible night sky over the Pricing hero — the first thing the
       // page shows, so the star field needs real presence, not a hint of one.
-      count = 88;
+      count = 96;
       seed = 733;
       break;
     case "pricingMid":
       // Comparison table + trust section: still an unmistakable star field,
       // just a step down from the hero.
-      count = 50;
+      count = 52;
       seed = 811;
       break;
     case "pricingLower":
       // AI tiers / credits / FAQ: sparser, but never an empty stretch of sky.
-      count = 34;
+      count = 36;
       seed = 877;
       break;
   }
 
-  // Pricing sections get a brighter baseline than the rest of the site so the
-  // stars read as an actual night sky rather than a barely-there texture.
-  const isPricing = variant === "pricingHero" || variant === "pricingMid" || variant === "pricingLower";
+  // Pricing sections (plus the boosted Pricing-page CTA) get a brighter
+  // baseline than the rest of the site so the stars read as an actual night
+  // sky rather than a barely-there texture.
+  const isPricing =
+    variant === "pricingHero" || variant === "pricingMid" || variant === "pricingLower" ||
+    (variant === "cta" && starBoost);
 
   const rand = () => {
     seed = (seed * 16807) % 2147483647;
@@ -248,12 +253,12 @@ function generateStars(variant: SectionAtmosphereVariant): Star[] {
   return stars;
 }
 
-export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVariant }) {
+export function SectionAtmosphere({ variant, starBoost = false }: { variant: SectionAtmosphereVariant; starBoost?: boolean }) {
   const [stars, setStars] = useState<Star[]>([]);
 
   useEffect(() => {
-    setStars(generateStars(variant));
-  }, [variant]);
+    setStars(generateStars(variant, starBoost));
+  }, [variant, starBoost]);
 
   // Soft vertical feathering with spatial overlap prevents rectangular boundary cutoffs
   const maskStyle: React.CSSProperties =
@@ -349,7 +354,7 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
 
       {variant === "cta" && (
         <div
-          className="absolute inset-0 blur-[125px] mix-blend-screen opacity-[0.024] pointer-events-none"
+          className={`absolute inset-0 blur-[125px] mix-blend-screen pointer-events-none ${starBoost ? "opacity-[0.036] animate-atmo-haze" : "opacity-[0.024]"}`}
           style={{
             background:
               "radial-gradient(ellipse 85% 55% at 50% 50%, rgba(65, 100, 185, 0.7) 0%, transparent 75%)",
@@ -495,10 +500,12 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
         </div>
       )}
 
-      {/* CTA Section: Quiet, late-night atmospheric presence with subtle horizontal motion */}
+      {/* CTA Section: quiet, late-night presence on landing; on Pricing (starBoost) this
+          is the page's final atmospheric centerpiece, so the clouds get a touch more
+          presence while the radial mask still keeps them subordinate to the card text. */}
       {variant === "cta" && (
         <div
-          className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.055]"
+          className={`absolute inset-0 overflow-hidden pointer-events-none ${starBoost ? "opacity-[0.075]" : "opacity-[0.055]"}`}
           style={{
             maskImage:
               "radial-gradient(ellipse 70% 55% at 50% 50%, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.85) 70%, rgba(0,0,0,0.95) 100%)",

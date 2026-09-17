@@ -385,6 +385,19 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
                 "radial-gradient(ellipse 92% 60% at 50% 30%, rgba(70, 110, 200, 0.75) 0%, rgba(35, 65, 140, 0.25) 60%, transparent 85%)",
             }}
           />
+          {/* Navbar-integration reinforcement: this page's atmosphere box already extends
+              to y=0 behind the transparent navbar (via the -mt-16 wrapper in pricing.tsx),
+              but the haze above peaks at 30% down — leaving the very top edge (the strip
+              directly behind the navbar) noticeably dimmer than the rest of the hero. This
+              second layer hugs top-0 specifically so that zone reads as clearly part of the
+              same night sky the instant the page loads, not just technically-present. */}
+          <div
+            className="absolute inset-x-0 top-0 h-[38%] blur-[110px] mix-blend-screen opacity-[0.034] pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(ellipse 100% 100% at 50% 0%, rgba(80, 120, 210, 0.8) 0%, rgba(40, 70, 150, 0.3) 55%, transparent 85%)",
+            }}
+          />
           <div
             className="absolute left-[10%] top-[35%] w-[70%] max-w-[900px] h-[45vh] blur-[135px] mix-blend-screen opacity-[0.020] pointer-events-none"
             style={{
@@ -569,14 +582,19 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
         <div
           className="absolute inset-0 overflow-hidden pointer-events-none"
           style={{
+            // Full opacity (1.0, not 0.9) right at 0% — the top edge sits directly behind
+            // the navbar, so cloud coverage needs to be at full strength there, not slightly
+            // faded, or that strip reads as thinner than the rest of the hero.
             maskImage:
-              "linear-gradient(to bottom, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.75) 55%, rgba(0,0,0,0.4) 100%)",
+              "linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,0.75) 55%, rgba(0,0,0,0.4) 100%)",
             WebkitMaskImage:
-              "linear-gradient(to bottom, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.75) 55%, rgba(0,0,0,0.4) 100%)",
+              "linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,0.75) 55%, rgba(0,0,0,0.4) 100%)",
           }}
         >
-          {/* Macro cloud belt: ~118s loop */}
-          <div className="absolute top-[8%] inset-x-0 h-[46%] overflow-hidden">
+          {/* Macro cloud belt: ~118s loop — starts slightly above the box's own top edge
+              (top-[-2%], matching the landing hero's overscan approach) so there's genuine
+              cloud coverage right at y=0, not just the tail end of a band starting at 8%. */}
+          <div className="absolute top-[-2%] inset-x-0 h-[46%] overflow-hidden">
             <div className="flex w-[200%] h-full animate-cloud-belt-pricing-macro">
               <PricingCloudTileMacro idSuffix="pm1" />
               <PricingCloudTileMacro idSuffix="pm2" />

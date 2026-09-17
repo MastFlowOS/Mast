@@ -317,7 +317,26 @@ function PricingPage() {
             The -mt-16 lives here — on the same element that holds SectionAtmosphere — so the
             atmosphere layer and the content both get pulled up under the sticky navbar together.
             (Previously this margin was on the inner <section> only, which left the atmosphere
-            starting 64px lower than the content — the visible seam right under the navbar.) */}
+            starting 64px lower than the content — the visible seam right under the navbar.)
+
+            This is the exact same compositing model the Landing page's <Hero> uses:
+              1. SiteNav is sticky + transparent-until-scrolled, and lives OUTSIDE this
+                 atmosphere wrapper entirely (see above) — it never gets a background of
+                 its own at rest, so whatever paints behind it shows straight through.
+              2. This wrapper sits in normal flow right after SiteNav, then pulls itself
+                 up by exactly the navbar's height (-mt-16 = -64px = h-16) so its own top
+                 edge lands at y=0 — the same y-coordinate as the top of the page/navbar.
+              3. SectionAtmosphere is absolutely positioned "top-0 -bottom-24" inside this
+                 wrapper, so it starts painting at that same y=0 and is unaffected by the
+                 hero <section>'s own pt-20 (that padding only shifts the copy, never the
+                 atmosphere, which is why the atmosphere can never be "pushed down" by hero
+                 content changes).
+              4. Stacking order (root-level siblings, ordered by z-index): Global foundation
+                 (fixed, z=-10) < this wrapper (relative, z=10, inherited from the
+                 .mast-landing ancestor) < SiteNav (sticky, z=50). So at scroll=0 the paint
+                 order is: deep-space base → pricingHero haze/clouds/stars → transparent
+                 navbar on top — a continuous night sky with the navbar floating in it,
+                 never a flat strip above it. */}
         <div className="relative overflow-x-clip -mt-16">
           <SectionAtmosphere variant="pricingHero" />
 

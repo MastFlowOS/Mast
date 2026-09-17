@@ -175,14 +175,17 @@ function generateStars(variant: SectionAtmosphereVariant, starBoost = false): St
       seed = 733;
       break;
     case "pricingMid":
-      // Comparison table + trust section: still an unmistakable star field,
-      // just a step down from the hero.
-      count = 52;
+      // Comparison + Pipeline sections: still an unmistakable star field,
+      // just a step down from the hero. Sized up slightly so the field reads
+      // as populated across both sections' full height, not just up top.
+      count = 62;
       seed = 811;
       break;
     case "pricingLower":
-      // AI tiers / credits / FAQ: sparser, but never an empty stretch of sky.
-      count = 36;
+      // Trust / AI tiers / credits / FAQ — four sections' worth of height,
+      // so this needs real coverage to avoid reading as empty in the lower
+      // two-thirds of the zone, while staying calmer than pricingMid.
+      count = 58;
       seed = 877;
       break;
   }
@@ -392,26 +395,53 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
         </>
       )}
 
-      {/* Pricing — mid zone (comparison + usage): lighter, thinner atmospheric presence */}
+      {/* Pricing — mid zone (comparison + usage): lighter, thinner atmospheric presence,
+          spread across both the Compare and Pipeline sections rather than pooling at the top. */}
       {variant === "pricingMid" && (
-        <div
-          className="absolute inset-0 blur-[120px] mix-blend-screen opacity-[0.018] pointer-events-none"
-          style={{
-            background:
-              "radial-gradient(ellipse 80% 45% at 50% 45%, rgba(65, 100, 185, 0.6) 0%, transparent 75%)",
-          }}
-        />
+        <>
+          <div
+            className="absolute left-[6%] top-[4%] w-[75%] max-w-[900px] h-[50%] blur-[120px] mix-blend-screen opacity-[0.020] pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(ellipse 80% 60% at 50% 45%, rgba(65, 100, 185, 0.6) 0%, transparent 75%)",
+            }}
+          />
+          <div
+            className="absolute right-[8%] top-[52%] w-[70%] max-w-[860px] h-[48%] blur-[125px] mix-blend-screen opacity-[0.016] pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(ellipse 78% 55% at 50% 50%, rgba(55, 90, 170, 0.55) 0%, transparent 75%)",
+            }}
+          />
+        </>
       )}
 
-      {/* Pricing — lower zone (trust / AI tiers / credits / FAQ): sparse stars + faint haze only */}
+      {/* Pricing — lower zone (trust / AI tiers / credits / FAQ): four sections' worth of
+          height, so haze is layered top-to-bottom instead of one faint centered patch. */}
       {variant === "pricingLower" && (
-        <div
-          className="absolute inset-0 blur-[125px] mix-blend-screen opacity-[0.012] pointer-events-none"
-          style={{
-            background:
-              "radial-gradient(ellipse 75% 40% at 50% 50%, rgba(55, 90, 170, 0.5) 0%, transparent 75%)",
-          }}
-        />
+        <>
+          <div
+            className="absolute left-[8%] top-[2%] w-[72%] max-w-[860px] h-[44%] blur-[125px] mix-blend-screen opacity-[0.020] pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(ellipse 75% 55% at 50% 45%, rgba(60, 95, 178, 0.55) 0%, transparent 75%)",
+            }}
+          />
+          <div
+            className="absolute right-[6%] top-[38%] w-[68%] max-w-[820px] h-[40%] blur-[128px] mix-blend-screen opacity-[0.017] pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(ellipse 72% 50% at 50% 50%, rgba(55, 90, 170, 0.5) 0%, transparent 75%)",
+            }}
+          />
+          <div
+            className="absolute left-[10%] top-[74%] w-[65%] max-w-[780px] h-[36%] blur-[125px] mix-blend-screen opacity-[0.015] pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(ellipse 70% 45% at 50% 50%, rgba(55, 90, 170, 0.5) 0%, transparent 75%)",
+            }}
+          />
+        </>
       )}
 
       {/* 2. Autonomous Horizontally Moving Cloud Formations */}
@@ -569,12 +599,56 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
         </div>
       )}
 
-      {/* Pricing mid zone: single light, thin cloud band */}
+      {/* Pricing mid zone: two independent, overlapping formations — reusing the exact same
+          Landing tile renderers (Solutions + Platform-upper) — so Compare gets a large slow
+          belt and Pipeline gets its own thin, opposite-direction belt instead of one thin
+          band pooled at the top of the whole zone. */}
       {variant === "pricingMid" && (
-        <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.05]">
-          <div className="flex w-[200%] h-full animate-cloud-belt-pricing-mid">
-            <PricingMidCloudTile idSuffix="pmid1" />
-            <PricingMidCloudTile idSuffix="pmid2" />
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          {/* Compare area: large, slow belt (same renderer as Landing's Solutions section) */}
+          <div className="absolute top-[2%] inset-x-0 h-[52%] overflow-hidden opacity-[0.065]">
+            <div className="flex w-[200%] h-full animate-cloud-belt-solutions">
+              <SolutionsCloudTile idSuffix="pmid-cmp1" />
+              <SolutionsCloudTile idSuffix="pmid-cmp2" />
+            </div>
+          </div>
+          {/* Pipeline area: thinner, opposite-direction belt (same renderer as Landing's
+              Platform upper wisps), overlapping the Compare formation for a seamless handoff */}
+          <div className="absolute top-[46%] inset-x-0 h-[54%] overflow-hidden opacity-[0.05]">
+            <div className="flex w-[200%] h-full animate-cloud-belt-platform-c">
+              <PlatformCloudTileUpper idSuffix="pmid-pipe1" />
+              <PlatformCloudTileUpper idSuffix="pmid-pipe2" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pricing lower zone: three independent, overlapping formations spanning Trust, AI,
+          Data and FAQ — reusing the same Landing tile renderers (Platform-lower, Features,
+          and the existing Pricing cirrus tile) at different phases/speeds/positions so the
+          whole zone reads as one continuous night sky rather than a dead stretch. */}
+      {variant === "pricingLower" && (
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          {/* Trust → AI area: broken, drifting cloud bank */}
+          <div className="absolute top-[0%] inset-x-0 h-[44%] overflow-hidden opacity-[0.048]">
+            <div className="flex w-[200%] h-full animate-cloud-belt-platform-b">
+              <PlatformCloudTileLower idSuffix="plow-trust1" />
+              <PlatformCloudTileLower idSuffix="plow-trust2" />
+            </div>
+          </div>
+          {/* AI → Data area: wide, low-contrast formation */}
+          <div className="absolute top-[32%] inset-x-0 h-[42%] overflow-hidden opacity-[0.04]">
+            <div className="flex w-[200%] h-full animate-cloud-belt-features">
+              <FeaturesCloudTile idSuffix="plow-ai1" />
+              <FeaturesCloudTile idSuffix="plow-ai2" />
+            </div>
+          </div>
+          {/* Data → FAQ area: thin cirrus, carrying the sky into the CTA's own atmosphere */}
+          <div className="absolute top-[68%] inset-x-0 h-[38%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-pricing-cirrus">
+              <PricingCloudTileCirrus idSuffix="plow-faq1" />
+              <PricingCloudTileCirrus idSuffix="plow-faq2" />
+            </div>
           </div>
         </div>
       )}
@@ -1104,47 +1178,6 @@ function PricingCloudTileCirrus({ idSuffix }: { idSuffix: string }) {
           </mask>
         </defs>
         <rect width="1600" height="320" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
-      </svg>
-    </div>
-  );
-}
-
-function PricingMidCloudTile({ idSuffix }: { idSuffix: string }) {
-  const filterId = `price-mid-cloud-${idSuffix}`;
-  const maskId = `price-mid-mask-${idSuffix}`;
-  return (
-    <div className="w-1/2 h-full shrink-0 relative mix-blend-screen">
-      <svg className="w-full h-full" viewBox="0 0 1600 340" preserveAspectRatio="none">
-        <defs>
-          <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
-            <feTurbulence
-              type="fractalNoise"
-              baseFrequency="0.0025 0.0095"
-              numOctaves="3"
-              result="noise"
-              seed="204"
-              stitchTiles="stitch"
-            />
-            <feColorMatrix
-              type="matrix"
-              values="
-                0 0 0 0 0.21
-                0 0 0 0 0.31
-                0 0 0 0 0.51
-                2.0 0 0 0 -0.85"
-            />
-          </filter>
-          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
-            <stop offset="25%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="75%" stopColor="#ffffff" stopOpacity="1" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </linearGradient>
-          <mask id={`m-${maskId}`}>
-            <rect width="1600" height="340" fill={`url(#${maskId})`} />
-          </mask>
-        </defs>
-        <rect width="1600" height="340" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );

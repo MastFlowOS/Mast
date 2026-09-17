@@ -876,6 +876,23 @@
   animation: cloud-wrap-ltr 85s linear infinite;
 }
 
+/* Pricing page — dedicated atmosphere loops (time-based, never scroll-linked) */
+.animate-cloud-belt-pricing-macro {
+  animation: cloud-wrap-ltr 118s linear infinite;
+}
+
+.animate-cloud-belt-pricing-secondary {
+  animation: cloud-wrap-rtl 88s linear infinite;
+}
+
+.animate-cloud-belt-pricing-cirrus {
+  animation: cloud-wrap-ltr 58s linear infinite;
+}
+
+.animate-cloud-belt-pricing-mid {
+  animation: cloud-wrap-rtl 96s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-atmo-cloud-macro,
   .animate-atmo-cloud-secondary,
@@ -891,6 +908,10 @@
   .animate-cloud-belt-platform-c,
   .animate-cloud-belt-cta,
   .animate-cloud-belt-footer,
+  .animate-cloud-belt-pricing-macro,
+  .animate-cloud-belt-pricing-secondary,
+  .animate-cloud-belt-pricing-cirrus,
+  .animate-cloud-belt-pricing-mid,
   .animate-atmo-haze,
   .animate-star-breathe,
   .animate-star-twinkle,

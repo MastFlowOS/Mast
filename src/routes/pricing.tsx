@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
+import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
 import {
   CheckCircle2,
   XCircle,
@@ -305,55 +306,63 @@ function FaqItem({ q, a }: { q: string; a: string }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 function PricingPage() {
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <>
+      {/* Global night world foundation: same deep-space backdrop as the landing page */}
+      <GlobalAtmosphereFoundation />
+      {/* SiteNav sits outside the atmosphere wrapper so the sky flows behind it, not as a hard strip */}
       <SiteNav />
 
-      {/* Hero */}
-      <section className="relative pt-28 pb-20 px-6 overflow-hidden text-center">
-        <div className="pointer-events-none absolute inset-0 bg-grid opacity-[0.15] [mask-image:radial-gradient(ellipse_at_top,black_20%,transparent_65%)]" />
-        <div
-          className="pointer-events-none absolute top-[-150px] left-1/2 -translate-x-1/2 size-[600px] rounded-full opacity-25 animate-pulse-glow"
-          style={{ background: "radial-gradient(closest-side, var(--brand), transparent)" }}
-        />
-        <div className="relative max-w-3xl mx-auto">
-          <span className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[10px] font-bold uppercase tracking-wider mb-6">
-            Simple pricing · No contracts
-          </span>
-          <h1 className="animate-fade-up delay-100 text-[clamp(2.2rem,6vw,3.5rem)] font-bold tracking-tight mb-5">
-            Pay for outcomes,<br />not seat counts.
-          </h1>
-          <p className="animate-fade-up delay-200 text-muted-foreground text-[1rem] leading-relaxed max-w-xl mx-auto">
-            Every plan includes the full platform — opportunity discovery, relationship data, pipeline,
-            and AI assistance. Upgrade when you need more volume.
-          </p>
-        </div>
-      </section>
+      <div className="relative z-10 min-h-screen text-foreground overflow-x-clip w-full">
+        {/* TOP: Hero + Plan cards share one full-width atmosphere (stronger clouds/haze behind the heading) */}
+        <div className="relative overflow-x-clip">
+          <SectionAtmosphere variant="pricingHero" />
 
-      {/* Plan cards */}
-      <section className="px-6 pb-24">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {tiers.map((t, i) => (
-              <div key={t.name} className="animate-fade-up" style={{ animationDelay: `${i * 80}ms` }}>
-                <PlanCard
-                  name={t.name}
-                  price={t.price}
-                  desc={t.desc}
-                  features={t.features}
-                  cta={t.cta}
-                  popular={t.popular}
-                />
+          {/* Hero */}
+          <section className="relative z-10 pt-28 pb-20 px-6 text-center">
+            <div className="relative max-w-3xl mx-auto">
+              <span className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand/10 border border-brand/30 text-brand text-[10px] font-bold uppercase tracking-wider mb-6">
+                Simple pricing · No contracts
+              </span>
+              <h1 className="animate-fade-up delay-100 text-[clamp(2.2rem,6vw,3.5rem)] font-bold tracking-tight mb-5">
+                Pay for outcomes,<br />not seat counts.
+              </h1>
+              <p className="animate-fade-up delay-200 text-muted-foreground text-[1rem] leading-relaxed max-w-xl mx-auto">
+                Every plan includes the full platform — opportunity discovery, relationship data, pipeline,
+                and AI assistance. Upgrade when you need more volume.
+              </p>
+            </div>
+          </section>
+
+          {/* Plan cards */}
+          <section className="relative z-10 px-6 pb-24">
+            <div className="max-w-7xl mx-auto">
+              <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {tiers.map((t, i) => (
+                  <div key={t.name} className="animate-fade-up" style={{ animationDelay: `${i * 80}ms` }}>
+                    <PlanCard
+                      name={t.name}
+                      price={t.price}
+                      desc={t.desc}
+                      features={t.features}
+                      cta={t.cta}
+                      popular={t.popular}
+                    />
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          <p className="text-center text-xs text-muted-foreground mt-6 animate-fade-up delay-400">
-            7-day money-back guarantee · No contracts · Cancel anytime
-          </p>
+              <p className="text-center text-xs text-muted-foreground mt-6 animate-fade-up delay-400">
+                7-day money-back guarantee · No contracts · Cancel anytime
+              </p>
+            </div>
+          </section>
         </div>
-      </section>
+
+      {/* MID: Comparison + usage sections share a lighter, quieter atmosphere */}
+      <div className="relative overflow-x-clip">
+        <SectionAtmosphere variant="pricingMid" />
 
       {/* Comparison table */}
-      <section className="px-6 pb-24 border-t border-border/50">
+      <section className="relative z-10 px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
             <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Compare</span>
@@ -420,7 +429,7 @@ function PricingPage() {
       </section>
 
       {/* How daily limits work */}
-      <section className="px-6 pb-24 border-t border-border/50">
+      <section className="relative z-10 px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
             <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Usage</span>
@@ -474,9 +483,14 @@ function PricingPage() {
           </div>
         </div>
       </section>
+      </div>
+
+      {/* LOWER: Trust, AI tiers, credits and FAQ share a sparser stars + faint haze atmosphere */}
+      <div className="relative overflow-x-clip">
+        <SectionAtmosphere variant="pricingLower" />
 
       {/* Trust */}
-      <section className="px-6 pb-24 border-t border-border/50">
+      <section className="relative z-10 px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
             <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Trust</span>
@@ -520,7 +534,7 @@ function PricingPage() {
       </section>
 
       {/* AI tiers */}
-      <section className="px-6 pb-24 border-t border-border/50">
+      <section className="relative z-10 px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
             <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">AI Assistance</span>
@@ -576,7 +590,7 @@ function PricingPage() {
       </section>
 
       {/* How Discovery Credits Work */}
-      <section className="px-6 pb-24 border-t border-border/50">
+      <section className="relative z-10 px-6 pb-24 border-t border-border/50">
         <div className="max-w-5xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
             <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">How Discovery Credits Work</span>
@@ -613,7 +627,7 @@ function PricingPage() {
       </section>
 
       {/* FAQ — now accordion */}
-      <section className="px-6 pb-24 border-t border-border/50">
+      <section className="relative z-10 px-6 pb-24 border-t border-border/50">
         <div className="max-w-3xl mx-auto pt-20">
           <div className="text-center mb-14 animate-fade-up">
             <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">FAQ</span>
@@ -626,9 +640,14 @@ function PricingPage() {
           </div>
         </div>
       </section>
+      </div>
+
+      {/* FOOTER: same quiet, late-night treatment as the landing page footer */}
+      <div className="relative overflow-x-clip">
+        <SectionAtmosphere variant="footer" />
 
       {/* CTA */}
-      <section className="px-6 pb-24">
+      <section className="relative z-10 px-6 pb-24">
         <div className="max-w-4xl mx-auto relative rounded-3xl overflow-hidden border border-border/60 p-16 text-center animate-fade-up">
           <div className="absolute inset-0 bg-card" />
           <div
@@ -667,6 +686,8 @@ function PricingPage() {
       </section>
 
       <SiteFooter />
-    </div>
+      </div>
+      </div>
+    </>
   );
 }

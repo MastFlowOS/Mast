@@ -11,7 +11,17 @@ type Star = {
   delay: number;
 };
 
-export type SectionAtmosphereVariant = "hero" | "solutions" | "features" | "platform" | "customers" | "cta" | "footer";
+export type SectionAtmosphereVariant =
+  | "hero"
+  | "solutions"
+  | "features"
+  | "platform"
+  | "customers"
+  | "cta"
+  | "footer"
+  | "pricingHero"
+  | "pricingMid"
+  | "pricingLower";
 
 // ─── Global Night World Foundation (Continuous backdrop beneath all sections) ──
 // Prevents any atmospheric vacuums: ensures every section has faint global night tone,
@@ -149,6 +159,18 @@ function generateStars(variant: SectionAtmosphereVariant): Star[] {
       count = 18;
       seed = 601;
       break;
+    case "pricingHero":
+      count = 30;
+      seed = 733;
+      break;
+    case "pricingMid":
+      count = 20;
+      seed = 811;
+      break;
+    case "pricingLower":
+      count = 14;
+      seed = 877;
+      break;
   }
 
   const rand = () => {
@@ -207,7 +229,7 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
 
   // Soft vertical feathering with spatial overlap prevents rectangular boundary cutoffs
   const maskStyle: React.CSSProperties =
-    variant === "hero"
+    variant === "hero" || variant === "pricingHero"
       ? {
           WebkitMaskImage: "linear-gradient(to bottom, black 0%, black 82%, transparent 100%)",
           maskImage: "linear-gradient(to bottom, black 0%, black 82%, transparent 100%)",
@@ -223,7 +245,7 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
         };
 
   const verticalPositionClass =
-    variant === "hero"
+    variant === "hero" || variant === "pricingHero"
       ? "top-0 -bottom-24"
       : variant === "footer"
       ? "-top-24 bottom-0"
@@ -313,6 +335,48 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
           style={{
             background:
               "radial-gradient(ellipse 85% 60% at 50% 40%, rgba(60, 95, 175, 0.65) 0%, transparent 75%)",
+          }}
+        />
+      )}
+
+      {/* Pricing — top zone (hero + plan cards): slightly stronger depth behind the heading */}
+      {variant === "pricingHero" && (
+        <>
+          <div
+            className="absolute inset-0 blur-[130px] mix-blend-screen opacity-[0.030] animate-atmo-haze pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(ellipse 92% 60% at 50% 30%, rgba(70, 110, 200, 0.75) 0%, rgba(35, 65, 140, 0.25) 60%, transparent 85%)",
+            }}
+          />
+          <div
+            className="absolute left-[10%] top-[35%] w-[70%] max-w-[900px] h-[45vh] blur-[135px] mix-blend-screen opacity-[0.020] pointer-events-none"
+            style={{
+              background:
+                "radial-gradient(ellipse at 50% 50%, rgba(55, 90, 175, 0.6) 0%, transparent 75%)",
+            }}
+          />
+        </>
+      )}
+
+      {/* Pricing — mid zone (comparison + usage): lighter, thinner atmospheric presence */}
+      {variant === "pricingMid" && (
+        <div
+          className="absolute inset-0 blur-[120px] mix-blend-screen opacity-[0.018] pointer-events-none"
+          style={{
+            background:
+              "radial-gradient(ellipse 80% 45% at 50% 45%, rgba(65, 100, 185, 0.6) 0%, transparent 75%)",
+          }}
+        />
+      )}
+
+      {/* Pricing — lower zone (trust / AI tiers / credits / FAQ): sparse stars + faint haze only */}
+      {variant === "pricingLower" && (
+        <div
+          className="absolute inset-0 blur-[125px] mix-blend-screen opacity-[0.012] pointer-events-none"
+          style={{
+            background:
+              "radial-gradient(ellipse 75% 40% at 50% 50%, rgba(55, 90, 170, 0.5) 0%, transparent 75%)",
           }}
         />
       )}
@@ -431,6 +495,51 @@ export function SectionAtmosphere({ variant }: { variant: SectionAtmosphereVaria
               <FooterCloudTile idSuffix="ft1" />
               <FooterCloudTile idSuffix="ft2" />
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pricing hero + plan-card zone: full-width macro/secondary/cirrus bands, time-driven only */}
+      {variant === "pricingHero" && (
+        <div
+          className="absolute inset-0 overflow-hidden pointer-events-none"
+          style={{
+            maskImage:
+              "linear-gradient(to bottom, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.75) 55%, rgba(0,0,0,0.4) 100%)",
+            WebkitMaskImage:
+              "linear-gradient(to bottom, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.75) 55%, rgba(0,0,0,0.4) 100%)",
+          }}
+        >
+          {/* Macro cloud belt: ~118s loop */}
+          <div className="absolute top-[8%] inset-x-0 h-[46%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-pricing-macro">
+              <PricingCloudTileMacro idSuffix="pm1" />
+              <PricingCloudTileMacro idSuffix="pm2" />
+            </div>
+          </div>
+          {/* Secondary cloud belt: ~88s loop, opposite direction */}
+          <div className="absolute top-[34%] inset-x-0 h-[42%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-pricing-secondary">
+              <PricingCloudTileSecondary idSuffix="ps1" />
+              <PricingCloudTileSecondary idSuffix="ps2" />
+            </div>
+          </div>
+          {/* Fine cirrus: ~58s loop */}
+          <div className="absolute top-[58%] inset-x-0 h-[38%] overflow-hidden">
+            <div className="flex w-[200%] h-full animate-cloud-belt-pricing-cirrus">
+              <PricingCloudTileCirrus idSuffix="pc1" />
+              <PricingCloudTileCirrus idSuffix="pc2" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pricing mid zone: single light, thin cloud band */}
+      {variant === "pricingMid" && (
+        <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-[0.05]">
+          <div className="flex w-[200%] h-full animate-cloud-belt-pricing-mid">
+            <PricingMidCloudTile idSuffix="pmid1" />
+            <PricingMidCloudTile idSuffix="pmid2" />
           </div>
         </div>
       )}
@@ -833,6 +942,170 @@ function CTACloudTile({ idSuffix }: { idSuffix: string }) {
           </mask>
         </defs>
         <rect width="1600" height="380" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+      </svg>
+    </div>
+  );
+}
+
+function PricingCloudTileMacro({ idSuffix }: { idSuffix: string }) {
+  const filterId = `price-macro-cloud-${idSuffix}`;
+  const maskId = `price-macro-mask-${idSuffix}`;
+  return (
+    <div className="w-1/2 h-full shrink-0 relative opacity-[0.09] mix-blend-screen">
+      <svg className="w-full h-full" viewBox="0 0 1600 400" preserveAspectRatio="none">
+        <defs>
+          <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0017 0.0072"
+              numOctaves="4"
+              result="noise"
+              seed="146"
+              stitchTiles="stitch"
+            />
+            <feColorMatrix
+              type="matrix"
+              values="
+                0 0 0 0 0.20
+                0 0 0 0 0.30
+                0 0 0 0 0.52
+                2.3 0 0 0 -0.85"
+            />
+          </filter>
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="22%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="78%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </linearGradient>
+          <mask id={`m-${maskId}`}>
+            <rect width="1600" height="400" fill={`url(#${maskId})`} />
+          </mask>
+        </defs>
+        <rect width="1600" height="400" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+      </svg>
+    </div>
+  );
+}
+
+function PricingCloudTileSecondary({ idSuffix }: { idSuffix: string }) {
+  const filterId = `price-sec-cloud-${idSuffix}`;
+  const maskId = `price-sec-mask-${idSuffix}`;
+  return (
+    <div className="w-1/2 h-full shrink-0 relative opacity-[0.07] mix-blend-screen">
+      <svg className="w-full h-full" viewBox="0 0 1600 360" preserveAspectRatio="none">
+        <defs>
+          <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0023 0.0088"
+              numOctaves="4"
+              result="noise"
+              seed="169"
+              stitchTiles="stitch"
+            />
+            <feColorMatrix
+              type="matrix"
+              values="
+                0 0 0 0 0.22
+                0 0 0 0 0.32
+                0 0 0 0 0.55
+                2.1 0 0 0 -0.85"
+            />
+          </filter>
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="25%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="75%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </linearGradient>
+          <mask id={`m-${maskId}`}>
+            <rect width="1600" height="360" fill={`url(#${maskId})`} />
+          </mask>
+        </defs>
+        <rect width="1600" height="360" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+      </svg>
+    </div>
+  );
+}
+
+function PricingCloudTileCirrus({ idSuffix }: { idSuffix: string }) {
+  const filterId = `price-cirrus-cloud-${idSuffix}`;
+  const maskId = `price-cirrus-mask-${idSuffix}`;
+  return (
+    <div className="w-1/2 h-full shrink-0 relative opacity-[0.055] mix-blend-screen">
+      <svg className="w-full h-full" viewBox="0 0 1600 320" preserveAspectRatio="none">
+        <defs>
+          <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0031 0.0118"
+              numOctaves="3"
+              result="noise"
+              seed="188"
+              stitchTiles="stitch"
+            />
+            <feColorMatrix
+              type="matrix"
+              values="
+                0 0 0 0 0.25
+                0 0 0 0 0.36
+                0 0 0 0 0.60
+                1.9 0 0 0 -0.8"
+            />
+          </filter>
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="30%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="70%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </linearGradient>
+          <mask id={`m-${maskId}`}>
+            <rect width="1600" height="320" fill={`url(#${maskId})`} />
+          </mask>
+        </defs>
+        <rect width="1600" height="320" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
+      </svg>
+    </div>
+  );
+}
+
+function PricingMidCloudTile({ idSuffix }: { idSuffix: string }) {
+  const filterId = `price-mid-cloud-${idSuffix}`;
+  const maskId = `price-mid-mask-${idSuffix}`;
+  return (
+    <div className="w-1/2 h-full shrink-0 relative mix-blend-screen">
+      <svg className="w-full h-full" viewBox="0 0 1600 340" preserveAspectRatio="none">
+        <defs>
+          <filter id={filterId} x="0%" y="0%" width="100%" height="100%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.0025 0.0095"
+              numOctaves="3"
+              result="noise"
+              seed="204"
+              stitchTiles="stitch"
+            />
+            <feColorMatrix
+              type="matrix"
+              values="
+                0 0 0 0 0.21
+                0 0 0 0 0.31
+                0 0 0 0 0.51
+                2.0 0 0 0 -0.85"
+            />
+          </filter>
+          <linearGradient id={maskId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="25%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="75%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </linearGradient>
+          <mask id={`m-${maskId}`}>
+            <rect width="1600" height="340" fill={`url(#${maskId})`} />
+          </mask>
+        </defs>
+        <rect width="1600" height="340" filter={`url(#${filterId})`} mask={`url(#m-${maskId})`} />
       </svg>
     </div>
   );

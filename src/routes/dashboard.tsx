@@ -5,9 +5,10 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { Fragment, useEffect, useRef, useState, useCallback } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { useAccount, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
+import { useNavIndicator } from "@/hooks/use-nav-indicator";
 import { DevPlanSwitcher } from "@/components/mast/DevPlanSwitcher";
 import {
   Crosshair, Search, Kanban, Bell, Settings, LogOut, X,
@@ -67,44 +68,32 @@ function DashboardLayout() {
   }, [authLoading, navigate, user]);
 
   // ── Sidebar indicator — measured dynamically based on DOM layout ─────
-  const navContainerRef = useRef<HTMLElement>(null);
-  const itemRefs = useRef<Map<string, HTMLAnchorElement>>(new Map());
-  const [indicator, setIndicator] = useState<{ top: number; height: number; opacity: number }>({
-    top: 0,
-    height: 40,
-    opacity: 0,
-  });
-
+  //
+  // Root cause of the "pill disappears after reload / after returning to a
+  // backgrounded tab" bug: this component early-returns a "Loading
+  // workspace…" placeholder (below) while `authLoading` is true, so on a
+  // fresh mount the <nav> — and therefore the container/item refs — don't
+  // exist yet. The first measurement finds a null container and measures
+  // nothing, leaving the indicator at its default `{ opacity: 0 }`. Once
+  // `useMe()` resolves and the real layout renders, `activeTo` (the route)
+  // is unchanged, so a plain `useRef` container gave the remeasure effect
+  // nothing to react to — it never re-ran, and the pill stayed invisible
+  // even though the route/active-item match (text/icon color) was always
+  // correct. A discarded-and-reloaded background tab (Chrome frees memory
+  // for hidden tabs and silently reloads them when you switch back) hits
+  // the exact same fresh-mount path, which is why switching tabs "for a
+  // while" reproduced it too.
+  //
+  // Fix (see src/hooks/use-nav-indicator.ts): the container is tracked via
+  // a state-backed callback ref instead of a plain useRef, so its identity
+  // changes at the exact moment the <nav> mounts, guaranteeing a remeasure
+  // right then — regardless of whether `activeTo` changed. `activeTo`
+  // remains the sole source of truth for *which* item is active.
   const activeTo = NAV.find((item) =>
     item.exact ? pathname === item.to : pathname.startsWith(item.to)
   )?.to || NAV[0].to;
 
-  const measureItem = useCallback((to: string) => {
-    const container = navContainerRef.current;
-    const el = itemRefs.current.get(to);
-    if (!container || !el) return null;
-    const cr = container.getBoundingClientRect();
-    const er = el.getBoundingClientRect();
-    return { top: er.top - cr.top + container.scrollTop, height: er.height };
-  }, []);
-
-  useEffect(() => {
-    const update = () => {
-      const m = measureItem(activeTo);
-      if (m) {
-        setIndicator({ top: m.top, height: m.height, opacity: 1 });
-      }
-    };
-    
-    update();
-    const raf = requestAnimationFrame(update);
-
-    window.addEventListener("resize", update);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", update);
-    };
-  }, [activeTo, measureItem]);
+  const { indicator, setContainer: setNavContainer, registerItem } = useNavIndicator(activeTo);
 
   // ── Notification state ────────────────────────────────────────────────────
   const [notifOpen, setNotifOpen] = useState(false);
@@ -229,7 +218,7 @@ function DashboardLayout() {
               <indicator absolute>  ← translated by safeIdx; accounts for p-3 offset
               <div space-y p-3>     ← normal-flow items; items start at 12px from nav top
         */}
-        <nav ref={navContainerRef} className="relative flex-1 overflow-y-auto">
+        <nav ref={(el) => setNavContainer(el)} className="relative flex-1 overflow-y-auto">
           {/* Gliding indicator — positioned to match the p-3 item container */}
           <div
             aria-hidden="true"
@@ -271,10 +260,7 @@ function DashboardLayout() {
                   )}
                   <Link
                     to={item.to}
-                    ref={(el: HTMLAnchorElement | null) => {
-                      if (el) itemRefs.current.set(item.to, el);
-                      else itemRefs.current.delete(item.to);
-                    }}
+                    ref={(el: HTMLAnchorElement | null) => registerItem(item.to, el)}
                     className={cn(
                       "relative z-10 flex items-center gap-3 px-3 py-2 rounded-lg",
                       "text-sm font-medium transition-colors duration-150",
@@ -306,10 +292,7 @@ function DashboardLayout() {
                   />
                   <Link
                     to={opsTo}
-                    ref={(el: HTMLAnchorElement | null) => {
-                      if (el) itemRefs.current.set(opsTo, el);
-                      else itemRefs.current.delete(opsTo);
-                    }}
+                    ref={(el: HTMLAnchorElement | null) => registerItem(opsTo, el)}
                     className={cn(
                       "relative z-10 flex items-center gap-3 px-3 py-2 rounded-lg",
                       "text-sm font-medium transition-colors duration-150",

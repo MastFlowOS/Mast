@@ -1,6 +1,6 @@
-# Mast Netlify + Replit Deployment
+# Mast Vercel + Railway Deployment
 
-## Frontend: Netlify
+## Frontend: Vercel
 
 Set this environment variable in Netlify:
 

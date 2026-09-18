@@ -11,7 +11,18 @@ import { computeDispatchSlots } from "./cityScheduling.js";
 export type DiscoveryPlanRequest = {
   scrapeJobId: string;
   userId: string;
-  planId?: string;       // resolved plan tier id (e.g. "pro") — optional, used for priority banding
+  // Resolved BILLING TIER id (e.g. "free" | "starter" | "pro" | "premium") —
+  // used for priority banding and concurrency-cap lookups. Deliberately
+  // named `planTierId`, NOT `planId`: `planId` elsewhere in this module and
+  // in discoveryPlanJob.ts/DiscoveryPlanPayload/DiscoveryTaskPayload always
+  // means the discovery_plans.id UUID. A prior version of this field was
+  // named `planId` and, once spread into the pg-boss payload alongside the
+  // real `planId: <uuid>` key (see enqueueDiscoveryPlan below), silently
+  // clobbered the UUID with the tier string ("free") — the worker then
+  // looked up discovery_plans.id = 'free', found nothing, and every Free
+  // discovery run silently no-opped (queued forever, zero discovery_tasks
+  // created). Keep these two concepts under permanently different names.
+  planTierId?: string;
   /**
    * The user's geographic scope selection — continent today (e.g. "North
    * America"), country in the future. This is the ONLY geographic input a
@@ -54,7 +65,11 @@ export async function enqueueDiscoveryPlan(request: DiscoveryPlanRequest): Promi
   if (error) throw error;
 
   const boss = await getBoss();
-  await boss.send(QUEUES.discoveryPlan, { planId: data.id, ...request });
+  // `planId` (the discovery_plans.id UUID) is spread LAST and explicitly,
+  // so it can never be shadowed by any field already present on `request`
+  // — see DiscoveryPlanRequest.planTierId's doc comment for the incident
+  // this guards against.
+  await boss.send(QUEUES.discoveryPlan, { ...request, planId: data.id });
   return data.id as string;
 }
 
@@ -220,8 +235,8 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
   // Scale intra-plan yield-based rank into the plan tier’s priority band so
   // cross-tier ordering (premium > pro > starter > free) and within-tier
   // ordering (high-yield cities first) compose without collision.
-  // request.planId is the billing plan tier id ("free"|"starter"|"pro"|"premium").
-  const tierConfig = getPlan(request.planId ?? null);
+  // request.planTierId is the billing plan tier id ("free"|"starter"|"pro"|"premium").
+  const tierConfig = getPlan(request.planTierId ?? null);
   const { base: bandBase, ceiling: bandCeiling } = tierConfig.priorityBand;
   const bandWidth = bandCeiling - bandBase; // e.g. 9 for a 10-point band
 
@@ -246,7 +261,7 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
         // user's REAL billing tier instead of silently defaulting to
         // "free" (workerConcurrency: 2) for every task, every plan, always
         // — see discover.ts's now-fixed enqueueDiscoveryPlan call for the
-        // other half of this. tierConfig.id (not raw request.planId) so an
+        // other half of this. tierConfig.id (not raw request.planTierId) so an
         // unrecognised/missing tier normalises to "free" the same way
         // getPlan() already does, instead of storing an invalid id.
         plan_tier_id: tierConfig.id,
@@ -323,7 +338,7 @@ export async function dispatchQueuedDiscoveryTasks(planId: string, request: Disc
     .select("status, delivered_count, requested_count, user_id").eq("id", planId).maybeSingle();
   if (!plan || plan.status === "cancelled" || plan.status === "completed" || plan.delivered_count >= plan.requested_count) return;
 
-  const concurrencyCap = getPlanConcurrency((request.planId as PlanId) ?? "free", env.PLAN_CONCURRENCY_OVERRIDES);
+  const concurrencyCap = getPlanConcurrency((request.planTierId as PlanId) ?? "free", env.PLAN_CONCURRENCY_OVERRIDES);
 
   const { count: runningCount } = await db
     .from("discovery_tasks")

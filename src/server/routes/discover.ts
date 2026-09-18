@@ -148,7 +148,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         scrapeJobId: job.id,
         userId,
         // AUDIT FIX (Phase 3B concurrency audit): this was never passed
-        // before, so every downstream getPlan(request.planId ?? null) /
+        // before, so every downstream getPlan(request.planTierId ?? null) /
         // getPlanConcurrency() call silently fell back to the "free" tier
         // — both the priority band (materializeDiscoveryPlan) AND, after
         // this phase's dispatch fix, the per-user worker-concurrency cap
@@ -157,7 +157,18 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         // 0-9, cap 2) regardless of their actual billing tier. See
         // planner.ts's plan_tier_id row field for the other half of this
         // fix.
-        planId: plan.id,
+        //
+        // NOTE: this field is named `planTierId` (never `planId`) on
+        // purpose — `planId` is reserved everywhere downstream (pg-boss
+        // discovery.plan payload, DiscoveryPlanPayload, DiscoveryTaskPayload,
+        // discovery_tasks.plan_id) for the discovery_plans.id UUID. This
+        // was the exact production incident: this field used to be named
+        // `planId: plan.id` ("free"), and enqueueDiscoveryPlan's pg-boss
+        // payload spread it in a way that clobbered the real UUID with the
+        // string "free", so handleDiscoveryPlanJob looked up
+        // discovery_plans.id = 'free', found no row, and returned early —
+        // every Free discovery run queued forever with zero discovery_tasks.
+        planTierId: plan.id,
         region: body.region,
         niche: body.niche,
         channels: body.channels,

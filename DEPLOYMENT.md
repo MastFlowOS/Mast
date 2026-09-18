@@ -2,7 +2,8 @@
 
 ## Frontend: Vercel
 
-Set this environment variable in Netlify:
+Set this environment variable in Vercel
+:
 
 ```text
 VITE_API_URL=https://your-replit-backend.replit.app

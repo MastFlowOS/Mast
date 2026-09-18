@@ -5,8 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useGenerateOutreachDraft, useMe, useRecordLeadActivity, useSettings } from "@/hooks/use-mast-api";
-import { isMissingBackendEndpoint, type Lead, type OutreachGenerationAction, type OutreachTone } from "@/lib/api";
+import { type Lead, type OutreachGenerationAction, type OutreachTone } from "@/lib/api";
 import { normalizeDraftResponse, TEMPLATES, type DraftContent } from "@/lib/lead-workspace";
+import { useFreeOutreach } from "@/hooks/use-free-outreach";
+import { isFreeTemplateKey } from "@/lib/outreach/templates";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
 import { LockedFeatureCard } from "@/components/mast/LockedFeatureCard";
 
@@ -24,83 +26,13 @@ const REWRITE_TONES: { tone: OutreachTone; label: string }[] = [
   { tone: "direct", label: "Rewrite Direct" },
 ];
 
-// Template-specific fallback content when AI endpoint is unavailable
-function buildFallbackDraft(
-  template: string,
-  channel: Channel,
-  lead: Lead,
-  senderName: string,
-): DraftContent {
-  const name = lead.businessName;
-  const ig = lead.instagramHandle ? `@${lead.instagramHandle.replace(/^@/, "")}` : name;
-  const niche = lead.niche ?? "your business";
-  const sender = senderName || "a web designer";
-
-  if (channel === "instagram") {
-    switch (template) {
-      case "follow_up_2day":
-        return {
-          body: `Hey ${ig} 👋 Just wanted to follow up on my message from a couple days ago. I work with ${niche} businesses on branding and web presence — would love to chat if you're open to it!\n\n– ${senderName || ""}`.trim(),
-        };
-      case "follow_up_5day":
-        return {
-          body: `Hi ${ig}! Checking in one more time — I help ${niche} brands stand out online with clean, conversion-focused design. Happy to share some ideas specific to your brand. No pressure!\n\n– ${senderName || ""}`.trim(),
-        };
-      case "objection_handling":
-        return {
-          body: `Hey ${ig} — totally understand if now isn't the right time, or budget's tight. I work with businesses at all stages and offer flexible options. Even a quick chat could be valuable. Open to a 15-min call?\n\n– ${senderName || ""}`.trim(),
-        };
-      case "reengagement":
-        return {
-          body: `Hey ${ig}! It's been a while — hope ${name} is doing well. I've been helping ${niche} businesses refresh their online presence lately and had some ideas for you. Worth a quick chat?\n\n– ${senderName || ""}`.trim(),
-        };
-      default:
-        return {
-          body: `Hey ${ig}! 👋 I came across ${name} and love what you're building. I'm ${sender} who specializes in working with ${niche} brands — I think I could add real value to your online presence. Would love to connect!\n\n– ${senderName || ""}`.trim(),
-        };
-    }
-  }
-
-  // Email templates
-  switch (template) {
-    case "follow_up_2day":
-      return {
-        subject: `Following up — ${name}`,
-        body: `Hi,\n\nI wanted to follow up on my previous message regarding ${name}'s online presence.\n\nI specialize in working with ${niche} businesses and I genuinely believe there's an opportunity to strengthen your brand and attract more customers through your website and design.\n\nWould you be open to a quick 15-minute call this week?\n\nBest,\n${senderName}`.trim(),
-      };
-    case "follow_up_5day":
-      return {
-        subject: `Last note — ${name}`,
-        body: `Hi,\n\nI know your inbox is busy, so I'll keep this brief — this is my last follow-up.\n\nI help ${niche} businesses like ${name} create a polished digital presence that converts visitors into customers. If timing isn't right now, no worries at all.\n\nWhenever you're ready to invest in your brand's online experience, I'd love to be the one to help.\n\nAll the best,\n${senderName}`.trim(),
-      };
-    case "objection_handling":
-      return {
-        subject: `A few thoughts on your concerns — ${name}`,
-        body: `Hi,\n\nI appreciate you getting back to me. I want to address a few common concerns:\n\n**"It's not the right time"** — Design work can be phased to fit your schedule and cash flow.\n\n**"It's too expensive"** — I offer flexible pricing tailored to ${niche} businesses at different growth stages.\n\n**"We handle it in-house"** — I work collaboratively and can supplement your team rather than replace it.\n\nWould a quick 15-minute call help clarify things?\n\nBest,\n${senderName}`.trim(),
-      };
-    case "reengagement":
-      return {
-        subject: `Reconnecting — ${name}`,
-        body: `Hi,\n\nI hope ${name} has been thriving since we last spoke. I wanted to reach back out because I've been thinking about a few specific ideas that could be a great fit for your brand.\n\nA lot has changed in the ${niche} space — new design trends, conversion patterns, and customer expectations. I'd love to walk you through what I'm seeing and how it could apply to you.\n\nWould you be open to catching up this week?\n\nBest,\n${senderName}`.trim(),
-      };
-    case "pricing_transition":
-      return {
-        subject: `A note on pricing — ${name}`,
-        body: `Hi,\n\nI wanted to reach out personally because I'm updating my service packages and pricing structure.\n\nCurrently, I'm offering a limited number of spots at my current rates before the change takes effect. Given your business in the ${niche} space, I thought this might be timely.\n\nIf you've been considering a refresh of your website or brand, now is a great time to lock in. Happy to talk through options.\n\nBest,\n${senderName}`.trim(),
-      };
-    default:
-      return {
-        subject: `Quick question for ${name}`,
-        body: `Hi,\n\nI came across ${name} and was genuinely impressed — it's clear you care about the quality of your work.\n\nI'm a web designer and brand consultant who specializes in helping ${niche} businesses build a polished online presence that attracts more of the right customers.\n\nI'd love to share a few ideas specific to your brand — would you be open to a quick 15-minute call this week?\n\nBest,\n${senderName}`.trim(),
-      };
-  }
-}
-
 export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssistantProps) {
   const { data: settings } = useSettings();
   const { data: auth } = useMe();
   const generateDraft = useGenerateOutreachDraft();
   const recordActivity = useRecordLeadActivity();
+  const freeOutreach = useFreeOutreach(lead);
+  const [isGeneratingFree, setIsGeneratingFree] = useState(false);
   const [drafts, setDrafts] = useState<Partial<Record<Channel, DraftContent>>>({});
   const [insertedDraftKey, setInsertedDraftKey] = useState<string | null>(null);
   const [template, setTemplate] = useState("initial");
@@ -109,7 +41,7 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
   const draft = drafts[channel] ?? null;
   const sourceSubject = draft?.subject ?? subject;
   const sourceBody = draft?.body ?? body;
-  const isGenerating = generateDraft.isPending;
+  const isGenerating = generateDraft.isPending || isGeneratingFree;
   const senderName = settings?.senderName ?? auth?.user?.fullName ?? "";
   const channelLabel =
     channel === "email"
@@ -171,15 +103,49 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
 
       toast.success(action === "rewrite" ? "Draft rewritten" : "Draft generated");
     } catch (error) {
-      if (isMissingBackendEndpoint(error)) {
-        // Fallback: generate template-specific content locally
-        const fallback = buildFallbackDraft(template, channel, lead, senderName);
-        setDrafts((current) => ({ ...current, [channel]: fallback }));
-        toast.success("Draft ready (template-based)");
-        return;
-      }
       const message = error instanceof Error ? error.message : "Could not generate outreach draft.";
       toast.error(message);
+    }
+  };
+
+  /**
+   * The deterministic Free path. Entirely local apart from the existing
+   * deterministic Opportunity Explanation read — it never touches
+   * generateOutreachDraft() or any AI endpoint.
+   */
+  const runFreeGeneration = async () => {
+    if (!isFreeTemplateKey(template)) {
+      toast.error("That template is part of the AI plan.");
+      return;
+    }
+    setInsertedDraftKey(null);
+    setIsGeneratingFree(true);
+    try {
+      const result = await freeOutreach.generate(template, channel, senderName);
+      if (!result.ok) {
+        toast.error(result.detail);
+        return;
+      }
+      const nextDraft: DraftContent = { subject: result.subject ?? undefined, body: result.body };
+      setDrafts((current) => ({ ...current, [channel]: nextDraft }));
+
+      // A generated draft is NOT a send: message_generated only, never a
+      // lastContactedAt patch and never a genuine-send activity type.
+      void recordActivity.mutateAsync({
+        lead,
+        activity: {
+          type: "message_generated",
+          channel,
+          subject: nextDraft.subject,
+          body: nextDraft.body,
+          content: `${channelLabel} draft generated (${TEMPLATES.find((t) => t.value === template)?.label ?? template})`,
+          metadata: { template, angleComponent: result.angleComponent, angleSource: result.angleSource },
+        },
+      });
+
+      toast.success("Draft ready");
+    } finally {
+      setIsGeneratingFree(false);
     }
   };
 
@@ -189,6 +155,17 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
     setInsertedDraftKey(`${channel}:${draft.subject ?? ""}:${draft.body}`);
     toast.success("Draft inserted into editor");
   };
+
+  // Deterministic eligibility for the currently-selected template. Shown
+  // inline next to the disabled Generate button rather than failing on click.
+  const templateIsFree = isFreeTemplateKey(template);
+  const eligibility = templateIsFree ? freeOutreach.checkEligibility(template) : null;
+  const refusalReason =
+    !templateIsFree
+      ? "Objection Handling is part of the AI plan and isn't generated locally."
+      : eligibility !== true && eligibility !== null
+        ? eligibility.refusalReason
+        : null;
 
   const draftKey = draft ? `${channel}:${draft.subject ?? ""}:${draft.body}` : null;
   const inserted = draftKey !== null && insertedDraftKey === draftKey;
@@ -206,8 +183,8 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
       </div>
 
       <Button
-        onClick={() => runAI("generate")}
-        disabled={isGenerating}
+        onClick={() => void runFreeGeneration()}
+        disabled={isGenerating || refusalReason !== null}
         className="w-full gap-2 bg-brand hover:bg-brand/90 text-brand-foreground"
       >
         {isGenerating ? (
@@ -221,6 +198,10 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
         )}
       </Button>
 
+      {refusalReason && (
+        <p className="text-[11px] text-muted-foreground -mt-3">{refusalReason}</p>
+      )}
+
       <div className="space-y-3 rounded-xl border border-border bg-background p-3">
         <div className="space-y-1.5">
           <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Template</p>
@@ -232,6 +213,7 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
               {TEMPLATES.map((item) => (
                 <SelectItem key={item.value} value={item.value}>
                   {item.label}
+                  {item.tier === "ai" ? " (AI plan)" : ""}
                 </SelectItem>
               ))}
             </SelectContent>

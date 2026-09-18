@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useRecordLeadActivity } from "@/hooks/use-mast-api";
 import type { Lead } from "@/lib/api";
+import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 
 interface ContactFormProps {
   lead: Lead;
@@ -72,6 +73,7 @@ export function ContactForm({ lead, body, setBody }: ContactFormProps) {
           body,
           timestamp: sentAt,
           content: "Contact form message marked sent",
+          metadata: getDraftProvenance(lead.id, "contact_form"),
         },
         patch: {
           status: "outreach",

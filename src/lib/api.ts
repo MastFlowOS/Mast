@@ -1,4 +1,5 @@
 import type { GenerationMode, PlanId, PlanConfig } from "./plans";
+import { getDraftProvenance } from "./outreach/draftProvenance";
 import { getPlan, PLANS } from "./plans";
 import { supabase } from "./supabase";
 import { addNotification } from "./notifications";
@@ -2001,7 +2002,9 @@ export async function updateFollowup(id: number | string, body: {
 
 // ─── Outreach draft (AI endpoint — stub that returns a local fallback) ─────────
 // The AI generation feature requires the Mast Lead Engine.
-// The AIAssistant component handles isMissingBackendEndpoint via its own fallback.
+// Free generation does NOT come through here — it is deterministic and local
+// (src/lib/outreach/pipeline.ts). This stub is the Paid/AI path only, still
+// used by AIAssistant rewrite/objection actions.
 export async function generateOutreachDraft(_leadId: number, _body: OutreachDraftRequest): Promise<OutreachDraftResponse> {
   throw new ApiError(501, "AI outreach generation requires the Mast Lead Engine backend.", { code: "ENGINE_NOT_CONNECTED" });
 }
@@ -2038,13 +2041,20 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
   });
 
   // Record lead activity
+  // Structured outreach continuity, attached to the genuine send. Rides on
+  // the existing lead_activities.metadata column — no new table, no
+  // migration — and is null when the body wasn't produced by the
+  // deterministic generator.
+  const continuityMetadata = getDraftProvenance(leadId, "email");
+
   await createLeadActivity(leadId, {
     type: "email_sent",
     timestamp: new Date().toISOString(),
     content: `Sent email: "${body.subject}"`,
     channel: "email",
     subject: body.subject,
-    body: body.body
+    body: body.body,
+    metadata: continuityMetadata,
   });
 
   // Create message record

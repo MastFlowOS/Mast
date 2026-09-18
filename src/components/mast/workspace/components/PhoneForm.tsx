@@ -5,6 +5,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useRecordLeadActivity } from "@/hooks/use-mast-api";
 import type { Lead } from "@/lib/api";
+import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 import { appendVisibleNote } from "@/lib/lead-workspace";
 
 interface PhoneFormProps {
@@ -57,6 +58,7 @@ export function PhoneForm({ lead, body, setBody }: PhoneFormProps) {
           channel: "phone",
           body,
           timestamp: completedAt,
+          metadata: getDraftProvenance(lead.id, "phone"),
           content: trimmedNotes ? `Call completed: ${trimmedNotes.slice(0, 100)}` : "Call completed",
         },
         patch,

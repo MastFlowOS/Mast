@@ -28,75 +28,53 @@ export const Route = createFileRoute("/dashboard/leads/$leadId")({
 });
 
 import { useEffect } from "react";
+import { useFreeOutreach } from "@/hooks/use-free-outreach";
+import { useMe, useSettings } from "@/hooks/use-mast-api";
+import type { OutreachChannel } from "@/lib/api";
 
-function buildDefaultDraftsForLead(lead: Lead): Record<Channel, ComposeDraft> {
-  const name = lead.businessName;
-  const niche = lead.niche || "your industry";
-  const location = lead.location || "your area";
-  const ig = lead.instagramHandle ? `@${lead.instagramHandle.replace(/^@/, "")}` : name;
-
-  return {
-    email: {
-      subject: `Partnership proposal for ${name}`,
-      body: `Hi,
-
-I came across ${name} while researching top-performing businesses in the ${niche} vertical in ${location}. 
-
-I noticed a couple of quick improvements that could help you capture more inbound customers from your online presence. Specifically, we've helped similar brands increase conversion rates by optimizing mobile checkouts and customer booking forms.
-
-Would you be open to a quick 5-minute chat next week to see some examples?
-
-Best,
-[Your Name]
-MAST OS`,
-    },
-    instagram: {
-      subject: "",
-      body: `Hey ${ig} 👋 I came across ${name} and really liked your posts. I help ${niche} brands optimize their mobile branding and conversion pathways. Would love to send over a quick mockup if you're open to it? No pressure at all!`,
-    },
-    phone: {
-      subject: "",
-      body: `[Phone Script]
-      
-"Hi, is this the owner or manager at ${name}? 
-Great. My name is [Your Name], and I'm calling because I specialize in helping ${niche} companies in ${location} capture more customers from their website. 
-
-I was looking at your mobile booking page and noticed a quick fix that could prevent potential customers from bouncing. 
-
-Do you have 2 minutes to talk, or should I send over a quick email with the details?"`,
-    },
-    contact_form: {
-      subject: "Quick question regarding website optimization",
-      body: `Hi team,
-
-I came across your contact form while auditing websites in the ${niche} sector. 
-
-I noticed a quick adjustment you could make to the booking flow of ${name} that could help prevent customer drop-off. 
-
-If you are open to it, I'd love to share the recommendation. Where is the best place to send it?
-
-Best,
-[Your Name]`,
-    },
-  };
-}
+const DEFAULT_DRAFT_CHANNELS: OutreachChannel[] = ["email", "instagram", "phone", "contact_form"];
 
 function LeadWorkspace() {
   const { leadId } = Route.useParams();
   const navigate = useNavigate();
   const { data: lead, isLoading, isError } = useLead(leadId);
 
+  const { data: settings } = useSettings();
+  const { data: auth } = useMe();
+  const freeOutreach = useFreeOutreach(lead);
+
   const [channel, setChannel] = useState<Channel>("email");
   const [drafts, setDrafts] = useState<Record<Channel, ComposeDraft>>(emptyDrafts);
   const [loadedLeadId, setLoadedLeadId] = useState<number | null>(null);
   const activeDraft = drafts[channel];
 
+  const senderName = settings?.senderName ?? auth?.user?.fullName ?? "";
+
+  // Default drafts come from the SAME deterministic pipeline the Generate
+  // button uses — there is no second message-generation system, and no
+  // fabricated placeholder copy. If the lead has no profession resolved,
+  // the drafts stay empty rather than falling back to profession-neutral
+  // filler.
   useEffect(() => {
-    if (lead && lead.id !== loadedLeadId) {
-      setDrafts(buildDefaultDraftsForLead(lead));
-      setLoadedLeadId(lead.id);
-    }
-  }, [lead, loadedLeadId]);
+    if (!lead || lead.id === loadedLeadId) return;
+    let cancelled = false;
+    setLoadedLeadId(lead.id);
+
+    void (async () => {
+      const next: Record<Channel, ComposeDraft> = { ...emptyDrafts };
+      for (const target of DEFAULT_DRAFT_CHANNELS) {
+        const result = await freeOutreach.generate("initial", target, senderName);
+        if (result.ok) {
+          next[target] = { subject: result.subject ?? "", body: result.body };
+        }
+      }
+      if (!cancelled) setDrafts(next);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lead, loadedLeadId, freeOutreach, senderName]);
 
   const setSubject = (subject: string) => {
     setDrafts((current) => ({

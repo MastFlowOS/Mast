@@ -168,15 +168,31 @@ export const CHANNELS: { value: OutreachChannel; label: string }[] = [
   { value: "contact_form", label: "Contact Form" },
 ];
 
-export const TEMPLATES = [
-  { value: "initial", label: "Initial Outreach" },
-  { value: "follow_up_2day", label: "Follow-up (2 days)" },
-  { value: "follow_up_5day", label: "Follow-up (5 days)" },
-  { value: "buried_bump", label: "Buried Bump" },
-  { value: "objection_handling", label: "Objection Handling" },
-  { value: "reengagement", label: "Re-engagement" },
-  { value: "pricing_transition", label: "Pricing Transition" },
+/**
+ * Which generator a template belongs to. `free` templates are produced by
+ * the deterministic local generator (src/lib/outreach/**) with no AI call
+ * of any kind; `ai` templates belong to the Paid/AI path and are never
+ * routed through the deterministic pipeline.
+ */
+export type TemplateTier = "free" | "ai";
+
+/**
+ * The template registry. Values are unchanged — this is the same list the
+ * UI has always exposed, extended with the minimum metadata needed to
+ * tell the Free deterministic templates apart from the Paid/AI one,
+ * rather than duplicated into a second hardcoded list.
+ */
+export const TEMPLATES: { value: string; label: string; tier: TemplateTier }[] = [
+  { value: "initial", label: "Initial Outreach", tier: "free" },
+  { value: "follow_up_2day", label: "Follow-up (2 days)", tier: "free" },
+  { value: "follow_up_5day", label: "Follow-up (5 days)", tier: "free" },
+  { value: "buried_bump", label: "Buried Bump", tier: "free" },
+  { value: "objection_handling", label: "Objection Handling", tier: "ai" },
+  { value: "reengagement", label: "Re-engagement", tier: "free" },
+  { value: "pricing_transition", label: "Pricing Transition", tier: "free" },
 ];
+
+export const FREE_TEMPLATES = TEMPLATES.filter((t) => t.tier === "free");
 
 export type WorkspaceActivityInput = {
   type: LeadActivityType;

@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useRecordLeadActivity, useSendLeadEmail } from "@/hooks/use-mast-api";
 import { isMissingBackendEndpoint, type Lead } from "@/lib/api";
+import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 import { normalizeLeadStatus } from "@/lib/lead-workspace";
 
 interface EmailFormProps {
@@ -110,6 +111,10 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
         body,
         timestamp: sentAt,
         content,
+        // Structured continuity for the deterministic generator. Rides on
+        // the existing lead_activities.metadata column; null when this
+        // draft wasn't produced by the generator.
+        metadata: getDraftProvenance(lead.id, "email"),
       },
       patch: {
         status: "outreach",

@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import type { EngineLead } from "./pythonBridge.js";
+import { normalizeDiscoveryNiche, resolveLeadNiche } from "../lib/niches.js";
 import { applyRediscoverySuccess, CONFIDENCE_DEFAULT, VERIFICATION_INTERVAL_MS } from "../scoring/confidenceModel.js";
 import { buildFieldTrust } from "../scoring/fieldTrust.js";
 import type { Json } from "../types/database.types.js";
@@ -30,6 +31,20 @@ export type DeliveryResult = {
   wasNewForUser: boolean;
   /** true when this business WOULD have been new, but the user is out of daily/monthly credit */
   limitReached?: boolean;
+};
+
+/**
+ * Optional per-delivery extras for insertLeadForUser()/toLeadRow().
+ * `discoveryNiche` is the single niche the discovery request selected that
+ * produced this business for this user. It takes precedence over
+ * `business.niche` (which can be null or another niche's tag) when the CRM
+ * row is written.
+ */
+export type LeadRowExtra = {
+  igFollowers?: string | null;
+  igBio?: string | null;
+  igLastPost?: string | null;
+  discoveryNiche?: string | null;
 };
 
 export type PoolBusiness = {
@@ -92,7 +107,7 @@ async function findExistingBusiness(fingerprints: string[]) {
 
   const { data, error } = await supabaseAdmin
     .from("businesses")
-    .select("id, confidence")
+    .select("id, confidence, niche")
     .overlaps("fingerprints", fingerprints)
     .limit(1)
     .maybeSingle();
@@ -155,6 +170,13 @@ export async function upsertBusinessFromEngineLead(
         verification_due_at: new Date(Date.now() + VERIFICATION_INTERVAL_MS).toISOString(),
         last_verification_kind: "rediscovery",
         confidence: nextConfidence,
+        // Fill-only: a business first stored without a niche (before the
+        // engine result was stamped with the requested niche) gets the tag
+        // it was just rediscovered under, so pool_lookup's niche filter can
+        // find it. An existing niche is never overwritten.
+        ...(!normalizeDiscoveryNiche(existing.niche) && normalizeDiscoveryNiche(lead.niche)
+          ? { niche: normalizeDiscoveryNiche(lead.niche) }
+          : {}),
         // C4/C5 fix: a rediscovery is a fresh crawl too — refresh these
         // fields rather than leaving them stuck at whatever the first
         // discovery happened to find, exactly like refreshedFields does in
@@ -181,7 +203,7 @@ export async function upsertBusinessFromEngineLead(
     .insert({
       name: lead.name,
       category: lead.category,
-      niche: lead.niche,
+      niche: normalizeDiscoveryNiche(lead.niche),
       query_used: lead.query,
       region: region || lead.region,
       address: lead.address,
@@ -226,7 +248,7 @@ export async function upsertBusinessFromEngineLead(
 function toLeadRow(
   business: PoolBusiness,
   ctx: DeliveryContext,
-  extra: { igFollowers?: string | null; igBio?: string | null; igLastPost?: string | null } = {},
+  extra: LeadRowExtra = {},
 ) {
   return {
     user_id: ctx.userId,
@@ -243,7 +265,7 @@ function toLeadRow(
     email: business.email || null,
     website: business.website || null,
     phone: business.phone || null,
-    niche: business.niche || null,
+    niche: resolveLeadNiche(extra.discoveryNiche, business.niche),
     location: business.address || null,
     status: "new",
     ig_followers: extra.igFollowers ?? null,
@@ -273,7 +295,7 @@ function toLeadRow(
 export async function insertLeadForUser(
   business: PoolBusiness,
   ctx: DeliveryContext,
-  extra?: { igFollowers?: string | null; igBio?: string | null; igLastPost?: string | null },
+  extra?: LeadRowExtra,
   onStage?: (stage: DeliveryStage) => void,
 ): Promise<DeliveryResult> {
   if (!ctx.userId) {
@@ -433,6 +455,9 @@ export async function deliverLead(
       igFollowers: lead.ig_followers != null ? String(lead.ig_followers) : null,
       igBio: lead.ig_bio || null,
       igLastPost: lead.ig_last_post_days != null ? `${lead.ig_last_post_days}d ago` : null,
+      // The lead's niche is the request-attributed one (stamped by
+      // runEngineQuery); passed explicitly so it outranks the business tag.
+      discoveryNiche: normalizeDiscoveryNiche(lead.niche),
     },
     onStage,
   );

@@ -44,3 +44,55 @@ export function splitNicheQuery(niche: string): string[] {
   }
   return result;
 }
+
+/**
+ * DISCOVERY NICHE ATTRIBUTION
+ *
+ * The discovery REQUEST is the authority on which niche produced a lead.
+ * The Python engine's result dicts (`_candidate_dict` on the live/discovery
+ * path, `_opportunity_to_lead_dict` on the full pipeline) never carry a
+ * `niche` key, so the Node side stamps the niche it asked for onto every
+ * lead the engine returns. Nothing here infers a niche, lower-cases it, or
+ * maps it onto the outreach categories (src/lib/outreach/niches/**) — the
+ * exact string the user selected is what gets persisted.
+ */
+
+/** Trims; returns null for null/undefined/non-string/blank input. */
+export function normalizeDiscoveryNiche(niche: unknown): string | null {
+  if (typeof niche !== "string") return null;
+  const trimmed = niche.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Returns the niche only when it is unambiguously ONE niche. A still-joined
+ * multi-niche string ("Bakery, Coffee Shop") returns null: attributing it
+ * to the first entry (or storing the joined string) would be a guess.
+ */
+export function singleDiscoveryNiche(niche: unknown): string | null {
+  const normalized = normalizeDiscoveryNiche(niche);
+  if (!normalized) return null;
+  const parts = splitNicheQuery(normalized);
+  return parts.length === 1 ? parts[0] : null;
+}
+
+/**
+ * Stamps the requested single niche onto a copy of an engine lead. The
+ * request wins over anything the engine emitted. With no single, real
+ * requested niche the lead is returned untouched — never a fabricated one.
+ */
+export function attributeDiscoveryNiche<T extends { niche?: unknown }>(lead: T, requestedNiche: unknown): T {
+  const niche = singleDiscoveryNiche(requestedNiche);
+  if (!niche) return lead;
+  return { ...lead, niche };
+}
+
+/**
+ * The niche persisted on a `leads` row: the discovery attribution first,
+ * then the business's own tag, then null. A business tag can be null or
+ * belong to a different niche than the one this request selected, so it is
+ * only ever a fallback.
+ */
+export function resolveLeadNiche(discoveryNiche: unknown, businessNiche: unknown): string | null {
+  return normalizeDiscoveryNiche(discoveryNiche) ?? normalizeDiscoveryNiche(businessNiche) ?? null;
+}

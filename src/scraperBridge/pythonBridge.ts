@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { env } from "../config/env.js";
+import { attributeDiscoveryNiche } from "../lib/niches.js";
 import { workerMetrics } from "../lib/observability.js";
 import {
   registerRequestEngineProcess,
@@ -23,7 +24,14 @@ export type EngineLead = {
   city: string;
   country: string;
   query: string;
-  niche: string;
+  /**
+   * The discovery niche that produced this lead. The Python engine's result
+   * dicts do NOT emit it, so it is absent on raw engine output;
+   * `runEngineQuery()` stamps the requested niche (`params.niche`) onto every
+   * lead it yields via attributeDiscoveryNiche(). Undefined means the caller
+   * supplied no single niche — never a guess.
+   */
+  niche?: string;
   region: string;
   phone: string;
   email: string;
@@ -1389,7 +1397,10 @@ export async function* runEngineQuery(
       }
 
       bridgeReceived += 1;
-      yield parsed as EngineLead;
+      // The engine never emits `niche` on its lead dicts (see EngineLead.niche),
+      // so the request's niche is the source of truth. Every caller passes one
+      // niche per engine call (multi-niche requests are split upstream).
+      yield attributeDiscoveryNiche(parsed as EngineLead, params.niche);
       // LIFECYCLE FIX: only counted once control returns here, i.e. the
       // consumer actually resumed this generator after receiving the
       // lead — see bridgeReceived/bridgeForwarded's declaration above.

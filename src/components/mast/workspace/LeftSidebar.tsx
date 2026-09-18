@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import type { Lead, FieldTrustEntry } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
 import { ChannelAvailabilityCard } from "./components/ChannelAvailabilityCard";
-import { NICHES, stripActivityMarkers } from "@/lib/lead-workspace";
+import { leadNicheLabel, stripActivityMarkers } from "@/lib/lead-workspace";
 import { staggerDelay } from "@/lib/motion";
 import { useOpportunityExplanation, useOpportunityInsight, useLeadTrust } from "@/hooks/use-mast-api";
 import { FeatureGate } from "@/components/mast/FeatureGate";
@@ -54,7 +54,7 @@ export function LeftSidebar({
   // nothing regresses for pre-existing data.
   const hasRealScore = lead.opportunityScore != null;
   const score = hasRealScore ? Math.round(lead.opportunityScore!) : lead.priority === "high" ? 94 : lead.priority === "normal" ? 78 : 62;
-  const nicheLabel = NICHES.find((n) => n.value === lead.niche)?.label ?? lead.niche;
+  const nicheLabel = leadNicheLabel(lead.niche);
 
   const hasContactData = lead.email || lead.phone || lead.website || lead.instagramHandle || lead.location;
 

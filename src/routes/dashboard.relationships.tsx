@@ -50,6 +50,8 @@ import {
   LEAD_STATUSES,
   NICHES,
   formatRelative,
+  leadMatchesNicheFilter,
+  leadNicheDisplay,
   leadStatusColor,
   leadStatusLabel,
   normalizeLeadStatus,
@@ -351,8 +353,11 @@ function Relationships() {
   // Client-side niche filtering
   const nicheFiltered = useMemo(() => {
     if (nicheFilters.length === 0) return allLeads;
-    return allLeads.filter(
-      (lead) => lead.niche && nicheFilters.includes(lead.niche)
+    // Filter options are NICHES slugs; stored niches may be a slug (manual
+    // leads) or the exact discovery string ("Coffee Shop"). Both sides go
+    // through the same key — see leadMatchesNicheFilter().
+    return allLeads.filter((lead) =>
+      leadMatchesNicheFilter(lead.niche, nicheFilters)
     );
   }, [allLeads, nicheFilters]);
 
@@ -839,9 +844,7 @@ function Relationships() {
                 const selectedRow = selected.has(lead.id);
                 const dead = normalizeLeadStatus(lead.status) === "dead";
                 const isStarred = starred.has(lead.id);
-                const nicheLabel =
-                  NICHES.find((n) => n.value === lead.niche)?.label ??
-                  lead.niche;
+                const nicheLabel = leadNicheDisplay(lead.niche);
                 return (
                   <tr
                     key={lead.id}
@@ -898,7 +901,7 @@ function Relationships() {
                       </div>
                     </td>
                     <td className="hidden px-3 py-3 text-muted-foreground md:table-cell">
-                      {nicheLabel ?? "—"}
+                      {nicheLabel}
                     </td>
                     <td className="px-3 py-3">
                       <span

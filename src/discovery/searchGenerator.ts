@@ -46,6 +46,14 @@ export type SearchQuery = {
   queryString: string;
 
   /**
+   * The single niche this query searches for. A SearchTarget's `niche` may
+   * be a comma-joined multi-niche string; each generated query narrows it to
+   * the one niche it actually searches, so results are attributed to the
+   * niche that produced them (never the joined string, never "the first").
+   */
+  niche?: string;
+
+  /**
    * Provider-specific supplemental params that the DiscoveryProvider
    * implementation knows how to consume.  Typed as an open record so new
    * providers can add params without touching this interface.

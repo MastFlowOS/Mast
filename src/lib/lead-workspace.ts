@@ -161,6 +161,73 @@ export const NICHES = [
   { value: "other", label: "Other" },
 ];
 
+// ─── Lead niche display & filtering ──────────────────────────────────────
+//
+// `leads.niche` holds one of two shapes:
+//  - a NICHES `value` slug ("coffee_shop"), for manually created/imported
+//    leads that picked from the controlled list; or
+//  - the exact discovery string the user selected ("Coffee Shop"), for
+//    discovered leads.
+// The CRM filter options are the NICHES slugs, so filtering has to compare
+// both shapes through one deterministic key. The stored value itself is
+// never rewritten, and this is NOT the outreach niche->category mapping
+// (src/lib/outreach/niches/**) — it only decides "are these the same niche
+// spelling".
+
+/** Shown in the CRM when a lead has no niche (null, empty or whitespace). */
+export const EMPTY_NICHE_LABEL = "—";
+
+/**
+ * Case-, whitespace-, punctuation- and diacritic-insensitive comparison key:
+ * "coffee_shop", "Coffee  Shop" and "COFFEE SHOP" all become "coffee shop";
+ * "Café" becomes "cafe"; "Bar & Lounge" becomes "bar and lounge". Empty
+ * string means "no niche". No plural folding, aliasing or category mapping.
+ */
+export function nicheMatchKey(niche: string | null | undefined): string {
+  if (typeof niche !== "string") return "";
+  return niche
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/** Label for a stored niche, or null when there is none to show. */
+export function leadNicheLabel(niche: string | null | undefined): string | null {
+  if (typeof niche !== "string") return null;
+  const trimmed = niche.trim();
+  if (!trimmed) return null;
+  // Only an exact controlled-list slug is translated to its label; any other
+  // stored value (a discovery string such as "Coffee Shops") is shown as-is.
+  return NICHES.find((n) => n.value === trimmed)?.label ?? trimmed;
+}
+
+/** What the CRM niche cell renders: the label, or "—" when blank. */
+export function leadNicheDisplay(niche: string | null | undefined): string {
+  return leadNicheLabel(niche) ?? EMPTY_NICHE_LABEL;
+}
+
+/**
+ * Whether a lead passes the CRM niche filter. `selected` holds NICHES slug
+ * values (as the filter UI emits them). A selected option matches a lead
+ * whose niche has the same key as the option's slug OR its label, so
+ * `coffee_shop` matches both a manual lead stored as "coffee_shop" and a
+ * discovered lead stored as "Coffee Shop". No selection means no filtering;
+ * with a selection, leads without a niche never match.
+ */
+export function leadMatchesNicheFilter(leadNiche: string | null | undefined, selected: readonly string[]): boolean {
+  if (selected.length === 0) return true;
+  const leadKey = nicheMatchKey(leadNiche);
+  if (!leadKey) return false;
+  return selected.some((value) => {
+    if (nicheMatchKey(value) === leadKey) return true;
+    const option = NICHES.find((n) => n.value === value);
+    return option !== undefined && nicheMatchKey(option.label) === leadKey;
+  });
+}
+
 export const CHANNELS: { value: OutreachChannel; label: string }[] = [
   { value: "email", label: "Email" },
   { value: "instagram", label: "Instagram DM" },

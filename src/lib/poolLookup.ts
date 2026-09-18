@@ -50,6 +50,13 @@ export type PoolLookupResult = {
  *    (splitNicheQuery) and unions the matches (OR semantics), exactly the
  *    same fix pattern as the live-discovery jobs.
  *
+ *  - Niche attribution: the SQL function returns only business ids, so
+ *    which selected niche produced each match is tracked here. Each business
+ *    is attributed to the FIRST niche (in request order) that matched it and
+ *    that niche is written to the lead row (see deliverLead.ts's
+ *    resolveLeadNiche) — never `businesses.niche`, and never "the first
+ *    selected niche" for every result.
+ *
  *  - Channel filters: `channels` was previously not even a parameter here,
  *    so Instant Discovery ignored them entirely. `pool_lookup()` can't
  *    filter by channel either (same migrations restriction), so this
@@ -68,7 +75,14 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
   // pools still correctly fall through to `shortfall` below.
   const perNicheLimit = hasChannelFilter ? params.quantity * 5 : params.quantity;
 
-  const matchesByBusinessId = new Map<string, { business_id: string; opportunity_score: number | null }>();
+  // First-match-wins attribution: `niches` is in request order, and a
+  // business already recorded by an earlier niche is never re-attributed to
+  // a later one. Map insertion order also fixes the delivery order, so the
+  // same request always produces the same business -> niche assignment.
+  const matchesByBusinessId = new Map<
+    string,
+    { business_id: string; opportunity_score: number | null; discoveryNiche: string }
+  >();
 
   for (const singleNiche of niches) {
     const { data: matches, error } = await supabaseAdmin.rpc("pool_lookup", {
@@ -83,7 +97,7 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
 
     for (const row of (matches ?? []) as Array<{ business_id: string; opportunity_score: number | null }>) {
       if (!matchesByBusinessId.has(row.business_id)) {
-        matchesByBusinessId.set(row.business_id, row);
+        matchesByBusinessId.set(row.business_id, { ...row, discoveryNiche: singleNiche });
       }
     }
   }
@@ -117,15 +131,21 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
       continue; // doesn't satisfy every requested channel — skip without counting
     }
 
-    const result = await insertLeadForUser(business, {
-      userId: params.userId,
-      professionSlug: params.professionSlug,
-      discoveryMode: params.rank ? "instant_pool_ranked" : "instant_pool",
-      scrapeJobId: params.scrapeJobId,
-      opportunityScore: row.opportunity_score,
-      dailyLimit: params.dailyLimit,
-      monthlyLimit: params.monthlyLimit,
-    });
+    const result = await insertLeadForUser(
+      business,
+      {
+        userId: params.userId,
+        professionSlug: params.professionSlug,
+        discoveryMode: params.rank ? "instant_pool_ranked" : "instant_pool",
+        scrapeJobId: params.scrapeJobId,
+        opportunityScore: row.opportunity_score,
+        dailyLimit: params.dailyLimit,
+        monthlyLimit: params.monthlyLimit,
+      },
+      // The requested niche that matched this business — NOT business.niche,
+      // which may be null or a different tag than the one that matched.
+      { discoveryNiche: row.discoveryNiche },
+    );
 
     if (result.limitReached) {
       limitReached = true;

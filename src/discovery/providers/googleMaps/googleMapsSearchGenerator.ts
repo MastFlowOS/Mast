@@ -33,6 +33,7 @@ export class GoogleMapsSearchGenerator implements SearchGenerator {
     const location = street ? `on ${street}, ${city}` : area ? `in ${area}, ${city}` : city;
     return splitNicheQuery(niche).map((n) => ({
       queryString: `${n} ${location}`,
+      niche: n,
       providerParams: { country: countryCode },
     }));
   }

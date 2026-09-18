@@ -43,7 +43,9 @@ export class GoogleMapsProvider implements DiscoveryProvider {
         city: target.city,
         country: target.countryCode,
         region: target.region,
-        niche: target.niche,
+        // Per-query niche first: target.niche may be a comma-joined
+        // multi-niche string, which must never reach the engine as one niche.
+        niche: query.niche ?? target.niche,
         // The engine's geographic field is also used by its OSM-side
         // scoping. Prefer the narrower street when one was atomically
         // claimed; Maps itself receives the street in queryString.

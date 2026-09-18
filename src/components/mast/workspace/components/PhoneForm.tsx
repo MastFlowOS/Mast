@@ -4,7 +4,7 @@ import { Phone, CheckCircle, MessagesSquare, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useRecordLeadActivity } from "@/hooks/use-mast-api";
-import type { Lead } from "@/lib/api";
+import { ApiError, type Lead } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 import { appendVisibleNote } from "@/lib/lead-workspace";
 
@@ -36,8 +36,8 @@ export function PhoneForm({ lead, body, setBody }: PhoneFormProps) {
       });
       setCallNotes("");
       toast.success("Call notes saved");
-    } catch {
-      toast.error("Could not save call notes");
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Could not save call notes");
     }
   };
 
@@ -45,7 +45,7 @@ export function PhoneForm({ lead, body, setBody }: PhoneFormProps) {
     const completedAt = new Date().toISOString();
     const trimmedNotes = callNotes.trim();
     const patch = {
-      status: "outreach",
+      status: "called",
       lastContactedAt: completedAt,
       ...(trimmedNotes ? { notes: appendVisibleNote(lead.notes, `Call notes:\n${trimmedNotes}`) } : {}),
     };
@@ -66,8 +66,8 @@ export function PhoneForm({ lead, body, setBody }: PhoneFormProps) {
       setIsCalled(true);
       setCallNotes("");
       toast.success("Marked as called");
-    } catch {
-      toast.error("Could not mark call as completed");
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Could not mark call as completed");
     }
   };
 

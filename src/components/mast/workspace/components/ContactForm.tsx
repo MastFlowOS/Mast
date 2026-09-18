@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useRecordLeadActivity } from "@/hooks/use-mast-api";
-import type { Lead } from "@/lib/api";
+import { ApiError, type Lead } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 
 interface ContactFormProps {
@@ -76,14 +76,14 @@ export function ContactForm({ lead, body, setBody }: ContactFormProps) {
           metadata: getDraftProvenance(lead.id, "contact_form"),
         },
         patch: {
-          status: "outreach",
+          status: "email_sent",
           lastContactedAt: sentAt,
         },
       });
       setSent(true);
       toast.success("Marked as sent");
-    } catch {
-      toast.error("Could not mark contact form as sent");
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Could not mark contact form as sent");
     }
   };
 

@@ -4,7 +4,7 @@ import { Instagram, Copy, Check, CheckCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useRecordLeadActivity } from "@/hooks/use-mast-api";
-import type { Lead } from "@/lib/api";
+import { ApiError, type Lead } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 
 import { normalizeInstagram } from "@/lib/instagram";
@@ -99,14 +99,14 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
           metadata: getDraftProvenance(lead.id, "instagram"),
         },
         patch: {
-          status: "outreach",
+          status: "instagram_sent",
           lastContactedAt: sentAt,
         },
       });
       setIsSent(true);
       toast.success("Marked as sent");
-    } catch {
-      toast.error("Could not mark Instagram DM as sent");
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Could not mark Instagram DM as sent");
     }
   };
 

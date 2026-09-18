@@ -526,6 +526,15 @@ function Pipeline() {
   // Kanban drop handler
   const handleDrop = async (status: LeadStatus) => {
     if (dragging == null) return;
+    // Pipeline-specific drag/reordering is the paid Pipeline feature itself
+    // (updateLead is a general-purpose lead update and no longer gates
+    // this) — enforce it right at the drag action.
+    if (!permissions.can("pipeline")) {
+      toast.error("Upgrade your plan to reorder the pipeline");
+      setDragging(null);
+      setDragOver(null);
+      return;
+    }
     try {
       await updateLead.mutateAsync({ id: dragging, body: { status } });
       toast.success(`Moved lead to ${leadStatusLabel(status)}`);
@@ -586,6 +595,10 @@ function Pipeline() {
       won: "closed",
     };
     
+    if (!permissions.can("pipeline")) {
+      toast.error("Upgrade your plan to reorder the pipeline");
+      return;
+    }
     const targetStatus = stageToStatus[targetStage];
     try {
       await updateLead.mutateAsync({ id: leadId, body: { status: targetStatus } });

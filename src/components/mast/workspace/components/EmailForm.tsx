@@ -5,7 +5,7 @@ import { Mail, Send, CheckCircle, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useRecordLeadActivity, useSendLeadEmail } from "@/hooks/use-mast-api";
-import { isMissingBackendEndpoint, type Lead } from "@/lib/api";
+import { ApiError, isMissingBackendEndpoint, type Lead } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 import { normalizeLeadStatus } from "@/lib/lead-workspace";
 
@@ -117,7 +117,7 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
         metadata: getDraftProvenance(lead.id, "email"),
       },
       patch: {
-        status: "outreach",
+        status: "email_sent",
         lastContactedAt: sentAt,
       },
     });
@@ -180,8 +180,8 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
             try {
               await recordSent();
               toast.success("Marked as sent");
-            } catch {
-              toast.error("Could not mark email as sent");
+            } catch (error) {
+              toast.error(error instanceof ApiError ? error.message : "Could not mark email as sent");
             }
           }}
           disabled={isSent || recordActivity.isPending}

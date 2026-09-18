@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCreateLead, useRecordLeadActivity, useUpdateLead } from "@/hooks/use-mast-api";
-import type { Lead, LeadStatus } from "@/lib/api";
+import { ApiError, type Lead, type LeadStatus } from "@/lib/api";
 import { LEAD_STATUSES, isRelationshipLead, leadStatusColor, leadStatusLabel, normalizeLeadStatus } from "@/lib/lead-workspace";
 
 type ConfirmAction = "archive" | "delete" | null;
@@ -50,8 +50,8 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
       });
       setSaved(true);
       toast.success(`${lead.businessName} added to pipeline`);
-    } catch {
-      toast.error("Failed to update lead");
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Failed to update lead");
     }
   };
 
@@ -71,9 +71,9 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
         patch: { status: nextStatus },
       });
       toast.success("Lead status updated");
-    } catch {
+    } catch (error) {
       setStatus(previousStatus);
-      toast.error("Failed to update status");
+      toast.error(error instanceof ApiError ? error.message : "Failed to update status");
     }
   };
 
@@ -92,8 +92,8 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
       });
       setStatus("dead");
       toast.success(`${lead.businessName} closed out`);
-    } catch {
-      toast.error("Action failed — please try again");
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Action failed — please try again");
     } finally {
       setMenuPending(null);
     }
@@ -106,8 +106,8 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
       await updateLeadMutation.mutateAsync({ id: lead.id, body: { status: "dead" } });
       toast.success("Opportunity removed");
       navigate({ to: "/dashboard/pipeline" });
-    } catch {
-      toast.error("Action failed — please try again");
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Action failed — please try again");
     } finally {
       setMenuPending(null);
     }
@@ -129,8 +129,8 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
       });
       toast.success("Lead duplicated");
       navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(dup.id) } });
-    } catch {
-      toast.error("Failed to duplicate lead");
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Failed to duplicate lead");
     } finally {
       setMenuPending(null);
     }

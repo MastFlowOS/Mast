@@ -1243,11 +1243,12 @@ export async function createLead(body: CreateLeadBody): Promise<Lead> {
 export async function updateLead(id: number, body: UpdateLeadBody): Promise<Lead> {
   const userId = await requireUserId();
 
-  // Enforce restricted pipeline status update
-  if (body.status && !["new", "ready"].includes(body.status)) {
-    await enforceCapability("pipeline");
-  }
-
+  // updateLead is the general-purpose lead data-access function: ordinary
+  // CRM status changes, follow-up updates, notes/metadata updates, and
+  // outreach "Mark Sent" actions all go through here for every plan. The
+  // `pipeline` capability gates the Pipeline Kanban feature itself (see
+  // dashboard.pipeline.tsx's drag/reorder handlers and getPipelineStats()
+  // above), not ordinary lead field updates — it must not be enforced here.
   const row = leadToDbRow(body as Partial<Lead>);
   row.updated_at = new Date().toISOString();
   const { data, error } = await supabase!.from("leads").update(row).eq("id", id).eq("user_id", userId).select().single();

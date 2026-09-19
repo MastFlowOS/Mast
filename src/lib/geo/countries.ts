@@ -37,8 +37,8 @@
  * time before ever marking the whole country exhausted.
  *
  * GEOGRAPHIC SCOPE, TERMINOLOGY: `region`/`country` is the user-facing
- * request scope — continent today (see resolveCountriesForSelection in
- * ./regions.ts), country in the future. `city` (`majorCities`) is an
+ * request scope — Global, a continent, or a country (see ./scope.ts for the
+ * parser and resolveCountriesForSelection in ./regions.ts). `city` (`majorCities`) is an
  * INTERNAL discovery work unit only — it is never a product-level
  * geographic selector, has no request-schema field, and is not something a
  * caller picks. A single country-scoped request intentionally expands into

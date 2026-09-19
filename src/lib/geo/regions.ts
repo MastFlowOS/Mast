@@ -13,14 +13,13 @@
  * ./countries.ts.
  */
 import { COUNTRIES, REGION_NAMES, type CountryInfo, type IncomeTier, type RegionName } from "./countries.js";
+import { parseGeoScope } from "./scope.js";
 
 /** Selecting a target currency should only prioritize countries whose
  * businesses are realistically able to pay in it — i.e. high/upper-middle
  * income economies. This is about the DISCOVERED BUSINESS's ability to pay,
  * not the country's actual local currency (see countries.ts docblock). */
 export const CURRENCY_ELIGIBLE_TIERS: IncomeTier[] = ["high", "upper_middle"];
-
-const GLOBAL_LABEL = "global";
 
 /**
  * Splits a comma-joined region label (e.g. "North America, Europe", the
@@ -35,10 +34,6 @@ export function splitRegionQuery(regionField: string): string[] {
     .split(",")
     .map((r) => r.trim())
     .filter((r) => r.length > 0);
-}
-
-function isGlobalSelection(regionNames: string[]): boolean {
-  return regionNames.some((r) => r.toLowerCase() === GLOBAL_LABEL);
 }
 
 /**
@@ -65,20 +60,22 @@ export function resolveCountriesForSelection(
   regionField: string,
   opts: { currencies?: string[] } = {},
 ): CountryInfo[] {
-  const regionNames = splitRegionQuery(regionField);
-  if (regionNames.length === 0) return [];
+  // Scope tokens are Global | continent | country (see ./scope.ts).
+  const scope = parseGeoScope(regionField);
+  if (scope.tokens.length === 0) return [];
 
-  const global = isGlobalSelection(regionNames);
-
-  const targetRegions: RegionName[] = global
-    ? REGION_NAMES
-    : (regionNames.filter((r) => REGION_NAMES.includes(r as RegionName)) as RegionName[]);
-
+  const targetRegions: RegionName[] = scope.global ? REGION_NAMES : scope.continents;
   const pool = COUNTRIES.filter((c) => targetRegions.includes(c.region));
 
+  // COUNTRY SCOPE: a country the user picked explicitly is searched as-is —
+  // never widened to its continent, and never dropped by the currency
+  // preference (choosing a country is a stronger signal than a currency).
+  // Global already contains every country.
+  const explicitCountries = scope.global ? [] : scope.countries;
+
   const hasCurrency = (opts.currencies?.length ?? 0) > 0;
-  if (!hasCurrency || global) {
-    return dedupeByCode(pool);
+  if (!hasCurrency || scope.global) {
+    return dedupeByCode([...pool, ...explicitCountries]);
   }
 
   const filtered = pool.filter((c) => CURRENCY_ELIGIBLE_TIERS.includes(c.incomeTier));
@@ -88,7 +85,7 @@ export function resolveCountriesForSelection(
   const coveredRegions = new Set(filtered.map((c) => c.region));
   const backfill = pool.filter((c) => !coveredRegions.has(c.region));
 
-  return dedupeByCode([...filtered, ...backfill]);
+  return dedupeByCode([...filtered, ...backfill, ...explicitCountries]);
 }
 
 function dedupeByCode(countries: CountryInfo[]): CountryInfo[] {

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { GlobeStand } from "./GlobeStand";
 import { WORLD_DOTS } from "./worldDots";
 import {
   FOCUS_COUNTRIES,
@@ -11,9 +12,9 @@ import {
 const TILT = 0.409;
 // Cinematic slow planetary rotation (radians per second) during free spin
 const BASE_SPEED = 0.024;
-// Visually substantial globe scale within the hero column (0.44 x 1.05 = ~5% larger sphere,
-// same centre point; glow ring at 1.055r still stays inside the canvas: 0.462 * 1.055 = 0.487 < 0.5)
-const SPHERE_FRACTION = 0.462;
+// Visually substantial globe scale within the hero column, harmoniously proportioned
+// with the antique bronze/gold stand finials and pedestal base
+const SPHERE_FRACTION = 0.415;
 const PAN_STRENGTH = 0.35;
 
 // Directional celestial light vector (subtle lunar / solar grazing angle)
@@ -33,6 +34,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
   const labelRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLDivElement>(null);
   const countRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -67,6 +69,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       const rect = container.getBoundingClientRect();
       width = rect.width || container.clientWidth || 360;
       height = rect.height || container.clientHeight || 360;
+      setDimensions({ width, height });
       dpr = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
@@ -588,11 +591,42 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     };
   }, []);
 
+  const cx = dimensions.width / 2;
+  const cy = dimensions.height / 2;
+  const r = Math.min(dimensions.width, dimensions.height) * SPHERE_FRACTION;
+
   return (
     <div ref={containerRef} className={`relative select-none pointer-events-none ${className}`}>
-      <canvas ref={canvasRef} className="block w-full h-full" aria-hidden="true" />
-      {/* Editorial Country Discovery Indicator: Country Name + Opportunity Count */}
-      <div className="pointer-events-none absolute left-1/2 bottom-2 -translate-x-1/2 flex flex-col items-center">
+      {/* 1. Antique bronze/gold stand (stable, fixed orientation) */}
+      {dimensions.width > 0 && dimensions.height > 0 && (
+        <GlobeStand
+          width={dimensions.width}
+          height={dimensions.height}
+          cx={cx}
+          cy={cy}
+          r={r}
+          tiltAngleDeg={10.5}
+        />
+      )}
+
+      {/* 2. Original digital globe canvas inside 10.5° axial tilt compositing wrapper */}
+      <div
+        className="w-full h-full relative"
+        style={{
+          transform: "rotate(10.5deg)",
+          transformOrigin: "50% 50%",
+        }}
+      >
+        <canvas ref={canvasRef} className="block w-full h-full" aria-hidden="true" />
+      </div>
+
+      {/* 3. Companion floating celestial gold dust motes hovering gently around the stand and globe */}
+      {dimensions.width > 0 && dimensions.height > 0 && (
+        <HeroGlobeDustMotes cx={cx} cy={cy} r={r} />
+      )}
+
+      {/* 4. Editorial Country Discovery Indicator: Country Name + Opportunity Count (level and horizontal) */}
+      <div className="pointer-events-none absolute left-1/2 bottom-0 -translate-x-1/2 flex flex-col items-center z-30">
         <div
           ref={labelRef}
           className="flex flex-col items-center gap-1 pointer-events-none text-center"
@@ -609,6 +643,45 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Companion Celestial Floating Dust Motes ──────────────────────────────────
+// Sparse micro-dust motes hovering gracefully around the perimeter of the globe and stand
+function HeroGlobeDustMotes({ cx, cy, r }: { cx: number; cy: number; r: number }) {
+  if (cx <= 0 || cy <= 0 || r <= 0) return null;
+
+  const motes = [
+    { dx: -r * 1.06, dy: -r * 0.38, size: 1.4, delay: "0s", dur: "7.2s", op: 0.35 },
+    { dx: -r * 0.96, dy: r * 0.34, size: 1.2, delay: "1.6s", dur: "8.4s", op: 0.28 },
+    { dx: -r * 0.44, dy: r * 1.08, size: 1.5, delay: "3.2s", dur: "6.5s", op: 0.38 },
+    { dx: r * 0.22, dy: r * 1.14, size: 1.1, delay: "0.9s", dur: "7.8s", op: 0.26 },
+    { dx: r * 0.98, dy: -r * 0.22, size: 1.4, delay: "2.4s", dur: "9.1s", op: 0.32 },
+    { dx: r * 0.88, dy: r * 0.48, size: 1.2, delay: "4.2s", dur: "6.9s", op: 0.24 },
+    { dx: -r * 0.28, dy: -r * 1.02, size: 1.6, delay: "1.4s", dur: "7.4s", op: 0.36 },
+    { dx: r * 0.46, dy: -r * 0.94, size: 1.3, delay: "3.6s", dur: "8.2s", op: 0.3 },
+    { dx: r * 1.08, dy: r * 0.12, size: 1.0, delay: "2.8s", dur: "6.6s", op: 0.25 },
+  ];
+
+  return (
+    <div className="absolute inset-0 pointer-events-none overflow-visible z-20" aria-hidden="true">
+      {motes.map((m, i) => (
+        <div
+          key={i}
+          className="absolute rounded-full bg-[#fae392] animate-star-breathe"
+          style={{
+            left: `${(cx + m.dx).toFixed(1)}px`,
+            top: `${(cy + m.dy).toFixed(1)}px`,
+            width: `${m.size}px`,
+            height: `${m.size}px`,
+            opacity: m.op,
+            animationDelay: m.delay,
+            animationDuration: m.dur,
+            boxShadow: `0 0 ${m.size * 2}px rgba(247, 223, 148, 0.6)`,
+          }}
+        />
+      ))}
     </div>
   );
 }

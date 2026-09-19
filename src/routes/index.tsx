@@ -5,6 +5,7 @@ import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { SignatureGlobe } from "@/components/mast/landing/SignatureGlobe";
 import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
+import { GoldParticleStream } from "@/components/mast/landing/GoldParticleStream";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -32,6 +33,8 @@ function LandingPage() {
     <>
       {/* Global night world foundation: continuous deep space across all sections */}
       <GlobalAtmosphereFoundation />
+      {/* Continuous celestial gold particle stream weaving organically through all landing page sections */}
+      <GoldParticleStream />
       {/* SiteNav must be OUTSIDE any overflow-hidden ancestor — that breaks sticky */}
       <SiteNav />
       {/* Page content wrapper sits above deep space */}

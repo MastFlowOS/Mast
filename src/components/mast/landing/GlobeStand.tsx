@@ -87,8 +87,8 @@ export function GlobeStand({
   /* ── Axis pin / finial (north) ────────────────────────────────────────── */
   const pinLen = clamp(r * 0.155, 16, 40);
   const pinR = band * 0.42;
-  const pinBaseX = px(Rc - band * 0.2, aN);
-  const pinBaseY = py(Rc - band * 0.2, aN);
+  const pinBaseX = px(r * 0.92, aN);
+  const pinBaseY = py(r * 0.92, aN);
   const pinTipX = px(Ro + pinLen, aN);
   const pinTipY = py(Ro + pinLen, aN);
   const finialX = px(Ro + pinLen + band * 0.28, aN);
@@ -100,7 +100,7 @@ export function GlobeStand({
 
   const bottomLimit = height - Math.max(2, height * 0.01);
   const idealStem = r * 0.3;
-  const idealBase = r * 0.42;
+  const idealBase = r * 0.44;
   const avail = Math.max(30, bottomLimit - (collarY + band * 0.8));
   const fit = clamp(avail / (idealStem + idealBase), 0.45, 1);
 
@@ -110,7 +110,7 @@ export function GlobeStand({
   const stemTopY = collarY + band * 0.75;
   const baseTopY = stemTopY + stemH;
 
-  const bw = Math.min(r * 0.62, width * 0.3); // pedestal half-width
+  const bw = Math.min(r * 0.68, width * 0.33); // pedestal half-width
   const persp = 0.3; // elliptical foreshortening of the round base
 
   const stemW = clamp(r * 0.085, 8, 18); // half-width of the column waist
@@ -166,14 +166,14 @@ export function GlobeStand({
           y2={cy + Ro}
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0%" stopColor="#f0d492" />
-          <stop offset="12%" stopColor="#c69a45" />
-          <stop offset="26%" stopColor="#6d4820" />
-          <stop offset="40%" stopColor="#b98a3c" />
-          <stop offset="52%" stopColor="#f6e2a6" />
-          <stop offset="63%" stopColor="#a5762f" />
-          <stop offset="78%" stopColor="#4a2f13" />
-          <stop offset="90%" stopColor="#8a6128" />
+          <stop offset="0%" stopColor="#c9ab72" />
+          <stop offset="12%" stopColor="#9c7734" />
+          <stop offset="26%" stopColor="#53381a" />
+          <stop offset="40%" stopColor="#8f6b2d" />
+          <stop offset="52%" stopColor="#dcc389" />
+          <stop offset="63%" stopColor="#7d5a24" />
+          <stop offset="78%" stopColor="#36220e" />
+          <stop offset="90%" stopColor="#6a4a1e" />
           <stop offset="100%" stopColor="#2a1a0b" />
         </linearGradient>
 
@@ -186,9 +186,9 @@ export function GlobeStand({
           y2={cy + Ro}
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0%" stopColor="rgba(255,247,214,0.95)" />
-          <stop offset="34%" stopColor="rgba(248,224,158,0.72)" />
-          <stop offset="70%" stopColor="rgba(196,150,74,0.4)" />
+          <stop offset="0%" stopColor="rgba(243,226,178,0.62)" />
+          <stop offset="34%" stopColor="rgba(228,202,144,0.46)" />
+          <stop offset="70%" stopColor="rgba(166,124,58,0.26)" />
           <stop offset="100%" stopColor="rgba(96,64,26,0.15)" />
         </linearGradient>
 
@@ -203,11 +203,11 @@ export function GlobeStand({
         >
           <stop offset="0%" stopColor="#1d1208" />
           <stop offset="9%" stopColor="#4a3014" />
-          <stop offset="22%" stopColor="#a87b33" />
-          <stop offset="31%" stopColor="#f5e0a4" />
-          <stop offset="40%" stopColor="#c79a47" />
-          <stop offset="55%" stopColor="#7c5525" />
-          <stop offset="68%" stopColor="#5a3c19" />
+          <stop offset="22%" stopColor="#8b6529" />
+          <stop offset="31%" stopColor="#dcc086" />
+          <stop offset="40%" stopColor="#a17930" />
+          <stop offset="55%" stopColor="#5e401b" />
+          <stop offset="68%" stopColor="#412c12" />
           <stop offset="82%" stopColor="#3a2512" />
           <stop offset="100%" stopColor="#150d05" />
         </linearGradient>
@@ -223,9 +223,9 @@ export function GlobeStand({
         >
           <stop offset="0%" stopColor="#1a1007" />
           <stop offset="14%" stopColor="#573a18" />
-          <stop offset="30%" stopColor="#bc8d3c" />
-          <stop offset="40%" stopColor="#f7e6b2" />
-          <stop offset="54%" stopColor="#ab7c32" />
+          <stop offset="30%" stopColor="#957033" />
+          <stop offset="40%" stopColor="#dfc68f" />
+          <stop offset="54%" stopColor="#825d26" />
           <stop offset="74%" stopColor="#4e3316" />
           <stop offset="100%" stopColor="#150d05" />
         </linearGradient>
@@ -237,18 +237,18 @@ export function GlobeStand({
           cy="30%"
           r="78%"
         >
-          <stop offset="0%" stopColor="#fbf0c6" />
-          <stop offset="28%" stopColor="#dcb765" />
-          <stop offset="62%" stopColor="#9a7130" />
-          <stop offset="88%" stopColor="#4e3416" />
+          <stop offset="0%" stopColor="#e4cd9b" />
+          <stop offset="28%" stopColor="#bb9750" />
+          <stop offset="62%" stopColor="#785527" />
+          <stop offset="88%" stopColor="#3c2711" />
           <stop offset="100%" stopColor="#2a1b0c" />
         </radialGradient>
 
         {/* Small parts: pins, beads, pivots */}
         <linearGradient id={`${uid}-bead`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#fff3cc" />
-          <stop offset="34%" stopColor="#e0bb68" />
-          <stop offset="68%" stopColor="#8d6429" />
+          <stop offset="0%" stopColor="#ecd6a4" />
+          <stop offset="34%" stopColor="#b8934d" />
+          <stop offset="68%" stopColor="#6b4a1e" />
           <stop offset="100%" stopColor="#2c1b0b" />
         </linearGradient>
 
@@ -261,9 +261,9 @@ export function GlobeStand({
           gradientUnits="userSpaceOnUse"
         >
           <stop offset="0%" stopColor="#2a1a0a" />
-          <stop offset="26%" stopColor="#a87b33" />
-          <stop offset="46%" stopColor="#f8e9ba" />
-          <stop offset="70%" stopColor="#9c7130" />
+          <stop offset="26%" stopColor="#87632a" />
+          <stop offset="46%" stopColor="#e0c894" />
+          <stop offset="70%" stopColor="#77551f" />
           <stop offset="100%" stopColor="#231508" />
         </linearGradient>
 
@@ -273,6 +273,31 @@ export function GlobeStand({
           <stop offset="78%" stopColor="rgba(0,0,0,0.14)" />
           <stop offset="100%" stopColor="rgba(0,0,0,0)" />
         </radialGradient>
+
+        {/* Warm light the sphere picks up from the bronze cradle beside it */}
+        <linearGradient
+          id={`${uid}-bounce`}
+          x1={cx + r * 0.9}
+          y1={cy - r * 0.9}
+          x2={cx + r * 0.2}
+          y2={cy + r}
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0%" stopColor="rgba(198,150,74,0)" />
+          <stop offset="26%" stopColor="rgba(214,170,96,0.34)" />
+          <stop offset="58%" stopColor="rgba(194,146,76,0.24)" />
+          <stop offset="100%" stopColor="rgba(150,106,48,0)" />
+        </linearGradient>
+
+        <radialGradient id={`${uid}-castShadow`} cx="50%" cy="46%" r="52%">
+          <stop offset="0%" stopColor="rgba(0,0,0,0.62)" />
+          <stop offset="58%" stopColor="rgba(0,0,0,0.34)" />
+          <stop offset="100%" stopColor="rgba(0,0,0,0)" />
+        </radialGradient>
+
+        <filter id={`${uid}-softBlur`} x="-25%" y="-25%" width="150%" height="150%">
+          <feGaussianBlur stdDeviation={Math.max(1.6, r * 0.028)} />
+        </filter>
 
         {/* Rust patina + micro-sparkle grain: makes the cast metal read as real */}
         <filter
@@ -293,10 +318,10 @@ export function GlobeStand({
           <feColorMatrix
             in="corrosion"
             type="matrix"
-            values="0 0 0 0 0.42
-                    0 0 0 0 0.21
-                    0 0 0 0 0.07
-                    0.85 0.45 0 0 -0.42"
+            values="0 0 0 0 0.36
+                    0 0 0 0 0.18
+                    0 0 0 0 0.06
+                    0.95 0.6 0 0 -0.4"
             result="rustTint"
           />
           <feComposite in="rustTint" in2="SourceAlpha" operator="in" result="rustMask" />
@@ -314,7 +339,7 @@ export function GlobeStand({
             values="0 0 0 0 1
                     0 0 0 0 0.9
                     0 0 0 0 0.62
-                    0.34 0.26 0 0 -0.34"
+                    0.26 0.2 0 0 -0.4"
             result="sparkleTint"
           />
           <feComposite in="sparkleTint" in2="SourceAlpha" operator="in" result="sparkleMask" />
@@ -348,19 +373,19 @@ export function GlobeStand({
           cy={t1y - t1rx * persp * 0.28}
           rx={t1rx * 0.46}
           ry={t1rx * persp * 0.34}
-          fill="rgba(255,244,206,0.34)"
+          fill="rgba(240,222,176,0.2)"
         />
         <path
           d={`M ${f(cx - t2rx * 0.72)} ${f(t2y + t2h * 0.48)} Q ${f(cx - t2rx * 0.1)} ${f(t2y + t2h * 0.86)}, ${f(cx + t2rx * 0.48)} ${f(t2y + t2h * 0.5)}`}
           fill="none"
-          stroke="rgba(255,240,196,0.5)"
+          stroke="rgba(236,215,166,0.3)"
           strokeWidth={Math.max(1.6, t2h * 0.16)}
           strokeLinecap="round"
         />
         <path
           d={`M ${f(cx - t3rx * 0.78)} ${f(t3y + t3h * 0.5)} Q ${f(cx - t3rx * 0.05)} ${f(t3y + t3h * 0.92)}, ${f(cx + t3rx * 0.62)} ${f(t3y + t3h * 0.52)}`}
           fill="none"
-          stroke="rgba(255,236,182,0.42)"
+          stroke="rgba(232,209,160,0.26)"
           strokeWidth={Math.max(1.6, t3h * 0.15)}
           strokeLinecap="round"
         />
@@ -368,19 +393,19 @@ export function GlobeStand({
         <path
           d={`M ${f(cx - t1rx)} ${f(t1y)} A ${f(t1rx)} ${f(t1rx * persp)} 0 0 0 ${f(cx + t1rx)} ${f(t1y)}`}
           fill="none"
-          stroke="rgba(255,246,214,0.75)"
+          stroke="rgba(238,219,172,0.5)"
           strokeWidth="1.1"
         />
         <path
           d={`M ${f(cx - t2rx)} ${f(t2y)} A ${f(t2rx)} ${f(t2rx * persp)} 0 0 0 ${f(cx + t2rx)} ${f(t2y)}`}
           fill="none"
-          stroke="rgba(255,240,198,0.7)"
+          stroke="rgba(234,213,164,0.46)"
           strokeWidth="1.1"
         />
         <path
           d={`M ${f(cx - t3rx)} ${f(t3y)} A ${f(t3rx)} ${f(t3rx * persp)} 0 0 0 ${f(cx + t3rx)} ${f(t3y)}`}
           fill="none"
-          stroke="rgba(255,238,190,0.62)"
+          stroke="rgba(230,209,158,0.42)"
           strokeWidth="1.2"
         />
 
@@ -407,7 +432,7 @@ export function GlobeStand({
         />
         <path
           d={`M ${f(cx - stemW * 0.42)} ${f(stemTopY + stemH * 0.08)} L ${f(cx - stemW * 0.5)} ${f(stemTopY + stemH * 0.92)}`}
-          stroke="rgba(255,243,206,0.6)"
+          stroke="rgba(234,214,166,0.4)"
           strokeWidth={Math.max(1.2, stemW * 0.2)}
           strokeLinecap="round"
           fill="none"
@@ -430,7 +455,7 @@ export function GlobeStand({
           width={stemW * 2.4}
           height={Math.max(1.4, band * 0.16)}
           rx={band * 0.08}
-          fill="rgba(255,243,206,0.55)"
+          fill="rgba(232,212,164,0.36)"
         />
 
         {/* ── Graduated meridian band (right hemisphere, wrapping under) ──── */}
@@ -463,14 +488,14 @@ export function GlobeStand({
         <path
           d={arcStroke(Rc + band * 0.02)}
           fill="none"
-          stroke="rgba(255,248,220,0.5)"
+          stroke="rgba(233,214,168,0.34)"
           strokeWidth={Math.max(1, band * 0.09)}
           strokeLinecap="round"
         />
         <path
           d={arcStroke(Ri + band * 0.08)}
           fill="none"
-          stroke="rgba(52,33,14,0.75)"
+          stroke="rgba(30,19,8,0.85)"
           strokeWidth={Math.max(1, band * 0.1)}
           strokeLinecap="round"
         />
@@ -488,7 +513,7 @@ export function GlobeStand({
           cx={f(px(Rc, aEnd) - band * 0.16)}
           cy={f(py(Rc, aEnd) - band * 0.2)}
           r={band * 0.22}
-          fill="rgba(255,248,220,0.75)"
+          fill="rgba(238,220,176,0.5)"
         />
 
         {/* ── South pole bearing ──────────────────────────────────────────── */}
@@ -525,7 +550,7 @@ export function GlobeStand({
           y1={f(pinBaseY)}
           x2={f(pinTipX)}
           y2={f(pinTipY)}
-          stroke="rgba(255,246,214,0.6)"
+          stroke="rgba(235,216,170,0.42)"
           strokeWidth={Math.max(1, pinR * 0.5)}
           strokeLinecap="round"
         />
@@ -541,9 +566,49 @@ export function GlobeStand({
           cx={f(finialX - band * 0.16)}
           cy={f(finialY - band * 0.18)}
           r={band * 0.2}
-          fill="rgba(255,250,228,0.8)"
+          fill="rgba(242,226,184,0.55)"
         />
       </g>
+
+      {/* ── Physical integration layer (painted over the sphere) ──────────── */}
+      {/* Bronze bounce light along the limb facing the cradle */}
+      <path
+        d={`M ${f(px(r * 0.955, -52 * DEG))} ${f(py(r * 0.955, -52 * DEG))} A ${f(r * 0.955)} ${f(r * 0.955)} 0 0 1 ${f(px(r * 0.955, 120 * DEG))} ${f(py(r * 0.955, 120 * DEG))}`}
+        fill="none"
+        stroke={`url(#${uid}-bounce)`}
+        strokeWidth={Math.max(3, r * 0.058)}
+        strokeLinecap="round"
+        filter={`url(#${uid}-softBlur)`}
+      />
+
+      {/* Pole sockets: the axis visibly enters the sphere at both pivots */}
+      <ellipse
+        cx={f(px(r * 0.97, aN))}
+        cy={f(py(r * 0.97, aN))}
+        rx={band * 0.5}
+        ry={band * 0.3}
+        transform={`rotate(${tiltAngleDeg} ${f(px(r * 0.97, aN))} ${f(py(r * 0.97, aN))})`}
+        fill="rgba(6,10,22,0.5)"
+        filter={`url(#${uid}-softBlur)`}
+      />
+      <ellipse
+        cx={f(px(r * 0.96, aS))}
+        cy={f(py(r * 0.96, aS))}
+        rx={band * 0.46}
+        ry={band * 0.28}
+        transform={`rotate(${tiltAngleDeg} ${f(px(r * 0.96, aS))} ${f(py(r * 0.96, aS))})`}
+        fill="rgba(6,10,22,0.45)"
+        filter={`url(#${uid}-softBlur)`}
+      />
+
+      {/* Sphere shadow dropped onto the pedestal plate */}
+      <ellipse
+        cx={cx}
+        cy={t1y + t1rx * persp * 0.06}
+        rx={t1rx * 0.74}
+        ry={t1rx * persp * 0.7}
+        fill={`url(#${uid}-castShadow)`}
+      />
     </svg>
   );
 }

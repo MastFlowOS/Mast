@@ -142,7 +142,7 @@ function Hero() {
         </div>
 
         {/* Globe column — overflow-visible so zoom animations never clip, z-20 above background atmosphere */}
-        <div className="relative h-[280px] sm:h-[340px] md:h-[420px] lg:h-[480px] lg:-mr-4 xl:-mr-6 overflow-visible z-20">
+        <div className="relative h-[300px] sm:h-[375px] md:h-[470px] lg:h-[540px] lg:-mr-4 xl:-mr-6 overflow-visible z-20">
           <SignatureGlobe className="w-full h-full overflow-visible" />
         </div>
       </div>

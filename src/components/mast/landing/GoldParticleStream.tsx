@@ -62,6 +62,7 @@ export function GoldParticleStream() {
     let height = 0;
     let dpr = 1;
     let docHeight = 1;
+    let pageWidth = 1;
     let scrollY = 0;
     let isVisible = true;
     let isTabActive = !document.hidden;
@@ -126,6 +127,11 @@ export function GoldParticleStream() {
       return a + (spineLut[Math.min(LUT_N, i + 1)] - a) * t;
     };
 
+    // Serpentine displacement of the current. A pure function of u — it is part
+    // of the artwork's shape, never of time or of scroll, so the ribbon keeps
+    // the exact same silhouette at the exact same place on the page forever.
+    const waveShape = (u: number) => Math.sin(u * 7.5) * 0.34 + Math.cos(u * 13.5) * 0.17;
+
     /* ── Deterministic PRNG so the current is identical on every load ───── */
     let seed = 90210;
     const rand = () => {
@@ -179,6 +185,9 @@ export function GoldParticleStream() {
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // Document-space extents. Sampled on resize only — never on scroll — so
+      // every particle keeps the same document coordinate for the whole session.
+      pageWidth = document.documentElement.clientWidth || width;
       docHeight = Math.max(
         document.documentElement.scrollHeight || 0,
         document.body.scrollHeight || 0,
@@ -235,8 +244,8 @@ export function GoldParticleStream() {
         alpha: 0.16 + core * 0.44 + rand() * 0.2 + (bright ? 0.16 : 0),
         twSpeed: 0.0009 + rand() * 0.0026,
         twPhase: rand() * Math.PI * 2,
-        driftAmp: 3 + rand() * 11,
-        driftFreq: 0.00016 + rand() * 0.00042,
+        driftAmp: 0.8 + rand() * 2.6,
+        driftFreq: 0.00012 + rand() * 0.0003,
         driftPhase: rand() * Math.PI * 2,
         glint: bright && rand() > 0.45,
       });
@@ -268,10 +277,11 @@ export function GoldParticleStream() {
 
     const onResize = () => updateDimensions();
     window.addEventListener("resize", onResize, { passive: true });
-    const onScroll = () => {
+    const readScroll = () => {
       scrollY = window.scrollY || window.pageYOffset || 0;
     };
-    window.addEventListener("scroll", onScroll, { passive: true });
+    // Kept only so the reduced-motion (non-rAF) path stays in step.
+    window.addEventListener("scroll", readScroll, { passive: true });
     const onVis = () => {
       isTabActive = !document.hidden;
     };
@@ -281,15 +291,11 @@ export function GoldParticleStream() {
 
     const cleanup = () => {
       window.removeEventListener("resize", onResize);
-      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("scroll", readScroll);
       document.removeEventListener("visibilitychange", onVis);
       io.disconnect();
     };
 
-    // The whole current creeps downward as one coherent body, so clusters
-    // never shear apart. One shared offset, applied at draw time.
-    let drift = 0;
-    const wrap = (u: number) => (u >= 1 ? u - 1 : u);
 
     /* ── Drawing ────────────────────────────────────────────────────────── */
     const drawFrame = (now: number, animate: boolean) => {
@@ -297,22 +303,15 @@ export function GoldParticleStream() {
       ctx.globalCompositeOperation = "lighter";
 
       const hw = halfWidth();
-      const wave1 = animate ? now * 0.00021 : 0;
-      const wave2 = animate ? now * 0.00013 : 0;
-
-      // Wavy displacement of the whole current — keeps the ribbon visibly
-      // serpentine independent of the spline itself.
-      const waveAt = (u: number) =>
-        Math.sin(u * 7.5 + wave1) * hw * 0.34 + Math.cos(u * 13.5 - wave2) * hw * 0.17;
 
       // 1. Unresolved cluster cores (round, soft, strictly secondary)
       for (let i = 0; i < clusters.length; i++) {
         const cl = clusters[i];
-        const cu = wrap(cl.u + drift);
+        const cu = cl.u;
         const sy = cu * docHeight - scrollY;
         const rpx = cl.radius * hw;
         if (sy < -rpx * 2 || sy > height + rpx * 2) continue;
-        const sx = spineAt(cu) * width + cl.lx * hw + waveAt(cu);
+        const sx = spineAt(cu) * pageWidth + cl.lx * hw + waveShape(cu) * hw;
         const pulse = animate ? 0.86 + Math.sin(now * cl.pulseSpeed + cl.pulsePhase) * 0.14 : 1;
         const d = rpx * 1.9;
         ctx.globalAlpha = Math.min(0.5, cl.coreAlpha * 0.5 * pulse);
@@ -322,14 +321,14 @@ export function GoldParticleStream() {
       // 2. The particle population — this is what makes the ribbon read thick
       for (let i = 0; i < starCount; i++) {
         const p = stars[i];
-        const pu = wrap(p.u + drift);
+        const pu = p.u;
         const sy = pu * docHeight - scrollY + p.ly * hw;
         if (sy < -30 || sy > height + 30) continue;
 
         const wobble = animate
           ? Math.sin(now * p.driftFreq + p.driftPhase) * p.driftAmp
           : 0;
-        const sx = spineAt(pu) * width + p.lx * hw + waveAt(pu) + wobble;
+        const sx = spineAt(pu) * pageWidth + p.lx * hw + waveShape(pu) * hw + wobble;
         if (sx < -40 || sx > width + 40) continue;
 
         let fade = 1;
@@ -376,15 +375,12 @@ export function GoldParticleStream() {
     }
 
     let rafId = 0;
-    let lastTime = performance.now();
 
     const render = (now: number) => {
-      const dt = Math.min(now - lastTime, 64);
-      lastTime = now;
-
       if (isVisible && isTabActive && width > 0 && height > 0) {
-        drift += 0.0000042 * (dt / 16.67);
-        if (drift >= 1) drift -= 1;
+        // Sampled here rather than in a scroll handler: the projection is then
+        // always built from the scroll offset of the frame being painted.
+        readScroll();
         drawFrame(now, true);
       }
       rafId = requestAnimationFrame(render);

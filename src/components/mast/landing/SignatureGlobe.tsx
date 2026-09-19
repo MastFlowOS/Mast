@@ -13,8 +13,12 @@ const TILT = 0.409;
 // Cinematic slow planetary rotation (radians per second) during free spin
 const BASE_SPEED = 0.024;
 // Visually substantial globe scale within the hero column, harmoniously proportioned
-// with the antique bronze/gold stand finials and pedestal base
-const SPHERE_FRACTION = 0.33;
+// with the antique bronze/gold stand finials and pedestal base. The sphere and the
+// cradle are scaled by this single figure together, so their relationship never drifts.
+const SPHERE_FRACTION = 0.32;
+// Vertical seat of the sphere inside the column. Sits low enough that the axis
+// finial clears the navigation bar while the pedestal still reaches the floor.
+const CENTER_FRACTION = 0.43;
 const PAN_STRENGTH = 0.35;
 
 // Directional celestial light vector (subtle lunar / solar grazing angle)
@@ -59,10 +63,14 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
     let atmoGlowCache: GradientCacheEntry | null = null;
     let oceanBgCache: GradientCacheEntry | null = null;
     let innerRimCache: GradientCacheEntry | null = null;
+    let bodyShadeCache: GradientCacheEntry | null = null;
+    let sheenCache: GradientCacheEntry | null = null;
     const invalidateGradientCaches = () => {
       atmoGlowCache = null;
       oceanBgCache = null;
       innerRimCache = null;
+      bodyShadeCache = null;
+      sheenCache = null;
     };
 
     const resize = () => {
@@ -134,7 +142,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       if (width === 0 || height === 0) return;
       ctx.clearRect(0, 0, width, height);
       const cx = width / 2;
-      const cy = height * 0.38;
+      const cy = height * CENTER_FRACTION;
       const r = Math.min(width, height) * SPHERE_FRACTION;
       
       const atmoGlow = ctx.createRadialGradient(cx, cy, r * 0.94, cx, cy, r * 1.055);
@@ -230,7 +238,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       }
 
       const cx = width / 2;
-      const cy = height * 0.38;
+      const cy = height * CENTER_FRACTION;
       const r = Math.min(width, height) * SPHERE_FRACTION;
       // Fixed displayed size: no punch-in, no punch-out, no camera scaling
       const effectiveR = r;
@@ -257,9 +265,9 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         atmoGlow = atmoGlowCache.gradient;
       } else {
         atmoGlow = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.94, cx, effectiveCY, effectiveR * 1.055);
-        atmoGlow.addColorStop(0, `rgba(56, 96, 192, ${0.16 * envLimbBreath})`);
-        atmoGlow.addColorStop(0.35, `rgba(42, 78, 168, ${0.09 * envLimbBreath})`);
-        atmoGlow.addColorStop(0.7, "rgba(30, 58, 138, 0.03)");
+        atmoGlow.addColorStop(0, `rgba(48, 84, 176, ${0.1 * envLimbBreath})`);
+        atmoGlow.addColorStop(0.35, `rgba(36, 68, 152, ${0.055 * envLimbBreath})`);
+        atmoGlow.addColorStop(0.7, "rgba(26, 50, 124, 0.02)");
         atmoGlow.addColorStop(1, "rgba(15, 23, 42, 0)");
         atmoGlowCache = { key: atmoGlowKey, gradient: atmoGlow };
       }
@@ -287,10 +295,11 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           effectiveCY,
           effectiveR * 1.01
         );
-        oceanBg.addColorStop(0, "rgba(8, 22, 54, 0.98)");
-        oceanBg.addColorStop(0.42, "rgba(6, 16, 42, 0.98)");
-        oceanBg.addColorStop(0.82, "rgba(4, 11, 28, 0.99)");
-        oceanBg.addColorStop(1, "rgba(3, 8, 22, 1)");
+        oceanBg.addColorStop(0, "rgba(13, 32, 72, 0.98)");
+        oceanBg.addColorStop(0.3, "rgba(8, 21, 52, 0.98)");
+        oceanBg.addColorStop(0.62, "rgba(5, 13, 34, 0.99)");
+        oceanBg.addColorStop(0.86, "rgba(3, 8, 22, 1)");
+        oceanBg.addColorStop(1, "rgba(2, 5, 15, 1)");
         oceanBgCache = { key: geometryKey, gradient: oceanBg };
       }
 
@@ -304,8 +313,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       } else {
         innerRim = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.86, cx, effectiveCY, effectiveR);
         innerRim.addColorStop(0, "rgba(0, 0, 0, 0)");
-        innerRim.addColorStop(0.72, "rgba(36, 68, 148, 0.10)");
-        innerRim.addColorStop(1, "rgba(68, 112, 210, 0.26)");
+        innerRim.addColorStop(0.72, "rgba(30, 58, 128, 0.07)");
+        innerRim.addColorStop(1, "rgba(58, 96, 182, 0.17)");
         innerRimCache = { key: geometryKey, gradient: innerRim };
       }
       ctx.fillStyle = innerRim;
@@ -506,6 +515,53 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         }
       }
 
+      // 5. Physical light response, applied over the dotted surface so the map
+      //    reads as printed ON the sphere rather than pasted in front of it.
+      //    Lighting matches the cradle: key from the upper left, warm bronze
+      //    bounce from the meridian band on the right.
+      const shadeKey = `${geometryKey}|shade`;
+      let bodyShade: CanvasGradient;
+      if (bodyShadeCache && bodyShadeCache.key === shadeKey) {
+        bodyShade = bodyShadeCache.gradient;
+      } else {
+        bodyShade = ctx.createRadialGradient(
+          cx - effectiveR * 0.42,
+          effectiveCY - effectiveR * 0.46,
+          effectiveR * 0.1,
+          cx - effectiveR * 0.18,
+          effectiveCY - effectiveR * 0.16,
+          effectiveR * 1.5
+        );
+        bodyShade.addColorStop(0, "rgba(120, 168, 255, 0.07)");
+        bodyShade.addColorStop(0.34, "rgba(10, 24, 58, 0)");
+        bodyShade.addColorStop(0.72, "rgba(2, 5, 14, 0.3)");
+        bodyShade.addColorStop(1, "rgba(1, 3, 9, 0.6)");
+        bodyShadeCache = { key: shadeKey, gradient: bodyShade };
+      }
+      ctx.fillStyle = bodyShade;
+      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
+
+      // Restrained glass specular on the key side — a sheen, not a hotspot
+      let sheen: CanvasGradient;
+      if (sheenCache && sheenCache.key === shadeKey) {
+        sheen = sheenCache.gradient;
+      } else {
+        sheen = ctx.createRadialGradient(
+          cx - effectiveR * 0.46,
+          effectiveCY - effectiveR * 0.5,
+          0,
+          cx - effectiveR * 0.46,
+          effectiveCY - effectiveR * 0.5,
+          effectiveR * 0.62
+        );
+        sheen.addColorStop(0, "rgba(150, 192, 255, 0.09)");
+        sheen.addColorStop(0.45, "rgba(96, 146, 226, 0.035)");
+        sheen.addColorStop(1, "rgba(60, 100, 180, 0)");
+        sheenCache = { key: shadeKey, gradient: sheen };
+      }
+      ctx.fillStyle = sheen;
+      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
+
       ctx.restore();
 
       // Editorial country name + opportunity count confirmation
@@ -585,7 +641,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
   }, []);
 
   const cx = dimensions.width / 2;
-  const cy = dimensions.height * 0.38;
+  const cy = dimensions.height * CENTER_FRACTION;
   const r = Math.min(dimensions.width, dimensions.height) * SPHERE_FRACTION;
 
   return (

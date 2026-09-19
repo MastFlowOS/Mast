@@ -24,8 +24,9 @@ export type DiscoveryPlanRequest = {
   // created). Keep these two concepts under permanently different names.
   planTierId?: string;
   /**
-   * The user's geographic scope selection — continent today (e.g. "North
-   * America"), country in the future. This is the ONLY geographic input a
+   * The user's geographic scope selection: a comma-separated list of
+   * Global | continent (e.g. "North America") | country (e.g. "Canada")
+   * tokens — see src/lib/geo/scope.ts. This is the ONLY geographic input a
    * caller provides. There is no city-level request field: city is an
    * internal discovery work unit, never a product-level selector. See
    * materializeDiscoveryPlan()'s doc comment for the full architecture.

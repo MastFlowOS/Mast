@@ -51,15 +51,13 @@ test("a continent-level region expands to every country in that region", () => {
 
 // ── B — Country scope expands to that country's internal city tasks ────
 test("a single-country scope expands to that country's internal major-city tasks", () => {
-  // Simulates the future \"country\" selector by using a region that
-  // resolves to exactly the country under test isn't possible today (no
-  // single-country region exists), so this exercises the underlying
-  // per-country expansion directly against the data resolveDiscoveryTargets
-  // consumes — the same majorCities expansion a future country-scoped
-  // request would go through.
-  const us = COUNTRIES.find((c) => c.code === "US")!;
-  const cities = us.majorCities.map((city) => ({ country: us, city }));
-  assert.deepEqual(cities.map((c) => c.city).sort(), ["Chicago", "Los Angeles", "New York"].sort());
+  // Country scope is real: a country token resolves to exactly that
+  // country (see src/lib/__tests__/countryScope.test.ts for the full
+  // US ≠ Canada ≠ UK regression suite).
+  const targets = resolveDiscoveryTargets({ region: "United States" });
+  assert.ok(targets.every((t) => t.country.code === "US"));
+  assert.deepEqual(targets.map((t) => t.city).sort(), ["Chicago", "Los Angeles", "New York"].sort());
+  assert.ok(COUNTRIES.some((c) => c.code === "US"));
 });
 
 // ── C — Cities are internal only; no public city request field exists ──

@@ -60,6 +60,7 @@ export type Database = {
           niche: string | null;
           query_used: string | null;
           region: string | null;
+          country_code: string | null;
           address: string | null;
           lat: number | null;
           lng: number | null;
@@ -106,6 +107,7 @@ export type Database = {
           niche?: string | null;
           query_used?: string | null;
           region?: string | null;
+          country_code?: string | null;
           address?: string | null;
           lat?: number | null;
           lng?: number | null;
@@ -152,6 +154,7 @@ export type Database = {
           niche?: string | null;
           query_used?: string | null;
           region?: string | null;
+          country_code?: string | null;
           address?: string | null;
           lat?: number | null;
           lng?: number | null;
@@ -616,6 +619,8 @@ export type Database = {
           p_profession_slug: string | null;
           p_rank: boolean;
           p_limit: number;
+          p_country_codes?: string[] | null;
+          p_country_strict?: boolean;
         };
         Returns: {
           business_id: string;

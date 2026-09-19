@@ -5,6 +5,7 @@ import { supabase } from "./supabase";
 import { addNotification } from "./notifications";
 import { buildPermissionsManager, getDevPlanOverride, type FeatureId } from "./permissions";
 import { UsageService } from "./usage";
+import { validateDiscoveryRegion } from "./geo/scope";
 import type { ProgressionEventTotals, ProgressionMetric } from "./progression";
 
 
@@ -1325,12 +1326,11 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
       throw new ApiError(403, `Channel ${ch} is restricted under your plan.`, {});
     }
   }
-  const requestedRegions = body.region
-    .split(",")
-    .map((r) => r.trim())
-    .filter(Boolean);
-  if (requestedRegions.some((r) => r !== "North America") && !permissions.can("regionalSearch")) {
-    throw new ApiError(403, "Regional search is restricted under your plan.", {});
+  // Same validation the server runs (src/lib/geo/scope.ts) so the pre-flight
+  // can never disagree with the enforced rule.
+  const geo = validateDiscoveryRegion(body.region, { regionalSearch: permissions.can("regionalSearch") });
+  if (!geo.ok) {
+    throw new ApiError(geo.code === "invalid_region" ? 400 : 403, geo.message, {});
   }
 
   // Note: `body.mode` (the UI's speed selector) is NOT sent — the backend
@@ -1343,7 +1343,7 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
     method: "POST",
     body: JSON.stringify({
       quantity: body.quantity,
-      region: body.region,
+      region: geo.region,
       niche: body.niche,
       channels: body.channels,
       currencies: body.currencies ?? [],

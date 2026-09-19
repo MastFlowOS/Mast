@@ -50,14 +50,21 @@ export class FakeDb {
     return new FakeQuery(this, name, this.table(name));
   }
 
-  /** Mirrors migrations/003_pool_lookup.sql::pool_lookup. */
+  /** Mirrors migrations/003 + 034 pool_lookup (country-aware). */
   private poolLookup(args: Row): Row[] {
     const has = (hay: unknown, needle: string) =>
       needle === "" || (typeof hay === "string" && hay.toLowerCase().includes(needle.toLowerCase()));
+    // Migration 034: continent/Global lookups = legacy label match OR
+    // country_code in the set; country lookups (p_country_strict) match ONLY
+    // on country_code. NULL country never matches a country set.
+    const codes: string[] | null = args.p_country_codes ?? null;
+    const inCodes = (b: Row) => codes !== null && b.country_code != null && codes.includes(b.country_code);
+    const regionOk = (b: Row) =>
+      args.p_country_strict === true ? inCodes(b) : has(b.region ?? "", args.p_region) || inCodes(b);
     const matches = this.businesses.filter(
       (b) =>
         b.is_disqualified !== true &&
-        has(b.region ?? "", args.p_region) &&
+        regionOk(b) &&
         (args.p_niche === "" || has(b.niche, args.p_niche)) &&
         !this.leads.some((l) => l.user_id === args.p_user_id && l.business_id === b.id),
     );

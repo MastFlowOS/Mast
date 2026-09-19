@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
+import { countryCodeFrom, parseGeoScope } from "../lib/geo/scope.js";
 import type { EngineLead } from "./pythonBridge.js";
 import { normalizeDiscoveryNiche, resolveLeadNiche } from "../lib/niches.js";
 import { applyRediscoverySuccess, CONFIDENCE_DEFAULT, VERIFICATION_INTERVAL_MS } from "../scoring/confidenceModel.js";
@@ -102,12 +103,29 @@ function extractSignals(lead: EngineLead) {
  * normalization is reimplemented here — we only ever compare fingerprint
  * strings the engine produced.
  */
+/**
+ * The ISO country to store on a business row. Order: the country the
+ * provider was asked to search (stamped on the lead by runEngineQuery), then
+ * the engine's own echo, then — only when the request named exactly one
+ * country and nothing else — that country. Otherwise null (unknown): a
+ * continent-wide request must never fabricate a country.
+ */
+export function resolveBusinessCountryCode(lead: EngineLead, region: string): string | null {
+  const direct = countryCodeFrom(lead.country_code) ?? countryCodeFrom(lead.country);
+  if (direct) return direct;
+  const scope = parseGeoScope(region);
+  if (!scope.global && scope.continents.length === 0 && scope.countries.length === 1) {
+    return scope.countries[0].code;
+  }
+  return null;
+}
+
 async function findExistingBusiness(fingerprints: string[]) {
   if (fingerprints.length === 0) return null;
 
   const { data, error } = await supabaseAdmin
     .from("businesses")
-    .select("id, confidence, niche")
+    .select("id, confidence, niche, country_code")
     .overlaps("fingerprints", fingerprints)
     .limit(1)
     .maybeSingle();
@@ -177,6 +195,13 @@ export async function upsertBusinessFromEngineLead(
         ...(!normalizeDiscoveryNiche(existing.niche) && normalizeDiscoveryNiche(lead.niche)
           ? { niche: normalizeDiscoveryNiche(lead.niche) }
           : {}),
+        // Same fill-only rule for the country: a business stored before
+        // country_code existed gets its country the first time it is
+        // rediscovered under a known one, so country-scoped pool lookups can
+        // find it. A known country is never overwritten.
+        ...(!existing.country_code && resolveBusinessCountryCode(lead, region)
+          ? { country_code: resolveBusinessCountryCode(lead, region) }
+          : {}),
         // C4/C5 fix: a rediscovery is a fresh crawl too — refresh these
         // fields rather than leaving them stuck at whatever the first
         // discovery happened to find, exactly like refreshedFields does in
@@ -206,6 +231,7 @@ export async function upsertBusinessFromEngineLead(
       niche: normalizeDiscoveryNiche(lead.niche),
       query_used: lead.query,
       region: region || lead.region,
+      country_code: resolveBusinessCountryCode(lead, region),
       address: lead.address,
       website: lead.website || null,
       email: lead.email || null,

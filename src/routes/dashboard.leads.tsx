@@ -10,9 +10,6 @@ import { toast } from "sonner";
 import { createPortal } from "react-dom";
 import {
   Zap,
-  Globe2,
-  Target,
-  Gauge,
   Sparkles,
   Mail,
   Phone,
@@ -21,14 +18,9 @@ import {
   X,
   Search,
   CheckSquare,
-  TrendingUp,
-  DollarSign,
-  Brain,
-  Clock,
-  Shield,
-  Coins,
   Check,
   Lock,
+  ArrowRight,
 } from "lucide-react";
 import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead } from "@/lib/api";
 
@@ -41,6 +33,14 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { type FeatureId } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
+import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
+import { GLOBAL_SCOPE, isLocalGeoToken, parseGeoScope } from "@/lib/geo/scope";
+import {
+  DISCOVERY_METHODS,
+  discoveryMethodForPlan,
+  generationModeFor,
+  nextDiscoveryMethod,
+} from "@/lib/discoveryMethod";
 import { addNotification } from "@/lib/notifications";
 import {
   DEFAULT_CHANNELS,
@@ -72,20 +72,19 @@ function GetLeadsWrapper() {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const REGIONS = [
-  "North America",
-  "South America",
-  "Europe",
-  "Asia",
-  "Africa",
-  "Oceania",
-  "Global",
-] as const;
+/** A scope token: a country name, a continent, or "Global" (see
+ * src/lib/geo/scope.ts — the same parser the server uses). */
+type Region = string;
 
-type Region = (typeof REGIONS)[number];
+/** Compact "Top Picks" shown first in the Target Region selector. */
+const TOP_PICK_COUNTRIES: Region[] = ["United States", "United Kingdom", "Canada"];
 
-const CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "AED"] as const;
-type Currency = (typeof CURRENCIES)[number];
+/** Every supported country, A→Z (the same data discovery searches). */
+const COUNTRY_NAMES: Region[] = COUNTRIES.map((c) => c.name).sort((a, b) => a.localeCompare(b));
+
+/** Broader scopes the backend also supports; offered under "Regions" in the
+ * search results so existing continent/Global capability is not lost. */
+const BROAD_SCOPES: Region[] = [...REGION_NAMES, GLOBAL_SCOPE];
 
 /** Full niche catalog — supports prefix search */
 const NICHE_CATALOG = [
@@ -166,55 +165,11 @@ const NICHE_CATALOG = [
   "Yoga Studio",
 ];
 
-const speeds = [
-  {
-    id: "scrape",
-    label: "Live Scraping",
-    desc: "Fresh records pulled from the web in real time",
-    premium: false,
-    multiplier: 1.0,
-    speedPct: 40,
-    qualityPct: 55,
-    costPct: 25,
-    timeLabel: "5–10 min",
-    speedLabel: "Thorough",
-    qualityLabel: "Standard",
-    costLabel: "Lowest",
-  },
-  {
-    id: "pool",
-    label: "Instant Pool Access",
-    desc: "Pre-verified businesses from Mast's curated pool",
-    premium: false,
-    multiplier: 1.5,
-    speedPct: 70,
-    qualityPct: 75,
-    costPct: 55,
-    timeLabel: "Under 1 min",
-    speedLabel: "Fast",
-    qualityLabel: "High",
-    costLabel: "Moderate",
-  },
-  {
-    id: "premium",
-    label: "Premium Instant Results",
-    desc: "Decision-makers with mobile-verified contacts",
-    premium: true,
-    multiplier: 2.0,
-    speedPct: 95,
-    qualityPct: 95,
-    costPct: 90,
-    timeLabel: "Instant",
-    speedLabel: "Fastest",
-    qualityLabel: "Premium",
-    costLabel: "Highest",
-  },
-];
-
 // Channel definitions — ordered: Email > Phone > Instagram > Website
 const channelOptions = [
   {
     id: "email",
+    short: "Email",
     label: "Verified Email",
     icon: Mail,
     costLabel: "Lowest cost",
@@ -222,6 +177,7 @@ const channelOptions = [
   },
   {
     id: "phone",
+    short: "Phone",
     label: "Phone Number",
     icon: Phone,
     costLabel: "Low cost",
@@ -229,6 +185,7 @@ const channelOptions = [
   },
   {
     id: "instagram",
+    short: "Instagram",
     label: "Instagram",
     icon: Instagram,
     costLabel: "Med cost",
@@ -236,6 +193,7 @@ const channelOptions = [
   },
   {
     id: "website",
+    short: "Website",
     label: "Website",
     icon: Link2,
     costLabel: "High cost",
@@ -265,72 +223,6 @@ function qtyToSliderIndex(qty: number): number {
 }
 
 // ─── Cost engine ──────────────────────────────────────────────────────────────
-
-/**
- * Base cost per lead based on selected channels.
- * Defined as a lookup table per spec:
- *   Email only                          → 1
- *   Email + Phone                       → 2
- *   Email + Phone + Instagram           → 3
- *   Email + Phone + Instagram + Website → 5
- * Any other combination falls back to the number of channels selected.
- */
-function baseLeadCost(channels: ChannelId[]): number {
-  const has = (id: ChannelId) => channels.includes(id);
-  if (has("email") && has("phone") && has("instagram") && has("website")) return 5;
-  if (has("email") && has("phone") && has("instagram")) return 3;
-  if (has("email") && has("phone")) return 2;
-  if (has("email")) return 1;
-  // Non-standard combinations: 1 credit per channel selected, minimum 1
-  return Math.max(1, channels.length);
-}
-
-/**
- * Region multiplier per spec:
- *   Global         → ×2.0
- *   4+ regions     → ×1.6
- *   3 regions      → ×1.4
- *   2 regions      → ×1.2
- *   1 region       → ×1.0
- */
-function regionMultiplier(regions: Region[]): number {
-  if (regions.includes("Global")) return 2.0;
-  if (regions.length >= 4) return 1.6;
-  if (regions.length === 3) return 1.4;
-  if (regions.length === 2) return 1.2;
-  return 1.0;
-}
-
-/**
- * Niche multiplier per spec:
- *   6+ niches  → ×1.4
- *   3–5 niches → ×1.2
- *   2 niches   → ×1.1
- *   0–1 niche  → ×1.0
- */
-function nicheMultiplier(niches: string[]): number {
-  if (niches.length >= 6) return 1.4;
-  if (niches.length >= 3) return 1.2;
-  if (niches.length === 2) return 1.1;
-  return 1.0;
-}
-
-/**
- * Final cost formula:
- *   Quantity × baseLeadCost × regionMultiplier × nicheMultiplier × modeMultiplier
- * Rounded to nearest whole credit, minimum 1.
- */
-function calcCredits(
-  qty: number,
-  channels: ChannelId[],
-  regions: Region[],
-  niches: string[],
-  speedId: string,
-): number {
-  const modeMultiplier = speeds.find((s) => s.id === speedId)?.multiplier ?? 1.0;
-  const raw = qty * baseLeadCost(channels) * regionMultiplier(regions) * nicheMultiplier(niches) * modeMultiplier;
-  return Math.max(1, Math.round(raw));
-}
 
 // ─── Main Component ────────────────────────────────────────────────────────────
 
@@ -369,9 +261,6 @@ function AnimatedCounter({ value }: { value: number }) {
   return <span>{displayValue.toLocaleString()}</span>;
 }
 
-// ─── Reusable Locked Feature Card ──────────────────────────────────────────────
-import { LockedFeatureCard } from "@/components/mast/LockedFeatureCard";
-
 function GetLeads() {
   const navigate = useNavigate();
 
@@ -396,19 +285,22 @@ function GetLeads() {
   const [qtyIndex, setQtyIndex] = useState<number>(qtyToSliderIndex(10));
   const quantity = sliderIndexToQty(qtyIndex);
 
-  // Multi-select regions & optional currencies
-  const [regions, setRegions] = useState<Region[]>(["North America"]);
-  const [currencies, setCurrencies] = useState<Currency[]>([]);
+  // Multi-select regions
+  const [regions, setRegions] = useState<Region[]>([TOP_PICK_COUNTRIES[0]]);
+  // Target Region selector UI state (Top Picks are always visible; the
+  // search box filters the full REGIONS list).
+  const [regionSearch, setRegionSearch] = useState("");
+  const [regionDropdownOpen, setRegionDropdownOpen] = useState(false);
+  const regionContainerRef = useRef<HTMLDivElement>(null);
 
   const hasInitializedRef = useRef(false);
 
   // Set default regions from settings when they load
   useEffect(() => {
     if (settings?.defaultRegions && !hasInitializedRef.current) {
-      const stored = settings.defaultRegions
-        .split(",")
-        .map((r) => r.trim())
-        .filter((r) => REGIONS.includes(r as Region)) as Region[];
+      // Saved defaults may be continents (Settings page) or countries; only
+      // tokens the backend actually understands are applied.
+      const stored: Region[] = parseGeoScope(settings.defaultRegions).tokens;
       if (stored.length > 0) {
         setRegions(stored);
         hasInitializedRef.current = true;
@@ -431,7 +323,6 @@ function GetLeads() {
   const [dropdownPosition, setDropdownPosition] = useState({ left: 0, top: 0, width: 0 });
 
   // Channels & generation mode
-  const [speed, setSpeed] = useState(speeds[0].id);
   // Lead-Yield Waste Fix: DEFAULT_CHANNELS is empty on purpose — see
   // src/lib/channelSelection.ts's module docstring. The audit found the
   // previous ["email","phone"] default silently pre-selected the most
@@ -468,8 +359,10 @@ function GetLeads() {
 
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
   const monthlyRemaining = account?.monthlyUsage.remaining ?? 0;
-  const currentSpeed = speeds.find((s) => s.id === speed)!;
-  const hasPremiumAccess = permissions.can("premiumPool");
+  // Discovery method is plan-derived (server: plan.discoveryMode) — there is
+  // no per-request mode to choose. See src/lib/discoveryMethod.ts.
+  const activeMethod = discoveryMethodForPlan(permissions.plan);
+  const upgradeMethod = nextDiscoveryMethod(permissions.plan);
 
   const leads = Array.isArray(leadsPayload)
     ? leadsPayload
@@ -499,6 +392,17 @@ function GetLeads() {
       const clickedDropdown = nicheDropdownRef.current?.contains(target);
       if (!clickedAnchor && !clickedDropdown) {
         setNicheDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  // Close the region search dropdown on outside click.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!regionContainerRef.current?.contains(e.target as Node)) {
+        setRegionDropdownOpen(false);
       }
     };
     document.addEventListener("mousedown", handler);
@@ -546,20 +450,22 @@ function GetLeads() {
     };
   }, [nicheDropdownOpen, niches.length]);
 
-  const localRegion = (settings?.defaultRegions?.split(",")?.[0]?.trim() || "North America") as Region;
   const hasRegionalSearch = permissions.can("regionalSearch");
 
   const toggleRegion = (r: Region) => {
-    if (!hasRegionalSearch && r !== localRegion) {
+    // Same rule the server enforces (validateDiscoveryRegion): without
+    // regionalSearch only the local region — North America and its
+    // countries — is searchable.
+    if (!hasRegionalSearch && !isLocalGeoToken(r)) {
       const meta = permissions.getFeatureMetadata("regionalSearch");
-      toast.error(`${meta.title} requires the ${meta.requiredPlan.toUpperCase()} plan. You are restricted to your local region (${localRegion}).`);
+      toast.error(`${meta.title} requires the ${meta.requiredPlan.toUpperCase()} plan. Your plan is limited to local search (North America).`);
       return;
     }
-    if (r === "Global") {
-      setRegions(["Global"]);
+    if (r === GLOBAL_SCOPE) {
+      setRegions([GLOBAL_SCOPE]);
     } else {
       setRegions((prev) => {
-        const withoutGlobal = prev.filter((x) => x !== "Global");
+        const withoutGlobal = prev.filter((x) => x !== GLOBAL_SCOPE);
         return withoutGlobal.includes(r)
           ? withoutGlobal.filter((x) => x !== r).length === 0
             ? [r] // keep at least one
@@ -568,11 +474,6 @@ function GetLeads() {
       });
     }
   };
-
-  const toggleCurrency = (c: Currency) =>
-    setCurrencies((prev) =>
-      prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
-    );
 
   const toggleNiche = (n: string) => {
     setNiches((prev) =>
@@ -600,6 +501,19 @@ function GetLeads() {
     setChannels((c) => toggleChannelSelection(c, id));
   };
 
+  const regionQuery = regionSearch.trim().toLowerCase();
+  const matchesRegionQuery = (r: Region) => r.toLowerCase().includes(regionQuery);
+  // Names that START with the query rank first ("u" → United …, Uganda …),
+  // then the rest; both groups stay A→Z.
+  const startsWithQuery = (r: Region) => r.toLowerCase().startsWith(regionQuery);
+  const filteredCountries = COUNTRY_NAMES.filter(matchesRegionQuery).sort(
+    (a, b) => Number(startsWithQuery(b)) - Number(startsWithQuery(a)),
+  );
+  // Continents / Global only appear once the user is actually searching, so
+  // the default list stays a pure country list.
+  const filteredBroadScopes = regionQuery ? BROAD_SCOPES.filter(matchesRegionQuery) : [];
+  const firstRegionMatch = filteredCountries[0] ?? filteredBroadScopes[0];
+
   const filteredNiches = NICHE_CATALOG.filter((n) =>
     n.toLowerCase().includes(nicheSearch.toLowerCase())
   );
@@ -611,9 +525,6 @@ function GetLeads() {
   }, [nicheActiveIndex]);
 
   const channelRestricted = channels.some((c) => !permissions.can(channelToFeature[c]));
-  const modeRestricted =
-    (speed === "pool" && !permissions.can("instantPool")) ||
-    (speed === "premium" && !permissions.can("premiumPool"));
   const exceedsDailyLimit = account ? quantity > dailyRemaining : false;
   const exceedsMonthlyLimit = account ? quantity > monthlyRemaining : false;
   // Niche selection is required — the engine must never receive an empty
@@ -630,7 +541,6 @@ function GetLeads() {
     !noNicheSelected &&
     !noChannelSelected &&
     !channelRestricted &&
-    !modeRestricted &&
     !exceedsDailyLimit &&
     !exceedsMonthlyLimit &&
     !isGenerating;
@@ -709,13 +619,16 @@ function GetLeads() {
         quantity,
         region: regions.join(", "),
         niche: niches.join(", "),
-        mode: speed as "scrape" | "pool" | "premium",
+        // Informational: the server derives the real mode from the plan.
+        mode: generationModeFor(activeMethod.id),
         // Pass-through-unchanged contract — see channelsForRequest's
         // docstring. Whatever the user selected (any AND-combination,
         // including a single channel) reaches the engine exactly as
         // selected; no default, dedup, or OR-conversion happens here.
         channels: channelsForRequest(channels),
-        currencies,
+        // Business Currency was removed from Discover. The request contract
+        // still carries the field, so send the explicit empty default.
+        currencies: [],
       });
 
       // Whatever arrived synchronously (Instant Discovery's pool hit) shows
@@ -1010,136 +923,49 @@ function GetLeads() {
   }
 
   // ─── 3. Main Discover Form ──────────────────────────────────────────────────
+  // Layout principle: PRIMARY DECISIONS (left) → LAUNCH (right, sticky) →
+  // SECONDARY INFORMATION (right, beneath). Every control below is wired to
+  // the exact same state/handlers as before; only the presentation changed.
+  const nicheSummary =
+    niches.length === 0
+      ? null
+      : niches.length <= 3
+        ? niches.join(", ")
+        : `${niches.slice(0, 3).join(", ")} +${niches.length - 3}`;
+  const channelSummary = channelOptions
+    .filter((c) => channels.includes(c.id))
+    .map((c) => c.short)
+    .join(" · ");
+  // Only real, user-actionable blockers are shown in red. A merely
+  // incomplete form gets a quiet muted hint instead of a standing warning.
+  const hardBlockMessage = exceedsDailyLimit
+    ? `Daily limit: only ${dailyRemaining.toLocaleString()} remaining today.`
+    : exceedsMonthlyLimit
+      ? `Monthly limit: only ${monthlyRemaining.toLocaleString()} remaining.`
+      : channelRestricted
+        ? "Your plan does not support this configuration."
+        : null;
+  const incompleteHint = noNicheSelected
+    ? "Select a niche to launch"
+    : noChannelSelected
+      ? "Select a contact channel to launch"
+      : null;
+
   return (
     <div className="p-8 max-w-7xl animate-page-enter">
-      <div className="mb-8 animate-fade-up">
-        <span className="text-xs font-bold text-brand uppercase tracking-widest">
-          Opportunity Engine
-        </span>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight">
-          Discover high-intent opportunities in minutes
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground max-w-2xl leading-relaxed">
-          Tell Mast what you're looking for. It finds verified businesses, loads your outreach channels, and prepares contextual intelligence — so every session starts with an edge.
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold tracking-tight">Discover</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Tell Mast who to find. Verified businesses arrive with contact channels loaded.
         </p>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-card border border-border rounded-2xl p-7 space-y-7">
-          {/* ── Quantity ─────────────────────────────────────────── */}
-          <Section
-            icon={Target}
-            title="Opportunity Amount"
-            subtitle="How many businesses should we find for you?"
-            stagger={0}
-          >
-            <div className="space-y-4">
-              <div className="flex items-baseline justify-between gap-4">
-                <p className="text-sm text-muted-foreground">
-                  Batch size for this session
-                </p>
-                <p className="text-2xl font-bold tracking-tight text-foreground tabular-nums">
-                  {quantity.toLocaleString()}
-                  <span className="ml-1.5 text-sm font-medium text-muted-foreground">
-                    businesses
-                  </span>
-                </p>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={maxSliderIndex}
-                step={1}
-                value={Math.min(qtyIndex, maxSliderIndex)}
-                onChange={(e) => setQtyIndex(Number(e.target.value))}
-                className="w-full accent-[color:var(--brand)] cursor-pointer"
-              />
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>1</span>
-                <span className="text-[11px]">
-                  Plan max: {maxQuantity.toLocaleString()}
-                </span>
-                <span>{maxQuantity.toLocaleString()}</span>
-              </div>
-            </div>
-          </Section>
-
-          {/* ── Region ───────────────────────────────────────────── */}
-          <Section
-            icon={Globe2}
-            title="Target Region"
-            subtitle="Geographic territories to search — combine with currency for purchasing-power targeting"
-            stagger={1}
-          >
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              {REGIONS.map((r) => {
-                const isSelected = regions.includes(r);
-                const isLocked = !hasRegionalSearch && r !== localRegion;
-                return (
-                  <button
-                    key={r}
-                    onClick={() => toggleRegion(r)}
-                    className={cn(
-                      isSelected
-                        ? "px-3 py-2.5 rounded-lg border-2 border-brand bg-brand/10 text-foreground text-sm font-medium text-center transition-all"
-                        : "px-3 py-2.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 text-sm font-medium text-center transition-colors",
-                      isLocked && "opacity-50 cursor-not-allowed"
-                    )}
-                  >
-                    <span className="flex items-center justify-center gap-1.5">
-                      {r}
-                      {isLocked && <Lock className="size-3 text-muted-foreground shrink-0" />}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="mt-5 pt-5 border-t border-border/60">
-              <div className="flex items-center gap-2 mb-3">
-                <DollarSign className="size-4 text-muted-foreground" />
-                <p className="text-xs font-semibold text-foreground">
-                  Business Currency
-                </p>
-                <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
-                  Optional
-                </span>
-              </div>
-              <p className="text-[11px] text-muted-foreground mb-3 leading-relaxed">
-                Filter by local purchasing power — works alongside region selection.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {CURRENCIES.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => toggleCurrency(c)}
-                    className={
-                      currencies.includes(c)
-                        ? "px-3 py-1.5 rounded-lg border-2 border-brand bg-brand/10 text-foreground text-xs font-bold tracking-wide transition-all"
-                        : "px-3 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 text-xs font-semibold tracking-wide transition-colors"
-                    }
-                  >
-                    {c}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </Section>
-
-          {/* ── Niche ────────────────────────────────────────────── */}
-          <Section
-            icon={Sparkles}
-            title="Business Niche"
-            subtitle="Select one or more verticals to target — required"
-            stagger={2}
-          >
+      <div className="grid lg:grid-cols-3 gap-6 items-start">
+        {/* ── Primary decisions ─────────────────────────────────── */}
+        <div className="lg:col-span-2 bg-card border border-border rounded-2xl divide-y divide-border/70">
+          {/* Business Niche — selector behavior unchanged */}
+          <Field label="Business Niche" hint="Required · pick one or more">
             <div ref={nicheContainerRef} className="relative">
-              {/* Selected niche chips */}
-              {niches.length === 0 && (
-                <p className="text-[11px] text-muted-foreground mb-2">
-                  Choose at least one niche to start a discovery session.
-                </p>
-              )}
               {niches.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   {niches.map((n) => (
@@ -1150,16 +976,16 @@ function GetLeads() {
                       {n}
                       <button
                         onClick={() => removeNiche(n)}
+                        aria-label={`Remove ${n}`}
                         className="text-muted-foreground hover:text-foreground ml-0.5"
                       >
-                        <X className="size-4" />
+                        <X className="size-3.5" />
                       </button>
                     </span>
                   ))}
                 </div>
               )}
 
-              {/* Search input */}
               <div ref={nicheInputWrapRef} className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
                 <input
@@ -1201,17 +1027,9 @@ function GetLeads() {
                 />
               </div>
 
-              {/*
-                Rendered through a real portal into document.body.
-                The old version used `position: fixed` while staying a normal
-                DOM descendant of this Section — but Section's `animate-fade-up`
-                class applies a CSS transform, and any transformed ancestor
-                becomes the containing block for `position: fixed` descendants.
-                That trapped the dropdown inside its own Section instead of the
-                viewport, which is why it rendered clipped and behind sibling
-                sections no matter what z-index it was given. Portaling escapes
-                that stacking context entirely.
-              */}
+              {/* Portaled to document.body so no transformed ancestor can
+                  trap or clip it — see the git history for the original
+                  root-cause note. Behavior unchanged. */}
               {nicheDropdownOpen &&
                 createPortal(
                   <div
@@ -1270,272 +1088,287 @@ function GetLeads() {
                   document.body
                 )}
             </div>
-          </Section>
+          </Field>
 
-          {/* ── Channels ─────────────────────────────────────────── */}
-          <Section
-            icon={Mail}
-            title="Outreach Channels"
-            subtitle="Select verified contact paths to load into your workspace"
-            stagger={3}
+          {/* Target Region + Opportunity Amount */}
+          <div className="grid md:grid-cols-5 md:divide-x divide-border/70 max-md:divide-y">
+            <Field label="Target Region" hint="Top picks" className="md:col-span-3">
+              <div ref={regionContainerRef} className="relative space-y-2.5">
+                <div className="flex flex-wrap gap-1.5">
+                  {[...TOP_PICK_COUNTRIES, ...regions.filter((r) => !TOP_PICK_COUNTRIES.includes(r))].map((r) => {
+                    const isSelected = regions.includes(r);
+                    const isLocked = !hasRegionalSearch && !isLocalGeoToken(r);
+                    return (
+                      <ChoiceChip
+                        key={r}
+                        selected={isSelected}
+                        locked={isLocked}
+                        onClick={() => toggleRegion(r)}
+                      >
+                        {r}
+                      </ChoiceChip>
+                    );
+                  })}
+                </div>
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
+                  <input
+                    type="text"
+                    role="combobox"
+                    aria-expanded={regionDropdownOpen}
+                    aria-controls="region-listbox"
+                    aria-autocomplete="list"
+                    placeholder="Search countries…"
+                    value={regionSearch}
+                    onChange={(e) => {
+                      setRegionSearch(e.target.value);
+                      setRegionDropdownOpen(true);
+                    }}
+                    onFocus={() => setRegionDropdownOpen(true)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setRegionDropdownOpen(false);
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (firstRegionMatch) {
+                          toggleRegion(firstRegionMatch);
+                          setRegionSearch("");
+                          setRegionDropdownOpen(false);
+                        }
+                      }
+                    }}
+                    className="w-full h-9 pl-8 pr-3 rounded-lg border border-border bg-background text-xs focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-brand placeholder:text-muted-foreground"
+                  />
+                  {regionDropdownOpen && (
+                    <div
+                      id="region-listbox"
+                      role="listbox"
+                      aria-multiselectable="true"
+                      className="absolute left-0 right-0 top-full mt-1 z-30 bg-card border border-border rounded-xl shadow-lg max-h-52 overflow-y-auto"
+                    >
+                      {filteredCountries.length + filteredBroadScopes.length > 0 ? (
+                        <>
+                          {filteredCountries.map((r) => (
+                            <RegionOption
+                              key={r}
+                              label={r}
+                              selected={regions.includes(r)}
+                              locked={!hasRegionalSearch && !isLocalGeoToken(r)}
+                              onPick={() => {
+                                toggleRegion(r);
+                                setRegionSearch("");
+                              }}
+                            />
+                          ))}
+                          {filteredBroadScopes.length > 0 && (
+                            <p className="px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground border-t border-border/60">
+                              Regions
+                            </p>
+                          )}
+                          {filteredBroadScopes.map((r) => (
+                            <RegionOption
+                              key={r}
+                              label={r}
+                              selected={regions.includes(r)}
+                              locked={!hasRegionalSearch && !isLocalGeoToken(r)}
+                              onPick={() => {
+                                toggleRegion(r);
+                                setRegionSearch("");
+                              }}
+                            />
+                          ))}
+                        </>
+                      ) : (
+                        <div className="px-3 py-2.5 text-xs text-muted-foreground">
+                          No countries match "{regionSearch}"
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Field>
+
+            {/* Opportunity Amount — slider approved as-is */}
+            <Field label="Opportunity Amount" className="md:col-span-2">
+              <div className="space-y-3">
+                <p className="text-2xl font-bold tracking-tight text-foreground tabular-nums text-right leading-none">
+                  {quantity.toLocaleString()}
+                  <span className="ml-1.5 text-sm font-medium text-muted-foreground">
+                    businesses
+                  </span>
+                </p>
+                <input
+                  type="range"
+                  min={0}
+                  max={maxSliderIndex}
+                  step={1}
+                  value={Math.min(qtyIndex, maxSliderIndex)}
+                  onChange={(e) => setQtyIndex(Number(e.target.value))}
+                  aria-label="Opportunity amount"
+                  className="w-full accent-[color:var(--brand)] cursor-pointer"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>1</span>
+                  <span className="text-[11px]">
+                    Plan max: {maxQuantity.toLocaleString()}
+                  </span>
+                  <span>{maxQuantity.toLocaleString()}</span>
+                </div>
+              </div>
+            </Field>
+          </div>
+
+          {/* Contact Channels */}
+          <Field
+            label="Contact Channels"
+            hint="More channels = stricter matching and fewer results"
           >
-            {/* Lead-Yield Waste Fix: makes the AND semantics visible before
-                the user picks — selecting more than one channel means a
-                lead must have EVERY selected channel, not any one of them,
-                so the tradeoff (fewer, richer leads) is informed rather
-                than silent. Channel matching itself is unchanged — see
-                src/lib/channelFilter.ts. */}
-            <p className="text-[11px] text-muted-foreground -mt-1 mb-3">
-              Selecting more than one channel requires a lead to have{" "}
-              <span className="font-semibold text-foreground">all</span> of them — fewer channels
-              means faster, higher-yield results.
-            </p>
-            <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
               {channelOptions.map((c) => {
                 const active = channels.includes(c.id);
-                const feat = channelToFeature[c.id];
-                const isLocked = !permissions.can(feat);
+                const isLocked = !permissions.can(channelToFeature[c.id]);
                 return (
-                  <button
+                  <ChoiceChip
                     key={c.id}
+                    selected={active}
+                    locked={isLocked}
                     onClick={() => toggleChannel(c.id)}
+                    icon={<c.icon className="size-3.5 shrink-0" />}
+                    size="md"
+                  >
+                    {c.short}
+                  </ChoiceChip>
+                );
+              })}
+            </div>
+          </Field>
+
+          {/* Discovery Method — derived from the plan by the server, so this is
+              a comparison of what each plan runs, NOT a selector. */}
+          <Field label="Discovery Method" hint="Set by your plan · 1 credit per opportunity">
+            <ul className="space-y-2" aria-label="Discovery methods">
+              {DISCOVERY_METHODS.map((m) => {
+                const isActive = m.id === activeMethod.id;
+                return (
+                  <li
+                    key={m.id}
+                    aria-current={isActive ? "true" : undefined}
                     className={cn(
-                      active
-                        ? "w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border-2 border-brand bg-brand/5 text-left transition-all"
-                        : "w-full flex items-center gap-4 px-4 py-3.5 rounded-xl border border-border hover:border-muted-foreground/30 hover:bg-muted/20 text-left transition-all",
-                      isLocked && "opacity-60 cursor-not-allowed"
+                      "rounded-xl border px-3.5 py-2.5 flex items-start gap-3",
+                      isActive ? "border-brand/60 bg-brand/[0.07]" : "border-border opacity-60"
                     )}
                   >
-                    <div
-                      className={
-                        active
-                          ? "size-10 rounded-lg bg-brand/15 border border-brand/25 grid place-items-center shrink-0"
-                          : "size-10 rounded-lg bg-muted/40 border border-border grid place-items-center shrink-0"
-                      }
-                    >
-                      <c.icon className={active ? "size-4 text-brand shrink-0" : "size-4 text-muted-foreground shrink-0"} />
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-foreground">{m.label}</span>
                         <span
-                          className={`text-sm font-semibold ${active ? "text-foreground" : "text-muted-foreground"}`}
-                        >
-                          {c.label}
-                        </span>
-                        {isLocked && (
-                          <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-1">
-                            <Lock className="size-4" /> Upgrade
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                        {c.description}
-                      </p>
-                    </div>
-                    <div
-                      className={
-                        active
-                          ? "size-5 rounded-full bg-brand grid place-items-center shrink-0"
-                          : "size-5 rounded-full border-2 border-border shrink-0"
-                      }
-                    >
-                      {active && <Check className="size-4 text-brand-foreground shrink-0" strokeWidth={3} />}
-                    </div>
-
-                  </button>
-                );
-              })}
-            </div>
-          </Section>
-
-          {/* ── Generation Mode ──────────────────────────────────── */}
-          <Section
-            icon={Gauge}
-            title="Discovery Speed"
-            subtitle="Mast automatically uses the method matched to your plan"
-            stagger={4}
-          >
-            <div className="space-y-3">
-              {speeds.map((s) => {
-                const isSelected = speed === s.id;
-                const isDisabled =
-                  (s.id === "pool" && account ? !account.limits.allowInstantPool : false) ||
-                  (s.id === "premium" && account ? !account.limits.allowPremiumPool : false);
-
-                return (
-                  <button
-                    key={s.id}
-                    onClick={() => setSpeed(s.id)}
-                    disabled={isDisabled}
-                    className={
-                      isSelected
-                        ? "w-full text-left p-5 rounded-xl border-2 border-brand bg-brand/5 relative transition-all"
-                        : "w-full text-left p-5 rounded-xl border border-border hover:border-muted-foreground/30 hover:bg-muted/10 transition-all disabled:opacity-45 disabled:cursor-not-allowed"
-                    }
-                  >
-                    <div className="flex items-start justify-between gap-3 mb-4">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-sm text-foreground">{s.label}</span>
-                          {s.premium && (
-                            <span className="text-[9px] font-bold bg-brand/15 text-brand px-2 py-0.5 rounded uppercase tracking-wider border border-brand/20">
-                              Premium
-                            </span>
+                          className={cn(
+                            "rounded px-1.5 py-px text-[10px] font-bold uppercase tracking-wider",
+                            isActive
+                              ? "bg-brand/15 text-brand"
+                              : "bg-muted/50 text-muted-foreground"
                           )}
-                        </div>
-                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{s.desc}</p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-brand uppercase tracking-wider shrink-0">
-                          <Clock className="size-4 shrink-0" />
-                          {s.timeLabel}
+                        >
+                          {isActive ? "Your plan" : m.minPlanLabel}
                         </span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-4">
-                      <SpeedMetric
-                        label="Speed"
-                        value={s.speedLabel}
-                        pct={s.speedPct}
-                        icon={Zap}
-                        active={isSelected}
-                      />
-                      <SpeedMetric
-                        label="Quality"
-                        value={s.qualityLabel}
-                        pct={s.qualityPct}
-                        icon={Shield}
-                        active={isSelected}
-                      />
-                      <SpeedMetric
-                        label="Cost"
-                        value={s.costLabel}
-                        pct={s.costPct}
-                        icon={Coins}
-                        active={isSelected}
-                        invert
-                      />
-                    </div>
-                  </button>
+                      </span>
+                      <span className="block text-xs text-muted-foreground leading-snug">
+                        {m.desc}
+                      </span>
+                      {isActive && (
+                        <span className="block mt-1 text-[11px] text-muted-foreground/80">
+                          {m.note}
+                        </span>
+                      )}
+                    </span>
+                    <span
+                      className={cn(
+                        "shrink-0 text-[11px] font-bold uppercase tracking-wider tabular-nums pt-0.5",
+                        isActive ? "text-brand" : "text-muted-foreground"
+                      )}
+                    >
+                      {m.timeLabel}
+                    </span>
+                  </li>
                 );
               })}
-            </div>
-          </Section>
+            </ul>
+          </Field>
         </div>
 
-        {/* ── Order Summary / CTA ──────────────────────────────────── */}
-        <aside className="space-y-5">
-          <div className="bg-card border border-border rounded-2xl p-6 shadow-md">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="font-bold text-base tracking-tight">Mission Planner</h3>
-              <span className="text-[10px] font-bold uppercase tracking-widest text-brand">
-                Ready
+        {/* ── Launch + secondary information ────────────────────── */}
+        <aside className="space-y-4 lg:sticky lg:top-6">
+          <div className="bg-card border border-border rounded-2xl p-5 shadow-md">
+            <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              Discovery Summary
+            </h3>
+            <p className="mt-2 text-xl font-bold tracking-tight tabular-nums">
+              {quantity.toLocaleString()}{" "}
+              <span className="text-sm font-medium text-muted-foreground">
+                {quantity === 1 ? "opportunity" : "opportunities"}
               </span>
-            </div>
-            <div className="space-y-3.5 text-sm">
-              <SummaryRow
-                label="Businesses"
-                value={`${quantity.toLocaleString()} per session`}
-              />
-              <SummaryRow
-                label="Regions"
-                value={regions.join(", ")}
-                truncate
-              />
-              {currencies.length > 0 && (
-                <SummaryRow
-                  label="Currency"
-                  value={currencies.join(", ")}
-                />
-              )}
-              <SummaryRow
-                label="Niches"
-                value={niches.length > 0 ? niches.join(", ") : "Select a niche"}
-                truncate
-              />
-              <SummaryRow
-                label="Channels"
-                value={
-                  channels.length > 0
-                    ? channelOptions
-                        .filter((c) => channels.includes(c.id))
-                        .map((c) => c.label)
-                        .join(", ")
-                    : "None selected"
-                }
-                truncate
-              />
-              <SummaryRow label="Speed" value={currentSpeed.label} />
-            </div>
-            <div className="my-5 h-px bg-border" />
-            <div className="rounded-xl bg-muted/30 border border-border/60 p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground font-medium">
-                  Session cost
-                </span>
-                <span className="inline-flex items-center gap-1.5 font-bold text-foreground tabular-nums">
-                  <TrendingUp className="size-4 text-brand shrink-0" />
-                  {quantity.toLocaleString()} credits
+            </p>
+            <ul className="mt-3 space-y-1.5 text-[13px]">
+              <SummaryLine value={regions.join(", ")} />
+              <SummaryLine value={nicheSummary} placeholder="Choose a niche" />
+              <SummaryLine value={channelSummary || null} placeholder="Choose contact channels" />
+              <SummaryLine value={`${activeMethod.shortLabel} · ${activeMethod.timeLabel}`} />
+            </ul>
 
-                </span>
-              </div>
-              <div className="flex justify-between text-[11px]">
-                <span className="text-muted-foreground">
-                  Today:{" "}
-                  <span className="text-foreground font-semibold tabular-nums">
-                    <AnimatedCounter value={dailyRemaining} /> left
-                  </span>
-                </span>
-                <span className="text-muted-foreground">
-                  Month:{" "}
-                  <span className="text-foreground font-semibold tabular-nums">
-                    <AnimatedCounter value={monthlyRemaining} /> left
-                  </span>
-                </span>
-              </div>
+            <div className="my-4 h-px bg-border" />
+
+            <div className="space-y-1">
+              <p className="text-sm font-semibold tabular-nums">
+                {quantity.toLocaleString()} {quantity === 1 ? "credit" : "credits"}
+              </p>
+              <p className="text-[11px] text-muted-foreground tabular-nums">
+                Today: <AnimatedCounter value={dailyRemaining} /> remaining
+              </p>
+              <p className="text-[11px] text-muted-foreground tabular-nums">
+                Month: <AnimatedCounter value={monthlyRemaining} /> remaining
+              </p>
             </div>
+
             <button
               onClick={handleGenerate}
               disabled={!canGenerate}
-              className="mt-5 w-full bg-brand hover:bg-brand-dark text-brand-foreground py-3.5 rounded-xl font-bold shadow-brand inline-flex items-center justify-center gap-2 disabled:opacity-55 disabled:hover:bg-brand cursor-pointer transition-all active:scale-[0.99] group"
+              className="mt-4 w-full bg-brand hover:bg-brand-dark text-brand-foreground py-3 rounded-xl font-bold shadow-brand inline-flex items-center justify-center gap-2 disabled:opacity-55 disabled:hover:bg-brand disabled:shadow-none cursor-pointer disabled:cursor-not-allowed transition-all active:scale-[0.99] group"
             >
-              <Sparkles className="size-4 text-brand-foreground group-hover:animate-pulse shrink-0" />
-              {isGenerating ? "Analyzing..." : "Launch Discovery Session"}
-
+              {isGenerating ? "Analyzing..." : "Launch Discovery"}
+              {!isGenerating && (
+                <ArrowRight className="size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+              )}
             </button>
-            {(noNicheSelected ||
-              noChannelSelected ||
-              channelRestricted ||
-              modeRestricted ||
-              exceedsDailyLimit ||
-              exceedsMonthlyLimit) && (
-              <p className="text-[11px] text-destructive text-center mt-2.5 leading-relaxed">
-                {noNicheSelected
-                  ? "Select at least one niche before launching a discovery session."
-                  : noChannelSelected
-                    ? "Select at least one outreach channel before launching a discovery session."
-                    : exceedsDailyLimit
-                      ? `Daily limit: only ${dailyRemaining} remaining today.`
-                      : exceedsMonthlyLimit
-                        ? `Monthly limit: only ${monthlyRemaining} remaining.`
-                        : "Your plan does not support this channel configuration."}
+            {hardBlockMessage ? (
+              <p role="alert" className="text-[11px] text-destructive text-center mt-2 leading-relaxed">
+                {hardBlockMessage}
               </p>
-            )}
+            ) : incompleteHint ? (
+              <p className="text-[11px] text-muted-foreground text-center mt-2">{incompleteHint}</p>
+            ) : null}
           </div>
 
-          {/* AI Overview — intelligent discovery layer */}
           <DiscoverAiOverview insights={discoverInsights} loading={!account || !analytics} />
 
-          {/* Premium opportunity pool card using LockedFeatureCard if user lacks premium access */}
-          {!hasPremiumAccess && (
-            <LockedFeatureCard
-              featureName="Premium Instant Results"
-              requiredPlan="starter"
-              description="Skip the wait times of live scraping. Instantly access our pre-verified pool of direct decision-makers with mobile numbers and social handles."
-              valueProposition="Connect with verified decision-makers instantly, reducing your opportunity-to-outreach cycle from 10 minutes to under 10 seconds."
-            />
+          {upgradeMethod && (
+            <div className="flex items-center gap-3 rounded-xl border border-brand/20 bg-brand/5 px-4 py-3">
+              <Zap className="size-4 text-brand shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-brand">
+                  {upgradeMethod.label}
+                </p>
+                <p className="text-xs text-muted-foreground truncate">
+                  {upgradeMethod.minPlanLabel}+ · {upgradeMethod.pitch}
+                </p>
+              </div>
+              <Link
+                to="/dashboard/subscription"
+                title={`Runs on the ${upgradeMethod.minPlanLabel} plan and above`}
+                className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-foreground text-background px-3 py-1.5 text-xs font-bold transition-colors hover:bg-foreground/90"
+              >
+                Upgrade <ArrowRight className="size-3.5" />
+              </Link>
+            </div>
           )}
         </aside>
       </div>
@@ -1545,122 +1378,127 @@ function GetLeads() {
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
 
-function Section({
-  icon: Icon,
-  title,
-  subtitle,
+/** Compact labelled setting row. */
+function Field({
+  label,
+  hint,
   children,
-  stagger = 0,
+  className,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  subtitle: string;
+  label: string;
+  hint?: string;
   children: React.ReactNode;
-  stagger?: number;
+  className?: string;
 }) {
-  const delayClass = ["delay-50", "delay-100", "delay-150", "delay-200", "delay-250"][Math.min(stagger, 4)];
   return (
-    <div className={`animate-fade-up ${delayClass}`}>
-      <div className="flex items-center gap-3 mb-4">
-        <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
-          <Icon className="size-4 text-brand shrink-0" />
-        </div>
-
-        <div>
-          <h3 className="font-semibold text-sm">{title}</h3>
-          <p className="text-xs text-muted-foreground">{subtitle}</p>
-        </div>
+    <div className={cn("px-5 py-4", className)}>
+      <div className="flex items-baseline justify-between gap-3 mb-2.5">
+        <h3 className="text-xs font-semibold text-foreground">{label}</h3>
+        {hint && <p className="text-[11px] text-muted-foreground text-right">{hint}</p>}
       </div>
       {children}
     </div>
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-foreground font-medium">{value}</span>
-    </div>
-  );
-}
-
-function SummaryRow({
-  label,
-  value,
-  truncate,
+/** Compact selectable chip. A locked chip stays clickable on purpose: the
+ * parent handler shows the plan-upgrade toast, exactly as before. */
+function ChoiceChip({
+  selected,
+  locked,
+  onClick,
+  icon,
+  size = "sm",
+  children,
 }: {
-  label: string;
-  value: string;
-  truncate?: boolean;
+  selected: boolean;
+  locked?: boolean;
+  onClick: () => void;
+  icon?: React.ReactNode;
+  size?: "sm" | "md";
+  children: React.ReactNode;
 }) {
   return (
-    <div className="flex justify-between gap-3 items-start">
-      <span className="text-muted-foreground shrink-0 text-xs font-medium">{label}</span>
-      <span
-        className={`text-foreground font-medium text-xs text-right ${truncate ? "truncate max-w-[160px]" : ""}`}
-      >
-        {value}
-      </span>
-    </div>
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-lg border font-medium transition-colors cursor-pointer",
+        size === "md" ? "h-9 px-3 text-[13px]" : "h-8 px-2.5 text-xs",
+        selected
+          ? "border-brand/60 bg-brand/10 text-foreground"
+          : "border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40",
+        locked && "opacity-60"
+      )}
+    >
+      {icon}
+      {children}
+      {selected && !locked && <Check className="size-3 text-brand shrink-0" strokeWidth={3} />}
+      {locked && <Lock className="size-3 shrink-0" aria-label="Locked on your plan" />}
+    </button>
   );
 }
 
-function SpeedMetric({
+function RegionOption({
   label,
-  value,
-  pct,
-  icon: Icon,
-  active,
-  invert,
+  selected,
+  locked,
+  onPick,
 }: {
   label: string;
-  value: string;
-  pct: number;
-  icon: React.ComponentType<{ className?: string }>;
-  active: boolean;
-  invert?: boolean;
+  selected: boolean;
+  locked: boolean;
+  onPick: () => void;
 }) {
-  const barColor = invert
-    ? "bg-gradient-to-r from-emerald-500/70 to-amber-500/70"
-    : "bg-gradient-to-r from-brand/50 to-brand";
-
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-1">
-        <Icon className={`size-4 shrink-0 ${active ? "text-brand" : "text-muted-foreground"}`} />
-
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          {label}
-        </span>
-      </div>
-      <div className="h-1.5 rounded-full bg-border overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-300 ${barColor}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span className={`text-[11px] font-semibold ${active ? "text-foreground" : "text-muted-foreground"}`}>
-        {value}
-      </span>
-    </div>
+    <button
+      role="option"
+      aria-selected={selected}
+      // Keep focus in the search input between picks.
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onPick}
+      className={cn(
+        "w-full flex items-center justify-between px-3 py-2 text-xs transition-colors text-left hover:bg-muted/40",
+        selected ? "text-brand font-medium" : "text-foreground",
+        locked && "opacity-55"
+      )}
+    >
+      <span>{label}</span>
+      {locked ? (
+        <Lock className="size-3 text-muted-foreground shrink-0" />
+      ) : selected ? (
+        <CheckSquare className="size-3.5 text-brand shrink-0" />
+      ) : null}
+    </button>
   );
 }
 
-const INSIGHT_TONE_STYLES: Record<DiscoverInsight["tone"], { card: string; action: string }> = {
-  brand: { card: "border-brand/25 bg-brand/5", action: "text-brand hover:text-brand/80" },
-  success: { card: "border-emerald-500/25 bg-emerald-500/5", action: "text-emerald-500 hover:text-emerald-400" },
-  warning: { card: "border-amber-500/25 bg-amber-500/5", action: "text-amber-500 hover:text-amber-400" },
-  neutral: { card: "border-border bg-muted/20", action: "text-muted-foreground hover:text-foreground" },
+function SummaryLine({ value, placeholder }: { value: string | null; placeholder?: string }) {
+  return (
+    <li className={cn("truncate", value ? "text-foreground" : "text-muted-foreground/70")}>
+      {value ?? placeholder}
+    </li>
+  );
+}
+
+const INSIGHT_ACTION_STYLES: Record<DiscoverInsight["tone"], string> = {
+  brand: "text-brand hover:text-brand/80",
+  success: "text-emerald-500 hover:text-emerald-400",
+  warning: "text-amber-500 hover:text-amber-400",
+  neutral: "text-muted-foreground hover:text-foreground",
 };
 
 const CONFIDENCE_STYLES: Record<DiscoverInsight["confidence"], string> = {
-  "High Confidence": "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20",
-  "Recommended": "bg-brand/10 text-brand border border-brand/20",
-  "Worth Testing": "bg-amber-500/10 text-amber-500 border border-amber-500/20",
-  "Watch Closely": "bg-muted/60 text-muted-foreground border border-border",
+  "High Confidence": "text-emerald-500",
+  "Recommended": "text-brand",
+  "Worth Testing": "text-amber-500",
+  "Watch Closely": "text-muted-foreground",
 };
 
+/** Compact AI Overview. Content is exactly buildDiscoverInsights()'s output
+ * — nothing is generated here. The top insight leads; the remaining ones
+ * (up to the same 3 as before) are one click away. */
 function DiscoverAiOverview({
   insights,
   loading,
@@ -1668,84 +1506,72 @@ function DiscoverAiOverview({
   insights: DiscoverInsight[];
   loading: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!loading && insights.length === 0) return null;
+
+  const pool = insights.slice(0, 3);
+  const shown = expanded ? pool : pool.slice(0, 1);
+  const hiddenCount = pool.length - shown.length;
+
   return (
-    <div className="bg-card border border-border rounded-2xl p-6 shadow-md relative overflow-hidden">
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.07]"
-        style={{
-          background:
-            "radial-gradient(ellipse at top left, color-mix(in oklab, var(--brand) 40%, transparent), transparent 70%)",
-        }}
-      />
-      <div className="relative space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
-            <Brain className="size-4 text-brand shrink-0" />
-          </div>
-
-          <div>
-            <h3 className="font-bold text-sm tracking-tight">AI Overview</h3>
-            <p className="text-[11px] text-muted-foreground">
-              Your next move, based on what's actually working
-            </p>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="space-y-3">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="h-20 rounded-xl bg-muted/40 animate-pulse" />
-            ))}
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            {insights.slice(0, 3).map((insight) => {
-              const styles = INSIGHT_TONE_STYLES[insight.tone];
-              const isExternal = insight.actionHref.startsWith("/");
-              return (
-                <div
-                  key={insight.id}
-                  className={`rounded-xl border p-3.5 space-y-2 ${styles.card}`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-xs font-semibold text-foreground leading-relaxed flex-1">
-                      {insight.title}
-                    </p>
-                    <span
-                      className={`shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full whitespace-nowrap ${CONFIDENCE_STYLES[insight.confidence]}`}
-                    >
-                      {insight.confidence}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    {insight.reason}
-                  </p>
-                  {isExternal ? (
-                    <a
-                      href={insight.actionHref}
-                      className={`inline-flex items-center text-[11px] font-semibold transition-colors ${styles.action}`}
-                    >
-                      {insight.actionLabel}
-                    </a>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const el = document.querySelector(insight.actionHref) as HTMLElement | null;
-                        el?.scrollIntoView({ behavior: "smooth", block: "center" });
-                        el?.focus?.();
-                      }}
-                      className={`inline-flex items-center text-[11px] font-semibold transition-colors cursor-pointer ${styles.action}`}
-                    >
-                      {insight.actionLabel}
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+    <div className="bg-card border border-border rounded-xl px-4 py-3.5">
+      <div className="flex items-center gap-1.5 mb-2">
+        <Sparkles className="size-3.5 text-brand shrink-0" />
+        <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+          AI Overview
+        </h3>
       </div>
+
+      {loading ? (
+        <div className="space-y-2">
+          <div className="h-3.5 w-2/3 rounded bg-muted/40 animate-pulse" />
+          <div className="h-3 w-full rounded bg-muted/40 animate-pulse" />
+        </div>
+      ) : (
+        <div className="divide-y divide-border/60">
+          {shown.map((insight) => {
+            const isRoute = insight.actionHref.startsWith("/");
+            const actionClass = `inline-flex items-center text-xs font-semibold transition-colors cursor-pointer ${INSIGHT_ACTION_STYLES[insight.tone]}`;
+            return (
+              <div key={insight.id} className="py-2 first:pt-0 last:pb-0 space-y-1">
+                <p className={`text-[10px] font-bold uppercase tracking-wider ${CONFIDENCE_STYLES[insight.confidence]}`}>
+                  {insight.confidence}
+                </p>
+                <p className="text-[13px] font-medium text-foreground leading-snug">{insight.title}</p>
+                <p className="text-xs text-muted-foreground leading-snug line-clamp-2">{insight.reason}</p>
+                {isRoute ? (
+                  <a href={insight.actionHref} className={actionClass}>
+                    {insight.actionLabel}
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const el = document.querySelector(insight.actionHref) as HTMLElement | null;
+                      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      el?.focus?.();
+                    }}
+                    className={actionClass}
+                  >
+                    {insight.actionLabel}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {!loading && pool.length > 1 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-2 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+        >
+          {expanded ? "Show less" : `${hiddenCount} more insight${hiddenCount === 1 ? "" : "s"}`}
+        </button>
+      )}
     </div>
   );
 }

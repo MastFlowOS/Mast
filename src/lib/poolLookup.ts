@@ -2,6 +2,8 @@ import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { insertLeadForUser, type PoolBusiness } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
+import { COUNTRIES, REGION_NAMES } from "./geo/countries.js";
+import { parseGeoScope } from "./geo/scope.js";
 
 export type PoolLookupParams = {
   userId: string;
@@ -16,6 +18,55 @@ export type PoolLookupParams = {
   /** Channels the user requested — see channelFilter.ts. Empty = no filter. */
   channels: string[];
 };
+
+/** One `pool_lookup()` call's geographic arguments. */
+export type PoolScope = {
+  /** Legacy free-text label match against businesses.region ('' = no label match). */
+  region: string;
+  /** ISO codes matched against businesses.country_code (null = none). */
+  countryCodes: string[] | null;
+  /** true → match ONLY on country_code (an explicit country selection). */
+  countryStrict: boolean;
+};
+
+/**
+ * Turns the request's scope tokens into pool_lookup() calls:
+ *
+ *  - COUNTRY token(s) → ONE strict call on businesses.country_code. Never
+ *    matched by label, never widened to the continent: "Canada" cannot return
+ *    a US business and vice-versa.
+ *  - CONTINENT token → the legacy label match (businesses.region ilike) OR
+ *    any business whose country_code is on that continent, so rows stored
+ *    before country_code existed keep matching exactly as before, and rows
+ *    discovered under a country selection are still visible to continent
+ *    searches (a strict superset of the old behavior).
+ *  - Global → same, over every country.
+ *
+ * A region with no recognizable token falls back to the raw legacy label so
+ * behavior for unexpected input is unchanged.
+ */
+export function poolScopesFor(regionField: string): PoolScope[] {
+  const scope = parseGeoScope(regionField);
+  const scopes: PoolScope[] = [];
+
+  if (scope.global) {
+    scopes.push({ region: "Global", countryCodes: COUNTRIES.map((c) => c.code), countryStrict: false });
+  } else {
+    for (const continent of scope.continents) {
+      if (!REGION_NAMES.includes(continent)) continue;
+      scopes.push({
+        region: continent,
+        countryCodes: COUNTRIES.filter((c) => c.region === continent).map((c) => c.code),
+        countryStrict: false,
+      });
+    }
+    if (scope.countries.length > 0) {
+      scopes.push({ region: "", countryCodes: scope.countries.map((c) => c.code), countryStrict: true });
+    }
+  }
+
+  return scopes.length > 0 ? scopes : [{ region: regionField, countryCodes: null, countryStrict: false }];
+}
 
 export type PoolLookupResult = {
   delivered: Array<{ businessId: string; opportunityScore: number | null }>;
@@ -84,20 +135,26 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
     { business_id: string; opportunity_score: number | null; discoveryNiche: string }
   >();
 
-  for (const singleNiche of niches) {
-    const { data: matches, error } = await supabaseAdmin.rpc("pool_lookup", {
-      p_user_id: params.userId,
-      p_region: params.region,
-      p_niche: singleNiche,
-      p_profession_slug: params.professionSlug,
-      p_rank: params.rank,
-      p_limit: perNicheLimit,
-    });
-    if (error) throw error;
+  const scopes = poolScopesFor(params.region);
 
-    for (const row of (matches ?? []) as Array<{ business_id: string; opportunity_score: number | null }>) {
-      if (!matchesByBusinessId.has(row.business_id)) {
-        matchesByBusinessId.set(row.business_id, { ...row, discoveryNiche: singleNiche });
+  for (const singleNiche of niches) {
+    for (const scope of scopes) {
+      const { data: matches, error } = await supabaseAdmin.rpc("pool_lookup", {
+        p_user_id: params.userId,
+        p_region: scope.region,
+        p_niche: singleNiche,
+        p_profession_slug: params.professionSlug,
+        p_rank: params.rank,
+        p_limit: perNicheLimit,
+        p_country_codes: scope.countryCodes,
+        p_country_strict: scope.countryStrict,
+      });
+      if (error) throw error;
+
+      for (const row of (matches ?? []) as Array<{ business_id: string; opportunity_score: number | null }>) {
+        if (!matchesByBusinessId.has(row.business_id)) {
+          matchesByBusinessId.set(row.business_id, { ...row, discoveryNiche: singleNiche });
+        }
       }
     }
   }

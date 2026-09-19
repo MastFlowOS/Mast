@@ -33,12 +33,18 @@ function LandingPage() {
     <>
       {/* Global night world foundation: continuous deep space across all sections */}
       <GlobalAtmosphereFoundation />
-      {/* Continuous celestial gold particle stream weaving organically through all landing page sections */}
-      <GoldParticleStream />
       {/* SiteNav must be OUTSIDE any overflow-hidden ancestor — that breaks sticky */}
       <SiteNav />
       {/* Page content wrapper sits above deep space */}
       <div className="mast-landing relative z-10 min-h-screen text-foreground overflow-x-clip w-full">
+        {/*
+          Document-space gold current: an absolute inset-0 first child of this
+          exact wrapper, so its height is always the wrapper's real content
+          height (Hero...Footer) and it scrolls with the page like any other
+          content — never a viewport-fixed overlay, never repositioned by JS
+          on scroll. See GoldParticleStream.tsx for the full rationale.
+        */}
+        <GoldParticleStream />
         <Hero />
         <Workflow />
         <ProductShowcase />

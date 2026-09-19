@@ -5,6 +5,7 @@ import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan } from "../../config/plans.js";
 import { getBoss, QUEUES } from "../../lib/queue.js";
+import { validateDiscoveryRegion } from "../../lib/geo/scope.js";
 import { lookupAndDeliverFromPool } from "../../lib/poolLookup.js";
 import { professionSlugForLabel } from "../../lib/professions.js";
 import { enqueueDiscoveryPlan } from "../../discovery/planner.js";
@@ -121,10 +122,18 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         return res.status(403).json({ code: "channel_restricted", message: `Channel '${ch}' is restricted under your plan.` });
       }
     }
-    const requestedRegions = body.region.split(",").map((r) => r.trim()).filter(Boolean);
-    if (requestedRegions.some((r) => r !== "North America") && !plan.regionalSearch) {
-      return res.status(403).json({ code: "region_restricted", message: "Regional search is restricted under your plan." });
+    // GEOGRAPHIC SCOPE: `region` is a list of Global | continent | country
+    // tokens (see src/lib/geo/scope.ts). Unknown tokens are rejected here —
+    // never silently dropped or widened — and plans without regionalSearch
+    // are limited to the local (North America) region, which now includes
+    // its individual countries. `region` below is the CANONICAL form of what
+    // the user selected and is what every downstream consumer (scrape job,
+    // discovery plan, pool lookup, pool expansion, business rows) receives.
+    const geo = validateDiscoveryRegion(body.region, { regionalSearch: plan.regionalSearch });
+    if (!geo.ok) {
+      return res.status(geo.code === "invalid_region" ? 400 : 403).json({ code: geo.code, message: geo.message });
     }
+    const region = geo.region;
 
     const focusAreaLabel = (profile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined;
     const professionSlug = professionSlugForLabel(focusAreaLabel);
@@ -137,7 +146,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         user_id: userId,
         mode: plan.discoveryMode,
         status: "queued",
-        query: { region: body.region, niche: body.niche, channels: body.channels, currencies: body.currencies, profession_slug: professionSlug, quantity },
+        query: { region: region, niche: body.niche, channels: body.channels, currencies: body.currencies, profession_slug: professionSlug, quantity },
       })
       .select()
       .single();
@@ -169,7 +178,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         // discovery_plans.id = 'free', found no row, and returned early —
         // every Free discovery run queued forever with zero discovery_tasks.
         planTierId: plan.id,
-        region: body.region,
+        region: region,
         niche: body.niche,
         channels: body.channels,
         currencies: body.currencies,
@@ -191,7 +200,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
     // Instant Discovery (Starter/Pro/Premium): pool-first, synchronous.
     const { delivered, shortfall, limitReached } = await lookupAndDeliverFromPool({
       userId,
-      region: body.region,
+      region: region,
       niche: body.niche,
       professionSlug,
       rank: plan.discoveryMode === "instant_pool_ranked",
@@ -221,7 +230,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
       await supabaseAdmin.from("scrape_jobs").update({ status: "streaming", results_count: delivered.length }).eq("id", job.id);
 
       const poolExpandPayload: PoolExpandJobPayload = {
-        region: body.region,
+        region: region,
         niche: body.niche,
         shortfall,
         currencies: body.currencies,
@@ -255,7 +264,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         .eq("id", job.id);
 
       const boss = await getBoss();
-      await boss.send(QUEUES.poolExpand, { region: body.region, niche: body.niche, shortfall, currencies: body.currencies });
+      await boss.send(QUEUES.poolExpand, { region: region, niche: body.niche, shortfall, currencies: body.currencies });
     } else {
       const poolFinalStatus = delivered.length >= quantity ? "completed" : "completed_partial";
       await supabaseAdmin

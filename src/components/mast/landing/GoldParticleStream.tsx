@@ -4,6 +4,19 @@ import { useEffect, useRef } from "react";
  * One continuous celestial gold current running from the top of the landing
  * page to the footer.
  *
+ * ARCHITECTURE — document-space, not viewport-space:
+ *
+ * This is rendered as a normal, absolutely-positioned DOM layer *inside* the
+ * page's content flow (`inset-0` on a `relative` ancestor whose height is the
+ * page's own content height), split into a stack of tile <canvas> elements
+ * each pinned to a fixed `top` offset in that document. There is no fixed
+ * viewport overlay and no `screenY = documentY - scrollY` conversion anywhere
+ * in this file. The browser's compositor scrolls these tiles exactly the way
+ * it scrolls any other page content — for free, on the compositor thread,
+ * with zero JavaScript involvement per scroll frame. A ResizeObserver on the
+ * container (not a scroll listener) is the only thing that ever moves a
+ * tile's `top`, and only when the page's actual content height changes.
+ *
  * The visual model is a chain of GLOBULAR CLUSTERS strung along a wide, wavy
  * spine — exactly like the reference photograph: a blazing unresolved core,
  * a dense resolved halo falling off steeply, then feathered outliers. Clusters
@@ -12,10 +25,16 @@ import { useEffect, useRef } from "react";
  * a drawn line. Every pixel of it comes from particles — the only non-particle
  * element is a faint unresolved core bloom per cluster, which is round and
  * secondary, never a stroke.
+ *
+ * Every particle's position is fixed in document space (`u` = fraction down
+ * the total page height, `lx`/`ly` = offset from the spine). Nothing here is
+ * ever a function of scroll. The only animation is a few px of local shimmer
+ * per particle — never enough to alter the ribbon's silhouette — and it runs
+ * only for the handful of tiles currently intersecting the viewport.
  */
 
 type Star = {
-  u: number; // position along the document [0,1]
+  u: number; // position along the document [0,1] — fixed, never touched after creation
   lx: number; // lateral offset from the spine, in units of the ribbon half-width
   ly: number; // vertical offset within its cluster, in ribbon half-widths
   size: number; // core radius in px
@@ -38,6 +57,16 @@ type Cluster = {
   pulsePhase: number;
 };
 
+type Tile = {
+  top: number; // document-space px — the tile's fixed offset; only rebuilds on real resize
+  height: number;
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  stars: Star[]; // this tile's slice of the population (± overflow margin)
+  clusters: Cluster[];
+  visible: boolean; // driven by IntersectionObserver — pauses rendering, never repositions
+};
+
 // Sampled from the reference cluster: ember amber → gold → champagne → white gold
 const STAR_RGB: [number, number, number][] = [
   [255, 156, 54],
@@ -47,25 +76,18 @@ const STAR_RGB: [number, number, number][] = [
   [255, 250, 226],
 ];
 
+// Document-space tile height. Tall enough to keep the DOM/canvas count small,
+// short enough that off-screen tiles are cheap to skip via IntersectionObserver.
+const TILE_HEIGHT = 1100;
+
 export function GoldParticleStream() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const container = containerRef.current;
+    if (!container) return;
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-    let width = 0;
-    let height = 0;
-    let dpr = 1;
-    let docHeight = 1;
-    let pageWidth = 1;
-    let scrollY = 0;
-    let isVisible = true;
-    let isTabActive = !document.hidden;
 
     /* ── Spine: the same current, weaving through every section ─────────── */
     const WAYPOINTS: [number, number][] = [
@@ -176,164 +198,192 @@ export function GoldParticleStream() {
       cctx.fillRect(0, 0, CORE, CORE);
     }
 
-    const updateDimensions = () => {
-      width = window.innerWidth;
-      height = window.innerHeight;
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(width * dpr);
-      canvas.height = Math.round(height * dpr);
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      // Document-space extents. Sampled on resize only — never on scroll — so
-      // every particle keeps the same document coordinate for the whole session.
-      pageWidth = document.documentElement.clientWidth || width;
-      docHeight = Math.max(
-        document.documentElement.scrollHeight || 0,
-        document.body.scrollHeight || 0,
-        height * 4
-      );
-      scrollY = window.scrollY || window.pageYOffset || 0;
-    };
-    updateDimensions();
+    /* ── State rebuilt only when real layout changes occur ──────────────── */
+    let pageWidth = 0;
+    let docHeight = 0;
+    let isMobile = false;
+    let clusters: Cluster[] = [];
+    let stars: Star[] = [];
+    let tiles: Tile[] = [];
+    let io: IntersectionObserver | null = null;
+    let isTabActive = !document.hidden;
 
-    const isMobile = width < 768;
+    const halfWidth = () => (isMobile ? Math.min(110, pageWidth * 0.3) : Math.min(230, pageWidth * 0.16));
 
-    /* ── Cluster chain along the spine ──────────────────────────────────── */
-    // Density is expressed per screen-height of document so the current keeps
-    // the same thickness whether the page is four screens tall or twelve.
-    const screens = Math.max(2, Math.min(16, docHeight / Math.max(1, height)));
-    const CLUSTER_COUNT = Math.round((isMobile ? 6 : 9) * screens);
-    const clusters: Cluster[] = [];
-    for (let i = 0; i < CLUSTER_COUNT; i++) {
-      const base = (i + 0.5) / CLUSTER_COUNT;
-      clusters.push({
-        u: Math.max(0.004, Math.min(0.996, base + (rand() - 0.5) * (0.6 / CLUSTER_COUNT))),
-        lx: gauss() * 0.3,
-        radius: 0.5 + rand() * 0.6,
-        coreAlpha: 0.35 + rand() * 0.45,
-        pulseSpeed: 0.00016 + rand() * 0.00022,
-        pulsePhase: rand() * Math.PI * 2,
-      });
-    }
+    /* ── Population: regenerated only when the mobile/desktop density tier
+       changes, never on every resize and never on scroll ─────────────────── */
+    const generateParticles = () => {
+      seed = 90210; // re-seeded so the current is identical every time it's (re)built
 
-    /* ── Star population ────────────────────────────────────────────────── */
-    const perCluster = isMobile ? 170 : 330;
-    const fieldCount = Math.round((isMobile ? 700 : 1500) * screens);
-    const stars: Star[] = [];
+      // Density scales with how many screen-heights the document spans, so the
+      // ribbon keeps the same visual thickness whether the page is short or long.
+      const viewportRef = window.innerHeight || 800;
+      const screens = Math.max(2, Math.min(16, docHeight / viewportRef));
+      const CLUSTER_COUNT = Math.round((isMobile ? 6 : 9) * screens);
 
-    const pushStar = (u: number, lx: number, ly: number, core: number) => {
-      // core: 1 at the cluster centre → 0 at the fringe. Drives brightness,
-      // colour temperature and how tightly the star packs.
-      const bright = rand() > 0.965;
-      const sz = bright
-        ? 1.5 + rand() * 1.7
-        : 0.45 + rand() * 0.85 + core * 0.45;
-      let colorIdx: number;
-      const cr = rand();
-      if (bright) colorIdx = cr > 0.55 ? 1 : cr > 0.2 ? 2 : 3;
-      else if (core > 0.7) colorIdx = cr > 0.45 ? 3 : 4;
-      else if (core > 0.35) colorIdx = cr > 0.5 ? 2 : 3;
-      else colorIdx = cr > 0.45 ? 1 : 0;
-      stars.push({
-        u,
-        lx,
-        ly,
-        size: sz,
-        colorIdx,
-        alpha: 0.16 + core * 0.44 + rand() * 0.2 + (bright ? 0.16 : 0),
-        twSpeed: 0.0009 + rand() * 0.0026,
-        twPhase: rand() * Math.PI * 2,
-        driftAmp: 0.8 + rand() * 2.6,
-        driftFreq: 0.00012 + rand() * 0.0003,
-        driftPhase: rand() * Math.PI * 2,
-        glint: bright && rand() > 0.45,
-      });
-    };
-
-    for (const cl of clusters) {
-      for (let i = 0; i < perCluster; i++) {
-        // King-profile-ish radial sampling: a steep power law packs most of the
-        // population into the blazing core and feathers the rest outward.
-        const rad = Math.pow(rand(), 2.35);
-        const ang = rand() * Math.PI * 2;
-        // gentle ellipticity, elongated along the direction of the current
-        const ex = Math.cos(ang) * rad * cl.radius;
-        const ey = Math.sin(ang) * rad * cl.radius * 1.5;
-        const core = 1 - Math.min(1, rad * 1.15);
-        pushStar(cl.u, cl.lx + ex, ey, core);
+      clusters = [];
+      for (let i = 0; i < CLUSTER_COUNT; i++) {
+        const base = (i + 0.5) / CLUSTER_COUNT;
+        clusters.push({
+          u: Math.max(0.004, Math.min(0.996, base + (rand() - 0.5) * (0.6 / CLUSTER_COUNT))),
+          lx: gauss() * 0.3,
+          radius: 0.5 + rand() * 0.6,
+          coreAlpha: 0.35 + rand() * 0.45,
+          pulseSpeed: 0.00016 + rand() * 0.00022,
+          pulsePhase: rand() * Math.PI * 2,
+        });
       }
-    }
 
-    // Field population: bridges cluster to cluster so the current never breaks
-    for (let i = 0; i < fieldCount; i++) {
-      const g = gauss();
-      pushStar(rand(), g * 0.62, gauss() * 0.3, Math.max(0, 0.42 - Math.abs(g) * 0.3));
-    }
+      const perCluster = isMobile ? 170 : 330;
+      const fieldCount = Math.round((isMobile ? 700 : 1500) * screens);
+      stars = [];
 
-    const starCount = stars.length;
+      const pushStar = (u: number, lx: number, ly: number, core: number) => {
+        const bright = rand() > 0.965;
+        const sz = bright ? 1.5 + rand() * 1.7 : 0.45 + rand() * 0.85 + core * 0.45;
+        let colorIdx: number;
+        const cr = rand();
+        if (bright) colorIdx = cr > 0.55 ? 1 : cr > 0.2 ? 2 : 3;
+        else if (core > 0.7) colorIdx = cr > 0.45 ? 3 : 4;
+        else if (core > 0.35) colorIdx = cr > 0.5 ? 2 : 3;
+        else colorIdx = cr > 0.45 ? 1 : 0;
+        stars.push({
+          u,
+          lx,
+          ly,
+          size: sz,
+          colorIdx,
+          alpha: 0.16 + core * 0.44 + rand() * 0.2 + (bright ? 0.16 : 0),
+          twSpeed: 0.0009 + rand() * 0.0026,
+          twPhase: rand() * Math.PI * 2,
+          driftAmp: 0.8 + rand() * 2.6,
+          driftFreq: 0.00012 + rand() * 0.0003,
+          driftPhase: rand() * Math.PI * 2,
+          glint: bright && rand() > 0.45,
+        });
+      };
 
-    const halfWidth = () => (isMobile ? Math.min(110, width * 0.3) : Math.min(230, width * 0.16));
+      for (const cl of clusters) {
+        for (let i = 0; i < perCluster; i++) {
+          // King-profile-ish radial sampling: a steep power law packs most of the
+          // population into the blazing core and feathers the rest outward.
+          const rad = Math.pow(rand(), 2.35);
+          const ang = rand() * Math.PI * 2;
+          const ex = Math.cos(ang) * rad * cl.radius;
+          const ey = Math.sin(ang) * rad * cl.radius * 1.5;
+          const core = 1 - Math.min(1, rad * 1.15);
+          pushStar(cl.u, cl.lx + ex, ey, core);
+        }
+      }
 
-    const onResize = () => updateDimensions();
-    window.addEventListener("resize", onResize, { passive: true });
-    const readScroll = () => {
-      scrollY = window.scrollY || window.pageYOffset || 0;
+      // Field population: bridges cluster to cluster so the current never breaks
+      for (let i = 0; i < fieldCount; i++) {
+        const g = gauss();
+        pushStar(rand(), g * 0.62, gauss() * 0.3, Math.max(0, 0.42 - Math.abs(g) * 0.3));
+      }
     };
-    // Kept only so the reduced-motion (non-rAF) path stays in step.
-    window.addEventListener("scroll", readScroll, { passive: true });
-    const onVis = () => {
-      isTabActive = !document.hidden;
-    };
-    document.addEventListener("visibilitychange", onVis);
-    const io = new IntersectionObserver(([e]) => { isVisible = e.isIntersecting; }, { threshold: 0 });
-    io.observe(canvas);
 
-    const cleanup = () => {
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("scroll", readScroll);
-      document.removeEventListener("visibilitychange", onVis);
-      io.disconnect();
+    /* ── Tiling: the document-space rendering surface ───────────────────── */
+    const teardownTiles = () => {
+      io?.disconnect();
+      io = null;
+      for (const t of tiles) t.canvas.remove();
+      tiles = [];
     };
 
-
-    /* ── Drawing ────────────────────────────────────────────────────────── */
-    const drawFrame = (now: number, animate: boolean) => {
-      ctx.clearRect(0, 0, width, height);
-      ctx.globalCompositeOperation = "lighter";
+    const buildTiles = () => {
+      teardownTiles();
+      if (pageWidth <= 0 || docHeight <= 0) return;
 
       const hw = halfWidth();
+      const margin = Math.max(220, hw * 2); // catches blooms/cores whose radius crosses a tile edge
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const count = Math.max(1, Math.ceil(docHeight / TILE_HEIGHT));
 
-      // 1. Unresolved cluster cores (round, soft, strictly secondary)
-      for (let i = 0; i < clusters.length; i++) {
-        const cl = clusters[i];
-        const cu = cl.u;
-        const sy = cu * docHeight - scrollY;
+      const frag = document.createDocumentFragment();
+
+      for (let i = 0; i < count; i++) {
+        const top = i * TILE_HEIGHT;
+        const h = Math.min(TILE_HEIGHT, docHeight - top);
+        if (h <= 0) continue;
+
+        const canvas = document.createElement("canvas");
+        canvas.setAttribute("aria-hidden", "true");
+        canvas.style.position = "absolute";
+        canvas.style.left = "0";
+        canvas.style.top = `${top}px`;
+        canvas.style.width = `${pageWidth}px`;
+        canvas.style.height = `${h}px`;
+        canvas.style.display = "block";
+        canvas.width = Math.max(1, Math.round(pageWidth * dpr));
+        canvas.height = Math.max(1, Math.round(h * dpr));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        frag.appendChild(canvas);
+
+        const yMin = top - margin;
+        const yMax = top + h + margin;
+        const tClusters = clusters.filter((c) => {
+          const y = c.u * docHeight;
+          return y >= yMin - c.radius * hw && y <= yMax + c.radius * hw;
+        });
+        const tStars = stars.filter((p) => {
+          const y = p.u * docHeight + p.ly * hw;
+          return y >= yMin && y <= yMax;
+        });
+
+        tiles.push({ top, height: h, canvas, ctx, stars: tStars, clusters: tClusters, visible: true });
+      }
+
+      container.appendChild(frag);
+
+      io = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            const tile = tiles.find((t) => t.canvas === entry.target);
+            if (tile) tile.visible = entry.isIntersecting;
+          }
+        },
+        { rootMargin: "300px 0px" }
+      );
+      for (const t of tiles) io.observe(t.canvas);
+    };
+
+    /* ── Drawing a single tile in its own local (tile-relative) space ───── */
+    const drawTile = (tile: Tile, now: number, animate: boolean) => {
+      const ctx = tile.ctx;
+      const w = pageWidth;
+      const h = tile.height;
+      const hw = halfWidth();
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.globalCompositeOperation = "lighter";
+
+      for (let i = 0; i < tile.clusters.length; i++) {
+        const cl = tile.clusters[i];
+        const sy = cl.u * docHeight - tile.top;
         const rpx = cl.radius * hw;
-        if (sy < -rpx * 2 || sy > height + rpx * 2) continue;
-        const sx = spineAt(cu) * pageWidth + cl.lx * hw + waveShape(cu) * hw;
+        if (sy < -rpx * 2 || sy > h + rpx * 2) continue;
+        const sx = spineAt(cl.u) * w + cl.lx * hw + waveShape(cl.u) * hw;
         const pulse = animate ? 0.86 + Math.sin(now * cl.pulseSpeed + cl.pulsePhase) * 0.14 : 1;
         const d = rpx * 1.9;
         ctx.globalAlpha = Math.min(0.5, cl.coreAlpha * 0.5 * pulse);
         ctx.drawImage(coreSprite, sx - d / 2, sy - d / 2, d, d);
       }
 
-      // 2. The particle population — this is what makes the ribbon read thick
-      for (let i = 0; i < starCount; i++) {
-        const p = stars[i];
-        const pu = p.u;
-        const sy = pu * docHeight - scrollY + p.ly * hw;
-        if (sy < -30 || sy > height + 30) continue;
+      for (let i = 0; i < tile.stars.length; i++) {
+        const p = tile.stars[i];
+        const sy = p.u * docHeight - tile.top + p.ly * hw;
+        if (sy < -30 || sy > h + 30) continue;
 
-        const wobble = animate
-          ? Math.sin(now * p.driftFreq + p.driftPhase) * p.driftAmp
-          : 0;
-        const sx = spineAt(pu) * pageWidth + p.lx * hw + waveShape(pu) * hw + wobble;
-        if (sx < -40 || sx > width + 40) continue;
+        const wobble = animate ? Math.sin(now * p.driftFreq + p.driftPhase) * p.driftAmp : 0;
+        const sx = spineAt(p.u) * w + p.lx * hw + waveShape(p.u) * hw + wobble;
+        if (sx < -40 || sx > w + 40) continue;
 
         let fade = 1;
-        if (pu < 0.015) fade = pu / 0.015;
-        else if (pu > 0.985) fade = Math.max(0, (1 - pu) / 0.015);
+        if (p.u < 0.015) fade = p.u / 0.015;
+        else if (p.u > 0.985) fade = Math.max(0, (1 - p.u) / 0.015);
 
         const tw = animate ? 0.8 + Math.sin(now * p.twSpeed + p.twPhase) * 0.2 : 1;
         const a = Math.min(0.95, p.alpha * fade * tw);
@@ -343,7 +393,6 @@ export function GoldParticleStream() {
         ctx.globalAlpha = a;
         ctx.drawImage(sprites[p.colorIdx], sx - d / 2, sy - d / 2, d, d);
 
-        // Diffraction glint on the handful of brightest members
         if (p.glint && a > 0.4) {
           const len = p.size * 6.5;
           ctx.globalAlpha = a * 0.34;
@@ -362,43 +411,70 @@ export function GoldParticleStream() {
       ctx.globalCompositeOperation = "source-over";
     };
 
-    if (reduceMotion) {
-      drawFrame(0, false);
-      const onStaticScroll = () => drawFrame(0, false);
-      window.addEventListener("scroll", onStaticScroll, { passive: true });
-      window.addEventListener("resize", onStaticScroll, { passive: true });
-      return () => {
-        window.removeEventListener("scroll", onStaticScroll);
-        window.removeEventListener("resize", onStaticScroll);
-        cleanup();
-      };
-    }
+    const drawAllStatic = () => {
+      for (const t of tiles) drawTile(t, 0, false);
+    };
+
+    /* ── Full rebuild: only on first mount and on genuine layout changes ─── */
+    const rebuild = () => {
+      const w = container.clientWidth || window.innerWidth;
+      const h = container.clientHeight || 1;
+      const mobile = w < 768;
+
+      const sizeChanged = Math.abs(w - pageWidth) > 1 || Math.abs(h - docHeight) > 1;
+      const densityTierChanged = mobile !== isMobile || stars.length === 0;
+
+      if (!sizeChanged && !densityTierChanged && tiles.length > 0) return;
+
+      pageWidth = w;
+      docHeight = Math.max(1, h);
+      isMobile = mobile;
+
+      if (densityTierChanged) generateParticles();
+      buildTiles();
+      if (reduceMotion) drawAllStatic();
+    };
+
+    rebuild();
+
+    // ResizeObserver — NOT a scroll listener — is the only thing that can ever
+    // move a tile. It fires on real layout changes (viewport resize, content
+    // reflow, fonts/images loading), never on scroll.
+    const ro = new ResizeObserver(() => rebuild());
+    ro.observe(container);
+
+    const onVisibilityChange = () => {
+      isTabActive = !document.hidden;
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     let rafId = 0;
-
     const render = (now: number) => {
-      if (isVisible && isTabActive && width > 0 && height > 0) {
-        // Sampled here rather than in a scroll handler: the projection is then
-        // always built from the scroll offset of the frame being painted.
-        readScroll();
-        drawFrame(now, true);
+      if (isTabActive) {
+        for (const t of tiles) {
+          if (t.visible) drawTile(t, now, true);
+        }
       }
       rafId = requestAnimationFrame(render);
     };
-    rafId = requestAnimationFrame(render);
+
+    if (!reduceMotion) {
+      rafId = requestAnimationFrame(render);
+    }
 
     return () => {
       cancelAnimationFrame(rafId);
-      cleanup();
+      ro.disconnect();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      teardownTiles();
     };
   }, []);
 
   return (
     <div
-      className="fixed inset-0 pointer-events-none select-none z-[1] overflow-hidden"
+      ref={containerRef}
+      className="absolute inset-0 pointer-events-none select-none -z-10 overflow-hidden"
       aria-hidden="true"
-    >
-      <canvas ref={canvasRef} className="block w-full h-full" />
-    </div>
+    />
   );
 }

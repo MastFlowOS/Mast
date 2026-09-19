@@ -6,6 +6,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { env } from "../config/env.js";
 import { attributeDiscoveryNiche } from "../lib/niches.js";
+import { attributeDiscoveryCountry } from "../lib/geo/scope.js";
 import { workerMetrics } from "../lib/observability.js";
 import {
   registerRequestEngineProcess,
@@ -23,6 +24,12 @@ export type EngineLead = {
   address: string;
   city: string;
   country: string;
+  /**
+   * ISO-3166 alpha-2 country this lead was discovered in. Stamped by
+   * `runEngineQuery()` from the country the provider was asked to search
+   * (falling back to the engine's own `country` echo). Absent = unknown.
+   */
+  country_code?: string;
   query: string;
   /**
    * The discovery niche that produced this lead. The Python engine's result
@@ -1400,7 +1407,10 @@ export async function* runEngineQuery(
       // The engine never emits `niche` on its lead dicts (see EngineLead.niche),
       // so the request's niche is the source of truth. Every caller passes one
       // niche per engine call (multi-niche requests are split upstream).
-      yield attributeDiscoveryNiche(parsed as EngineLead, params.niche);
+      yield attributeDiscoveryCountry(
+        attributeDiscoveryNiche(parsed as EngineLead, params.niche),
+        params.country,
+      );
       // LIFECYCLE FIX: only counted once control returns here, i.e. the
       // consumer actually resumed this generator after receiving the
       // lead — see bridgeReceived/bridgeForwarded's declaration above.

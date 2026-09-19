@@ -5,8 +5,45 @@ import {
   FOCUS_COUNTRIES,
   DOT_COUNTRY_IDS,
   selectCycleOpportunities,
-  type ActiveOpportunity
+  type ActiveOpportunity,
 } from "./focusCountries";
+
+/**
+ * PERF NOTE — per-dot trigonometry is precomputed once, not per frame.
+ *
+ * WORLD_DOTS is a fixed ~2,880-point dataset; each dot's latitude never
+ * changes, so `cos(phi)`, `sin(phi)`, `cos(lambda)` and `sin(lambda)` are
+ * frame-invariant and are computed exactly once here, at module load,
+ * instead of being recomputed from `d.lat`/`d.lon` on every animation frame
+ * (previously ~4 trig calls × 2,880 dots = ~11,500 `Math.cos`/`Math.sin`
+ * calls every frame just to re-derive values that never change).
+ *
+ * The one thing that *does* change every frame is `rotation`. Rather than
+ * calling `Math.cos`/`Math.sin` again for every dot's `theta = lambda -
+ * rotation`, the per-dot rotated angle is derived algebraically from the
+ * angle-difference identities:
+ *   cos(lambda - rotation) = cos(lambda)cos(rotation) + sin(lambda)sin(rotation)
+ *   sin(lambda - rotation) = sin(lambda)cos(rotation) - cos(lambda)sin(rotation)
+ * `cos(rotation)`/`sin(rotation)` are computed exactly once per frame (not
+ * per dot), and each dot's rotated position then costs 4 multiplies + 2
+ * adds instead of 2 trig calls. This is an exact algebraic identity, not an
+ * approximation — the rendered globe is pixel-identical to before, just far
+ * cheaper to compute every frame.
+ */
+const WORLD_DOT_COUNT = WORLD_DOTS.length;
+const WORLD_DOT_COS_PHI = new Float32Array(WORLD_DOT_COUNT);
+const WORLD_DOT_SIN_PHI = new Float32Array(WORLD_DOT_COUNT); // == y0, rotation-invariant
+const WORLD_DOT_COS_LAMBDA = new Float32Array(WORLD_DOT_COUNT);
+const WORLD_DOT_SIN_LAMBDA = new Float32Array(WORLD_DOT_COUNT);
+for (let i = 0; i < WORLD_DOT_COUNT; i++) {
+  const d = WORLD_DOTS[i];
+  const phi = (d.lat * Math.PI) / 180;
+  const lambda = (d.lon * Math.PI) / 180;
+  WORLD_DOT_COS_PHI[i] = Math.cos(phi);
+  WORLD_DOT_SIN_PHI[i] = Math.sin(phi);
+  WORLD_DOT_COS_LAMBDA[i] = Math.cos(lambda);
+  WORLD_DOT_SIN_LAMBDA[i] = Math.sin(lambda);
+}
 
 // Fixed Earth axial tilt: 23.44 degrees in radians
 const TILT = 0.409;
@@ -97,7 +134,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       ([entry]) => {
         visible = entry.isIntersecting;
       },
-      { threshold: 0.05 }
+      { threshold: 0.05 },
     );
     io.observe(container);
 
@@ -144,7 +181,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       const cx = width / 2;
       const cy = height * CENTER_FRACTION;
       const r = Math.min(width, height) * SPHERE_FRACTION;
-      
+
       const atmoGlow = ctx.createRadialGradient(cx, cy, r * 0.94, cx, cy, r * 1.055);
       atmoGlow.addColorStop(0, "rgba(56, 96, 192, 0.16)");
       atmoGlow.addColorStop(0.35, "rgba(42, 78, 168, 0.09)");
@@ -158,7 +195,14 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.clip();
-      const oceanBg = ctx.createRadialGradient(cx - r * 0.25, cy - r * 0.28, r * 0.12, cx, cy, r * 1.01);
+      const oceanBg = ctx.createRadialGradient(
+        cx - r * 0.25,
+        cy - r * 0.28,
+        r * 0.12,
+        cx,
+        cy,
+        r * 1.01,
+      );
       oceanBg.addColorStop(0, "rgba(8, 22, 54, 0.98)");
       oceanBg.addColorStop(0.42, "rgba(6, 16, 42, 0.98)");
       oceanBg.addColorStop(0.82, "rgba(4, 11, 28, 0.99)");
@@ -184,12 +228,21 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           countryCycles[targetIdx]++;
           const target = FOCUS_COUNTRIES[targetIdx];
           // Deterministically select 5–15 organic opportunities from candidate pool for this cycle
-          activeOpportunities = selectCycleOpportunities(target, countryCycles[targetIdx], sessionSeed);
+          activeOpportunities = selectCycleOpportunities(
+            target,
+            countryCycles[targetIdx],
+            sessionSeed,
+          );
           rotationAtSettleStart = rotation;
           const targetLambda = (target.lon * Math.PI) / 180;
-          const delta = (((targetLambda - rotationAtSettleStart) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+          const delta =
+            (((targetLambda - rotationAtSettleStart) % (Math.PI * 2)) + Math.PI * 2) %
+            (Math.PI * 2);
           targetRotation = rotationAtSettleStart + delta;
-          const lastDotDelay = activeOpportunities.length > 0 ? activeOpportunities[activeOpportunities.length - 1].delayMs : 2000;
+          const lastDotDelay =
+            activeOpportunities.length > 0
+              ? activeOpportunities[activeOpportunities.length - 1].delayMs
+              : 2000;
           focusDuration = lastDotDelay + 3800;
         } else if (phase === "settle" && phaseElapsed >= settleDuration) {
           phase = "focus";
@@ -210,7 +263,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           rotation += BASE_SPEED * (dt / 1000);
         } else if (phase === "settle") {
           const p = Math.min(1, phaseElapsed / settleDuration);
-          rotation = rotationAtSettleStart + (targetRotation - rotationAtSettleStart) * easeInOutCubic(p);
+          rotation =
+            rotationAtSettleStart + (targetRotation - rotationAtSettleStart) * easeInOutCubic(p);
         } else if (phase === "focus") {
           rotation = targetRotation;
         } else if (phase === "release") {
@@ -264,7 +318,14 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       if (atmoGlowCache && atmoGlowCache.key === atmoGlowKey) {
         atmoGlow = atmoGlowCache.gradient;
       } else {
-        atmoGlow = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.94, cx, effectiveCY, effectiveR * 1.055);
+        atmoGlow = ctx.createRadialGradient(
+          cx,
+          effectiveCY,
+          effectiveR * 0.94,
+          cx,
+          effectiveCY,
+          effectiveR * 1.055,
+        );
         atmoGlow.addColorStop(0, `rgba(48, 84, 176, ${0.1 * envLimbBreath})`);
         atmoGlow.addColorStop(0.35, `rgba(36, 68, 152, ${0.055 * envLimbBreath})`);
         atmoGlow.addColorStop(0.7, "rgba(26, 50, 124, 0.02)");
@@ -293,7 +354,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           effectiveR * 0.12,
           cx,
           effectiveCY,
-          effectiveR * 1.01
+          effectiveR * 1.01,
         );
         oceanBg.addColorStop(0, "rgba(13, 32, 72, 0.98)");
         oceanBg.addColorStop(0.3, "rgba(8, 21, 52, 0.98)");
@@ -311,7 +372,14 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       if (innerRimCache && innerRimCache.key === geometryKey) {
         innerRim = innerRimCache.gradient;
       } else {
-        innerRim = ctx.createRadialGradient(cx, effectiveCY, effectiveR * 0.86, cx, effectiveCY, effectiveR);
+        innerRim = ctx.createRadialGradient(
+          cx,
+          effectiveCY,
+          effectiveR * 0.86,
+          cx,
+          effectiveCY,
+          effectiveR,
+        );
         innerRim.addColorStop(0, "rgba(0, 0, 0, 0)");
         innerRim.addColorStop(0.72, "rgba(30, 58, 128, 0.07)");
         innerRim.addColorStop(1, "rgba(58, 96, 182, 0.17)");
@@ -326,23 +394,26 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       // 3. Continental land dots: fine, nocturnal Earth dots
       // When a country is focused, its dots become visibly light gold (#c9a66b),
       // allowing the sovereign country silhouette to emerge authentically from the dotted Earth!
-      const dots = WORLD_DOTS;
-      const dotCount = dots.length;
+      const dotCount = WORLD_DOT_COUNT;
+
+      // Rotation's cos/sin computed ONCE per frame (not once per dot — see the
+      // perf note above the module-level trig caches at the top of this file).
+      const cosR = Math.cos(rotation);
+      const sinR = Math.sin(rotation);
 
       for (let i = 0; i < dotCount; i++) {
-        const d = dots[i];
-        const phi = (d.lat * Math.PI) / 180;
-        const lambda = (d.lon * Math.PI) / 180;
-
-        // 3D Unit sphere coordinates
-        const cosPhi = Math.cos(phi);
-        const sinPhi = Math.sin(phi);
-        const theta = lambda - rotation;
-        const cosTheta = Math.cos(theta);
-        const sinTheta = Math.sin(theta);
+        // 3D Unit sphere coordinates — cosPhi/sinPhi/cosLambda/sinLambda are
+        // precomputed (lat/lon never change); only cosTheta/sinTheta depend on
+        // the current rotation, and are derived algebraically instead of via
+        // fresh Math.cos/Math.sin calls per dot.
+        const cosPhi = WORLD_DOT_COS_PHI[i];
+        const cosLambda = WORLD_DOT_COS_LAMBDA[i];
+        const sinLambda = WORLD_DOT_SIN_LAMBDA[i];
+        const cosTheta = cosLambda * cosR + sinLambda * sinR;
+        const sinTheta = sinLambda * cosR - cosLambda * sinR;
 
         const x0 = cosPhi * sinTheta;
-        const y0 = sinPhi;
+        const y0 = WORLD_DOT_SIN_PHI[i];
         const z0 = cosPhi * cosTheta;
 
         // Apply axial tilt
@@ -363,13 +434,13 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         const zDepth = Math.max(0, Math.min(1, z));
 
         // Base planetary land luminosity: visible even in darkest shadow
-        let luminosity = (0.24 + sunFactor * 0.48) * (0.76 + 0.24 * zDepth);
-        let dotRadius = Math.max(0.7, 0.82 + 0.28 * zDepth);
+        const luminosity = (0.24 + sunFactor * 0.48) * (0.76 + 0.24 * zDepth);
+        const dotRadius = Math.max(0.7, 0.82 + 0.28 * zDepth);
 
         // Base nocturnal palette: pale silvery-blue in light, deep nocturnal slate in shadow
-        let rVal = Math.round(135 + sunFactor * 75);
-        let gVal = Math.round(165 + sunFactor * 65);
-        let bVal = Math.round(215 + sunFactor * 40);
+        const rVal = Math.round(135 + sunFactor * 75);
+        const gVal = Math.round(165 + sunFactor * 65);
+        const bVal = Math.round(215 + sunFactor * 40);
 
         // Check if dot belongs to the active focus country
         const isTargetCountry = currentTarget && targetIdx >= 0 && DOT_COUNTRY_IDS[i] === targetIdx;
@@ -388,12 +459,12 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           // Continuous luminance interpolation: NEVER dims to 0 or becomes transparent!
           // Country always maintains normal geographic visibility, smoothly transitioning between gold and nocturnal Earth
           const isSmallCountry = ["EGY", "FRA", "DEU", "JPN", "NZL"].includes(currentTarget.iso);
-          const targetCountryLum = (isSmallCountry ? 0.60 : 0.52) + 0.10 * zDepth;
+          const targetCountryLum = (isSmallCountry ? 0.6 : 0.52) + 0.1 * zDepth;
           const dotLum = luminosity * (1 - tGold) + targetCountryLum * tGold;
 
           // Continuous radius interpolation
           const targetCountryDotR = isSmallCountry
-            ? Math.max(1.05, dotRadius * 1.30)
+            ? Math.max(1.05, dotRadius * 1.3)
             : Math.max(0.85, dotRadius * 1.15);
           const curDotR = dotRadius * (1 - tGold) + targetCountryDotR * tGold;
 
@@ -416,13 +487,17 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
       // 4. Sequential Opportunity Dots (The Main Focus: One-by-One Lead Discovery)
       // Level 3 in visual hierarchy: Unmistakably bright MAST gold, crisp core, visible halo & atmospheric bloom
-      if (currentTarget && activeOpportunities.length > 0 && (phase === "focus" || phase === "release")) {
+      if (
+        currentTarget &&
+        activeOpportunities.length > 0 &&
+        (phase === "focus" || phase === "release")
+      ) {
         const opps = activeOpportunities;
         const oppCount = opps.length;
 
         // Screen-space responsive sizing with strict minimum clamps:
         // Ensures opportunity dots never shrink to invisibility on small countries or high DPR
-        const scaleRef = Math.max(0.85, Math.min(1.30, effectiveR / 290));
+        const scaleRef = Math.max(0.85, Math.min(1.3, effectiveR / 290));
         const baseCoreR = Math.max(2.4, Math.min(3.0, 2.65 * scaleRef));
         const baseHaloR = Math.max(5.5, Math.min(7.2, 6.2 * scaleRef));
         const baseBloomR = Math.max(9.5, Math.min(13.0, 11.2 * scaleRef));
@@ -530,7 +605,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           effectiveR * 0.1,
           cx - effectiveR * 0.18,
           effectiveCY - effectiveR * 0.16,
-          effectiveR * 1.5
+          effectiveR * 1.5,
         );
         bodyShade.addColorStop(0, "rgba(120, 168, 255, 0.07)");
         bodyShade.addColorStop(0.34, "rgba(10, 24, 58, 0)");
@@ -552,7 +627,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           0,
           cx - effectiveR * 0.46,
           effectiveCY - effectiveR * 0.5,
-          effectiveR * 0.62
+          effectiveR * 0.62,
         );
         sheen.addColorStop(0, "rgba(150, 192, 255, 0.09)");
         sheen.addColorStop(0.45, "rgba(96, 146, 226, 0.035)");

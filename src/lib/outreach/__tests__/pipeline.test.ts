@@ -297,3 +297,39 @@ test("no profession -> refusal (ladder never reaches a 5th profession-neutral fa
   });
   assert.equal(result.ok, false);
 });
+
+// ─── Angle/value distinctness (final-polish fix) ────────────────────────────
+
+test("formatted email body never repeats the angle sentence back-to-back (angle/value duplication fix)", () => {
+  const result = generateFreeOutreach({
+    lead: lead({ niche: "cafe" }),
+    profession: "graphic_design",
+    templateKey: "initial",
+    channel: "email",
+    signal: signal(true, ["branding"]),
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    // The value-prop sentence for branding should appear exactly once.
+    const angleSentence = result.slots.angle!;
+    const occurrences = result.body.split(angleSentence).length - 1;
+    assert.equal(occurrences, 1, `expected angle sentence to appear once, got ${occurrences}: ${result.body}`);
+    assert.equal(result.slots.value, undefined);
+  }
+});
+
+test("formatted contact_form body never repeats the angle sentence back-to-back", () => {
+  const result = generateFreeOutreach({
+    lead: lead({ niche: "cafe" }),
+    profession: "graphic_design",
+    templateKey: "initial",
+    channel: "contact_form",
+    signal: signal(true, ["branding"]),
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const angleSentence = result.slots.angle!;
+    const occurrences = result.body.split(angleSentence).length - 1;
+    assert.equal(occurrences, 1, `expected angle sentence to appear once, got ${occurrences}: ${result.body}`);
+  }
+});

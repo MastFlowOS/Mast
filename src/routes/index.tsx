@@ -85,7 +85,7 @@ function Hero() {
         {/* Copy column */}
         <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">
           {/* Heading */}
-          <h1 className="animate-fade-up delay-100 text-[clamp(1.9rem,4.5vw,3.1rem)] font-extrabold text-foreground tracking-tight mb-5 leading-[1.1]">
+          <h1 className="animate-fade-up delay-100 text-[clamp(1.9rem,4vw,2.75rem)] font-extrabold text-foreground tracking-tight mb-5 leading-[1.1]">
             Stop switching tabs.<br />
             Start closing deals.
           </h1>
@@ -160,13 +160,13 @@ function Workflow() {
   return (
     <section className="relative px-6 pb-10 md:pb-12">
       <div className="max-w-5xl mx-auto animate-fade-up">
-        <div className="relative rounded-2xl border border-border/60 bg-card/70 backdrop-blur-sm px-4 sm:px-8 py-5 sm:py-6 gradient-border overflow-hidden">
+        <div className="relative rounded-2xl border border-border/60 bg-card/70 backdrop-blur-sm px-4 sm:px-8 py-5 sm:py-[18px] gradient-border overflow-hidden">
           <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/40 to-transparent" />
           <div className="flex flex-col md:flex-row items-stretch justify-between gap-6 md:gap-1.5">
             {workflowSteps.map((step, i) => (
               <div key={step.title} className="flex items-center md:contents">
-                <div className="flex flex-col items-center text-center gap-2 flex-1 md:px-1">
-                  <div className="relative size-9 rounded-full bg-[var(--landing-blue-tint)] border border-[var(--landing-blue-border)] grid place-items-center">
+                <div className="flex flex-col items-center text-center gap-2 md:gap-1.5 flex-1 md:px-1">
+                  <div className="relative size-9 md:size-8 rounded-full bg-[var(--landing-blue-tint)] border border-[var(--landing-blue-border)] grid place-items-center">
                     <span className="absolute -top-1 -right-1 size-4 rounded-full bg-[var(--landing-blue)] text-white text-[9px] font-bold grid place-items-center border border-card">
                       {i + 1}
                     </span>
@@ -693,7 +693,7 @@ const trustedLogos = [
 
 function TrustedBy() {
   return (
-    <section className="relative px-6 pb-12 md:pb-16">
+    <section className="relative px-6 pb-6 md:pb-8">
       <div className="max-w-5xl mx-auto text-center animate-fade-up">
         <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.2em] mb-5">
           Trusted by growing teams worldwide
@@ -739,7 +739,7 @@ function Problem() {
   ];
 
   return (
-    <section id="solutions" className="relative py-16 px-6 overflow-x-clip">
+    <section id="solutions" className="relative pt-6 pb-16 px-6 overflow-x-clip">
       <SectionAtmosphere variant="features" />
       <div className="relative z-10 max-w-5xl mx-auto grid md:grid-cols-2 gap-12 items-center">
         <div className="animate-fade-up">
@@ -863,37 +863,37 @@ const features = [
 
 function Features() {
   return (
-    <section className="relative py-16 px-6 border-t border-border/50 overflow-x-clip">
+    <section className="relative py-10 px-6 border-t border-border/50 overflow-x-clip">
       <SectionAtmosphere variant="platform" />
       <div className="relative z-10 max-w-5xl mx-auto">
-        <div className="text-center mb-12 max-w-2xl mx-auto animate-fade-up">
+        <div className="text-center mb-6 max-w-2xl mx-auto animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Platform</span>
-          <h2 className="mt-3 text-[clamp(1.5rem,3.2vw,2.1rem)] font-bold tracking-tight">
+          <h2 className="mt-2 text-[clamp(1.4rem,2.9vw,1.9rem)] font-bold tracking-tight">
             Everything your sales team needs.
             <br />
             <span className="text-muted-foreground">Nothing it doesn't.</span>
           </h2>
-          <p className="mt-3 text-muted-foreground text-[0.85rem] leading-relaxed">
+          <p className="mt-2 text-muted-foreground text-[0.85rem] leading-relaxed">
             Nine modules. One workspace. AI running through all of it.
           </p>
         </div>
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
           {features.map((f, i) => (
             <div
               key={f.title}
-              className="group relative p-5 bg-card border border-border/60 rounded-xl card-hover overflow-hidden animate-fade-up"
+              className="group relative p-4 bg-card border border-border/60 rounded-xl card-hover overflow-hidden animate-fade-up"
               style={{ animationDelay: `${i * 55}ms` }}
             >
               <div className="absolute inset-0 bg-gradient-to-br from-brand/0 to-brand/0 group-hover:from-brand/[0.04] group-hover:to-transparent transition-all duration-500 pointer-events-none rounded-xl" />
 
-              <div className="relative size-9 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center mb-4 group-hover:bg-brand/20 group-hover:border-brand/35 group-hover:scale-110 transition-all duration-300 shadow-[0_0_16px_-6px_color-mix(in_oklab,var(--brand)_50%,transparent)] group-hover:shadow-[0_0_24px_-4px_color-mix(in_oklab,var(--brand)_70%,transparent)]">
+              <div className="relative size-8 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center mb-2.5 group-hover:bg-brand/20 group-hover:border-brand/35 group-hover:scale-110 transition-all duration-300 shadow-[0_0_16px_-6px_color-mix(in_oklab,var(--brand)_50%,transparent)] group-hover:shadow-[0_0_24px_-4px_color-mix(in_oklab,var(--brand)_70%,transparent)]">
                 <f.icon className="size-4 text-brand" />
               </div>
 
               {/* Outcome-first headline */}
               <p className="text-sm font-bold text-foreground mb-1">{f.outcome}</p>
-              <p className="text-[10px] font-semibold text-brand uppercase tracking-wider mb-2">{f.title}</p>
-              <p className="text-[12.5px] text-muted-foreground leading-relaxed">{f.desc}</p>
+              <p className="text-[10px] font-semibold text-brand uppercase tracking-wider mb-1.5">{f.title}</p>
+              <p className="text-[12px] text-muted-foreground leading-[1.5]">{f.desc}</p>
 
               <div className="absolute bottom-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
             </div>
@@ -976,12 +976,12 @@ const plans = [
   },
 ];
 
-export function PlanCard({ name, price, forWho, outcome, features, cta, popular }: {
-  name: string; price: string; forWho?: string; outcome?: string; desc?: string; features: string[]; cta: string; popular: boolean;
+export function PlanCard({ name, price, forWho, outcome, features, cta, popular, compact = false }: {
+  name: string; price: string; forWho?: string; outcome?: string; desc?: string; features: string[]; cta: string; popular: boolean; compact?: boolean;
 }) {
   return (
     <div
-      className={`relative flex flex-col rounded-2xl p-5 overflow-hidden transition-all duration-300 card-hover ${
+      className={`relative flex flex-col rounded-2xl ${compact ? "p-4" : "p-5"} overflow-hidden transition-all duration-300 card-hover ${
         popular
           ? "bg-gradient-to-b from-brand/10 to-card border-2 border-brand shadow-brand"
           : "bg-card border border-border/60"
@@ -997,7 +997,7 @@ export function PlanCard({ name, price, forWho, outcome, features, cta, popular 
       )}
 
       {/* Plan name */}
-      <div className={`text-[9px] font-bold uppercase tracking-[0.2em] mb-2 ${popular ? "text-brand" : "text-muted-foreground"}`}>
+      <div className={`text-[9px] font-bold uppercase tracking-[0.2em] ${compact ? "mb-1.5" : "mb-2"} ${popular ? "text-brand" : "text-muted-foreground"}`}>
         {name}
       </div>
 
@@ -1012,10 +1012,10 @@ export function PlanCard({ name, price, forWho, outcome, features, cta, popular 
 
       {/* Outcome */}
       {outcome && (
-        <p className="text-[13px] font-semibold text-foreground mt-2 mb-3.5 leading-snug">{outcome}</p>
+        <p className={`text-[13px] font-semibold text-foreground ${compact ? "mt-1.5 mb-3" : "mt-2 mb-3.5"} leading-snug`}>{outcome}</p>
       )}
 
-      <ul className="space-y-2 flex-1 mb-5">
+      <ul className={`${compact ? "space-y-1.5 mb-3" : "space-y-2 mb-5"} flex-1`}>
         {features.map((f) => (
           <li key={f} className="flex items-start gap-2 text-[12.5px] text-muted-foreground">
             <CheckCircle2 className="size-4 text-brand shrink-0 mt-0.5" /> {f}
@@ -1039,26 +1039,26 @@ export function PlanCard({ name, price, forWho, outcome, features, cta, popular 
 
 function PricingPreview() {
   return (
-    <section id="testimonials" className="relative py-16 px-6 border-t border-border/50 overflow-x-clip">
+    <section id="testimonials" className="relative py-10 px-6 border-t border-border/50 overflow-x-clip">
       <SectionAtmosphere variant="customers" />
       <div className="relative z-10 max-w-5xl mx-auto">
-        <div className="text-center mb-10 animate-fade-up">
+        <div className="text-center mb-6 animate-fade-up">
           <span className="text-[10px] font-bold text-brand uppercase tracking-[0.2em]">Pricing</span>
-          <h2 className="mt-3 text-[clamp(1.5rem,3.2vw,2.1rem)] font-bold text-foreground">
+          <h2 className="mt-2 text-[clamp(1.5rem,3.2vw,2.1rem)] font-bold text-foreground">
             One price. No surprises.
           </h2>
-          <p className="mt-3 text-muted-foreground text-sm">
+          <p className="mt-2 text-muted-foreground text-sm">
             Daily opportunity limits keep your pipeline active all month, not just week one.
           </p>
         </div>
         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
           {plans.map((p, i) => (
             <div key={p.name} className="animate-fade-up" style={{ animationDelay: `${i * 80}ms` }}>
-              <PlanCard {...p} />
+              <PlanCard {...p} compact />
             </div>
           ))}
         </div>
-        <div className="text-center mt-6 animate-fade-up delay-400">
+        <div className="text-center mt-3 animate-fade-up delay-400">
           <Link
             to="/pricing"
             className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand hover:text-brand-dark transition-colors group"

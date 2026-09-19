@@ -11,8 +11,9 @@ import {
 const TILT = 0.409;
 // Cinematic slow planetary rotation (radians per second) during free spin
 const BASE_SPEED = 0.024;
-// Visually substantial globe scale within the hero column
-const SPHERE_FRACTION = 0.44;
+// Visually substantial globe scale within the hero column (0.44 x 1.05 = ~5% larger sphere,
+// same centre point; glow ring at 1.055r still stays inside the canvas: 0.462 * 1.055 = 0.487 < 0.5)
+const SPHERE_FRACTION = 0.462;
 const PAN_STRENGTH = 0.35;
 
 // Directional celestial light vector (subtle lunar / solar grazing angle)

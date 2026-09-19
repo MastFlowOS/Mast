@@ -47,9 +47,20 @@ export function toSafeLeadFacts(lead: Lead): SafeLeadFacts {
 export type ResolvedAngle = {
   readonly component: OpportunityComponent | "generic";
   readonly source: AngleSource;
+  /** The core profession-specific relevance statement — populates the `angle` slot. */
   readonly text: string;
   /** The authored problem framing, when one was selected. Never lead-specific. */
   readonly observation: string | null;
+  /**
+   * Optional supporting elaboration for the `value` slot, distinct from
+   * `text`. The authored profession data model currently has exactly one
+   * string per component (`valuePropAngles[component]`), which is what
+   * `text` already carries — there is no second, genuinely different
+   * sentence to elaborate with. Rather than repeat `text` here (which
+   * previously caused email/contact-form bodies to say the same sentence
+   * twice back-to-back), this stays `null` whenever no distinct
+   * elaboration exists, so the `value` slot is correctly omitted.
+   */
   readonly value: string | null;
 };
 
@@ -81,14 +92,16 @@ export function resolveAngle(input: SlotResolutionInput): ResolvedAngle {
 
   for (const component of signal.rankedComponents) {
     const problem = problemsByComponent.get(component);
-    const value = profession.valuePropAngles[component];
-    if (!problem || !value) continue;
+    const angleText = profession.valuePropAngles[component];
+    if (!problem || !angleText) continue;
     return {
       component,
       source: "opportunity",
-      text: value,
+      text: angleText,
       observation: problem.problemConcept,
-      value,
+      // No distinct elaboration exists beyond the angle text itself for
+      // this component — omit rather than repeat it as `value`.
+      value: null,
     };
   }
 
@@ -97,14 +110,16 @@ export function resolveAngle(input: SlotResolutionInput): ResolvedAngle {
   // signal, never assumed, so they are skipped here.
   for (const context of category.serviceOpportunityContext) {
     if (establishedQuality && ASSUMPTION_GUARDED_COMPONENTS.includes(context.component)) continue;
-    const value = profession.valuePropAngles[context.component];
-    if (!value) continue;
+    const angleText = profession.valuePropAngles[context.component];
+    if (!angleText) continue;
     return {
       component: context.component,
       source: "category-fallback",
-      text: value,
+      text: angleText,
       observation: context.concept,
-      value,
+      // Same reasoning as the opportunity-sourced case above: no distinct
+      // elaboration exists, so omit rather than repeat `text`.
+      value: null,
     };
   }
 

@@ -1,25 +1,50 @@
 import { useEffect, useRef } from "react";
 
-type Particle = {
-  u: number; // Position [0, 1] along document length
-  lateral: number; // Normalized lateral offset from stream spine [-1, 1]
-  speed: number; // Downward drift speed
-  driftAmp: number; // Amplitude of organic oscillation
-  driftFreq: number; // Frequency of organic oscillation
-  driftPhase: number;
-  size: number; // Radius in pixels
-  baseAlpha: number;
-  twinkleSpeed: number;
-  twinklePhase: number;
+/**
+ * One continuous celestial gold current running from the top of the landing
+ * page to the footer.
+ *
+ * The visual model is a chain of GLOBULAR CLUSTERS strung along a wide, wavy
+ * spine — exactly like the reference photograph: a blazing unresolved core,
+ * a dense resolved halo falling off steeply, then feathered outliers. Clusters
+ * overlap along the path, and a field population bridges the gaps, so the eye
+ * reads one thick, clustered golden ribbon rather than a scattering of dots or
+ * a drawn line. Every pixel of it comes from particles — the only non-particle
+ * element is a faint unresolved core bloom per cluster, which is round and
+ * secondary, never a stroke.
+ */
+
+type Star = {
+  u: number; // position along the document [0,1]
+  lx: number; // lateral offset from the spine, in units of the ribbon half-width
+  ly: number; // vertical offset within its cluster, in ribbon half-widths
+  size: number; // core radius in px
   colorIdx: number;
+  alpha: number;
+  twSpeed: number;
+  twPhase: number;
+  driftAmp: number;
+  driftFreq: number;
+  driftPhase: number;
+  glint: boolean;
 };
 
-// Rich warm gold celestial dust palette
-const GOLD_COLORS = [
-  "rgba(188, 142, 68,", // Muted antique bronze
-  "rgba(212, 172, 92,", // Warm celestial gold
-  "rgba(235, 202, 126,", // Soft glowing champagne gold
-  "rgba(255, 235, 175,", // Bright specular dust highlight
+type Cluster = {
+  u: number;
+  lx: number;
+  radius: number; // in units of ribbon half-width
+  coreAlpha: number;
+  pulseSpeed: number;
+  pulsePhase: number;
+};
+
+// Sampled from the reference cluster: ember amber → gold → champagne → white gold
+const STAR_RGB: [number, number, number][] = [
+  [255, 156, 54],
+  [255, 190, 88],
+  [255, 214, 132],
+  [255, 238, 186],
+  [255, 250, 226],
 ];
 
 export function GoldParticleStream() {
@@ -28,7 +53,6 @@ export function GoldParticleStream() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -42,47 +66,44 @@ export function GoldParticleStream() {
     let isVisible = true;
     let isTabActive = !document.hidden;
 
-    // Spline waypoints defining the continuous celestial current through all sections
+    /* ── Spine: the same current, weaving through every section ─────────── */
     const WAYPOINTS: [number, number][] = [
-      [0.0, 0.65],
-      [0.07, 0.74], // Sweeps diagonally past and behind the Hero Globe
-      [0.16, 0.53], // Curves into Workflow
-      [0.28, 0.35], // Weaves behind Product Showcase / Relationship Data
-      [0.42, 0.50], // Crosses through Trusted By
-      [0.55, 0.64], // Sweeps through Why MAST / Problem
-      [0.70, 0.39], // Weaves through Platform / Features
-      [0.84, 0.52], // Crosses through Pricing Preview
-      [0.94, 0.48], // Frames the CTA Box
-      [1.0, 0.50], // Naturally dissolves into the Footer
+      [0.0, 0.72],
+      [0.05, 0.78], // enters from above, sweeps past the hero globe
+      [0.12, 0.6],
+      [0.19, 0.43], // Workflow
+      [0.28, 0.33], // Relationship Data
+      [0.37, 0.47],
+      [0.46, 0.62], // Trusted By
+      [0.55, 0.56],
+      [0.64, 0.36], // Why MAST
+      [0.73, 0.44], // Platform / Features
+      [0.82, 0.6], // Pricing
+      [0.9, 0.5],
+      [0.96, 0.56], // Final CTA
+      [1.0, 0.48], // dissolves into the footer
     ];
 
-    // Cubic Catmull-Rom spline interpolation along the stream path
-    const getSpineX = (u: number): number => {
-      const clampedU = Math.max(0, Math.min(1, u));
+    const spineRaw = (u: number): number => {
+      const c = Math.max(0, Math.min(1, u));
       const n = WAYPOINTS.length;
-
       let idx = 0;
       for (let i = 0; i < n - 1; i++) {
-        if (clampedU >= WAYPOINTS[i][0] && clampedU <= WAYPOINTS[i + 1][0]) {
+        if (c >= WAYPOINTS[i][0] && c <= WAYPOINTS[i + 1][0]) {
           idx = i;
           break;
         }
       }
-
       const p0 = WAYPOINTS[Math.max(0, idx - 1)];
       const p1 = WAYPOINTS[idx];
       const p2 = WAYPOINTS[Math.min(n - 1, idx + 1)];
       const p3 = WAYPOINTS[Math.min(n - 1, idx + 2)];
-
-      const segLen = p2[0] - p1[0] || 0.001;
-      const t = (clampedU - p1[0]) / segLen;
-
+      const seg = p2[0] - p1[0] || 0.001;
+      const t = (c - p1[0]) / seg;
       const t2 = t * t;
       const t3 = t2 * t;
-
       const v0 = (p2[1] - p0[1]) * 0.5;
       const v1 = (p3[1] - p1[1]) * 0.5;
-
       return (
         (2 * t3 - 3 * t2 + 1) * p1[1] +
         (t3 - 2 * t2 + t) * v0 +
@@ -91,17 +112,73 @@ export function GoldParticleStream() {
       );
     };
 
+    // Sampled once into a lookup table — evaluated for every visible particle
+    // on every frame, so the raw spline is far too expensive to call directly.
+    const LUT_N = 1024;
+    const spineLut = new Float32Array(LUT_N + 1);
+    for (let i = 0; i <= LUT_N; i++) spineLut[i] = spineRaw(i / LUT_N);
+    const spineAt = (u: number): number => {
+      const c = u <= 0 ? 0 : u >= 1 ? 1 : u;
+      const f = c * LUT_N;
+      const i = f | 0;
+      const t = f - i;
+      const a = spineLut[i];
+      return a + (spineLut[Math.min(LUT_N, i + 1)] - a) * t;
+    };
+
+    /* ── Deterministic PRNG so the current is identical on every load ───── */
+    let seed = 90210;
+    const rand = () => {
+      seed = (seed * 16807) % 2147483647;
+      return (seed - 1) / 2147483646;
+    };
+    const gauss = () => (rand() + rand() + rand() + rand() - 2) * 0.7;
+
+    /* ── Pre-rendered star sprites (radial falloff) ─────────────────────── */
+    const SPRITE = 48;
+    const sprites: HTMLCanvasElement[] = STAR_RGB.map(([r, g, b]) => {
+      const c = document.createElement("canvas");
+      c.width = SPRITE;
+      c.height = SPRITE;
+      const sctx = c.getContext("2d")!;
+      const half = SPRITE / 2;
+      const grad = sctx.createRadialGradient(half, half, 0, half, half, half);
+      grad.addColorStop(0, `rgba(255,250,236,1)`);
+      grad.addColorStop(0.13, `rgba(${r},${g},${b},0.95)`);
+      grad.addColorStop(0.32, `rgba(${r},${g},${b},0.38)`);
+      grad.addColorStop(0.6, `rgba(${r},${Math.round(g * 0.82)},${Math.round(b * 0.6)},0.1)`);
+      grad.addColorStop(1, `rgba(${r},${Math.round(g * 0.7)},${Math.round(b * 0.5)},0)`);
+      sctx.fillStyle = grad;
+      sctx.fillRect(0, 0, SPRITE, SPRITE);
+      return c;
+    });
+
+    // Soft unresolved-core bloom: the collective light of a cluster's centre
+    const CORE = 160;
+    const coreSprite = document.createElement("canvas");
+    coreSprite.width = CORE;
+    coreSprite.height = CORE;
+    {
+      const cctx = coreSprite.getContext("2d")!;
+      const h = CORE / 2;
+      const g = cctx.createRadialGradient(h, h, 0, h, h, h);
+      g.addColorStop(0, "rgba(255,206,132,0.55)");
+      g.addColorStop(0.18, "rgba(255,186,100,0.28)");
+      g.addColorStop(0.45, "rgba(222,156,70,0.1)");
+      g.addColorStop(1, "rgba(180,124,56,0)");
+      cctx.fillStyle = g;
+      cctx.fillRect(0, 0, CORE, CORE);
+    }
+
     const updateDimensions = () => {
       width = window.innerWidth;
       height = window.innerHeight;
       dpr = Math.min(window.devicePixelRatio || 1, 2);
-
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
       docHeight = Math.max(
         document.documentElement.scrollHeight || 0,
         document.body.scrollHeight || 0,
@@ -109,87 +186,192 @@ export function GoldParticleStream() {
       );
       scrollY = window.scrollY || window.pageYOffset || 0;
     };
-
     updateDimensions();
+
+    const isMobile = width < 768;
+
+    /* ── Cluster chain along the spine ──────────────────────────────────── */
+    // Density is expressed per screen-height of document so the current keeps
+    // the same thickness whether the page is four screens tall or twelve.
+    const screens = Math.max(2, Math.min(16, docHeight / Math.max(1, height)));
+    const CLUSTER_COUNT = Math.round((isMobile ? 6 : 9) * screens);
+    const clusters: Cluster[] = [];
+    for (let i = 0; i < CLUSTER_COUNT; i++) {
+      const base = (i + 0.5) / CLUSTER_COUNT;
+      clusters.push({
+        u: Math.max(0.004, Math.min(0.996, base + (rand() - 0.5) * (0.6 / CLUSTER_COUNT))),
+        lx: gauss() * 0.3,
+        radius: 0.5 + rand() * 0.6,
+        coreAlpha: 0.35 + rand() * 0.45,
+        pulseSpeed: 0.00016 + rand() * 0.00022,
+        pulsePhase: rand() * Math.PI * 2,
+      });
+    }
+
+    /* ── Star population ────────────────────────────────────────────────── */
+    const perCluster = isMobile ? 170 : 330;
+    const fieldCount = Math.round((isMobile ? 700 : 1500) * screens);
+    const stars: Star[] = [];
+
+    const pushStar = (u: number, lx: number, ly: number, core: number) => {
+      // core: 1 at the cluster centre → 0 at the fringe. Drives brightness,
+      // colour temperature and how tightly the star packs.
+      const bright = rand() > 0.965;
+      const sz = bright
+        ? 1.5 + rand() * 1.7
+        : 0.45 + rand() * 0.85 + core * 0.45;
+      let colorIdx: number;
+      const cr = rand();
+      if (bright) colorIdx = cr > 0.55 ? 1 : cr > 0.2 ? 2 : 3;
+      else if (core > 0.7) colorIdx = cr > 0.45 ? 3 : 4;
+      else if (core > 0.35) colorIdx = cr > 0.5 ? 2 : 3;
+      else colorIdx = cr > 0.45 ? 1 : 0;
+      stars.push({
+        u,
+        lx,
+        ly,
+        size: sz,
+        colorIdx,
+        alpha: 0.16 + core * 0.44 + rand() * 0.2 + (bright ? 0.16 : 0),
+        twSpeed: 0.0009 + rand() * 0.0026,
+        twPhase: rand() * Math.PI * 2,
+        driftAmp: 3 + rand() * 11,
+        driftFreq: 0.00016 + rand() * 0.00042,
+        driftPhase: rand() * Math.PI * 2,
+        glint: bright && rand() > 0.45,
+      });
+    };
+
+    for (const cl of clusters) {
+      for (let i = 0; i < perCluster; i++) {
+        // King-profile-ish radial sampling: a steep power law packs most of the
+        // population into the blazing core and feathers the rest outward.
+        const rad = Math.pow(rand(), 2.35);
+        const ang = rand() * Math.PI * 2;
+        // gentle ellipticity, elongated along the direction of the current
+        const ex = Math.cos(ang) * rad * cl.radius;
+        const ey = Math.sin(ang) * rad * cl.radius * 1.5;
+        const core = 1 - Math.min(1, rad * 1.15);
+        pushStar(cl.u, cl.lx + ex, ey, core);
+      }
+    }
+
+    // Field population: bridges cluster to cluster so the current never breaks
+    for (let i = 0; i < fieldCount; i++) {
+      const g = gauss();
+      pushStar(rand(), g * 0.62, gauss() * 0.3, Math.max(0, 0.42 - Math.abs(g) * 0.3));
+    }
+
+    const starCount = stars.length;
+
+    const halfWidth = () => (isMobile ? Math.min(110, width * 0.3) : Math.min(230, width * 0.16));
 
     const onResize = () => updateDimensions();
     window.addEventListener("resize", onResize, { passive: true });
-
     const onScroll = () => {
       scrollY = window.scrollY || window.pageYOffset || 0;
     };
     window.addEventListener("scroll", onScroll, { passive: true });
-
-    const onVisibilityChange = () => {
+    const onVis = () => {
       isTabActive = !document.hidden;
     };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        isVisible = entry.isIntersecting;
-      },
-      { threshold: 0 }
-    );
+    document.addEventListener("visibilitychange", onVis);
+    const io = new IntersectionObserver(([e]) => { isVisible = e.isIntersecting; }, { threshold: 0 });
     io.observe(canvas);
 
-    // Dense celestial cluster calibration:
-    // Yields ~300-400 active particles clustered in any viewport, forming a thick ribbon
-    const isMobile = width < 768;
-    const particleCount = isMobile ? 650 : 1550;
-
-    let seed = 48291;
-    const rand = () => {
-      seed = (seed * 16807) % 2147483647;
-      return (seed - 1) / 2147483646;
+    const cleanup = () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll);
+      document.removeEventListener("visibilitychange", onVis);
+      io.disconnect();
     };
 
-    const particles: Particle[] = [];
-    for (let i = 0; i < particleCount; i++) {
-      // Cubic distribution: creates a thick, dense golden core with soft feathered edges
-      const rVal = rand() * 2 - 1;
-      const lateral = rVal * rVal * rVal * 0.75 + (rand() * 2 - 1) * 0.25;
+    // The whole current creeps downward as one coherent body, so clusters
+    // never shear apart. One shared offset, applied at draw time.
+    let drift = 0;
+    const wrap = (u: number) => (u >= 1 ? u - 1 : u);
 
-      // Particles closer to the core have higher opacity and warmer gold hues
-      const distFromCore = Math.abs(lateral);
-      const coreFactor = 1 - Math.min(1, distFromCore);
+    /* ── Drawing ────────────────────────────────────────────────────────── */
+    const drawFrame = (now: number, animate: boolean) => {
+      ctx.clearRect(0, 0, width, height);
+      ctx.globalCompositeOperation = "lighter";
 
-      particles.push({
-        u: rand(),
-        lateral,
-        speed: 0.00003 + rand() * 0.000038,
-        driftAmp: 8 + rand() * 18,
-        driftFreq: 0.0008 + rand() * 0.001,
-        driftPhase: rand() * Math.PI * 2,
-        size: 0.7 + rand() * 0.9 + (rand() > 0.88 ? 0.6 : 0),
-        baseAlpha: 0.16 + coreFactor * 0.38 + rand() * 0.12,
-        twinkleSpeed: 0.0014 + rand() * 0.0022,
-        twinklePhase: rand() * Math.PI * 2,
-        colorIdx: coreFactor > 0.65 ? (rand() > 0.5 ? 2 : 3) : (rand() > 0.5 ? 1 : 0),
-      });
-    }
+      const hw = halfWidth();
+      const wave1 = animate ? now * 0.00021 : 0;
+      const wave2 = animate ? now * 0.00013 : 0;
+
+      // Wavy displacement of the whole current — keeps the ribbon visibly
+      // serpentine independent of the spline itself.
+      const waveAt = (u: number) =>
+        Math.sin(u * 7.5 + wave1) * hw * 0.34 + Math.cos(u * 13.5 - wave2) * hw * 0.17;
+
+      // 1. Unresolved cluster cores (round, soft, strictly secondary)
+      for (let i = 0; i < clusters.length; i++) {
+        const cl = clusters[i];
+        const cu = wrap(cl.u + drift);
+        const sy = cu * docHeight - scrollY;
+        const rpx = cl.radius * hw;
+        if (sy < -rpx * 2 || sy > height + rpx * 2) continue;
+        const sx = spineAt(cu) * width + cl.lx * hw + waveAt(cu);
+        const pulse = animate ? 0.86 + Math.sin(now * cl.pulseSpeed + cl.pulsePhase) * 0.14 : 1;
+        const d = rpx * 1.9;
+        ctx.globalAlpha = Math.min(0.5, cl.coreAlpha * 0.5 * pulse);
+        ctx.drawImage(coreSprite, sx - d / 2, sy - d / 2, d, d);
+      }
+
+      // 2. The particle population — this is what makes the ribbon read thick
+      for (let i = 0; i < starCount; i++) {
+        const p = stars[i];
+        const pu = wrap(p.u + drift);
+        const sy = pu * docHeight - scrollY + p.ly * hw;
+        if (sy < -30 || sy > height + 30) continue;
+
+        const wobble = animate
+          ? Math.sin(now * p.driftFreq + p.driftPhase) * p.driftAmp
+          : 0;
+        const sx = spineAt(pu) * width + p.lx * hw + waveAt(pu) + wobble;
+        if (sx < -40 || sx > width + 40) continue;
+
+        let fade = 1;
+        if (pu < 0.015) fade = pu / 0.015;
+        else if (pu > 0.985) fade = Math.max(0, (1 - pu) / 0.015);
+
+        const tw = animate ? 0.8 + Math.sin(now * p.twSpeed + p.twPhase) * 0.2 : 1;
+        const a = Math.min(0.95, p.alpha * fade * tw);
+        if (a <= 0.012) continue;
+
+        const d = p.size * 5.2;
+        ctx.globalAlpha = a;
+        ctx.drawImage(sprites[p.colorIdx], sx - d / 2, sy - d / 2, d, d);
+
+        // Diffraction glint on the handful of brightest members
+        if (p.glint && a > 0.4) {
+          const len = p.size * 6.5;
+          ctx.globalAlpha = a * 0.34;
+          ctx.strokeStyle = "rgba(255,238,190,1)";
+          ctx.lineWidth = 0.7;
+          ctx.beginPath();
+          ctx.moveTo(sx - len, sy);
+          ctx.lineTo(sx + len, sy);
+          ctx.moveTo(sx, sy - len);
+          ctx.lineTo(sx, sy + len);
+          ctx.stroke();
+        }
+      }
+
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+    };
 
     if (reduceMotion) {
-      ctx.clearRect(0, 0, width, height);
-      const streamHalfWidth = isMobile ? 70 : 120;
-      for (let i = 0; i < particleCount; i++) {
-        const p = particles[i];
-        const screenY = p.u * docHeight - scrollY;
-        if (screenY < -30 || screenY > height + 30) continue;
-
-        const spineX = getSpineX(p.u) * width;
-        const screenX = spineX + p.lateral * streamHalfWidth;
-
-        ctx.beginPath();
-        ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = `${GOLD_COLORS[p.colorIdx]}${p.baseAlpha.toFixed(2)})`;
-        ctx.fill();
-      }
+      drawFrame(0, false);
+      const onStaticScroll = () => drawFrame(0, false);
+      window.addEventListener("scroll", onStaticScroll, { passive: true });
+      window.addEventListener("resize", onStaticScroll, { passive: true });
       return () => {
-        window.removeEventListener("resize", onResize);
-        window.removeEventListener("scroll", onScroll);
-        document.removeEventListener("visibilitychange", onVisibilityChange);
-        io.disconnect();
+        window.removeEventListener("scroll", onStaticScroll);
+        window.removeEventListener("resize", onStaticScroll);
+        cleanup();
       };
     }
 
@@ -201,93 +383,17 @@ export function GoldParticleStream() {
       lastTime = now;
 
       if (isVisible && isTabActive && width > 0 && height > 0) {
-        ctx.clearRect(0, 0, width, height);
-
-        // Slow organic wave undulation along the celestial stream
-        const waveTime1 = now * 0.00032;
-        const waveTime2 = now * 0.00018;
-        const streamHalfWidth = isMobile ? 75 : 125;
-
-        for (let i = 0; i < particleCount; i++) {
-          const p = particles[i];
-
-          // Advance downward drift
-          p.u += p.speed * (dt / 16.67);
-          if (p.u > 1.0) p.u -= 1.0;
-
-          const screenY = p.u * docHeight - scrollY;
-
-          // Frustum culling: render only particles in visible viewport
-          if (screenY < -40 || screenY > height + 40) continue;
-
-          // Spline position
-          const baseNormX = getSpineX(p.u);
-
-          // Harmonic wave undulation
-          const waveOffset =
-            Math.sin(p.u * 8 + waveTime1) * 22 +
-            Math.cos(p.u * 14 - waveTime2) * 14;
-
-          // Individual organic micro-wander
-          const driftOffset =
-            Math.sin(now * p.driftFreq + p.driftPhase) * p.driftAmp;
-
-          const screenX =
-            baseNormX * width +
-            p.lateral * streamHalfWidth +
-            waveOffset +
-            driftOffset;
-
-          // Soft edge fade at very top and bottom of the page
-          let edgeFade = 1.0;
-          if (p.u < 0.02) edgeFade = p.u / 0.02;
-          else if (p.u > 0.95) edgeFade = Math.max(0, (1.0 - p.u) / 0.05);
-
-          // Subtle twinkle
-          const twinkle =
-            0.78 + Math.sin(now * p.twinkleSpeed + p.twinklePhase) * 0.22;
-
-          // Proximity boost near Hero Globe zone (u between 0.03 and 0.12)
-          let heroBoost = 1.0;
-          if (p.u >= 0.03 && p.u <= 0.12) {
-            const dist = Math.abs(p.u - 0.075) / 0.045;
-            heroBoost = 1.0 + (1.0 - Math.min(1, dist)) * 0.22;
-          }
-
-          const finalAlpha = Math.min(
-            0.65,
-            p.baseAlpha * edgeFade * twinkle * heroBoost
-          );
-
-          if (finalAlpha <= 0.01) continue;
-
-          // Crisp particle core
-          ctx.beginPath();
-          ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2);
-          ctx.fillStyle = `${GOLD_COLORS[p.colorIdx]}${finalAlpha.toFixed(3)})`;
-          ctx.fill();
-
-          // Soft delicate bloom for larger highlight particles
-          if (p.size > 1.4 && finalAlpha > 0.25) {
-            ctx.beginPath();
-            ctx.arc(screenX, screenY, p.size * 2.2, 0, Math.PI * 2);
-            ctx.fillStyle = `${GOLD_COLORS[p.colorIdx]}${(finalAlpha * 0.2).toFixed(3)})`;
-            ctx.fill();
-          }
-        }
+        drift += 0.0000042 * (dt / 16.67);
+        if (drift >= 1) drift -= 1;
+        drawFrame(now, true);
       }
-
       rafId = requestAnimationFrame(render);
     };
-
     rafId = requestAnimationFrame(render);
 
     return () => {
       cancelAnimationFrame(rafId);
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("scroll", onScroll);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      io.disconnect();
+      cleanup();
     };
   }, []);
 

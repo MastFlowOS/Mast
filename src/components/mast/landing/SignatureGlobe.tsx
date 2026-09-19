@@ -14,7 +14,7 @@ const TILT = 0.409;
 const BASE_SPEED = 0.024;
 // Visually substantial globe scale within the hero column, harmoniously proportioned
 // with the antique bronze/gold stand finials and pedestal base
-const SPHERE_FRACTION = 0.29;
+const SPHERE_FRACTION = 0.33;
 const PAN_STRENGTH = 0.35;
 
 // Directional celestial light vector (subtle lunar / solar grazing angle)

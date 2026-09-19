@@ -9,6 +9,24 @@ interface GlobeStandProps {
   tiltAngleDeg?: number;
 }
 
+const DEG = Math.PI / 180;
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const f = (n: number) => n.toFixed(2);
+
+/**
+ * Antique desk-globe cradle, modelled directly on the reference photograph:
+ *
+ *   - graduated meridian band entering at the NORTH pin, wrapping the RIGHT
+ *     hemisphere, sweeping UNDER the sphere and terminating in a rounded knob
+ *     at the lower LEFT (same side/orientation as the reference — not mirrored)
+ *   - turned baluster column with beaded collars
+ *   - wide stepped pedestal with a domed top plate and heavy rolled foot
+ *
+ * Material: polished premium gold / antique bronze with a mottled rust-patina
+ * filter and fine micro-sparkle grain so it reads as a real cast-metal object.
+ * The whole assembly is a stationary layer — only the sphere inside it rotates.
+ */
 export function GlobeStand({
   width,
   height,
@@ -17,75 +35,119 @@ export function GlobeStand({
   r,
   tiltAngleDeg = 10.5,
 }: GlobeStandProps) {
-  const idPrefix = useId().replace(/:/g, "_");
+  const uid = useId().replace(/:/g, "_");
 
   if (width <= 0 || height <= 0 || r <= 0) return null;
 
-  const tiltRad = (tiltAngleDeg * Math.PI) / 180;
-  const sinTilt = Math.sin(tiltRad);
-  const cosTilt = Math.cos(tiltRad);
+  const tilt = tiltAngleDeg * DEG;
 
-  // Meridian ring radius: generous clearance so the blue globe sits comfortably INSIDE
-  const ringRadius = r * 1.22;
-  const ringThickness = Math.max(9, Math.min(14, r * 0.085));
+  /* ── Meridian band geometry ───────────────────────────────────────────── */
+  const band = clamp(r * 0.096, 9, 20);
+  const Rc = r * 1.112; // centreline radius — tight clearance, as in the photo
+  const Ro = Rc + band / 2;
+  const Ri = Rc - band / 2;
 
-  // Outer and inner edges of the thick meridian ring
-  const R_outer = ringRadius + ringThickness / 2;
-  const R_inner = ringRadius - ringThickness / 2;
+  const px = (R: number, a: number) => cx + R * Math.cos(a);
+  const py = (R: number, a: number) => cy + R * Math.sin(a);
 
-  // North & South pole positions on the ring
-  const N_outer_x = cx + R_outer * sinTilt;
-  const N_outer_y = cy - R_outer * cosTilt;
-  const S_outer_x = cx - R_outer * sinTilt;
-  const S_outer_y = cy + R_outer * cosTilt;
+  const aN = -90 * DEG + tilt; // north pole / axis pin
+  const aS = 90 * DEG + tilt; // south pole bearing
+  const aEnd = 154 * DEG; // rounded terminal knob, lower LEFT
 
-  const N_inner_x = cx + R_inner * sinTilt;
-  const N_inner_y = cy - R_inner * cosTilt;
-  const S_inner_x = cx - R_inner * sinTilt;
-  const S_inner_y = cy + R_inner * cosTilt;
+  const arcSpan = aEnd - aN; // ~233° — right side + under the sphere
+  const largeArc = arcSpan > Math.PI ? 1 : 0;
 
-  // North finial geometry
-  const northFinialBaseX = cx + (R_outer + 1) * sinTilt;
-  const northFinialBaseY = cy - (R_outer + 1) * cosTilt;
-  const northFinialTipX = cx + (R_outer + 18) * sinTilt;
-  const northFinialTipY = cy - (R_outer + 18) * cosTilt;
+  const bandPath =
+    `M ${f(px(Ro, aN))} ${f(py(Ro, aN))} ` +
+    `A ${f(Ro)} ${f(Ro)} 0 ${largeArc} 1 ${f(px(Ro, aEnd))} ${f(py(Ro, aEnd))} ` +
+    `L ${f(px(Ri, aEnd))} ${f(py(Ri, aEnd))} ` +
+    `A ${f(Ri)} ${f(Ri)} 0 ${largeArc} 0 ${f(px(Ri, aN))} ${f(py(Ri, aN))} Z`;
 
-  // South pivot hub geometry
-  const southPivotHubX = cx - (R_outer + 2) * sinTilt;
-  const southPivotHubY = cy + (R_outer + 2) * cosTilt;
+  const arcStroke = (R: number) =>
+    `M ${f(px(R, aN))} ${f(py(R, aN))} ` +
+    `A ${f(R)} ${f(R)} 0 ${largeArc} 1 ${f(px(R, aEnd))} ${f(py(R, aEnd))}`;
 
-  // Cradle arm attachment point on lower meridian arc (angle ~148 degrees)
-  const cradleAngle = 148 * (Math.PI / 180);
-  const cradleAttachOuterX = cx + (R_outer - 1) * Math.cos(cradleAngle);
-  const cradleAttachOuterY = cy + (R_outer - 1) * Math.sin(cradleAngle);
-
-  // Central mounting piece and vertical stem
-  const mountY = cy + r * 1.34;
-  const stemHeight = Math.max(28, Math.min(42, r * 0.28));
-  const stemBottomY = mountY + stemHeight;
-  const stemWidth = Math.max(14, Math.min(20, r * 0.12));
-
-  // Base dimensions: large weighted pedestal firmly anchoring the composition
-  const baseWidth = Math.max(140, Math.min(195, r * 1.25));
-  const baseHalfW = baseWidth / 2;
-  const midTierHalfW = baseHalfW * 0.72;
-  const topTierHalfW = baseHalfW * 0.44;
-
-  const baseTopY = stemBottomY;
-  const baseHeight = 22;
-  const baseBottomY = baseTopY + baseHeight;
-
-  // Astronomical degree notches along the meridian ring
-  const ticks: { x1: number; y1: number; x2: number; y2: number }[] = [];
-  for (let deg = -75; deg <= 75; deg += 15) {
-    const rad = (deg * Math.PI) / 180 - Math.PI / 2 + tiltRad;
+  /* Graduation notches engraved across the band */
+  const ticks: { x1: number; y1: number; x2: number; y2: number; w: number }[] = [];
+  for (let d = -76; d <= 152; d += 4) {
+    const a = d * DEG;
+    if (a < aN + 0.06 || a > aEnd - 0.06) continue;
+    const major = Math.round(d) % 20 === 0;
+    const inner = Ri + band * 0.1;
+    const outer = inner + band * (major ? 0.62 : 0.38);
     ticks.push({
-      x1: cx + (R_inner + 1.5) * Math.cos(rad),
-      y1: cy + (R_inner + 1.5) * Math.sin(rad),
-      x2: cx + (R_outer - 1.5) * Math.cos(rad),
-      y2: cy + (R_outer - 1.5) * Math.sin(rad),
+      x1: px(inner, a),
+      y1: py(inner, a),
+      x2: px(outer, a),
+      y2: py(outer, a),
+      w: major ? 1.5 : 0.9,
     });
   }
+
+  /* ── Axis pin / finial (north) ────────────────────────────────────────── */
+  const pinLen = clamp(r * 0.155, 16, 40);
+  const pinR = band * 0.42;
+  const pinBaseX = px(Rc - band * 0.2, aN);
+  const pinBaseY = py(Rc - band * 0.2, aN);
+  const pinTipX = px(Ro + pinLen, aN);
+  const pinTipY = py(Ro + pinLen, aN);
+  const finialX = px(Ro + pinLen + band * 0.28, aN);
+  const finialY = py(Ro + pinLen + band * 0.28, aN);
+
+  /* ── Vertical layout: collar → column → pedestal ──────────────────────── */
+  const arcBottomY = cy + Ro;
+  const collarY = arcBottomY - band * 0.3;
+
+  const bottomLimit = height - Math.max(2, height * 0.01);
+  const idealStem = r * 0.3;
+  const idealBase = r * 0.42;
+  const avail = Math.max(30, bottomLimit - (collarY + band * 0.8));
+  const fit = clamp(avail / (idealStem + idealBase), 0.45, 1);
+
+  const stemH = Math.max(16, idealStem * fit);
+  const baseH = Math.max(20, idealBase * fit);
+
+  const stemTopY = collarY + band * 0.75;
+  const baseTopY = stemTopY + stemH;
+
+  const bw = Math.min(r * 0.62, width * 0.3); // pedestal half-width
+  const persp = 0.3; // elliptical foreshortening of the round base
+
+  const stemW = clamp(r * 0.085, 8, 18); // half-width of the column waist
+
+  /* Stacked pedestal tiers (top plate → skirt → rolled foot) */
+  const t1rx = bw * 0.93;
+  const t2rx = bw * 0.82;
+  const t3rx = bw;
+  const t1h = baseH * 0.2;
+  const t2h = baseH * 0.32;
+  const t3h = baseH * 0.36;
+  const t1y = baseTopY;
+  const t2y = t1y + t1h;
+  const t3y = t2y + t2h;
+  const baseBottomY = t3y + t3h;
+
+  /** Side wall of a foreshortened cylinder tier. */
+  const wall = (rx: number, topY: number, h: number) => {
+    const ry = rx * persp;
+    return (
+      `M ${f(cx - rx)} ${f(topY)} L ${f(cx - rx)} ${f(topY + h)} ` +
+      `A ${f(rx)} ${f(ry)} 0 0 0 ${f(cx + rx)} ${f(topY + h)} ` +
+      `L ${f(cx + rx)} ${f(topY)} ` +
+      `A ${f(rx)} ${f(ry)} 0 0 1 ${f(cx - rx)} ${f(topY)} Z`
+    );
+  };
+
+  /* Turned baluster column profile */
+  const wNeck = stemW * 0.62;
+  const wBelly = stemW * 1.15;
+  const columnPath =
+    `M ${f(cx - wNeck)} ${f(stemTopY)} ` +
+    `C ${f(cx - wNeck * 1.05)} ${f(stemTopY + stemH * 0.2)}, ${f(cx - wBelly)} ${f(stemTopY + stemH * 0.3)}, ${f(cx - wBelly)} ${f(stemTopY + stemH * 0.5)} ` +
+    `C ${f(cx - wBelly)} ${f(stemTopY + stemH * 0.7)}, ${f(cx - stemW * 0.8)} ${f(stemTopY + stemH * 0.82)}, ${f(cx - stemW * 1.02)} ${f(stemTopY + stemH)} ` +
+    `L ${f(cx + stemW * 1.02)} ${f(stemTopY + stemH)} ` +
+    `C ${f(cx + stemW * 0.8)} ${f(stemTopY + stemH * 0.82)}, ${f(cx + wBelly)} ${f(stemTopY + stemH * 0.7)}, ${f(cx + wBelly)} ${f(stemTopY + stemH * 0.5)} ` +
+    `C ${f(cx + wBelly)} ${f(stemTopY + stemH * 0.3)}, ${f(cx + wNeck * 1.05)} ${f(stemTopY + stemH * 0.2)}, ${f(cx + wNeck)} ${f(stemTopY)} Z`;
 
   return (
     <svg
@@ -95,351 +157,393 @@ export function GlobeStand({
       aria-hidden="true"
     >
       <defs>
-        {/* Rich antique bronze gradient for the heavy meridian ring */}
+        {/* Polished gold across the meridian band — grazing light from upper left */}
         <linearGradient
-          id={`${idPrefix}-bronzeRing`}
-          x1={N_outer_x}
-          y1={N_outer_y}
-          x2={S_outer_x}
-          y2={S_outer_y}
+          id={`${uid}-bandMetal`}
+          x1={cx - Ro}
+          y1={cy - Ro}
+          x2={cx + Ro}
+          y2={cy + Ro}
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0%" stopColor="#3d2712" />
-          <stop offset="20%" stopColor="#694821" />
-          <stop offset="42%" stopColor="#a8803b" />
-          <stop offset="55%" stopColor="#dfbf6c" />
-          <stop offset="70%" stopColor="#966e30" />
-          <stop offset="90%" stopColor="#4f3316" />
-          <stop offset="100%" stopColor="#2c1a0c" />
+          <stop offset="0%" stopColor="#f0d492" />
+          <stop offset="12%" stopColor="#c69a45" />
+          <stop offset="26%" stopColor="#6d4820" />
+          <stop offset="40%" stopColor="#b98a3c" />
+          <stop offset="52%" stopColor="#f6e2a6" />
+          <stop offset="63%" stopColor="#a5762f" />
+          <stop offset="78%" stopColor="#4a2f13" />
+          <stop offset="90%" stopColor="#8a6128" />
+          <stop offset="100%" stopColor="#2a1a0b" />
         </linearGradient>
 
-        {/* Specular golden edge highlights */}
+        {/* Specular rim catching the light along the outer edge of the band */}
         <linearGradient
-          id={`${idPrefix}-goldBevel`}
-          x1={N_outer_x}
-          y1={N_outer_y}
-          x2={S_outer_x}
-          y2={S_outer_y}
+          id={`${uid}-rimLight`}
+          x1={cx}
+          y1={cy - Ro}
+          x2={cx + Ro}
+          y2={cy + Ro}
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0%" stopColor="rgba(247, 223, 148, 0.4)" />
-          <stop offset="35%" stopColor="rgba(255, 235, 175, 0.95)" />
-          <stop offset="65%" stopColor="rgba(215, 178, 102, 0.8)" />
-          <stop offset="100%" stopColor="rgba(140, 98, 42, 0.3)" />
+          <stop offset="0%" stopColor="rgba(255,247,214,0.95)" />
+          <stop offset="34%" stopColor="rgba(248,224,158,0.72)" />
+          <stop offset="70%" stopColor="rgba(196,150,74,0.4)" />
+          <stop offset="100%" stopColor="rgba(96,64,26,0.15)" />
         </linearGradient>
 
-        {/* Heavy curved cantilever arm gradient */}
+        {/* Cylindrical shading for column + pedestal walls */}
         <linearGradient
-          id={`${idPrefix}-cradleArm`}
-          x1={cradleAttachOuterX}
-          y1={cradleAttachOuterY}
-          x2={cx}
-          y2={mountY}
+          id={`${uid}-turnedMetal`}
+          x1={cx - bw}
+          y1={0}
+          x2={cx + bw}
+          y2={0}
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0%" stopColor="#54391b" />
-          <stop offset="35%" stopColor="#967033" />
-          <stop offset="55%" stopColor="#d8b663" />
-          <stop offset="80%" stopColor="#7a5525" />
-          <stop offset="100%" stopColor="#3d2712" />
+          <stop offset="0%" stopColor="#1d1208" />
+          <stop offset="9%" stopColor="#4a3014" />
+          <stop offset="22%" stopColor="#a87b33" />
+          <stop offset="31%" stopColor="#f5e0a4" />
+          <stop offset="40%" stopColor="#c79a47" />
+          <stop offset="55%" stopColor="#7c5525" />
+          <stop offset="68%" stopColor="#5a3c19" />
+          <stop offset="82%" stopColor="#3a2512" />
+          <stop offset="100%" stopColor="#150d05" />
         </linearGradient>
 
-        {/* Turned column stem cylindrical shading */}
+        {/* Column is narrower — its own tighter cylindrical ramp */}
         <linearGradient
-          id={`${idPrefix}-stemPillar`}
-          x1={cx - stemWidth / 2}
-          y1={mountY}
-          x2={cx + stemWidth / 2}
-          y2={mountY}
+          id={`${uid}-columnMetal`}
+          x1={cx - stemW * 1.2}
+          y1={0}
+          x2={cx + stemW * 1.2}
+          y2={0}
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0%" stopColor="#2a1b0c" />
-          <stop offset="25%" stopColor="#5a3d1b" />
-          <stop offset="50%" stopColor="#c7a14e" />
-          <stop offset="75%" stopColor="#6e4a22" />
-          <stop offset="100%" stopColor="#25160a" />
+          <stop offset="0%" stopColor="#1a1007" />
+          <stop offset="14%" stopColor="#573a18" />
+          <stop offset="30%" stopColor="#bc8d3c" />
+          <stop offset="40%" stopColor="#f7e6b2" />
+          <stop offset="54%" stopColor="#ab7c32" />
+          <stop offset="74%" stopColor="#4e3316" />
+          <stop offset="100%" stopColor="#150d05" />
         </linearGradient>
 
-        {/* Large weighted stepped base tiered shading */}
-        <linearGradient
-          id={`${idPrefix}-steppedBase`}
-          x1={cx - baseHalfW}
-          y1={baseTopY}
-          x2={cx + baseHalfW}
-          y2={baseTopY}
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop offset="0%" stopColor="#24170a" />
-          <stop offset="18%" stopColor="#4d3417" />
-          <stop offset="38%" stopColor="#87622b" />
-          <stop offset="50%" stopColor="#cfab59" />
-          <stop offset="65%" stopColor="#7d5926" />
-          <stop offset="88%" stopColor="#432c13" />
-          <stop offset="100%" stopColor="#1e1207" />
-        </linearGradient>
-
-        {/* Deep ambient contact shadow underneath the base */}
+        {/* Lit top faces of the pedestal discs */}
         <radialGradient
-          id={`${idPrefix}-baseShadow`}
-          cx="50%"
-          cy="50%"
-          r="50%"
+          id={`${uid}-topFace`}
+          cx="38%"
+          cy="30%"
+          r="78%"
         >
-          <stop offset="0%" stopColor="rgba(0, 0, 0, 0.75)" />
-          <stop offset="50%" stopColor="rgba(0, 0, 0, 0.45)" />
-          <stop offset="80%" stopColor="rgba(0, 0, 0, 0.15)" />
-          <stop offset="100%" stopColor="rgba(0, 0, 0, 0)" />
+          <stop offset="0%" stopColor="#fbf0c6" />
+          <stop offset="28%" stopColor="#dcb765" />
+          <stop offset="62%" stopColor="#9a7130" />
+          <stop offset="88%" stopColor="#4e3416" />
+          <stop offset="100%" stopColor="#2a1b0c" />
         </radialGradient>
+
+        {/* Small parts: pins, beads, pivots */}
+        <linearGradient id={`${uid}-bead`} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#fff3cc" />
+          <stop offset="34%" stopColor="#e0bb68" />
+          <stop offset="68%" stopColor="#8d6429" />
+          <stop offset="100%" stopColor="#2c1b0b" />
+        </linearGradient>
+
+        <linearGradient
+          id={`${uid}-pinMetal`}
+          x1={pinBaseX - pinR}
+          y1={pinBaseY}
+          x2={pinBaseX + pinR}
+          y2={pinBaseY}
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0%" stopColor="#2a1a0a" />
+          <stop offset="26%" stopColor="#a87b33" />
+          <stop offset="46%" stopColor="#f8e9ba" />
+          <stop offset="70%" stopColor="#9c7130" />
+          <stop offset="100%" stopColor="#231508" />
+        </linearGradient>
+
+        <radialGradient id={`${uid}-groundShadow`} cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="rgba(0,0,0,0.8)" />
+          <stop offset="48%" stopColor="rgba(0,0,0,0.44)" />
+          <stop offset="78%" stopColor="rgba(0,0,0,0.14)" />
+          <stop offset="100%" stopColor="rgba(0,0,0,0)" />
+        </radialGradient>
+
+        {/* Rust patina + micro-sparkle grain: makes the cast metal read as real */}
+        <filter
+          id={`${uid}-patina`}
+          x="-12%"
+          y="-12%"
+          width="124%"
+          height="124%"
+          colorInterpolationFilters="sRGB"
+        >
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="0.055 0.09"
+            numOctaves="4"
+            seed="13"
+            result="corrosion"
+          />
+          <feColorMatrix
+            in="corrosion"
+            type="matrix"
+            values="0 0 0 0 0.42
+                    0 0 0 0 0.21
+                    0 0 0 0 0.07
+                    0.85 0.45 0 0 -0.42"
+            result="rustTint"
+          />
+          <feComposite in="rustTint" in2="SourceAlpha" operator="in" result="rustMask" />
+          <feBlend in="SourceGraphic" in2="rustMask" mode="multiply" result="corroded" />
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="0.9"
+            numOctaves="2"
+            seed="41"
+            result="grain"
+          />
+          <feColorMatrix
+            in="grain"
+            type="matrix"
+            values="0 0 0 0 1
+                    0 0 0 0 0.9
+                    0 0 0 0 0.62
+                    0.34 0.26 0 0 -0.34"
+            result="sparkleTint"
+          />
+          <feComposite in="sparkleTint" in2="SourceAlpha" operator="in" result="sparkleMask" />
+          <feBlend in="corroded" in2="sparkleMask" mode="screen" />
+        </filter>
       </defs>
 
-      {/* 1. Deep ambient ground contact shadow beneath the wide circular base */}
+      {/* Contact shadow on the desk surface */}
       <ellipse
         cx={cx}
-        cy={baseBottomY + 3}
-        rx={baseHalfW * 1.2}
-        ry={7}
-        fill={`url(#${idPrefix}-baseShadow)`}
+        cy={baseBottomY + 1}
+        rx={bw * 1.28}
+        ry={Math.max(5, bw * 0.2)}
+        fill={`url(#${uid}-groundShadow)`}
       />
 
-      {/* 2. Heavy Stepped Circular Pedestal Base */}
-      {/* Tier 1: Upper collar */}
-      <rect
-        x={cx - topTierHalfW}
-        y={baseTopY}
-        width={topTierHalfW * 2}
-        height="5"
-        rx="2"
-        fill={`url(#${idPrefix}-steppedBase)`}
-        stroke="#1a1006"
-        strokeWidth="0.8"
-      />
-      {/* Golden bevel highlight on upper collar */}
-      <line
-        x1={cx - topTierHalfW + 2}
-        y1={baseTopY + 1}
-        x2={cx + topTierHalfW - 2}
-        y2={baseTopY + 1}
-        stroke="rgba(247, 223, 148, 0.7)"
-        strokeWidth="1"
-      />
+      <g filter={`url(#${uid}-patina)`}>
+        {/* ── Pedestal: rolled foot → skirt → domed top plate ─────────────── */}
+        <path d={wall(t3rx, t3y, t3h)} fill={`url(#${uid}-turnedMetal)`} stroke="#120b04" strokeWidth="0.9" />
+        <ellipse cx={cx} cy={t3y} rx={t3rx} ry={t3rx * persp} fill={`url(#${uid}-topFace)`} />
 
-      {/* Tier 2: Middle stepped tier */}
-      <rect
-        x={cx - midTierHalfW}
-        y={baseTopY + 5}
-        width={midTierHalfW * 2}
-        height="6"
-        rx="2.5"
-        fill={`url(#${idPrefix}-steppedBase)`}
-        stroke="#1a1006"
-        strokeWidth="0.8"
-      />
-      <line
-        x1={cx - midTierHalfW + 3}
-        y1={baseTopY + 6}
-        x2={cx + midTierHalfW - 3}
-        y2={baseTopY + 6}
-        stroke="rgba(247, 223, 148, 0.65)"
-        strokeWidth="1"
-      />
+        <path d={wall(t2rx, t2y, t2h)} fill={`url(#${uid}-turnedMetal)`} stroke="#160e05" strokeWidth="0.9" />
+        <ellipse cx={cx} cy={t2y} rx={t2rx} ry={t2rx * persp} fill={`url(#${uid}-topFace)`} />
 
-      {/* Tier 3: Main wide weighted bottom plinth */}
-      <rect
-        x={cx - baseHalfW}
-        y={baseTopY + 11}
-        width={baseWidth}
-        height="11"
-        rx="3.5"
-        fill={`url(#${idPrefix}-steppedBase)`}
-        stroke="#120b04"
-        strokeWidth="1"
-      />
-      {/* Broad metallic edge highlight across base plinth */}
-      <line
-        x1={cx - baseHalfW + 4}
-        y1={baseTopY + 12.5}
-        x2={cx + baseHalfW - 4}
-        y2={baseTopY + 12.5}
-        stroke="rgba(255, 235, 175, 0.85)"
-        strokeWidth="1.2"
-      />
+        <path d={wall(t1rx, t1y, t1h)} fill={`url(#${uid}-turnedMetal)`} stroke="#1a1006" strokeWidth="0.9" />
+        <ellipse cx={cx} cy={t1y} rx={t1rx} ry={t1rx * persp} fill={`url(#${uid}-topFace)`} />
 
-      {/* 3. Substantial Vertical Stem / Pedestal Column */}
-      <rect
-        x={cx - stemWidth / 2}
-        y={mountY + 7}
-        width={stemWidth}
-        height={stemHeight - 7}
-        rx="2"
-        fill={`url(#${idPrefix}-stemPillar)`}
-        stroke="#1e1307"
-        strokeWidth="0.8"
-      />
-      {/* Turned decorative ring bands on stem */}
-      <rect
-        x={cx - stemWidth * 0.62}
-        y={mountY + 14}
-        width={stemWidth * 1.24}
-        height="4"
-        rx="1.5"
-        fill="#c7a14e"
-        stroke="#3a2510"
-        strokeWidth="0.8"
-      />
-      <rect
-        x={cx - stemWidth * 0.58}
-        y={baseTopY - 4}
-        width={stemWidth * 1.16}
-        height="4"
-        rx="1.5"
-        fill="#a8803b"
-        stroke="#2c1b0c"
-        strokeWidth="0.8"
-      />
+        {/* Broad polished reflections raking across each tier */}
+        <ellipse
+          cx={cx - t1rx * 0.3}
+          cy={t1y - t1rx * persp * 0.28}
+          rx={t1rx * 0.46}
+          ry={t1rx * persp * 0.34}
+          fill="rgba(255,244,206,0.34)"
+        />
+        <path
+          d={`M ${f(cx - t2rx * 0.72)} ${f(t2y + t2h * 0.48)} Q ${f(cx - t2rx * 0.1)} ${f(t2y + t2h * 0.86)}, ${f(cx + t2rx * 0.48)} ${f(t2y + t2h * 0.5)}`}
+          fill="none"
+          stroke="rgba(255,240,196,0.5)"
+          strokeWidth={Math.max(1.6, t2h * 0.16)}
+          strokeLinecap="round"
+        />
+        <path
+          d={`M ${f(cx - t3rx * 0.78)} ${f(t3y + t3h * 0.5)} Q ${f(cx - t3rx * 0.05)} ${f(t3y + t3h * 0.92)}, ${f(cx + t3rx * 0.62)} ${f(t3y + t3h * 0.52)}`}
+          fill="none"
+          stroke="rgba(255,236,182,0.42)"
+          strokeWidth={Math.max(1.6, t3h * 0.15)}
+          strokeLinecap="round"
+        />
+        {/* Crisp gold bevel on every tier lip */}
+        <path
+          d={`M ${f(cx - t1rx)} ${f(t1y)} A ${f(t1rx)} ${f(t1rx * persp)} 0 0 0 ${f(cx + t1rx)} ${f(t1y)}`}
+          fill="none"
+          stroke="rgba(255,246,214,0.75)"
+          strokeWidth="1.1"
+        />
+        <path
+          d={`M ${f(cx - t2rx)} ${f(t2y)} A ${f(t2rx)} ${f(t2rx * persp)} 0 0 0 ${f(cx + t2rx)} ${f(t2y)}`}
+          fill="none"
+          stroke="rgba(255,240,198,0.7)"
+          strokeWidth="1.1"
+        />
+        <path
+          d={`M ${f(cx - t3rx)} ${f(t3y)} A ${f(t3rx)} ${f(t3rx * persp)} 0 0 0 ${f(cx + t3rx)} ${f(t3y)}`}
+          fill="none"
+          stroke="rgba(255,238,190,0.62)"
+          strokeWidth="1.2"
+        />
 
-      {/* 4. Heavy Central Mounting Collar / Swivel Piece */}
-      <rect
-        x={cx - stemWidth * 0.75}
-        y={mountY}
-        width={stemWidth * 1.5}
-        height="7.5"
-        rx="2"
-        fill={`url(#${idPrefix}-bronzeRing)`}
-        stroke="#24170a"
-        strokeWidth="0.9"
-      />
-      <circle
-        cx={cx}
-        cy={mountY + 3.75}
-        r="2"
-        fill="#fae392"
-      />
+        {/* ── Turned baluster column ──────────────────────────────────────── */}
+        <path d={columnPath} fill={`url(#${uid}-columnMetal)`} stroke="#1c1207" strokeWidth="0.9" />
+        {/* Beaded collars on the column */}
+        <ellipse
+          cx={cx}
+          cy={stemTopY + stemH * 0.5}
+          rx={stemW * 1.32}
+          ry={Math.max(2.4, stemH * 0.08)}
+          fill={`url(#${uid}-columnMetal)`}
+          stroke="#1c1207"
+          strokeWidth="0.8"
+        />
+        <ellipse
+          cx={cx}
+          cy={stemTopY + stemH * 0.9}
+          rx={stemW * 1.12}
+          ry={Math.max(2, stemH * 0.07)}
+          fill={`url(#${uid}-columnMetal)`}
+          stroke="#1c1207"
+          strokeWidth="0.8"
+        />
+        <path
+          d={`M ${f(cx - stemW * 0.42)} ${f(stemTopY + stemH * 0.08)} L ${f(cx - stemW * 0.5)} ${f(stemTopY + stemH * 0.92)}`}
+          stroke="rgba(255,243,206,0.6)"
+          strokeWidth={Math.max(1.2, stemW * 0.2)}
+          strokeLinecap="round"
+          fill="none"
+        />
 
-      {/* 5. Thick Curved Cantilever Cradle Arm */}
-      {/* Outer thick stroke forming the heavy arm body */}
-      <path
-        d={`M ${cradleAttachOuterX.toFixed(2)} ${cradleAttachOuterY.toFixed(2)} C ${(cradleAttachOuterX + 16).toFixed(2)} ${(cradleAttachOuterY + 34).toFixed(2)}, ${(cx - 32).toFixed(2)} ${(mountY - 6).toFixed(2)}, ${cx.toFixed(2)} ${mountY.toFixed(2)}`}
-        fill="none"
-        stroke={`url(#${idPrefix}-cradleArm)`}
-        strokeWidth="11"
-        strokeLinecap="round"
-      />
-      {/* Inner metallic highlight contour along the arm */}
-      <path
-        d={`M ${(cradleAttachOuterX + 1).toFixed(2)} ${(cradleAttachOuterY + 1).toFixed(2)} C ${(cradleAttachOuterX + 16).toFixed(2)} ${(cradleAttachOuterY + 32).toFixed(2)}, ${(cx - 30).toFixed(2)} ${(mountY - 6).toFixed(2)}, ${cx.toFixed(2)} ${mountY.toFixed(2)}`}
-        fill="none"
-        stroke={`url(#${idPrefix}-goldBevel)`}
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        opacity="0.9"
-      />
-
-      {/* 6. Substantial Outer Meridian Ring (Thick dimensional band around left hemisphere) */}
-      {/* Solid dimensional ring body */}
-      <path
-        d={`M ${N_outer_x.toFixed(2)} ${N_outer_y.toFixed(2)} A ${R_outer.toFixed(2)} ${R_outer.toFixed(2)} 0 0 0 ${S_outer_x.toFixed(2)} ${S_outer_y.toFixed(2)} L ${S_inner_x.toFixed(2)} ${S_inner_y.toFixed(2)} A ${R_inner.toFixed(2)} ${R_inner.toFixed(2)} 0 0 1 ${N_inner_x.toFixed(2)} ${N_inner_y.toFixed(2)} Z`}
-        fill={`url(#${idPrefix}-bronzeRing)`}
-        stroke="#1a1006"
-        strokeWidth="1"
-      />
-
-      {/* Outer edge gold highlight rim */}
-      <path
-        d={`M ${N_outer_x.toFixed(2)} ${N_outer_y.toFixed(2)} A ${R_outer.toFixed(2)} ${R_outer.toFixed(2)} 0 0 0 ${S_outer_x.toFixed(2)} ${S_outer_y.toFixed(2)}`}
-        fill="none"
-        stroke={`url(#${idPrefix}-goldBevel)`}
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-
-      {/* Inner edge gold highlight rim */}
-      <path
-        d={`M ${N_inner_x.toFixed(2)} ${N_inner_y.toFixed(2)} A ${R_inner.toFixed(2)} ${R_inner.toFixed(2)} 0 0 0 ${S_inner_x.toFixed(2)} ${S_inner_y.toFixed(2)}`}
-        fill="none"
-        stroke={`url(#${idPrefix}-goldBevel)`}
-        strokeWidth="1.2"
-        strokeLinecap="round"
-        opacity="0.85"
-      />
-
-      {/* Astronomical degree tick notches along the meridian */}
-      {ticks.map((t, i) => (
-        <line
-          key={i}
-          x1={t.x1.toFixed(2)}
-          y1={t.y1.toFixed(2)}
-          x2={t.x2.toFixed(2)}
-          y2={t.y2.toFixed(2)}
-          stroke="rgba(255, 235, 175, 0.65)"
+        {/* ── Mounting collar where the meridian meets the column ─────────── */}
+        <rect
+          x={cx - stemW * 1.5}
+          y={collarY}
+          width={stemW * 3}
+          height={band * 0.82}
+          rx={band * 0.3}
+          fill={`url(#${uid}-columnMetal)`}
+          stroke="#1a1006"
           strokeWidth="1"
         />
-      ))}
+        <rect
+          x={cx - stemW * 1.2}
+          y={collarY + band * 0.16}
+          width={stemW * 2.4}
+          height={Math.max(1.4, band * 0.16)}
+          rx={band * 0.08}
+          fill="rgba(255,243,206,0.55)"
+        />
 
-      {/* 7. Obvious North Pole Pivot Assembly */}
-      {/* Axial axle entering the globe north pole */}
-      <line
-        x1={(cx + (r * 0.95) * sinTilt).toFixed(2)}
-        y1={(cy - (r * 0.95) * cosTilt).toFixed(2)}
-        x2={N_outer_x.toFixed(2)}
-        y2={N_outer_y.toFixed(2)}
-        stroke="#5a3d1b"
-        strokeWidth="4"
-        strokeLinecap="round"
-      />
-      {/* Heavy bracket wrapping around the meridian ring */}
-      <circle
-        cx={(cx + ringRadius * sinTilt).toFixed(2)}
-        cy={(cy - ringRadius * cosTilt).toFixed(2)}
-        r="7.5"
-        fill={`url(#${idPrefix}-bronzeRing)`}
-        stroke="#1a1006"
-        strokeWidth="1"
-      />
-      {/* Turned brass finial pin and ornamental top bead */}
-      <line
-        x1={northFinialBaseX.toFixed(2)}
-        y1={northFinialBaseY.toFixed(2)}
-        x2={northFinialTipX.toFixed(2)}
-        y2={northFinialTipY.toFixed(2)}
-        stroke={`url(#${idPrefix}-bronzeRing)`}
-        strokeWidth="4.5"
-        strokeLinecap="round"
-      />
-      <circle
-        cx={northFinialTipX.toFixed(2)}
-        cy={northFinialTipY.toFixed(2)}
-        r="5.5"
-        fill="#dfbf6c"
-        stroke="#3d2712"
-        strokeWidth="1"
-      />
+        {/* ── Graduated meridian band (right hemisphere, wrapping under) ──── */}
+        <path d={bandPath} fill={`url(#${uid}-bandMetal)`} stroke="#160e05" strokeWidth="1.1" />
 
-      {/* 8. Obvious South Pole Pivot Assembly */}
-      {/* Axial axle entering the globe south pole */}
-      <line
-        x1={(cx - (r * 0.95) * sinTilt).toFixed(2)}
-        y1={(cy + (r * 0.95) * cosTilt).toFixed(2)}
-        x2={S_outer_x.toFixed(2)}
-        y2={S_outer_y.toFixed(2)}
-        stroke="#5a3d1b"
-        strokeWidth="4.5"
-        strokeLinecap="round"
-      />
-      {/* Heavy lower pivot bearing housing */}
-      <circle
-        cx={southPivotHubX.toFixed(2)}
-        cy={southPivotHubY.toFixed(2)}
-        r="8"
-        fill={`url(#${idPrefix}-bronzeRing)`}
-        stroke="#1a1006"
-        strokeWidth="1.2"
-      />
-      <circle
-        cx={southPivotHubX.toFixed(2)}
-        cy={southPivotHubY.toFixed(2)}
-        r="4"
-        fill="#c7a14e"
-      />
+        {/* engraved graduation notches */}
+        <g opacity="0.55">
+          {ticks.map((t, i) => (
+            <line
+              key={i}
+              x1={f(t.x1)}
+              y1={f(t.y1)}
+              x2={f(t.x2)}
+              y2={f(t.y2)}
+              stroke="#1b1107"
+              strokeWidth={t.w}
+              strokeLinecap="butt"
+            />
+          ))}
+        </g>
+
+        {/* polished bevels top and bottom of the band */}
+        <path
+          d={arcStroke(Ro - band * 0.1)}
+          fill="none"
+          stroke={`url(#${uid}-rimLight)`}
+          strokeWidth={Math.max(1.4, band * 0.16)}
+          strokeLinecap="round"
+        />
+        <path
+          d={arcStroke(Rc + band * 0.02)}
+          fill="none"
+          stroke="rgba(255,248,220,0.5)"
+          strokeWidth={Math.max(1, band * 0.09)}
+          strokeLinecap="round"
+        />
+        <path
+          d={arcStroke(Ri + band * 0.08)}
+          fill="none"
+          stroke="rgba(52,33,14,0.75)"
+          strokeWidth={Math.max(1, band * 0.1)}
+          strokeLinecap="round"
+        />
+
+        {/* rounded terminal knob at the lower-left end of the meridian */}
+        <circle
+          cx={f(px(Rc, aEnd))}
+          cy={f(py(Rc, aEnd))}
+          r={band * 0.68}
+          fill={`url(#${uid}-bead)`}
+          stroke="#170f06"
+          strokeWidth="1"
+        />
+        <circle
+          cx={f(px(Rc, aEnd) - band * 0.16)}
+          cy={f(py(Rc, aEnd) - band * 0.2)}
+          r={band * 0.22}
+          fill="rgba(255,248,220,0.75)"
+        />
+
+        {/* ── South pole bearing ──────────────────────────────────────────── */}
+        <line
+          x1={f(px(r * 0.99, aS))}
+          y1={f(py(r * 0.99, aS))}
+          x2={f(px(Rc, aS))}
+          y2={f(py(Rc, aS))}
+          stroke="#8a6128"
+          strokeWidth={band * 0.3}
+          strokeLinecap="round"
+        />
+        <circle
+          cx={f(px(Rc, aS))}
+          cy={f(py(Rc, aS))}
+          r={band * 0.55}
+          fill={`url(#${uid}-bead)`}
+          stroke="#170f06"
+          strokeWidth="1"
+        />
+
+        {/* ── North axis pin + finial ─────────────────────────────────────── */}
+        <line
+          x1={f(pinBaseX)}
+          y1={f(pinBaseY)}
+          x2={f(pinTipX)}
+          y2={f(pinTipY)}
+          stroke={`url(#${uid}-pinMetal)`}
+          strokeWidth={pinR * 2}
+          strokeLinecap="round"
+        />
+        <line
+          x1={f(pinBaseX)}
+          y1={f(pinBaseY)}
+          x2={f(pinTipX)}
+          y2={f(pinTipY)}
+          stroke="rgba(255,246,214,0.6)"
+          strokeWidth={Math.max(1, pinR * 0.5)}
+          strokeLinecap="round"
+        />
+        <circle
+          cx={f(finialX)}
+          cy={f(finialY)}
+          r={band * 0.6}
+          fill={`url(#${uid}-bead)`}
+          stroke="#170f06"
+          strokeWidth="1"
+        />
+        <circle
+          cx={f(finialX - band * 0.16)}
+          cy={f(finialY - band * 0.18)}
+          r={band * 0.2}
+          fill="rgba(255,250,228,0.8)"
+        />
+      </g>
     </svg>
   );
 }

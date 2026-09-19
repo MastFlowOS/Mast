@@ -1,25 +1,25 @@
 import { useEffect, useRef } from "react";
 
 type Particle = {
-  u: number; // Normalized vertical position [0, 1] along document height
-  lateralOffset: number; // Normalized lateral offset from stream spine [-1, 1]
-  speed: number; // Downward drift speed along u
-  wanderAmp: number; // Amplitude of organic lateral drift
-  wanderFreq: number; // Frequency of lateral drift
-  wanderPhase: number; // Phase offset
-  size: number; // Particle radius in pixels
-  baseAlpha: number; // Target opacity [0.12 - 0.42]
-  twinkleSpeed: number; // Twinkle frequency
-  twinklePhase: number; // Twinkle phase offset
-  colorIdx: number; // Index into subtle warm gold palette
+  u: number; // Position [0, 1] along document length
+  lateral: number; // Normalized lateral offset from stream spine [-1, 1]
+  speed: number; // Downward drift speed
+  driftAmp: number; // Amplitude of organic oscillation
+  driftFreq: number; // Frequency of organic oscillation
+  driftPhase: number;
+  size: number; // Radius in pixels
+  baseAlpha: number;
+  twinkleSpeed: number;
+  twinklePhase: number;
+  colorIdx: number;
 };
 
-// Warm celestial gold palette: muted bronze to warm gold accents
-const GOLD_PALETTE = [
-  "rgba(185, 145, 75,", // Muted antique bronze
-  "rgba(205, 168, 98,", // Warm gold dust
-  "rgba(225, 195, 128,", // Soft champagne gold
-  "rgba(245, 222, 155,", // Bright golden highlight
+// Rich warm gold celestial dust palette
+const GOLD_COLORS = [
+  "rgba(188, 142, 68,", // Muted antique bronze
+  "rgba(212, 172, 92,", // Warm celestial gold
+  "rgba(235, 202, 126,", // Soft glowing champagne gold
+  "rgba(255, 235, 175,", // Bright specular dust highlight
 ];
 
 export function GoldParticleStream() {
@@ -42,31 +42,21 @@ export function GoldParticleStream() {
     let isVisible = true;
     let isTabActive = !document.hidden;
 
-    // Stream central spine path defined as (u, xPercent) waypoints across sections:
-    // u=0.00: Top of page / Above Hero
-    // u=0.07: Hero Globe zone
-    // u=0.15: Workflow section
-    // u=0.28: Product Showcase / Relationship Data
-    // u=0.42: Trusted By section
-    // u=0.55: Why MAST / Problem
-    // u=0.70: Platform / Features
-    // u=0.84: Pricing Preview
-    // u=0.94: CTA Section
-    // u=1.00: Footer dissolution
+    // Spline waypoints defining the continuous celestial current through all sections
     const WAYPOINTS: [number, number][] = [
-      [0.0, 0.72],
-      [0.07, 0.74],
-      [0.15, 0.54],
-      [0.28, 0.36],
-      [0.42, 0.50],
-      [0.55, 0.64],
-      [0.70, 0.40],
-      [0.84, 0.52],
-      [0.94, 0.48],
-      [1.0, 0.50],
+      [0.0, 0.65],
+      [0.07, 0.74], // Sweeps diagonally past and behind the Hero Globe
+      [0.16, 0.53], // Curves into Workflow
+      [0.28, 0.35], // Weaves behind Product Showcase / Relationship Data
+      [0.42, 0.50], // Crosses through Trusted By
+      [0.55, 0.64], // Sweeps through Why MAST / Problem
+      [0.70, 0.39], // Weaves through Platform / Features
+      [0.84, 0.52], // Crosses through Pricing Preview
+      [0.94, 0.48], // Frames the CTA Box
+      [1.0, 0.50], // Naturally dissolves into the Footer
     ];
 
-    // Smooth Catmull-Rom interpolation along spline waypoints
+    // Cubic Catmull-Rom spline interpolation along the stream path
     const getSpineX = (u: number): number => {
       const clampedU = Math.max(0, Math.min(1, u));
       const n = WAYPOINTS.length;
@@ -87,7 +77,6 @@ export function GoldParticleStream() {
       const segLen = p2[0] - p1[0] || 0.001;
       const t = (clampedU - p1[0]) / segLen;
 
-      // Standard cubic Hermite / Catmull-Rom
       const t2 = t * t;
       const t3 = t2 * t;
 
@@ -102,7 +91,6 @@ export function GoldParticleStream() {
       );
     };
 
-    // Determine viewport & document geometry
     const updateDimensions = () => {
       width = window.innerWidth;
       height = window.innerHeight;
@@ -124,9 +112,7 @@ export function GoldParticleStream() {
 
     updateDimensions();
 
-    const onResize = () => {
-      updateDimensions();
-    };
+    const onResize = () => updateDimensions();
     window.addEventListener("resize", onResize, { passive: true });
 
     const onScroll = () => {
@@ -139,7 +125,6 @@ export function GoldParticleStream() {
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
-    // Observer to pause if viewport is off-screen
     const io = new IntersectionObserver(
       ([entry]) => {
         isVisible = entry.isIntersecting;
@@ -148,13 +133,12 @@ export function GoldParticleStream() {
     );
     io.observe(canvas);
 
-    // Initialize particles:
-    // Scaled for performance: ~180 particles on desktop, ~75 on mobile
+    // Dense celestial cluster calibration:
+    // Yields ~300-400 active particles clustered in any viewport, forming a thick ribbon
     const isMobile = width < 768;
-    const particleCount = isMobile ? 75 : 185;
+    const particleCount = isMobile ? 650 : 1550;
 
-    // Pseudorandom seed generator for deterministic organic spread
-    let seed = 91823;
+    let seed = 48291;
     const rand = () => {
       seed = (seed * 16807) % 2147483647;
       return (seed - 1) / 2147483646;
@@ -162,40 +146,43 @@ export function GoldParticleStream() {
 
     const particles: Particle[] = [];
     for (let i = 0; i < particleCount; i++) {
-      // Normal-like distribution for lateral offset: cluster near core, sparse at edges
-      const r1 = rand() * 2 - 1;
-      const r2 = rand() * 2 - 1;
-      const lateralOffset = (r1 + r2) * 0.5;
+      // Cubic distribution: creates a thick, dense golden core with soft feathered edges
+      const rVal = rand() * 2 - 1;
+      const lateral = rVal * rVal * rVal * 0.75 + (rand() * 2 - 1) * 0.25;
+
+      // Particles closer to the core have higher opacity and warmer gold hues
+      const distFromCore = Math.abs(lateral);
+      const coreFactor = 1 - Math.min(1, distFromCore);
 
       particles.push({
-        u: rand(), // Spread along full document length
-        lateralOffset,
-        speed: 0.000028 + rand() * 0.000035,
-        wanderAmp: 12 + rand() * 22,
-        wanderFreq: 0.0006 + rand() * 0.0008,
-        wanderPhase: rand() * Math.PI * 2,
-        size: 0.7 + rand() * 1.1, // Delicate micro-particles 0.7px - 1.8px
-        baseAlpha: 0.12 + rand() * 0.24,
-        twinkleSpeed: 0.0012 + rand() * 0.002,
+        u: rand(),
+        lateral,
+        speed: 0.00003 + rand() * 0.000038,
+        driftAmp: 8 + rand() * 18,
+        driftFreq: 0.0008 + rand() * 0.001,
+        driftPhase: rand() * Math.PI * 2,
+        size: 0.7 + rand() * 0.9 + (rand() > 0.88 ? 0.6 : 0),
+        baseAlpha: 0.16 + coreFactor * 0.38 + rand() * 0.12,
+        twinkleSpeed: 0.0014 + rand() * 0.0022,
         twinklePhase: rand() * Math.PI * 2,
-        colorIdx: Math.floor(rand() * GOLD_PALETTE.length),
+        colorIdx: coreFactor > 0.65 ? (rand() > 0.5 ? 2 : 3) : (rand() > 0.5 ? 1 : 0),
       });
     }
 
-    // Single static render for reduced motion users
     if (reduceMotion) {
       ctx.clearRect(0, 0, width, height);
+      const streamHalfWidth = isMobile ? 70 : 120;
       for (let i = 0; i < particleCount; i++) {
         const p = particles[i];
         const screenY = p.u * docHeight - scrollY;
-        if (screenY < -20 || screenY > height + 20) continue;
+        if (screenY < -30 || screenY > height + 30) continue;
 
         const spineX = getSpineX(p.u) * width;
-        const screenX = spineX + p.lateralOffset * 85;
+        const screenX = spineX + p.lateral * streamHalfWidth;
 
         ctx.beginPath();
         ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = `${GOLD_PALETTE[p.colorIdx]}${p.baseAlpha})`;
+        ctx.fillStyle = `${GOLD_COLORS[p.colorIdx]}${p.baseAlpha.toFixed(2)})`;
         ctx.fill();
       }
       return () => {
@@ -217,82 +204,76 @@ export function GoldParticleStream() {
         ctx.clearRect(0, 0, width, height);
 
         // Slow organic wave undulation along the celestial stream
-        const waveTime1 = now * 0.00035;
-        const waveTime2 = now * 0.0002;
-
-        const streamHalfWidth = isMobile ? 55 : 85;
+        const waveTime1 = now * 0.00032;
+        const waveTime2 = now * 0.00018;
+        const streamHalfWidth = isMobile ? 75 : 125;
 
         for (let i = 0; i < particleCount; i++) {
           const p = particles[i];
 
-          // Advance downward progress along the page
+          // Advance downward drift
           p.u += p.speed * (dt / 16.67);
-          if (p.u > 1.0) {
-            p.u -= 1.0;
-          }
+          if (p.u > 1.0) p.u -= 1.0;
 
-          // Compute screen position
           const screenY = p.u * docHeight - scrollY;
 
-          // Frustum culling: skip particles outside viewport window
+          // Frustum culling: render only particles in visible viewport
           if (screenY < -40 || screenY > height + 40) continue;
 
-          // Base horizontal position from spline
+          // Spline position
           const baseNormX = getSpineX(p.u);
 
-          // Subtle harmonic wave undulation
+          // Harmonic wave undulation
           const waveOffset =
-            Math.sin(p.u * 9 + waveTime1) * 16 +
-            Math.cos(p.u * 15 - waveTime2) * 10;
+            Math.sin(p.u * 8 + waveTime1) * 22 +
+            Math.cos(p.u * 14 - waveTime2) * 14;
 
-          // Individual organic wander
-          const wanderOffset =
-            Math.sin(now * p.wanderFreq + p.wanderPhase) * p.wanderAmp;
+          // Individual organic micro-wander
+          const driftOffset =
+            Math.sin(now * p.driftFreq + p.driftPhase) * p.driftAmp;
 
-          // Combined screen X
           const screenX =
             baseNormX * width +
-            p.lateralOffset * streamHalfWidth +
+            p.lateral * streamHalfWidth +
             waveOffset +
-            wanderOffset;
+            driftOffset;
 
-          // Natural stream opacity modulation:
-          // Gently fades at extreme top (u < 0.02) and bottom (u > 0.95)
+          // Soft edge fade at very top and bottom of the page
           let edgeFade = 1.0;
-          if (p.u < 0.03) edgeFade = p.u / 0.03;
-          else if (p.u > 0.94) edgeFade = Math.max(0, (1.0 - p.u) / 0.06);
+          if (p.u < 0.02) edgeFade = p.u / 0.02;
+          else if (p.u > 0.95) edgeFade = Math.max(0, (1.0 - p.u) / 0.05);
 
-          // Gentle breathing/twinkle
+          // Subtle twinkle
           const twinkle =
-            0.75 + Math.sin(now * p.twinkleSpeed + p.twinklePhase) * 0.25;
+            0.78 + Math.sin(now * p.twinkleSpeed + p.twinklePhase) * 0.22;
 
-          // Proximity light enhancement near Hero Globe zone (u between 0.04 and 0.12)
-          let heroProximityBoost = 1.0;
-          if (p.u >= 0.04 && p.u <= 0.12) {
-            const distFromHeroCenter = Math.abs(p.u - 0.08) / 0.04;
-            heroProximityBoost = 1.0 + (1.0 - distFromHeroCenter) * 0.25;
+          // Proximity boost near Hero Globe zone (u between 0.03 and 0.12)
+          let heroBoost = 1.0;
+          if (p.u >= 0.03 && p.u <= 0.12) {
+            const dist = Math.abs(p.u - 0.075) / 0.045;
+            heroBoost = 1.0 + (1.0 - Math.min(1, dist)) * 0.22;
           }
 
           const finalAlpha = Math.min(
-            0.55,
-            p.baseAlpha * edgeFade * twinkle * heroProximityBoost
+            0.65,
+            p.baseAlpha * edgeFade * twinkle * heroBoost
           );
 
-          if (finalAlpha <= 0.005) continue;
+          if (finalAlpha <= 0.01) continue;
 
-          // Soft ambient glow for slightly larger particles (size > 1.2px)
-          if (p.size > 1.2 && finalAlpha > 0.2) {
-            ctx.beginPath();
-            ctx.arc(screenX, screenY, p.size * 2.2, 0, Math.PI * 2);
-            ctx.fillStyle = `${GOLD_PALETTE[p.colorIdx]}${(finalAlpha * 0.18).toFixed(3)})`;
-            ctx.fill();
-          }
-
-          // Main crisp particle core
+          // Crisp particle core
           ctx.beginPath();
           ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2);
-          ctx.fillStyle = `${GOLD_PALETTE[p.colorIdx]}${finalAlpha.toFixed(3)})`;
+          ctx.fillStyle = `${GOLD_COLORS[p.colorIdx]}${finalAlpha.toFixed(3)})`;
           ctx.fill();
+
+          // Soft delicate bloom for larger highlight particles
+          if (p.size > 1.4 && finalAlpha > 0.25) {
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, p.size * 2.2, 0, Math.PI * 2);
+            ctx.fillStyle = `${GOLD_COLORS[p.colorIdx]}${(finalAlpha * 0.2).toFixed(3)})`;
+            ctx.fill();
+          }
         }
       }
 

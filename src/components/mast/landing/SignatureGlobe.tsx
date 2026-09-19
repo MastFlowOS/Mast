@@ -14,7 +14,7 @@ const TILT = 0.409;
 const BASE_SPEED = 0.024;
 // Visually substantial globe scale within the hero column, harmoniously proportioned
 // with the antique bronze/gold stand finials and pedestal base
-const SPHERE_FRACTION = 0.415;
+const SPHERE_FRACTION = 0.29;
 const PAN_STRENGTH = 0.35;
 
 // Directional celestial light vector (subtle lunar / solar grazing angle)
@@ -134,7 +134,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       if (width === 0 || height === 0) return;
       ctx.clearRect(0, 0, width, height);
       const cx = width / 2;
-      const cy = height / 2;
+      const cy = height * 0.38;
       const r = Math.min(width, height) * SPHERE_FRACTION;
       
       const atmoGlow = ctx.createRadialGradient(cx, cy, r * 0.94, cx, cy, r * 1.055);
@@ -212,36 +212,29 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       }
 
       const currentTarget = targetIdx >= 0 ? FOCUS_COUNTRIES[targetIdx] : null;
-      const targetZoom = currentTarget ? currentTarget.zoom : 1.08;
 
-      // Country base light and smooth zoom interpolation
-      let zoom = 1.0;
+      // Stable physical globe: ZERO camera zoom/punch-in shifts.
+      // Country base light smoothly transitions to gold during focus and back to nocturnal Earth
       let countryBaseGold = 0;
 
       if (phase === "settle") {
         const p = Math.min(1, phaseElapsed / settleDuration);
         const ep = easeInOutCubic(p);
-        zoom = 1.0 + (targetZoom - 1.0) * ep;
-        // Country base light transitions cleanly from 0 -> 1.0
         countryBaseGold = ep;
       } else if (phase === "focus") {
-        zoom = targetZoom;
         countryBaseGold = 1.0;
       } else if (phase === "release") {
         const p = Math.min(1, phaseElapsed / releaseDuration);
         const ep = easeInOutCubic(p);
-        zoom = 1.0 + (targetZoom - 1.0) * (1 - ep);
         countryBaseGold = Math.max(0, 1 - ep);
       }
 
-      const targetUY = currentTarget ? unitY(currentTarget.lat, currentTarget.lon, rotation) : 0;
-      const panProgress = (zoom - 1.0) / (targetZoom - 1.0 || 1);
-
       const cx = width / 2;
-      const cy = height / 2;
+      const cy = height * 0.38;
       const r = Math.min(width, height) * SPHERE_FRACTION;
-      const effectiveR = r * zoom;
-      const effectiveCY = cy + targetUY * r * panProgress * PAN_STRENGTH;
+      // Fixed displayed size: no punch-in, no punch-out, no camera scaling
+      const effectiveR = r;
+      const effectiveCY = cy;
 
       // 1. Outer atmospheric limb scattering (Rayleigh haze hugging the outer edge)
       const envLimbBreath = 1 + Math.sin(currentNow * 0.00032) * 0.04;
@@ -592,12 +585,12 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
   }, []);
 
   const cx = dimensions.width / 2;
-  const cy = dimensions.height / 2;
+  const cy = dimensions.height * 0.38;
   const r = Math.min(dimensions.width, dimensions.height) * SPHERE_FRACTION;
 
   return (
     <div ref={containerRef} className={`relative select-none pointer-events-none ${className}`}>
-      {/* 1. Antique bronze/gold stand (stable, fixed orientation) */}
+      {/* 1. Antique bronze/gold stand (completely stationary, does not rotate) */}
       {dimensions.width > 0 && dimensions.height > 0 && (
         <GlobeStand
           width={dimensions.width}
@@ -614,7 +607,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         className="w-full h-full relative"
         style={{
           transform: "rotate(10.5deg)",
-          transformOrigin: "50% 50%",
+          transformOrigin: `${cx}px ${cy}px`,
         }}
       >
         <canvas ref={canvasRef} className="block w-full h-full" aria-hidden="true" />

@@ -1,4 +1,5 @@
 import type { GenerationMode, PlanId, PlanConfig } from "./plans";
+import { isDiscoveryModeAllowed, type DiscoveryMode } from "../config/plans.js";
 import { getDraftProvenance } from "./outreach/draftProvenance";
 import { getPlan, PLANS } from "./plans";
 import { supabase } from "./supabase";
@@ -356,7 +357,17 @@ export type LeadGenerationRequest = {
   quantity: number;
   region: string;
   niche: string;
+  /** Legacy/informational only — kept for existing callers, but NOT what
+   * decides backend behavior. Use `method` for that. */
   mode: GenerationMode;
+  /**
+   * The discovery method the user picked (Live Scraping / Instant Pool
+   * Access / Ranked Instant Results). This IS sent to and honored by the
+   * backend, re-validated there against the resolved plan
+   * (isDiscoveryModeAllowed) — never trusted as-is. Omitted → the plan's
+   * default (ceiling) method.
+   */
+  method?: DiscoveryMode;
   channels: string[];
   /** Target currencies, if any — narrows which countries get searched per
    * region to ones where discovered businesses can realistically pay in
@@ -1333,12 +1344,16 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
     throw new ApiError(geo.code === "invalid_region" ? 400 : 403, geo.message, {});
   }
 
-  // Note: `body.mode` (the UI's speed selector) is NOT sent — the backend
-  // derives the real discovery mode from the user's actual subscription
-  // plan, per the product philosophy ("MAST decides, not the user"). See
-  // Phase 4 deliverables notes for the resulting UI inconsistency this
-  // surfaces in the speed selector, flagged there rather than silently
-  // papered over here.
+  // Discovery Method: fast-fail pre-check only — the gateway
+  // (src/server/routes/discover.ts) re-validates this itself
+  // (isDiscoveryModeAllowed) and is the authoritative enforcement, exactly
+  // like the channel/region checks above. `body.mode` (legacy) is still
+  // NOT sent — it's informational-only and superseded by `method`, which
+  // the backend actually reads and honors.
+  if (body.method && !isDiscoveryModeAllowed(resolvedPlan, body.method)) {
+    throw new ApiError(403, `The '${body.method}' discovery method requires a higher plan.`, {});
+  }
+
   const backendResponse = await backendFetch<DiscoverBackendResponse>("/v1/discover", {
     method: "POST",
     body: JSON.stringify({
@@ -1347,6 +1362,7 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
       niche: body.niche,
       channels: body.channels,
       currencies: body.currencies ?? [],
+      method: body.method,
     }),
   });
 

@@ -39,8 +39,10 @@ import {
   DISCOVERY_METHODS,
   discoveryMethodForPlan,
   generationModeFor,
+  isDiscoveryMethodEligible,
   nextDiscoveryMethod,
 } from "@/lib/discoveryMethod";
+import type { DiscoveryMode } from "@/config/plans";
 import { addNotification } from "@/lib/notifications";
 import {
   DEFAULT_CHANNELS,
@@ -359,10 +361,21 @@ function GetLeads() {
 
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
   const monthlyRemaining = account?.monthlyUsage.remaining ?? 0;
-  // Discovery method is plan-derived (server: plan.discoveryMode) — there is
-  // no per-request mode to choose. See src/lib/discoveryMethod.ts.
+  // Discovery Method is a real, user-chosen option — the user may pick any
+  // method their plan is eligible for (see src/lib/discoveryMethod.ts /
+  // src/config/plans.ts isDiscoveryModeAllowed, re-validated server-side).
+  // `activeMethod` is only the plan's DEFAULT (its ceiling) — used to
+  // preselect the picker and to describe "your plan" in the upgrade strip.
   const activeMethod = discoveryMethodForPlan(permissions.plan);
   const upgradeMethod = nextDiscoveryMethod(permissions.plan);
+  // null until the user actually picks something; falls back to the
+  // plan's default below. Also falls back automatically if a plan
+  // change (e.g. a downgrade) makes the previous pick ineligible.
+  const [selectedMethodId, setSelectedMethodId] = useState<DiscoveryMode | null>(null);
+  const selectedMethod =
+    (selectedMethodId && isDiscoveryMethodEligible(permissions.plan, selectedMethodId)
+      ? DISCOVERY_METHODS.find((m) => m.id === selectedMethodId)
+      : undefined) ?? activeMethod;
 
   const leads = Array.isArray(leadsPayload)
     ? leadsPayload
@@ -619,8 +632,11 @@ function GetLeads() {
         quantity,
         region: regions.join(", "),
         niche: niches.join(", "),
-        // Informational: the server derives the real mode from the plan.
-        mode: generationModeFor(activeMethod.id),
+        // Legacy/informational field, kept for type back-compat only.
+        mode: generationModeFor(selectedMethod.id),
+        // The actual chosen Discovery Method — this IS honored by the
+        // server (re-validated there against the resolved plan).
+        method: selectedMethod.id,
         // Pass-through-unchanged contract — see channelsForRequest's
         // docstring. Whatever the user selected (any AND-combination,
         // including a single channel) reaches the engine exactly as
@@ -1243,52 +1259,80 @@ function GetLeads() {
             </div>
           </Field>
 
-          {/* Discovery Method — derived from the plan by the server, so this is
-              a comparison of what each plan runs, NOT a selector. */}
-          <Field label="Discovery Method" hint="Set by your plan · 1 credit per opportunity">
+          {/* Discovery Method — an actual selectable option, gated by plan
+              eligibility (isDiscoveryMethodEligible), re-validated by the
+              server. PLAN BADGE (min plan required) and SELECTED (the
+              user's current pick) are deliberately separate signals —
+              never conflate them. */}
+          <Field
+            label="Discovery Method"
+            hint="Choose how MAST finds your opportunities · 1 credit per opportunity"
+          >
             <ul className="space-y-2" aria-label="Discovery methods">
               {DISCOVERY_METHODS.map((m) => {
-                const isActive = m.id === activeMethod.id;
+                const isSelected = m.id === selectedMethod.id;
+                const isEligible = isDiscoveryMethodEligible(permissions.plan, m.id);
                 return (
-                  <li
-                    key={m.id}
-                    aria-current={isActive ? "true" : undefined}
-                    className={cn(
-                      "rounded-xl border px-3.5 py-2.5 flex items-start gap-3",
-                      isActive ? "border-brand/60 bg-brand/[0.07]" : "border-border opacity-60"
-                    )}
-                  >
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-foreground">{m.label}</span>
-                        <span
-                          className={cn(
-                            "rounded px-1.5 py-px text-[10px] font-bold uppercase tracking-wider",
-                            isActive
-                              ? "bg-brand/15 text-brand"
-                              : "bg-muted/50 text-muted-foreground"
-                          )}
-                        >
-                          {isActive ? "Your plan" : m.minPlanLabel}
-                        </span>
-                      </span>
-                      <span className="block text-xs text-muted-foreground leading-snug">
-                        {m.desc}
-                      </span>
-                      {isActive && (
-                        <span className="block mt-1 text-[11px] text-muted-foreground/80">
-                          {m.note}
-                        </span>
-                      )}
-                    </span>
-                    <span
+                  <li key={m.id}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={isSelected}
+                      aria-current={isSelected ? "true" : undefined}
+                      onClick={() => {
+                        if (!isEligible) {
+                          toast.error(`${m.label} requires the ${m.minPlanLabel.toUpperCase()} plan.`);
+                          return;
+                        }
+                        setSelectedMethodId(m.id);
+                      }}
                       className={cn(
-                        "shrink-0 text-[11px] font-bold uppercase tracking-wider tabular-nums pt-0.5",
-                        isActive ? "text-brand" : "text-muted-foreground"
+                        "w-full text-left rounded-xl border px-3.5 py-2.5 flex items-start gap-3 transition-colors cursor-pointer",
+                        isSelected
+                          ? "border-brand/60 bg-brand/[0.07]"
+                          : isEligible
+                          ? "border-border hover:border-muted-foreground/40"
+                          : "border-border opacity-60"
                       )}
                     >
-                      {m.timeLabel}
-                    </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-semibold text-foreground">{m.label}</span>
+                          {/* PLAN BADGE — minimum plan required, always shown. */}
+                          <span className="rounded px-1.5 py-px text-[10px] font-bold uppercase tracking-wider bg-muted/50 text-muted-foreground">
+                            {m.minPlanLabel}
+                          </span>
+                          {/* SELECTED — the user's current choice, shown separately. */}
+                          {isSelected && (
+                            <span className="rounded px-1.5 py-px text-[10px] font-bold uppercase tracking-wider bg-brand/15 text-brand">
+                              Selected
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-xs text-muted-foreground leading-snug">
+                          {m.desc}
+                        </span>
+                        {isSelected && (
+                          <span className="block mt-1 text-[11px] text-muted-foreground/80">
+                            {m.note}
+                          </span>
+                        )}
+                        {!isEligible && (
+                          <span className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground/80">
+                            <Lock className="size-3 shrink-0" aria-label={`Locked — requires ${m.minPlanLabel}`} />
+                            Requires {m.minPlanLabel}
+                          </span>
+                        )}
+                      </span>
+                      <span
+                        className={cn(
+                          "shrink-0 text-[11px] font-bold uppercase tracking-wider tabular-nums pt-0.5",
+                          isSelected ? "text-brand" : "text-muted-foreground"
+                        )}
+                      >
+                        {m.timeLabel}
+                      </span>
+                    </button>
                   </li>
                 );
               })}
@@ -1312,7 +1356,7 @@ function GetLeads() {
               <SummaryLine value={regions.join(", ")} />
               <SummaryLine value={nicheSummary} placeholder="Choose a niche" />
               <SummaryLine value={channelSummary || null} placeholder="Choose contact channels" />
-              <SummaryLine value={`${activeMethod.shortLabel} · ${activeMethod.timeLabel}`} />
+              <SummaryLine value={`${selectedMethod.shortLabel} · ${selectedMethod.timeLabel}`} />
             </ul>
 
             <div className="my-4 h-px bg-border" />

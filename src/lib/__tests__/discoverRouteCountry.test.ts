@@ -224,8 +224,8 @@ describe("Starter / Pro (Instant pool) — country-scoped pool delivery", () => 
   });
 });
 
-describe("Discovery mode is plan-derived, never client-selected", () => {
-  test("the same request yields the plan's mode regardless of any `mode` the client sends", async () => {
+describe("legacy `mode` field (GenerationMode shape) is inert — superseded by `method`", () => {
+  test("a `mode` value is always ignored; the resolved plan's default method wins when no `method` is sent", async () => {
     seedPool();
     for (const [p, expected] of [["starter", "instant_pool"], ["pro", "instant_pool_ranked"], ["premium", "instant_pool_ranked"]] as const) {
       plan = p;
@@ -238,5 +238,45 @@ describe("Discovery mode is plan-derived, never client-selected", () => {
     plan = "free";
     await post({ region: "Canada", mode: "premium" });
     assert.equal(recorded.scrapeJobs.at(-1)!.mode, "live");
+  });
+});
+
+describe("Discovery Method is a real, plan-gated selection (`method`)", () => {
+  test("an eligible `method` is honored even when it's below the plan's ceiling", async () => {
+    plan = "premium";
+    seedPool();
+    const res = await post({ region: "Canada", quantity: 1, method: "instant_pool" /* below premium's ranked ceiling */ });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.mode, "instant_pool", "the selected method won, not the plan's ceiling");
+    const call = db.rpcCalls.find((c) => c.fn === "pool_lookup")!;
+    assert.equal(call.args.p_rank, false, "instant_pool must not be ranked, even though the plan could rank it");
+  });
+
+  test("a `method` above the plan's ceiling is rejected with 403, never silently downgraded or upgraded", async () => {
+    plan = "starter"; // ceiling: instant_pool
+    seedPool();
+    const res = await post({ region: "Canada", quantity: 1, method: "instant_pool_ranked" });
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.equal(body.code, "method_restricted");
+    assert.equal(recorded.scrapeJobs.length, 0, "nothing was created for a rejected request");
+  });
+
+  test("free plan may only select `live`; `instant_pool` is rejected", async () => {
+    plan = "free";
+    const res = await post({ region: "Canada", method: "instant_pool" });
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).code, "method_restricted");
+  });
+
+  test("omitting `method` falls back to the plan's default (ceiling) method, unchanged from before", async () => {
+    seedPool();
+    for (const [p, expected] of [["starter", "instant_pool"], ["pro", "instant_pool_ranked"], ["premium", "instant_pool_ranked"]] as const) {
+      plan = p;
+      db.leads.length = 0;
+      const res = await post({ region: "Canada", quantity: 1 });
+      assert.equal((await res.json()).mode, expected, p);
+    }
   });
 });

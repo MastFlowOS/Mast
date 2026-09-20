@@ -23,15 +23,44 @@
 export type PlanId = "free" | "starter" | "pro" | "premium";
 
 /**
- * Discovery behavior per the product philosophy doc:
- *  - free    -> always Live Discovery (real scrape, streamed results, never
+ * Discovery behavior per the product philosophy doc. `discoveryMode` is
+ * each plan's CEILING method, i.e. what a request uses when the user
+ * hasn't chosen one, and the highest one they're allowed to choose:
+ *  - free    -> Live Scraping only (real scrape, streamed results, never
  *               touches the Global Lead Pool)
- *  - starter -> Instant Discovery (pool-first, background-expand on miss)
- *  - pro     -> same as starter, but results are ranked by Opportunity Score
- *               before being returned
- *  - premium -> same as pro, plus AI Opportunity Intelligence downstream
+ *  - starter -> Live Scraping or Instant Pool Access (pool-first,
+ *               background-expand on miss)
+ *  - pro     -> the above, plus Ranked Instant Results (pool results
+ *               ordered by Opportunity Score)
+ *  - premium -> same ceiling as pro, plus AI Opportunity Intelligence
+ *               downstream
+ * See isDiscoveryModeAllowed() for the actual per-request gate.
  */
 export type DiscoveryMode = "live" | "instant_pool" | "instant_pool_ranked";
+
+/**
+ * Ordinal rank of each method on the live → instant_pool →
+ * instant_pool_ranked ladder. A plan's `discoveryMode` (below) is a
+ * CEILING, not a fixed single behavior: the Discover UI lets a user pick
+ * any of the three methods, and a request may use any method at or below
+ * its plan's ceiling. See isDiscoveryModeAllowed().
+ */
+const DISCOVERY_MODE_RANK: Record<DiscoveryMode, number> = {
+  live: 0,
+  instant_pool: 1,
+  instant_pool_ranked: 2,
+};
+
+/**
+ * Whether `mode` is a method `planId` is entitled to run. This is the
+ * single check both the server (src/server/routes/discover.ts) and the
+ * client (src/lib/api.ts, src/lib/discoveryMethod.ts) use to gate a
+ * user-selected discovery method — the server re-applies it itself and
+ * never trusts a client's own gating.
+ */
+export function isDiscoveryModeAllowed(planId: string | null | undefined, mode: DiscoveryMode): boolean {
+  return DISCOVERY_MODE_RANK[mode] <= DISCOVERY_MODE_RANK[getPlan(planId).discoveryMode];
+}
 
 export type PlanConfig = {
   id: PlanId;

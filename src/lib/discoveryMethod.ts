@@ -1,19 +1,25 @@
 /**
  * Discovery METHOD — what actually happens when a user launches Discover.
  *
- * The method is derived from the user's PLAN on the server, not chosen per
- * request ("MAST decides, not the user" — see api.ts generateLeads and
- * src/server/routes/discover.ts, which sets `mode: plan.discoveryMode` and
- * never reads a request-supplied mode). The server's plan table
- * (src/config/plans.ts) is the single source of truth and is what this
- * module reads, so the UI can never claim something the backend doesn't do:
+ * The user picks one of the three methods below in the Discover UI; the
+ * server re-validates that choice against the plan's ceiling before
+ * honoring it (see api.ts generateLeads and src/server/routes/discover.ts,
+ * which reads `body.method` and rejects it with 403 if it's above what the
+ * resolved plan allows). Each plan's `discoveryMode` in
+ * src/config/plans.ts is that ceiling — the default method for the plan,
+ * and the highest one it may select:
  *
  *   free            → live                 real scrape, results streamed
  *   starter         → instant_pool         pool first; any shortfall is
  *                                          scraped live in the background
  *   pro / premium   → instant_pool_ranked  same, ordered by Opportunity Score
+ *
+ * discoveryMethodForPlan() below returns that default/ceiling method —
+ * used to preselect the Discover UI and to describe "your plan" in the
+ * upgrade strip. isDiscoveryMethodEligible() is what actually gates
+ * whether a given method can be selected/sent for a given plan.
  */
-import { getPlan, type DiscoveryMode, type PlanId } from "../config/plans.js";
+import { getPlan, isDiscoveryModeAllowed, type DiscoveryMode, type PlanId } from "../config/plans.js";
 import type { GenerationMode } from "./plans.js";
 
 export type DiscoveryMethod = {
@@ -71,6 +77,15 @@ export const DISCOVERY_METHODS: readonly DiscoveryMethod[] = [
 export function discoveryMethodForPlan(planId: string | null | undefined): DiscoveryMethod {
   const mode = getPlan(planId).discoveryMode;
   return DISCOVERY_METHODS.find((m) => m.id === mode) ?? DISCOVERY_METHODS[0];
+}
+
+/**
+ * Whether `method` is one `planId` may actually select/run — the same
+ * ceiling check the server re-applies before honoring a chosen method.
+ * Use this to decide which of DISCOVERY_METHODS are clickable vs locked.
+ */
+export function isDiscoveryMethodEligible(planId: string | null | undefined, method: DiscoveryMode): boolean {
+  return isDiscoveryModeAllowed(planId, method);
 }
 
 /** The next method up the plan ladder, or null if already on the top one. */

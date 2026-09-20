@@ -125,7 +125,10 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       // derived from width/height, but invalidate explicitly to be safe.
       invalidateGradientCaches();
     };
-    resize();
+    // `resize()` reads layout (getBoundingClientRect) and reallocates the
+    // canvas backing store — real, measurable work, and not needed until we
+    // actually draw. It moves into the same deferred idle start as the first
+    // draw below, instead of running synchronously during mount.
     const ro = new ResizeObserver(resize);
     ro.observe(container);
 
@@ -696,18 +699,55 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       rafId = requestAnimationFrame(loop);
     };
 
-    // Immediate initial frame so Earth is visible on first render
-    try {
-      draw(0, performance.now());
-    } catch {
-      drawFallback();
-    }
+    // The globe's first draw + continuous rotation are decorative — deferred
+    // to the browser's idle time so they run AFTER the hero has had its
+    // chance to paint, not synchronously during mount. A modest timeout still
+    // guarantees the globe appears soon even under sustained main-thread load.
+    // (requestIdleCallback isn't in every engine — Safari falls back to a
+    // short setTimeout that still yields to paint first.)
+    let deferredStartHandle: number | null = null;
+    const w = window as typeof window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    const scheduleStart =
+      typeof w.requestIdleCallback === "function"
+        ? (cb: () => void) => w.requestIdleCallback!(cb, { timeout: 200 })
+        : (cb: () => void) => window.setTimeout(cb, 32);
+    const cancelStart = (id: number) => {
+      if (typeof w.cancelIdleCallback === "function") w.cancelIdleCallback(id);
+      else window.clearTimeout(id);
+    };
 
-    if (!reduceMotion) {
-      rafId = requestAnimationFrame(loop);
-    }
+    deferredStartHandle = scheduleStart(() => {
+      deferredStartHandle = null;
+      // Immediate initial frame so Earth is visible as soon as it starts
+      performance.mark("signature-globe-init-start");
+      resize(); // sizes the canvas just before its first real draw
+      try {
+        draw(0, performance.now());
+      } catch {
+        drawFallback();
+      }
+      performance.mark("signature-globe-init-end");
+      try {
+        performance.measure(
+          "signature-globe-init",
+          "signature-globe-init-start",
+          "signature-globe-init-end",
+        );
+      } catch {
+        // performance.measure can throw if marks are missing (e.g. a fast
+        // remount raced the marks) — timing is best-effort, not required.
+      }
+
+      if (!reduceMotion) {
+        rafId = requestAnimationFrame(loop);
+      }
+    });
 
     return () => {
+      if (deferredStartHandle != null) cancelStart(deferredStartHandle);
       cancelAnimationFrame(rafId);
       ro.disconnect();
       io.disconnect();

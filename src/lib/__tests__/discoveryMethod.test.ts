@@ -10,6 +10,7 @@ import {
   DISCOVERY_METHODS,
   discoveryMethodForPlan,
   generationModeFor,
+  isDiscoveryMethodEligible,
   nextDiscoveryMethod,
 } from "../discoveryMethod.js";
 
@@ -49,4 +50,20 @@ test("request mode value matches what the server will do", () => {
   assert.equal(generationModeFor("live"), "scrape");
   assert.equal(generationModeFor("instant_pool"), "pool");
   assert.equal(generationModeFor("instant_pool_ranked"), "premium");
+});
+
+test("isDiscoveryMethodEligible: a plan may select its own ceiling and everything below it, nothing above", () => {
+  assert.equal(isDiscoveryMethodEligible("free", "live"), true);
+  assert.equal(isDiscoveryMethodEligible("free", "instant_pool"), false);
+  assert.equal(isDiscoveryMethodEligible("free", "instant_pool_ranked"), false);
+
+  assert.equal(isDiscoveryMethodEligible("starter", "live"), true);
+  assert.equal(isDiscoveryMethodEligible("starter", "instant_pool"), true);
+  assert.equal(isDiscoveryMethodEligible("starter", "instant_pool_ranked"), false);
+
+  assert.equal(isDiscoveryMethodEligible("pro", "live"), true);
+  assert.equal(isDiscoveryMethodEligible("pro", "instant_pool"), true);
+  assert.equal(isDiscoveryMethodEligible("pro", "instant_pool_ranked"), true);
+
+  assert.equal(isDiscoveryMethodEligible("premium", "instant_pool_ranked"), true);
 });

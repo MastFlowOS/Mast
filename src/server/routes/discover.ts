@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
-import { getPlan } from "../../config/plans.js";
+import { getPlan, isDiscoveryModeAllowed } from "../../config/plans.js";
 import { getBoss, QUEUES } from "../../lib/queue.js";
 import { validateDiscoveryRegion } from "../../lib/geo/scope.js";
 import { lookupAndDeliverFromPool } from "../../lib/poolLookup.js";
@@ -46,6 +46,16 @@ const DiscoverRequestSchema = z.object({
    * region to ones where discovered businesses can realistically pay in
    * that currency. See src/lib/geo/regions.ts. */
   currencies: z.array(z.string()).default([]),
+  /**
+   * The discovery method the user picked in the Discover UI (Live
+   * Scraping / Instant Pool Access / Ranked Instant Results). Optional
+   * for backward compatibility — an omitted value falls back to the
+   * resolved plan's default (ceiling) method below. Whatever is sent
+   * here is re-validated against the resolved plan (isDiscoveryModeAllowed)
+   * before it's honored — a client can never grant itself a method its
+   * plan doesn't allow.
+   */
+  method: z.enum(["live", "instant_pool", "instant_pool_ranked"]).optional(),
 });
 
 /**
@@ -64,6 +74,14 @@ const DiscoverRequestSchema = z.object({
  *  - Channel (email/phone/instagram/website) and regional-search
  *    restrictions are now enforced here too, not just client-side (a gap
  *    flagged, not fixed, in Phase 4).
+ *  - Discovery Method is a real, user-chosen option (`body.method`), not
+ *    something purely derived from the plan: each plan's `discoveryMode`
+ *    is a CEILING (see config/plans.ts), and the user may pick any method
+ *    at or below it. The requested method is re-validated against that
+ *    ceiling here (isDiscoveryModeAllowed) — never trusted as-is. An
+ *    omitted method falls back to the plan's ceiling; an ineligible one
+ *    is rejected outright (403), since the UI should never have let it
+ *    be selected in the first place.
  */
 discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) => {
   try {
@@ -91,6 +109,17 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
     const plan = getPlan(resolvedRow.subscription_plan);
     const dailyUsed = resolvedRow.daily_leads_used;
     const monthlyUsed = resolvedRow.monthly_leads_used;
+
+    // The method actually used for this request: whatever the user chose,
+    // re-validated against the resolved plan — never trusted as-is —
+    // falling back to the plan's default (ceiling) method when omitted.
+    const mode = body.method ?? plan.discoveryMode;
+    if (!isDiscoveryModeAllowed(plan.id, mode)) {
+      return res.status(403).json({
+        code: "method_restricted",
+        message: `The '${mode}' discovery method requires a higher plan.`,
+      });
+    }
 
     const { data: profile, error: profileError } = await supabaseAdmin
       .from("profiles")
@@ -144,7 +173,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
       .from("scrape_jobs")
       .insert({
         user_id: userId,
-        mode: plan.discoveryMode,
+        mode,
         status: "queued",
         query: { region: region, niche: body.niche, channels: body.channels, currencies: body.currencies, profession_slug: professionSlug, quantity },
       })
@@ -152,7 +181,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
       .single();
     if (jobError) throw jobError;
 
-    if (plan.discoveryMode === "live") {
+    if (mode === "live") {
       const planId = await enqueueDiscoveryPlan({
         scrapeJobId: job.id,
         userId,
@@ -191,19 +220,19 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
       return res.status(202).json({
         jobId: job.id,
         planId,
-        mode: plan.discoveryMode,
+        mode,
         status: "queued",
         requested: quantity,
       });
     }
 
-    // Instant Discovery (Starter/Pro/Premium): pool-first, synchronous.
+    // Instant Discovery: pool-first, synchronous.
     const { delivered, shortfall, limitReached } = await lookupAndDeliverFromPool({
       userId,
       region: region,
       niche: body.niche,
       professionSlug,
-      rank: plan.discoveryMode === "instant_pool_ranked",
+      rank: mode === "instant_pool_ranked",
       quantity,
       scrapeJobId: job.id,
       dailyLimit: plan.dailyLeadLimit,
@@ -237,7 +266,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         followUp: {
           userId,
           professionSlug,
-          rank: plan.discoveryMode === "instant_pool_ranked",
+          rank: mode === "instant_pool_ranked",
           scrapeJobId: job.id,
           dailyLimit: plan.dailyLeadLimit,
           monthlyLimit: plan.monthlyLeadLimit,
@@ -279,7 +308,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
       // queued above (shortfall > 0 && !limitReached) — never a fake id
       // for a pure pool hit, which has no live scraping to show.
       planId: poolExpandPlanId,
-      mode: plan.discoveryMode,
+      mode,
       status: finalInstantStatus,
       requested: quantity,
       delivered: delivered.length,

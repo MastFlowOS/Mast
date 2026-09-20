@@ -120,25 +120,48 @@ describe("Discover redesign — removed / replaced UI", () => {
     }
   });
 
-  it("Discovery Method is a plan-derived comparison, not a fake selector", async () => {
+  it("Discovery Method is a real, plan-gated selector — PLAN badge and SELECTED are separate signals, locked methods stay unselectable", async () => {
     await renderDiscover("starter");
     const list = screen.getByRole("list", { name: /discovery methods/i });
-    // Nothing in the section is interactive: no radios, buttons or inputs.
-    expect(within(list).queryAllByRole("radio")).toHaveLength(0);
-    expect(within(list).queryAllByRole("button")).toHaveLength(0);
-    expect(list.querySelector("input,button")).toBeNull();
-    // No speed/quality/cost analytics.
-    expect(within(list).queryByText(/^quality$/i)).toBeNull();
-    expect(within(list).queryByText(/^cost$/i)).toBeNull();
-    expect(list.querySelector('[style*="width"]')).toBeNull();
-    // Time labels.
+    const options = within(list).getAllByRole("option");
+    expect(options).toHaveLength(3);
+
+    const live = options.find((o) => /Live Scraping/.test(o.textContent ?? ""))!;
+    const pool = options.find((o) => /Instant Pool Access/.test(o.textContent ?? ""))!;
+    const ranked = options.find((o) => /Ranked Instant Results/.test(o.textContent ?? ""))!;
+
+    // Starter's default (ceiling) method, Instant Pool Access, is preselected.
+    expect(pool.getAttribute("aria-selected")).toBe("true");
+    expect(pool.textContent).toMatch(/selected/i);
+    expect(live.getAttribute("aria-selected")).toBe("false");
+    expect(ranked.getAttribute("aria-selected")).toBe("false");
+
+    // PLAN badge (minimum plan required) is shown on every row, regardless
+    // of selection — never conflated with the SELECTED indicator above.
+    expect(live.textContent).toMatch(/free/i);
+    expect(pool.textContent).toMatch(/starter/i);
+    expect(ranked.textContent).toMatch(/pro/i);
+
+    // Time labels, unchanged.
     expect(within(list).getByText("10–30 min")).toBeTruthy();
     expect(within(list).getAllByText("Instant").length).toBeGreaterThan(0);
-    // Exactly one row is "Your plan": Starter runs the instant pool.
-    const active = list.querySelectorAll('[aria-current="true"]');
-    expect(active).toHaveLength(1);
-    expect(active[0].textContent).toContain("Instant Pool Access");
-    expect(active[0].textContent).toContain("Your plan");
+
+    // Ranked Instant Results is above Starter's ceiling: visibly locked and
+    // NOT selectable — clicking it shows the upgrade toast instead of
+    // changing the selection (mirrors the existing locked-chip behavior).
+    expect(ranked.querySelector("svg[aria-label*='Locked']")).not.toBeNull();
+    fireEvent.click(ranked);
+    expect(h.toastError).toHaveBeenCalledTimes(1);
+    expect(ranked.getAttribute("aria-selected")).toBe("false");
+    expect(pool.getAttribute("aria-selected")).toBe("true"); // selection unchanged
+
+    // Live Scraping is below the ceiling and IS eligible: fully clickable.
+    expect(live.querySelector("svg[aria-label*='Locked']")).toBeNull();
+    fireEvent.click(live);
+    expect(live.getAttribute("aria-selected")).toBe("true");
+    expect(pool.getAttribute("aria-selected")).toBe("false");
+
+    expect(screen.getByText(/choose how mast finds your opportunities/i)).toBeTruthy();
     expect(screen.getByText(/1 credit per opportunity/i)).toBeTruthy();
     // Nothing the backend does not run.
     expect(screen.queryByText(/mobile.?verified/i)).toBeNull();
@@ -260,7 +283,8 @@ describe("Discover redesign — preserved behavior", () => {
       quantity: 10,
       region: "Canada",
       niche: "Coffee Shop, Gym",
-      mode: "premium", // informational: Pro runs the ranked instant pool
+      mode: "premium", // legacy/informational only
+      method: "instant_pool_ranked", // real field: Pro's default (ceiling) method, unchanged
       channels: ["email", "phone"],
       currencies: [],
     });

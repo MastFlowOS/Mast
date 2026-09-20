@@ -17,34 +17,51 @@ import { useEffect, useRef } from "react";
  * container (not a scroll listener) is the only thing that ever moves a
  * tile's `top`, and only when the page's actual content height changes.
  *
- * PERFORMANCE MODEL — bake once, animate almost nothing:
+ * PERFORMANCE MODEL, PART 1 — bake once, animate almost nothing:
  *
- * Earlier revisions of this component redrew every particle in every visible
- * tile on every animation frame via `requestAnimationFrame`, each redraw
- * issuing thousands of `drawImage` calls under `globalCompositeOperation =
- * "lighter"`. Profiling showed this was the dominant source of dropped
- * frames on the landing page (a majority of ~1,300+ dropped frames and the
- * worst single main-thread tasks in the trace).
+ * Each tile's canvas bitmap is painted once and never redrawn — there is no
+ * `requestAnimationFrame` loop in this file. The handful of particles that
+ * should visibly shimmer (a small, page-wide-capped "highlight" subset) are
+ * excluded from the bake and rendered as tiny DOM elements animated purely
+ * by CSS `@keyframes` on the compositor thread.
  *
- * This revision keeps the exact same visual population and density, but
- * paints each tile's canvas bitmap exactly ONCE, at build time (mount or a
- * genuine layout change) — never again afterward. There is no
- * `requestAnimationFrame` loop in this file at all. The handful of particles
- * that should visibly shimmer (the "glint" highlights, capped to a small,
- * page-wide budget) are excluded from the static bake and instead rendered
- * as tiny absolutely-positioned DOM elements whose twinkle/drift is driven
- * entirely by CSS `@keyframes` (opacity + transform), which the browser runs
- * on the compositor thread with no per-frame JavaScript and no repainting of
- * the large tile bitmaps underneath. An IntersectionObserver pauses those
- * CSS animations (via `animation-play-state`) for tiles that are off-screen,
- * and a `visibilitychange` listener pauses all of them when the tab is
- * backgrounded.
+ * PERFORMANCE MODEL, PART 2 — never block first paint with the bake itself:
+ *
+ * Profiling showed that even with the RAF loop removed, baking the *entire*
+ * document's ~25,000+ particles into canvas bitmaps synchronously on mount
+ * was itself a single ~1.1–1.8 second main-thread task — long enough on its
+ * own to badly delay LCP, because it ran before the browser had a chance to
+ * paint the hero. So the bake is now:
+ *
+ *   - Split into small, bounded units of work (a tile's cluster cores, then
+ *     batches of ~200 stars at a time, then that tile's small DOM highlight
+ *     set) — no single unit takes more than a few milliseconds.
+ *   - Scheduled with `requestIdleCallback` (falling back to `setTimeout` on
+ *     engines without it), so it only runs when the browser has spare main-
+ *     thread time — i.e. after the hero has already had its chance to paint.
+ *   - Ordered so the tile(s) covering the current viewport are baked first;
+ *     an IntersectionObserver promotes a tile's work to the front of the
+ *     queue the moment it's about to scroll into view, so fast scrolling
+ *     doesn't outrun the background bake.
+ *   - Never scroll-driven: the IntersectionObserver only reprioritizes
+ *     already-scheduled idle work: it does not add a scroll listener and
+ *     does not compute anything from `scrollY`.
+ *
+ * The empty tile `<canvas>` elements themselves ARE created synchronously on
+ * mount (cheap — no pixel work, and this layer's ancestor's height comes
+ * from the page's own content, so their presence never affects layout or
+ * causes a layout shift). Only the expensive part — generating the particle
+ * population and painting it — is deferred and chunked.
  *
  * The visual model is unchanged: a chain of GLOBULAR CLUSTERS strung along a
  * wide, wavy spine — a blazing unresolved core, a dense resolved halo
  * falling off steeply, then feathered outliers. Clusters overlap along the
  * path, and a field population bridges the gaps, so the eye reads one thick,
  * clustered golden ribbon rather than a scattering of dots or a drawn line.
+ * The one visible trade-off from the change above: the ribbon now fills in
+ * tile-by-tile over the first idle moments after load, instead of appearing
+ * fully-formed in the same frame as the rest of the page — a deliberate,
+ * small, disclosed visual cost in exchange for a paintable hero.
  *
  * Every particle's position is fixed in document space (`u` = fraction down
  * the total page height, `lx`/`ly` = offset from the spine). Nothing here is
@@ -77,12 +94,19 @@ type Cluster = {
 };
 
 type Tile = {
+  index: number;
   top: number; // document-space px — the tile's fixed offset; only rebuilds on real resize
   height: number;
   el: HTMLDivElement; // wrapper: holds the baked canvas + this tile's CSS-animated highlight elements
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
+  clusters: Cluster[];
+  stars: Star[];
+  baked: boolean;
 };
+
+type IdleDeadlineLike = { didTimeout: boolean; timeRemaining: () => number };
+type Job = (() => void) & { tileIndex?: number };
 
 // Sampled from the reference cluster: ember amber → gold → champagne → white gold
 const STAR_RGB: [number, number, number][] = [
@@ -113,6 +137,15 @@ const TILE_HEIGHT = 1100;
 // into the static canvas bitmap once and never touched again.
 const HIGHLIGHT_BUDGET_DESKTOP = 150;
 const HIGHLIGHT_BUDGET_MOBILE = 70;
+
+// Bounded work-unit sizes. Sized so a single job's own duration stays well
+// under 50ms even at 6x CPU throttling (measured ~0.043ms/star to bake,
+// ~0.0055ms/star to generate on the reference hardware used to tune this) —
+// deliberately conservative because a single job can't be interrupted
+// mid-execution once started, so its own worst-case duration is the real
+// ceiling on task size, not just the scheduler's slice budget.
+const STAR_BAKE_BATCH = 100;
+const STAR_GENERATE_BATCH = 700;
 
 const STYLE_ID = "mast-gold-particle-stream-styles";
 
@@ -207,6 +240,31 @@ function ensureStylesInjected() {
   document.head.appendChild(style);
 }
 
+// requestIdleCallback isn't in every engine (notably Safari) — fall back to a
+// short setTimeout with a synthetic deadline that still yields quickly.
+function scheduleIdle(cb: (deadline: IdleDeadlineLike) => void, timeout: number): number {
+  const w = window as typeof window & {
+    requestIdleCallback?: (cb: (d: IdleDeadlineLike) => void, opts?: { timeout: number }) => number;
+  };
+  if (typeof w.requestIdleCallback === "function") {
+    return w.requestIdleCallback(cb, { timeout });
+  }
+  const start = performance.now();
+  return window.setTimeout(
+    () => {
+      cb({ didTimeout: true, timeRemaining: () => Math.max(0, 8 - (performance.now() - start)) });
+    },
+    Math.min(timeout, 32),
+  );
+}
+
+function cancelIdle(id: number | null) {
+  if (id == null) return;
+  const w = window as typeof window & { cancelIdleCallback?: (id: number) => void };
+  if (typeof w.cancelIdleCallback === "function") w.cancelIdleCallback(id);
+  else window.clearTimeout(id);
+}
+
 export function GoldParticleStream() {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -217,6 +275,8 @@ export function GoldParticleStream() {
     ensureStylesInjected();
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let active = true; // guards every deferred callback against running after unmount
 
     /* ── Spine: the same current, weaving through every section ─────────── */
     const WAYPOINTS: [number, number][] = [
@@ -265,8 +325,7 @@ export function GoldParticleStream() {
     };
 
     // Sampled once into a lookup table — evaluated for every particle during
-    // the one-time bake (and, for the highlight subset, once at build time
-    // to compute a fixed anchor position — never per frame).
+    // the deferred bake, never per animation frame (there is no such loop).
     const LUT_N = 1024;
     const spineLut = new Float32Array(LUT_N + 1);
     for (let i = 0; i <= LUT_N; i++) spineLut[i] = spineRaw(i / LUT_N);
@@ -335,18 +394,70 @@ export function GoldParticleStream() {
     let clusters: Cluster[] = [];
     let stars: Star[] = [];
     let tiles: Tile[] = [];
-    let io: IntersectionObserver | null = null;
+    let tileIO: IntersectionObserver | null = null; // pauses CSS animation for off-screen baked tiles
+    let priorityIO: IntersectionObserver | null = null; // promotes a tile's idle jobs when it nears the viewport
 
     const halfWidth = () =>
       isMobile ? Math.min(110, pageWidth * 0.3) : Math.min(230, pageWidth * 0.16);
 
-    /* ── Population: regenerated only when the mobile/desktop density tier
-       changes, never on every resize and never on scroll ─────────────────── */
-    const generateParticles = () => {
+    /* ── Idle work queue — every expensive step (population generation,
+       cluster/star baking, DOM highlight mounting) is a small bounded job
+       pushed here and drained only when the browser is idle. ────────────── */
+    let jobQueue: Job[] = [];
+    let idleHandle: number | null = null;
+    let idleTimer: number | null = null;
+
+    // Small, fixed wall-clock budget per idle slice, checked with our own
+    // performance.now() rather than trusted purely from the idle deadline.
+    // This matters under CPU throttling: a throttled engine's real execution
+    // time for a "small" batch can balloon well past what the idle deadline
+    // API accounted for, so relying on `deadline.timeRemaining()` alone let
+    // multiple batches get packed into a single >50ms browser task — exactly
+    // the kind of task this scheduler exists to prevent. Capping on our own
+    // clock, after every single job, closes that gap regardless of how the
+    // deadline API is (mis)calibrated for the current throttling rate.
+    const SLICE_BUDGET_MS = 8;
+
+    const pump = (deadline: IdleDeadlineLike) => {
+      idleHandle = null;
+      if (!active) return;
+      const sliceStart = performance.now();
+      while (active && jobQueue.length) {
+        const job = jobQueue.shift()!;
+        job();
+        const elapsed = performance.now() - sliceStart;
+        if (elapsed >= SLICE_BUDGET_MS) break;
+        const remaining = deadline.didTimeout
+          ? SLICE_BUDGET_MS - elapsed
+          : deadline.timeRemaining();
+        if (remaining <= 1) break;
+      }
+      if (active && jobQueue.length) {
+        idleHandle = scheduleIdle(pump, 400);
+      }
+    };
+
+    const kickPump = () => {
+      if (idleHandle != null || !active || jobQueue.length === 0) return;
+      idleHandle = scheduleIdle(pump, 400);
+    };
+
+    // Moves every already-queued job belonging to `tileIndex` to the front of
+    // the queue (preserving their relative order), so a tile about to scroll
+    // into view gets baked before tiles further down the page.
+    const promoteTile = (tileIndex: number) => {
+      if (!jobQueue.some((j) => j.tileIndex === tileIndex)) return;
+      const mine: Job[] = [];
+      const rest: Job[] = [];
+      for (const j of jobQueue) (j.tileIndex === tileIndex ? mine : rest).push(j);
+      jobQueue = [...mine, ...rest];
+    };
+
+    /* ── Population generation — chunked into ~2,500-star batches so the
+       whole document's population is never generated in a single task ──── */
+    const generateParticles = (onDone: () => void) => {
       seed = 90210; // re-seeded so the current is identical every time it's (re)built
 
-      // Density scales with how many screen-heights the document spans, so the
-      // ribbon keeps the same visual thickness whether the page is short or long.
       const viewportRef = window.innerHeight || 800;
       const screens = Math.max(2, Math.min(16, docHeight / viewportRef));
       const CLUSTER_COUNT = Math.round((isMobile ? 6 : 9) * screens);
@@ -398,26 +509,57 @@ export function GoldParticleStream() {
         });
       };
 
-      for (const cl of clusters) {
-        for (let i = 0; i < perCluster; i++) {
-          // King-profile-ish radial sampling: a steep power law packs most of the
-          // population into the blazing core and feathers the rest outward.
-          const rad = Math.pow(rand(), 2.35);
-          const ang = rand() * Math.PI * 2;
-          const ex = Math.cos(ang) * rad * cl.radius;
-          const ey = Math.sin(ang) * rad * cl.radius * 1.5;
-          const core = 1 - Math.min(1, rad * 1.15);
-          pushStar(cl.u, cl.lx + ex, ey, core);
+      // The generation order (cluster-by-cluster, then the field population)
+      // must stay exactly as it was: splitting it across idle callbacks below
+      // only pauses/resumes this same sequential PRNG consumption — it never
+      // reorders it — so every particle's position/size/color is bit-identical
+      // to a fully-synchronous generation.
+      let clusterCursor = 0;
+      let starsInClusterCursor = 0;
+      let fieldCursor = 0;
+
+      const genClusterBatch: Job = () => {
+        let produced = 0;
+        while (clusterCursor < clusters.length && produced < STAR_GENERATE_BATCH) {
+          const cl = clusters[clusterCursor];
+          while (starsInClusterCursor < perCluster && produced < STAR_GENERATE_BATCH) {
+            const rad = Math.pow(rand(), 2.35);
+            const ang = rand() * Math.PI * 2;
+            const ex = Math.cos(ang) * rad * cl.radius;
+            const ey = Math.sin(ang) * rad * cl.radius * 1.5;
+            const core = 1 - Math.min(1, rad * 1.15);
+            pushStar(cl.u, cl.lx + ex, ey, core);
+            starsInClusterCursor++;
+            produced++;
+          }
+          if (starsInClusterCursor >= perCluster) {
+            clusterCursor++;
+            starsInClusterCursor = 0;
+          }
         }
-      }
+        if (clusterCursor < clusters.length) {
+          jobQueue.unshift(genClusterBatch);
+        } else {
+          jobQueue.unshift(genFieldBatch);
+        }
+      };
 
-      // Field population: bridges cluster to cluster so the current never breaks
-      for (let i = 0; i < fieldCount; i++) {
-        const g = gauss();
-        pushStar(rand(), g * 0.62, gauss() * 0.3, Math.max(0, 0.42 - Math.abs(g) * 0.3));
-      }
+      const genFieldBatch: Job = () => {
+        const end = Math.min(fieldCount, fieldCursor + STAR_GENERATE_BATCH);
+        for (; fieldCursor < end; fieldCursor++) {
+          const g = gauss();
+          pushStar(rand(), g * 0.62, gauss() * 0.3, Math.max(0, 0.42 - Math.abs(g) * 0.3));
+        }
+        if (fieldCursor < fieldCount) {
+          jobQueue.unshift(genFieldBatch);
+        } else {
+          assignHighlights();
+          onDone();
+        }
+      };
 
-      assignHighlights();
+      jobQueue.push(genClusterBatch);
+      kickPump();
     };
 
     // Marks a small, page-wide-capped subset of the "glint" stars as
@@ -442,94 +584,21 @@ export function GoldParticleStream() {
       }
     };
 
-    /* ── One-time bake: paints every cluster core (at its resting brightness)
-       and every non-highlight star into this tile's bitmap exactly once.
-       This canvas is never cleared or redrawn again after this call. ────── */
-    const bakeTile = (
-      ctx: CanvasRenderingContext2D,
-      top: number,
-      h: number,
-      tClusters: Cluster[],
-      tStars: Star[],
-    ) => {
-      const w = pageWidth;
-      const hw = halfWidth();
-
-      ctx.clearRect(0, 0, w, h);
-      ctx.globalCompositeOperation = "lighter";
-
-      for (let i = 0; i < tClusters.length; i++) {
-        const cl = tClusters[i];
-        const sy = cl.u * docHeight - top;
-        const rpx = cl.radius * hw;
-        if (sy < -rpx * 2 || sy > h + rpx * 2) continue;
-        const sx = spineAt(cl.u) * w + cl.lx * hw + waveShape(cl.u) * hw;
-        const d = rpx * 1.9;
-        // Resting brightness (the pulse's midpoint) — the CSS glow overlay
-        // layered on top adds the breathing motion back in, additively.
-        ctx.globalAlpha = Math.min(0.5, cl.coreAlpha * 0.5);
-        ctx.drawImage(coreSprite, sx - d / 2, sy - d / 2, d, d);
-      }
-
-      for (let i = 0; i < tStars.length; i++) {
-        const p = tStars[i];
-        if (p.highlight) continue; // rendered as a DOM sparkle instead
-
-        const sy = p.u * docHeight - top + p.ly * hw;
-        if (sy < -30 || sy > h + 30) continue;
-        const sx = spineAt(p.u) * w + p.lx * hw + waveShape(p.u) * hw;
-        if (sx < -40 || sx > w + 40) continue;
-
-        let fade = 1;
-        if (p.u < 0.015) fade = p.u / 0.015;
-        else if (p.u > 0.985) fade = Math.max(0, (1 - p.u) / 0.015);
-
-        const a = Math.min(0.95, p.alpha * fade);
-        if (a <= 0.012) continue;
-
-        const d = p.size * 5.2;
-        ctx.globalAlpha = a;
-        ctx.drawImage(sprites[p.colorIdx], sx - d / 2, sy - d / 2, d, d);
-
-        if (p.glint && a > 0.4) {
-          const len = p.size * 6.5;
-          ctx.globalAlpha = a * 0.34;
-          ctx.strokeStyle = "rgba(255,238,190,1)";
-          ctx.lineWidth = 0.7;
-          ctx.beginPath();
-          ctx.moveTo(sx - len, sy);
-          ctx.lineTo(sx + len, sy);
-          ctx.moveTo(sx, sy - len);
-          ctx.lineTo(sx, sy + len);
-          ctx.stroke();
-        }
-      }
-
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = "source-over";
-    };
-
     /* ── Mounts the CSS-animated highlight elements for a single tile. Their
        positions are computed once, here, and never touched again — all
        subsequent motion (twinkle, drift, pulse) is pure CSS on the
        compositor thread. ─────────────────────────────────────────────────── */
-    const mountHighlights = (
-      tileEl: HTMLDivElement,
-      top: number,
-      h: number,
-      tClusters: Cluster[],
-      tStars: Star[],
-    ) => {
+    const mountHighlights = (tile: Tile) => {
       if (reduceMotion) return;
       const w = pageWidth;
       const hw = halfWidth();
       const frag = document.createDocumentFragment();
 
-      for (let i = 0; i < tClusters.length; i++) {
-        const cl = tClusters[i];
-        const sy = cl.u * docHeight - top;
+      for (let i = 0; i < tile.clusters.length; i++) {
+        const cl = tile.clusters[i];
+        const sy = cl.u * docHeight - tile.top;
         const rpx = cl.radius * hw;
-        if (sy < -rpx * 2 || sy > h + rpx * 2) continue;
+        if (sy < -rpx * 2 || sy > tile.height + rpx * 2) continue;
         const sx = spineAt(cl.u) * w + cl.lx * hw + waveShape(cl.u) * hw;
         const d = rpx * 1.9 * 0.85;
         const period = (2 * Math.PI) / cl.pulseSpeed; // ms — pulseSpeed is radians/ms
@@ -553,12 +622,12 @@ export function GoldParticleStream() {
         frag.appendChild(glow);
       }
 
-      for (let i = 0; i < tStars.length; i++) {
-        const p = tStars[i];
+      for (let i = 0; i < tile.stars.length; i++) {
+        const p = tile.stars[i];
         if (!p.highlight) continue;
 
-        const sy = p.u * docHeight - top + p.ly * hw;
-        if (sy < -30 || sy > h + 30) continue;
+        const sy = p.u * docHeight - tile.top + p.ly * hw;
+        if (sy < -30 || sy > tile.height + 30) continue;
         const sx = spineAt(p.u) * w + p.lx * hw + waveShape(p.u) * hw;
         if (sx < -40 || sx > w + 40) continue;
 
@@ -593,71 +662,144 @@ export function GoldParticleStream() {
         frag.appendChild(sparkle);
       }
 
-      tileEl.appendChild(frag);
+      tile.el.appendChild(frag);
     };
 
-    /* ── Tiling: the document-space rendering surface ───────────────────── */
-    const teardownTiles = () => {
-      io?.disconnect();
-      io = null;
+    /* ── Baking a single tile, split into bounded jobs: cluster cores (cheap,
+       one job), then ~200-star batches, then the DOM highlight mount. Canvas
+       state (clip/composite mode) is only touched at the start/end of the
+       whole sequence, not per batch. ─────────────────────────────────────── */
+    const enqueueTileBakeJobs = (tile: Tile) => {
+      const hw = halfWidth();
+      let starCursor = 0;
+
+      const initJob: Job = () => {
+        tile.ctx.clearRect(0, 0, pageWidth, tile.height);
+        tile.ctx.globalCompositeOperation = "lighter";
+      };
+      initJob.tileIndex = tile.index;
+
+      const clustersJob: Job = () => {
+        const w = pageWidth;
+        for (let i = 0; i < tile.clusters.length; i++) {
+          const cl = tile.clusters[i];
+          const sy = cl.u * docHeight - tile.top;
+          const rpx = cl.radius * hw;
+          if (sy < -rpx * 2 || sy > tile.height + rpx * 2) continue;
+          const sx = spineAt(cl.u) * w + cl.lx * hw + waveShape(cl.u) * hw;
+          const d = rpx * 1.9;
+          // Resting brightness (the pulse's midpoint) — the CSS glow overlay
+          // layered on top adds the breathing motion back in, additively.
+          tile.ctx.globalAlpha = Math.min(0.5, cl.coreAlpha * 0.5);
+          tile.ctx.drawImage(coreSprite, sx - d / 2, sy - d / 2, d, d);
+        }
+      };
+      clustersJob.tileIndex = tile.index;
+
+      const starsBatchJob: Job = () => {
+        const w = pageWidth;
+        const end = Math.min(tile.stars.length, starCursor + STAR_BAKE_BATCH);
+        for (; starCursor < end; starCursor++) {
+          const p = tile.stars[starCursor];
+          if (p.highlight) continue; // rendered as a DOM sparkle instead
+
+          const sy = p.u * docHeight - tile.top + p.ly * hw;
+          if (sy < -30 || sy > tile.height + 30) continue;
+          const sx = spineAt(p.u) * w + p.lx * hw + waveShape(p.u) * hw;
+          if (sx < -40 || sx > w + 40) continue;
+
+          let fade = 1;
+          if (p.u < 0.015) fade = p.u / 0.015;
+          else if (p.u > 0.985) fade = Math.max(0, (1 - p.u) / 0.015);
+
+          const a = Math.min(0.95, p.alpha * fade);
+          if (a <= 0.012) continue;
+
+          const d = p.size * 5.2;
+          tile.ctx.globalAlpha = a;
+          tile.ctx.drawImage(sprites[p.colorIdx], sx - d / 2, sy - d / 2, d, d);
+
+          if (p.glint && a > 0.4) {
+            const len = p.size * 6.5;
+            tile.ctx.globalAlpha = a * 0.34;
+            tile.ctx.strokeStyle = "rgba(255,238,190,1)";
+            tile.ctx.lineWidth = 0.7;
+            tile.ctx.beginPath();
+            tile.ctx.moveTo(sx - len, sy);
+            tile.ctx.lineTo(sx + len, sy);
+            tile.ctx.moveTo(sx, sy - len);
+            tile.ctx.lineTo(sx, sy + len);
+            tile.ctx.stroke();
+          }
+        }
+        if (starCursor < tile.stars.length) {
+          jobQueue.unshift(starsBatchJob);
+        } else {
+          jobQueue.unshift(finishJob);
+        }
+      };
+      starsBatchJob.tileIndex = tile.index;
+
+      const finishJob: Job = () => {
+        tile.ctx.globalAlpha = 1;
+        tile.ctx.globalCompositeOperation = "source-over";
+        mountHighlights(tile);
+        tile.baked = true;
+        if (tile.index === 0) {
+          performance.mark("gold-stream-first-tile-baked");
+          try {
+            performance.measure(
+              "gold-stream-first-tile",
+              "gold-stream-schedule-start",
+              "gold-stream-first-tile-baked",
+            );
+          } catch {
+            // best-effort timing only
+          }
+        }
+        if (tiles.length > 0 && tiles.every((t) => t.baked)) {
+          performance.mark("gold-stream-full-bake-end");
+          try {
+            performance.measure(
+              "gold-stream-full-bake",
+              "gold-stream-schedule-start",
+              "gold-stream-full-bake-end",
+            );
+          } catch {
+            // best-effort timing only
+          }
+        }
+      };
+      finishJob.tileIndex = tile.index;
+
+      jobQueue.push(initJob, clustersJob, starsBatchJob);
+      kickPump();
+    };
+
+    /* ── Tiling: the document-space rendering surface. Tile shells (empty
+       canvases, correctly positioned/sized) are created synchronously and
+       immediately — this is cheap (no star data involved) and lets
+       IntersectionObserver start tracking them right away. Assigning the
+       population to tiles and baking are both deferred/chunked. ─────────── */
+    const teardown = () => {
+      active = false;
+      cancelIdle(idleHandle);
+      idleHandle = null;
+      if (idleTimer != null) window.clearTimeout(idleTimer);
+      jobQueue = [];
+      tileIO?.disconnect();
+      tileIO = null;
+      priorityIO?.disconnect();
+      priorityIO = null;
       for (const t of tiles) t.el.remove();
       tiles = [];
     };
 
-    const buildTiles = () => {
-      teardownTiles();
-      if (pageWidth <= 0 || docHeight <= 0) return;
-
-      const hw = halfWidth();
-      const margin = Math.max(220, hw * 2); // catches blooms/cores whose radius crosses a tile edge
+    const buildTileShells = (onDone: () => void) => {
       const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
       const count = Math.max(1, Math.ceil(docHeight / TILE_HEIGHT));
 
-      const frag = document.createDocumentFragment();
-
-      for (let i = 0; i < count; i++) {
-        const top = i * TILE_HEIGHT;
-        const h = Math.min(TILE_HEIGHT, docHeight - top);
-        if (h <= 0) continue;
-
-        const el = document.createElement("div");
-        el.className = "mast-gold-tile";
-        el.style.top = `${top}px`;
-        el.style.height = `${h}px`;
-
-        const canvas = document.createElement("canvas");
-        canvas.setAttribute("aria-hidden", "true");
-        canvas.width = Math.max(1, Math.round(pageWidth * dpr));
-        canvas.height = Math.max(1, Math.round(h * dpr));
-        const ctx = canvas.getContext("2d");
-        if (!ctx) continue;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        el.appendChild(canvas);
-
-        const yMin = top - margin;
-        const yMax = top + h + margin;
-        const tClusters = clusters.filter((c) => {
-          const y = c.u * docHeight;
-          return y >= yMin - c.radius * hw && y <= yMax + c.radius * hw;
-        });
-        const tStars = stars.filter((p) => {
-          const y = p.u * docHeight + p.ly * hw;
-          return y >= yMin && y <= yMax;
-        });
-
-        bakeTile(ctx, top, h, tClusters, tStars);
-        mountHighlights(el, top, h, tClusters, tStars);
-
-        frag.appendChild(el);
-        tiles.push({ top, height: h, el, canvas, ctx });
-      }
-
-      container.appendChild(frag);
-
-      // Pauses each tile's CSS animations while it's off-screen. This is the
-      // only thing the IntersectionObserver drives now — there is no
-      // per-frame drawing left for it to gate.
-      io = new IntersectionObserver(
+      tileIO = new IntersectionObserver(
         (entries) => {
           for (const entry of entries) {
             const tile = tiles.find((t) => t.el === entry.target);
@@ -666,10 +808,124 @@ export function GoldParticleStream() {
         },
         { rootMargin: "300px 0px" },
       );
-      for (const t of tiles) io.observe(t.el);
+      priorityIO = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            const tile = tiles.find((t) => t.el === entry.target);
+            if (tile && !tile.baked) promoteTile(tile.index);
+          }
+        },
+        { rootMargin: "1000px 0px" },
+      );
+
+      // Allocating a tile's canvas backing store (its actual pixel buffer) is
+      // real, measurable work — for a full-width, ~1100px-tall tile at up to
+      // 1.5x device pixel ratio that's a multi-megapixel GPU-backed surface.
+      // Creating all of them in one synchronous loop was itself large enough
+      // to show up as a single long task under CPU throttling, so each
+      // tile's shell is its own bounded job, same as everything else here.
+      let shellCursor = 0;
+      const shellJob: Job = () => {
+        const i = shellCursor++;
+        const top = i * TILE_HEIGHT;
+        const h = Math.min(TILE_HEIGHT, docHeight - top);
+        if (h > 0) {
+          const el = document.createElement("div");
+          el.className = "mast-gold-tile";
+          el.style.top = `${top}px`;
+          el.style.height = `${h}px`;
+
+          const canvas = document.createElement("canvas");
+          canvas.setAttribute("aria-hidden", "true");
+          canvas.width = Math.max(1, Math.round(pageWidth * dpr));
+          canvas.height = Math.max(1, Math.round(h * dpr));
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            el.appendChild(canvas);
+            container.appendChild(el);
+
+            const tile: Tile = {
+              index: i,
+              top,
+              height: h,
+              el,
+              canvas,
+              ctx,
+              clusters: [],
+              stars: [],
+              baked: false,
+            };
+            tiles.push(tile);
+            tileIO!.observe(el);
+            priorityIO!.observe(el);
+          }
+        }
+        if (shellCursor < count) {
+          jobQueue.unshift(shellJob);
+        } else {
+          onDone();
+        }
+      };
+
+      jobQueue.push(shellJob);
+      kickPump();
     };
 
-    /* ── Full rebuild: only on first mount and on genuine layout changes ─── */
+    // Assigns the population to tiles with a SINGLE chunked pass over `stars`
+    // (checking only each star's own tile and its immediate neighbors, for
+    // the margin overlap — never all tiles), instead of the O(tiles × stars)
+    // cost of filtering the full array once per tile. Each batch is its own
+    // bounded job, and a tile's bake jobs are only enqueued once its
+    // population assignment is complete.
+    const assignPopulationToTilesAndEnqueueBakes = () => {
+      const hw = halfWidth();
+      const margin = Math.max(220, hw * 2); // catches blooms/cores whose radius crosses a tile edge
+
+      const clustersJob: Job = () => {
+        for (const c of clusters) {
+          const y = c.u * docHeight;
+          const idx = Math.max(0, Math.min(tiles.length - 1, Math.floor(y / TILE_HEIGHT)));
+          for (let ti = Math.max(0, idx - 1); ti <= Math.min(tiles.length - 1, idx + 1); ti++) {
+            const tile = tiles[ti];
+            const yMin = tile.top - margin - c.radius * hw;
+            const yMax = tile.top + tile.height + margin + c.radius * hw;
+            if (y >= yMin && y <= yMax) tile.clusters.push(c);
+          }
+        }
+      };
+
+      let starCursor = 0;
+      const starsBatchJob: Job = () => {
+        const end = Math.min(stars.length, starCursor + STAR_GENERATE_BATCH);
+        for (; starCursor < end; starCursor++) {
+          const p = stars[starCursor];
+          const y = p.u * docHeight + p.ly * hw;
+          const idx = Math.max(0, Math.min(tiles.length - 1, Math.floor(y / TILE_HEIGHT)));
+          for (let ti = Math.max(0, idx - 1); ti <= Math.min(tiles.length - 1, idx + 1); ti++) {
+            const tile = tiles[ti];
+            if (y >= tile.top - margin && y <= tile.top + tile.height + margin) tile.stars.push(p);
+          }
+        }
+        if (starCursor < stars.length) {
+          jobQueue.unshift(starsBatchJob);
+        } else {
+          jobQueue.unshift(enqueueAllBakesJob);
+        }
+      };
+
+      const enqueueAllBakesJob: Job = () => {
+        for (const t of tiles) enqueueTileBakeJobs(t);
+      };
+
+      jobQueue.push(clustersJob, starsBatchJob);
+      kickPump();
+    };
+
+    /* ── Full rebuild: only on first mount and on genuine layout changes.
+       Population generation and tile baking are both deferred/chunked — this
+       function only ever does cheap, synchronous setup. ─────────────────── */
     const rebuild = () => {
       const w = container.clientWidth || window.innerWidth;
       const h = container.clientHeight || 1;
@@ -680,20 +936,67 @@ export function GoldParticleStream() {
 
       if (!sizeChanged && !densityTierChanged && tiles.length > 0) return;
 
+      // Cancel any in-flight deferred work from a previous build before
+      // starting a new one (e.g. a resize arriving mid-bake).
+      cancelIdle(idleHandle);
+      idleHandle = null;
+      jobQueue = [];
+      tileIO?.disconnect();
+      tileIO = null;
+      priorityIO?.disconnect();
+      priorityIO = null;
+      for (const t of tiles) t.el.remove();
+      tiles = [];
+
       pageWidth = w;
       docHeight = Math.max(1, h);
       isMobile = mobile;
 
-      if (densityTierChanged) generateParticles();
-      buildTiles();
+      // Tile shells and population generation are independent of each other
+      // (shells only need docHeight; generation only needs cluster/star
+      // math) — kick off both, and only assign the population into tiles
+      // once whichever finishes last is done. Both are chunked/deferred, so
+      // neither blocks the other or the main thread synchronously.
+      let shellsReady = false;
+      let populationReady = !densityTierChanged; // already have stars/clusters if the tier didn't change
+      const maybeAssign = () => {
+        if (active && shellsReady && populationReady) assignPopulationToTilesAndEnqueueBakes();
+      };
+
+      buildTileShells(() => {
+        shellsReady = true;
+        maybeAssign();
+      });
+
+      if (densityTierChanged) {
+        generateParticles(() => {
+          populationReady = true;
+          maybeAssign();
+        });
+      }
     };
 
-    rebuild();
+    // Idle-scheduled the whole build so it runs AFTER the hero has had its
+    // chance to paint, not synchronously during mount. A modest timeout
+    // still guarantees it starts soon even under sustained main-thread load.
+    performance.mark("gold-stream-schedule-start");
+    idleHandle = scheduleIdle(() => {
+      idleHandle = null;
+      if (active) rebuild();
+    }, 200);
 
     // ResizeObserver — NOT a scroll listener — is the only thing that can ever
     // move a tile. It fires on real layout changes (viewport resize, content
     // reflow, fonts/images loading), never on scroll.
-    const ro = new ResizeObserver(() => rebuild());
+    const ro = new ResizeObserver(() => {
+      // Debounced onto idle time too, so a burst of resize events (e.g. a
+      // mobile keyboard opening/closing) can't trigger a synchronous rebuild.
+      if (idleTimer != null) window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(() => {
+        idleTimer = null;
+        if (active) rebuild();
+      }, 120);
+    });
     ro.observe(container);
 
     // Pauses every CSS animation in this layer while the tab is backgrounded.
@@ -706,7 +1009,7 @@ export function GoldParticleStream() {
     return () => {
       ro.disconnect();
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      teardownTiles();
+      teardown();
     };
   }, []);
 

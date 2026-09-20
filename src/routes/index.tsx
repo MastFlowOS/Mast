@@ -5,7 +5,6 @@ import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { SignatureGlobe } from "@/components/mast/landing/SignatureGlobe";
 import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
-import { GoldParticleStream } from "@/components/mast/landing/GoldParticleStream";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -37,14 +36,6 @@ function LandingPage() {
       <SiteNav />
       {/* Page content wrapper sits above deep space */}
       <div className="mast-landing relative z-10 min-h-screen text-foreground overflow-x-clip w-full">
-        {/*
-          Document-space gold current: an absolute inset-0 first child of this
-          exact wrapper, so its height is always the wrapper's real content
-          height (Hero...Footer) and it scrolls with the page like any other
-          content — never a viewport-fixed overlay, never repositioned by JS
-          on scroll. See GoldParticleStream.tsx for the full rationale.
-        */}
-        <GoldParticleStream />
         <Hero />
         <Workflow />
         <ProductShowcase />

@@ -1090,8 +1090,37 @@ function GetLeads() {
             </div>
           </Field>
 
-          {/* Target Region + Opportunity Amount */}
+          {/* Opportunity Amount + Target Region */}
           <div className="grid md:grid-cols-5 md:divide-x divide-border/70 max-md:divide-y">
+            {/* Opportunity Amount — slider approved as-is */}
+            <Field label="Opportunity Amount" className="md:col-span-2">
+              <div className="space-y-3">
+                <p className="text-2xl font-bold tracking-tight text-foreground tabular-nums text-right leading-none">
+                  {quantity.toLocaleString()}
+                  <span className="ml-1.5 text-sm font-medium text-muted-foreground">
+                    businesses
+                  </span>
+                </p>
+                <input
+                  type="range"
+                  min={0}
+                  max={maxSliderIndex}
+                  step={1}
+                  value={Math.min(qtyIndex, maxSliderIndex)}
+                  onChange={(e) => setQtyIndex(Number(e.target.value))}
+                  aria-label="Opportunity amount"
+                  className="w-full accent-[color:var(--brand)] cursor-pointer"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>1</span>
+                  <span className="text-[11px]">
+                    Plan max: {maxQuantity.toLocaleString()}
+                  </span>
+                  <span>{maxQuantity.toLocaleString()}</span>
+                </div>
+              </div>
+            </Field>
+
             <Field label="Target Region" hint="Top picks" className="md:col-span-3">
               <div ref={regionContainerRef} className="relative space-y-2.5">
                 <div className="flex flex-wrap gap-1.5">
@@ -1184,35 +1213,6 @@ function GetLeads() {
                       )}
                     </div>
                   )}
-                </div>
-              </div>
-            </Field>
-
-            {/* Opportunity Amount — slider approved as-is */}
-            <Field label="Opportunity Amount" className="md:col-span-2">
-              <div className="space-y-3">
-                <p className="text-2xl font-bold tracking-tight text-foreground tabular-nums text-right leading-none">
-                  {quantity.toLocaleString()}
-                  <span className="ml-1.5 text-sm font-medium text-muted-foreground">
-                    businesses
-                  </span>
-                </p>
-                <input
-                  type="range"
-                  min={0}
-                  max={maxSliderIndex}
-                  step={1}
-                  value={Math.min(qtyIndex, maxSliderIndex)}
-                  onChange={(e) => setQtyIndex(Number(e.target.value))}
-                  aria-label="Opportunity amount"
-                  className="w-full accent-[color:var(--brand)] cursor-pointer"
-                />
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>1</span>
-                  <span className="text-[11px]">
-                    Plan max: {maxQuantity.toLocaleString()}
-                  </span>
-                  <span>{maxQuantity.toLocaleString()}</span>
                 </div>
               </div>
             </Field>
@@ -1351,10 +1351,10 @@ function GetLeads() {
           <DiscoverAiOverview insights={discoverInsights} loading={!account || !analytics} />
 
           {upgradeMethod && (
-            <div className="flex items-center gap-3 rounded-xl border border-brand/20 bg-brand/5 px-4 py-3">
-              <Zap className="size-4 text-brand shrink-0" />
+            <div className="flex items-center gap-3 rounded-xl border border-brand/10 bg-brand/5 px-4 py-3">
+              <Zap className="size-4 text-brand/70 shrink-0" />
               <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-brand">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-brand/80">
                   {upgradeMethod.label}
                 </p>
                 <p className="text-xs text-muted-foreground truncate">
@@ -1364,7 +1364,7 @@ function GetLeads() {
               <Link
                 to="/dashboard/subscription"
                 title={`Runs on the ${upgradeMethod.minPlanLabel} plan and above`}
-                className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-foreground text-background px-3 py-1.5 text-xs font-bold transition-colors hover:bg-foreground/90"
+                className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-foreground/80 text-background px-3 py-1.5 text-xs font-bold transition-colors hover:bg-foreground/90"
               >
                 Upgrade <ArrowRight className="size-3.5" />
               </Link>
@@ -1515,9 +1515,9 @@ function DiscoverAiOverview({
   const hiddenCount = pool.length - shown.length;
 
   return (
-    <div className="bg-card border border-border rounded-xl px-4 py-3.5">
+    <div className="bg-card border border-border/60 rounded-xl px-4 py-3.5">
       <div className="flex items-center gap-1.5 mb-2">
-        <Sparkles className="size-3.5 text-brand shrink-0" />
+        <Sparkles className="size-3.5 text-brand/70 shrink-0" />
         <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
           AI Overview
         </h3>
@@ -1538,7 +1538,7 @@ function DiscoverAiOverview({
                 <p className={`text-[10px] font-bold uppercase tracking-wider ${CONFIDENCE_STYLES[insight.confidence]}`}>
                   {insight.confidence}
                 </p>
-                <p className="text-[13px] font-medium text-foreground leading-snug">{insight.title}</p>
+                <p className="text-[13px] font-medium text-foreground/90 leading-snug">{insight.title}</p>
                 <p className="text-xs text-muted-foreground leading-snug line-clamp-2">{insight.reason}</p>
                 {isRoute ? (
                   <a href={insight.actionHref} className={actionClass}>

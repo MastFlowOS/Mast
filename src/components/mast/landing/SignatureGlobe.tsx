@@ -49,9 +49,15 @@ const TILT = 0.409;
 // Cinematic slow planetary rotation (radians per second) during free spin
 const BASE_SPEED = 0.024;
 // Visually substantial globe scale within the hero column.
-const SPHERE_FRACTION = 0.32;
+// Exported so GlobeStand can derive its container geometry from the exact
+// same values instead of mirroring them.
+export const SPHERE_FRACTION = 0.32;
 // Vertical seat of the sphere inside the hero column.
-const CENTER_FRACTION = 0.43;
+export const CENTER_FRACTION = 0.43;
+// Default clockwise lean of the polar axis on screen, in degrees. Callers
+// that mount the globe in something with its own lean (GlobeStand) pass
+// `axisTiltDeg` to match it.
+export const DEFAULT_AXIS_TILT_DEG = 10.5;
 const PAN_STRENGTH = 0.35;
 
 // Directional celestial light vector (subtle lunar / solar grazing angle)
@@ -65,7 +71,13 @@ function easeInOutCubic(t: number) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-export function SignatureGlobe({ className = "" }: { className?: string }) {
+export function SignatureGlobe({
+  className = "",
+  axisTiltDeg = DEFAULT_AXIS_TILT_DEG,
+}: {
+  className?: string;
+  axisTiltDeg?: number;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const labelRef = useRef<HTMLDivElement>(null);
@@ -202,10 +214,10 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         cy,
         r * 1.01,
       );
-      oceanBg.addColorStop(0, "rgba(8, 22, 54, 0.98)");
-      oceanBg.addColorStop(0.42, "rgba(6, 16, 42, 0.98)");
-      oceanBg.addColorStop(0.82, "rgba(4, 11, 28, 0.99)");
-      oceanBg.addColorStop(1, "rgba(3, 8, 22, 1)");
+      oceanBg.addColorStop(0, "rgb(8, 22, 54)");
+      oceanBg.addColorStop(0.42, "rgb(6, 16, 42)");
+      oceanBg.addColorStop(0.82, "rgb(4, 11, 28)");
+      oceanBg.addColorStop(1, "rgb(3, 8, 22)");
       ctx.fillStyle = oceanBg;
       ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
       ctx.restore();
@@ -355,36 +367,22 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
           effectiveCY,
           effectiveR * 1.01,
         );
-        oceanBg.addColorStop(0, "rgba(13, 32, 72, 0.98)");
-        oceanBg.addColorStop(0.3, "rgba(8, 21, 52, 0.98)");
-        oceanBg.addColorStop(0.62, "rgba(5, 13, 34, 0.99)");
-        oceanBg.addColorStop(0.86, "rgba(3, 8, 22, 1)");
-        oceanBg.addColorStop(1, "rgba(2, 5, 15, 1)");
+        // Every stop is fully opaque (alpha 1). The body used to end in
+        // 0.98/0.99 stops, which left ~1.5% of whatever sat behind the
+        // canvas bleeding through the whole disc.
+        // The floor of the ramp is deliberately a real navy rather than
+        // near-black: the page behind the globe is ~rgb(8-15, 12-19, 24-32),
+        // and a limb at rgb(2, 5, 15) was tonally indistinguishable from it,
+        // so the sphere's edge vanished and it read as see-through.
+        oceanBg.addColorStop(0, "rgb(17, 40, 88)");
+        oceanBg.addColorStop(0.3, "rgb(12, 29, 68)");
+        oceanBg.addColorStop(0.62, "rgb(9, 22, 54)");
+        oceanBg.addColorStop(0.86, "rgb(7, 17, 42)");
+        oceanBg.addColorStop(1, "rgb(6, 14, 35)");
         oceanBgCache = { key: geometryKey, gradient: oceanBg };
       }
 
       ctx.fillStyle = oceanBg;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
-
-      // Complete 360-degree spherical horizon definition ring
-      let innerRim: CanvasGradient;
-      if (innerRimCache && innerRimCache.key === geometryKey) {
-        innerRim = innerRimCache.gradient;
-      } else {
-        innerRim = ctx.createRadialGradient(
-          cx,
-          effectiveCY,
-          effectiveR * 0.86,
-          cx,
-          effectiveCY,
-          effectiveR,
-        );
-        innerRim.addColorStop(0, "rgba(0, 0, 0, 0)");
-        innerRim.addColorStop(0.72, "rgba(30, 58, 128, 0.07)");
-        innerRim.addColorStop(1, "rgba(58, 96, 182, 0.17)");
-        innerRimCache = { key: geometryKey, gradient: innerRim };
-      }
-      ctx.fillStyle = innerRim;
       ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
 
       const cosTilt = Math.cos(TILT);
@@ -608,8 +606,8 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         );
         bodyShade.addColorStop(0, "rgba(120, 168, 255, 0.07)");
         bodyShade.addColorStop(0.34, "rgba(10, 24, 58, 0)");
-        bodyShade.addColorStop(0.72, "rgba(2, 5, 14, 0.3)");
-        bodyShade.addColorStop(1, "rgba(1, 3, 9, 0.6)");
+        bodyShade.addColorStop(0.72, "rgba(2, 5, 14, 0.2)");
+        bodyShade.addColorStop(1, "rgba(1, 3, 9, 0.4)");
         bodyShadeCache = { key: shadeKey, gradient: bodyShade };
       }
       ctx.fillStyle = bodyShade;
@@ -634,6 +632,30 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
         sheenCache = { key: shadeKey, gradient: sheen };
       }
       ctx.fillStyle = sheen;
+      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
+
+      // Complete 360-degree spherical horizon definition ring. Painted last
+      // (over the shade and sheen) so the shadow side keeps a readable edge —
+      // drawn earlier, the body shade darkened it away and the silhouette
+      // dissolved into the background.
+      let innerRim: CanvasGradient;
+      if (innerRimCache && innerRimCache.key === geometryKey) {
+        innerRim = innerRimCache.gradient;
+      } else {
+        innerRim = ctx.createRadialGradient(
+          cx,
+          effectiveCY,
+          effectiveR * 0.86,
+          cx,
+          effectiveCY,
+          effectiveR,
+        );
+        innerRim.addColorStop(0, "rgba(0, 0, 0, 0)");
+        innerRim.addColorStop(0.72, "rgba(34, 64, 140, 0.08)");
+        innerRim.addColorStop(1, "rgba(64, 106, 196, 0.26)");
+        innerRimCache = { key: geometryKey, gradient: innerRim };
+      }
+      ctx.fillStyle = innerRim;
       ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
 
       ctx.restore();
@@ -757,11 +779,11 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
 
   return (
     <div ref={containerRef} className={`relative select-none pointer-events-none ${className}`}>
-      {/* 1. Digital globe canvas inside 10.5° axial tilt compositing wrapper */}
+      {/* 1. Digital globe canvas inside the axial-lean compositing wrapper */}
       <div
         className="w-full h-full relative"
         style={{
-          transform: "rotate(10.5deg)",
+          transform: `rotate(${axisTiltDeg}deg)`,
           transformOrigin: `${cx}px ${cy}px`,
         }}
       >
@@ -769,7 +791,7 @@ export function SignatureGlobe({ className = "" }: { className?: string }) {
       </div>
 
       {/* 2. Editorial Country Discovery Indicator: Country Name + Opportunity Count (level and horizontal) */}
-      <div className="pointer-events-none absolute left-1/2 bottom-0 -translate-x-1/2 flex flex-col items-center z-30">
+      <div className="pointer-events-none absolute left-1/2 bottom-0 -translate-x-1/2 flex flex-col items-center z-30 whitespace-nowrap">
         <div
           ref={labelRef}
           className="flex flex-col items-center gap-1 pointer-events-none text-center"

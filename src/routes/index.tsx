@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode, type ReactElement } from "
 import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
-import { SignatureGlobe } from "@/components/mast/landing/SignatureGlobe";
+import { GlobeStand } from "@/components/mast/landing/GlobeStand";
 import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
 import {
   Sparkles, Users, Zap, ShieldCheck,
@@ -140,7 +140,7 @@ function Hero() {
 
         {/* Globe column — overflow-visible so zoom animations never clip, z-20 above background atmosphere */}
         <div className="relative h-[300px] sm:h-[375px] md:h-[470px] lg:h-[540px] lg:-mr-4 xl:-mr-6 overflow-visible z-20">
-          <SignatureGlobe className="w-full h-full overflow-visible" />
+          <GlobeStand className="overflow-visible" />
         </div>
       </div>
     </header>

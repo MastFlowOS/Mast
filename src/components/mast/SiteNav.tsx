@@ -31,7 +31,6 @@ type SiteNavProps = {
 
 export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   const [scrolled, setScrolled] = useState(false);
-  const [sheenOffset, setSheenOffset] = useState(0);
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
@@ -42,6 +41,18 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   const logout = useLogout();
 
   const scrolledRef = useRef(false);
+
+  // The sheen's scroll offset is applied straight to the DOM instead of going
+  // through React state. As state it re-rendered the whole nav (and forced an
+  // extra style recalc + repaint) on every scroll frame; the value is purely
+  // visual, so React never needs to know about it. The callback ref also seeds
+  // the position the moment the sheen mounts (it only exists while `scrolled`).
+  const sheenElRef = useRef<HTMLDivElement | null>(null);
+  const sheenOffsetRef = useRef(0);
+  const setSheenEl = useCallback((el: HTMLDivElement | null) => {
+    sheenElRef.current = el;
+    if (el) el.style.backgroundPositionX = `${-sheenOffsetRef.current}px`;
+  }, []);
 
   useEffect(() => {
     let rafId = 0;
@@ -60,7 +71,10 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
         // Slow, subtle celestial sheen that drifts across the header as you
         // scroll — gives the bar a sense of moving with the page instead
         // of sitting as a static, flat-colored strip.
-        setSheenOffset(scrollY * 0.25);
+        const offset = scrollY * 0.25;
+        sheenOffsetRef.current = offset;
+        const sheenEl = sheenElRef.current;
+        if (sheenEl) sheenEl.style.backgroundPositionX = `${-offset}px`;
       });
     };
     window.addEventListener("scroll", handler, { passive: true });
@@ -112,7 +126,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
 
   return (
     <nav
-      className={`sticky top-0 z-50 transition-all duration-300 ${
+      className={`sticky top-0 z-50 transition-[border-color,background-color,box-shadow,backdrop-filter,-webkit-backdrop-filter] duration-300 ${
         scrolled
           ? "border-b border-brand/15 bg-[#010309]/80 backdrop-blur-md shadow-[0_4px_30px_rgba(0,0,0,0.6)]"
           : "border-b border-transparent bg-transparent"
@@ -120,13 +134,13 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
     >
       {scrolled && (
         <div
+          ref={setSheenEl}
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 opacity-80"
           style={{
             backgroundImage:
               "linear-gradient(115deg, transparent 15%, color-mix(in oklab, var(--brand, #c9a66b) 12%, transparent) 48%, transparent 82%)",
             backgroundSize: "220% 100%",
-            backgroundPositionX: `${-sheenOffset}px`,
           }}
         />
       )}

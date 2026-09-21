@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { HAZE_STYLE } from "./atmosphereHaze";
 
 type Star = {
   id: number;
@@ -29,6 +30,154 @@ export type SectionAtmosphereVariant =
   | "pricingHero"
   | "pricingMid"
   | "pricingLower";
+
+// ─── Star rendering: grouped layers (Phase 1B) ───────────────────────────────
+// Previously every star was its own absolutely-positioned <div> with its own
+// CSS animation (210 animated nodes on the landing page, 324 on Pricing), which
+// meant hundreds of independent style invalidations every frame. The star
+// *generators* below are unchanged (same seeds → same positions, sizes and
+// brightness); only how the result is drawn changed:
+//
+//   • Non-pulsing stars ("drift", ~65%) are painted once, into a single static
+//     layer: one element whose background is a small data-URI SVG.
+//   • Pulsing stars are bucketed into a few groups (3 breathe + 2 twinkle per
+//     field). Each group is ONE element with ONE opacity keyframe animation
+//     (compositor-only). Per-star peak brightness is baked into each circle's
+//     fill-opacity; the group animates between that peak and a floor ratio.
+//
+// No JS timers, no RAF, no scroll listeners: it is generated once (useMemo)
+// and animated purely by CSS. Per-star scale pulsing (≤±0.25px) and the 5px
+// drift are intentionally not reproduced — they are below what is visible.
+const STAR_FILL = "#e8f0fe";
+const BREATHE_GROUPS = 3;
+const TWINKLE_GROUPS = 2;
+
+type StarGroup = {
+  url: string;
+  duration: number;
+  delay: number;
+  /** opacity at the trough, as a fraction of the group's peak (1) */
+  lo: number;
+  mid1?: number;
+  mid2?: number;
+  /** opacity when animations are disabled (prefers-reduced-motion) */
+  base: number;
+};
+
+type StarLayers = {
+  staticUrl: string | null;
+  breathe: StarGroup[];
+  twinkle: StarGroup[];
+};
+
+type StarDot = { x: number; y: number; size: number; alpha: number };
+
+// Same fallbacks the old keyframes used when a star carried no --star-op-* vars.
+const BREATHE_DEFAULTS = { min: 0.12, max: 0.5 };
+const TWINKLE_DEFAULTS = { min: 0.15, mid1: 0.35, max: 0.7, mid2: 0.38 };
+
+function starsToUrl(dots: StarDot[]): string {
+  const circles = dots
+    .map((d) => {
+      const r = d.size / 2;
+      // cx/cy are % of the layer box, r is px; translate(r r) reproduces the old
+      // "left/top = x%/y% of the star's top-left corner" placement exactly.
+      return `<circle cx='${d.x.toFixed(2)}%' cy='${d.y.toFixed(2)}%' r='${r.toFixed(2)}' transform='translate(${r.toFixed(2)} ${r.toFixed(2)})' fill='${STAR_FILL}' fill-opacity='${d.alpha.toFixed(3)}'/>`;
+    })
+    .join("");
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg'>${circles}</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+// Sort by duration and split into contiguous buckets so each group runs at a
+// clearly different tempo (avoids one lock-step "heartbeat" across the sky).
+function bucketByDuration(list: Star[], n: number): Star[][] {
+  if (list.length === 0) return [];
+  const k = Math.min(n, list.length);
+  const sorted = [...list].sort((a, b) => a.duration - b.duration);
+  const buckets: Star[][] = Array.from({ length: k }, () => []);
+  sorted.forEach((s, i) => buckets[Math.floor((i * k) / sorted.length)].push(s));
+  return buckets;
+}
+
+const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+function buildGroups(list: Star[], kind: "breathe" | "twinkle"): StarGroup[] {
+  const d = kind === "breathe" ? BREATHE_DEFAULTS : TWINKLE_DEFAULTS;
+  const buckets = bucketByDuration(list, kind === "breathe" ? BREATHE_GROUPS : TWINKLE_GROUPS);
+  return buckets.map((b, i) => {
+    const peaks = b.map((s) => s.opMax ?? d.max);
+    const duration = mean(b.map((s) => s.duration));
+    const ratio = (pick: (s: Star) => number, fallback: number) =>
+      mean(b.map((s, j) => Math.min(1, pick(s) / peaks[j] || fallback / d.max)));
+    return {
+      url: starsToUrl(b.map((s, j) => ({ x: s.x, y: s.y, size: s.size, alpha: peaks[j] }))),
+      duration,
+      // Evenly spread phases across groups instead of clustering near t=0.
+      delay: -(duration * (i + 0.37)) / b.length,
+      lo: ratio((s) => s.opMin ?? d.min, d.min),
+      mid1:
+        kind === "twinkle"
+          ? ratio((s) => s.opMid1 ?? TWINKLE_DEFAULTS.mid1, TWINKLE_DEFAULTS.mid1)
+          : undefined,
+      mid2:
+        kind === "twinkle"
+          ? ratio((s) => s.opMid2 ?? TWINKLE_DEFAULTS.mid2, TWINKLE_DEFAULTS.mid2)
+          : undefined,
+      base: Math.min(1, mean(b.map((s, j) => s.opacity / peaks[j]))),
+    };
+  });
+}
+
+function buildStarLayers(stars: Star[]): StarLayers {
+  const still = stars.filter((s) => s.type === "drift-a" || s.type === "drift-b");
+  return {
+    staticUrl: still.length
+      ? starsToUrl(still.map((s) => ({ x: s.x, y: s.y, size: s.size, alpha: s.opacity })))
+      : null,
+    breathe: buildGroups(
+      stars.filter((s) => s.type === "breathe"),
+      "breathe",
+    ),
+    twinkle: buildGroups(
+      stars.filter((s) => s.type === "twinkle"),
+      "twinkle",
+    ),
+  };
+}
+
+const layerBg = (url: string): React.CSSProperties => ({
+  backgroundImage: url,
+  backgroundSize: "100% 100%",
+  backgroundRepeat: "no-repeat",
+});
+
+function StarLayerStack({ layers }: { layers: StarLayers }) {
+  const group = (g: StarGroup, i: number, kind: "breathe" | "twinkle") => (
+    <div
+      key={`${kind}-${i}`}
+      className={`absolute inset-0 animate-star-group-${kind}`}
+      style={
+        {
+          ...layerBg(g.url),
+          opacity: g.base,
+          "--sg-dur": `${g.duration.toFixed(2)}s`,
+          "--sg-delay": `${g.delay.toFixed(2)}s`,
+          "--sg-lo": g.lo.toFixed(3),
+          ...(g.mid1 !== undefined ? { "--sg-m1": g.mid1.toFixed(3) } : {}),
+          ...(g.mid2 !== undefined ? { "--sg-m2": g.mid2.toFixed(3) } : {}),
+        } as React.CSSProperties
+      }
+    />
+  );
+  return (
+    <>
+      {layers.staticUrl && <div className="absolute inset-0" style={layerBg(layers.staticUrl)} />}
+      {layers.breathe.map((g, i) => group(g, i, "breathe"))}
+      {layers.twinkle.map((g, i) => group(g, i, "twinkle"))}
+    </>
+  );
+}
 
 // ─── Global Night World Foundation (Continuous backdrop beneath all sections) ──
 // Prevents any atmospheric vacuums: ensures every section has faint global night tone,
@@ -74,6 +223,7 @@ export function GlobalAtmosphereFoundation() {
 
     return list;
   }, []);
+  const globalLayers = useMemo(() => buildStarLayers(globalStars), [globalStars]);
 
   return (
     <div
@@ -91,46 +241,17 @@ export function GlobalAtmosphereFoundation() {
 
       {/* 2. Global faint atmospheric depth veils (percentage widths avoid scrollbar vw mismatch) */}
       <div
-        className="absolute right-[5%] top-[12%] w-[75%] max-w-[960px] h-[65vh] blur-[150px] mix-blend-screen opacity-[0.024] animate-atmo-haze"
-        style={{
-          background:
-            "radial-gradient(ellipse at 50% 50%, rgba(70, 110, 200, 0.75) 0%, transparent 75%)",
-        }}
+        className="atmo-soft absolute right-[5%] top-[12%] w-[75%] max-w-[960px] h-[65vh] mix-blend-screen opacity-[0.024] animate-atmo-haze"
+        style={HAZE_STYLE.globalA}
       />
       <div
-        className="absolute left-[8%] top-[55%] w-[80%] max-w-[1000px] h-[55vh] blur-[140px] mix-blend-screen opacity-[0.018]"
-        style={{
-          background:
-            "radial-gradient(ellipse at 50% 50%, rgba(55, 90, 175, 0.65) 0%, transparent 75%)",
-        }}
+        className="atmo-soft absolute left-[8%] top-[55%] w-[80%] max-w-[1000px] h-[55vh] mix-blend-screen opacity-[0.018]"
+        style={HAZE_STYLE.globalB}
       />
 
-      {/* 3. Global sparse distant micro-stars */}
+      {/* 3. Global sparse distant micro-stars (1 static layer + a few grouped pulse layers) */}
       <div className="absolute inset-0">
-        {globalStars.map((star) => {
-          let animClass = "";
-          if (star.type === "drift-a") animClass = "animate-star-drift-a";
-          else if (star.type === "drift-b") animClass = "animate-star-drift-b";
-          else if (star.type === "breathe") animClass = "animate-star-breathe";
-
-          return (
-            <div
-              key={star.id}
-              className={`absolute bg-[#e8f0fe] rounded-full ${animClass}`}
-              style={
-                {
-                  left: `${star.x}%`,
-                  top: `${star.y}%`,
-                  width: `${star.size}px`,
-                  height: `${star.size}px`,
-                  opacity: star.opacity,
-                  "--star-duration": `${star.duration}s`,
-                  "--star-delay": `${star.delay}s`,
-                } as React.CSSProperties
-              }
-            />
-          );
-        })}
+        <StarLayerStack layers={globalLayers} />
       </div>
     </div>
   );
@@ -266,6 +387,7 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
   // useMemo instead of useEffect+setState, so mounting a section (there are
   // up to 10 of these on a single page) costs one render, not two.
   const stars = useMemo(() => generateStars(variant, starBoost), [variant, starBoost]);
+  const layers = useMemo(() => buildStarLayers(stars), [stars]);
 
   // Soft vertical feathering with spatial overlap prevents rectangular boundary cutoffs
   const maskStyle: React.CSSProperties =
@@ -302,80 +424,56 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
         <>
           {/* Full-width continuous night sky depth across the entire hero width */}
           <div
-            className="absolute inset-0 blur-[130px] mix-blend-screen opacity-[0.028] animate-atmo-haze pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(ellipse 95% 65% at 50% 45%, rgba(70, 110, 200, 0.75) 0%, rgba(35, 65, 140, 0.25) 60%, transparent 85%)",
-            }}
+            className="atmo-soft absolute inset-0 mix-blend-screen opacity-[0.028] animate-atmo-haze pointer-events-none"
+            style={HAZE_STYLE.hero}
           />
           {/* Soft planetary back-glow framing the Earth on the right */}
           <div
-            className="absolute right-[4%] top-[10%] w-[52%] max-w-[680px] aspect-square rounded-full blur-[120px] mix-blend-screen opacity-[0.032] pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(circle at 50% 50%, rgba(85, 130, 225, 0.8) 0%, rgba(40, 70, 160, 0.25) 55%, transparent 80%)",
-            }}
+            className="atmo-soft absolute right-[4%] top-[10%] w-[52%] max-w-[680px] aspect-square mix-blend-screen opacity-[0.032] pointer-events-none"
+            style={HAZE_STYLE.heroGlow}
           />
         </>
       )}
 
       {variant === "solutions" && (
         <div
-          className="absolute left-[10%] top-[20%] w-[65%] max-w-[800px] h-[40vh] blur-[120px] mix-blend-screen opacity-[0.024]"
-          style={{
-            background:
-              "radial-gradient(ellipse at 50% 50%, rgba(85, 125, 205, 0.7) 0%, transparent 75%)",
-          }}
+          className="atmo-soft absolute left-[10%] top-[20%] w-[65%] max-w-[800px] h-[40vh] mix-blend-screen opacity-[0.024]"
+          style={HAZE_STYLE.solutions}
         />
       )}
 
       {variant === "features" && (
         <div
-          className="absolute right-[15%] top-[25%] w-[60%] max-w-[760px] h-[40vh] blur-[115px] mix-blend-screen opacity-[0.022]"
-          style={{
-            background:
-              "radial-gradient(ellipse at 50% 50%, rgba(70, 105, 190, 0.65) 0%, transparent 75%)",
-          }}
+          className="atmo-soft absolute right-[15%] top-[25%] w-[60%] max-w-[760px] h-[40vh] mix-blend-screen opacity-[0.022]"
+          style={HAZE_STYLE.features}
         />
       )}
 
       {variant === "platform" && (
         <div
-          className="absolute inset-0 blur-[125px] mix-blend-screen opacity-[0.030] animate-atmo-haze"
-          style={{
-            background:
-              "radial-gradient(ellipse 90% 50% at 50% 45%, rgba(65, 100, 185, 0.7) 0%, transparent 75%)",
-          }}
+          className="atmo-soft absolute inset-0 mix-blend-screen opacity-[0.030] animate-atmo-haze"
+          style={HAZE_STYLE.platform}
         />
       )}
 
       {variant === "customers" && (
         <div
-          className="absolute right-[12%] top-[25%] w-[55%] max-w-[700px] h-[35vh] blur-[110px] mix-blend-screen opacity-[0.016]"
-          style={{
-            background:
-              "radial-gradient(ellipse at 50% 50%, rgba(60, 95, 180, 0.6) 0%, transparent 75%)",
-          }}
+          className="atmo-soft absolute right-[12%] top-[25%] w-[55%] max-w-[700px] h-[35vh] mix-blend-screen opacity-[0.016]"
+          style={HAZE_STYLE.customers}
         />
       )}
 
       {variant === "cta" && (
         <div
-          className={`absolute inset-0 blur-[125px] mix-blend-screen pointer-events-none ${starBoost ? "opacity-[0.036] animate-atmo-haze" : "opacity-[0.024]"}`}
-          style={{
-            background:
-              "radial-gradient(ellipse 85% 55% at 50% 50%, rgba(65, 100, 185, 0.7) 0%, transparent 75%)",
-          }}
+          className={`atmo-soft absolute inset-0 mix-blend-screen pointer-events-none ${starBoost ? "opacity-[0.036] animate-atmo-haze" : "opacity-[0.024]"}`}
+          style={HAZE_STYLE.cta}
         />
       )}
 
       {variant === "footer" && (
         <div
-          className="absolute inset-0 blur-[130px] mix-blend-screen opacity-[0.020] pointer-events-none"
-          style={{
-            background:
-              "radial-gradient(ellipse 85% 60% at 50% 40%, rgba(60, 95, 175, 0.65) 0%, transparent 75%)",
-          }}
+          className="atmo-soft absolute inset-0 mix-blend-screen opacity-[0.020] pointer-events-none"
+          style={HAZE_STYLE.footer}
         />
       )}
 
@@ -383,11 +481,8 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
       {variant === "pricingHero" && (
         <>
           <div
-            className="absolute inset-0 blur-[130px] mix-blend-screen opacity-[0.030] animate-atmo-haze pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(ellipse 92% 60% at 50% 30%, rgba(70, 110, 200, 0.75) 0%, rgba(35, 65, 140, 0.25) 60%, transparent 85%)",
-            }}
+            className="atmo-soft absolute inset-0 mix-blend-screen opacity-[0.030] animate-atmo-haze pointer-events-none"
+            style={HAZE_STYLE.pricingHeroA}
           />
           {/* Navbar-integration reinforcement: this page's atmosphere box already extends
               to y=0 behind the transparent navbar (via the -mt-16 wrapper in pricing.tsx),
@@ -396,18 +491,12 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
               second layer hugs top-0 specifically so that zone reads as clearly part of the
               same night sky the instant the page loads, not just technically-present. */}
           <div
-            className="absolute inset-x-0 top-0 h-[38%] blur-[110px] mix-blend-screen opacity-[0.034] pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(ellipse 100% 100% at 50% 0%, rgba(80, 120, 210, 0.8) 0%, rgba(40, 70, 150, 0.3) 55%, transparent 85%)",
-            }}
+            className="atmo-soft absolute inset-x-0 top-0 h-[38%] mix-blend-screen opacity-[0.034] pointer-events-none"
+            style={HAZE_STYLE.pricingHeroTop}
           />
           <div
-            className="absolute left-[10%] top-[35%] w-[70%] max-w-[900px] h-[45vh] blur-[135px] mix-blend-screen opacity-[0.020] pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(ellipse at 50% 50%, rgba(55, 90, 175, 0.6) 0%, transparent 75%)",
-            }}
+            className="atmo-soft absolute left-[10%] top-[35%] w-[70%] max-w-[900px] h-[45vh] mix-blend-screen opacity-[0.020] pointer-events-none"
+            style={HAZE_STYLE.pricingHeroC}
           />
         </>
       )}
@@ -417,18 +506,12 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
       {variant === "pricingMid" && (
         <>
           <div
-            className="absolute left-[6%] top-[4%] w-[75%] max-w-[900px] h-[50%] blur-[120px] mix-blend-screen opacity-[0.020] pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(ellipse 80% 60% at 50% 45%, rgba(65, 100, 185, 0.6) 0%, transparent 75%)",
-            }}
+            className="atmo-soft absolute left-[6%] top-[4%] w-[75%] max-w-[900px] h-[50%] mix-blend-screen opacity-[0.020] pointer-events-none"
+            style={HAZE_STYLE.pricingMidA}
           />
           <div
-            className="absolute right-[8%] top-[52%] w-[70%] max-w-[860px] h-[48%] blur-[125px] mix-blend-screen opacity-[0.016] pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(ellipse 78% 55% at 50% 50%, rgba(55, 90, 170, 0.55) 0%, transparent 75%)",
-            }}
+            className="atmo-soft absolute right-[8%] top-[52%] w-[70%] max-w-[860px] h-[48%] mix-blend-screen opacity-[0.016] pointer-events-none"
+            style={HAZE_STYLE.pricingMidB}
           />
         </>
       )}
@@ -438,25 +521,16 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
       {variant === "pricingLower" && (
         <>
           <div
-            className="absolute left-[8%] top-[2%] w-[72%] max-w-[860px] h-[44%] blur-[125px] mix-blend-screen opacity-[0.020] pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(ellipse 75% 55% at 50% 45%, rgba(60, 95, 178, 0.55) 0%, transparent 75%)",
-            }}
+            className="atmo-soft absolute left-[8%] top-[2%] w-[72%] max-w-[860px] h-[44%] mix-blend-screen opacity-[0.020] pointer-events-none"
+            style={HAZE_STYLE.pricingLowerA}
           />
           <div
-            className="absolute right-[6%] top-[38%] w-[68%] max-w-[820px] h-[40%] blur-[128px] mix-blend-screen opacity-[0.017] pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(ellipse 72% 50% at 50% 50%, rgba(55, 90, 170, 0.5) 0%, transparent 75%)",
-            }}
+            className="atmo-soft absolute right-[6%] top-[38%] w-[68%] max-w-[820px] h-[40%] mix-blend-screen opacity-[0.017] pointer-events-none"
+            style={HAZE_STYLE.pricingLowerB}
           />
           <div
-            className="absolute left-[10%] top-[74%] w-[65%] max-w-[780px] h-[36%] blur-[125px] mix-blend-screen opacity-[0.015] pointer-events-none"
-            style={{
-              background:
-                "radial-gradient(ellipse 70% 45% at 50% 50%, rgba(55, 90, 170, 0.5) 0%, transparent 75%)",
-            }}
+            className="atmo-soft absolute left-[10%] top-[74%] w-[65%] max-w-[780px] h-[36%] mix-blend-screen opacity-[0.015] pointer-events-none"
+            style={HAZE_STYLE.pricingLowerC}
           />
         </>
       )}
@@ -675,37 +749,9 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
         </div>
       )}
 
-      {/* 3. Section-Specific Living Stars (No Scroll Parallax) */}
+      {/* 3. Section-Specific Living Stars (No Scroll Parallax): 1 static layer + a few grouped pulse layers */}
       <div className="absolute inset-0 pointer-events-none">
-        {stars.map((star) => {
-          let animClass = "";
-          if (star.type === "drift-a") animClass = "animate-star-drift-a";
-          else if (star.type === "drift-b") animClass = "animate-star-drift-b";
-          else if (star.type === "breathe") animClass = "animate-star-breathe";
-          else if (star.type === "twinkle") animClass = "animate-star-twinkle";
-
-          return (
-            <div
-              key={star.id}
-              className={`absolute bg-[#e8f0fe] rounded-full ${animClass}`}
-              style={
-                {
-                  left: `${star.x}%`,
-                  top: `${star.y}%`,
-                  width: `${star.size}px`,
-                  height: `${star.size}px`,
-                  opacity: star.opacity,
-                  "--star-duration": `${star.duration}s`,
-                  "--star-delay": `${star.delay}s`,
-                  ...(star.opMin !== undefined ? { "--star-op-min": star.opMin } : {}),
-                  ...(star.opMid1 !== undefined ? { "--star-op-mid1": star.opMid1 } : {}),
-                  ...(star.opMax !== undefined ? { "--star-op-max": star.opMax } : {}),
-                  ...(star.opMid2 !== undefined ? { "--star-op-mid2": star.opMid2 } : {}),
-                } as React.CSSProperties
-              }
-            />
-          );
-        })}
+        <StarLayerStack layers={layers} />
       </div>
     </div>
   );

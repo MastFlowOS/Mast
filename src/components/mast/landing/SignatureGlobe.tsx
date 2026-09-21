@@ -10,11 +10,11 @@ import {
 /**
  * PERF NOTE — per-dot trigonometry is precomputed once, not per frame.
  *
- * WORLD_DOTS is a fixed ~9,000-point dataset; each dot's latitude never
+ * WORLD_DOTS is a fixed ~5,500-point dataset; each dot's latitude never
  * changes, so `cos(phi)`, `sin(phi)`, `cos(lambda)` and `sin(lambda)` are
  * frame-invariant and are computed exactly once here, at module load,
  * instead of being recomputed from `d.lat`/`d.lon` on every animation frame
- * (previously ~4 trig calls × 9,000 dots = ~36,000 `Math.cos`/`Math.sin`
+ * (previously ~4 trig calls × 5,500 dots = ~22,000 `Math.cos`/`Math.sin`
  * calls every frame just to re-derive values that never change).
  *
  * The one thing that *does* change every frame is `rotation`. Rather than
@@ -87,7 +87,7 @@ const sampleProfile = (table: number[], l: number) => {
 // Land is a perforated shell with light shining through: every dot is a small
 // self-lit pinhole with a warm halo. Core radius as a fraction of the sphere
 // radius, and the sprite (core + halo) as a multiple of the core radius.
-const DOT_CORE_FRACTION = 0.0038;
+const DOT_CORE_FRACTION = 0.0047;
 const DOT_MIN_CORE_PX = 0.75;
 const DOT_SPRITE_SCALE = 2.25;
 const DOT_SPRITE_HALF_PX = 32;
@@ -177,9 +177,9 @@ function createDotSprites(): HTMLCanvasElement[] {
   const size = DOT_SPRITE_HALF_PX * 2;
   for (let k = 0; k < DOT_SPRITE_TINTS; k++) {
     const t = k / (DOT_SPRITE_TINTS - 1);
-    const core = [255, Math.round(mix(242, 190, t)), Math.round(mix(206, 96, t))];
-    const mid = [255, Math.round(mix(208, 160, t)), Math.round(mix(132, 62, t))];
-    const halo = [255, Math.round(mix(170, 130, t)), Math.round(mix(74, 38, t))];
+    const core = [244, Math.round(mix(222, 178, t)), Math.round(mix(172, 92, t))];
+    const mid = [236, Math.round(mix(190, 150, t)), Math.round(mix(124, 60, t))];
+    const halo = [226, Math.round(mix(150, 120, t)), Math.round(mix(70, 36, t))];
     const c = document.createElement("canvas");
     c.width = size;
     c.height = size;
@@ -195,9 +195,9 @@ function createDotSprites(): HTMLCanvasElement[] {
     );
     grad.addColorStop(0, `rgba(${core[0]}, ${core[1]}, ${core[2]}, 1)`);
     grad.addColorStop(0.4, `rgba(${core[0]}, ${core[1]}, ${core[2]}, 1)`);
-    grad.addColorStop(0.54, `rgba(${mid[0]}, ${mid[1]}, ${mid[2]}, 0.62)`);
-    grad.addColorStop(0.72, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.2)`);
-    grad.addColorStop(0.9, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.05)`);
+    grad.addColorStop(0.54, `rgba(${mid[0]}, ${mid[1]}, ${mid[2]}, 0.5)`);
+    grad.addColorStop(0.72, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.15)`);
+    grad.addColorStop(0.9, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.04)`);
     grad.addColorStop(1, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0)`);
     g.fillStyle = grad;
     g.fillRect(0, 0, size, size);
@@ -500,7 +500,7 @@ export function SignatureGlobe({
         const squash = Math.max(0.09, zDepth);
 
         // Self-lit dots stay bright and only ease off toward the limb.
-        const dotAlpha = 0.72 + 0.28 * Math.min(1, zDepth / 0.6);
+        const dotAlpha = 0.6 + 0.28 * Math.min(1, zDepth / 0.6);
         const tint = Math.round(
           (1 - Math.min(1, zDepth / 0.55)) * (DOT_SPRITE_TINTS - 1),
         );

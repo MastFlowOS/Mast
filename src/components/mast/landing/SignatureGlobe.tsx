@@ -10,11 +10,11 @@ import {
 /**
  * PERF NOTE — per-dot trigonometry is precomputed once, not per frame.
  *
- * WORLD_DOTS is a fixed ~8,900-point dataset; each dot's latitude never
+ * WORLD_DOTS is a fixed ~9,000-point dataset; each dot's latitude never
  * changes, so `cos(phi)`, `sin(phi)`, `cos(lambda)` and `sin(lambda)` are
  * frame-invariant and are computed exactly once here, at module load,
  * instead of being recomputed from `d.lat`/`d.lon` on every animation frame
- * (previously ~4 trig calls × 8,900 dots = ~35,600 `Math.cos`/`Math.sin`
+ * (previously ~4 trig calls × 9,000 dots = ~36,000 `Math.cos`/`Math.sin`
  * calls every frame just to re-derive values that never change).
  *
  * The one thing that *does* change every frame is `rotation`. Rather than
@@ -448,7 +448,7 @@ export function SignatureGlobe({
       const cosTilt = Math.cos(TILT);
       const sinTilt = Math.sin(TILT);
 
-      // 2. Land: a regular latitude/longitude lattice of self-lit pinholes.
+      // 2. Land: evenly spaced (relaxed, non-lattice) self-lit pinholes.
       //    Each dot is a pre-rendered sprite (cream core, amber halo) stamped
       //    with its radial axis squashed by the surface's foreshortening, so
       //    rows compress into thin glowing lines toward the limb.

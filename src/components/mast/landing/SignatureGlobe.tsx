@@ -10,11 +10,11 @@ import {
 /**
  * PERF NOTE — per-dot trigonometry is precomputed once, not per frame.
  *
- * WORLD_DOTS is a fixed ~2,880-point dataset; each dot's latitude never
+ * WORLD_DOTS is a fixed ~12,600-point dataset; each dot's latitude never
  * changes, so `cos(phi)`, `sin(phi)`, `cos(lambda)` and `sin(lambda)` are
  * frame-invariant and are computed exactly once here, at module load,
  * instead of being recomputed from `d.lat`/`d.lon` on every animation frame
- * (previously ~4 trig calls × 2,880 dots = ~11,500 `Math.cos`/`Math.sin`
+ * (previously ~4 trig calls × 12,600 dots = ~50,400 `Math.cos`/`Math.sin`
  * calls every frame just to re-derive values that never change).
  *
  * The one thing that *does* change every frame is `rotation`. Rather than
@@ -60,10 +60,151 @@ export const CENTER_FRACTION = 0.43;
 export const DEFAULT_AXIS_TILT_DEG = 10.5;
 const PAN_STRENGTH = 0.35;
 
-// Directional celestial light vector (subtle lunar / solar grazing angle)
-const LIGHT_X = -0.42;
-const LIGHT_Y = 0.48;
-const LIGHT_Z = 0.77;
+// Key light for the matte navy body, in camera space (x right, y up, z toward
+// the viewer). Fitted to the reference render: the ocean is brightest to the
+// upper right of centre and falls to near-black toward the lower left.
+const BODY_LIGHT_X = 0.507;
+const BODY_LIGHT_Y = 0.394;
+const BODY_LIGHT_Z = 0.766;
+
+// Ocean colour as a function of n·L (piecewise linear), fitted to the
+// reference: near-black in the shadowed lower left, a low navy plateau across
+// the body, and a tight blue lift where the light lands.
+const BODY_PROFILE_L = [-0.2, 0, 0.2, 0.4, 0.55, 0.7, 0.8, 0.9, 1.0];
+const BODY_PROFILE_R = [0.3, 0.4, 0.4, 0.6, 1.0, 1.2, 1.4, 1.8, 3.0];
+const BODY_PROFILE_G = [1.5, 2.0, 3.0, 4.5, 6.0, 7.5, 9.5, 15, 28];
+const BODY_PROFILE_B = [4, 5.5, 8, 11, 13.5, 16, 20, 29, 55];
+const sampleProfile = (table: number[], l: number) => {
+  if (l <= BODY_PROFILE_L[0]) return table[0];
+  const last = BODY_PROFILE_L.length - 1;
+  if (l >= BODY_PROFILE_L[last]) return table[last];
+  let j = 0;
+  while (l > BODY_PROFILE_L[j + 1]) j++;
+  const t = (l - BODY_PROFILE_L[j]) / (BODY_PROFILE_L[j + 1] - BODY_PROFILE_L[j]);
+  return table[j] + (table[j + 1] - table[j]) * t;
+};
+
+// Land is a perforated shell with light shining through: every dot is a small
+// self-lit pinhole with a warm halo. Core radius as a fraction of the sphere
+// radius, and the sprite (core + halo) as a multiple of the core radius.
+const DOT_CORE_FRACTION = 0.0038;
+const DOT_MIN_CORE_PX = 0.75;
+const DOT_SPRITE_SCALE = 2.25;
+const DOT_SPRITE_HALF_PX = 32;
+const DOT_SPRITE_TINTS = 6;
+
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const smoothstep = (a: number, b: number, v: number) => {
+  const t = clamp01((v - a) / (b - a));
+  return t * t * (3 - 2 * t);
+};
+const mix = (a: number, b: number, t: number) => a + (b - a) * t;
+
+/**
+ * Pre-renders the matte navy sphere body once (per size) as an offscreen
+ * bitmap: per-pixel Lambert shading from BODY_LIGHT, a faint cool limb
+ * light, and a fine deterministic speckle. It is static in screen space, so
+ * each frame just blits it.
+ *
+ * `axisTiltDeg` is the CSS clockwise lean the canvas is wrapped in; the light
+ * is counter-rotated by that amount so it lands upper-right on screen.
+ */
+function createBodyShade(
+  radiusCss: number,
+  dpr: number,
+  axisTiltDeg: number,
+): { canvas: HTMLCanvasElement; sizeCss: number } | null {
+  const rd = radiusCss * dpr;
+  const size = Math.ceil(rd * 2) + 2;
+  const off = document.createElement("canvas");
+  off.width = size;
+  off.height = size;
+  const octx = off.getContext("2d");
+  if (!octx) return null;
+  const img = octx.createImageData(size, size);
+  const data = img.data;
+
+  const a = (axisTiltDeg * Math.PI) / 180;
+  const lx = BODY_LIGHT_X * Math.cos(a) - BODY_LIGHT_Y * Math.sin(a);
+  const ly = BODY_LIGHT_X * Math.sin(a) + BODY_LIGHT_Y * Math.cos(a);
+  const lz = BODY_LIGHT_Z;
+  const half = size / 2;
+
+  for (let py = 0; py < size; py++) {
+    for (let px = 0; px < size; px++) {
+      const dx = px + 0.5 - half;
+      const dy = py + 0.5 - half;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const coverage = clamp01(rd - d + 0.5);
+      if (coverage <= 0) continue;
+
+      const nx = dx / rd;
+      const ny = -dy / rd;
+      const nr2 = nx * nx + ny * ny;
+      const nz = nr2 >= 1 ? 0 : Math.sqrt(1 - nr2);
+      const lambert = Math.max(0, nx * lx + ny * ly + nz * lz);
+      const lSigned = nx * lx + ny * ly + nz * lz;
+
+      // Cool limb light, present all the way round and a touch stronger on
+      // the lit side.
+      const rimT = smoothstep(0.94, 1, Math.min(1, d / rd));
+      const rim = Math.pow(rimT, 1.3) * (0.75 + 0.25 * lambert);
+
+      // Deterministic speckle (no per-frame or per-load randomness).
+      let h = (px * 374761393 + py * 668265263) | 0;
+      h = (h ^ (h >>> 13)) * 1274126177;
+      h = h ^ (h >>> 16);
+      const n = ((h & 1023) / 1023 - 0.5) * 2;
+
+      const i = (py * size + px) * 4;
+      data[i] = Math.max(0, Math.min(255, sampleProfile(BODY_PROFILE_R, lSigned) + 14 * rim + n * 0.5));
+      data[i + 1] = Math.max(0, Math.min(255, sampleProfile(BODY_PROFILE_G, lSigned) + 26 * rim + n * 1.0));
+      data[i + 2] = Math.max(0, Math.min(255, sampleProfile(BODY_PROFILE_B, lSigned) + 40 * rim + n * 1.8));
+      data[i + 3] = Math.round(coverage * 255);
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  return { canvas: off, sizeCss: size / dpr };
+}
+
+/**
+ * Pre-renders the land-dot sprite in a few tints. Face-on dots are a hot
+ * cream core in a soft amber halo; toward the limb they warm to amber, the way
+ * the reference's foreshortened rows read as thin glowing lines.
+ */
+function createDotSprites(): HTMLCanvasElement[] {
+  const sprites: HTMLCanvasElement[] = [];
+  const size = DOT_SPRITE_HALF_PX * 2;
+  for (let k = 0; k < DOT_SPRITE_TINTS; k++) {
+    const t = k / (DOT_SPRITE_TINTS - 1);
+    const core = [255, Math.round(mix(242, 190, t)), Math.round(mix(206, 96, t))];
+    const mid = [255, Math.round(mix(208, 160, t)), Math.round(mix(132, 62, t))];
+    const halo = [255, Math.round(mix(170, 130, t)), Math.round(mix(74, 38, t))];
+    const c = document.createElement("canvas");
+    c.width = size;
+    c.height = size;
+    const g = c.getContext("2d");
+    if (!g) continue;
+    const grad = g.createRadialGradient(
+      DOT_SPRITE_HALF_PX,
+      DOT_SPRITE_HALF_PX,
+      0,
+      DOT_SPRITE_HALF_PX,
+      DOT_SPRITE_HALF_PX,
+      DOT_SPRITE_HALF_PX,
+    );
+    grad.addColorStop(0, `rgba(${core[0]}, ${core[1]}, ${core[2]}, 1)`);
+    grad.addColorStop(0.4, `rgba(${core[0]}, ${core[1]}, ${core[2]}, 1)`);
+    grad.addColorStop(0.54, `rgba(${mid[0]}, ${mid[1]}, ${mid[2]}, 0.62)`);
+    grad.addColorStop(0.72, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.2)`);
+    grad.addColorStop(0.9, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.05)`);
+    grad.addColorStop(1, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0)`);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+    sprites.push(c);
+  }
+  return sprites;
+}
 
 type Phase = "rotate" | "settle" | "focus" | "release";
 
@@ -99,23 +240,13 @@ export function SignatureGlobe({
     let height = 0;
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
 
-    // Imperative CanvasGradient cache — avoids rebuilding gradients on every
-    // animation frame when the geometry they depend on hasn't changed.
-    // Each entry is invalidated independently based on the exact values used
-    // to construct it, so cached gradients remain visually identical to
-    // freshly-created ones; nothing here changes appearance.
-    type GradientCacheEntry = { key: string; gradient: CanvasGradient };
-    let atmoGlowCache: GradientCacheEntry | null = null;
-    let oceanBgCache: GradientCacheEntry | null = null;
-    let innerRimCache: GradientCacheEntry | null = null;
-    let bodyShadeCache: GradientCacheEntry | null = null;
-    let sheenCache: GradientCacheEntry | null = null;
+    // The sphere body is pre-rendered once per size (see createBodyShade) and
+    // the dot sprites once per mount, so frames only blit and stamp.
+    type BodyShadeEntry = { key: string; canvas: HTMLCanvasElement; sizeCss: number };
+    let bodyShadeCache: BodyShadeEntry | null = null;
+    const dotSprites = createDotSprites();
     const invalidateGradientCaches = () => {
-      atmoGlowCache = null;
-      oceanBgCache = null;
-      innerRimCache = null;
       bodyShadeCache = null;
-      sheenCache = null;
     };
 
     const resize = () => {
@@ -193,32 +324,11 @@ export function SignatureGlobe({
       const cy = height * CENTER_FRACTION;
       const r = Math.min(width, height) * SPHERE_FRACTION;
 
-      const atmoGlow = ctx.createRadialGradient(cx, cy, r * 0.94, cx, cy, r * 1.055);
-      atmoGlow.addColorStop(0, "rgba(56, 96, 192, 0.16)");
-      atmoGlow.addColorStop(0.35, "rgba(42, 78, 168, 0.09)");
-      atmoGlow.addColorStop(1, "rgba(15, 23, 42, 0)");
-      ctx.beginPath();
-      ctx.arc(cx, cy, r * 1.055, 0, Math.PI * 2);
-      ctx.fillStyle = atmoGlow;
-      ctx.fill();
-
       ctx.save();
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.clip();
-      const oceanBg = ctx.createRadialGradient(
-        cx - r * 0.25,
-        cy - r * 0.28,
-        r * 0.12,
-        cx,
-        cy,
-        r * 1.01,
-      );
-      oceanBg.addColorStop(0, "rgb(8, 22, 54)");
-      oceanBg.addColorStop(0.42, "rgb(6, 16, 42)");
-      oceanBg.addColorStop(0.82, "rgb(4, 11, 28)");
-      oceanBg.addColorStop(1, "rgb(3, 8, 22)");
-      ctx.fillStyle = oceanBg;
+      ctx.fillStyle = "rgb(3, 10, 24)";
       ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
       ctx.restore();
     };
@@ -226,7 +336,6 @@ export function SignatureGlobe({
     const draw = (dt: number, timeMs?: number) => {
       ctx.clearRect(0, 0, width, height);
       if (width === 0 || height === 0) return;
-      const currentNow = timeMs ?? performance.now();
 
       if (!reduceMotion) {
         phaseElapsed += dt;
@@ -309,94 +418,51 @@ export function SignatureGlobe({
       const effectiveR = r;
       const effectiveCY = cy;
 
-      // 1. Outer atmospheric limb scattering (Rayleigh haze hugging the outer edge)
-      const envLimbBreath = 1 + Math.sin(currentNow * 0.00032) * 0.04;
-
-      // Geometry-only key — shared by the two gradients whose color stops
-      // never change (oceanBg, innerRim). During the "rotate" and "focus"
-      // phases (the large majority of runtime) cx/effectiveCY/effectiveR are
-      // frame-to-frame constant, so those gradients are reused as-is instead
-      // of being rebuilt every animation frame.
-      const geometryKey = `${cx}|${effectiveCY}|${effectiveR}`;
-      // atmoGlow's color stops depend on envLimbBreath, which drifts every
-      // frame (a slow continuous sine breathing effect), so it is included
-      // in its cache key. This preserves the exact per-frame breathing
-      // animation — atmoGlow will still be rebuilt whenever that value
-      // actually changes, same as before.
-      const atmoGlowKey = `${geometryKey}|${envLimbBreath}`;
-
-      let atmoGlow: CanvasGradient;
-      if (atmoGlowCache && atmoGlowCache.key === atmoGlowKey) {
-        atmoGlow = atmoGlowCache.gradient;
-      } else {
-        atmoGlow = ctx.createRadialGradient(
-          cx,
-          effectiveCY,
-          effectiveR * 0.94,
-          cx,
-          effectiveCY,
-          effectiveR * 1.055,
-        );
-        atmoGlow.addColorStop(0, `rgba(48, 84, 176, ${0.1 * envLimbBreath})`);
-        atmoGlow.addColorStop(0.35, `rgba(36, 68, 152, ${0.055 * envLimbBreath})`);
-        atmoGlow.addColorStop(0.7, "rgba(26, 50, 124, 0.02)");
-        atmoGlow.addColorStop(1, "rgba(15, 23, 42, 0)");
-        atmoGlowCache = { key: atmoGlowKey, gradient: atmoGlow };
+      // 1. Matte navy sphere body: pre-rendered per size (Lambert shading, faint
+      //    cool limb light, fine speckle). No outer glow — the silhouette is a
+      //    crisp edge against the page, like the physical object it mimics.
+      const shadeKey = `${effectiveR}|${dpr}`;
+      if (!bodyShadeCache || bodyShadeCache.key !== shadeKey) {
+        const built = createBodyShade(effectiveR, dpr, axisTiltDeg);
+        bodyShadeCache = built ? { key: shadeKey, ...built } : null;
       }
 
-      ctx.beginPath();
-      ctx.arc(cx, effectiveCY, effectiveR * 1.055, 0, Math.PI * 2);
-      ctx.fillStyle = atmoGlow;
-      ctx.fill();
-
-      // 2. Base planetary ocean body with enhanced 3D curvature visibility
       ctx.save();
       ctx.beginPath();
       ctx.arc(cx, effectiveCY, effectiveR, 0, Math.PI * 2);
       ctx.clip();
 
-      let oceanBg: CanvasGradient;
-      if (oceanBgCache && oceanBgCache.key === geometryKey) {
-        oceanBg = oceanBgCache.gradient;
-      } else {
-        oceanBg = ctx.createRadialGradient(
-          cx - effectiveR * 0.25,
-          effectiveCY - effectiveR * 0.28,
-          effectiveR * 0.12,
-          cx,
-          effectiveCY,
-          effectiveR * 1.01,
+      if (bodyShadeCache) {
+        ctx.drawImage(
+          bodyShadeCache.canvas,
+          cx - bodyShadeCache.sizeCss / 2,
+          effectiveCY - bodyShadeCache.sizeCss / 2,
+          bodyShadeCache.sizeCss,
+          bodyShadeCache.sizeCss,
         );
-        // Every stop is fully opaque (alpha 1). The body used to end in
-        // 0.98/0.99 stops, which left ~1.5% of whatever sat behind the
-        // canvas bleeding through the whole disc.
-        // The floor of the ramp is deliberately a real navy rather than
-        // near-black: the page behind the globe is ~rgb(8-15, 12-19, 24-32),
-        // and a limb at rgb(2, 5, 15) was tonally indistinguishable from it,
-        // so the sphere's edge vanished and it read as see-through.
-        oceanBg.addColorStop(0, "rgb(17, 40, 88)");
-        oceanBg.addColorStop(0.3, "rgb(12, 29, 68)");
-        oceanBg.addColorStop(0.62, "rgb(9, 22, 54)");
-        oceanBg.addColorStop(0.86, "rgb(7, 17, 42)");
-        oceanBg.addColorStop(1, "rgb(6, 14, 35)");
-        oceanBgCache = { key: geometryKey, gradient: oceanBg };
+      } else {
+        ctx.fillStyle = "rgb(3, 10, 24)";
+        ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
       }
-
-      ctx.fillStyle = oceanBg;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
 
       const cosTilt = Math.cos(TILT);
       const sinTilt = Math.sin(TILT);
 
-      // 3. Continental land dots: fine, nocturnal Earth dots
-      // When a country is focused, its dots become visibly light gold (#c9a66b),
-      // allowing the sovereign country silhouette to emerge authentically from the dotted Earth!
+      // 2. Land: a regular latitude/longitude lattice of self-lit pinholes.
+      //    Each dot is a pre-rendered sprite (cream core, amber halo) stamped
+      //    with its radial axis squashed by the surface's foreshortening, so
+      //    rows compress into thin glowing lines toward the limb.
+      //    When a country is focused its dots crossfade to MAST gold (#c9a66b).
       const dotCount = WORLD_DOT_COUNT;
 
       // Rotation's cos/sin computed ONCE per frame (not once per dot — see the
       // perf note above the module-level trig caches at the top of this file).
       const cosR = Math.cos(rotation);
       const sinR = Math.sin(rotation);
+
+      const rho = Math.max(DOT_MIN_CORE_PX, effectiveR * DOT_CORE_FRACTION);
+      const spriteK = (rho * DOT_SPRITE_SCALE) / DOT_SPRITE_HALF_PX;
+      const dotRadius = rho * 1.15;
 
       for (let i = 0; i < dotCount; i++) {
         // 3D Unit sphere coordinates — cosPhi/sinPhi/cosLambda/sinLambda are
@@ -425,62 +491,64 @@ export function SignatureGlobe({
         const sx = cx + x * effectiveR;
         const sy = effectiveCY - y * effectiveR;
 
-        // Natural directional lighting calculation
-        const dotLight = x * LIGHT_X + y * LIGHT_Y + z * LIGHT_Z;
-        const sunFactor = Math.max(0, dotLight);
         const zDepth = Math.max(0, Math.min(1, z));
 
-        // Base planetary land luminosity: visible even in darkest shadow
-        const luminosity = (0.24 + sunFactor * 0.48) * (0.76 + 0.24 * zDepth);
-        const dotRadius = Math.max(0.7, 0.82 + 0.28 * zDepth);
+        // Foreshortening: squash along the radial (limb-ward) direction.
+        const rad = Math.sqrt(x * x + y * y);
+        const ux = rad > 1e-4 ? x / rad : 1;
+        const uy = rad > 1e-4 ? -y / rad : 0;
+        const squash = Math.max(0.09, zDepth);
 
-        // Base nocturnal palette: pale silvery-blue in light, deep nocturnal slate in shadow
-        const rVal = Math.round(135 + sunFactor * 75);
-        const gVal = Math.round(165 + sunFactor * 65);
-        const bVal = Math.round(215 + sunFactor * 40);
+        // Self-lit dots stay bright and only ease off toward the limb.
+        const dotAlpha = 0.72 + 0.28 * Math.min(1, zDepth / 0.6);
+        const tint = Math.round(
+          (1 - Math.min(1, zDepth / 0.55)) * (DOT_SPRITE_TINTS - 1),
+        );
 
         // Check if dot belongs to the active focus country
         const isTargetCountry = currentTarget && targetIdx >= 0 && DOT_COUNTRY_IDS[i] === targetIdx;
+        const tGold = isTargetCountry ? countryBaseGold : 0;
 
-        if (isTargetCountry && countryBaseGold > 0.001) {
-          const tGold = countryBaseGold; // 1.0 (peak focus) -> 0.0 (end of release)
+        // Non-focus dots quieten while a country is focused and return to full
+        // brightness as countryBaseGold drops back to 0.
+        const spriteAlpha = isTargetCountry
+          ? dotAlpha * (1 - 0.5 * tGold)
+          : dotAlpha * (1 - 0.42 * countryBaseGold);
 
-          // Continuous color interpolation from normal nocturnal Earth directly to full MAST gold #c9a66b:
-          // releaseProgress = 0 (tGold = 1.0) -> full MAST gold #c9a66b (201, 166, 107)
-          // releaseProgress = 0.5 (tGold = 0.5) -> soft desaturated pale gold / blue-gold midpoint
-          // releaseProgress = 1.0 (tGold = 0.0) -> exact normal nocturnal Earth land color (rVal, gVal, bVal)
-          const goldR = Math.round(rVal * (1 - tGold) + 201 * tGold);
-          const goldG = Math.round(gVal * (1 - tGold) + 166 * tGold);
-          const goldB = Math.round(bVal * (1 - tGold) + 107 * tGold);
+        const sprite = dotSprites[tint];
+        if (sprite && spriteAlpha > 0.004) {
+          ctx.globalAlpha = spriteAlpha;
+          ctx.setTransform(
+            dpr * ux * squash * spriteK,
+            dpr * uy * squash * spriteK,
+            dpr * -uy * spriteK,
+            dpr * ux * spriteK,
+            dpr * sx,
+            dpr * sy,
+          );
+          ctx.drawImage(sprite, -DOT_SPRITE_HALF_PX, -DOT_SPRITE_HALF_PX);
+        }
 
-          // Continuous luminance interpolation: NEVER dims to 0 or becomes transparent!
-          // Country always maintains normal geographic visibility, smoothly transitioning between gold and nocturnal Earth
+        if (isTargetCountry && tGold > 0.001) {
+          // Continuous crossfade from the lit pinhole to full MAST gold #c9a66b
+          // (201, 166, 107): tGold 1.0 (peak focus) -> 0.0 (end of release).
           const isSmallCountry = ["EGY", "FRA", "DEU", "JPN", "NZL"].includes(currentTarget.iso);
-          const targetCountryLum = (isSmallCountry ? 0.6 : 0.52) + 0.1 * zDepth;
-          const dotLum = luminosity * (1 - tGold) + targetCountryLum * tGold;
-
-          // Continuous radius interpolation
+          const targetCountryLum = (isSmallCountry ? 0.88 : 0.82) + 0.1 * zDepth;
           const targetCountryDotR = isSmallCountry
             ? Math.max(1.05, dotRadius * 1.3)
             : Math.max(0.85, dotRadius * 1.15);
           const curDotR = dotRadius * (1 - tGold) + targetCountryDotR * tGold;
 
+          ctx.globalAlpha = 1;
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
           ctx.beginPath();
           ctx.arc(sx, sy, curDotR, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${goldR}, ${goldG}, ${goldB}, ${dotLum})`;
-          ctx.fill();
-        } else {
-          // Normal nocturnal continent point outside the focus country
-          // Quietened slightly during active country focus; returns smoothly to full brightness as countryBaseGold drops to 0
-          const nonTargetDim = 1 - 0.22 * countryBaseGold;
-          const quietLum = luminosity * nonTargetDim;
-
-          ctx.beginPath();
-          ctx.arc(sx, sy, dotRadius, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${rVal}, ${gVal}, ${bVal}, ${quietLum})`;
+          ctx.fillStyle = `rgba(201, 166, 107, ${targetCountryLum * tGold})`;
           ctx.fill();
         }
       }
+      ctx.globalAlpha = 1;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       // 4. Sequential Opportunity Dots (The Main Focus: One-by-One Lead Discovery)
       // Level 3 in visual hierarchy: Unmistakably bright MAST gold, crisp core, visible halo & atmospheric bloom
@@ -586,77 +654,6 @@ export function SignatureGlobe({
           }
         }
       }
-
-      // 5. Physical light response, applied over the dotted surface so the map
-      //    reads as printed ON the sphere rather than pasted in front of it.
-      //    Lighting matches the cradle: key from the upper left, warm bronze
-      //    bounce from the meridian band on the right.
-      const shadeKey = `${geometryKey}|shade`;
-      let bodyShade: CanvasGradient;
-      if (bodyShadeCache && bodyShadeCache.key === shadeKey) {
-        bodyShade = bodyShadeCache.gradient;
-      } else {
-        bodyShade = ctx.createRadialGradient(
-          cx - effectiveR * 0.42,
-          effectiveCY - effectiveR * 0.46,
-          effectiveR * 0.1,
-          cx - effectiveR * 0.18,
-          effectiveCY - effectiveR * 0.16,
-          effectiveR * 1.5,
-        );
-        bodyShade.addColorStop(0, "rgba(120, 168, 255, 0.07)");
-        bodyShade.addColorStop(0.34, "rgba(10, 24, 58, 0)");
-        bodyShade.addColorStop(0.72, "rgba(2, 5, 14, 0.2)");
-        bodyShade.addColorStop(1, "rgba(1, 3, 9, 0.4)");
-        bodyShadeCache = { key: shadeKey, gradient: bodyShade };
-      }
-      ctx.fillStyle = bodyShade;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
-
-      // Restrained glass specular on the key side — a sheen, not a hotspot
-      let sheen: CanvasGradient;
-      if (sheenCache && sheenCache.key === shadeKey) {
-        sheen = sheenCache.gradient;
-      } else {
-        sheen = ctx.createRadialGradient(
-          cx - effectiveR * 0.46,
-          effectiveCY - effectiveR * 0.5,
-          0,
-          cx - effectiveR * 0.46,
-          effectiveCY - effectiveR * 0.5,
-          effectiveR * 0.62,
-        );
-        sheen.addColorStop(0, "rgba(150, 192, 255, 0.09)");
-        sheen.addColorStop(0.45, "rgba(96, 146, 226, 0.035)");
-        sheen.addColorStop(1, "rgba(60, 100, 180, 0)");
-        sheenCache = { key: shadeKey, gradient: sheen };
-      }
-      ctx.fillStyle = sheen;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
-
-      // Complete 360-degree spherical horizon definition ring. Painted last
-      // (over the shade and sheen) so the shadow side keeps a readable edge —
-      // drawn earlier, the body shade darkened it away and the silhouette
-      // dissolved into the background.
-      let innerRim: CanvasGradient;
-      if (innerRimCache && innerRimCache.key === geometryKey) {
-        innerRim = innerRimCache.gradient;
-      } else {
-        innerRim = ctx.createRadialGradient(
-          cx,
-          effectiveCY,
-          effectiveR * 0.86,
-          cx,
-          effectiveCY,
-          effectiveR,
-        );
-        innerRim.addColorStop(0, "rgba(0, 0, 0, 0)");
-        innerRim.addColorStop(0.72, "rgba(34, 64, 140, 0.08)");
-        innerRim.addColorStop(1, "rgba(64, 106, 196, 0.26)");
-        innerRimCache = { key: geometryKey, gradient: innerRim };
-      }
-      ctx.fillStyle = innerRim;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
 
       ctx.restore();
 

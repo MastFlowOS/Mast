@@ -44,6 +44,29 @@ for (let i = 0; i < WORLD_DOT_COUNT; i++) {
   WORLD_DOT_SIN_LAMBDA[i] = Math.sin(lambda);
 }
 
+// Precomputed city / metropolitan density index (0: rural, 1: mid-urban, 2: major metro/coastline)
+// Aligns with the illuminated urban constellations seen in the reference photograph
+const WORLD_DOT_CITY_LEVEL = new Uint8Array(WORLD_DOT_COUNT);
+for (let i = 0; i < WORLD_DOT_COUNT; i++) {
+  const d = WORLD_DOTS[i];
+  const lat = d.lat;
+  const lon = d.lon;
+  const isUSMegalopolis = lat >= 26 && lat <= 48 && lon >= -92 && lon <= -68;
+  const isUSWestCoast = lat >= 30 && lat <= 50 && lon >= -124 && lon <= -114;
+  const isCentralAm = lat >= 12 && lat <= 24 && lon >= -102 && lon <= -80;
+  const isSAmCoastal =
+    (lat >= -36 && lat <= -18 && lon >= -52 && lon <= -38) ||
+    (lat >= -5 && lat <= 12 && lon >= -78 && lon <= -64);
+  const isEurope = lat >= 36 && lat <= 58 && lon >= -9 && lon <= 26;
+  const isEastAsia = lat >= 20 && lat <= 42 && lon >= 110 && lon <= 142;
+
+  if (isUSMegalopolis || isEurope || isSAmCoastal) {
+    WORLD_DOT_CITY_LEVEL[i] = 2;
+  } else if (isUSWestCoast || isCentralAm || isEastAsia) {
+    WORLD_DOT_CITY_LEVEL[i] = 1;
+  }
+}
+
 // Fixed Earth axial tilt: 23.44 degrees in radians
 const TILT = 0.409;
 // Cinematic slow planetary rotation (radians per second) during free spin
@@ -54,18 +77,16 @@ const BASE_SPEED = 0.024;
 export const SPHERE_FRACTION = 0.32;
 // Vertical seat of the sphere inside the hero column.
 export const CENTER_FRACTION = 0.43;
-// Default clockwise lean of the polar axis on screen, in degrees. Callers
-// that mount the globe in something with its own lean (GlobeStand) pass
-// `axisTiltDeg` to match it.
-export const DEFAULT_AXIS_TILT_DEG = 10.5;
+// Polar axis tilt in degrees matching the stand's 21.5° brass semi-meridian
+export const DEFAULT_AXIS_TILT_DEG = 21.5;
 const PAN_STRENGTH = 0.35;
 
 // Key light for the matte navy body, in camera space (x right, y up, z toward
-// the viewer). Fitted to the reference render: the ocean is brightest to the
-// upper right of centre and falls to near-black toward the lower left.
-const BODY_LIGHT_X = 0.507;
-const BODY_LIGHT_Y = 0.394;
-const BODY_LIGHT_Z = 0.766;
+// the viewer). Fitted to the reference photograph: warm celestial illumination
+// lands on the upper-right hemisphere (Europe, North-East Atlantic).
+const BODY_LIGHT_X = 0.58;
+const BODY_LIGHT_Y = 0.42;
+const BODY_LIGHT_Z = 0.69;
 
 // Ocean colour as a function of n·L (piecewise linear), fitted to the
 // reference: near-black in the shadowed lower left, a low navy plateau across
@@ -87,9 +108,9 @@ const sampleProfile = (table: number[], l: number) => {
 // Land is a perforated shell with light shining through: every dot is a small
 // self-lit pinhole with a warm halo. Core radius as a fraction of the sphere
 // radius, and the sprite (core + halo) as a multiple of the core radius.
-const DOT_CORE_FRACTION = 0.0047;
-const DOT_MIN_CORE_PX = 0.75;
-const DOT_SPRITE_SCALE = 2.25;
+const DOT_CORE_FRACTION = 0.0048;
+const DOT_MIN_CORE_PX = 0.8;
+const DOT_SPRITE_SCALE = 2.35;
 const DOT_SPRITE_HALF_PX = 32;
 const DOT_SPRITE_TINTS = 6;
 
@@ -102,12 +123,9 @@ const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 
 /**
  * Pre-renders the matte navy sphere body once (per size) as an offscreen
- * bitmap: per-pixel Lambert shading from BODY_LIGHT, a faint cool limb
- * light, and a fine deterministic speckle. It is static in screen space, so
- * each frame just blits it.
- *
- * `axisTiltDeg` is the CSS clockwise lean the canvas is wrapped in; the light
- * is counter-rotated by that amount so it lands upper-right on screen.
+ * bitmap: per-pixel Lambert shading from BODY_LIGHT, warm golden specular sheen
+ * matching the reference's celestial bounce on the upper right, a faint cool limb
+ * light, and a fine deterministic speckle.
  */
 function createBodyShade(
   radiusCss: number,
@@ -145,6 +163,9 @@ function createBodyShade(
       const lambert = Math.max(0, nx * lx + ny * ly + nz * lz);
       const lSigned = nx * lx + ny * ly + nz * lz;
 
+      // Warm golden specular sheen on upper-right ocean from celestial stardust
+      const goldSheen = Math.pow(lambert, 2.4);
+
       // Cool limb light, present all the way round and a touch stronger on
       // the lit side.
       const rimT = smoothstep(0.94, 1, Math.min(1, d / rd));
@@ -157,9 +178,18 @@ function createBodyShade(
       const n = ((h & 1023) / 1023 - 0.5) * 2;
 
       const i = (py * size + px) * 4;
-      data[i] = Math.max(0, Math.min(255, sampleProfile(BODY_PROFILE_R, lSigned) + 14 * rim + n * 0.5));
-      data[i + 1] = Math.max(0, Math.min(255, sampleProfile(BODY_PROFILE_G, lSigned) + 26 * rim + n * 1.0));
-      data[i + 2] = Math.max(0, Math.min(255, sampleProfile(BODY_PROFILE_B, lSigned) + 40 * rim + n * 1.8));
+      data[i] = Math.max(
+        0,
+        Math.min(255, sampleProfile(BODY_PROFILE_R, lSigned) + 14 * rim + 38 * goldSheen + n * 0.5),
+      );
+      data[i + 1] = Math.max(
+        0,
+        Math.min(255, sampleProfile(BODY_PROFILE_G, lSigned) + 26 * rim + 24 * goldSheen + n * 1.0),
+      );
+      data[i + 2] = Math.max(
+        0,
+        Math.min(255, sampleProfile(BODY_PROFILE_B, lSigned) + 40 * rim + 8 * goldSheen + n * 1.8),
+      );
       data[i + 3] = Math.round(coverage * 255);
     }
   }
@@ -169,17 +199,17 @@ function createBodyShade(
 
 /**
  * Pre-renders the land-dot sprite in a few tints. Face-on dots are a hot
- * cream core in a soft amber halo; toward the limb they warm to amber, the way
- * the reference's foreshortened rows read as thin glowing lines.
+ * luminous gold core in a glowing amber halo; toward the limb they warm to deep
+ * amber, matching the reference photograph's golden illuminated continents.
  */
 function createDotSprites(): HTMLCanvasElement[] {
   const sprites: HTMLCanvasElement[] = [];
   const size = DOT_SPRITE_HALF_PX * 2;
   for (let k = 0; k < DOT_SPRITE_TINTS; k++) {
     const t = k / (DOT_SPRITE_TINTS - 1);
-    const core = [244, Math.round(mix(222, 178, t)), Math.round(mix(172, 92, t))];
-    const mid = [236, Math.round(mix(190, 150, t)), Math.round(mix(124, 60, t))];
-    const halo = [226, Math.round(mix(150, 120, t)), Math.round(mix(70, 36, t))];
+    const core = [255, Math.round(mix(236, 202, t)), Math.round(mix(182, 115, t))];
+    const mid = [248, Math.round(mix(196, 156, t)), Math.round(mix(108, 48, t))];
+    const halo = [236, Math.round(mix(162, 118, t)), Math.round(mix(54, 18, t))];
     const c = document.createElement("canvas");
     c.width = size;
     c.height = size;
@@ -194,10 +224,10 @@ function createDotSprites(): HTMLCanvasElement[] {
       DOT_SPRITE_HALF_PX,
     );
     grad.addColorStop(0, `rgba(${core[0]}, ${core[1]}, ${core[2]}, 1)`);
-    grad.addColorStop(0.4, `rgba(${core[0]}, ${core[1]}, ${core[2]}, 1)`);
-    grad.addColorStop(0.54, `rgba(${mid[0]}, ${mid[1]}, ${mid[2]}, 0.5)`);
-    grad.addColorStop(0.72, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.15)`);
-    grad.addColorStop(0.9, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.04)`);
+    grad.addColorStop(0.38, `rgba(${core[0]}, ${core[1]}, ${core[2]}, 1)`);
+    grad.addColorStop(0.55, `rgba(${mid[0]}, ${mid[1]}, ${mid[2]}, 0.58)`);
+    grad.addColorStop(0.74, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.22)`);
+    grad.addColorStop(0.9, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0.05)`);
     grad.addColorStop(1, `rgba(${halo[0]}, ${halo[1]}, ${halo[2]}, 0)`);
     g.fillStyle = grad;
     g.fillRect(0, 0, size, size);
@@ -448,6 +478,26 @@ export function SignatureGlobe({
       const cosTilt = Math.cos(TILT);
       const sinTilt = Math.sin(TILT);
 
+      // Pole contact occlusion — soft shadow where the brass pivot cups grip the ball
+      const northPoleX = cx + effectiveR * 0.3665;
+      const northPoleY = effectiveCY - effectiveR * 0.9304;
+      const southPoleX = cx - effectiveR * 0.3665;
+      const southPoleY = effectiveCY + effectiveR * 0.9304;
+
+      const poleOccRadius = effectiveR * 0.095;
+      const drawPoleOcclusion = (px: number, py: number) => {
+        const occGrad = ctx.createRadialGradient(px, py, 0, px, py, poleOccRadius);
+        occGrad.addColorStop(0, "rgba(0, 0, 0, 0.65)");
+        occGrad.addColorStop(0.5, "rgba(0, 0, 0, 0.25)");
+        occGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = occGrad;
+        ctx.beginPath();
+        ctx.arc(px, py, poleOccRadius, 0, Math.PI * 2);
+        ctx.fill();
+      };
+      drawPoleOcclusion(northPoleX, northPoleY);
+      drawPoleOcclusion(southPoleX, southPoleY);
+
       // 2. Land: evenly spaced (relaxed, non-lattice) self-lit pinholes.
       //    Each dot is a pre-rendered sprite (cream core, amber halo) stamped
       //    with its radial axis squashed by the surface's foreshortening, so
@@ -515,18 +565,39 @@ export function SignatureGlobe({
           ? dotAlpha * (1 - 0.5 * tGold)
           : dotAlpha * (1 - 0.42 * countryBaseGold);
 
+        // Metropolitan / city light boost matching orbital night lights in the reference
+        const cityLevel = WORLD_DOT_CITY_LEVEL[i];
+        let finalSpriteK = spriteK;
+        let baseSpriteAlpha = spriteAlpha;
+        if (cityLevel === 2) {
+          finalSpriteK = spriteK * 1.34;
+          baseSpriteAlpha = Math.min(1, spriteAlpha * 1.35);
+        } else if (cityLevel === 1) {
+          finalSpriteK = spriteK * 1.18;
+          baseSpriteAlpha = Math.min(1, spriteAlpha * 1.2);
+        }
+
         const sprite = dotSprites[tint];
-        if (sprite && spriteAlpha > 0.004) {
-          ctx.globalAlpha = spriteAlpha;
+        if (sprite && baseSpriteAlpha > 0.004) {
+          ctx.globalAlpha = baseSpriteAlpha;
           ctx.setTransform(
-            dpr * ux * squash * spriteK,
-            dpr * uy * squash * spriteK,
-            dpr * -uy * spriteK,
-            dpr * ux * spriteK,
+            dpr * ux * squash * finalSpriteK,
+            dpr * uy * squash * finalSpriteK,
+            dpr * -uy * finalSpriteK,
+            dpr * ux * finalSpriteK,
             dpr * sx,
             dpr * sy,
           );
           ctx.drawImage(sprite, -DOT_SPRITE_HALF_PX, -DOT_SPRITE_HALF_PX);
+
+          // Extra luminous pinpoint for metropolitan city clusters
+          if (cityLevel > 0 && zDepth > 0.25) {
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.beginPath();
+            ctx.arc(sx, sy, dotRadius * (cityLevel === 2 ? 0.72 : 0.55), 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, 250, 235, ${0.85 * baseSpriteAlpha})`;
+            ctx.fill();
+          }
         }
 
         if (isTargetCountry && tGold > 0.001) {

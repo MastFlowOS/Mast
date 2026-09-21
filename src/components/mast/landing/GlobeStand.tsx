@@ -6,12 +6,11 @@ import {
 
 /**
  * GlobeStand — composites the approved static bronze stand PNG with the
- * existing live <SignatureGlobe/> canvas so the two read as ONE physical
- * object: a sphere mounted between the stand's two pivots, seated inside its
- * meridian ring.
+ * existing live <SignatureGlobe/> canvas so the globe reads as one physical
+ * object: a sphere held by the stand's two pivots inside its meridian ring.
  *
  *  - the stand is one static <img>: never redrawn, animated, or recreated in
- *    SVG/Canvas/WebGL, and the PNG itself is not modified
+ *    SVG/Canvas/WebGL, and the PNG is not modified
  *  - <SignatureGlobe/> keeps its own canvas, rAF loop, rotation and data; this
  *    file only decides where its box sits, how large it is, and how far its
  *    polar axis leans
@@ -19,44 +18,37 @@ import {
  *
  * GEOMETRY (all numbers are pixels of the 1072x1467 stand asset)
  * --------------------------------------------------------------
- * Measured from the alpha channel of the asset, not eyeballed.
+ * Measured from the alpha channel of the asset, not eyeballed:
  *
- * The previous revision sized the globe as "the largest disc that touches no
- * stand pixel" (R 416 at 522,557). That constraint was the bug: it is the
- * definition of a sphere that is NEAR the hardware rather than HELD by it, so
- * the result always read as a ring plus a floating digital sphere. On a real
- * globe the poles sit INSIDE the pivot cups — the hardware overlaps the ball.
+ *  1. Meridian ring — a circle fitted to the ring's inner edge (rms error
+ *     1.4px over 130deg of arc) gives centre (504.7, 570.6), R 481.7.
+ *  2. Pivot axis — both end barrels are the same part (knob up, cup down)
+ *     tilted 22deg from vertical, i.e. the stand's polar lean. The top
+ *     barrel's axis line passes within ~17px of the ring centre.
+ *  3. The seat — sliding a disc along that axis and asking for the largest
+ *     disc that touches no stand pixel peaks at centre (522, 557), R 422.
+ *     There it is tangent to the top barrel's cup AND the bottom barrel's
+ *     knob at the same time — the two pivots independently define the same
+ *     sphere. (A globe concentric with the ring can be at most R 400 before
+ *     it hits the knob, which is why "a fraction of the ring radius" always
+ *     looked like it was floating.)
  *
- * The correct seat is defined twice over, by two independent features that
- * agree to within 2px:
+ * The rendered sphere is that seat minus a small clearance, which leaves ~6px
+ * to each pivot and ~42px (about 10% of R) to the ring, with no stand pixel
+ * inside the disc.
  *
- *  1. Meridian ring — a circle fitted to the ring's inner edge over 128deg of
- *     arc gives centre (498.0, 569.5), R 487.6 (rms 1.4px, 256 samples).
- *  2. Top pivot cup — the only part of the stand (besides the lower arm) that
- *     intrudes inside that circle. Its centroid is (686.8, 142.6), which is
- *     466.8px from the ring centre, on a bearing of 23.9deg from vertical.
- *
- * So a sphere centred on the ring centre with R 467 puts its north pole
- * exactly at the centre of the pivot cup, and sits 20.6px (4.2% of R) clear of
- * the ring's inner edge all the way round. That 0.958 globe-to-ring ratio is
- * also what the supplied reference image measures (globe limb R 209.7 against
- * a ring inner radius of ~219 — a ratio of 0.957).
- *
- * The lean is the same 23.9deg bearing, which is the stand's own polar axis.
+ * Because everything below is a percentage of the stand box, whose own aspect
+ * ratio is fixed, the relationship holds at every size with no per-breakpoint
+ * offsets.
  *
  * LAYERING
  * --------
- * No front/back split of the PNG is needed, and none is used. With the sphere
- * on its true seat the only stand parts that overlap it are the two pivot cups
- * and the lower arm — all of which are correctly IN FRONT of the ball on a
- * real globe. The ring band never overlaps it at all. So the stand is simply
- * painted above the canvas, which gives correct occlusion, lets the pivots
- * visibly bite into the sphere, and tucks the globe's atmospheric glow behind
- * the metal instead of washing over it.
- *
- * The globe box deliberately has no z-index of its own: that would trap
- * SignatureGlobe's country label in a lower stacking context; left alone the
- * label (z-30) stays above the stand.
+ * The sphere never overlaps the stand, so no front/back split of the PNG is
+ * needed. The stand is simply painted *above* the canvas so the globe's soft
+ * atmospheric glow (which extends ~5% past the limb) tucks behind the metal
+ * at the pivots instead of washing over it. The globe box deliberately has no
+ * z-index of its own: that would trap SignatureGlobe's country label in a
+ * lower stacking context; left alone the label (z-30) stays above the stand.
  */
 
 const STAND_ASSET = "/images/globe-stand.png";
@@ -65,11 +57,11 @@ const STAND_HEIGHT_PX = 1467;
 const STAND_ASPECT_RATIO = `${STAND_WIDTH_PX} / ${STAND_HEIGHT_PX}`;
 
 // Sphere seat, in stand-asset pixels (see GEOMETRY above).
-const SPHERE_CENTER_X_PX = 498;
-const SPHERE_CENTER_Y_PX = 569.5;
-const SPHERE_RADIUS_PX = 467;
-// The stand's polar lean from vertical (ring centre -> top pivot cup), clockwise.
-const STAND_AXIS_TILT_DEG = 23.9;
+const SPHERE_CENTER_X_PX = 522;
+const SPHERE_CENTER_Y_PX = 557;
+const SPHERE_RADIUS_PX = 416; // largest fit is 422; 6px left as clearance
+// The stand's polar lean from vertical (the end barrels' tilt), clockwise.
+const STAND_AXIS_TILT_DEG = 22;
 
 // SignatureGlobe centres its sphere horizontally in its box; vertically and
 // in size it uses the exported fractions (imported above, not mirrored).

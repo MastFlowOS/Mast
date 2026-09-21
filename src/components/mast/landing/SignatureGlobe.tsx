@@ -48,29 +48,17 @@ for (let i = 0; i < WORLD_DOT_COUNT; i++) {
 const TILT = 0.409;
 // Cinematic slow planetary rotation (radians per second) during free spin
 const BASE_SPEED = 0.024;
-// Sphere radius as a fraction of the (square) canvas side, and the sphere's
-// vertical seat inside it. Exported so GlobeStand can derive its container
-// geometry from the exact same values instead of mirroring them.
-//
-// These are deliberately tight: the box is only ~1.10x the sphere diameter,
-// leaving just enough margin for the atmospheric limb (which reaches 1.055R).
-// The globe used to occupy a third of a much larger canvas, which meant most
-// of the backing store was cleared and composited every frame for nothing.
-// Tightening the box shrank the canvas by ~38% in area *while* the rendered
-// sphere grew ~12% — strictly less per-frame work than before.
-export const SPHERE_FRACTION = 0.455;
-// Sphere centred in its own box; the country label is positioned from the
-// sphere's measured geometry rather than the box edge (see the label block
-// at the end of this file), so this no longer has to leave room below.
-export const CENTER_FRACTION = 0.5;
+// Visually substantial globe scale within the hero column.
+// Exported so GlobeStand can derive its container geometry from the exact
+// same values instead of mirroring them.
+export const SPHERE_FRACTION = 0.32;
+// Vertical seat of the sphere inside the hero column.
+export const CENTER_FRACTION = 0.43;
 // Default clockwise lean of the polar axis on screen, in degrees. Callers
 // that mount the globe in something with its own lean (GlobeStand) pass
 // `axisTiltDeg` to match it.
 export const DEFAULT_AXIS_TILT_DEG = 10.5;
 const PAN_STRENGTH = 0.35;
-// Distance from the sphere's bottom to the country label, as a fraction of
-// the sphere radius. Seats the label on the stand's base.
-const LABEL_GAP_FRACTION = 0.55;
 
 // Directional celestial light vector (subtle lunar / solar grazing angle)
 const LIGHT_X = -0.42;
@@ -122,21 +110,12 @@ export function SignatureGlobe({
     let innerRimCache: GradientCacheEntry | null = null;
     let bodyShadeCache: GradientCacheEntry | null = null;
     let sheenCache: GradientCacheEntry | null = null;
-    let bronzeBounceCache: GradientCacheEntry | null = null;
-    let poleOcclusionCache: { key: string; top: CanvasGradient; bottom: CanvasGradient } | null =
-      null;
-    let rimWarmCache: GradientCacheEntry | null = null;
-    let rimCoolCache: GradientCacheEntry | null = null;
     const invalidateGradientCaches = () => {
       atmoGlowCache = null;
       oceanBgCache = null;
       innerRimCache = null;
       bodyShadeCache = null;
       sheenCache = null;
-      bronzeBounceCache = null;
-      poleOcclusionCache = null;
-      rimWarmCache = null;
-      rimCoolCache = null;
     };
 
     const resize = () => {
@@ -235,10 +214,10 @@ export function SignatureGlobe({
         cy,
         r * 1.01,
       );
-      oceanBg.addColorStop(0, "rgb(14, 32, 70)");
-      oceanBg.addColorStop(0.42, "rgb(9, 21, 49)");
-      oceanBg.addColorStop(0.82, "rgb(5, 12, 30)");
-      oceanBg.addColorStop(1, "rgb(4, 9, 24)");
+      oceanBg.addColorStop(0, "rgb(8, 22, 54)");
+      oceanBg.addColorStop(0.42, "rgb(6, 16, 42)");
+      oceanBg.addColorStop(0.82, "rgb(4, 11, 28)");
+      oceanBg.addColorStop(1, "rgb(3, 8, 22)");
       ctx.fillStyle = oceanBg;
       ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
       ctx.restore();
@@ -395,11 +374,11 @@ export function SignatureGlobe({
         // near-black: the page behind the globe is ~rgb(8-15, 12-19, 24-32),
         // and a limb at rgb(2, 5, 15) was tonally indistinguishable from it,
         // so the sphere's edge vanished and it read as see-through.
-        oceanBg.addColorStop(0, "rgb(14, 32, 70)");
-        oceanBg.addColorStop(0.3, "rgb(10, 23, 53)");
-        oceanBg.addColorStop(0.62, "rgb(7, 16, 39)");
-        oceanBg.addColorStop(0.86, "rgb(5, 11, 28)");
-        oceanBg.addColorStop(1, "rgb(4, 9, 24)");
+        oceanBg.addColorStop(0, "rgb(17, 40, 88)");
+        oceanBg.addColorStop(0.3, "rgb(12, 29, 68)");
+        oceanBg.addColorStop(0.62, "rgb(9, 22, 54)");
+        oceanBg.addColorStop(0.86, "rgb(7, 17, 42)");
+        oceanBg.addColorStop(1, "rgb(6, 14, 35)");
         oceanBgCache = { key: geometryKey, gradient: oceanBg };
       }
 
@@ -452,8 +431,8 @@ export function SignatureGlobe({
         const zDepth = Math.max(0, Math.min(1, z));
 
         // Base planetary land luminosity: visible even in darkest shadow
-        const luminosity = (0.3 + sunFactor * 0.62) * (0.72 + 0.28 * zDepth);
-        const dotRadius = Math.max(0.72, 0.84 + 0.3 * zDepth);
+        const luminosity = (0.24 + sunFactor * 0.48) * (0.76 + 0.24 * zDepth);
+        const dotRadius = Math.max(0.7, 0.82 + 0.28 * zDepth);
 
         // Base nocturnal palette: pale silvery-blue in light, deep nocturnal slate in shadow
         const rVal = Math.round(135 + sunFactor * 75);
@@ -608,33 +587,6 @@ export function SignatureGlobe({
         }
       }
 
-      // 4b. Bronze bounce — warm light thrown back onto the sphere by the
-      //     meridian ring it sits in. Anchored to the ring side (upper right)
-      //     so the globe is lit by the object that holds it rather than by an
-      //     abstract studio light, which is most of what makes the two read as
-      //     one scene. Geometry-keyed, so it is built once and reused.
-      let bronzeBounce: CanvasGradient;
-      const bounceKey = `${geometryKey}|bronze`;
-      if (bronzeBounceCache && bronzeBounceCache.key === bounceKey) {
-        bronzeBounce = bronzeBounceCache.gradient;
-      } else {
-        bronzeBounce = ctx.createRadialGradient(
-          cx + effectiveR * 0.86,
-          effectiveCY - effectiveR * 0.34,
-          effectiveR * 0.02,
-          cx + effectiveR * 0.86,
-          effectiveCY - effectiveR * 0.34,
-          effectiveR * 0.72,
-        );
-        bronzeBounce.addColorStop(0, "rgba(226, 170, 88, 0.26)");
-        bronzeBounce.addColorStop(0.35, "rgba(186, 132, 62, 0.1)");
-        bronzeBounce.addColorStop(0.7, "rgba(148, 100, 46, 0.028)");
-        bronzeBounce.addColorStop(1, "rgba(120, 80, 36, 0)");
-        bronzeBounceCache = { key: bounceKey, gradient: bronzeBounce };
-      }
-      ctx.fillStyle = bronzeBounce;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
-
       // 5. Physical light response, applied over the dotted surface so the map
       //    reads as printed ON the sphere rather than pasted in front of it.
       //    Lighting matches the cradle: key from the upper left, warm bronze
@@ -654,8 +606,8 @@ export function SignatureGlobe({
         );
         bodyShade.addColorStop(0, "rgba(120, 168, 255, 0.07)");
         bodyShade.addColorStop(0.34, "rgba(10, 24, 58, 0)");
-        bodyShade.addColorStop(0.72, "rgba(2, 5, 14, 0.26)");
-        bodyShade.addColorStop(1, "rgba(1, 3, 9, 0.52)");
+        bodyShade.addColorStop(0.72, "rgba(2, 5, 14, 0.2)");
+        bodyShade.addColorStop(1, "rgba(1, 3, 9, 0.4)");
         bodyShadeCache = { key: shadeKey, gradient: bodyShade };
       }
       ctx.fillStyle = bodyShade;
@@ -700,92 +652,11 @@ export function SignatureGlobe({
         );
         innerRim.addColorStop(0, "rgba(0, 0, 0, 0)");
         innerRim.addColorStop(0.72, "rgba(34, 64, 140, 0.08)");
-        innerRim.addColorStop(1, "rgba(72, 116, 208, 0.3)");
+        innerRim.addColorStop(1, "rgba(64, 106, 196, 0.26)");
         innerRimCache = { key: geometryKey, gradient: innerRim };
       }
       ctx.fillStyle = innerRim;
       ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
-
-      // Pole contact occlusion — the soft darkening a real ball picks up where
-      // the pivot cups press into it. Drawn in CANVAS space at the top and
-      // bottom of the disc: the wrapper's `rotate(axisTiltDeg)` then carries
-      // these onto the stand's two pivots, so the lean is honoured without
-      // this pass having to know about it.
-      const occKey = `${geometryKey}|poles`;
-      let poleTop: CanvasGradient;
-      let poleBottom: CanvasGradient;
-      if (poleOcclusionCache && poleOcclusionCache.key === occKey) {
-        poleTop = poleOcclusionCache.top;
-        poleBottom = poleOcclusionCache.bottom;
-      } else {
-        const makeOcclusion = (py: number) => {
-          const g = ctx.createRadialGradient(cx, py, 0, cx, py, effectiveR * 0.26);
-          g.addColorStop(0, "rgba(0, 0, 0, 0.42)");
-          g.addColorStop(0.5, "rgba(0, 0, 0, 0.14)");
-          g.addColorStop(1, "rgba(0, 0, 0, 0)");
-          return g;
-        };
-        poleTop = makeOcclusion(effectiveCY - effectiveR * 0.95);
-        poleBottom = makeOcclusion(effectiveCY + effectiveR * 0.95);
-        poleOcclusionCache = { key: occKey, top: poleTop, bottom: poleBottom };
-      }
-      ctx.fillStyle = poleTop;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
-      ctx.fillStyle = poleBottom;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
-
-      // Glass rim — a thin specular edge riding the limb: warm on the meridian
-      // side, cool on the key side. This is what lets the body sit as dark as
-      // it now does without the silhouette dissolving into the page behind it
-      // (the failure the old near-navy floor was working around). The edge is
-      // carried by light on the limb instead of by a raised black level, which
-      // is both closer to real glass and what closes the visual gap to the
-      // bronze ring.
-      const RIM_WIDTH = 0.018;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, effectiveCY, effectiveR, 0, Math.PI * 2);
-      ctx.arc(cx, effectiveCY, effectiveR * (1 - RIM_WIDTH), 0, Math.PI * 2, true);
-      ctx.clip();
-
-      let rimWarm: CanvasGradient;
-      const rimKey = `${geometryKey}|rim`;
-      if (rimWarmCache && rimWarmCache.key === rimKey) {
-        rimWarm = rimWarmCache.gradient;
-      } else {
-        rimWarm = ctx.createLinearGradient(
-          cx - effectiveR * 0.35,
-          effectiveCY + effectiveR * 0.9,
-          cx + effectiveR * 0.95,
-          effectiveCY - effectiveR * 0.75,
-        );
-        rimWarm.addColorStop(0, "rgba(198, 142, 66, 0)");
-        rimWarm.addColorStop(0.5, "rgba(206, 150, 74, 0.186)");
-        rimWarm.addColorStop(0.82, "rgba(240, 198, 126, 0.409)");
-        rimWarm.addColorStop(1, "rgba(252, 222, 166, 0.248)");
-        rimWarmCache = { key: rimKey, gradient: rimWarm };
-      }
-      ctx.fillStyle = rimWarm;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
-
-      let rimCool: CanvasGradient;
-      if (rimCoolCache && rimCoolCache.key === rimKey) {
-        rimCool = rimCoolCache.gradient;
-      } else {
-        rimCool = ctx.createLinearGradient(
-          cx + effectiveR * 0.45,
-          effectiveCY + effectiveR * 0.9,
-          cx - effectiveR * 0.9,
-          effectiveCY - effectiveR * 0.8,
-        );
-        rimCool.addColorStop(0, "rgba(120, 170, 255, 0)");
-        rimCool.addColorStop(0.62, "rgba(128, 174, 252, 0.099)");
-        rimCool.addColorStop(1, "rgba(186, 214, 255, 0.211)");
-        rimCoolCache = { key: rimKey, gradient: rimCool };
-      }
-      ctx.fillStyle = rimCool;
-      ctx.fillRect(cx - effectiveR, effectiveCY - effectiveR, effectiveR * 2, effectiveR * 2);
-      ctx.restore();
 
       ctx.restore();
 
@@ -919,19 +790,8 @@ export function SignatureGlobe({
         <canvas ref={canvasRef} className="block w-full h-full" aria-hidden="true" />
       </div>
 
-      {/* 2. Editorial Country Discovery Indicator: Country Name + Opportunity
-          Count (level and horizontal).
-
-          Positioned from the sphere's own measured geometry rather than the
-          canvas box's bottom edge. The box is now a tight square around the
-          sphere, so `bottom-0` would sit the label on the globe's lower limb;
-          seating it a fixed fraction of the radius below the sphere keeps it
-          on the stand's base, exactly where it read before, and makes it
-          independent of any future change to the box fractions. */}
-      <div
-        className="pointer-events-none absolute -translate-x-1/2 flex flex-col items-center z-30 whitespace-nowrap"
-        style={{ left: `${cx}px`, top: `${cy + r * (1 + LABEL_GAP_FRACTION)}px` }}
-      >
+      {/* 2. Editorial Country Discovery Indicator: Country Name + Opportunity Count (level and horizontal) */}
+      <div className="pointer-events-none absolute left-1/2 bottom-0 -translate-x-1/2 flex flex-col items-center z-30 whitespace-nowrap">
         <div
           ref={labelRef}
           className="flex flex-col items-center gap-1 pointer-events-none text-center"

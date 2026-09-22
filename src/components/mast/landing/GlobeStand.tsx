@@ -51,17 +51,20 @@ import {
  * lower stacking context; left alone the label (z-30) stays above the stand.
  */
 
-const STAND_ASSET = "/images/globe-stand.png";
+const STAND_ASSET_REAR = "/images/globe-stand.png";
+const STAND_ASSET_FRONT = "/images/globe-stand-front.png";
 const STAND_WIDTH_PX = 1072;
 const STAND_HEIGHT_PX = 1467;
 const STAND_ASPECT_RATIO = `${STAND_WIDTH_PX} / ${STAND_HEIGHT_PX}`;
 
-// Sphere seat, in stand-asset pixels (see GEOMETRY above).
-const SPHERE_CENTER_X_PX = 522;
-const SPHERE_CENTER_Y_PX = 557;
-const SPHERE_RADIUS_PX = 416; // largest fit is 422; 6px left as clearance
-// The stand's polar lean from vertical (the end barrels' tilt), clockwise.
-const STAND_AXIS_TILT_DEG = 22;
+// Sphere seat, in stand-asset pixels, fitted with subpixel precision between both
+// pivot holders along the stand's polar lean axis:
+// Top socket cup at (655, 145), bottom pivot holder at (215, 880).
+const SPHERE_CENTER_X_PX = 435.0;
+const SPHERE_CENTER_Y_PX = 512.5;
+const SPHERE_RADIUS_PX = 432.3; // Seats snugly into both holders with 4px penetration
+// Clockwise lean of the polar axis connecting the two holders
+const STAND_AXIS_TILT_DEG = 30.91;
 
 // SignatureGlobe centres its sphere horizontally in its box; vertically and
 // in size it uses the exported fractions (imported above, not mirrored).
@@ -90,23 +93,30 @@ export function GlobeStand({ className = "" }: { className?: string }) {
       className={`relative mx-auto h-[92.5%] -translate-y-[3%] ${className}`}
       style={{ aspectRatio: STAND_ASPECT_RATIO }}
     >
-      {/* Live globe, seated on the measured sphere. No z-index here on purpose
-          (see LAYERING). */}
-      <div className="absolute" style={globeBoxStyle}>
+      {/* Layer 1 (z-10): Stand rear layer — base, pedestal, central hinge, and rear meridian ring behind the globe */}
+      <img
+        src={STAND_ASSET_REAR}
+        alt=""
+        aria-hidden="true"
+        draggable={false}
+        className="pointer-events-none absolute inset-0 z-10 h-full w-full select-none"
+      />
+
+      {/* Layer 2 (z-20): Live rotating globe, seated snugly inside both pivot sockets */}
+      <div className="absolute z-20" style={globeBoxStyle}>
         <SignatureGlobe
           className="w-full h-full overflow-visible"
           axisTiltDeg={STAND_AXIS_TILT_DEG}
         />
       </div>
 
-      {/* Static stand asset — never animated, never redrawn. Above the canvas,
-          below the label. */}
+      {/* Layer 3 (z-30): Stand front hardware — socket collar lips & ambient occlusion contact shadows gripping the globe in front */}
       <img
-        src={STAND_ASSET}
+        src={STAND_ASSET_FRONT}
         alt=""
         aria-hidden="true"
         draggable={false}
-        className="pointer-events-none absolute inset-0 z-10 h-full w-full select-none"
+        className="pointer-events-none absolute inset-0 z-30 h-full w-full select-none"
       />
     </div>
   );

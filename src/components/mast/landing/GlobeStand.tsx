@@ -12,12 +12,11 @@ const GLOBE_ASPECT_RATIO = `${GLOBE_WIDTH_PX} / ${GLOBE_HEIGHT_PX}`;
 
 export function GlobeStand({ className = "" }: { className?: string }) {
   return (
-    // 100% of the column gives the asset a bit more visual presence than the
-    // prior 92.5% (proportions untouched, still contained by the column's own
-    // overflow-visible box so nothing crops), and the -2% lift is a fraction
-    // of the asset's own height so it scales with it at every breakpoint.
+    // 92.5% of the column keeps the whole pedestal comfortably inside the hero
+    // (a small reduction, proportions untouched), and the -3% lift is a
+    // fraction of the asset's own height so it scales with it.
     <div
-      className={`relative mx-auto h-[100%] -translate-y-[2%] ${className}`}
+      className={`relative mx-auto h-[92.5%] -translate-y-[3%] ${className}`}
       style={{ aspectRatio: GLOBE_ASPECT_RATIO }}
     >
       <img

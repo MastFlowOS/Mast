@@ -5,6 +5,8 @@
  * nothing here is redrawn, animated, or recreated in SVG/Canvas/WebGL.
  */
 
+import { GlobePresentationSurface } from "./GlobePresentationSurface";
+
 const GLOBE_ASSET = "/images/mast-globe-final.png";
 const GLOBE_WIDTH_PX = 1072;
 const GLOBE_HEIGHT_PX = 1467;
@@ -16,15 +18,18 @@ export function GlobeStand({ className = "" }: { className?: string }) {
     // (a small reduction, proportions untouched), and the -3% lift is a
     // fraction of the asset's own height so it scales with it.
     <div
-      className={`relative mx-auto h-[92.5%] -translate-y-[3%] ${className}`}
+      className={`relative mx-auto h-[92.5%] -translate-y-[3%] overflow-visible ${className}`}
       style={{ aspectRatio: GLOBE_ASPECT_RATIO }}
     >
+      {/* Ground presentation surface underneath the globe and stand */}
+      <GlobePresentationSurface />
+
       <img
         src={GLOBE_ASSET}
         alt=""
         aria-hidden="true"
         draggable={false}
-        className="pointer-events-none absolute inset-0 h-full w-full select-none object-contain"
+        className="pointer-events-none relative z-10 h-full w-full select-none object-contain"
       />
     </div>
   );

@@ -5,6 +5,7 @@ import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { GlobeStand } from "@/components/mast/landing/GlobeStand";
 import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
+import { HeroFloorSurface } from "@/components/mast/landing/HeroFloorSurface";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -81,6 +82,8 @@ function Hero() {
     <header className="relative -mt-16 pt-28 pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-x-clip">
       {/* Autonomous section-specific atmosphere: moving clouds behind Earth, stars, subtle haze */}
       <SectionAtmosphere variant="hero" />
+      {/* Phase 1D — full-width floor surface, independent of the radar artwork */}
+      <HeroFloorSurface />
       <div className="relative z-10 max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">

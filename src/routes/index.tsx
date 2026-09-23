@@ -5,7 +5,7 @@ import { SiteFooter } from "@/components/mast/SiteFooter";
 import { BrandMark } from "@/components/mast/BrandMark";
 import { GlobeStand } from "@/components/mast/landing/GlobeStand";
 import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
-import { HeroFloorSurface } from "@/components/mast/landing/HeroFloorSurface";
+import { GroundSurface } from "@/components/mast/landing/GroundSurface";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -78,23 +78,25 @@ const heroStats = [
 ];
 
 function Hero() {
+  const pedestalAnchorRef = useRef<HTMLDivElement>(null);
   return (
-    <header className="relative -mt-16 pt-28 pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-x-clip">
+    <header className="relative -mt-16 pt-24 pb-14 sm:pt-26 sm:pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-x-clip">
       {/* Autonomous section-specific atmosphere: moving clouds behind Earth, stars, subtle haze */}
       <SectionAtmosphere variant="hero" />
-      {/* Phase 1D — full-width floor surface, independent of the radar artwork */}
-      <HeroFloorSurface />
+      {/* Single ground system: one photographic floor asset, kept aligned to
+          the globe's pedestal at every breakpoint via pedestalAnchorRef. */}
+      <GroundSurface pedestalAnchorRef={pedestalAnchorRef} />
       <div className="relative z-10 max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">
           {/* Heading */}
-          <h1 className="animate-fade-up delay-100 text-[clamp(1.9rem,4vw,2.75rem)] font-extrabold text-foreground tracking-tight mb-5 leading-[1.1]">
+          <h1 className="animate-fade-up delay-100 text-[clamp(1.9rem,4vw,2.75rem)] font-extrabold text-foreground tracking-tight mb-4 leading-[1.12]">
             Stop switching tabs.<br />
             Start closing deals.
           </h1>
 
           {/* Subtext */}
-          <p className="animate-fade-up delay-200 text-sm md:text-[0.95rem] text-muted-foreground/90 mb-8 max-w-[500px] mx-auto lg:mx-0 leading-relaxed">
+          <p className="animate-fade-up delay-200 text-sm md:text-[0.95rem] text-muted-foreground/90 mb-6 max-w-[490px] mx-auto lg:mx-0 leading-relaxed">
             MAST replaces your scattered sales stack with one unified AI workspace —
             business research, relationship data, pipeline, and reminders, all talking to each other.
           </p>
@@ -119,12 +121,12 @@ function Hero() {
           </div>
 
           {/* Sub-note */}
-          <p className="animate-fade-up delay-400 text-[10px] text-muted-foreground/50 mt-4">
+          <p className="animate-fade-up delay-400 text-[10px] text-muted-foreground/50 mt-3.5">
             No credit card required · Free plan available · Cancel anytime
           </p>
 
           {/* Stat strip - Styled as clean, separated inline stats with top divider */}
-          <div className="animate-fade-up delay-500 mt-10 pt-6 border-t border-white/[0.08] max-w-lg mx-auto lg:mx-0">
+          <div className="animate-fade-up delay-500 mt-8 pt-5 border-t border-white/[0.08] max-w-lg mx-auto lg:mx-0">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               {heroStats.map(({ icon: Icon, value, label }) => (
                 <div key={label} className="flex flex-col items-center lg:items-start text-center lg:text-left gap-1">
@@ -142,8 +144,8 @@ function Hero() {
         </div>
 
         {/* Globe column — overflow-visible so zoom animations never clip, z-20 above background atmosphere */}
-        <div className="relative h-[300px] sm:h-[375px] md:h-[470px] lg:h-[540px] lg:-mr-4 xl:-mr-6 overflow-visible z-20">
-          <GlobeStand className="overflow-visible" />
+        <div className="relative h-[270px] sm:h-[340px] md:h-[420px] lg:h-[470px] lg:-mr-4 xl:-mr-6 overflow-visible z-20">
+          <GlobeStand className="overflow-visible" pedestalAnchorRef={pedestalAnchorRef} />
         </div>
       </div>
     </header>

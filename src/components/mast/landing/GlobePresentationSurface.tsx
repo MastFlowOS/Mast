@@ -138,19 +138,31 @@ const GRADIENT_LAYERS: GradientLayer[] = [
 // a linear gradient has zero side-to-side falloff, so nothing here reads as
 // a centered ellipse or spotlight no matter how large the box is.
 //
-//   floorBase     — the broad flat floor. Uniform left-to-right, soft
-//                   vertical fade in just above the pedestal line and back
-//                   out toward the bottom of the hero. One small, low-
-//                   opacity warm radial highlight is layered into the same
-//                   element's background (not a separate DOM layer) right
-//                   at the pedestal line, so ambient light gently catches
-//                   the floor there without adding a second visible shape.
-//   floorBaseTilt — a narrower band right at the pedestal contact line,
-//                   given a genuine CSS 3D tilt (perspective + rotateX,
-//                   the same technique already used by floorPerspective
-//                   above) so the nearest part of the floor actually
-//                   foreshortens like a horizontal surface, rather than
-//                   implying depth through concentric brightness.
+// PHASE 1C.1 — floor spread + blending refinement. Widened and heightened
+// both layers further (still vw/vh, still bounded), and replaced every
+// gradient with many more, much more gradual stops so there is no plateau
+// anywhere that could read as a contained "pool" — intensity now rises and
+// falls slowly across a long span instead of ramping to a mid-box plateau
+// over a short one. floorBase's warm accent used to be a separate radial
+// ellipse layered into the background (a second, distinctly-shaped glow);
+// it has been removed and replaced with a faint warm tint folded directly
+// into the linear ramp's own color stops, so there is no longer any radial
+// shape in either layer at all — only a broad, low-contrast vertical wash.
+// floorBaseTilt has also been widened much closer to floorBase's own width
+// (rather than sitting distinctly narrower) and had its peak opacity
+// lowered, so it no longer reads as a brighter inner zone concentric with
+// a fainter outer one.
+//
+//   floorBase     — the broad flat floor. Uniform left-to-right, an
+//                   extremely gradual vertical wash from fully transparent,
+//                   up through a low, subtle peak, back to fully
+//                   transparent — no hard edge or plateau anywhere.
+//   floorBaseTilt — a wide band at the pedestal contact line, keeping the
+//                   same CSS 3D tilt direction (perspective + rotateX) as
+//                   before so the nearest part of the floor still
+//                   foreshortens like a horizontal surface, just subtler
+//                   and closer in width to floorBase so it reads as part of
+//                   the same surface rather than a second, brighter shape.
 //
 // Both anchor to the same PEDESTAL_LEFT/PEDESTAL_TOP contact point as every
 // other layer in this file (left/top percentages are relative to this
@@ -160,24 +172,23 @@ const GRADIENT_LAYERS: GradientLayer[] = [
 const FLOOR_BASE_LAYERS: GradientLayer[] = [
   {
     key: "floorBase",
-    width: "128vw",
-    height: "42vh",
+    width: "168vw",
+    height: "56vh",
     left: PEDESTAL_LEFT,
     top: PEDESTAL_TOP,
-    translate: "translate(-50%, -24%)",
+    translate: "translate(-50%, -18%)",
     background:
-      "radial-gradient(ellipse 46% 30% at 50% 10%, rgba(196,156,98,0.13) 0%, rgba(196,156,98,0.045) 55%, rgba(196,156,98,0) 80%), " +
-      "linear-gradient(180deg, rgba(7,9,13,0) 0%, rgba(8,10,15,0.15) 12%, rgba(8,10,15,0.23) 32%, rgba(7,9,14,0.21) 56%, rgba(6,8,13,0.10) 80%, rgba(6,8,13,0) 100%)",
+      "linear-gradient(180deg, rgba(6,8,12,0) 0%, rgba(8,9,12,0.035) 10%, rgba(9,10,13,0.075) 22%, rgba(10,10,13,0.115) 34%, rgba(12,11,13,0.14) 46%, rgba(11,10,12,0.13) 58%, rgba(9,9,11,0.09) 72%, rgba(7,8,10,0.045) 86%, rgba(6,7,9,0) 100%)",
   },
   {
     key: "floorBaseTilt",
-    width: "64vw",
-    height: "18vh",
+    width: "112vw",
+    height: "28vh",
     left: PEDESTAL_LEFT,
     top: PEDESTAL_TOP,
-    translate: "translate(-50%, -55%) perspective(900px) rotateX(76deg)",
+    translate: "translate(-50%, -56%) perspective(900px) rotateX(76deg)",
     background:
-      "linear-gradient(180deg, rgba(10,12,17,0) 0%, rgba(10,12,17,0.24) 40%, rgba(9,11,16,0.26) 62%, rgba(9,11,16,0) 100%)",
+      "linear-gradient(180deg, rgba(8,9,13,0) 0%, rgba(9,10,14,0.045) 16%, rgba(10,11,15,0.095) 34%, rgba(10,11,15,0.115) 50%, rgba(10,11,15,0.095) 66%, rgba(9,10,13,0.045) 84%, rgba(8,9,12,0) 100%)",
   },
 ];
 

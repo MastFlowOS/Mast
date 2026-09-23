@@ -25,6 +25,14 @@
  * instead of disappearing into it. Still one static radial-gradient <div>,
  * still fully transparent at its outer edge (no hard border), so it stays
  * a soft pool rather than a visible glowing shape.
+ *
+ * PHASE 2A.1 (round 2) — reference comparison showed the pool still reading
+ * too small/round next to the actual floor reflection under the pedestal.
+ * Widened and elongated further (height grew faster than width, since the
+ * reference's reflection stretches toward the viewer along the floor more
+ * than it spreads side to side) and added extra low-opacity gradient stops
+ * so the outer edge dissolves into the dark floor over a longer distance
+ * instead of tapering off abruptly. Same single <div>, no new layer.
  */
 
 import type { RefObject } from "react";
@@ -47,14 +55,16 @@ const PEDESTAL_TOP = "94.2%";
 // off viewport width like the rest of the hero's floor treatment so it
 // scales gently across breakpoints instead of jumping. 2A.1 widened it and
 // gave it real vertical extent (was near-flat) so it reads as a pool on the
-// floor rather than a sliver, and added a brighter inner stop. The vertical
-// -32% shift keeps most of the shape below the contact line, with just
-// enough tucked upward that it sits behind the pedestal's own base pixels
-// rather than peeking past them.
-const REFLECTION_WIDTH = "clamp(100px, 11vw, 230px)";
-const REFLECTION_HEIGHT = "clamp(30px, 3.4vw, 70px)";
+// floor rather than a sliver, brightened the inner stop, and (round 2)
+// pushed both dimensions further with a longer low-opacity tail so it blends
+// into the dark floor gradually rather than stopping short. The vertical
+// shift keeps most of the shape below the contact line, with just enough
+// tucked upward that it sits behind the pedestal's own base pixels rather
+// than peeking past them.
+const REFLECTION_WIDTH = "clamp(130px, 14vw, 290px)";
+const REFLECTION_HEIGHT = "clamp(60px, 7vw, 150px)";
 const REFLECTION_GRADIENT =
-  "radial-gradient(ellipse at center, rgba(205,158,96,0.46) 0%, rgba(205,158,96,0.30) 18%, rgba(205,158,96,0.16) 40%, rgba(205,158,96,0.06) 68%, rgba(205,158,96,0) 100%)";
+  "radial-gradient(ellipse at center, rgba(205,158,96,0.50) 0%, rgba(205,158,96,0.32) 20%, rgba(205,158,96,0.18) 42%, rgba(205,158,96,0.08) 65%, rgba(205,158,96,0.02) 85%, rgba(205,158,96,0) 100%)";
 
 export function GlobeStand({
   className = "",
@@ -82,7 +92,7 @@ export function GlobeStand({
           top: PEDESTAL_TOP,
           width: REFLECTION_WIDTH,
           height: REFLECTION_HEIGHT,
-          transform: "translate(-50%, -32%)",
+          transform: "translate(-50%, -22%)",
           background: REFLECTION_GRADIENT,
         }}
       />

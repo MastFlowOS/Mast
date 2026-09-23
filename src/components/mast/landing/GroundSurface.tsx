@@ -1,33 +1,46 @@
 /**
- * GroundSurface — the hero's entire ground system, replacing the previous
- * stack of separate layers (HeroFloorSurface's CSS-masked texture image,
- * plus GlobePresentationSurface's radar-floor asset, gradient "pool" layers,
- * and contact shadow/glow). There is now exactly one ground: a single
- * photographic floor asset, positioned with CSS only (no gradients trying to
- * recreate the artwork, no canvas/WebGL, no particles).
+ * GroundSurface — the hero's single ground layer.
+ *
+ * PHASE 1F — the floor is a PRE-BAKED PERSPECTIVE SURFACE. All of the depth
+ * (grid converging toward a horizon, foreshortened rings, the warm pool, the
+ * dark falloff toward the distance) is already in the artwork. This component
+ * does not redraw, warp or duplicate that artwork — it only composites it:
+ *
+ *   - width      one bounded, viewport-relative size (no stretching)
+ *   - position   pinned so the artwork's focal point sits under the pedestal
+ *   - masking    image-local (percentage-of-artwork) gradients only, so the
+ *                treatment holds regardless of breakpoint or measured size
+ *   - filter     one mild, uniform brightness/contrast/saturation trim
+ *
+ * There are NO transforms beyond the alignment translate (no rotateX /
+ * perspective / scale), NO second copy of the image and NO second floor.
+ * Depth still comes from the image (the perspective grid itself is never
+ * touched) — CSS here only fades and grades it, it never redraws it.
+ *
+ * PHASE 1F.1 — compositing pass on top of the above. The artwork's own
+ * transition from black into the lit floor (~41%–55% down its own frame) is
+ * abrupt at the pixel level, which read as a hard horizontal "floor starts
+ * here" seam once displayed at hero scale. This phase widens that transition
+ * into a soft image-local mask (TOP_FADE, on a wrapper around the image) and
+ * adds an asymmetric horizontal mask (GROUND_FADE, on the image itself) that
+ * keeps the left side — behind the hero copy — substantially darker than the
+ * pedestal side, so the warm light stays read as localized to the globe. A
+ * single mild filter reduces how hard the grid/ring lines pop, without
+ * touching their scale or position. All of this is masking/filter math on the
+ * existing artwork; no new gradient layer stands in for the material itself.
  *
  * ALIGNMENT
- * The asset's own focal point — the center of its engraved circular marking,
- * where the warm light converges (measured directly from the source image at
- * ~64.5%, 62% of its frame) — must land exactly on the globe pedestal's
- * ground-contact point. Because the globe column's position shifts across
- * breakpoints (stacked on mobile/tablet, a grid column on desktop) a fixed
- * CSS percentage can't track it. Instead this component reads the pedestal
- * anchor marker rendered by GlobeStand with getBoundingClientRect() at
- * runtime, and re-measures on resize — so the floor tracks the pedestal
- * exactly at every breakpoint instead of relying on per-breakpoint guesses.
+ * The artwork's focal point — center of its innermost engraved ring, where the
+ * warm light converges (~64.5%, 62% of its frame) — must land on the globe
+ * pedestal's ground-contact point. The globe column moves across breakpoints,
+ * so the pedestal marker rendered by GlobeStand is read with
+ * getBoundingClientRect() and re-measured on resize.
  *
- * CONTAINMENT
- * The outer band is bottom-anchored with a bounded height (clamp, not vh
- * alone) and overflow-hidden, matching the hero's own footprint. The asset
- * already fades to transparent toward its own top/bottom edges (baked into
- * its alpha channel), so cropping is only ever cutting already-near-empty
- * pixels — never a hard line through the visible floor. Left/right, the
- * image is sized wide enough (bounded clamp, not an extreme percentage) that
- * its own edges clear the viewport at realistic breakpoints; where they
- * don't, the container's overflow-hidden crops it flush with the hero's own
- * edge, which reads as the floor continuing off-page rather than a visible
- * boundary.
+ * SWAPPING THE ASSET
+ * If the artwork is replaced, only GROUND_ASSET, GROUND_ASPECT_RATIO and the
+ * FOCAL_* constants below need to change. TOP_FADE's stops are keyed to this
+ * artwork's own horizon position (~41%–55% down its frame) and would need
+ * re-checking against a new asset's row-brightness profile too.
  */
 
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
@@ -37,21 +50,66 @@ const GROUND_ASSET = "/images/mast-hero-ground.webp";
 // Natural asset proportions (2172 x 724 px).
 const GROUND_ASPECT_RATIO = "2172 / 724";
 
-// Focal point of the source artwork — center of the innermost engraved ring
-// / warm highlight — as a fraction of the asset's own frame.
+// Focal point of the artwork as a fraction of its own frame.
 const FOCAL_X = 0.645;
 const FOCAL_Y = 0.62;
 
-// Bounded width: comfortably wider than the viewport so the asset's own
-// left/right edges clear the frame at typical breakpoints, capped so it's
-// never an extreme multiple of the viewport on ultra-wide screens.
-const GROUND_WIDTH = "clamp(1400px, 190vw, 2600px)";
+// Bounded width. ~1.25x the band: wide enough that the floor runs continuously
+// across the lower scene, small enough that grid and rings stay fine rather
+// than a giant graphic (the old 190vw / 2600px was ~1.8x). CSS clamp is the
+// pre-measurement fallback; the measured width below is the same rule plus a
+// guarantee that the artwork's right edge always clears the viewport (on
+// stacked layouts the pedestal is mid-screen, so a plain 125vw would stop
+// short and read as a vertical cut).
+const GROUND_WIDTH_FALLBACK = "clamp(820px, 125vw, 2100px)";
+const MIN_W = 820;
+const MAX_W = 2400;
+const WIDTH_FACTOR = 1.25;
+const RIGHT_EDGE_CLEARANCE = 1.1;
 
-// Bottom-anchored band height — bounded, matches the footprint the old
-// floor occupied.
+// Bottom-anchored band, matches the hero's footprint.
 const BAND_HEIGHT = "clamp(320px, 54vh, 540px)";
 
-type Offset = { x: number; y: number };
+// Single constant opacity.
+const GROUND_OPACITY = 1;
+
+// Horizontal mask on the image itself, in image-local percentages (stable
+// across breakpoints since it never depends on measured pixel size).
+//
+// Two jobs in one gradient:
+//   - true edges (0–3%, 97–100%) stay fully hidden, as before, so no
+//     rectangle reads at the artwork's left/right boundary.
+//   - PHASE 1F.1: the whole left run — from just past the edge (9%) through
+//     the hero-copy zone (up to ~46%) — is held at a fraction of full
+//     opacity (0.32) rather than the old flat 1.0, then eased back up to
+//     full brightness by 66%, just past the pedestal's focal point (64.5%).
+//     That keeps the warm light read as pooled around the globe instead of
+//     washing the whole floor.
+const GROUND_FADE =
+  "linear-gradient(to right, rgba(0,0,0,0) 0%, rgba(0,0,0,0.18) 3%, rgba(0,0,0,0.32) 9%, rgba(0,0,0,0.32) 46%, rgba(0,0,0,0.58) 56%, rgba(0,0,0,0.88) 63%, rgba(0,0,0,1) 68%, rgba(0,0,0,1) 91%, rgba(0,0,0,0.5) 97%, rgba(0,0,0,0) 100%)";
+
+// Vertical mask on a wrapper around the image, in image-local percentages.
+// The artwork's own black-to-lit-floor transition sits at ~41%–55% down its
+// frame (measured off the source: rows are flat black through ~41%, then
+// ramp up to full floor brightness by ~55% of the 724px-tall artwork). That
+// ramp is only ~14% of the frame, which reads as a hard seam at hero scale.
+// This mask widens the same transition to a ~28%-of-frame band (34%–62%)
+// with intermediate stops so it eases rather than switches on, letting the
+// floor "emerge" out of the dark instead of starting behind a visible line.
+// Below 62% (past the focal point) the artwork is already fully lit, so the
+// mask stays fully opaque and touches nothing else.
+const TOP_FADE =
+  "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 34%, rgba(0,0,0,0.12) 40%, rgba(0,0,0,0.4) 46%, rgba(0,0,0,0.85) 54%, rgba(0,0,0,1) 62%, rgba(0,0,0,1) 100%)";
+
+// Single mild, uniform grade on the artwork: takes some of the snap off the
+// grid/ring linework (item 3 — "embedded" rather than "printed over") without
+// touching their scale, position, or the material's own dark charcoal/bronze
+// color. Applied once, to the whole image — the pedestal keeps its relative
+// dominance because GROUND_FADE (above) darkens the rest of the floor
+// further on top of this same uniform trim.
+const FLOOR_FILTER = "brightness(0.88) contrast(0.92) saturate(0.9)";
+
+type Measure = { x: number; y: number; h: number; w: number };
 
 export function GroundSurface({
   pedestalAnchorRef,
@@ -59,7 +117,7 @@ export function GroundSurface({
   pedestalAnchorRef: RefObject<HTMLDivElement | null>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [offset, setOffset] = useState<Offset | null>(null);
+  const [m, setM] = useState<Measure | null>(null);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -70,9 +128,11 @@ export function GroundSurface({
       if (!anchor) return;
       const containerRect = container.getBoundingClientRect();
       const anchorRect = anchor.getBoundingClientRect();
-      setOffset({
+      setM({
         x: anchorRect.left - containerRect.left,
         y: anchorRect.top - containerRect.top,
+        h: containerRect.height,
+        w: containerRect.width,
       });
     };
 
@@ -81,8 +141,7 @@ export function GroundSurface({
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(container);
     window.addEventListener("resize", measure);
-    // Fonts finishing their swap can change header/copy height, which shifts
-    // the pedestal a little — catch that once, without polling.
+    // Fonts finishing their swap can shift the pedestal slightly.
     document.fonts?.ready?.then(measure).catch(() => {});
 
     return () => {
@@ -91,12 +150,28 @@ export function GroundSurface({
     };
   }, [pedestalAnchorRef]);
 
-  // Before the first measurement, fall back to a reasonable static guess
-  // (roughly where the pedestal sits on desktop) rather than rendering
-  // nothing — this only ever shows for a single frame before layout effects
-  // resolve.
-  const left = offset ? `${offset.x}px` : "68%";
-  const top = offset ? `${offset.y}px` : "88%";
+  // Single-frame fallback before the first measurement.
+  const left = m ? `${m.x}px` : "68%";
+  const top = m ? `${m.y}px` : "88%";
+
+  // Width only: the bounded rule above, widened if needed so the artwork's
+  // right edge (a (1 - FOCAL_X) fraction of its width beyond the pedestal)
+  // stays past the viewport's right edge.
+  const groundWidth = m
+    ? `${Math.min(
+        MAX_W,
+        Math.max(MIN_W, WIDTH_FACTOR * m.w, ((m.w - m.x) / (1 - FOCAL_X)) * RIGHT_EDGE_CLEARANCE),
+      )}px`
+    : GROUND_WIDTH_FALLBACK;
+
+  // Lower-edge fade only: starts a little below the pedestal's contact line and
+  // reaches transparent exactly at the hero's bottom, so the floor dissolves
+  // instead of being cropped by the next section.
+  const fadeStart = m ? Math.min(m.y + 24, m.h - 60) : null;
+  const bandMask =
+    fadeStart === null
+      ? "linear-gradient(to bottom, #000 0%, #000 90%, transparent 100%)"
+      : `linear-gradient(to bottom, #000 0px, #000 ${fadeStart}px, rgba(0,0,0,0.5) ${fadeStart + (m!.h - fadeStart) * 0.5}px, transparent ${m!.h}px)`;
 
   return (
     <div
@@ -105,28 +180,39 @@ export function GroundSurface({
       aria-hidden="true"
       style={{
         height: BAND_HEIGHT,
-        // Safety-net fade in addition to the asset's own baked-in alpha —
-        // guarantees no hard line at the container's own top/bottom edge
-        // regardless of exact measured position.
-        WebkitMaskImage:
-          "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,1) 14%, rgba(0,0,0,1) 82%, rgba(0,0,0,0) 100%)",
-        maskImage:
-          "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,1) 14%, rgba(0,0,0,1) 82%, rgba(0,0,0,0) 100%)",
+        WebkitMaskImage: bandMask,
+        maskImage: bandMask,
       }}
     >
-      <img
-        src={GROUND_ASSET}
-        alt=""
-        draggable={false}
-        className="pointer-events-none absolute select-none max-w-none"
+      {/* Alignment wrapper: unchanged position/size/transform math from
+          Phase 1F. Carries the vertical (horizon) mask only, in image-local
+          percentages, so it holds regardless of the measured pixel size. */}
+      <div
+        className="pointer-events-none absolute block max-w-none select-none"
         style={{
-          width: GROUND_WIDTH,
+          width: groundWidth,
           aspectRatio: GROUND_ASPECT_RATIO,
           left,
           top,
+          // Alignment only: puts the artwork's focal point on the pedestal.
           transform: `translate(-${FOCAL_X * 100}%, -${FOCAL_Y * 100}%)`,
+          opacity: GROUND_OPACITY,
+          WebkitMaskImage: TOP_FADE,
+          maskImage: TOP_FADE,
         }}
-      />
+      >
+        <img
+          src={GROUND_ASSET}
+          alt=""
+          draggable={false}
+          className="pointer-events-none absolute inset-0 block h-full w-full select-none"
+          style={{
+            WebkitMaskImage: GROUND_FADE,
+            maskImage: GROUND_FADE,
+            filter: FLOOR_FILTER,
+          }}
+        />
+      </div>
     </div>
   );
 }

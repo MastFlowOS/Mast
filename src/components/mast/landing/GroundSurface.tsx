@@ -54,17 +54,22 @@ const GROUND_ASPECT_RATIO = "2172 / 724";
 const FOCAL_X = 0.645;
 const FOCAL_Y = 0.62;
 
-// Bounded width. ~1.25x the band: wide enough that the floor runs continuously
+// Bounded width. ~1.34x the band: wide enough that the floor runs continuously
 // across the lower scene, small enough that grid and rings stay fine rather
-// than a giant graphic (the old 190vw / 2600px was ~1.8x). CSS clamp is the
-// pre-measurement fallback; the measured width below is the same rule plus a
-// guarantee that the artwork's right edge always clears the viewport (on
-// stacked layouts the pedestal is mid-screen, so a plain 125vw would stop
-// short and read as a vertical cut).
-const GROUND_WIDTH_FALLBACK = "clamp(820px, 125vw, 2100px)";
+// than a giant graphic (the old 190vw / 2600px was ~1.8x). Since height
+// follows width at a locked aspect ratio, this factor is also what controls
+// how tall the artwork renders — and because it's pinned to the pedestal via
+// FOCAL_Y, a taller render pushes the horizon further above the pedestal in
+// absolute px, i.e. it's the one knob that raises how high the lit floor
+// reaches, without stretching or distorting anything (bumped slightly up
+// from 1.25 for that reason). CSS clamp is the pre-measurement fallback; the
+// measured width below is the same rule plus a guarantee that the artwork's
+// right edge always clears the viewport (on stacked layouts the pedestal is
+// mid-screen, so a plain 134vw would stop short and read as a vertical cut).
+const GROUND_WIDTH_FALLBACK = "clamp(820px, 134vw, 2250px)";
 const MIN_W = 820;
 const MAX_W = 2400;
-const WIDTH_FACTOR = 1.25;
+const WIDTH_FACTOR = 1.34;
 const RIGHT_EDGE_CLEARANCE = 1.1;
 
 // Bottom-anchored band, matches the hero's footprint.

@@ -33,6 +33,16 @@
  * than it spreads side to side) and added extra low-opacity gradient stops
  * so the outer edge dissolves into the dark floor over a longer distance
  * instead of tapering off abruptly. Same single <div>, no new layer.
+ *
+ * PHASE 2A.2 — the single symmetric radial-gradient was the reason it kept
+ * reading as a glow no matter how it was resized: a plain ellipse gradient
+ * is round in every direction, which nothing on a real floor reflection is.
+ * This pass keeps it one <div> with one `background`, but composites two
+ * radial-gradients into that one background — a small brighter hotspot
+ * positioned high in the box (the actual point of contact) and a broader,
+ * much softer shape stacked lower and taller beneath it (the tapering
+ * spread away from that contact point). Two gradients, still a single
+ * paint on a single static element — not a second decorative layer.
  */
 
 import type { RefObject } from "react";
@@ -50,21 +60,27 @@ const GLOBE_ASPECT_RATIO = `${GLOBE_WIDTH_PX} / ${GLOBE_HEIGHT_PX}`;
 const PEDESTAL_LEFT = "46.64%";
 const PEDESTAL_TOP = "94.2%";
 
-// PHASE 2A / 2A.1 — reflection layer. A wide ellipse (reflections
-// foreshorten on a floor) centered on the pedestal's contact point. Sized
-// off viewport width like the rest of the hero's floor treatment so it
-// scales gently across breakpoints instead of jumping. 2A.1 widened it and
-// gave it real vertical extent (was near-flat) so it reads as a pool on the
-// floor rather than a sliver, brightened the inner stop, and (round 2)
-// pushed both dimensions further with a longer low-opacity tail so it blends
-// into the dark floor gradually rather than stopping short. The vertical
-// shift keeps most of the shape below the contact line, with just enough
-// tucked upward that it sits behind the pedestal's own base pixels rather
-// than peeking past them.
-const REFLECTION_WIDTH = "clamp(130px, 14vw, 290px)";
-const REFLECTION_HEIGHT = "clamp(60px, 7vw, 150px)";
-const REFLECTION_GRADIENT =
-  "radial-gradient(ellipse at center, rgba(205,158,96,0.50) 0%, rgba(205,158,96,0.32) 20%, rgba(205,158,96,0.18) 42%, rgba(205,158,96,0.08) 65%, rgba(205,158,96,0.02) 85%, rgba(205,158,96,0) 100%)";
+// PHASE 2A / 2A.1 / 2A.2 — reflection layer, centered on the pedestal's
+// contact point and sized off viewport width like the rest of the hero's
+// floor treatment so it scales gently across breakpoints instead of
+// jumping. 2A.2 reshaped it from one symmetric ellipse into two
+// radial-gradients composited in a single `background`: CONTACT sits high
+// and tight — the subtle brighter point directly beneath the base — and
+// TAPER is wider, taller, and much softer, stacked lower so the light
+// visibly spreads and fades as it extends away rather than forming one
+// uniform round glow. The vertical shift keeps most of the box below the
+// contact line, with just enough tucked upward that CONTACT sits behind
+// the pedestal's own base pixels rather than peeking past them.
+const REFLECTION_WIDTH = "clamp(150px, 16vw, 320px)";
+const REFLECTION_HEIGHT = "clamp(120px, 14vw, 280px)";
+const REFLECTION_GRADIENT = [
+  // CONTACT — small, brighter, high in the box: the point where the
+  // pedestal actually meets the floor.
+  "radial-gradient(ellipse 58% 42% at 50% 14%, rgba(205,158,96,0.42) 0%, rgba(205,158,96,0.22) 45%, rgba(205,158,96,0) 100%)",
+  // TAPER — broader and much softer, centered lower: the reflection
+  // spreading and fading away from that contact point.
+  "radial-gradient(ellipse 92% 80% at 50% 56%, rgba(205,158,96,0.16) 0%, rgba(205,158,96,0.09) 35%, rgba(205,158,96,0.03) 65%, rgba(205,158,96,0) 100%)",
+].join(", ");
 
 export function GlobeStand({
   className = "",
@@ -92,7 +108,7 @@ export function GlobeStand({
           top: PEDESTAL_TOP,
           width: REFLECTION_WIDTH,
           height: REFLECTION_HEIGHT,
-          transform: "translate(-50%, -22%)",
+          transform: "translate(-50%, -14%)",
           background: REFLECTION_GRADIENT,
         }}
       />

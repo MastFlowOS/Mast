@@ -276,16 +276,9 @@ export function GlobePresentationSurface() {
       className="pointer-events-none absolute inset-0 select-none overflow-visible z-0"
       aria-hidden="true"
     >
-      {/* Phase 1C continuous floor base — painted first so every layer
-          above (Phase 1A pool gradients, rings asset, contact layers)
-          renders on top of it. */}
-      {FLOOR_BASE_LAYERS.map((layer) => (
-        <FloorLayer key={layer.key} layer={layer} />
-      ))}
-
-      {GRADIENT_LAYERS.map((layer) => (
-        <FloorLayer key={layer.key} layer={layer} />
-      ))}
+      {/* Gradient floor base and pool layers removed — replaced by HeroFloorSurface
+          (real dark photographic floor texture). Only RADAR MARKINGS and contact
+          layers remain here. */}
 
       {/* Photographic rings/astrolabe markings, embedded in the floor above —
           same asset, same pedestal anchor math as before (the translate ratio is

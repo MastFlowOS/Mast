@@ -153,16 +153,52 @@ const GRADIENT_LAYERS: GradientLayer[] = [
 // lowered, so it no longer reads as a brighter inner zone concentric with
 // a fainter outer one.
 //
-//   floorBase     — the broad flat floor. Uniform left-to-right, an
-//                   extremely gradual vertical wash from fully transparent,
-//                   up through a low, subtle peak, back to fully
-//                   transparent — no hard edge or plateau anywhere.
+// PHASE 1C.2 — full-width hero floor + horizontal perspective. The recorded
+// playback showed the floor still concentrated around the globe. Two
+// concrete causes, both fixed here without touching width/height order of
+// magnitude beyond what 1C already established:
+//
+//   1. floorBaseTilt was only 112vw wide. At the two-column desktop
+//      breakpoints the pedestal sits at roughly 70-75% of viewport width
+//      (the globe column is the narrower right-hand fr-track), so a layer
+//      needs at least ~150vw of width, centered on the pedestal, before its
+//      near edge reaches all the way to the hero's left edge. At 112vw it
+//      fell short by a real, visible margin — the near/tilted band simply
+//      did not exist yet under the left portion of the hero copy, it
+//      wasn't just faint there. floorBaseTilt is now the same 180vw as
+//      floorBase so both layers' left/right edges sit safely outside the
+//      viewport (still page-clipped by the hero's overflow-x-clip, not by
+//      their own gradient falloff) at any realistic viewport width.
+//   2. Both layers' colors sat very close in value to the page's near-black
+//      atmosphere, so once separated from the bright radar asset the tint
+//      was nearly imperceptible. Peak opacity is raised and the color is
+//      shifted to a warmer, slightly lighter neutral (distinct from the
+//      cooler background) so the floor reads as a physical surface even in
+//      isolation, while staying far too subtle to affect text contrast.
+//
+// Both layers also gain a second, purely *linear* gradient (a shallow
+// diagonal angle, not 90/180deg) layered behind the existing vertical wash.
+// Its stops rise from a low base, peak at 50% — which, because each layer's
+// box is horizontally centered on the pedestal via translate(-50%), is
+// exactly where the pedestal sits — and ease back down on both sides. That
+// gives the "brighten toward the globe, fade toward the distant reaches"
+// quality the flat vertical-only wash couldn't, entirely through straight,
+// axis-aligned stops: there is no radial shape, no curve, and (because the
+// stops never return to true zero within the visible viewport slice of the
+// oversized box) no ellipse or pool boundary anywhere in view.
+//
+//   floorBase     — the broad flat floor. A gentle diagonal wash (brighter
+//                   toward the pedestal, dimmer toward the far left/right)
+//                   combined with the original vertical near/far falloff —
+//                   fully transparent, up through a subtle peak, back to
+//                   fully transparent — no hard edge or plateau anywhere.
 //   floorBaseTilt — a wide band at the pedestal contact line, keeping the
 //                   same CSS 3D tilt direction (perspective + rotateX) as
 //                   before so the nearest part of the floor still
-//                   foreshortens like a horizontal surface, just subtler
-//                   and closer in width to floorBase so it reads as part of
-//                   the same surface rather than a second, brighter shape.
+//                   foreshortens like a horizontal surface, with the same
+//                   two-gradient treatment as floorBase but kept subtler so
+//                   it still reads as part of the same surface rather than
+//                   a second, brighter shape.
 //
 // Both anchor to the same PEDESTAL_LEFT/PEDESTAL_TOP contact point as every
 // other layer in this file (left/top percentages are relative to this
@@ -172,23 +208,23 @@ const GRADIENT_LAYERS: GradientLayer[] = [
 const FLOOR_BASE_LAYERS: GradientLayer[] = [
   {
     key: "floorBase",
-    width: "168vw",
+    width: "180vw",
     height: "56vh",
     left: PEDESTAL_LEFT,
     top: PEDESTAL_TOP,
     translate: "translate(-50%, -18%)",
     background:
-      "linear-gradient(180deg, rgba(6,8,12,0) 0%, rgba(8,9,12,0.035) 10%, rgba(9,10,13,0.075) 22%, rgba(10,10,13,0.115) 34%, rgba(12,11,13,0.14) 46%, rgba(11,10,12,0.13) 58%, rgba(9,9,11,0.09) 72%, rgba(7,8,10,0.045) 86%, rgba(6,7,9,0) 100%)",
+      "linear-gradient(100deg, rgba(20,17,13,0) 0%, rgba(23,19,15,0.035) 10%, rgba(27,22,17,0.07) 25%, rgba(30,25,19,0.095) 40%, rgba(31,26,19,0.105) 50%, rgba(29,24,18,0.09) 62%, rgba(26,22,17,0.06) 78%, rgba(22,19,15,0.025) 92%, rgba(20,17,13,0) 100%), linear-gradient(180deg, rgba(9,8,7,0) 0%, rgba(14,12,10,0.045) 10%, rgba(19,16,12,0.095) 22%, rgba(23,19,15,0.145) 34%, rgba(26,22,17,0.185) 46%, rgba(24,20,16,0.165) 58%, rgba(19,17,14,0.115) 72%, rgba(14,12,10,0.055) 86%, rgba(9,8,7,0) 100%)",
   },
   {
     key: "floorBaseTilt",
-    width: "112vw",
+    width: "180vw",
     height: "28vh",
     left: PEDESTAL_LEFT,
     top: PEDESTAL_TOP,
     translate: "translate(-50%, -56%) perspective(900px) rotateX(76deg)",
     background:
-      "linear-gradient(180deg, rgba(8,9,13,0) 0%, rgba(9,10,14,0.045) 16%, rgba(10,11,15,0.095) 34%, rgba(10,11,15,0.115) 50%, rgba(10,11,15,0.095) 66%, rgba(9,10,13,0.045) 84%, rgba(8,9,12,0) 100%)",
+      "linear-gradient(96deg, rgba(22,18,14,0) 0%, rgba(25,20,15,0.03) 15%, rgba(28,23,17,0.055) 35%, rgba(29,24,18,0.065) 50%, rgba(28,23,17,0.05) 65%, rgba(25,20,15,0.025) 85%, rgba(22,18,14,0) 100%), linear-gradient(180deg, rgba(11,10,9,0) 0%, rgba(16,14,11,0.06) 16%, rgba(22,18,14,0.115) 34%, rgba(25,21,16,0.15) 50%, rgba(22,18,14,0.115) 66%, rgba(16,14,11,0.06) 84%, rgba(11,10,9,0) 100%)",
   },
 ];
 

@@ -12,15 +12,6 @@
  * a genuine CSS 3D tilt for the near band instead of relying on concentric
  * rings of brightness to imply depth.
  *
- * PHASE 1B — radar floor markings only. The floor structure above (its size,
- * perspective, fade and placement) is unchanged from 1A. This phase only
- * changes how the existing mast-radar-floor.webp asset is presented: it now
- * carries the same perspective tilt as the floor itself, fades out via a soft
- * mask instead of relying solely on its own baked-in edge fade, and is toned
- * down (opacity + desaturation) so it reads as markings embedded in the floor
- * rather than a separate decal sitting on top of it. No reflection, gold
- * particles, comet trail, or globe/stand changes are part of this phase.
- *
  * Composition (back to front):
  *   1. floorPlane      — the large continuous ground plane. Extremely wide and
  *                         low, flat opacity, relative to its own footprint —
@@ -35,21 +26,10 @@
  *                         gradually into the surrounding dark background
  *                         toward its most distant/lowest edge, instead of the
  *                         floor stopping abruptly.
- *   4. ringsCore, ringsExtend — the original photographic radar/astrolabe floor
- *                         asset (unchanged pixels), reused as two instances rather
- *                         than one. Each carries a gentler version of the same
- *                         perspective/rotateX tilt used by floorPerspective (so the
- *                         markings sit in the same 3D floor context instead of
- *                         floating on top of it as a flat decal, without crushing
- *                         their fine detail), a soft radial mask so they fade out
- *                         well before their own box edge, and reduced
- *                         opacity/saturation so they read as markings toned into
- *                         the floor rather than a bright sticker. ringsCore is the
- *                         legible instance at the pedestal; ringsExtend is a
- *                         larger, much fainter copy offset along the floor so the
- *                         grid/ring pattern feels like it continues naturally
- *                         across the wider plane instead of stopping at one
- *                         graphic's boundary.
+ *   4. ringsAsset       — the original photographic radar/astrolabe floor asset
+ *                         (unchanged pixels), scaled up further and layered on
+ *                         top so it reads as markings embedded in the larger
+ *                         floor plane above, not as the floor's own boundary.
  *   5. contactShadow    — small dark ellipse right at the base, grounding the pedestal.
  *   6. goldGlow         — small warm gold reflection at the exact contact point, screened
  *                         on top so it reads as light bouncing off the floor by the base.
@@ -137,6 +117,70 @@ const GRADIENT_LAYERS: GradientLayer[] = [
   },
 ];
 
+// ─── PHASE 1C — continuous floor base ──────────────────────────────────────
+// A new environment layer, painted *behind* everything above (GRADIENT_LAYERS
+// is still the untouched Phase 1A treatment; the rings asset and
+// CONTACT_LAYERS below are also untouched). This is the two-layer "physical
+// studio floor" the globe stands inside, kept deliberately separate from the
+// pedestal-centered pool gradients above it.
+//
+// Where GRADIENT_LAYERS is sized as a large percentage of this component's
+// own narrow, aspect-ratio-locked box, these two layers are sized from the
+// viewport (vw/vh) instead — a real, bounded physical measurement rather
+// than an inflated percentage of a small box. A width safely over 100vw
+// guarantees the layer's left/right edges sit outside the visible frame on
+// any screen size, so the floor is clipped by the hero's own
+// overflow-x-clip (no page overflow) instead of fading out from its own
+// gradient — it reads as continuing past the frame because it genuinely
+// does, not because a radial falloff was stretched wide.
+//
+// Both layers use only *linear* gradients (vertical stops), never radial:
+// a linear gradient has zero side-to-side falloff, so nothing here reads as
+// a centered ellipse or spotlight no matter how large the box is.
+//
+//   floorBase     — the broad flat floor. Uniform left-to-right, soft
+//                   vertical fade in just above the pedestal line and back
+//                   out toward the bottom of the hero. One small, low-
+//                   opacity warm radial highlight is layered into the same
+//                   element's background (not a separate DOM layer) right
+//                   at the pedestal line, so ambient light gently catches
+//                   the floor there without adding a second visible shape.
+//   floorBaseTilt — a narrower band right at the pedestal contact line,
+//                   given a genuine CSS 3D tilt (perspective + rotateX,
+//                   the same technique already used by floorPerspective
+//                   above) so the nearest part of the floor actually
+//                   foreshortens like a horizontal surface, rather than
+//                   implying depth through concentric brightness.
+//
+// Both anchor to the same PEDESTAL_LEFT/PEDESTAL_TOP contact point as every
+// other layer in this file (left/top percentages are relative to this
+// component's own box regardless of how large the sized layer itself is),
+// so they track the globe/stand across breakpoints with no new
+// breakpoint-specific code.
+const FLOOR_BASE_LAYERS: GradientLayer[] = [
+  {
+    key: "floorBase",
+    width: "128vw",
+    height: "42vh",
+    left: PEDESTAL_LEFT,
+    top: PEDESTAL_TOP,
+    translate: "translate(-50%, -24%)",
+    background:
+      "radial-gradient(ellipse 46% 30% at 50% 10%, rgba(196,156,98,0.13) 0%, rgba(196,156,98,0.045) 55%, rgba(196,156,98,0) 80%), " +
+      "linear-gradient(180deg, rgba(7,9,13,0) 0%, rgba(8,10,15,0.15) 12%, rgba(8,10,15,0.23) 32%, rgba(7,9,14,0.21) 56%, rgba(6,8,13,0.10) 80%, rgba(6,8,13,0) 100%)",
+  },
+  {
+    key: "floorBaseTilt",
+    width: "64vw",
+    height: "18vh",
+    left: PEDESTAL_LEFT,
+    top: PEDESTAL_TOP,
+    translate: "translate(-50%, -55%) perspective(900px) rotateX(76deg)",
+    background:
+      "linear-gradient(180deg, rgba(10,12,17,0) 0%, rgba(10,12,17,0.24) 40%, rgba(9,11,16,0.26) 62%, rgba(9,11,16,0) 100%)",
+  },
+];
+
 // Rendered after the rings asset: grounds the pedestal, then lights it.
 const CONTACT_LAYERS: GradientLayer[] = [
   {
@@ -185,64 +229,33 @@ export function GlobePresentationSurface() {
       className="pointer-events-none absolute inset-0 select-none overflow-visible z-0"
       aria-hidden="true"
     >
+      {/* Phase 1C continuous floor base — painted first so every layer
+          above (Phase 1A pool gradients, rings asset, contact layers)
+          renders on top of it. */}
+      {FLOOR_BASE_LAYERS.map((layer) => (
+        <FloorLayer key={layer.key} layer={layer} />
+      ))}
+
       {GRADIENT_LAYERS.map((layer) => (
         <FloorLayer key={layer.key} layer={layer} />
       ))}
 
-      {/* Radar/astrolabe markings, embedded in the floor above — same unmodified
-          asset (mast-radar-floor.webp) used twice, not redesigned. floorPerspective's
-          own rotateX(74deg) is a near-edge-on tilt that only ever renders a soft,
-          detail-free gradient, so applying it verbatim to this image (which has real
-          fine detail — rings, tick marks, graduation lines) would crush it into an
-          unreadable sliver. Instead both instances use a gentler tilt in the same
-          perspective(760px) 3D context — enough to visually agree with the floor's
-          foreshortening without destroying the markings — plus a soft radial mask so
-          they dissolve well before their own box edge instead of showing a graphic
-          boundary. Reduced opacity/saturation keeps them toned into the dark floor
-          rather than reading as a bright sticker. */}
+      {/* Photographic rings/astrolabe markings, embedded in the floor above —
+          same asset, same pedestal anchor math as before (the translate ratio is
+          relative to the asset's own box, so it still centers on the asset's
+          internal ring-center regardless of scale). Sized up further so it reads
+          as detail sitting on top of the larger floor plane, not as the floor's
+          own boundary. */}
       <img
         src={RADAR_FLOOR_ASSET}
         alt=""
         draggable={false}
         className="pointer-events-none absolute select-none object-contain max-w-none"
         style={{
-          width: "360%",
+          width: "310%",
           left: PEDESTAL_LEFT,
           top: PEDESTAL_TOP,
-          transform:
-            "translate(-56.84%, -49.27%) perspective(760px) rotateX(22deg) scale(1.4, 1)",
-          transformOrigin: "50% 8%",
-          opacity: 0.8,
-          filter: "saturate(0.85) brightness(0.92)",
-          WebkitMaskImage:
-            "radial-gradient(ellipse 60% 55% at 50% 42%, black 0%, black 45%, transparent 78%)",
-          maskImage:
-            "radial-gradient(ellipse 60% 55% at 50% 42%, black 0%, black 45%, transparent 78%)",
-        }}
-      />
-
-      {/* Fainter, larger copy of the same asset, offset along the floor so the
-          ring/grid pattern reads as continuing naturally across the wider plane
-          rather than stopping at one graphic's edge — not a second design, just
-          the same markings extended and heavily faded. */}
-      <img
-        src={RADAR_FLOOR_ASSET}
-        alt=""
-        draggable={false}
-        className="pointer-events-none absolute select-none object-contain max-w-none"
-        style={{
-          width: "620%",
-          left: PEDESTAL_LEFT,
-          top: PEDESTAL_TOP,
-          transform:
-            "translate(-52%, -49.27%) perspective(760px) rotateX(22deg) scale(1.3, 1)",
-          transformOrigin: "50% 8%",
-          opacity: 0.16,
-          filter: "saturate(0.8) brightness(0.9)",
-          WebkitMaskImage:
-            "radial-gradient(ellipse 62% 50% at 50% 42%, black 0%, black 30%, transparent 68%)",
-          maskImage:
-            "radial-gradient(ellipse 62% 50% at 50% 42%, black 0%, black 30%, transparent 68%)",
+          transform: "translate(-56.84%, -49.27%)",
         }}
       />
 

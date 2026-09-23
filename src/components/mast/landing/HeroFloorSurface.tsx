@@ -35,6 +35,36 @@
  * tilts in GlobePresentationSurface, since this layer's job is the broad
  * surface, not a foreshortened near band.
  *
+ * PHASE 1D.1 — visibility pass. Phase 1D's two gradients were each so low-
+ * alpha (peaking around 0.22-0.24) that, layered together, the base barely
+ * lifted off the page's near-black background (#02040c) — in practice
+ * almost invisible against it, exactly as reported after the real browser
+ * check. The fix here is a deliberate two-tier split rather than just
+ * turning every number up:
+ *
+ *   1. floorBase  — the dominant layer, and the one that actually makes the
+ *      floor "clearly visible across the lower hero." It varies only by y
+ *      (180deg, no x component at all), so at any given row it is the same
+ *      strength all the way across — that uniformity *is* what reads as a
+ *      broad surface spanning the full width, at a peak alpha (~0.56) high
+ *      enough to sit clearly above the background rather than blending into
+ *      it. It still fades to fully transparent at 0% and 100%, so the top
+ *      and bottom boundaries remain a gradual dissolve, not a cut line.
+ *   2. floorWarmth — a secondary, much lower-alpha layer (peaking ~0.24)
+ *      that varies only by x (92deg), layered on top of floorBase. Its job
+ *      is purely the left/right variation: warmer and a little brighter
+ *      loosely toward where the globe/pedestal sits, cooler and dimmer
+ *      toward the far left and right edges. Keeping its peak alpha well
+ *      below floorBase's matters structurally, not just tonally: because it
+ *      has no y component, an x-only gradient is constant along the full
+ *      height of the layer, so if it were strong it would leave a visible
+ *      band right at the top edge even where floorBase has already faded to
+ *      zero. At this lower alpha its contribution there stays a soft, minor
+ *      tint rather than a seam.
+ *
+ * Both remain strictly linear gradients — no radial shape, so no ellipse,
+ * pool, spotlight, or circular glow at any size or alpha.
+ *
  * PHASE 1D — floor surface only. Deliberately excludes and does not touch:
  * radar markings (the existing photographic asset, painted separately in
  * GlobePresentationSurface), reflection, and gold particle flow — all
@@ -60,17 +90,20 @@ export function HeroFloorSurface() {
           transform: "perspective(2200px) rotateX(5deg)",
           transformOrigin: "50% 100%",
           background:
-            // Horizontal wash — transparent at both edges, rising to a
-            // single broad peak slightly right of center (loosely toward
-            // where the globe/pedestal sits in the two-column layout),
-            // dark toward the far left and right. Purely linear along the
-            // x-axis: no side-to-side falloff shaped like an ellipse.
-            "linear-gradient(92deg, rgba(10,9,8,0) 0%, rgba(15,13,11,0.05) 10%, rgba(19,16,13,0.12) 26%, rgba(22,18,15,0.18) 42%, rgba(24,20,16,0.22) 58%, rgba(23,19,15,0.19) 72%, rgba(18,15,12,0.11) 86%, rgba(12,10,9,0.04) 95%, rgba(10,9,8,0) 100%), " +
-            // Vertical wash — fades up into the atmosphere above (0%) and
-            // eases back down again toward the very bottom (100%), so
-            // there is no hard line at either the top or bottom boundary,
-            // only a gradual dissolve into the surrounding page background.
-            "linear-gradient(180deg, rgba(8,7,6,0) 0%, rgba(12,10,9,0.05) 16%, rgba(16,14,11,0.14) 34%, rgba(19,16,13,0.21) 52%, rgba(20,17,14,0.24) 68%, rgba(17,14,12,0.17) 84%, rgba(11,10,9,0.06) 95%, rgba(8,7,6,0) 100%)",
+            // floorWarmth — secondary, low-alpha left/right accent. Warm and
+            // a little brighter around a single broad peak slightly right
+            // of center (loosely toward the globe/pedestal), cooler and
+            // dimmer toward the far left and right. Purely linear along the
+            // x-axis, deliberately kept well under floorBase's alpha (see
+            // docblock) so it never reads as its own band or glow.
+            "linear-gradient(92deg, rgba(9,8,7,0) 0%, rgba(14,13,11,0.05) 8%, rgba(18,15,12,0.10) 20%, rgba(26,21,15,0.16) 34%, rgba(36,28,18,0.20) 48%, rgba(44,33,20,0.24) 60%, rgba(38,29,18,0.20) 72%, rgba(26,21,15,0.12) 85%, rgba(15,13,11,0.05) 95%, rgba(9,8,7,0) 100%), " +
+            // floorBase — dominant, x-independent wash. Same strength across
+            // the full width at any given row, which is what makes the
+            // floor clearly, uniformly visible edge to edge rather than
+            // concentrated in the middle. Fades to fully transparent at the
+            // top (into the atmosphere above) and the bottom (into the page
+            // background below), so both boundaries stay a gradual dissolve.
+            "linear-gradient(180deg, rgba(9,8,7,0) 0%, rgba(14,12,10,0.08) 10%, rgba(19,16,13,0.20) 22%, rgba(24,20,16,0.34) 36%, rgba(27,23,18,0.46) 50%, rgba(29,24,19,0.56) 62%, rgba(27,23,18,0.50) 74%, rgba(21,18,14,0.32) 86%, rgba(14,12,10,0.12) 95%, rgba(9,8,7,0) 100%)",
         }}
       />
     </div>

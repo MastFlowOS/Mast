@@ -19,6 +19,12 @@
  * edge, while the surrounding transparent pixels let it read as light
  * pooling on the floor the globe column already renders above. Nothing
  * about the image, the anchor marker, or the existing constants changes.
+ *
+ * PHASE 2A.1 — same single layer, just turned up: larger footprint and a
+ * brighter, multi-stop center so it actually reads against the floor
+ * instead of disappearing into it. Still one static radial-gradient <div>,
+ * still fully transparent at its outer edge (no hard border), so it stays
+ * a soft pool rather than a visible glowing shape.
  */
 
 import type { RefObject } from "react";
@@ -36,16 +42,19 @@ const GLOBE_ASPECT_RATIO = `${GLOBE_WIDTH_PX} / ${GLOBE_HEIGHT_PX}`;
 const PEDESTAL_LEFT = "46.64%";
 const PEDESTAL_TOP = "94.2%";
 
-// PHASE 2A — reflection layer. A flat, wide ellipse (reflections foreshorten
-// on a floor) centered on the pedestal's contact point. Sized off viewport
-// width like the rest of the hero's floor treatment so it scales gently
-// across breakpoints instead of jumping. The vertical -32% shift keeps most
-// of the shape below the contact line, with just enough tucked upward that
-// it sits behind the pedestal's own base pixels rather than peeking past them.
-const REFLECTION_WIDTH = "clamp(56px, 6.5vw, 128px)";
-const REFLECTION_HEIGHT = "clamp(9px, 1vw, 20px)";
+// PHASE 2A / 2A.1 — reflection layer. A wide ellipse (reflections
+// foreshorten on a floor) centered on the pedestal's contact point. Sized
+// off viewport width like the rest of the hero's floor treatment so it
+// scales gently across breakpoints instead of jumping. 2A.1 widened it and
+// gave it real vertical extent (was near-flat) so it reads as a pool on the
+// floor rather than a sliver, and added a brighter inner stop. The vertical
+// -32% shift keeps most of the shape below the contact line, with just
+// enough tucked upward that it sits behind the pedestal's own base pixels
+// rather than peeking past them.
+const REFLECTION_WIDTH = "clamp(100px, 11vw, 230px)";
+const REFLECTION_HEIGHT = "clamp(30px, 3.4vw, 70px)";
 const REFLECTION_GRADIENT =
-  "radial-gradient(ellipse at center, rgba(205,158,96,0.30) 0%, rgba(205,158,96,0.16) 30%, rgba(205,158,96,0.06) 60%, rgba(205,158,96,0) 100%)";
+  "radial-gradient(ellipse at center, rgba(205,158,96,0.46) 0%, rgba(205,158,96,0.30) 18%, rgba(205,158,96,0.16) 40%, rgba(205,158,96,0.06) 68%, rgba(205,158,96,0) 100%)";
 
 export function GlobeStand({
   className = "",

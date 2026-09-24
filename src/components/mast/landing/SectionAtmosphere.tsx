@@ -70,22 +70,74 @@ type StarLayers = {
   twinkle: StarGroup[];
 };
 
-type StarDot = { x: number; y: number; size: number; alpha: number };
+type StarDot = {
+  x: number;
+  y: number;
+  size: number;
+  alpha: number;
+  /** Optional per-dot colour (defaults to the site-wide STAR_FILL). */
+  fill?: string;
+  /**
+   * Optional soft halo, as a multiple of the dot's own radius. The halo is a
+   * radial-gradient disc (fill-opacity = `haloAlpha`), drawn under the core.
+   * With `alpha: 0` the dot is a halo only — used for out-of-focus bokeh.
+   */
+  halo?: number;
+  haloAlpha?: number;
+  /** Halo colour family. Defaults to "cool" (the site star tint). */
+  haloTone?: "cool" | "warm";
+};
 
 // Same fallbacks the old keyframes used when a star carried no --star-op-* vars.
 const BREATHE_DEFAULTS = { min: 0.12, max: 0.5 };
 const TWINKLE_DEFAULTS = { min: 0.15, mid1: 0.35, max: 0.7, mid2: 0.38 };
 
-function starsToUrl(dots: StarDot[]): string {
+// Shared halo falloff: a smooth, near-gaussian ramp (no visible disc edge).
+const HALO_DEFS = (id: string, rgb: string) =>
+  `<radialGradient id='${id}'>` +
+  [
+    [0, 1],
+    [0.22, 0.62],
+    [0.45, 0.28],
+    [0.7, 0.08],
+    [1, 0],
+  ]
+    .map(([o, a]) => `<stop offset='${o}' stop-color='${rgb}' stop-opacity='${a}'/>`)
+    .join("") +
+  `</radialGradient>`;
+
+function starsToUrl(dots: StarDot[], compact = false): string {
+  // Halo gradients are only emitted when a dot asks for one, so layers made of
+  // plain dots (every pre-4A star layer) serialise exactly as before.
+  const cool = dots.some((d) => d.halo && d.haloTone !== "warm");
+  const warm = dots.some((d) => d.halo && d.haloTone === "warm");
+  const defs =
+    cool || warm
+      ? `<defs>${cool ? HALO_DEFS("hc", STAR_FILL) : ""}${warm ? HALO_DEFS("hw", "#f2c887") : ""}</defs>`
+      : "";
   const circles = dots
     .map((d) => {
       const r = d.size / 2;
       // cx/cy are % of the layer box, r is px; translate(r r) reproduces the old
       // "left/top = x%/y% of the star's top-left corner" placement exactly.
-      return `<circle cx='${d.x.toFixed(2)}%' cy='${d.y.toFixed(2)}%' r='${r.toFixed(2)}' transform='translate(${r.toFixed(2)} ${r.toFixed(2)})' fill='${STAR_FILL}' fill-opacity='${d.alpha.toFixed(3)}'/>`;
+      // `compact` (hero star layer only): 1-decimal %, and no translate(r r) nudge
+      // (<= 1.5px, invisible on random stars). Keeps a ~550-dot layer to ~60 KB.
+      const at = compact
+        ? `cx='${d.x.toFixed(1)}%' cy='${d.y.toFixed(1)}%'`
+        : `cx='${d.x.toFixed(2)}%' cy='${d.y.toFixed(2)}%'`;
+      const tr = compact ? "" : `transform='translate(${r.toFixed(2)} ${r.toFixed(2)})'`;
+      const tone = d.fill ?? STAR_FILL;
+      const halo = d.halo
+        ? `<circle ${at} r='${(r * d.halo).toFixed(2)}' ${tr} fill='url(#${d.haloTone === "warm" ? "hw" : "hc"})' fill-opacity='${(d.haloAlpha ?? 0.1).toFixed(3)}'/>`
+        : "";
+      const core =
+        d.alpha > 0
+          ? `<circle ${at} r='${r.toFixed(2)}' ${tr} fill='${tone}' fill-opacity='${d.alpha.toFixed(compact ? 2 : 3)}'/>`
+          : "";
+      return halo + core;
     })
     .join("");
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg'>${circles}</svg>`;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg'>${defs}${circles}</svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 }
 
@@ -145,6 +197,215 @@ function buildStarLayers(stars: Star[]): StarLayers {
     ),
   };
 }
+
+// ─── Hero deep field (Phase 4A) ──────────────────────────────────────────────
+// The hero sky is built from three depth layers, all static and all painted by
+// the compositor — nothing here animates, and there is no JS after first render:
+//
+//   FAR   the baked nebula (`.hero-nebula`, styles.css): cool charcoal/navy haze
+//   MID   this star field: many very faint distant stars, fewer mid ones, a
+//         handful of brighter ones with a soft halo. Cool blue-white, with the
+//         odd warm one, as in the reference.
+//   NEAR  sparse warm dust points + a few very faint out-of-focus bokeh
+//
+// Positions come from a deterministic density field (same LCG the other star
+// generators use, so the sky is identical on every load): richest around the
+// globe / gold-flow area and the upper right, thin along the top, nearly empty
+// behind the hero copy and toward the floor. Positions are % of the hero
+// atmosphere box; the nebula asset is cover-fitted into the same box.
+//
+// Phase 4A.1 — starfield density + character: ~550 star dots (was ~175) plus 22
+// warm/bokeh dots, across TWO layers. (The removed particle system was thousands
+// of DOM nodes / a canvas loop; this is still two elements carrying two small SVG
+// backgrounds.) The star tiers:
+//
+//   T1  ~430  tiny, faint, distant — the majority. Brightness is skewed low, so most
+//             are barely-there and a minority read as clear pinpoints.
+//   T2  ~105  moderately visible. Never placed in the copy footprint.
+//   T3  ~15   the few brighter stars, each with a subtle halo. Never placed in the
+//             copy footprint, the nav row, the globe's silhouette, or near each other.
+//
+// Copy protection lives in the star density field itself (`copyBox` below): the
+// desktop copy column is a rectangle in these % coordinates, so it is nearly empty
+// and holds no T2/T3 at all. The stacked (<lg) layout can't be expressed in
+// viewport-independent % positions, so that is handled by a mask on the star layer
+// in styles.css (`.hero-deepfield-stars`).
+//
+// The warm dust / bokeh layer draws from its own RNG stream, pinned to the exact
+// state it started from before 4A.1, so re-tuning the stars cannot move it.
+type HeroSky = { starsUrl: string; nearUrl: string };
+
+const COOL_TINTS = ["#cfdcff", "#dbe6ff", "#e6eeff", "#dfe8ff"];
+const WARM_STAR = "#ffe0b0";
+const WARM_DUST = ["#f3c986", "#ffd9a0", "#eebd78"];
+// RNG state at which the warm-dust / bokeh layer began drawing in Phase 4A (validated).
+const HERO_NEAR_SEED = 820431270;
+
+function buildHeroSky(): HeroSky {
+  let seed = 1103;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+  const between = (a: number, b: number) => a + rand() * (b - a);
+  const pick = <T,>(xs: T[]) => xs[Math.floor(rand() * xs.length) % xs.length];
+  const smooth = (a: number, b: number, v: number) => {
+    const t = Math.min(1, Math.max(0, (v - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+  const blob = (x: number, y: number, cx: number, cy: number, sx: number, sy: number) =>
+    Math.exp(-(((x - cx) / sx) ** 2 + ((y - cy) / sy) ** 2));
+  // 0..1: how much this point sits inside the "keep it dark" zone behind the copy
+  const copyZone = (x: number, y: number) =>
+    Math.exp(-(Math.abs((x - 0.22) / 0.24) ** 2.6 + Math.abs((y - 0.52) / 0.3) ** 2.6));
+  const floorFade = (y: number) => 1 - 0.85 * smooth(0.74, 0.93, y);
+
+  // Stars only (4A.1). 1 inside / 0 outside a soft rectangle: the footprint of the
+  // desktop hero copy (h1, paragraph, CTAs, note, stat strip) plus margin, in % of
+  // the atmosphere box. Measured across lg widths (1024-2560px) the copy column
+  // spans x 5%-51% and y 20%-72% of the box, so this is the envelope of all of them.
+  const plateau = (v: number, a: number, b: number, feather: number) =>
+    smooth(a - feather, a, v) * (1 - smooth(b, b + feather, v));
+  const copyBox = (x: number, y: number) => plateau(x, 0.045, 0.515, 0.035) * plateau(y, 0.17, 0.76, 0.05);
+  // Where the larger stars (T2/T3) may sit: outside the copy footprint, and not
+  // behind the nav links / buttons along the very top of the box.
+  const openSky = (x: number, y: number) => copyBox(x, y) < 0.02 && (y >= 0.085 || (x > 0.5 && x < 0.72));
+  // T3 also stays off the globe's silhouette (approx. across lg widths), where it would be hidden.
+  const behindGlobe = (x: number, y: number) => ((x - 0.72) / 0.09) ** 2 + ((y - 0.38) / 0.25) ** 2 < 1;
+
+  // Where stars are allowed to be (relative density, unitless). Peak of the field below
+  // is 0.55 + 0.5 + 1.1 + 0.7 ~= 2.85, so the rejection sampler's ceiling is 3.
+  const STAR_DENSITY_MAX = 3;
+  const starDensity = (x: number, y: number) =>
+    (0.55 +
+      0.5 * blob(x, y, 0.58, 0.1, 0.46, 0.14) + // band along the top, weighted to the right
+      1.1 * blob(x, y, 0.66, 0.4, 0.26, 0.34) + // around the globe / gold flow
+      0.7 * blob(x, y, 0.92, 0.24, 0.14, 0.3)) * // upper right
+    (1 - 0.88 * copyBox(x, y)) *
+    floorFade(y);
+  // Warm dust: hugs the globe halo and the lower right where the flow lands.
+  const warmDensity = (x: number, y: number) =>
+    (0.18 + 1.0 * blob(x, y, 0.68, 0.42, 0.3, 0.36) + 0.5 * blob(x, y, 0.9, 0.72, 0.15, 0.2)) *
+    (1 - 0.95 * copyZone(x, y)) *
+    floorFade(y) *
+    smooth(0.03, 0.09, y); // keep clear of the nav row
+
+  const sample = (density: (x: number, y: number) => number, max: number) => {
+    for (let i = 0; i < 400; i++) {
+      const x = rand();
+      const y = rand();
+      if (rand() * max < density(x, y)) return { x: x * 100, y: y * 100 };
+    }
+    return { x: 70, y: 30 };
+  };
+
+  // Same rejection sampler as `sample`, plus an acceptance test. (`sample` itself is
+  // left byte-for-byte alone: the warm layer below uses it.)
+  const sampleWhere = (
+    density: (x: number, y: number) => number,
+    max: number,
+    ok: (x: number, y: number) => boolean,
+  ) => {
+    for (let i = 0; i < 800; i++) {
+      const x = rand();
+      const y = rand();
+      if (ok(x, y) && rand() * max < density(x, y)) return { x: x * 100, y: y * 100 };
+    }
+    return { x: 66, y: 30 };
+  };
+  const anywhere = () => true;
+
+  // Loose clusters, so the field clumps like a real sky instead of a grid of noise.
+  const clusters = Array.from({ length: 13 }, () => sample(starDensity, STAR_DENSITY_MAX));
+  const clusteredWhere = (ok: (x: number, y: number) => boolean) => {
+    const c = pick(clusters);
+    const x = c.x + (rand() + rand() - 1) * 3.0;
+    const y = c.y + (rand() + rand() - 1) * 5.0;
+    const inBox = x > 0 && x < 100 && y > 0 && y < 100;
+    return inBox && ok(x / 100, y / 100) && copyBox(x / 100, y / 100) < 0.5
+      ? { x, y }
+      : sampleWhere(starDensity, STAR_DENSITY_MAX, ok);
+  };
+
+  const stars: StarDot[] = [];
+  const cool = () => pick(COOL_TINTS);
+
+  // Tier 1 — tiny, faint, distant: the majority of the field. Brightness is skewed
+  // low (u = rand^1.8), so most are faint and a minority are clearly visible pinpoints;
+  // size follows brightness a little. Copy-footprint strays are dimmed further.
+  for (let i = 0; i < 430; i++) {
+    const p = i % 100 < 50 ? clusteredWhere(anywhere) : sampleWhere(starDensity, STAR_DENSITY_MAX, anywhere);
+    const warm = rand() < 0.06;
+    const u = rand() ** 1.8;
+    const size = 0.75 + rand() * 0.25 + u * 0.4;
+    const alpha = (0.1 + u * 0.5) * (1 - 0.5 * copyBox(p.x / 100, p.y / 100));
+    stars.push({ ...p, size, alpha, fill: warm ? WARM_STAR : cool() });
+  }
+  // Tier 2 — moderately visible stars.
+  for (let i = 0; i < 105; i++) {
+    const p = i % 100 < 30 ? clusteredWhere(openSky) : sampleWhere(starDensity, STAR_DENSITY_MAX, openSky);
+    const warm = rand() < 0.07;
+    stars.push({
+      ...p,
+      size: between(1.3, 2.0),
+      alpha: 0.42 + rand() ** 1.4 * 0.32,
+      fill: warm ? WARM_STAR : cool(),
+    });
+  }
+  // Tier 3 — a few brighter stars with a subtle halo. Kept few: they set scale.
+  // Spaced apart so they read as individual bright stars, not a clump.
+  const brights: { x: number; y: number }[] = [];
+  const spaced = (x: number, y: number) =>
+    openSky(x, y) && !behindGlobe(x, y) && brights.every((b) => Math.abs(b.x - x) > 0.07 || Math.abs(b.y - y) > 0.12);
+  for (let i = 0; i < 15; i++) {
+    const p = sampleWhere(starDensity, STAR_DENSITY_MAX, spaced);
+    brights.push({ x: p.x / 100, y: p.y / 100 });
+    stars.push({
+      ...p,
+      size: between(2.1, 3.0),
+      alpha: between(0.72, 0.95),
+      fill: "#f2f6ff",
+      halo: 4.2,
+      haloAlpha: between(0.08, 0.13),
+    });
+  }
+
+  // The warm layer below is unchanged from Phase 4A: it continues from the RNG state
+  // the old star loops used to leave behind, so its dots land exactly where they did.
+  seed = HERO_NEAR_SEED;
+  const near: StarDot[] = [];
+  // Warm distant dust points; about half carry a faint halo.
+  for (let i = 0; i < 18; i++) {
+    const halo = i % 2 === 0;
+    near.push({
+      ...sample(warmDensity, 1.8),
+      size: between(1.4, 3.2),
+      alpha: between(0.22, 0.5),
+      fill: pick(WARM_DUST),
+      ...(halo ? { halo: 5, haloAlpha: between(0.06, 0.1), haloTone: "warm" as const } : {}),
+    });
+  }
+  // A few large, very soft, very faint out-of-focus points: near-field bokeh.
+  // Halo-only (alpha 0), gaussian-ish falloff, low alpha — they should read as
+  // a faint warm bloom in the dark, never as a visible disc.
+  for (let i = 0; i < 4; i++) {
+    near.push({
+      ...sample(warmDensity, 1.8),
+      size: 2,
+      alpha: 0,
+      fill: "#f0c27a",
+      halo: between(9, 16), // radius = halo x the 1px core radius, i.e. ~9-16px
+      haloAlpha: between(0.05, 0.09),
+      haloTone: "warm",
+    });
+  }
+
+  return { starsUrl: starsToUrl(stars, true), nearUrl: starsToUrl(near) };
+}
+
+// Built once per page load, on first hero mount (deterministic; not per render).
+let heroSkyCache: HeroSky | null = null;
+const getHeroSky = () => (heroSkyCache ??= buildHeroSky());
 
 const layerBg = (url: string): React.CSSProperties => ({
   backgroundImage: url,
@@ -388,6 +649,8 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
   // up to 10 of these on a single page) costs one render, not two.
   const stars = useMemo(() => generateStars(variant, starBoost), [variant, starBoost]);
   const layers = useMemo(() => buildStarLayers(stars), [stars]);
+  // Hero only: the static deep-field (built once per page load, see buildHeroSky).
+  const heroSky = variant === "hero" ? getHeroSky() : null;
 
   // Soft vertical feathering with spatial overlap prevents rectangular boundary cutoffs
   const maskStyle: React.CSSProperties =
@@ -419,6 +682,10 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
       style={maskStyle}
       aria-hidden="true"
     >
+      {/* 0. HERO FAR LAYER (Phase 4A): baked nebula — the deepest thing in the scene.
+          Static; see `.hero-nebula` in styles.css. Sits under the haze and cloud belts. */}
+      {variant === "hero" && <div className="hero-nebula absolute inset-0 pointer-events-none" />}
+
       {/* 1. Atmospheric Haze & Ambient Depth (Autonomous, time-based) */}
       {variant === "hero" && (
         <>
@@ -747,6 +1014,21 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
             </div>
           </div>
         </div>
+      )}
+
+      {/* 2b. HERO DEEP FIELD (Phase 4A): static distant stars (mid layer), then sparse warm
+          dust + faint bokeh (near layer). Two elements, two SVG backgrounds, no animation. */}
+      {heroSky && (
+        <>
+          <div
+            className="hero-deepfield hero-deepfield-stars absolute inset-0 pointer-events-none"
+            style={layerBg(heroSky.starsUrl)}
+          />
+          <div
+            className="hero-deepfield hero-deepfield-near absolute inset-0 pointer-events-none"
+            style={layerBg(heroSky.nearUrl)}
+          />
+        </>
       )}
 
       {/* 3. Section-Specific Living Stars (No Scroll Parallax): 1 static layer + a few grouped pulse layers */}

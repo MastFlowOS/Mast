@@ -1016,33 +1016,3 @@
     mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.3) 0%, rgba(0, 0, 0, 0.3) 40%, #000 62%);
   }
 }
-
-/* ---------------------------------------------------------------
-   PHASE 4A.1 — star layer only, stacked (<lg) layout.
-
-   Below 1024px the copy is centred over the top of the hero box, which the
-   viewport-independent % star positions can't know about (the desktop copy
-   footprint is handled in buildHeroSky). So the STAR layer (.hero-deepfield-stars;
-   the warm dust/bokeh layer keeps the 4A mask above) is masked instead:
-     - a thin band along the top (behind the nav row) keeps some stars,
-     - the copy area (h1 -> stat strip) is held near-empty, so even the brightest
-       stars there fall to ~6% and vanish,
-     - stars ramp back to full strength as the globe column begins, so the globe /
-       right-hand environment keeps the full field.
-   Measured extents, % of the hero box: h1 top 9.5%; copy ends at 46% (640-1023px)
-   or 55% (<640px, where the stat strip wraps to 2 rows); globe column begins at
-   46-49% / 57-58%. Stop positions sit just past those.
---------------------------------------------------------------- */
-@media (max-width: 1023px) {
-  .hero-deepfield-stars {
-    -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.55) 5%, rgba(0, 0, 0, 0.06) 9%, rgba(0, 0, 0, 0.06) 47%, #000 60%);
-    mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.55) 5%, rgba(0, 0, 0, 0.06) 9%, rgba(0, 0, 0, 0.06) 47%, #000 60%);
-  }
-}
-
-@media (max-width: 639px) {
-  .hero-deepfield-stars {
-    -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.55) 5%, rgba(0, 0, 0, 0.06) 9%, rgba(0, 0, 0, 0.06) 56%, #000 70%);
-    mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.55) 5%, rgba(0, 0, 0, 0.06) 9%, rgba(0, 0, 0, 0.06) 56%, #000 70%);
-  }
-}

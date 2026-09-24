@@ -6,10 +6,11 @@
  * turned into a particle system. No canvas, no WebGL, no RAF, no timers, no
  * scroll hooks. Nothing here animates.
  *
- * PHASE 3A.1 — INTENSITY. The PNG bytes are still untouched and no second
- * asset was generated; opacity/brightness/contrast/saturate are applied as
- * compositing only (see FLOW_OPACITY / FLOW_FILTER below) to bring the
- * rendered intensity down to "cosmic dust." Path, scale, rotation, and
+ * PHASE 3A.1 / 3A.2 — INTENSITY. The PNG bytes are still untouched and no
+ * second asset was generated; opacity/brightness/contrast/saturate are
+ * applied as compositing only (see FLOW_OPACITY / FLOW_FILTER below) to
+ * bring the rendered intensity toward "cosmic dust, not a solid beam," then
+ * tuned back up once 3A.1 read as too dim. Path, scale, rotation, and
  * placement below are unchanged from Phase 3A.
  *
  * LAYERING (see Hero in routes/index.tsx)
@@ -66,7 +67,7 @@ const FLOW_ROTATE_DEG = 3.8;
 const FLOW_TOP_MASK =
   "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,1) 9%, rgba(0,0,0,1) 100%)";
 
-// PHASE 3A.1 — INTENSITY ONLY. The source asset renders as a bright, dense,
+// PHASE 3A.1 — INTENSITY. The source asset renders as a bright, dense,
 // near-solid ribbon with large blown-out orbs. These three values pull it
 // toward "fine illuminated cosmic dust" without touching the asset, path,
 // placement, or rotation above:
@@ -79,8 +80,15 @@ const FLOW_TOP_MASK =
 //   - brightness() knocks the remaining peak brightness down further.
 //   - saturate() nudges the color back toward warm gold, since dimming a
 //     near-white core desaturates it toward gray.
-const FLOW_OPACITY = 0.6;
-const FLOW_FILTER = "brightness(0.78) contrast(0.82) saturate(1.05)";
+//
+// PHASE 3A.2 — TUNE. 3A.1's values (opacity 0.6, brightness 0.78) read as
+// too dim, especially along the upper sweep and the pass behind the globe.
+// Opacity and brightness are both eased back up toward the source; contrast
+// is left at 3A.1's level, since that's what keeps the large particles from
+// overpowering the tiny dust as the flow gets more visible again.
+const FLOW_OPACITY = 0.78;
+const FLOW_FILTER = "brightness(0.9) contrast(0.82) saturate(1.05)";
+
 
 type Frame = { x: number; y: number; w: number; h: number };
 

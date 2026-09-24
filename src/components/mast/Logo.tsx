@@ -1,21 +1,16 @@
 import { Link } from "@tanstack/react-router";
-import { BrandMark } from "./BrandMark";
+import { MastWordmark } from "./MastWordmark";
 
 interface LogoProps {
   to?: string;
-  size?: number;
-  showWordmark?: boolean;
+  /** Rendered height in px of the wordmark. */
+  height?: number;
 }
 
-export function Logo({ to = "/", size = 32, showWordmark = true }: LogoProps) {
+export function Logo({ to = "/", height = 24 }: LogoProps) {
   return (
-    <Link to={to} className="flex items-center gap-2.5 group">
-      <BrandMark size={size} />
-      {showWordmark && (
-        <span className="font-bold text-lg tracking-[0.02em] text-foreground">
-          MAST
-        </span>
-      )}
+    <Link to={to} className="flex items-center group">
+      <MastWordmark height={height} />
     </Link>
   );
 }

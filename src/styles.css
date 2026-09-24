@@ -1048,18 +1048,36 @@
 }
 
 /* ---------------------------------------------------------------
-   PHASE 4B — subtle environment motion (far nebula, mid starfield, warm dust/bokeh).
+   PHASE 4B / 4B.1 — visible environment motion (far nebula, mid starfield, warm dust/bokeh).
 
    Each existing Phase 4A layer is moved AS A WHOLE by one compositor-only transform
-   animation: translate3d, no filters, no JS, no per-star / per-particle work, no new
-   DOM. Distances are tiny and cycles are very long. Every layer gets its own direction
-   and its own (coprime) duration, so the three never line up or repeat together.
-   Each cycle starts and ends at translate3d(0, 0, 0) — exactly the 4A resting position —
-   and eases in and out (sine) at both ends of the drift so there is no visible turnaround.
+   animation: translate3d (+ a hair of scale on the nebula), no filters, no JS, no
+   per-star / per-particle work, no new DOM.
 
-     .hero-nebula           far   83s   diagonal, right/down   16px x 9px
-     .hero-deepfield-stars  mid   107s  horizontal, left       5px
-     .hero-deepfield-near   near  61s   opposing, right/up     7px x 3px
+   4B.1 retune: the original 4B drift (16px out and back over 83s) moved the nebula at
+   ~0.4px/s, which is below what the eye registers on a dark, low-contrast scene, so the
+   environment read as static. Distances are now larger, cycles 2-3x shorter, and the path
+   is a slow closed loop (a thin ellipse) instead of a straight out-and-back. A straight
+   sine swing spends a third of every cycle below half its peak speed and stops dead at
+   each turnaround; the elliptical loop never drops below ~40% of its peak speed, so
+   motion is readable at any moment you happen to look. Speeds are still only ~1-3px/s,
+   5-10x slower than the cloud belts (13-30px/s), so the layers read as separate depth planes.
+
+     layer                  depth  cycle   span   drift (far end)        peak speed
+     .hero-nebula           far    36.2s   32px   right/down, ~28deg     ~2.8px/s   + scale 1 -> 1.015 -> 1
+     .hero-deepfield-stars  mid    26s     14px   left/slightly up       ~1.7px/s
+     .hero-deepfield-near   near   23.3s   20px   right/up, ~40deg       ~2.7px/s   (opposite handedness)
+
+   "span" = distance from the 4A resting position to the far end of the loop. Each loop
+   starts and ends at translate3d(0, 0, 0) (scale(1)), exactly the 4A resting position.
+   Keyframes are 12 evenly spaced samples of the ellipse with LINEAR timing between them
+   (easing per segment would make the layer pulse at every stop).
+
+   Not fighting the cloud belts: the belts wrap horizontally (115s / 82s / 50s, plus the
+   90s haze pulse). The three loop durations are deliberately non-round: no pair among
+   them, or against those belt periods, is within 3% of a simple (up to 4:1) ratio, so the
+   scene never settles into a repeating alignment. The layers also drift along different
+   axes and in different directions from one another, and the belts stay purely horizontal.
 
    No will-change on purpose (same convention as the star groups above): Chrome promotes
    an element while its transform animation runs, and with reduced motion nothing is
@@ -1068,30 +1086,63 @@
    edge and the star/dust layers are sparse at the edges, so no seam is exposed.
 --------------------------------------------------------------- */
 @keyframes hero-drift-nebula {
-  0%, 100% { transform: translate3d(0, 0, 0); }
-  50% { transform: translate3d(16px, 9px, 0); }
+       0% { transform: translate3d(0, 0, 0) scale(1); }
+    8.33% { transform: translate3d(3.42px, -1.86px, 0) scale(1.0010); }
+   16.67% { transform: translate3d(9.71px, -1.21px, 0) scale(1.0037); }
+      25% { transform: translate3d(17.18px, 1.77px, 0) scale(1.0075); }
+   33.33% { transform: translate3d(23.83px, 6.30px, 0) scale(1.0112); }
+   41.67% { transform: translate3d(27.89px, 11.15px, 0) scale(1.0140); }
+      50% { transform: translate3d(28.25px, 15.02px, 0) scale(1.0150); }
+   58.33% { transform: translate3d(24.84px, 16.89px, 0) scale(1.0140); }
+   66.67% { transform: translate3d(18.55px, 16.24px, 0) scale(1.0112); }
+      75% { transform: translate3d(11.08px, 13.25px, 0) scale(1.0075); }
+   83.33% { transform: translate3d(4.42px, 8.73px, 0) scale(1.0037); }
+   91.67% { transform: translate3d(0.37px, 3.88px, 0) scale(1.0010); }
+     100% { transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes hero-drift-stars {
-  0%, 100% { transform: translate3d(0, 0, 0); }
-  50% { transform: translate3d(-5px, 0, 0); }
+       0% { transform: translate3d(0, 0, 0); }
+    8.33% { transform: translate3d(-1.32px, 1.30px, 0); }
+   16.67% { transform: translate3d(-4.10px, 1.77px, 0); }
+      25% { transform: translate3d(-7.59px, 1.28px, 0); }
+   33.33% { transform: translate3d(-10.86px, -0.04px, 0); }
+   41.67% { transform: translate3d(-13.03px, -1.84px, 0); }
+      50% { transform: translate3d(-13.52px, -3.62px, 0); }
+   58.33% { transform: translate3d(-12.20px, -4.93px, 0); }
+   66.67% { transform: translate3d(-9.42px, -5.39px, 0); }
+      75% { transform: translate3d(-5.93px, -4.90px, 0); }
+   83.33% { transform: translate3d(-2.66px, -3.58px, 0); }
+   91.67% { transform: translate3d(-0.49px, -1.79px, 0); }
+     100% { transform: translate3d(0, 0, 0); }
 }
 
 @keyframes hero-drift-dust {
-  0%, 100% { transform: translate3d(0, 0, 0); }
-  50% { transform: translate3d(7px, -3px, 0); }
+       0% { transform: translate3d(0, 0, 0); }
+    8.33% { transform: translate3d(2.31px, 0.67px, 0); }
+   16.67% { transform: translate3d(6.06px, -0.56px, 0); }
+      25% { transform: translate3d(10.23px, -3.36px, 0); }
+   33.33% { transform: translate3d(13.72px, -6.99px, 0); }
+   41.67% { transform: translate3d(15.58px, -10.46px, 0); }
+      50% { transform: translate3d(15.32px, -12.86px, 0); }
+   58.33% { transform: translate3d(13.01px, -13.53px, 0); }
+   66.67% { transform: translate3d(9.26px, -12.30px, 0); }
+      75% { transform: translate3d(5.09px, -9.49px, 0); }
+   83.33% { transform: translate3d(1.60px, -5.87px, 0); }
+   91.67% { transform: translate3d(-0.26px, -2.39px, 0); }
+     100% { transform: translate3d(0, 0, 0); }
 }
 
 .hero-nebula {
-  animation: hero-drift-nebula 83s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+  animation: hero-drift-nebula 36.2s linear infinite;
 }
 
 .hero-deepfield-stars {
-  animation: hero-drift-stars 107s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+  animation: hero-drift-stars 26s linear infinite;
 }
 
 .hero-deepfield-near {
-  animation: hero-drift-dust 61s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+  animation: hero-drift-dust 23.3s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

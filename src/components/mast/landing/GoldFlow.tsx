@@ -2,9 +2,15 @@
  * GoldFlow — the hero's static gold environmental flow.
  *
  * PHASE 3A — STATIC INTEGRATION ONLY. One approved transparent PNG, rendered
- * as a single <img>, exactly as supplied: not redrawn, recolored, recreated in
- * CSS, or turned into a particle system. No canvas, no WebGL, no RAF, no
- * timers, no scroll hooks. Nothing here animates.
+ * as a single <img>, exactly as supplied: not redrawn, recreated in CSS, or
+ * turned into a particle system. No canvas, no WebGL, no RAF, no timers, no
+ * scroll hooks. Nothing here animates.
+ *
+ * PHASE 3A.1 — INTENSITY. The PNG bytes are still untouched and no second
+ * asset was generated; opacity/brightness/contrast/saturate are applied as
+ * compositing only (see FLOW_OPACITY / FLOW_FILTER below) to bring the
+ * rendered intensity down to "cosmic dust." Path, scale, rotation, and
+ * placement below are unchanged from Phase 3A.
  *
  * LAYERING (see Hero in routes/index.tsx)
  *
@@ -59,6 +65,22 @@ const FLOW_ROTATE_DEG = 3.8;
 // Dissolves only the top edge of the image (image-local %). See TRANSPARENCY.
 const FLOW_TOP_MASK =
   "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,1) 9%, rgba(0,0,0,1) 100%)";
+
+// PHASE 3A.1 — INTENSITY ONLY. The source asset renders as a bright, dense,
+// near-solid ribbon with large blown-out orbs. These three values pull it
+// toward "fine illuminated cosmic dust" without touching the asset, path,
+// placement, or rotation above:
+//   - FLOW_OPACITY thins the whole layer so the floor/atmosphere behind it
+//     shows through, breaking up the "solid beam" read.
+//   - contrast() does most of the shaping work: it pulls extreme (near-white
+//     core/orb) values down hard while barely touching — and slightly
+//     lifting — the faint dust values, so the tiny particles stay visible
+//     while the brightest points get tamed the most.
+//   - brightness() knocks the remaining peak brightness down further.
+//   - saturate() nudges the color back toward warm gold, since dimming a
+//     near-white core desaturates it toward gray.
+const FLOW_OPACITY = 0.6;
+const FLOW_FILTER = "brightness(0.78) contrast(0.82) saturate(1.05)";
 
 type Frame = { x: number; y: number; w: number; h: number };
 
@@ -131,6 +153,8 @@ export function GoldFlow({
               transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
               WebkitMaskImage: FLOW_TOP_MASK,
               maskImage: FLOW_TOP_MASK,
+              opacity: FLOW_OPACITY,
+              filter: FLOW_FILTER,
             }}
           />
         </div>

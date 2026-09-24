@@ -35,7 +35,6 @@ import {
   Waypoints,
   Workflow,
 } from "lucide-react";
-import { BrandMark } from "@/components/mast/BrandMark";
 import { MastWordmark } from "@/components/mast/MastWordmark";
 import { useMe, useSaveSettings } from "@/hooks/use-mast-api";
 import { ApiError } from "@/lib/api";
@@ -256,8 +255,7 @@ function OnboardingPage() {
       <div className="pointer-events-none absolute inset-0 bg-grid opacity-[0.15]" />
 
       <header className="relative px-6 py-6 lg:px-10">
-        <div className="flex items-center gap-2.5">
-          <BrandMark size={32} />
+        <div className="flex items-center h-8">
           <MastWordmark height={24} />
         </div>
       </header>

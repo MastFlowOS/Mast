@@ -1,5 +1,4 @@
 import { Link } from "@tanstack/react-router";
-import { BrandMark } from "./BrandMark";
 import { MastWordmark } from "./MastWordmark";
 import { Mail, Twitter, Github } from "lucide-react";
 import { SectionAtmosphere } from "./landing/SectionAtmosphere";
@@ -27,9 +26,8 @@ export function SiteFooter() {
         <div className="grid md:grid-cols-5 gap-6 mb-8">
           {/* Brand col */}
           <div className="md:col-span-2">
-            <div className="flex items-center gap-2 mb-3">
-              <BrandMark size={24} />
-              <MastWordmark height={18} />
+            <div className="flex items-center h-6 mb-3">
+              <MastWordmark height={12} />
             </div>
             <p className="text-xs text-muted-foreground max-w-xs leading-relaxed">
               The premium AI sales workspace for managing relationships and pipeline. Built for modern agencies, freelancers, and growth operators.

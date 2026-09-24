@@ -2,7 +2,6 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode, type ReactElement } from "react";
 import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
-import { BrandMark } from "@/components/mast/BrandMark";
 import { MastWordmark } from "@/components/mast/MastWordmark";
 import { GlobeStand } from "@/components/mast/landing/GlobeStand";
 import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
@@ -306,9 +305,8 @@ function PanelShell({ activeNav, breadcrumb, children }: { activeNav: string; br
       <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-brand/40 to-transparent z-10" />
       <div className="flex h-[360px] sm:h-[390px] md:h-[420px] bg-card">
         <aside className="w-40 shrink-0 border-r border-border p-3 hidden lg:flex flex-col gap-4 bg-[oklch(0.14_0.024_265)]">
-          <div className="flex items-center gap-2 pt-1 px-0.5">
-            <BrandMark size={16} />
-            <MastWordmark height={13} />
+          <div className="flex items-center h-4 mt-1 px-0.5">
+            <MastWordmark height={9} />
           </div>
           <nav className="space-y-0.5">
             {navItems.map((label) => (

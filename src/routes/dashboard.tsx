@@ -6,7 +6,6 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { BrandMark } from "@/components/mast/BrandMark";
 import { MastWordmark } from "@/components/mast/MastWordmark";
 import { useAccount, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
 import { useNavIndicator } from "@/hooks/use-nav-indicator";
@@ -198,10 +197,11 @@ function DashboardLayout() {
       >
         {/* Logo */}
         <div className="px-5 h-16 flex items-center border-b border-border shrink-0">
-          <Link to="/" className="flex items-center gap-3">
-            <BrandMark size={34} />
-            <div className="flex flex-col leading-none">
-              <MastWordmark height={20} />
+          <Link to="/" className="flex items-center">
+            {/* items-start: without it the flex-col stretches the wordmark to the
+                tagline's width and distorts its aspect ratio. */}
+            <div className="flex flex-col items-start leading-none">
+              <MastWordmark height={14} />
               <span className="mt-1.5 text-[9px] font-semibold tracking-[0.22em] text-muted-foreground uppercase">
                 Client Acquisition OS
               </span>

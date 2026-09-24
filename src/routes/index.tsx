@@ -6,6 +6,7 @@ import { BrandMark } from "@/components/mast/BrandMark";
 import { GlobeStand } from "@/components/mast/landing/GlobeStand";
 import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
 import { GroundSurface } from "@/components/mast/landing/GroundSurface";
+import { GoldFlow } from "@/components/mast/landing/GoldFlow";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -86,6 +87,9 @@ function Hero() {
       {/* Single ground system: one photographic floor asset, kept aligned to
           the globe's pedestal at every breakpoint via pedestalAnchorRef. */}
       <GroundSurface pedestalAnchorRef={pedestalAnchorRef} />
+      {/* Static gold flow: sits above the floor, below the globe + copy (z-0 sibling,
+          later in DOM than GroundSurface; the z-10 content container is above it). */}
+      <GoldFlow pedestalAnchorRef={pedestalAnchorRef} />
       <div className="relative z-10 max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">

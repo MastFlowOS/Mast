@@ -215,9 +215,10 @@ function buildStarLayers(stars: Star[]): StarLayers {
 // atmosphere box; the nebula asset is cover-fitted into the same box.
 //
 // Phase 4A.1 — starfield density + character: ~550 star dots (was ~175) plus 22
-// warm/bokeh dots, across TWO layers. (The removed particle system was thousands
-// of DOM nodes / a canvas loop; this is still two elements carrying two small SVG
-// backgrounds.) The star tiers:
+// warm/bokeh dots (4A.2 raised the bokeh-orb count to 23 and brightened both),
+// across TWO layers. (The removed particle system was thousands of DOM nodes /
+// a canvas loop; this is still two elements carrying two small SVG backgrounds.)
+// The star tiers:
 //
 //   T1  ~430  tiny, faint, distant — the majority. Brightness is skewed low, so most
 //             are barely-there and a minority read as clear pinpoints.
@@ -372,6 +373,11 @@ function buildHeroSky(): HeroSky {
 
   // The warm layer below is unchanged from Phase 4A: it continues from the RNG state
   // the old star loops used to leave behind, so its dots land exactly where they did.
+  // Phase 4A.2 — visibility-only pass: the density field and per-draw rand() usage
+  // are untouched, so all 22 original dots land exactly where they did in 4A.1;
+  // only their alpha/halo strength was raised, plus one extra bokeh orb appended
+  // at the end, so the layer actually reads against the night sky instead of
+  // disappearing into it.
   seed = HERO_NEAR_SEED;
   const near: StarDot[] = [];
   // Warm distant dust points; about half carry a faint halo.
@@ -379,23 +385,23 @@ function buildHeroSky(): HeroSky {
     const halo = i % 2 === 0;
     near.push({
       ...sample(warmDensity, 1.8),
-      size: between(1.4, 3.2),
-      alpha: between(0.22, 0.5),
+      size: between(1.6, 3.4),
+      alpha: between(0.34, 0.66),
       fill: pick(WARM_DUST),
-      ...(halo ? { halo: 5, haloAlpha: between(0.06, 0.1), haloTone: "warm" as const } : {}),
+      ...(halo ? { halo: 5.5, haloAlpha: between(0.11, 0.17), haloTone: "warm" as const } : {}),
     });
   }
   // A few large, very soft, very faint out-of-focus points: near-field bokeh.
-  // Halo-only (alpha 0), gaussian-ish falloff, low alpha — they should read as
-  // a faint warm bloom in the dark, never as a visible disc.
-  for (let i = 0; i < 4; i++) {
+  // Halo-only (alpha 0), gaussian-ish falloff — they should read as a soft warm
+  // bloom in the dark, never as a hard-edged disc.
+  for (let i = 0; i < 5; i++) {
     near.push({
       ...sample(warmDensity, 1.8),
       size: 2,
       alpha: 0,
       fill: "#f0c27a",
-      halo: between(9, 16), // radius = halo x the 1px core radius, i.e. ~9-16px
-      haloAlpha: between(0.05, 0.09),
+      halo: between(10, 19), // radius = halo x the 1px core radius, i.e. ~10-19px
+      haloAlpha: between(0.11, 0.17),
       haloTone: "warm",
     });
   }

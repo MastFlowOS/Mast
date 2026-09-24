@@ -1046,3 +1046,58 @@
     mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.55) 5%, rgba(0, 0, 0, 0.06) 9%, rgba(0, 0, 0, 0.06) 56%, #000 70%);
   }
 }
+
+/* ---------------------------------------------------------------
+   PHASE 4B — subtle environment motion (far nebula, mid starfield, warm dust/bokeh).
+
+   Each existing Phase 4A layer is moved AS A WHOLE by one compositor-only transform
+   animation: translate3d, no filters, no JS, no per-star / per-particle work, no new
+   DOM. Distances are tiny and cycles are very long. Every layer gets its own direction
+   and its own (coprime) duration, so the three never line up or repeat together.
+   Each cycle starts and ends at translate3d(0, 0, 0) — exactly the 4A resting position —
+   and eases in and out (sine) at both ends of the drift so there is no visible turnaround.
+
+     .hero-nebula           far   83s   diagonal, right/down   16px x 9px
+     .hero-deepfield-stars  mid   107s  horizontal, left       5px
+     .hero-deepfield-near   near  61s   opposing, right/up     7px x 3px
+
+   No will-change on purpose (same convention as the star groups above): Chrome promotes
+   an element while its transform animation runs, and with reduced motion nothing is
+   promoted at all. Layers stay inset-0 inside the overflow-hidden atmosphere box, so the
+   drift can never cause horizontal overflow; the nebula asset fades to ~0 alpha at every
+   edge and the star/dust layers are sparse at the edges, so no seam is exposed.
+--------------------------------------------------------------- */
+@keyframes hero-drift-nebula {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(16px, 9px, 0); }
+}
+
+@keyframes hero-drift-stars {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(-5px, 0, 0); }
+}
+
+@keyframes hero-drift-dust {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(7px, -3px, 0); }
+}
+
+.hero-nebula {
+  animation: hero-drift-nebula 83s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+}
+
+.hero-deepfield-stars {
+  animation: hero-drift-stars 107s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+}
+
+.hero-deepfield-near {
+  animation: hero-drift-dust 61s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-nebula,
+  .hero-deepfield-stars,
+  .hero-deepfield-near {
+    animation: none !important;
+  }
+}

@@ -30,6 +30,23 @@
  * never the floor or atmosphere behind it. Under prefers-reduced-motion the
  * whole overlay unmounts, leaving exactly the static Phase 3A.2 image.
  *
+ * PHASE 5A — CINEMATIC MOTION PASS. The two dash layers above always carried
+ * a stroke-dasharray, but hero-gold-flow-glow-shift / hero-gold-flow-spark-shift
+ * (see styles.css) — the animations meant to drive their stroke-dashoffset —
+ * were never actually defined, so the "moving" dust sat still. Those two
+ * keyframes now exist, each shifting its layer's dashoffset by exactly that
+ * layer's own dasharray sum (a full pattern period), so the loop repeats with
+ * no visible seam, in the direction the centerline was traced: top of the
+ * sweep → around the globe → lower sweep → floor. A third, thinner dash layer
+ * (FLOW_ENERGY_EMBER_* below, driven by hero-gold-flow-ember-shift) was added
+ * at its own length/brightness/speed so the flow reads as a few independent
+ * highlight clusters rather than one repeating dash — same centerline, same
+ * box, same rotation as the other two; nothing about the path or the base PNG
+ * changed. Under prefers-reduced-motion, the glow/spark layers simply stop
+ * animating (freezing at the dashoffset: 0 they already sat at before this
+ * phase — today's static look, unchanged); the ember layer, being new, is
+ * hidden outright rather than shown frozen.
+ *
  * LAYERING (see Hero in routes/index.tsx)
  *
  *   atmosphere  →  GroundSurface  →  GOLD FLOW  →  globe + stand + copy
@@ -142,6 +159,17 @@ const FLOW_ENERGY_GLOW_COLOR = "#F0C170";
 const FLOW_ENERGY_SPARK_DASH = "2 34 1 52 3 20 1 60 2 28 4 46";
 const FLOW_ENERGY_SPARK_COLOR = "#FFF3D2";
 
+// PHASE 5A — third dash layer: a mid-weight, mid-brightness cluster train,
+// between the glow band and the spark dust in both size and speed, at its
+// own dash lengths/gaps and its own color. Riding the same centerline at a
+// different pattern length and a different speed than the other two means
+// it drifts in and out of phase with them, so together the three layers
+// read as a few independently-paced highlight clusters instead of one
+// repeating dash. Sum (236) matches hero-gold-flow-ember-shift's end offset
+// in styles.css the same way the glow/spark sums do.
+const FLOW_ENERGY_EMBER_DASH = "3 70 5 100 2 56";
+const FLOW_ENERGY_EMBER_COLOR = "#FFDFA0";
+
 type Frame = { x: number; y: number; w: number; h: number };
 
 export function GoldFlow({
@@ -156,6 +184,7 @@ export function GoldFlow({
   const uid = useId();
   const glowBlurId = `goldFlowGlowBlur-${uid}`;
   const sparkBlurId = `goldFlowSparkBlur-${uid}`;
+  const emberBlurId = `goldFlowEmberBlur-${uid}`;
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -233,12 +262,12 @@ export function GoldFlow({
               className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
               style={{ opacity: FLOW_OPACITY, filter: FLOW_FILTER }}
             />
-            {/* PHASE 4C — energy overlay. Same box, same rotation, same
-                stationary path as the centerline above; only the two dash
-                patterns' offsets are animated (see styles.css). Unmounted
-                entirely under prefers-reduced-motion, so reduced motion is
-                exactly the static Phase 3A.2 image above with nothing on
-                top of it. */}
+            {/* PHASE 4C / 5A — energy overlay. Same box, same rotation, same
+                stationary path as the centerline above; only each dash
+                layer's own dashoffset is animated (see hero-gold-flow-* in
+                styles.css). Under prefers-reduced-motion the glow/spark
+                layers freeze (today's static look); the ember layer, being
+                new in 5A, is hidden outright. */}
             <svg
               aria-hidden="true"
               focusable="false"
@@ -252,6 +281,9 @@ export function GoldFlow({
                 </filter>
                 <filter id={sparkBlurId} x="-20%" y="-40%" width="140%" height="180%">
                   <feGaussianBlur stdDeviation="2" />
+                </filter>
+                <filter id={emberBlurId} x="-25%" y="-50%" width="150%" height="200%">
+                  <feGaussianBlur stdDeviation="4" />
                 </filter>
               </defs>
               <path
@@ -275,6 +307,17 @@ export function GoldFlow({
                 strokeOpacity={0.85}
                 strokeDasharray={FLOW_ENERGY_SPARK_DASH}
                 style={{ filter: `url(#${sparkBlurId})`, mixBlendMode: "screen" }}
+              />
+              <path
+                d={FLOW_ENERGY_PATH_D}
+                className="hero-gold-flow-ember"
+                fill="none"
+                stroke={FLOW_ENERGY_EMBER_COLOR}
+                strokeWidth={9}
+                strokeLinecap="round"
+                strokeOpacity={0.55}
+                strokeDasharray={FLOW_ENERGY_EMBER_DASH}
+                style={{ filter: `url(#${emberBlurId})`, mixBlendMode: "screen" }}
               />
             </svg>
           </div>

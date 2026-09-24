@@ -114,7 +114,40 @@ const TOP_FADE =
 // further on top of this same uniform trim.
 const FLOOR_FILTER = "brightness(0.88) contrast(0.92) saturate(0.9)";
 
-type Measure = { x: number; y: number; h: number; w: number };
+// PHASE 5A — floor-glow placement. GoldFlow's own FLOW_* constants put the
+// flow's lower end (the tail of FLOW_ENERGY_PATH_D, at image pixel
+// 863.6/1536, 1023/1024 of the flow asset) at roughly (60.6%, 104.8%) of the
+// globe's own box — worked out the same way GoldFlow reads that box (see its
+// PLACEMENT comment). GlobeStand's PEDESTAL_LEFT/TOP put the pedestal's
+// ground-contact point at (46.64%, 94.2%) of that same box. The difference
+// between the two — ~13.9% of the globe box's width to the right, ~10.6% of
+// its height below — is where the flow actually lands beside the pedestal,
+// expressed as an offset from the pedestal anchor this file already measures
+// below, so no second globe-relative measurement system is needed. (The
+// flow box's own 3.8° tilt is small enough at this scale to ignore for a
+// glow this faint.)
+const FLOW_LANDING_OFFSET_X_PCT = 13.93;
+const FLOW_LANDING_OFFSET_Y_PCT = 10.63;
+
+// Floor-glow ellipse size, as a fraction of the globe box's own width —
+// scales with the globe like GlobeStand's reflection pool does, instead of
+// a fixed px size that would look right at only one breakpoint.
+const FLOOR_GLOW_WIDTH_FACTOR = 0.11;
+const FLOOR_GLOW_HEIGHT_FACTOR = 0.045;
+
+type Measure = {
+  x: number;
+  y: number;
+  h: number;
+  w: number;
+  // PHASE 5A — floor-glow center (px, relative to this component's own
+  // container, same space as x/y) and size, only set once the globe box is
+  // measurable; null hides the glow rather than guessing a position.
+  glowX: number | null;
+  glowY: number | null;
+  glowW: number | null;
+  glowH: number | null;
+};
 
 export function GroundSurface({
   pedestalAnchorRef,
@@ -133,11 +166,28 @@ export function GroundSurface({
       if (!anchor) return;
       const containerRect = container.getBoundingClientRect();
       const anchorRect = anchor.getBoundingClientRect();
+      const x = anchorRect.left - containerRect.left;
+      const y = anchorRect.top - containerRect.top;
+
+      // PHASE 5A — the pedestal marker's parent IS the globe box (see
+      // GoldFlow's globeBox() helper for the same trick), so its measured
+      // width/height is what FLOW_LANDING_OFFSET_*_PCT above are percentages
+      // of.
+      const globeBox = anchor.parentElement?.getBoundingClientRect() ?? null;
+      const glowX = globeBox ? x + (FLOW_LANDING_OFFSET_X_PCT / 100) * globeBox.width : null;
+      const glowY = globeBox ? y + (FLOW_LANDING_OFFSET_Y_PCT / 100) * globeBox.height : null;
+      const glowW = globeBox ? globeBox.width * FLOOR_GLOW_WIDTH_FACTOR : null;
+      const glowH = globeBox ? globeBox.width * FLOOR_GLOW_HEIGHT_FACTOR : null;
+
       setM({
-        x: anchorRect.left - containerRect.left,
-        y: anchorRect.top - containerRect.top,
+        x,
+        y,
         h: containerRect.height,
         w: containerRect.width,
+        glowX,
+        glowY,
+        glowW,
+        glowH,
       });
     };
 
@@ -218,6 +268,25 @@ export function GroundSurface({
           }}
         />
       </div>
+      {/* PHASE 5A — floor interaction. A faint, purely-opacity-pulsing radial
+          glow at the point where the gold flow's lower sweep lands beside
+          the pedestal (see FLOW_LANDING_OFFSET_*_PCT above). It never moves
+          or resizes — only hero-floor-flow-glow-pulse's opacity animates
+          (styles.css) — so it reads as the passing energy warming the floor,
+          not as a light of its own. Omitted entirely until the globe box is
+          measurable, rather than guessing a position for one frame. */}
+      {m && m.glowX !== null && m.glowY !== null && m.glowW !== null && m.glowH !== null && (
+        <div
+          className="hero-floor-flow-glow pointer-events-none absolute"
+          style={{
+            left: m.glowX,
+            top: m.glowY,
+            width: m.glowW,
+            height: m.glowH,
+            transform: "translate(-50%, -50%)",
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -1159,75 +1159,28 @@
 }
 
 /* ---------------------------------------------------------------
-   PHASE 5A — hero gold-flow motion + floor interaction.
+   PHASE 5A — floor interaction (kept). PHASE 5B — dash-layer motion
+   (removed, superseded).
 
-   The dash layers in GoldFlow.tsx (.hero-gold-flow-glow / -spark, drawn
-   along the flow asset's own traced centerline) always carried a
-   stroke-dasharray, but nothing ever animated stroke-dashoffset, so the
-   tiled dash pattern just sat still — the flow read as static even though
-   the markup was already wired for motion. The rules below are what
-   actually moves it:
+   PHASE 5A originally added two things: three SVG stroke-dasharray layers in
+   GoldFlow.tsx driven by the stroke-dashoffset keyframes below, and this
+   separate floor pulse. PHASE 5B replaced the flow asset itself with a
+   pre-rendered animated WebP (see the file-level comment in GoldFlow.tsx),
+   so the dash layers and their hero-gold-flow-glow-shift / -spark-shift /
+   -ember-shift keyframes no longer exist in the markup and have been
+   removed from here — an unused animation firing on a nonexistent element
+   is dead weight, not a harmless no-op. The floor pulse below is untouched:
+   it belongs to GroundSurface's floor treatment, not to the flow asset
+   PHASE 5B replaced, and floor is out of this phase's scope.
 
-     - hero-gold-flow-glow-shift / -spark-shift drive the two existing dash
-       layers. Each animates stroke-dashoffset from 0 to the negative of
-       that layer's own stroke-dasharray sum (glow: 70+210=280, spark: 253)
-       — shifting the pattern by exactly one period, so it loops with no
-       visible seam, while a negative end value moves the visible dash
-       forward along the path in the direction it was traced: top of the
-       sweep → around the globe → lower sweep → floor.
-     - hero-gold-flow-ember-shift drives a third, thinner dash layer
-       (FLOW_ENERGY_EMBER_* in GoldFlow.tsx) at its own length, color and
-       speed (sum 236), so the flow reads as a few independent,
-       differently-sized highlight clusters drifting past at different
-       rates rather than one repeating dash. Same centerline, same box,
-       same rotation as the other two — nothing about the path or the base
-       PNG changes. The three durations (4.2s / 2.8s / 3.6s) and their
-       negative delays are deliberately non-matching, so the three layers
-       drift in and out of phase instead of ever repeating in lockstep.
-
-   hero-floor-flow-glow-pulse is a separate, much fainter pulse on a small
+   hero-floor-flow-glow-pulse is a small, separate, fainter pulse on a small
    radial-gradient <div> GroundSurface positions at the flow's own landing
    point on the floor (see FLOW_LANDING_OFFSET_*_PCT in GroundSurface.tsx).
-   It only breathes opacity — it never moves or resizes — so it reads as
-   the passing energy warming the floor rather than as a light source of
-   its own.
-
-   All of this is compositor-only (an SVG attribute or opacity, both driven
-   purely by CSS) — no canvas, no RAF, no per-particle JS, and only the one
-   extra dash layer / one extra <div> beyond what already existed. Under
-   reduced motion, the pre-existing glow/spark layers simply stop animating
-   (freezing at the stroke-dashoffset: 0 they already sat at before this
-   phase, i.e. today's static look is unchanged); the two brand-new pieces
-   (ember layer, floor pulse) are hidden outright, since neither existed
-   before this phase.
+   It only breathes opacity — it never moves or resizes — so it reads as the
+   passing energy warming the floor rather than as a light source of its own.
+   This is compositor-only (opacity, driven purely by CSS) — no canvas, no
+   RAF, no per-particle JS.
 --------------------------------------------------------------- */
-@keyframes hero-gold-flow-glow-shift {
-  from { stroke-dashoffset: 0; }
-  to   { stroke-dashoffset: -280; }
-}
-
-@keyframes hero-gold-flow-spark-shift {
-  from { stroke-dashoffset: 0; }
-  to   { stroke-dashoffset: -253; }
-}
-
-@keyframes hero-gold-flow-ember-shift {
-  from { stroke-dashoffset: 0; }
-  to   { stroke-dashoffset: -236; }
-}
-
-.hero-gold-flow-glow {
-  animation: hero-gold-flow-glow-shift 4.2s linear infinite;
-}
-
-.hero-gold-flow-spark {
-  animation: hero-gold-flow-spark-shift 2.8s linear infinite -0.6s;
-}
-
-.hero-gold-flow-ember {
-  animation: hero-gold-flow-ember-shift 3.6s linear infinite -1.9s;
-}
-
 @keyframes hero-floor-flow-glow-pulse {
   0%, 100% { opacity: 0.04; }
   50% { opacity: 0.13; }
@@ -1242,12 +1195,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hero-gold-flow-glow,
-  .hero-gold-flow-spark {
-    animation: none !important;
-  }
-
-  .hero-gold-flow-ember,
   .hero-floor-flow-glow {
     display: none !important;
   }

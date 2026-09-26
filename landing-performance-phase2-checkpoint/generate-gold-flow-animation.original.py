@@ -68,19 +68,12 @@ SRC = os.path.join(ROOT, "public", "images", "mast-gold-flow.png")
 OUT = os.path.join(ROOT, "public", "images", "mast-gold-flow-animated.webp")
 
 # ---- timing ---------------------------------------------------------------
-# 24 frames / 6.4s (3.75 fps), scale 0.5 (768x1024→768x512 output) —
-# LANDING PERFORMANCE PHASE 1: dropped from the original 48 frames @ native
-# 1536x1024 after profiling showed the main-thread WebP decode cost of that
-# asset (64 ImageDecodeTask events, 4.84s cumulative, one decode as long as
-# 910ms) was the primary cause of scroll jank on the landing page. Content
-# is soft, diffuse dust, not a sharp-edged animation, so the eye doesn't
-# need a high frame rate or full resolution to read it as smooth motion —
-# and each frame here is a full new render + a real decode cost in the
-# browser, not a cheap inter-frame delta. See landing-performance-phase1.md.
-# --frames / --scale below can override these for one-off experiments
-# without touching what a plain, no-args invocation regenerates.
+# 48 frames / 6.4s (7.5 fps) rather than a higher rate: this content is soft,
+# diffuse dust, not a sharp-edged animation, so the eye doesn't need a high
+# frame rate to read it as smooth motion, and each extra frame costs real
+# file size (each one is a full new render, not a cheap inter-frame delta).
 LOOP_SECONDS = 6.4
-N_FRAMES = 24
+N_FRAMES = 48
 FPS = N_FRAMES / LOOP_SECONDS
 
 # ---- flow -----------------------------------------------------------------
@@ -413,17 +406,13 @@ def main():
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--quality", type=int, default=WEBP_QUALITY)
     ap.add_argument("--alpha-quality", type=int, default=WEBP_ALPHA_QUALITY)
-    ap.add_argument("--scale", type=float, default=0.5, help="output scale (1.0 = native 1536x1024)")
-    ap.add_argument("--frames", type=int, default=N_FRAMES, help="frame count (overrides N_FRAMES for this run only; loop length stays LOOP_SECONDS, so fps is recomputed)")
+    ap.add_argument("--scale", type=float, default=1.0, help="output scale (1.0 = native 1536x1024)")
     args = ap.parse_args()
-
-    n_frames = args.frames
-    fps = n_frames / LOOP_SECONDS
 
     P = load_premult()
     r = Renderer(P)
     frames = []
-    phis = [k / n_frames for k in range(n_frames)]
+    phis = [k / N_FRAMES for k in range(N_FRAMES)]
     if args.preview:
         phis = [k / args.preview for k in range(args.preview)]
     for i, phi in enumerate(phis):
@@ -442,7 +431,7 @@ def main():
         args.out,
         save_all=True,
         append_images=frames[1:],
-        duration=int(round(1000 / fps)),
+        duration=int(round(1000 / FPS)),
         loop=0,
         lossless=False,
         quality=args.quality,
@@ -450,7 +439,7 @@ def main():
         method=WEBP_METHOD,
         minimize_size=False,
     )
-    print(f"wrote {args.out}  {os.path.getsize(args.out) / 1e6:.2f} MB  {len(frames)} frames  {len(frames) / fps:.1f}s", file=sys.stderr)
+    print(f"wrote {args.out}  {os.path.getsize(args.out) / 1e6:.2f} MB  {len(frames)} frames  {len(frames) / FPS:.1f}s", file=sys.stderr)
 
 
 if __name__ == "__main__":

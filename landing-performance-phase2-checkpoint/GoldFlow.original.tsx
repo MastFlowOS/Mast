@@ -91,20 +91,9 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 // above). FLOW_ASSET_STATIC is the original Phase 3A.2 still, kept as the
 // prefers-reduced-motion source and as the generator script's input; it is
 // pixel-for-pixel what used to be the only asset here.
-// PHASE 6 — LANDING PERFORMANCE FIX. FLOW_ASSET was 48 frames at native
-// 1536x1024 (5.7 MB) and was the landing page's primary jank source: it was
-// decoded on the main thread far more than its frame count should require
-// (64 ImageDecodeTask events for 48 frames, 4.84s cumulative decode, one
-// decode as long as 910ms), which starved everything else running on that
-// thread, including scroll. It's now regenerated at 24 frames / 50% linear
-// resolution (768x512, 1.1 MB) via `scripts/generate-gold-flow-animation.py`
-// (no CLI args needed — those are its new defaults), same loop length
-// (6.4s), same path, same transparency. See landing-performance-phase1.md
-// for the full trace evidence and the A/B comparison that preceded this.
 const FLOW_ASSET = "/images/mast-gold-flow-animated.webp";
 const FLOW_ASSET_STATIC = "/images/mast-gold-flow.png";
-// Natural asset proportions (1536 x 1024 px) — identical for both assets;
-// the animated WebP's own frames are smaller (768x512) but keep this ratio.
+// Natural asset proportions (1536 x 1024 px) — identical for both assets.
 const FLOW_ASPECT_RATIO = "1536 / 1024";
 
 // Placement of the flow image's top-left corner and its width, as a
@@ -167,34 +156,21 @@ export function GoldFlow({
       if (!box) return;
       const c = container.getBoundingClientRect();
       const b = box.getBoundingClientRect();
-      const nextX = b.left - c.left;
-      const nextY = b.top - c.top;
-      const nextW = b.width;
-      const nextH = b.height;
-
-      setFrame((prev) => {
-        if (
-          prev &&
-          Math.abs(prev.x - nextX) < 0.5 &&
-          Math.abs(prev.y - nextY) < 0.5 &&
-          Math.abs(prev.w - nextW) < 0.5 &&
-          Math.abs(prev.h - nextH) < 0.5
-        ) {
-          return prev;
-        }
-        return { x: nextX, y: nextY, w: nextW, h: nextH };
-      });
+      setFrame({ x: b.left - c.left, y: b.top - c.top, w: b.width, h: b.height });
     };
 
     measure();
 
-    // Responsive breakpoints are driven by window resizing; no continuous
-    // ResizeObserver is needed, preventing layout thrashing and observer churn.
-    window.addEventListener("resize", measure, { passive: true });
-    // Fonts finishing their swap can shift the globe column slightly on first load.
+    const resizeObserver = new ResizeObserver(measure);
+    resizeObserver.observe(container);
+    const box = globeBox();
+    if (box) resizeObserver.observe(box);
+    window.addEventListener("resize", measure);
+    // Fonts finishing their swap can shift the globe column slightly.
     document.fonts?.ready?.then(measure).catch(() => {});
 
     return () => {
+      resizeObserver.disconnect();
       window.removeEventListener("resize", measure);
     };
   }, [pedestalAnchorRef]);

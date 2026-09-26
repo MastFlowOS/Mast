@@ -682,10 +682,21 @@ export function SectionAtmosphere({ variant, starBoost = false }: { variant: Sec
       ? "-top-24 bottom-0"
       : "-inset-y-24";
 
+  const isHero = variant === "hero" || variant === "pricingHero";
+  const containerStyle: React.CSSProperties = {
+    ...maskStyle,
+    ...(isHero
+      ? {}
+      : {
+          contentVisibility: "auto",
+          containIntrinsicSize: "100% 600px",
+        }),
+  };
+
   return (
     <div
       className={`absolute inset-x-0 pointer-events-none overflow-hidden select-none z-0 ${verticalPositionClass}`}
-      style={maskStyle}
+      style={containerStyle}
       aria-hidden="true"
     >
       {/* 0. HERO FAR LAYER (Phase 4A): baked nebula — the deepest thing in the scene.

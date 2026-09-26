@@ -87,16 +87,17 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
-// PHASE 7 — HIGH-FRAMERATE CONTINUOUS GOLD-DUST FLOW.
-// The flow is now rendered as a 30 FPS seamlessly looping transparent WebM video
-// (mast-gold-flow-animated.webm) baked offline from the approved static source PNG
-// (mast-gold-flow.png). The continuous 192-frame loop eliminates stepping and
-// frame-jumps, delivering silky-smooth flowing cosmic dust.
-// Video decoding runs directly on hardware VPU/GPU compositor threads with zero main-thread
-// decode stalls.
+// PHASE 8 — HARDWARE-ACCELERATED OPAQUE VIDEO DELIVERY VIA SCREEN BLEND.
+// To bypass browser software decoding stalls from transparent-alpha VP9 (yuva420p),
+// the gold flow is rendered as a normal opaque 60 FPS video on a pure black background
+// and blended using `mix-blend-mode: screen`.
+// On pure black (#000000), screen blending is mathematically transparent (1 - (1 - d)*(1 - 0) = d),
+// while gold light luminance adds seamlessly to the dark hero backdrop.
+// Universal hardware decoding via H.264 MP4 and VP9 WebM eliminates Media thread stalls.
 // Fallback: prefers-reduced-motion, video error, or unsupported environments automatically
 // render the original static PNG.
-const FLOW_VIDEO_ASSET = "/images/mast-gold-flow-animated.webm";
+const FLOW_VIDEO_MP4 = "/images/mast-gold-flow-animated.mp4";
+const FLOW_VIDEO_WEBM = "/images/mast-gold-flow-animated.webm";
 const FLOW_ASSET_STATIC = "/images/mast-gold-flow.png";
 // Natural asset proportions (1536 x 1024 px) — 1.5 aspect ratio.
 const FLOW_ASPECT_RATIO = "1536 / 1024";
@@ -219,8 +220,6 @@ export function GoldFlow({
               aspectRatio: FLOW_ASPECT_RATIO,
               transformOrigin: "0 0",
               transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
-              WebkitMaskImage: FLOW_TOP_MASK,
-              maskImage: FLOW_TOP_MASK,
             }}
           >
             {prefersReducedMotion || videoFailed ? (
@@ -230,7 +229,12 @@ export function GoldFlow({
                 draggable={false}
                 decoding="async"
                 className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
-                style={{ opacity: FLOW_OPACITY, filter: FLOW_FILTER }}
+                style={{
+                  opacity: FLOW_OPACITY,
+                  filter: FLOW_FILTER,
+                  WebkitMaskImage: FLOW_TOP_MASK,
+                  maskImage: FLOW_TOP_MASK,
+                }}
               />
             ) : (
               <video
@@ -244,17 +248,29 @@ export function GoldFlow({
                 draggable={false}
                 onError={() => setVideoFailed(true)}
                 className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none object-cover"
-                style={{ opacity: FLOW_OPACITY, filter: FLOW_FILTER }}
+                style={{
+                  opacity: FLOW_OPACITY,
+                  filter: FLOW_FILTER,
+                  mixBlendMode: "screen",
+                  WebkitMaskImage: FLOW_TOP_MASK,
+                  maskImage: FLOW_TOP_MASK,
+                }}
               >
-                <source src={FLOW_VIDEO_ASSET} type='video/webm; codecs="vp9"' />
-                {/* Fallback for browsers that do not support WebM */}
+                <source src={FLOW_VIDEO_MP4} type="video/mp4" />
+                <source src={FLOW_VIDEO_WEBM} type='video/webm; codecs="vp9"' />
+                {/* Fallback for browsers that do not support video */}
                 <img
                   src={FLOW_ASSET_STATIC}
                   alt=""
                   draggable={false}
                   decoding="async"
                   className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
-                  style={{ opacity: FLOW_OPACITY, filter: FLOW_FILTER }}
+                  style={{
+                    opacity: FLOW_OPACITY,
+                    filter: FLOW_FILTER,
+                    WebkitMaskImage: FLOW_TOP_MASK,
+                    maskImage: FLOW_TOP_MASK,
+                  }}
                 />
               </video>
             )}

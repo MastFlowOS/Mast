@@ -520,17 +520,18 @@ def main():
     ap = argparse.ArgumentParser(
         description="PHASE 9: True particle gold dust flow")
     ap.add_argument("--production", action="store_true",
-                    help="Full 6.4s production render")
+                    help="Full 6.4s production render directly to public/images/")
     ap.add_argument("--fps", type=int, default=60)
-    ap.add_argument("--speed", type=float, default=DIAG_SPEED,
-                    help="Speed multiplier (2.0 = diagnostic exaggeration)")
+    ap.add_argument("--speed", type=float, default=0.45,
+                    help="Speed multiplier (0.45 = serene, calm drift)")
+    ap.add_argument("--out-mp4", default=os.path.join(ROOT, "public", "images", "mast-gold-flow-animated.mp4"))
+    ap.add_argument("--out-webm", default=os.path.join(ROOT, "public", "images", "mast-gold-flow-animated.webm"))
     args = ap.parse_args()
 
     os.makedirs(DIAG_DIR, exist_ok=True)
 
     print("═" * 60, file=sys.stderr)
-    print("PHASE 9: TRUE PARTICLE GOLD DUST FLOW — DIAGNOSTIC",
-          file=sys.stderr)
+    print("PHASE 9: TRUE PARTICLE GOLD DUST FLOW", file=sys.stderr)
     print("═" * 60, file=sys.stderr)
 
     print("\nBuilding S-curve...", file=sys.stderr)
@@ -547,10 +548,15 @@ def main():
     fps = args.fps
     speed = args.speed
     dt = 1.0 / fps
-    n_frames = 60  # 1 second diagnostic
 
-    print(f"\nRendering {n_frames} frames at {fps} FPS, "
-          f"{speed}× speed...", file=sys.stderr)
+    if args.production:
+        duration = 6.4
+        n_frames = int(round(fps * duration))
+        print(f"\nPRODUCTION RENDER: {n_frames} frames (6.4s @ {fps} FPS, {speed}× calm speed)...", file=sys.stderr)
+    else:
+        duration = 1.0
+        n_frames = 60
+        print(f"\nDiagnostic render: {n_frames} frames ({duration}s @ {fps} FPS, {speed}× speed)...", file=sys.stderr)
 
     t0 = time.time()
     frames = []
@@ -559,10 +565,10 @@ def main():
         rgb = renderer.render_frame(dt, speed_mult=speed,
                                     frame_time=fi * dt)
         frames.append(rgb)
-        if (fi + 1) % 10 == 0:
+        if (fi + 1) % 15 == 0 or fi == n_frames - 1:
             el = time.time() - t0
-            rate = (fi + 1) / el
-            eta = (n_frames - fi - 1) / rate
+            rate = (fi + 1) / max(0.01, el)
+            eta = (n_frames - fi - 1) / max(0.01, rate)
             sys.stderr.write(
                 f"\r  [{fi+1:3d}/{n_frames}] "
                 f"{rate:.1f} fps  ETA {eta:.0f}s")
@@ -571,6 +577,43 @@ def main():
     elapsed = time.time() - t0
     print(f"\n  Render done in {elapsed:.1f}s "
           f"({n_frames/elapsed:.1f} fps)", file=sys.stderr)
+
+    if args.production:
+        # Seamless loop blending: blend the tail frames with the start frames over 0.5s (30 frames)
+        blend_n = 30
+        print(f"\nApplying seamless loop blend over {blend_n} frames...", file=sys.stderr)
+        final_frames = [f.copy() for f in frames]
+        for bi in range(blend_n):
+            alpha = (bi + 1) / (blend_n + 1)
+            # End of loop blends smoothly into the beginning
+            head_idx = bi
+            tail_idx = n_frames - blend_n + bi
+            blended = (1.0 - alpha) * frames[tail_idx].astype(np.float32) + alpha * frames[head_idx].astype(np.float32)
+            final_frames[tail_idx] = np.clip(blended, 0, 255).astype(np.uint8)
+
+        print(f"\nEncoding MP4 directly to {args.out_mp4}...", file=sys.stderr)
+        encode_mp4(final_frames, args.out_mp4, fps=fps)
+
+        print(f"Encoding companion WebM to {args.out_webm}...", file=sys.stderr)
+        import imageio_ffmpeg
+        import subprocess
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        cmd_webm = [
+            ffmpeg_exe, "-y",
+            "-i", args.out_mp4,
+            "-c:v", "libvpx-vp9",
+            "-pix_fmt", "yuv420p",
+            "-b:v", "1800k",
+            "-minrate", "800k",
+            "-maxrate", "3000k",
+            "-crf", "28",
+            "-speed", "4",
+            "-row-mt", "1",
+            args.out_webm,
+        ]
+        subprocess.run(cmd_webm, check=True)
+        print(f"\n✅ Production video assets successfully generated in public/images/!", file=sys.stderr)
+        return
 
     # ---- save diagnostic frames ----
     diag_indices = [0, 15, 30, 45, 59]

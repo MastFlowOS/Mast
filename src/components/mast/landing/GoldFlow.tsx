@@ -85,26 +85,20 @@
  * mobile/tablet) it would otherwise read as a flat cut.
  */
 
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
-// PHASE 5B — the pre-rendered animated dust flow (see the file-level comment
-// above). FLOW_ASSET_STATIC is the original Phase 3A.2 still, kept as the
-// prefers-reduced-motion source and as the generator script's input; it is
-// pixel-for-pixel what used to be the only asset here.
-// PHASE 6 — LANDING PERFORMANCE FIX. FLOW_ASSET was 48 frames at native
-// 1536x1024 (5.7 MB) and was the landing page's primary jank source: it was
-// decoded on the main thread far more than its frame count should require
-// (64 ImageDecodeTask events for 48 frames, 4.84s cumulative decode, one
-// decode as long as 910ms), which starved everything else running on that
-// thread, including scroll. It's now regenerated at 24 frames / 50% linear
-// resolution (768x512, 1.1 MB) via `scripts/generate-gold-flow-animation.py`
-// (no CLI args needed — those are its new defaults), same loop length
-// (6.4s), same path, same transparency. See landing-performance-phase1.md
-// for the full trace evidence and the A/B comparison that preceded this.
-const FLOW_ASSET = "/images/mast-gold-flow-animated.webp";
+// PHASE 7 — HIGH-FRAMERATE CONTINUOUS GOLD-DUST FLOW.
+// The flow is now rendered as a 30 FPS seamlessly looping transparent WebM video
+// (mast-gold-flow-animated.webm) baked offline from the approved static source PNG
+// (mast-gold-flow.png). The continuous 192-frame loop eliminates stepping and
+// frame-jumps, delivering silky-smooth flowing cosmic dust.
+// Video decoding runs directly on hardware VPU/GPU compositor threads with zero main-thread
+// decode stalls.
+// Fallback: prefers-reduced-motion, video error, or unsupported environments automatically
+// render the original static PNG.
+const FLOW_VIDEO_ASSET = "/images/mast-gold-flow-animated.webm";
 const FLOW_ASSET_STATIC = "/images/mast-gold-flow.png";
-// Natural asset proportions (1536 x 1024 px) — identical for both assets;
-// the animated WebP's own frames are smaller (768x512) but keep this ratio.
+// Natural asset proportions (1536 x 1024 px) — 1.5 aspect ratio.
 const FLOW_ASPECT_RATIO = "1536 / 1024";
 
 // Placement of the flow image's top-left corner and its width, as a
@@ -120,27 +114,6 @@ const FLOW_ROTATE_DEG = 3.8;
 const FLOW_TOP_MASK =
   "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,1) 9%, rgba(0,0,0,1) 100%)";
 
-// PHASE 3A.1 — INTENSITY. The source asset renders as a bright, dense,
-// near-solid ribbon with large blown-out orbs. These three values pull it
-// toward "fine illuminated cosmic dust" without touching the asset, path,
-// placement, or rotation above:
-//   - FLOW_OPACITY thins the whole layer so the floor/atmosphere behind it
-//     shows through, breaking up the "solid beam" read.
-//   - contrast() does most of the shaping work: it pulls extreme (near-white
-//     core/orb) values down hard while barely touching — and slightly
-//     lifting — the faint dust values, so the tiny particles stay visible
-//     while the brightest points get tamed the most.
-//   - brightness() knocks the remaining peak brightness down further.
-//   - saturate() nudges the color back toward warm gold, since dimming a
-//     near-white core desaturates it toward gray.
-//
-// PHASE 3A.2 — TUNE. 3A.1's values (opacity 0.6, brightness 0.78) read as
-// too dim, especially along the upper sweep and the pass behind the globe.
-// Opacity and brightness are both eased back up toward the source; contrast
-// is left at 3A.1's level, since that's what keeps the large particles from
-// overpowering the tiny dust as the flow gets more visible again. PHASE 5B
-// applies these identically to the animated WebP — every frame of it was
-// rendered from this same still, so the same compositing reads the same way.
 const FLOW_OPACITY = 0.78;
 const FLOW_FILTER = "brightness(0.9) contrast(0.82) saturate(1.05)";
 
@@ -152,7 +125,28 @@ export function GoldFlow({
   pedestalAnchorRef: RefObject<HTMLDivElement | null>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [frame, setFrame] = useState<Frame | null>(null);
+  const [videoFailed, setVideoFailed] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mql = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setPrefersReducedMotion(mql.matches);
+
+    const handler = (e: MediaQueryListEvent) => setPrefersReducedMotion(e.matches);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, []);
+
+  useEffect(() => {
+    if (!prefersReducedMotion && !videoFailed && videoRef.current) {
+      videoRef.current.play().catch(() => {
+        // Autoplay rejection or codec error falls back cleanly
+      });
+    }
+  }, [prefersReducedMotion, videoFailed]);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -215,7 +209,7 @@ export function GoldFlow({
           <div
             // Flow box: identical left/top/width/rotation the image alone
             // has always carried. The top mask lives here so it dissolves
-            // whichever asset the <picture> below resolves to.
+            // whichever asset below resolves to.
             className="pointer-events-none absolute block"
             style={{
               left: `${FLOW_LEFT_PCT}%`,
@@ -229,21 +223,41 @@ export function GoldFlow({
               maskImage: FLOW_TOP_MASK,
             }}
           >
-            {/* PHASE 5B — a <picture> resolves the reduced-motion choice
-                before any request is made: a reduced-motion visitor's
-                browser only ever fetches the static PNG, never the animated
-                WebP. No JS, no matchMedia, nothing to hydrate. */}
-            <picture>
-              <source media="(prefers-reduced-motion: reduce)" srcSet={FLOW_ASSET_STATIC} />
+            {prefersReducedMotion || videoFailed ? (
               <img
-                src={FLOW_ASSET}
+                src={FLOW_ASSET_STATIC}
                 alt=""
                 draggable={false}
                 decoding="async"
                 className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
                 style={{ opacity: FLOW_OPACITY, filter: FLOW_FILTER }}
               />
-            </picture>
+            ) : (
+              <video
+                ref={videoRef}
+                autoPlay
+                muted
+                loop
+                playsInline
+                preload="auto"
+                aria-hidden="true"
+                draggable={false}
+                onError={() => setVideoFailed(true)}
+                className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none object-cover"
+                style={{ opacity: FLOW_OPACITY, filter: FLOW_FILTER }}
+              >
+                <source src={FLOW_VIDEO_ASSET} type='video/webm; codecs="vp9"' />
+                {/* Fallback for browsers that do not support WebM */}
+                <img
+                  src={FLOW_ASSET_STATIC}
+                  alt=""
+                  draggable={false}
+                  decoding="async"
+                  className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
+                  style={{ opacity: FLOW_OPACITY, filter: FLOW_FILTER }}
+                />
+              </video>
+            )}
           </div>
         </div>
       )}

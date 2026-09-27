@@ -126,37 +126,133 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
 
   return (
     <nav
-      className={`sticky top-0 z-50 transition-[border-color,background-color,box-shadow,backdrop-filter,-webkit-backdrop-filter] duration-300 ${
-        scrolled
-          ? "border-b border-brand/15 bg-[#010309]/80 backdrop-blur-md shadow-[0_4px_30px_rgba(0,0,0,0.6)]"
-          : "border-b border-transparent bg-transparent"
-      }`}
+      aria-label="Main navigation"
+      className="sticky top-0 z-50 w-full px-4 sm:px-6 lg:px-8 pt-3 sm:pt-4 pb-2 pointer-events-none transition-all duration-300"
     >
-      {scrolled && (
+      <div className="relative max-w-6xl mx-auto">
+        {/* Floating pill capsule */}
         <div
-          ref={setSheenEl}
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 opacity-80"
-          style={{
-            backgroundImage:
-              "linear-gradient(115deg, transparent 15%, color-mix(in oklab, var(--brand, #c9a66b) 12%, transparent) 48%, transparent 82%)",
-            backgroundSize: "220% 100%",
-          }}
-        />
-      )}
-      <div className="relative max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-        {/* Left: logo + links */}
-        <div className="flex items-center gap-10">
-          <Logo />
-          <div className="hidden md:flex items-center gap-1">
+          className={`pointer-events-auto relative w-full h-14 px-5 sm:px-7 rounded-full flex items-center justify-between transition-all duration-300 overflow-hidden ${
+            disableBackdropBlur
+              ? scrolled
+                ? "bg-[#050814] border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]"
+                : "bg-[#050814]/90 border border-white/[0.08] shadow-[0_6px_24px_rgba(0,0,0,0.35),0_1px_0_rgba(255,255,255,0.04)_inset]"
+              : scrolled
+                ? "bg-[#020511]/85 backdrop-blur-xl border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]"
+                : "bg-[#020511]/65 backdrop-blur-xl border border-white/[0.08] shadow-[0_6px_24px_rgba(0,0,0,0.35),0_1px_0_rgba(255,255,255,0.04)_inset]"
+          }`}
+        >
+          {scrolled && (
+            <div
+              ref={setSheenEl}
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-40 rounded-full"
+              style={{
+                backgroundImage:
+                  "linear-gradient(115deg, transparent 20%, color-mix(in oklab, var(--brand, #c9a66b) 12%, transparent) 50%, transparent 80%)",
+                backgroundSize: "220% 100%",
+              }}
+            />
+          )}
+
+          {/* Left group: Logo + Nav links */}
+          <div className="relative z-10 flex items-center gap-8 lg:gap-10">
+            <Logo height={22} />
+            <div className="hidden md:flex items-center gap-1">
+              {links.map((l) =>
+                l.anchor ? (
+                  // Anchor link — always navigates to /#hash
+                  <a
+                    key={l.label}
+                    href={`/${l.anchor}`}
+                    onClick={(e) => handleAnchorClick(e, l.anchor!)}
+                    className="px-3.5 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-white/[0.04] rounded-full transition-colors duration-150"
+                  >
+                    {l.label}
+                  </a>
+                ) : (
+                  <Link
+                    key={l.label}
+                    to={l.to as "/"}
+                    className={`px-3.5 py-1.5 text-sm font-medium rounded-full transition-all duration-150 ${
+                      pathname === l.to
+                        ? "text-foreground bg-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                        : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
+                    }`}
+                  >
+                    {l.label}
+                  </Link>
+                ),
+              )}
+            </div>
+          </div>
+
+          {/* Right group: Auth-aware actions */}
+          <div className="relative z-10 flex items-center gap-2 sm:gap-3">
+            {authLoading ? (
+              // Skeleton while resolving session — prevents flicker
+              <div className="hidden sm:block h-7 w-20 rounded-full bg-white/[0.06] animate-pulse" />
+            ) : user ? (
+              // Authenticated state
+              <>
+                <Link
+                  to="/dashboard"
+                  className="hidden sm:inline-flex items-center gap-1.5 text-sm font-medium text-foreground bg-white/[0.08] hover:bg-white/[0.12] border border-white/[0.08] px-3.5 py-1.5 rounded-full transition-colors duration-150"
+                >
+                  <Crosshair className="size-3.5 text-brand" />
+                  Focus
+                </Link>
+                <button
+                  onClick={handleLogout}
+                  className="hidden sm:block text-sm font-medium text-muted-foreground hover:text-foreground transition-colors duration-150 px-3.5 py-1.5 rounded-full hover:bg-white/[0.04]"
+                >
+                  Log out
+                </button>
+              </>
+            ) : (
+              // Unauthenticated state
+              <>
+                <Link
+                  to="/login"
+                  className="hidden sm:block text-sm font-medium text-muted-foreground hover:text-foreground transition-colors duration-150 px-3.5 py-1.5 rounded-full hover:bg-white/[0.04]"
+                >
+                  Login
+                </Link>
+                <Link
+                  to="/signup"
+                  className="relative group bg-brand hover:bg-brand-dark text-brand-foreground px-4 sm:px-5 py-1.5 rounded-full text-sm font-semibold transition-all duration-200 shadow-brand btn-press overflow-hidden"
+                >
+                  <span className="relative z-10">Start Free</span>
+                  <span className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity duration-200 rounded-full" />
+                </Link>
+              </>
+            )}
+
+            {/* Mobile hamburger */}
+            <button
+              className="md:hidden size-9 grid place-items-center rounded-full border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.08] text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setMobileOpen((o) => !o)}
+              aria-label={mobileOpen ? "Close menu" : "Open menu"}
+            >
+              {mobileOpen ? <X className="size-4" /> : <Menu className="size-4" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Floating Mobile dropdown panel */}
+        {mobileOpen && (
+          <div
+            className={`pointer-events-auto md:hidden mt-2 p-3 rounded-2xl border border-white/[0.1] bg-[#020511]/95 shadow-[0_16px_40px_rgba(0,0,0,0.65)] space-y-1 animate-fade-up ${
+              disableBackdropBlur ? "" : "backdrop-blur-2xl"
+            }`}
+          >
             {links.map((l) =>
               l.anchor ? (
-                // Anchor link — always navigates to /#hash
                 <a
                   key={l.label}
                   href={`/${l.anchor}`}
                   onClick={(e) => handleAnchorClick(e, l.anchor!)}
-                  className="relative px-3 py-2 text-sm font-medium text-muted-foreground hover:text-brand transition-colors duration-150 rounded-lg hover:bg-brand/5 group"
+                  className="block px-3.5 py-2 text-sm font-medium text-muted-foreground hover:text-foreground rounded-xl hover:bg-white/[0.04] transition-colors"
                 >
                   {l.label}
                 </a>
@@ -164,133 +260,60 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
                 <Link
                   key={l.label}
                   to={l.to as "/"}
-                  className={`relative px-3 py-2 text-sm font-medium transition-colors duration-150 rounded-lg hover:bg-brand/5 group ${
+                  className={`block px-3.5 py-2 text-sm font-medium rounded-xl transition-colors ${
                     pathname === l.to
-                      ? "text-brand"
-                      : "text-muted-foreground hover:text-brand"
+                      ? "text-foreground bg-white/[0.08]"
+                      : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
                   }`}
+                  onClick={() => setMobileOpen(false)}
                 >
                   {l.label}
-                  {pathname === l.to && (
-                    <span className="absolute inset-x-3 -bottom-px h-0.5 bg-brand" />
-                  )}
                 </Link>
               ),
             )}
+            <div className="pt-2 mt-1 border-t border-white/[0.08] space-y-1">
+              {user ? (
+                <>
+                  <Link
+                    to="/dashboard"
+                    className="flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-foreground bg-white/[0.06] rounded-xl hover:bg-white/[0.1] transition-colors"
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    <Crosshair className="size-3.5 text-brand" />
+                    Focus
+                  </Link>
+                  <button
+                    className="block w-full text-left px-3.5 py-2 text-sm font-medium text-muted-foreground hover:text-foreground rounded-xl hover:bg-white/[0.04] transition-colors"
+                    onClick={() => {
+                      setMobileOpen(false);
+                      handleLogout();
+                    }}
+                  >
+                    Log out
+                  </button>
+                </>
+              ) : (
+                <>
+                  <Link
+                    to="/login"
+                    className="block px-3.5 py-2 text-sm font-medium text-muted-foreground hover:text-foreground rounded-xl hover:bg-white/[0.04] transition-colors"
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    Login
+                  </Link>
+                  <Link
+                    to="/signup"
+                    className="block px-3.5 py-2 text-sm font-semibold text-brand-foreground bg-brand hover:bg-brand-dark rounded-xl text-center transition-colors shadow-brand"
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    Start Free
+                  </Link>
+                </>
+              )}
+            </div>
           </div>
-        </div>
-
-        {/* Right: auth-aware actions */}
-        <div className="flex items-center gap-2">
-          {authLoading ? (
-            // Skeleton while resolving session — prevents flicker
-            <div className="hidden sm:block h-8 w-20 rounded-full bg-card/60 animate-pulse" />
-          ) : user ? (
-            // Authenticated state
-            <>
-              <Link
-                to="/dashboard"
-                className="hidden sm:inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-2 rounded-lg hover:bg-white/[0.04]"
-              >
-                <Crosshair className="size-4" />
-                Focus
-              </Link>
-              <button
-                onClick={handleLogout}
-                className="hidden sm:block text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-2 rounded-lg hover:bg-white/[0.04]"
-              >
-                Log out
-              </button>
-            </>
-          ) : (
-            // Unauthenticated state
-            <>
-              <Link
-                to="/login"
-                className="hidden sm:block text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-2 rounded-lg hover:bg-white/[0.04]"
-              >
-                Login
-              </Link>
-              <Link
-                to="/signup"
-                className="relative group bg-brand hover:bg-brand-dark text-brand-foreground px-5 py-2 rounded-full text-sm font-semibold transition-all duration-200 shadow-brand btn-press overflow-hidden"
-              >
-                <span className="relative z-10">Start Free</span>
-                <span className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity duration-200 rounded-full" />
-              </Link>
-            </>
-          )}
-
-          {/* Mobile hamburger */}
-          <button
-            className="md:hidden ml-1 size-9 grid place-items-center rounded-lg border border-border hover:bg-card transition-colors"
-            onClick={() => setMobileOpen((o) => !o)}
-          >
-            {mobileOpen ? <X className="size-4" /> : <Menu className="size-4" />}
-          </button>
-        </div>
+        )}
       </div>
-
-      {/* Mobile menu */}
-      {mobileOpen && (
-        <div
-          className={`md:hidden border-t border-brand/20 bg-[#02040c]/95 px-6 py-4 space-y-1 animate-fade-up ${
-            disableBackdropBlur ? "" : "backdrop-blur-xl"
-          }`}
-        >
-          {links.map((l) =>
-            l.anchor ? (
-              <a
-                key={l.label}
-                href={`/${l.anchor}`}
-                onClick={(e) => handleAnchorClick(e, l.anchor!)}
-                className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
-              >
-                {l.label}
-              </a>
-            ) : (
-              <Link
-                key={l.label}
-                to={l.to as "/"}
-                className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
-                onClick={() => setMobileOpen(false)}
-              >
-                {l.label}
-              </Link>
-            ),
-          )}
-          <div className="pt-2 border-t border-brand/10 space-y-1">
-            {user ? (
-              <>
-                <Link
-                  to="/dashboard"
-                  className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
-                  onClick={() => setMobileOpen(false)}
-                >
-                  Focus
-                </Link>
-                <button
-                  className="block w-full text-left px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
-                  onClick={() => {
-                    setMobileOpen(false);
-                    handleLogout();
-                  }}
-                >
-                  Log out
-                </button>
-              </>
-            ) : (
-              <Link
-                to="/login"
-                className="block px-3 py-2.5 text-sm font-medium text-muted-foreground hover:text-brand rounded-lg hover:bg-brand/5 transition-colors"
-                onClick={() => setMobileOpen(false)}
-              >
-                Login
-              </Link>
-            )}
-          </div>
-        </div>
-      )}
     </nav>
   );
 }

@@ -62,19 +62,24 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
         rafId = 0;
         const scrollY = window.scrollY;
 
-        const nextScrolled = scrollY > 12;
-        if (nextScrolled !== scrolledRef.current) {
+        // Hysteresis threshold: trigger compact state when scrollY > 20px,
+        // expand back to wide transparent top state when scrollY <= 8px.
+        const current = scrolledRef.current;
+        const nextScrolled = current ? scrollY > 8 : scrollY > 20;
+
+        if (nextScrolled !== current) {
           scrolledRef.current = nextScrolled;
           setScrolled(nextScrolled);
         }
 
         // Slow, subtle celestial sheen that drifts across the header as you
-        // scroll — gives the bar a sense of moving with the page instead
-        // of sitting as a static, flat-colored strip.
-        const offset = scrollY * 0.25;
-        sheenOffsetRef.current = offset;
-        const sheenEl = sheenElRef.current;
-        if (sheenEl) sheenEl.style.backgroundPositionX = `${-offset}px`;
+        // scroll — gives the bar a sense of moving with the page
+        if (nextScrolled) {
+          const offset = scrollY * 0.25;
+          sheenOffsetRef.current = offset;
+          const sheenEl = sheenElRef.current;
+          if (sheenEl) sheenEl.style.backgroundPositionX = `${-offset}px`;
+        }
       });
     };
     window.addEventListener("scroll", handler, { passive: true });
@@ -127,26 +132,27 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   return (
     <nav
       aria-label="Main navigation"
-      className="sticky top-0 z-50 w-full px-4 sm:px-6 lg:px-8 pt-3 sm:pt-4 pb-2 pointer-events-none transition-all duration-300"
+      className={`sticky top-0 z-50 w-full px-4 sm:px-6 lg:px-8 pointer-events-none transition-[padding] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        scrolled ? "pt-3 sm:pt-3.5 pb-2" : "pt-2 sm:pt-3 pb-1"
+      }`}
     >
-      <div className="relative max-w-6xl mx-auto">
-        {/* Floating pill capsule */}
+      <div className="relative mx-auto">
+        {/* Dynamic expanding / collapsing nav container */}
         <div
-          className={`pointer-events-auto relative w-full h-14 px-5 sm:px-7 rounded-full flex items-center justify-between transition-all duration-300 overflow-hidden ${
-            disableBackdropBlur
-              ? scrolled
-                ? "bg-[#050814] border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]"
-                : "bg-[#050814]/90 border border-white/[0.08] shadow-[0_6px_24px_rgba(0,0,0,0.35),0_1px_0_rgba(255,255,255,0.04)_inset]"
-              : scrolled
-                ? "bg-[#020511]/85 backdrop-blur-xl border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]"
-                : "bg-[#020511]/65 backdrop-blur-xl border border-white/[0.08] shadow-[0_6px_24px_rgba(0,0,0,0.35),0_1px_0_rgba(255,255,255,0.04)_inset]"
+          className={`pointer-events-auto relative mx-auto flex items-center justify-between transition-[max-width,height,padding,background-color,border-color,box-shadow,backdrop-filter] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] overflow-hidden rounded-full ${
+            scrolled
+              ? "max-w-5xl h-14 px-5 sm:px-7 " +
+                (disableBackdropBlur
+                  ? "bg-[#050814] border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]"
+                  : "bg-[#020511]/85 backdrop-blur-xl border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]")
+              : "max-w-7xl h-16 px-6 sm:px-8 lg:px-10 bg-transparent border border-transparent shadow-none backdrop-blur-none"
           }`}
         >
           {scrolled && (
             <div
               ref={setSheenEl}
               aria-hidden="true"
-              className="pointer-events-none absolute inset-0 opacity-40 rounded-full"
+              className="pointer-events-none absolute inset-0 opacity-40 rounded-full animate-fade-in"
               style={{
                 backgroundImage:
                   "linear-gradient(115deg, transparent 20%, color-mix(in oklab, var(--brand, #c9a66b) 12%, transparent) 50%, transparent 80%)",
@@ -156,7 +162,11 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
           )}
 
           {/* Left group: Logo + Nav links */}
-          <div className="relative z-10 flex items-center gap-8 lg:gap-10">
+          <div
+            className={`relative z-10 flex items-center transition-[gap] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+              scrolled ? "gap-7 lg:gap-9" : "gap-8 lg:gap-12"
+            }`}
+          >
             <Logo height={22} />
             <div className="hidden md:flex items-center gap-1">
               {links.map((l) =>

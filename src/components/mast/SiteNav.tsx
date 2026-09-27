@@ -3,7 +3,6 @@ import { Logo } from "./Logo";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Crosshair, Menu, X } from "lucide-react";
 import { useMe, useLogout } from "@/hooks/use-mast-api";
-import { useHorizontalNavIndicator } from "@/hooks/use-horizontal-nav-indicator";
 
 // Configurable anchor targets — always resolve to the home page sections
 const ANCHOR_LINKS: Record<string, string> = {
@@ -12,10 +11,10 @@ const ANCHOR_LINKS: Record<string, string> = {
 };
 
 const links = [
-  { label: "Features", to: "/" },
-  { label: "Pricing", to: "/pricing" },
-  { label: "Solutions", anchor: "#solutions" },
-  { label: "Customers", anchor: "#testimonials" },
+  { key: "features", label: "Features", to: "/" },
+  { key: "pricing", label: "Pricing", to: "/pricing" },
+  { key: "solutions", label: "Solutions", anchor: "#solutions" },
+  { key: "customers", label: "Customers", anchor: "#testimonials" },
 ];
 
 type SiteNavProps = {
@@ -43,6 +42,148 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
 
   const scrolledRef = useRef(false);
 
+  // Active and hover tracking for the floating pill
+  const [activeKey, setActiveKey] = useState<string | null>(() => {
+    if (pathname === "/pricing") return "pricing";
+    if (typeof window !== "undefined") {
+      if (window.location.hash === "#solutions") return "solutions";
+      if (window.location.hash === "#testimonials") return "customers";
+    }
+    return pathname === "/" ? "features" : null;
+  });
+
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
+  const targetKey = hoveredKey ?? activeKey;
+
+  const navLinksRef = useRef<HTMLDivElement>(null);
+  const [pillStyle, setPillStyle] = useState({ x: 0, y: 0, width: 0, height: 0, opacity: 0 });
+  const pillMounted = useRef(false);
+  const [pillAnimReady, setPillAnimReady] = useState(false);
+
+  // Sync activeKey when route changes
+  useEffect(() => {
+    if (pathname === "/pricing") {
+      setActiveKey("pricing");
+    } else if (pathname === "/") {
+      if (window.location.hash === "#solutions") {
+        setActiveKey("solutions");
+      } else if (window.location.hash === "#testimonials") {
+        setActiveKey("customers");
+      } else if (window.scrollY < 300) {
+        setActiveKey("features");
+      }
+    } else {
+      setActiveKey(null);
+    }
+  }, [pathname]);
+
+  // Scroll spy on home page: update activeKey as sections scroll into view
+  useEffect(() => {
+    if (pathname !== "/") return;
+
+    let ticking = false;
+    const handleScrollSpy = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        ticking = false;
+        const scrollY = window.scrollY;
+        if (scrollY < 300) {
+          setActiveKey("features");
+          return;
+        }
+
+        const navOffset = 180;
+        const testimonialsEl = document.getElementById("testimonials");
+        if (testimonialsEl) {
+          const rect = testimonialsEl.getBoundingClientRect();
+          if (rect.top <= navOffset) {
+            setActiveKey("customers");
+            return;
+          }
+        }
+
+        const solutionsEl = document.getElementById("solutions");
+        if (solutionsEl) {
+          const rect = solutionsEl.getBoundingClientRect();
+          if (rect.top <= navOffset) {
+            setActiveKey("solutions");
+            return;
+          }
+        }
+
+        setActiveKey("features");
+      });
+    };
+
+    window.addEventListener("scroll", handleScrollSpy, { passive: true });
+    return () => window.removeEventListener("scroll", handleScrollSpy);
+  }, [pathname]);
+
+  // Measure and position the pill behind targetKey (hovered or active)
+  const measurePill = useCallback(() => {
+    const container = navLinksRef.current;
+    if (!container || !targetKey) {
+      setPillStyle((prev) => ({ ...prev, opacity: 0 }));
+      return;
+    }
+
+    const targetEl = container.querySelector<HTMLElement>(
+      `[data-nav-key="${targetKey}"]`,
+    );
+    if (!targetEl) return;
+
+    const cr = container.getBoundingClientRect();
+    const er = targetEl.getBoundingClientRect();
+
+    if (er.width > 0 && er.height > 0) {
+      setPillStyle({
+        x: er.left - cr.left,
+        y: er.top - cr.top,
+        width: er.width,
+        height: er.height,
+        opacity: 1,
+      });
+
+      if (!pillMounted.current) {
+        pillMounted.current = true;
+        requestAnimationFrame(() => {
+          setPillAnimReady(true);
+        });
+      }
+    }
+  }, [targetKey]);
+
+  useEffect(() => {
+    measurePill();
+  }, [measurePill, scrolled]);
+
+  useEffect(() => {
+    const container = navLinksRef.current;
+    if (!container) return;
+
+    const ro = new ResizeObserver(() => {
+      measurePill();
+    });
+    ro.observe(container);
+
+    window.addEventListener("resize", measurePill);
+    const onVisible = () => {
+      if (!document.hidden) measurePill();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    document.fonts?.ready?.then?.(() => {
+      measurePill();
+    });
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measurePill);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [measurePill]);
+
   // The sheen's scroll offset is applied straight to the DOM instead of going
   // through React state. As state it re-rendered the whole nav (and forced an
   // extra style recalc + repaint) on every scroll frame; the value is purely
@@ -54,27 +195,6 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
     sheenElRef.current = el;
     if (el) el.style.backgroundPositionX = `${-sheenOffsetRef.current}px`;
   }, []);
-
-  // Shared horizontal sliding pill indicator for active nav item
-  const activeLink = links.find((l) => l.to && pathname === l.to);
-  const activeTo = activeLink?.to ?? null;
-  const {
-    indicator,
-    setContainer: setNavLinksContainer,
-    registerItem: registerNavItem,
-  } = useHorizontalNavIndicator(activeTo);
-  const [animReady, setAnimReady] = useState(false);
-  // After the first paint with a valid indicator position, enable transitions
-  // so the pill slides on subsequent tab changes instead of jumping.
-  useEffect(() => {
-    if (indicator.opacity > 0 && !animReady) {
-      // Let the browser paint the initial position, then enable transitions
-      const raf = requestAnimationFrame(() => {
-        setAnimReady(true);
-      });
-      return () => cancelAnimationFrame(raf);
-    }
-  }, [indicator.opacity, animReady]);
 
   useEffect(() => {
     let rafId = 0;
@@ -116,9 +236,10 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
    * If already on "/", just scroll. If on another page, navigate first.
    */
   const handleAnchorClick = useCallback(
-    (e: React.MouseEvent<HTMLAnchorElement>, hash: string) => {
+    (e: React.MouseEvent<HTMLAnchorElement>, hash: string, key: string) => {
       e.preventDefault();
       setMobileOpen(false);
+      setActiveKey(key);
 
       const scrollToHash = () => {
         const id = hash.replace("#", "");
@@ -191,51 +312,68 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
           >
             <Logo height={22} />
             <div
-              ref={setNavLinksContainer}
+              ref={navLinksRef}
+              onMouseLeave={() => setHoveredKey(null)}
               className="hidden md:flex items-center gap-1 relative"
             >
               {/* Shared sliding pill indicator */}
               <div
                 aria-hidden="true"
-                className="absolute top-0 left-0 h-full rounded-full bg-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                className="absolute rounded-full bg-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] pointer-events-none"
                 style={{
-                  transform: `translateX(${indicator.x}px)`,
-                  width: `${indicator.width}px`,
-                  opacity: indicator.opacity,
-                  transition: animReady
-                    ? "transform 400ms cubic-bezier(0.16, 1, 0.3, 1), width 400ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease"
+                  top: 0,
+                  left: 0,
+                  transform: `translate3d(${pillStyle.x}px, ${pillStyle.y}px, 0)`,
+                  width: `${pillStyle.width}px`,
+                  height: `${pillStyle.height}px`,
+                  opacity: pillStyle.opacity,
+                  transition: pillAnimReady
+                    ? "transform 350ms cubic-bezier(0.16, 1, 0.3, 1), width 350ms cubic-bezier(0.16, 1, 0.3, 1), height 350ms cubic-bezier(0.16, 1, 0.3, 1), opacity 150ms ease"
                     : "none",
-                  willChange: "transform, width",
-                  pointerEvents: "none",
+                  willChange: "transform, width, height",
                 }}
               />
-              {links.map((l) =>
-                l.anchor ? (
+              {links.map((l) => {
+                const isSelected = targetKey === l.key;
+                return l.anchor ? (
                   // Anchor link — always navigates to /#hash
                   <a
                     key={l.label}
-                    ref={(node) => registerNavItem(l.label, node)}
+                    data-nav-key={l.key}
                     href={`/${l.anchor}`}
-                    onClick={(e) => handleAnchorClick(e, l.anchor!)}
-                    className="relative z-[1] px-3.5 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground rounded-full transition-colors duration-150"
+                    onMouseEnter={() => setHoveredKey(l.key)}
+                    onClick={(e) => handleAnchorClick(e, l.anchor!, l.key)}
+                    className={`relative z-[1] px-3.5 py-1.5 text-sm font-medium rounded-full transition-colors duration-200 ${
+                      isSelected
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
                   >
                     {l.label}
                   </a>
                 ) : (
                   <Link
                     key={l.label}
-                    ref={(node: HTMLAnchorElement | null) => registerNavItem(l.to!, node)}
+                    data-nav-key={l.key}
                     to={l.to as "/"}
-                    className={`relative z-[1] px-3.5 py-1.5 text-sm font-medium rounded-full transition-colors duration-150 ${
-                      pathname === l.to
+                    onMouseEnter={() => setHoveredKey(l.key)}
+                    onClick={(e) => {
+                      setActiveKey(l.key);
+                      if (l.key === "features" && pathname === "/") {
+                        e.preventDefault();
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                      }
+                    }}
+                    className={`relative z-[1] px-3.5 py-1.5 text-sm font-medium rounded-full transition-colors duration-200 ${
+                      isSelected
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
                     {l.label}
                   </Link>
-                ),
-              )}
+                );
+              })}
             </div>
           </div>
 
@@ -298,13 +436,18 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
               disableBackdropBlur ? "" : "backdrop-blur-2xl"
             }`}
           >
-            {links.map((l) =>
-              l.anchor ? (
+            {links.map((l) => {
+              const isSelected = activeKey === l.key;
+              return l.anchor ? (
                 <a
                   key={l.label}
                   href={`/${l.anchor}`}
-                  onClick={(e) => handleAnchorClick(e, l.anchor!)}
-                  className="block px-3.5 py-2 text-sm font-medium text-muted-foreground hover:text-foreground rounded-xl hover:bg-white/[0.04] transition-colors"
+                  onClick={(e) => handleAnchorClick(e, l.anchor!, l.key)}
+                  className={`block px-3.5 py-2 text-sm font-medium rounded-xl transition-colors ${
+                    isSelected
+                      ? "text-foreground bg-white/[0.08]"
+                      : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
+                  }`}
                 >
                   {l.label}
                 </a>
@@ -313,16 +456,23 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
                   key={l.label}
                   to={l.to as "/"}
                   className={`block px-3.5 py-2 text-sm font-medium rounded-xl transition-colors ${
-                    pathname === l.to
+                    isSelected
                       ? "text-foreground bg-white/[0.08]"
                       : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
                   }`}
-                  onClick={() => setMobileOpen(false)}
+                  onClick={(e) => {
+                    setActiveKey(l.key);
+                    setMobileOpen(false);
+                    if (l.key === "features" && pathname === "/") {
+                      e.preventDefault();
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }
+                  }}
                 >
                   {l.label}
                 </Link>
-              ),
-            )}
+              );
+            })}
             <div className="pt-2 mt-1 border-t border-white/[0.08] space-y-1">
               {user ? (
                 <>

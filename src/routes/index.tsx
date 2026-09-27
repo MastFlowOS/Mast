@@ -94,7 +94,10 @@ function Hero() {
         {/* Copy column */}
         <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">
           {/* Heading */}
-          <h1 className="animate-fade-up delay-100 text-[clamp(1.9rem,4vw,2.75rem)] font-extrabold text-foreground tracking-tight mb-4 leading-[1.12]">
+          <h1
+            style={{ fontFamily: "var(--font-serif)" }}
+            className="mast-hero-headline animate-fade-up delay-100 font-serif font-semibold text-[clamp(2rem,4.2vw,3rem)] text-foreground tracking-[-0.02em] mb-4 leading-[1.12]"
+          >
             Stop switching tabs.<br />
             Start closing deals.
           </h1>

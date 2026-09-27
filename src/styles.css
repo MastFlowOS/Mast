@@ -1,5 +1,5 @@
 @import "tailwindcss" source(none);
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@1,400;1,500;1,600;1,700&family=Space+Grotesk:wght@400;500;600;700&family=Syne:wght@700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&family=Space+Grotesk:wght@400;500;600;700&family=Syne:wght@700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
 @source "../src";
 @import "tw-animate-css";
 
@@ -50,6 +50,7 @@
 
   /* -- Typography --------------------------------------------- */
   --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-serif: "Playfair Display", "Cormorant Garamond", Georgia, serif;
 
   /* -- Elevation / shadow ------------------------------------- */
   --shadow-brand:    0 10px 40px -10px  color-mix(in oklab, var(--brand) 50%, transparent);
@@ -653,7 +654,7 @@
 .mast-landing {
   --font-sans: "Space Grotesk", sans-serif;
   --font-display: "Syne", sans-serif;
-  --font-serif: "Cormorant Garamond", serif;
+  --font-serif: "Playfair Display", "Cormorant Garamond", Georgia, serif;
 
   --background: #02040c;
   --card: #05070f;
@@ -708,6 +709,11 @@
 .mast-landing h6 {
   font-family: var(--font-display);
   letter-spacing: -0.02em;
+}
+
+.mast-landing h1.mast-hero-headline,
+.mast-hero-headline {
+  font-family: var(--font-serif);
 }
 
 @layer utilities {

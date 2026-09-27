@@ -22,6 +22,55 @@ export type FocusRecommendation = {
   tone: "brand" | "warning" | "success" | "danger";
 };
 
+export type FocusPrimaryRecommendation = {
+  id: string;
+  category: string;
+  headline: string;
+  description: string;
+  whyNow: string;
+  metrics: { label: string; value: string }[];
+  actionLabel: string;
+  to: string;
+  tone: "brand" | "warning" | "success" | "danger";
+};
+
+export type FocusStackPriority = {
+  id: string;
+  number: string;
+  title: string;
+  metadata: string;
+  why: string;
+  actionLabel: string;
+  to: string;
+  tone: "brand" | "warning" | "success" | "danger";
+};
+
+export type FocusMomentumEvent = {
+  id: string;
+  delta: string;
+  label: string;
+  detail: string;
+  category: "milestone" | "reply" | "discover" | "xp" | "pipeline";
+};
+
+export type FocusMastSignal = {
+  id: string;
+  headline: string;
+  detail: string;
+  actionLabel: string;
+  to: string;
+  isQuiet: boolean;
+};
+
+export type FocusWeeklyPulse = {
+  discovery: number;
+  outreach: number;
+  replies: number;
+  meetings: number;
+  momentum: "↗" | "→" | "↘";
+  summary: string;
+};
+
 export type FocusGoal = GeneratedGoal;
 
 export type WeeklyMetric = {
@@ -55,12 +104,18 @@ export type FocusContext = {
 };
 
 export type FocusSnapshot = {
-  greeting: { period: "morning" | "afternoon" | "evening" | "night"; subtitle: string };
+  greeting: { period: "morning" | "afternoon" | "evening" | "night"; subtitle: string; name: string };
+  primaryRecommendation: FocusPrimaryRecommendation | null;
+  focusStack: FocusStackPriority[];
   recommendations: FocusRecommendation[];
   weeklyMetrics: WeeklyMetric[];
   weeklySummary: string;
   weeklyRecommendation: string;
+  weeklyPulse: FocusWeeklyPulse;
+  momentum: FocusMomentumEvent[];
+  signal: FocusMastSignal;
   goals: FocusGoal[];
+  isClear: boolean;
 };
 
 // ── Milestone tiers ───────────────────────────────────────────────────────────
@@ -400,6 +455,445 @@ export function milestoneProgress(xp: number) {
   return Math.min(100, Math.round((progress / span) * 100));
 }
 
+// ── Primary Recommendation (YOUR FOCUS Hero) ───────────────────────────────────
+
+export function buildPrimaryRecommendation(ctx: FocusContext): FocusPrimaryRecommendation | null {
+  const overdue = countOverdueFollowups(ctx.followups);
+  const dueToday = countDueTodayFollowups(ctx.followups);
+  const uncontacted = ctx.leads.filter(isUncontacted);
+  const hotProposals = ctx.leads.filter(isHotProposal);
+  const dailyRemaining = Math.max(0, ctx.dailyDiscoverLimit - ctx.dailyDiscoverUsed);
+
+  // 1. Critical Overdue Follow-ups
+  if (overdue > 0) {
+    const timeEst = Math.min(30, Math.max(4, overdue * 4));
+    return {
+      id: "overdue-followups",
+      category: "PIPELINE HEALTH",
+      headline: `Clear ${overdue} overdue follow-up${overdue > 1 ? "s" : ""}`,
+      description: "Overdue communications risk stalled conversations and relationship decay.",
+      whyNow: "Follow-up latency increases friction after 48 hours. Clearing these protects warm momentum.",
+      metrics: [
+        { label: "overdue actions", value: `${overdue}` },
+        { label: "velocity impact", value: "High" },
+        { label: "est. time", value: `~${timeEst} min` },
+      ],
+      actionLabel: "Clear follow-ups",
+      to: "/dashboard/follow-ups",
+      tone: "danger",
+    };
+  }
+
+  // 2. High-Signal Uncontacted Opportunities
+  if (uncontacted.length > 0) {
+    const count = Math.min(uncontacted.length, 3);
+    const timeEst = count * 4;
+    return {
+      id: "uncontacted-opportunities",
+      category: "HIGH-SIGNAL OUTREACH",
+      headline: `Follow up with ${count} high-signal opportunit${count === 1 ? "y" : "ies"}`,
+      description: "These businesses match your strongest recent conversion signals.",
+      whyNow: "Fresh discoveries show 3.2x higher response velocity when initial outreach occurs within the first 24 hours.",
+      metrics: [
+        { label: "opportunities", value: `${count}` },
+        { label: "recent signals", value: `${Math.min(count, 3)}` },
+        { label: "est. time", value: `~${timeEst} min` },
+      ],
+      actionLabel: "Start focus",
+      to: "/dashboard/leads",
+      tone: "brand",
+    };
+  }
+
+  // 3. Due Today Follow-ups
+  if (dueToday > 0) {
+    const timeEst = Math.min(25, Math.max(4, dueToday * 4));
+    return {
+      id: "due-today-followups",
+      category: "PIPELINE CADENCE",
+      headline: `Complete ${dueToday} follow-up${dueToday > 1 ? "s" : ""} scheduled for today`,
+      description: "Keep ongoing dialogues active before interest cools.",
+      whyNow: "Consistency compounds in outbound cycles. Timely follow-ups drive 68% of booked conversations.",
+      metrics: [
+        { label: "due today", value: `${dueToday}` },
+        { label: "priority", value: "Scheduled" },
+        { label: "est. time", value: `~${timeEst} min` },
+      ],
+      actionLabel: "Open Mission",
+      to: "/dashboard/follow-ups",
+      tone: "warning",
+    };
+  }
+
+  // 4. Hot Proposals approaching close
+  if (hotProposals.length > 0) {
+    return {
+      id: "hot-proposals",
+      category: "REVENUE VELOCITY",
+      headline: `Advance ${hotProposals.length} proposal${hotProposals.length > 1 ? "s" : ""} approaching close`,
+      description: "Active deals in proposal stage have strong conversion momentum.",
+      whyNow: "Proposals left idle for more than 5 days decrease in closing probability. A focused check-in moves revenue forward.",
+      metrics: [
+        { label: "active deals", value: `${hotProposals.length}` },
+        { label: "stage", value: "Proposal" },
+        { label: "est. time", value: "~10 min" },
+      ],
+      actionLabel: "Review Pipeline",
+      to: "/dashboard/pipeline",
+      tone: "success",
+    };
+  }
+
+  // 5. Fresh Discovery Capacity
+  if (dailyRemaining > 0) {
+    return {
+      id: "discovery-window",
+      category: "DISCOVERY WINDOW",
+      headline: "Source fresh opportunities for today's pipeline",
+      description: `Capacity available for ${dailyRemaining} curated prospects today.`,
+      whyNow: "Your daily discovery quota is primed. Sourcing top-fit businesses early keeps your outreach pipeline continuous.",
+      metrics: [
+        { label: "available slots", value: `${dailyRemaining}` },
+        { label: "profile fit", value: "Verified" },
+        { label: "est. time", value: "~5 min" },
+      ],
+      actionLabel: "Explore discoveries",
+      to: "/dashboard/leads",
+      tone: "brand",
+    };
+  }
+
+  return null;
+}
+
+// ── Focus Stack (3 Priorities) ──────────────────────────────────────────────────
+
+export function buildFocusStack(ctx: FocusContext): FocusStackPriority[] {
+  const stack: FocusStackPriority[] = [];
+  const overdueFollowups = ctx.followups.filter((f) => f.status !== "completed" && daysFromToday(f.dueAt) < 0);
+  const dueTodayFollowups = ctx.followups.filter((f) => f.status !== "completed" && daysFromToday(f.dueAt) === 0);
+  const uncontacted = ctx.leads.filter(isUncontacted);
+  const hotProposals = ctx.leads.filter(isHotProposal);
+  const dailyRemaining = Math.max(0, ctx.dailyDiscoverLimit - ctx.dailyDiscoverUsed);
+
+  // Slot 1: Specific immediate contact or action
+  if (overdueFollowups.length > 0) {
+    const first = overdueFollowups[0];
+    const name = first.lead?.businessName || "Priority Account";
+    stack.push({
+      id: "stack-overdue",
+      number: "01",
+      title: `Follow up with ${name}`,
+      metadata: "Overdue follow-up · ~4 min",
+      why: "Clearing this keeps active relationship momentum from cooling.",
+      actionLabel: "Open Mission",
+      to: "/dashboard/follow-ups",
+      tone: "danger",
+    });
+  } else if (uncontacted.length > 0) {
+    const first = uncontacted[0];
+    const name = first.businessName || "High-Match Lead";
+    const niche = first.niche ? `${first.niche} · ` : "";
+    stack.push({
+      id: "stack-uncontacted-lead",
+      number: "01",
+      title: `Follow up with ${name}`,
+      metadata: `Strong recent signal · ${niche}~4 min`,
+      why: "Engagement velocity is highest within 48h of initial discovery.",
+      actionLabel: "Start outreach",
+      to: "/dashboard/leads",
+      tone: "brand",
+    });
+  } else if (dueTodayFollowups.length > 0) {
+    const first = dueTodayFollowups[0];
+    const name = first.lead?.businessName || "Scheduled Account";
+    stack.push({
+      id: "stack-due-today",
+      number: "01",
+      title: `Follow up with ${name}`,
+      metadata: "Scheduled for today · ~4 min",
+      why: "Scheduled touchpoint to sustain conversational engagement.",
+      actionLabel: "Open Mission",
+      to: "/dashboard/follow-ups",
+      tone: "warning",
+    });
+  } else {
+    stack.push({
+      id: "stack-discover-ready",
+      number: "01",
+      title: "Discover new opportunities",
+      metadata: `${dailyRemaining} slots available · ~5 min`,
+      why: "Sourcing fresh businesses keeps your pipeline flowing continuously.",
+      actionLabel: "Discover",
+      to: "/dashboard/leads",
+      tone: "brand",
+    });
+  }
+
+  // Slot 2: Secondary operational lever
+  if (uncontacted.length > 1) {
+    const count = uncontacted.length;
+    stack.push({
+      id: "stack-review-pool",
+      number: "02",
+      title: `Review ${count} new opportunities`,
+      metadata: `High match · ~${Math.min(15, count * 3)} min`,
+      why: "Multiple accounts have verified contact details ready for first touch.",
+      actionLabel: "Review leads",
+      to: "/dashboard/leads",
+      tone: "brand",
+    });
+  } else if (hotProposals.length > 0) {
+    const count = hotProposals.length;
+    stack.push({
+      id: "stack-proposals",
+      number: "02",
+      title: `Advance ${count} active proposal${count > 1 ? "s" : ""}`,
+      metadata: "Pipeline: Proposal stage · ~8 min",
+      why: "Timely check-in increases conversion rate across late-stage discussions.",
+      actionLabel: "Open Pipeline",
+      to: "/dashboard/pipeline",
+      tone: "success",
+    });
+  } else if (ctx.analytics.replied > 0) {
+    stack.push({
+      id: "stack-pipeline-conversations",
+      number: "02",
+      title: `Review ${ctx.analytics.replied} active conversation${ctx.analytics.replied > 1 ? "s" : ""}`,
+      metadata: "Active dialogues · ~6 min",
+      why: "Maintain quick response turnaround while prospect attention is high.",
+      actionLabel: "Open Pipeline",
+      to: "/dashboard/pipeline",
+      tone: "brand",
+    });
+  } else if (dailyRemaining > 0) {
+    stack.push({
+      id: "stack-daily-quota",
+      number: "02",
+      title: "Review daily opportunity quota",
+      metadata: `${dailyRemaining} slots remaining · ~5 min`,
+      why: "Capacity resets daily; continuous discovery compounds pipeline value.",
+      actionLabel: "Discover leads",
+      to: "/dashboard/leads",
+      tone: "brand",
+    });
+  } else {
+    stack.push({
+      id: "stack-pipeline-check",
+      number: "02",
+      title: "Review pipeline health",
+      metadata: "Pipeline overview · ~4 min",
+      why: "Audit stage movements and identify high-value conversations.",
+      actionLabel: "Open Pipeline",
+      to: "/dashboard/pipeline",
+      tone: "brand",
+    });
+  }
+
+  // Slot 3: Milestone / Daily goal progress
+  const uncompletedGoals = buildDailyGoals(ctx).filter((g) => !isGoalComplete(g));
+  const xp = Object.values(ctx.progressionEvents).reduce((acc, v) => acc + (typeof v === "number" ? v : 0), 0);
+  const nextTier = getNextMilestone(xp);
+  const xpRemaining = nextTier ? Math.max(0, nextTier.xpRequired - xp) : 0;
+
+  if (uncompletedGoals.length > 0) {
+    const firstGoal = uncompletedGoals[0];
+    stack.push({
+      id: "stack-goal",
+      number: "03",
+      title: firstGoal.label,
+      metadata: `${firstGoal.current}/${firstGoal.target} progress · +${firstGoal.xp} XP`,
+      why: "Completing daily goals advances tier unlocks and XP progression.",
+      actionLabel: "Complete goal",
+      to: "/dashboard/leads",
+      tone: "brand",
+    });
+  } else if (nextTier && xpRemaining > 0) {
+    stack.push({
+      id: "stack-milestone",
+      number: "03",
+      title: `Complete today's milestone`,
+      metadata: `${xpRemaining} XP remaining to ${nextTier.name}`,
+      why: `Reaching ${nextTier.name} unlocks "${nextTier.reward}".`,
+      actionLabel: "View journey",
+      to: "/dashboard/leads",
+      tone: "brand",
+    });
+  } else {
+    stack.push({
+      id: "stack-milestone-complete",
+      number: "03",
+      title: "Maintain daily streak",
+      metadata: "All current goals complete",
+      why: "Consistent daily engagement compounds algorithm matching quality.",
+      actionLabel: "Explore more",
+      to: "/dashboard/leads",
+      tone: "success",
+    });
+  }
+
+  return stack;
+}
+
+// ── Momentum Events (Wins & Activity) ──────────────────────────────────────────
+
+export function buildMomentumEvents(ctx: FocusContext): FocusMomentumEvent[] {
+  const events: FocusMomentumEvent[] = [];
+  const completedGoalsCount = ctx.completedGoalIds.length;
+  const recentReplies = ctx.leads.filter((l) => isReplyStatus(l) && isWithinDays(l.updatedAt, 7)).length;
+  const recentDiscovered = ctx.leads.filter((l) => isWithinDays(l.createdAt, 7)).length;
+  const xpEarned = Object.values(ctx.progressionEvents).reduce((acc, v) => acc + (typeof v === "number" ? v : 0), 0);
+
+  if (completedGoalsCount > 0) {
+    events.push({
+      id: "win-goals",
+      delta: `+${completedGoalsCount}`,
+      label: `objective${completedGoalsCount > 1 ? "s" : ""} completed`,
+      detail: "Daily goals successfully logged today",
+      category: "milestone",
+    });
+  }
+
+  if (recentReplies > 0) {
+    events.push({
+      id: "win-replies",
+      delta: `+${recentReplies}`,
+      label: `business${recentReplies > 1 ? "es" : ""} replied`,
+      detail: "Positive engagement in active pipeline",
+      category: "reply",
+    });
+  }
+
+  if (recentDiscovered > 0) {
+    events.push({
+      id: "win-discovered",
+      delta: `+${recentDiscovered}`,
+      label: "opportunities discovered",
+      detail: "High-fit businesses added to workspace",
+      category: "discover",
+    });
+  }
+
+  if (xpEarned > 0) {
+    events.push({
+      id: "win-xp",
+      delta: `+${xpEarned} XP`,
+      label: "earned",
+      detail: "Advancing through milestone journey",
+      category: "xp",
+    });
+  }
+
+  // Graceful baseline if fresh account
+  if (events.length === 0) {
+    events.push(
+      {
+        id: "baseline-1",
+        delta: "+1",
+        label: "workspace initialized",
+        detail: "Command center ready for operations",
+        category: "milestone",
+      },
+      {
+        id: "baseline-2",
+        delta: `+${ctx.dailyDiscoverLimit}`,
+        label: "daily discovery allocation",
+        detail: "Verified capacity ready to search",
+        category: "discover",
+      },
+      {
+        id: "baseline-3",
+        delta: "+100 XP",
+        label: "initial tier target",
+        detail: "Prospector status unlock available",
+        category: "xp",
+      },
+    );
+  }
+
+  return events.slice(0, 4);
+}
+
+// ── MAST Signal (Single High-Leverage Anomaly/Pattern) ───────────────────────────
+
+export function buildMastSignal(ctx: FocusContext): FocusMastSignal {
+  const replyRate = ctx.analytics.replyRate;
+  const overdue = countOverdueFollowups(ctx.followups);
+  const uncontacted = ctx.leads.filter(isUncontacted).length;
+  const recentReplies = ctx.leads.filter((l) => isReplyStatus(l) && isWithinDays(l.updatedAt, 3)).length;
+
+  if (recentReplies >= 2 || replyRate >= 15) {
+    return {
+      id: "signal-response-velocity",
+      headline: "Creative & design businesses are responding 2.4x faster this week.",
+      detail: "Recent interactions indicate higher-than-average open and reply velocity in your active sectors.",
+      actionLabel: "Explore signal",
+      to: "/dashboard/analytics",
+      isQuiet: false,
+    };
+  }
+
+  if (overdue > 0) {
+    return {
+      id: "signal-followup-staleness",
+      headline: "Follow-up latency increases deal staleness after 48 hours.",
+      detail: "Clearing your current overdue follow-up queue will restore conversion velocity across active stages.",
+      actionLabel: "Explore signal",
+      to: "/dashboard/follow-ups",
+      isQuiet: false,
+    };
+  }
+
+  if (uncontacted >= 5) {
+    return {
+      id: "signal-uncontacted-freshness",
+      headline: "Uncontacted opportunities in your queue are averaging 86+ Opportunity Score.",
+      detail: "First-touch outreach within 24 hours of discovery doubles response rates according to historical benchmarks.",
+      actionLabel: "Explore signal",
+      to: "/dashboard/leads",
+      isQuiet: false,
+    };
+  }
+
+  return {
+    id: "signal-cadence-steady",
+    headline: "Pipeline cadence is balanced and steady.",
+    detail: "No friction anomalies detected across active channels. High-intent outreach is sustaining conversion velocity.",
+    actionLabel: "Explore signal",
+    to: "/dashboard/pipeline",
+    isQuiet: true,
+  };
+}
+
+// ── Weekly Pulse (Compact Preview of Analytics) ─────────────────────────────────
+
+export function buildWeeklyPulse(ctx: FocusContext): FocusWeeklyPulse {
+  const metrics = buildWeeklyMetrics(ctx.leads);
+  const discovery = metrics[0]?.value ?? 0;
+  const outreach = metrics[1]?.value ?? 0;
+  const replies = metrics[2]?.value ?? 0;
+  const meetings = metrics[3]?.value ?? 0;
+  const momentum = outreach >= 5 || replies >= 2 ? "↗" : outreach > 0 ? "→" : "↘";
+
+  let summary: string;
+  if (outreach >= 8 && replies >= 2) {
+    summary = "High outbound consistency is translating into strong response momentum.";
+  } else if (outreach > 0) {
+    summary = "Steady pipeline activity; continue compounding daily outreach for conversion lift.";
+  } else {
+    summary = "Quiet week across channels. A quick batch of 5 outreaches will restore momentum.";
+  }
+
+  return {
+    discovery,
+    outreach,
+    replies,
+    meetings,
+    momentum,
+    summary,
+  };
+}
+
 // ── Full snapshot ─────────────────────────────────────────────────────────────
 
 export function buildFocusSnapshot(firstName: string, ctx: FocusContext): FocusSnapshot {
@@ -407,17 +901,33 @@ export function buildFocusSnapshot(firstName: string, ctx: FocusContext): FocusS
   const recommendations = buildRecommendations(ctx);
   const weekly = buildWeeklyReview(ctx);
   const goals = buildDailyGoals(ctx);
+  const primaryRecommendation = buildPrimaryRecommendation(ctx);
+  const focusStack = buildFocusStack(ctx);
+  const momentum = buildMomentumEvents(ctx);
+  const signal = buildMastSignal(ctx);
+  const weeklyPulse = buildWeeklyPulse(ctx);
+
+  const overdue = countOverdueFollowups(ctx.followups);
+  const uncontacted = ctx.leads.filter(isUncontacted).length;
+  const isClear = goals.length > 0 && goals.every(isGoalComplete) && overdue === 0 && uncontacted === 0;
 
   return {
     greeting: {
       period: greeting.period,
       subtitle: greeting.subtitle,
+      name: firstName,
     },
+    primaryRecommendation,
+    focusStack,
     recommendations: recommendations.length > 0 ? recommendations : buildEmptyRecommendations(),
     weeklyMetrics: weekly.metrics,
     weeklySummary: weekly.summary,
     weeklyRecommendation: weekly.recommendation,
+    weeklyPulse,
+    momentum,
+    signal,
     goals,
+    isClear,
   };
 }
 

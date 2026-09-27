@@ -35,20 +35,30 @@
  * of any kind. The browser just decodes and plays an animated image, exactly
  * as it would a GIF.
  *
- * Every other value below — position, scale, rotation, opacity/filter,
- * top mask — is untouched from Phase 3A.2; only the asset the <img> points
- * to (and, for prefers-reduced-motion, which asset it points to) changed.
+ * PHASE 8 — TRIED, REVERTED. Swapped the animated WebP for an opaque 60 FPS
+ * H.264/VP9 video on a pure-black background, composited with
+ * `mix-blend-mode: screen` (screen-blending pure black is mathematically a
+ * no-op, so black was meant to read as "invisible"). In practice this never
+ * fully worked: lossy video compression does not preserve exact (0,0,0)
+ * black, so the whole video frame carried faint compression noise that
+ * screen-blending lightened into a visible rectangle sitting behind the
+ * globe — worse, that rectangle survives even after the blend-mode/
+ * stacking-context isolation bug (transform on an ancestor breaking the
+ * blend's backdrop) is fixed, because the noise floor itself is baked into
+ * the encoded pixels, not a compositing bug. A blend-mode illusion of
+ * transparency is strictly less reliable than real alpha. Reverted back to
+ * the Phase 5B animated WebP, which carries genuine RGBA alpha (verified
+ * fully transparent, alpha 0, at all four corners and throughout the
+ * background) — no blend trick, so no rectangle, at some cost in decode
+ * efficiency versus hardware video.
  *
  * REDUCED MOTION. Animated WebPs autoplay all their frames the moment
  * they're decoded — there's no CSS to pause an <img>'s own animation — so
  * respecting prefers-reduced-motion means choosing a different SRC, not
- * stopping a running one. That's done with a <picture>: a <source> that
- * only matches "(prefers-reduced-motion: reduce)" points at the original
- * static PHASE 3A.2 PNG, and the plain <img> fallback (used whenever that
- * media query doesn't match) points at the animated WebP. The browser
- * resolves this itself before ever requesting a file, so a reduced-motion
- * visitor never downloads the animated asset at all — no JS, no
- * matchMedia listener, nothing to hydrate.
+ * stopping a running one. That's done by tracking the media query in state
+ * and swapping the <img src> between the static PHASE 3A.2 PNG (reduced
+ * motion) and the animated WebP (default) — no canvas, no RAF, nothing to
+ * hydrate beyond the one state read.
  *
  * LAYERING (see Hero in routes/index.tsx)
  *
@@ -78,26 +88,18 @@
  *
  * TRANSPARENCY
  * Both the static PNG and the animated WebP are real RGBA, alpha 0 at all
- * four corners, drawn with plain normal blending. The one exception to "the
- * asset is untouched" is the top mask below, which only dissolves the
- * image's top few percent — the stream runs off the top of the source frame,
- * so on layouts where that edge falls inside the hero (stacked
- * mobile/tablet) it would otherwise read as a flat cut.
+ * four corners, drawn with plain normal blending — no mix-blend-mode, no
+ * chroma-key, nothing that depends on the exact color value of "background"
+ * pixels. The one exception to "the asset is untouched" is the top mask
+ * below, which only dissolves the image's top few percent — the stream runs
+ * off the top of the source frame, so on layouts where that edge falls
+ * inside the hero (stacked mobile/tablet) it would otherwise read as a flat
+ * cut.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
-// PHASE 8 — HARDWARE-ACCELERATED OPAQUE VIDEO DELIVERY VIA SCREEN BLEND.
-// To bypass browser software decoding stalls from transparent-alpha VP9 (yuva420p),
-// the gold flow is rendered as a normal opaque 60 FPS video on a pure black background
-// and blended using `mix-blend-mode: screen`.
-// On pure black (#000000), screen blending is mathematically transparent (1 - (1 - d)*(1 - 0) = d),
-// while gold light luminance adds seamlessly to the dark hero backdrop.
-// Universal hardware decoding via H.264 MP4 and VP9 WebM eliminates Media thread stalls.
-// Fallback: prefers-reduced-motion, video error, or unsupported environments automatically
-// render the original static PNG.
-const FLOW_VIDEO_MP4 = "/images/mast-gold-flow-animated.mp4";
-const FLOW_VIDEO_WEBM = "/images/mast-gold-flow-animated.webm";
+const FLOW_ASSET_ANIMATED = "/images/mast-gold-flow-animated.webp";
 const FLOW_ASSET_STATIC = "/images/mast-gold-flow.png";
 // Natural asset proportions (1536 x 1024 px) — 1.5 aspect ratio.
 const FLOW_ASPECT_RATIO = "1536 / 1024";
@@ -126,9 +128,7 @@ export function GoldFlow({
   pedestalAnchorRef: RefObject<HTMLDivElement | null>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const [frame, setFrame] = useState<Frame | null>(null);
-  const [videoFailed, setVideoFailed] = useState(false);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   useEffect(() => {
@@ -140,14 +140,6 @@ export function GoldFlow({
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);
   }, []);
-
-  useEffect(() => {
-    if (!prefersReducedMotion && !videoFailed && videoRef.current) {
-      videoRef.current.play().catch(() => {
-        // Autoplay rejection or codec error falls back cleanly
-      });
-    }
-  }, [prefersReducedMotion, videoFailed]);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -208,9 +200,9 @@ export function GoldFlow({
           style={{ left: frame.x, top: frame.y, width: frame.w, height: frame.h }}
         >
           <div
-            // Flow box: identical left/top/width/rotation the image alone
-            // has always carried. The top mask lives here so it dissolves
-            // whichever asset below resolves to.
+            // Flow box: identical left/top/width the image alone has always
+            // carried. The top mask lives here so it dissolves whichever
+            // asset below resolves to.
             className="pointer-events-none absolute block"
             style={{
               left: `${FLOW_LEFT_PCT}%`,
@@ -220,75 +212,21 @@ export function GoldFlow({
               aspectRatio: FLOW_ASPECT_RATIO,
             }}
           >
-            {prefersReducedMotion || videoFailed ? (
-              <img
-                src={FLOW_ASSET_STATIC}
-                alt=""
-                draggable={false}
-                decoding="async"
-                className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
-                style={{
-                  opacity: FLOW_OPACITY,
-                  filter: FLOW_FILTER,
-                  WebkitMaskImage: FLOW_TOP_MASK,
-                  maskImage: FLOW_TOP_MASK,
-                  transformOrigin: "0 0",
-                  transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
-                }}
-              />
-            ) : (
-              <video
-                ref={videoRef}
-                autoPlay
-                muted
-                loop
-                playsInline
-                preload="auto"
-                aria-hidden="true"
-                draggable={false}
-                onError={() => setVideoFailed(true)}
-                className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none object-cover"
-                style={{
-                  opacity: FLOW_OPACITY,
-                  filter: FLOW_FILTER,
-                  mixBlendMode: "screen",
-                  WebkitMaskImage: FLOW_TOP_MASK,
-                  maskImage: FLOW_TOP_MASK,
-                  // Rotation lives here (on the blended element itself) rather
-                  // than on an ancestor wrapper. A `transform` on an ancestor
-                  // establishes a NEW stacking context, which isolates
-                  // mix-blend-mode so it only blends against that empty
-                  // wrapper (transparent) instead of the real hero background
-                  // behind it — the opaque black video background then paints
-                  // as a visible dark/gold rectangle instead of vanishing.
-                  // Keeping the transform on the video itself avoids creating
-                  // that isolating ancestor, so "screen" correctly blends
-                  // against GroundSurface/atmosphere behind it and black
-                  // reads as fully transparent.
-                  transformOrigin: "0 0",
-                  transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
-                }}
-              >
-                <source src={FLOW_VIDEO_MP4} type="video/mp4" />
-                <source src={FLOW_VIDEO_WEBM} type='video/webm; codecs="vp9"' />
-                {/* Fallback for browsers that do not support video */}
-                <img
-                  src={FLOW_ASSET_STATIC}
-                  alt=""
-                  draggable={false}
-                  decoding="async"
-                  className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
-                  style={{
-                    opacity: FLOW_OPACITY,
-                    filter: FLOW_FILTER,
-                    WebkitMaskImage: FLOW_TOP_MASK,
-                    maskImage: FLOW_TOP_MASK,
-                    transformOrigin: "0 0",
-                    transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
-                  }}
-                />
-              </video>
-            )}
+            <img
+              src={prefersReducedMotion ? FLOW_ASSET_STATIC : FLOW_ASSET_ANIMATED}
+              alt=""
+              draggable={false}
+              decoding="async"
+              className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
+              style={{
+                opacity: FLOW_OPACITY,
+                filter: FLOW_FILTER,
+                WebkitMaskImage: FLOW_TOP_MASK,
+                maskImage: FLOW_TOP_MASK,
+                transformOrigin: "0 0",
+                transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
+              }}
+            />
           </div>
         </div>
       )}

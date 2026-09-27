@@ -3,6 +3,7 @@ import { Logo } from "./Logo";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Crosshair, Menu, X } from "lucide-react";
 import { useMe, useLogout } from "@/hooks/use-mast-api";
+import { useHorizontalNavIndicator } from "@/hooks/use-horizontal-nav-indicator";
 
 // Configurable anchor targets — always resolve to the home page sections
 const ANCHOR_LINKS: Record<string, string> = {
@@ -53,6 +54,27 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
     sheenElRef.current = el;
     if (el) el.style.backgroundPositionX = `${-sheenOffsetRef.current}px`;
   }, []);
+
+  // Shared horizontal sliding pill indicator for active nav item
+  const activeLink = links.find((l) => l.to && pathname === l.to);
+  const activeTo = activeLink?.to ?? null;
+  const {
+    indicator,
+    setContainer: setNavLinksContainer,
+    registerItem: registerNavItem,
+  } = useHorizontalNavIndicator(activeTo);
+  const [animReady, setAnimReady] = useState(false);
+  // After the first paint with a valid indicator position, enable transitions
+  // so the pill slides on subsequent tab changes instead of jumping.
+  useEffect(() => {
+    if (indicator.opacity > 0 && !animReady) {
+      // Let the browser paint the initial position, then enable transitions
+      const raf = requestAnimationFrame(() => {
+        setAnimReady(true);
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [indicator.opacity, animReady]);
 
   useEffect(() => {
     let rafId = 0;
@@ -168,26 +190,46 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
             }`}
           >
             <Logo height={22} />
-            <div className="hidden md:flex items-center gap-1">
+            <div
+              ref={setNavLinksContainer}
+              className="hidden md:flex items-center gap-1 relative"
+            >
+              {/* Shared sliding pill indicator */}
+              <div
+                aria-hidden="true"
+                className="absolute top-0 left-0 h-full rounded-full bg-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                style={{
+                  transform: `translateX(${indicator.x}px)`,
+                  width: `${indicator.width}px`,
+                  opacity: indicator.opacity,
+                  transition: animReady
+                    ? "transform 400ms cubic-bezier(0.16, 1, 0.3, 1), width 400ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease"
+                    : "none",
+                  willChange: "transform, width",
+                  pointerEvents: "none",
+                }}
+              />
               {links.map((l) =>
                 l.anchor ? (
                   // Anchor link — always navigates to /#hash
                   <a
                     key={l.label}
+                    ref={(node) => registerNavItem(l.label, node)}
                     href={`/${l.anchor}`}
                     onClick={(e) => handleAnchorClick(e, l.anchor!)}
-                    className="px-3.5 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-white/[0.04] rounded-full transition-colors duration-150"
+                    className="relative z-[1] px-3.5 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground rounded-full transition-colors duration-150"
                   >
                     {l.label}
                   </a>
                 ) : (
                   <Link
                     key={l.label}
+                    ref={(node: HTMLAnchorElement | null) => registerNavItem(l.to!, node)}
                     to={l.to as "/"}
-                    className={`px-3.5 py-1.5 text-sm font-medium rounded-full transition-all duration-150 ${
+                    className={`relative z-[1] px-3.5 py-1.5 text-sm font-medium rounded-full transition-colors duration-150 ${
                       pathname === l.to
-                        ? "text-foreground bg-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
-                        : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
                     {l.label}

@@ -238,17 +238,29 @@ class Renderer:
         self._build_sprites()
 
     def _build_background(self):
-        """Heavily blurred static envelope from the source PNG."""
+        """Heavily blurred static envelope from the source PNG with border-safe zero clamping."""
         im = np.asarray(Image.open(SRC).convert("RGBA"), np.float32) / 255.0
         a = im[..., 3:4]
         premult = im[..., :3] * a
-        # Heavy blur to keep just the smooth haze/glow (no fine grain)
-        env = cv2.GaussianBlur(premult, (0, 0), 22.0,
-                               borderType=cv2.BORDER_REFLECT_101)
+        # Use BORDER_CONSTANT (zeros outside) so blur fades naturally to black
+        env = cv2.GaussianBlur(premult, (0, 0), 12.0, borderType=cv2.BORDER_CONSTANT)
         # Downscale
-        env_small = cv2.resize(env, (OUT_W, OUT_H),
-                               interpolation=cv2.INTER_AREA)
-        self.bg = (np.clip(env_small, 0, 1) * 255).astype(np.float32)
+        env_small = cv2.resize(env, (OUT_W, OUT_H), interpolation=cv2.INTER_AREA)
+
+        # Build feather ramps to ensure all 4 borders strictly fade to 0.0
+        y_ramp = np.ones((OUT_H, 1), dtype=np.float32)
+        y_ramp[:24, 0] = np.linspace(0, 1, 24)**2       # Top edge fade
+        y_ramp[-40:, 0] = np.linspace(1, 0, 40)**2      # Bottom edge fade
+
+        x_ramp = np.ones((1, OUT_W), dtype=np.float32)
+        x_ramp[0, :20] = np.linspace(0, 1, 20)**2       # Left edge fade
+        x_ramp[0, -20:] = np.linspace(1, 0, 20)**2      # Right edge fade
+
+        feathered = env_small * y_ramp[:, :, None] * x_ramp[:, :, None]
+        # Strictly clamp low background values (<= 2 out of 255) to exact 0
+        feathered[feathered < (2.0 / 255.0)] = 0.0
+
+        self.bg = (feathered * 255.0).astype(np.float32)
 
     def _build_sprites(self):
         """Pre-render a set of soft grain sprites at different sizes."""
@@ -323,6 +335,17 @@ class Renderer:
 
         # ---- render main grains ----
         self._splat_particles(frame, px, py, field.size, opac, field.color_idx)
+
+        # Strictly clean all 4 borders to pure black (0, 0, 0)
+        # Top 3 rows, bottom 3 rows, left 3 cols, right 3 cols
+        frame[:3, :] = 0
+        frame[-3:, :] = 0
+        frame[:, :3] = 0
+        frame[:, -3:] = 0
+
+        # Zero out any sub-threshold noise
+        lum = 77 * frame[:, :, 0] + 150 * frame[:, :, 1] + 29 * frame[:, :, 2]
+        frame[lum < 400] = 0
 
         return np.clip(frame, 0, 255).astype(np.uint8)
 
@@ -483,7 +506,7 @@ def track_bright_particles(curve, rng_seed, frame_indices, dt, speed_mult):
 # VIDEO ENCODING
 # ═══════════════════════════════════════════════════════════════════════════
 def encode_mp4(frames_rgb, path, fps=60):
-    """Encode list of (H,W,3) uint8 arrays to H.264 MP4."""
+    """Encode list of (H,W,3) uint8 arrays to H.264 MP4 without pipe deadlock."""
     import imageio_ffmpeg
     import subprocess
 
@@ -500,17 +523,21 @@ def encode_mp4(frames_rgb, path, fps=60):
         "-movflags", "+faststart",
         path,
     ]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-    for f in frames_rgb:
-        proc.stdin.write(f.tobytes())
-    proc.stdin.close()
-    _, err = proc.communicate()
-    if proc.returncode != 0:
-        print(f"FFmpeg error:\n{err.decode()}", file=sys.stderr)
+    log_path = os.path.join(DIAG_DIR, "ffmpeg_encode.log")
+    with open(log_path, "w", encoding="utf-8") as err_log:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err_log)
+        for f in frames_rgb:
+            proc.stdin.write(f.tobytes())
+        proc.stdin.close()
+        ret = proc.wait()
+
+    if ret != 0:
+        with open(log_path, "r", encoding="utf-8") as err_log:
+            err = err_log.read()
+        print(f"FFmpeg error:\n{err}", file=sys.stderr)
         sys.exit(1)
     sz = os.path.getsize(path) / 1e6
-    print(f"  Video → {path}  ({sz:.2f} MB, {len(frames_rgb)} frames, "
-          f"{fps} FPS)", file=sys.stderr)
+    print(f"  Video → {path}  ({sz:.2f} MB, {len(frames_rgb)} frames, {fps} FPS)", file=sys.stderr)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -603,12 +630,10 @@ def main():
             "-i", args.out_mp4,
             "-c:v", "libvpx-vp9",
             "-pix_fmt", "yuv420p",
-            "-b:v", "1800k",
-            "-minrate", "800k",
-            "-maxrate", "3000k",
-            "-crf", "28",
-            "-speed", "4",
-            "-row-mt", "1",
+            "-crf", "30",
+            "-b:v", "0",
+            "-deadline", "realtime",
+            "-cpu-used", "8",
             args.out_webm,
         ]
         subprocess.run(cmd_webm, check=True)

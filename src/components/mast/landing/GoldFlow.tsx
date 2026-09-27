@@ -218,8 +218,6 @@ export function GoldFlow({
               width: `${FLOW_WIDTH_PCT}%`,
               height: "auto",
               aspectRatio: FLOW_ASPECT_RATIO,
-              transformOrigin: "0 0",
-              transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
             }}
           >
             {prefersReducedMotion || videoFailed ? (
@@ -234,6 +232,8 @@ export function GoldFlow({
                   filter: FLOW_FILTER,
                   WebkitMaskImage: FLOW_TOP_MASK,
                   maskImage: FLOW_TOP_MASK,
+                  transformOrigin: "0 0",
+                  transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
                 }}
               />
             ) : (
@@ -254,6 +254,19 @@ export function GoldFlow({
                   mixBlendMode: "screen",
                   WebkitMaskImage: FLOW_TOP_MASK,
                   maskImage: FLOW_TOP_MASK,
+                  // Rotation lives here (on the blended element itself) rather
+                  // than on an ancestor wrapper. A `transform` on an ancestor
+                  // establishes a NEW stacking context, which isolates
+                  // mix-blend-mode so it only blends against that empty
+                  // wrapper (transparent) instead of the real hero background
+                  // behind it — the opaque black video background then paints
+                  // as a visible dark/gold rectangle instead of vanishing.
+                  // Keeping the transform on the video itself avoids creating
+                  // that isolating ancestor, so "screen" correctly blends
+                  // against GroundSurface/atmosphere behind it and black
+                  // reads as fully transparent.
+                  transformOrigin: "0 0",
+                  transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
                 }}
               >
                 <source src={FLOW_VIDEO_MP4} type="video/mp4" />
@@ -270,6 +283,8 @@ export function GoldFlow({
                     filter: FLOW_FILTER,
                     WebkitMaskImage: FLOW_TOP_MASK,
                     maskImage: FLOW_TOP_MASK,
+                    transformOrigin: "0 0",
+                    transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
                   }}
                 />
               </video>

@@ -107,6 +107,8 @@ export function GlobeStand({
         alt=""
         aria-hidden="true"
         draggable={false}
+        fetchPriority="high"
+        loading="eager"
         className="pointer-events-none relative z-10 h-full w-full select-none object-contain"
       />
 

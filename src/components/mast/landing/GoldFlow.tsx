@@ -97,7 +97,7 @@
  * cut.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const FLOW_ASSET_ANIMATED = "/images/mast-gold-flow-animated.webp";
 const FLOW_ASSET_STATIC = "/images/mast-gold-flow.png";
@@ -123,9 +123,12 @@ const FLOW_FILTER = "brightness(0.9) contrast(0.82) saturate(1.05)";
 type Frame = { x: number; y: number; w: number; h: number };
 
 export function GoldFlow({
-  pedestalAnchorRef,
+  globeBox,
 }: {
-  pedestalAnchorRef: RefObject<HTMLDivElement | null>;
+  // The globe's own box, measured once by Hero via useGlobeBox and shared
+  // with GroundSurface — see that hook for why this replaced GoldFlow's own
+  // resize/fonts-ready measurement of the same element.
+  globeBox: DOMRect | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [frame, setFrame] = useState<Frame | null>(null);
@@ -143,48 +146,27 @@ export function GoldFlow({
 
   useLayoutEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || !globeBox) return;
 
-    // The pedestal marker is a direct child of GlobeStand's root box, which is
-    // exactly the globe asset's box — so its parent IS the globe frame.
-    const globeBox = () => pedestalAnchorRef.current?.parentElement ?? null;
+    const c = container.getBoundingClientRect();
+    const nextX = globeBox.left - c.left;
+    const nextY = globeBox.top - c.top;
+    const nextW = globeBox.width;
+    const nextH = globeBox.height;
 
-    const measure = () => {
-      const box = globeBox();
-      if (!box) return;
-      const c = container.getBoundingClientRect();
-      const b = box.getBoundingClientRect();
-      const nextX = b.left - c.left;
-      const nextY = b.top - c.top;
-      const nextW = b.width;
-      const nextH = b.height;
-
-      setFrame((prev) => {
-        if (
-          prev &&
-          Math.abs(prev.x - nextX) < 0.5 &&
-          Math.abs(prev.y - nextY) < 0.5 &&
-          Math.abs(prev.w - nextW) < 0.5 &&
-          Math.abs(prev.h - nextH) < 0.5
-        ) {
-          return prev;
-        }
-        return { x: nextX, y: nextY, w: nextW, h: nextH };
-      });
-    };
-
-    measure();
-
-    // Responsive breakpoints are driven by window resizing; no continuous
-    // ResizeObserver is needed, preventing layout thrashing and observer churn.
-    window.addEventListener("resize", measure, { passive: true });
-    // Fonts finishing their swap can shift the globe column slightly on first load.
-    document.fonts?.ready?.then(measure).catch(() => {});
-
-    return () => {
-      window.removeEventListener("resize", measure);
-    };
-  }, [pedestalAnchorRef]);
+    setFrame((prev) => {
+      if (
+        prev &&
+        Math.abs(prev.x - nextX) < 0.5 &&
+        Math.abs(prev.y - nextY) < 0.5 &&
+        Math.abs(prev.w - nextW) < 0.5 &&
+        Math.abs(prev.h - nextH) < 0.5
+      ) {
+        return prev;
+      }
+      return { x: nextX, y: nextY, w: nextW, h: nextH };
+    });
+  }, [globeBox]);
 
   return (
     <div

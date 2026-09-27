@@ -101,12 +101,13 @@ export const queryKeys = {
   opsHistory: (rangeHours: number) => ["mast", "ops", "history", rangeHours] as const,
 };
 
-export function useMe() {
+export function useMe(enabled = true) {
   return useQuery({
     queryKey: queryKeys.me,
     queryFn: getMe,
     retry: false,
     staleTime: 60_000,
+    enabled,
   });
 }
 

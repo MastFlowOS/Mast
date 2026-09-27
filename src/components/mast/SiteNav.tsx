@@ -35,8 +35,36 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
 
-  // Auth state — read from React Query cache (populated by /api/me on app init)
-  const { data: auth, isLoading: authLoading } = useMe();
+  // Auth state — read from React Query cache (populated by /api/me).
+  // SiteNav is only ever rendered on public marketing routes (landing,
+  // pricing, terms, privacy, refunds, security, status) — anonymous
+  // visitors don't need auth-gating for first paint, so the request is
+  // deferred until the browser is idle instead of firing immediately on
+  // mount. This keeps it from competing with hero-critical work (fonts,
+  // the globe image) without changing the Login/Logout/Focus behavior:
+  // the existing skeleton below covers the brief window before it
+  // resolves, exactly as it already did while the request was in flight.
+  const [meEnabled, setMeEnabled] = useState(false);
+  useEffect(() => {
+    const win = window as typeof window & {
+      requestIdleCallback?: (cb: () => void) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof win.requestIdleCallback === "function") {
+      const handle = win.requestIdleCallback(() => setMeEnabled(true));
+      return () => win.cancelIdleCallback?.(handle);
+    }
+    const timeout = setTimeout(() => setMeEnabled(true), 200);
+    return () => clearTimeout(timeout);
+  }, []);
+
+  const { data: auth, isLoading: meIsLoading } = useMe(meEnabled);
+  // While the query is deliberately not yet enabled, React Query reports
+  // isLoading as false (it isn't fetching) — but the nav still doesn't
+  // know the real auth state yet, so treat that window as loading too.
+  // Otherwise the unauthenticated markup would flash before swapping to
+  // the authenticated one once the deferred request resolves.
+  const authLoading = !meEnabled || meIsLoading;
   const user = auth?.user ?? null;
   const logout = useLogout();
 

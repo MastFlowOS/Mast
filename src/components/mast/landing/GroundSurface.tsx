@@ -151,8 +151,13 @@ type Measure = {
 
 export function GroundSurface({
   pedestalAnchorRef,
+  globeBox,
 }: {
   pedestalAnchorRef: RefObject<HTMLDivElement | null>;
+  // The globe's own box, measured once by Hero via useGlobeBox and shared
+  // with GoldFlow, instead of this component separately re-deriving it from
+  // `anchor.parentElement` on every resize/fonts-ready pass.
+  globeBox: DOMRect | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [m, setM] = useState<Measure | null>(null);
@@ -169,11 +174,9 @@ export function GroundSurface({
       const x = anchorRect.left - containerRect.left;
       const y = anchorRect.top - containerRect.top;
 
-      // PHASE 5A — the pedestal marker's parent IS the globe box (see
-      // GoldFlow's globeBox() helper for the same trick), so its measured
-      // width/height is what FLOW_LANDING_OFFSET_*_PCT above are percentages
-      // of.
-      const globeBox = anchor.parentElement?.getBoundingClientRect() ?? null;
+      // PHASE 5A — width/height below are what FLOW_LANDING_OFFSET_*_PCT
+      // above are percentages of; globeBox now comes from the shared
+      // useGlobeBox measurement in Hero rather than being re-derived here.
       const glowX = globeBox ? x + (FLOW_LANDING_OFFSET_X_PCT / 100) * globeBox.width : null;
       const glowY = globeBox ? y + (FLOW_LANDING_OFFSET_Y_PCT / 100) * globeBox.height : null;
       const glowW = globeBox ? globeBox.width * FLOOR_GLOW_WIDTH_FACTOR : null;
@@ -203,7 +206,7 @@ export function GroundSurface({
       resizeObserver.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [pedestalAnchorRef]);
+  }, [pedestalAnchorRef, globeBox]);
 
   // Single-frame fallback before the first measurement.
   const left = m ? `${m.x}px` : "68%";

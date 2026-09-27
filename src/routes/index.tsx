@@ -7,6 +7,7 @@ import { GlobeStand } from "@/components/mast/landing/GlobeStand";
 import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast/landing/SectionAtmosphere";
 import { GroundSurface } from "@/components/mast/landing/GroundSurface";
 import { GoldFlow } from "@/components/mast/landing/GoldFlow";
+import { useGlobeBox } from "@/hooks/use-globe-box";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -80,16 +81,20 @@ const heroStats = [
 
 function Hero() {
   const pedestalAnchorRef = useRef<HTMLDivElement>(null);
+  // Measured once here and shared with both GroundSurface and GoldFlow,
+  // instead of each independently re-deriving the same globe box on every
+  // resize/fonts-ready pass.
+  const globeBox = useGlobeBox(pedestalAnchorRef);
   return (
     <header className="relative -mt-16 pt-24 pb-14 sm:pt-26 sm:pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-x-clip">
       {/* Autonomous section-specific atmosphere: moving clouds behind Earth, stars, subtle haze */}
       <SectionAtmosphere variant="hero" />
       {/* Single ground system: one photographic floor asset, kept aligned to
           the globe's pedestal at every breakpoint via pedestalAnchorRef. */}
-      <GroundSurface pedestalAnchorRef={pedestalAnchorRef} />
+      <GroundSurface pedestalAnchorRef={pedestalAnchorRef} globeBox={globeBox} />
       {/* Static gold flow: sits above the floor, below the globe + copy (z-0 sibling,
           later in DOM than GroundSurface; the z-10 content container is above it). */}
-      <GoldFlow pedestalAnchorRef={pedestalAnchorRef} />
+      <GoldFlow globeBox={globeBox} />
       <div className="relative z-10 max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">

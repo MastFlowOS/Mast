@@ -194,10 +194,22 @@ function DashboardLayout() {
   const RAIL_WIDTH = 72;
   const SIDEBAR_WIDTH = 256; // same as the old w-64
   const sidebarWidth = isMobile ? SIDEBAR_WIDTH : (sidebarExpanded ? SIDEBAR_WIDTH : RAIL_WIDTH);
-  const labelClass = cn(
-    "whitespace-nowrap transition-opacity duration-200",
-    sidebarExpanded ? "opacity-100" : "opacity-0",
-  );
+
+  // One easing curve drives the whole rail so it reads as a single surface
+  // unfolding rather than several elements animating independently.
+  const SIDEBAR_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
+  const SIDEBAR_DURATION_MS = 340;
+
+  const labelClass = "whitespace-nowrap";
+  // Labels reveal only once the rail has visibly started widening (a short
+  // delay on expand), but drop out with zero delay on collapse — so nothing
+  // lingers mid-shrink and nothing appears before there's room for it.
+  const labelStyle: React.CSSProperties = {
+    opacity: sidebarExpanded ? 1 : 0,
+    transform: sidebarExpanded ? "translateX(0)" : "translateX(-6px)",
+    transition: `opacity 220ms ${SIDEBAR_EASE} ${sidebarExpanded ? "90ms" : "0ms"}, transform 220ms ${SIDEBAR_EASE} ${sidebarExpanded ? "90ms" : "0ms"}`,
+    pointerEvents: sidebarExpanded ? "auto" : "none",
+  };
 
   return (
     <div className="h-screen flex bg-background text-foreground overflow-hidden">
@@ -227,7 +239,7 @@ function DashboardLayout() {
         style={{
           background: "oklch(0.155 0.028 265)",
           width: sidebarWidth,
-          transition: "width 280ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 280ms ease",
+          transition: `width ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}, box-shadow ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
           boxShadow: !isMobile && sidebarExpanded
             ? "12px 0 32px -12px rgba(0,0,0,0.55)"
             : "none",
@@ -243,7 +255,7 @@ function DashboardLayout() {
             </div>
             {/* items-start: without it the flex-col stretches the wordmark to the
                 tagline's width and distorts its aspect ratio. */}
-            <div className={cn("flex flex-col items-start leading-none", labelClass)}>
+            <div className={cn("flex flex-col items-start leading-none", labelClass)} style={labelStyle}>
               <MastWordmark height={14} />
               <span className="mt-1.5 text-[9px] font-semibold tracking-[0.22em] text-muted-foreground uppercase">
                 Client Acquisition OS
@@ -322,7 +334,7 @@ function DashboardLayout() {
                       "size-4 shrink-0 transition-colors",
                       active ? "text-brand" : "text-muted-foreground",
                     )} />
-                    <span className={labelClass}>{item.label}</span>
+                    <span className={labelClass} style={labelStyle}>{item.label}</span>
                   </Link>
                 </Fragment>
               );
@@ -355,10 +367,13 @@ function DashboardLayout() {
                       "size-4 shrink-0 transition-colors",
                       opsActive ? "text-amber-400" : "text-amber-600/60",
                     )} />
-                    <span className={labelClass}>Ops</span>
-                    {sidebarExpanded && (
-                      <span className="ml-auto text-[9px] font-bold tracking-wider uppercase text-amber-600/60 border border-amber-600/30 rounded px-1 whitespace-nowrap">eng</span>
-                    )}
+                    <span className={labelClass} style={labelStyle}>Ops</span>
+                    <span
+                      className="ml-auto text-[9px] font-bold tracking-wider uppercase text-amber-600/60 border border-amber-600/30 rounded px-1 whitespace-nowrap"
+                      style={labelStyle}
+                    >
+                      eng
+                    </span>
                   </Link>
                 </>
               );
@@ -366,48 +381,78 @@ function DashboardLayout() {
           </div>
         </nav>
 
-        {/* Credits / profile — collapsed: a minimal avatar anchor only.
-            Expanded: the existing credits widget, with a compact profile
-            row folded in above it instead of a separate large card. */}
-        <div className="p-3 border-t border-border shrink-0">
-          {!sidebarExpanded ? (
-            <div className="flex justify-center">
-              <div className="size-8 rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-[11px] font-bold text-brand">
-                {initials}
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-border bg-background p-3">
-              <div className="flex items-center gap-2.5 mb-3">
-                <div className="size-8 rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-[11px] font-bold text-brand shrink-0">
+        {/* Account / usage dock — one persistent surface instead of two
+            hard-swapped layouts. The avatar (with a thin usage ring baked
+            in, so collapsed still shows something) stays put in both
+            states; only the identity text and the credits block fade and
+            collapse, on the same easing/timing as the rail width. */}
+        <div className="p-2.5 border-t border-border shrink-0">
+          <div
+            className="rounded-xl border border-border overflow-hidden"
+            style={{ background: "oklch(0.135 0.024 265)" }}
+          >
+            {/* Identity row */}
+            <div className="flex items-center gap-2.5 px-2.5 py-2">
+              <div className="relative shrink-0 size-8" title={`${creditPct}% of credits used`}>
+                {/* Thin usage ring — doubles as the "tiny usage indicator"
+                    for the collapsed rail, without needing extra height. */}
+                <div
+                  aria-hidden="true"
+                  className="absolute inset-0 rounded-full"
+                  style={{
+                    background: `conic-gradient(var(--brand) ${creditPct * 3.6}deg, var(--color-border) 0deg)`,
+                    WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
+                    mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
+                  }}
+                />
+                <div className="absolute inset-[3px] rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-[10px] font-bold text-brand">
                   {initials}
                 </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold text-foreground truncate">{user.fullName}</p>
-                  <p className="text-[10px] text-muted-foreground truncate">{planName} Plan</p>
+              </div>
+              <div className="min-w-0 overflow-hidden">
+                <p className="text-xs font-semibold text-foreground truncate" style={labelStyle}>
+                  {user.fullName}
+                </p>
+                <p className="text-[10px] text-muted-foreground truncate" style={labelStyle}>
+                  {planName} Plan
+                </p>
+              </div>
+            </div>
+
+            {/* Credits — collapses its row height (not just opacity) so the
+                rail doesn't keep reserving space for hidden content while
+                collapsed. */}
+            <div
+              className="grid"
+              style={{
+                gridTemplateRows: sidebarExpanded ? "1fr" : "0fr",
+                transition: `grid-template-rows ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
+              }}
+            >
+              <div className="overflow-hidden min-h-0">
+                <div className="px-2.5 pb-2.5 pt-0.5" style={labelStyle}>
+                  <div className="h-1 w-full bg-border rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-brand rounded-full"
+                      style={{ width: `${creditPct}%`, transition: `width 700ms ${SIDEBAR_EASE}` }}
+                    />
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between gap-2">
+                    <p className="text-[10px] text-foreground whitespace-nowrap">
+                      {credits.remaining.toLocaleString()}
+                      <span className="text-muted-foreground">/{credits.limit.toLocaleString()}</span>
+                    </p>
+                    <Link
+                      to="/dashboard/subscription"
+                      className="text-[10px] font-semibold text-brand hover:text-brand-dark transition-colors whitespace-nowrap"
+                    >
+                      Upgrade →
+                    </Link>
+                  </div>
                 </div>
               </div>
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Credits</p>
-              </div>
-              <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-brand rounded-full"
-                  style={{ width: `${creditPct}%`, transition: "width 1s cubic-bezier(0.16,1,0.3,1)" }}
-                />
-              </div>
-              <p className="mt-2 text-xs text-foreground">
-                {credits.remaining.toLocaleString()}{" "}
-                <span className="text-muted-foreground">/ {credits.limit.toLocaleString()} credits left</span>
-              </p>
-              <Link
-                to="/dashboard/subscription"
-                className="mt-3 block text-center text-[11px] font-semibold text-brand hover:text-brand-dark transition-colors"
-              >
-                Upgrade plan →
-              </Link>
             </div>
-          )}
+          </div>
         </div>
       </aside>
 

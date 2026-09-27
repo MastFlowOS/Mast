@@ -13,54 +13,52 @@
  * tuned back up once 3A.1 read as too dim. Path, scale, rotation, and
  * placement below are unchanged from Phase 3A.
  *
- * PHASE 4C / 5A — SUPERSEDED BY 5B, REMOVED. Thin SVG dash overlay traced
- * over the static PNG; read as beads travelling a wire, not dust. Replaced.
+ * PHASE 4C / 5A — SUPERSEDED BY 5B, REMOVED. These phases drove a thin SVG
+ * overlay traced over the static PNG: two, then three, stroked <path> copies
+ * of the flow's centerline with a repeating stroke-dasharray whose
+ * dashoffset was animated by CSS. That reads as beads/dashes travelling
+ * along a wire, not as dust — a tiled dash pattern is a small number of
+ * discrete repeating shapes, however small each one is drawn, and shifting
+ * it along a static path is a fundamentally different motion from a particle
+ * field advecting through space. See PHASE 5B below for the replacement.
  *
- * PHASE 5B — Animated WebP (mast-gold-flow-animated.webp), same still
- * offline-decomposed into a haze/envelope layer plus a dust texture carried
- * downstream along the flow's own traced ridge, baked into frames. Real
- * RGBA alpha, no blend tricks — but browser-side animated-WebP playback is
- * comparatively inefficient to decode, and on this page it visibly stutters
- * rather than reading as smooth drifting dust. Kept only as the
- * prefers-reduced-motion fallback (a still frame is fine there — see below).
+ * PHASE 5B — REAL GOLD-DUST FLOW. The SVG dash overlay is gone. In its place,
+ * FLOW_ASSET is now a pre-rendered, seamlessly-looping, transparent animated
+ * WebP (mast-gold-flow-animated.webp): the *same* still, offline-decomposed
+ * into a static haze/envelope and a dust texture, then the dust texture is
+ * carried downstream along the stream's own traced ridge (see
+ * scripts/generate-gold-flow-animation.py for the full method) and baked
+ * into 48 frames. So what plays back is thousands of the still's own grains
+ * continuously drifting and regrouping along the fixed S-shaped path — not a
+ * shape sliding along a line — while remaining a single <img>: still no
+ * canvas, no WebGL, no RAF, no per-particle JS, no runtime animation system
+ * of any kind. The browser just decodes and plays an animated image, exactly
+ * as it would a GIF.
  *
- * PHASE 8 — HARDWARE-ACCELERATED OPAQUE VIDEO DELIVERY VIA SCREEN BLEND.
- * The same frames as Phase 5B, rendered instead as a normal opaque 30 FPS
- * H.264/VP9 video on a pure black background, composited with
- * `mix-blend-mode: screen`. On truly pure black, screen-blending is a
- * mathematical no-op (1 - (1-d)*(1-0) = d), so black reads as fully
- * "invisible" while gold luminance adds onto the dark hero backdrop —
- * hardware video decode, so it's smooth where the WebP wasn't.
+ * PHASE 8 — TRIED, REVERTED. Swapped the animated WebP for an opaque 60 FPS
+ * H.264/VP9 video on a pure-black background, composited with
+ * `mix-blend-mode: screen` (screen-blending pure black is mathematically a
+ * no-op, so black was meant to read as "invisible"). In practice this never
+ * fully worked: lossy video compression does not preserve exact (0,0,0)
+ * black, so the whole video frame carried faint compression noise that
+ * screen-blending lightened into a visible rectangle sitting behind the
+ * globe — worse, that rectangle survives even after the blend-mode/
+ * stacking-context isolation bug (transform on an ancestor breaking the
+ * blend's backdrop) is fixed, because the noise floor itself is baked into
+ * the encoded pixels, not a compositing bug. A blend-mode illusion of
+ * transparency is strictly less reliable than real alpha. Reverted back to
+ * the Phase 5B animated WebP, which carries genuine RGBA alpha (verified
+ * fully transparent, alpha 0, at all four corners and throughout the
+ * background) — no blend trick, so no rectangle, at some cost in decode
+ * efficiency versus hardware video.
  *
- * PHASE 8 initially shipped with two compounding bugs that both showed up as
- * a visible rectangle behind the globe instead of true transparency:
- *   1. The rotation transform lived on an ancestor wrapper around the
- *      video, not on the video itself. A CSS `transform` establishes a new
- *      stacking context, which isolates mix-blend-mode: the video's "screen"
- *      blend could then only see that empty wrapper as backdrop, not the
- *      real hero background behind it — so the blend never actually
- *      happened and the opaque black painted through as a plain rectangle.
- *      Fixed by moving `transform: rotate(...)` onto the video/img elements
- *      themselves (same visual result, since they fill the wrapper exactly)
- *      so the blend now composites against the real page background.
- *   2. Even after (1), a faint rectangle remained: the encoded mp4/webm
- *      never tagged an explicit color_range, so it was ambiguous whether
- *      the black background was "limited" (16-235) or "full" (0-255) range.
- *      A decoder that guessed differently than the encoder assumed would
- *      read the intended pure-black floor as a slightly-lifted, visibly
- *      non-zero value — not because any pixel was wrong, but because the
- *      decoder didn't know which range to map it through. Fixed at the
- *      source: scripts/generate-gold-flow-video.py now tags
- *      `-color_range tv -colorspace bt709 -color_primaries bt709
- *      -color_trc bt709` on both the H.264 and VP9 encodes, removing the
- *      ambiguity so every decoder reconstructs the same true (0,0,0) black
- *      that mix-blend-mode: screen needs to disappear completely.
- *
- * REDUCED MOTION. Video autoplay is suppressed by the browser under
- * prefers-reduced-motion in some environments and is unnecessary motion
- * regardless, so a reduced-motion visitor gets the static PHASE 3A.2 PNG
- * instead — chosen via a state flag read from matchMedia, no CSS animation
- * to pause.
+ * REDUCED MOTION. Animated WebPs autoplay all their frames the moment
+ * they're decoded — there's no CSS to pause an <img>'s own animation — so
+ * respecting prefers-reduced-motion means choosing a different SRC, not
+ * stopping a running one. That's done by tracking the media query in state
+ * and swapping the <img src> between the static PHASE 3A.2 PNG (reduced
+ * motion) and the animated WebP (default) — no canvas, no RAF, nothing to
+ * hydrate beyond the one state read.
  *
  * LAYERING (see Hero in routes/index.tsx)
  *
@@ -89,21 +87,19 @@
  * FLOW_ASSET / FLOW_ASPECT_RATIO and these constants need to change.
  *
  * TRANSPARENCY
- * The static PNG is real RGBA, alpha 0 at all four corners. The video is
- * opaque pure black at those same corners/background, made to read as
- * transparent via mix-blend-mode: screen (see PHASE 8 notes above for why
- * that requires both the no-ancestor-transform rule and the explicit
- * color_range tagging to actually hold). The one exception to "the asset is
- * untouched" is the top mask below, which only dissolves the image's top few
- * percent — the stream runs off the top of the source frame, so on layouts
- * where that edge falls inside the hero (stacked mobile/tablet) it would
- * otherwise read as a flat cut.
+ * Both the static PNG and the animated WebP are real RGBA, alpha 0 at all
+ * four corners, drawn with plain normal blending — no mix-blend-mode, no
+ * chroma-key, nothing that depends on the exact color value of "background"
+ * pixels. The one exception to "the asset is untouched" is the top mask
+ * below, which only dissolves the image's top few percent — the stream runs
+ * off the top of the source frame, so on layouts where that edge falls
+ * inside the hero (stacked mobile/tablet) it would otherwise read as a flat
+ * cut.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
-const FLOW_VIDEO_MP4 = "/images/mast-gold-flow-animated.mp4";
-const FLOW_VIDEO_WEBM = "/images/mast-gold-flow-animated.webm";
+const FLOW_ASSET_ANIMATED = "/images/mast-gold-flow-animated.webp";
 const FLOW_ASSET_STATIC = "/images/mast-gold-flow.png";
 // Natural asset proportions (1536 x 1024 px) — 1.5 aspect ratio.
 const FLOW_ASPECT_RATIO = "1536 / 1024";
@@ -132,9 +128,7 @@ export function GoldFlow({
   pedestalAnchorRef: RefObject<HTMLDivElement | null>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const [frame, setFrame] = useState<Frame | null>(null);
-  const [videoFailed, setVideoFailed] = useState(false);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   useEffect(() => {
@@ -146,14 +140,6 @@ export function GoldFlow({
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);
   }, []);
-
-  useEffect(() => {
-    if (!prefersReducedMotion && !videoFailed && videoRef.current) {
-      videoRef.current.play().catch(() => {
-        // Autoplay rejection or codec error falls back cleanly
-      });
-    }
-  }, [prefersReducedMotion, videoFailed]);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -215,9 +201,8 @@ export function GoldFlow({
         >
           <div
             // Flow box: identical left/top/width the image alone has always
-            // carried. No transform here — see PHASE 8 note (1) above for
-            // why rotation must live on the media element itself, not this
-            // wrapper, when that element also carries mix-blend-mode.
+            // carried. The top mask lives here so it dissolves whichever
+            // asset below resolves to.
             className="pointer-events-none absolute block"
             style={{
               left: `${FLOW_LEFT_PCT}%`,
@@ -227,64 +212,21 @@ export function GoldFlow({
               aspectRatio: FLOW_ASPECT_RATIO,
             }}
           >
-            {prefersReducedMotion || videoFailed ? (
-              <img
-                src={FLOW_ASSET_STATIC}
-                alt=""
-                draggable={false}
-                decoding="async"
-                className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
-                style={{
-                  opacity: FLOW_OPACITY,
-                  filter: FLOW_FILTER,
-                  WebkitMaskImage: FLOW_TOP_MASK,
-                  maskImage: FLOW_TOP_MASK,
-                  transformOrigin: "0 0",
-                  transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
-                }}
-              />
-            ) : (
-              <video
-                ref={videoRef}
-                autoPlay
-                muted
-                loop
-                playsInline
-                preload="auto"
-                aria-hidden="true"
-                draggable={false}
-                onError={() => setVideoFailed(true)}
-                className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none object-cover"
-                style={{
-                  opacity: FLOW_OPACITY,
-                  filter: FLOW_FILTER,
-                  mixBlendMode: "screen",
-                  WebkitMaskImage: FLOW_TOP_MASK,
-                  maskImage: FLOW_TOP_MASK,
-                  transformOrigin: "0 0",
-                  transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
-                }}
-              >
-                <source src={FLOW_VIDEO_MP4} type="video/mp4" />
-                <source src={FLOW_VIDEO_WEBM} type='video/webm; codecs="vp9"' />
-                {/* Fallback for browsers that do not support video */}
-                <img
-                  src={FLOW_ASSET_STATIC}
-                  alt=""
-                  draggable={false}
-                  decoding="async"
-                  className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
-                  style={{
-                    opacity: FLOW_OPACITY,
-                    filter: FLOW_FILTER,
-                    WebkitMaskImage: FLOW_TOP_MASK,
-                    maskImage: FLOW_TOP_MASK,
-                    transformOrigin: "0 0",
-                    transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
-                  }}
-                />
-              </video>
-            )}
+            <img
+              src={prefersReducedMotion ? FLOW_ASSET_STATIC : FLOW_ASSET_ANIMATED}
+              alt=""
+              draggable={false}
+              decoding="async"
+              className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
+              style={{
+                opacity: FLOW_OPACITY,
+                filter: FLOW_FILTER,
+                WebkitMaskImage: FLOW_TOP_MASK,
+                maskImage: FLOW_TOP_MASK,
+                transformOrigin: "0 0",
+                transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
+              }}
+            />
           </div>
         </div>
       )}

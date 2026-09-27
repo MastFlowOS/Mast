@@ -207,17 +207,6 @@ def main():
         "-tune", "film",
         "-movflags", "+faststart",
         "-g", str(int(args.fps)),
-        # Explicitly tag limited (tv/mpeg) range + BT.709 primaries/matrix in
-        # the bitstream's VUI parameters. Without this the stream was leaving
-        # color_range as "unspecified": most decoders default to limited
-        # range for H.264 in that case, but not all do, and a decoder that
-        # guesses "full" instead will read our Y=16 black floor as RGB~16 —
-        # a faint but visible rectangle where "invisible" black should be.
-        # Tagging it removes the guess entirely.
-        "-color_range", "tv",
-        "-colorspace", "bt709",
-        "-color_primaries", "bt709",
-        "-color_trc", "bt709",
         args.out_mp4,
     ]
 
@@ -264,10 +253,6 @@ def main():
             "-crf", "28",
             "-speed", "4",
             "-row-mt", "1",
-            "-color_range", "tv",
-            "-colorspace", "bt709",
-            "-color_primaries", "bt709",
-            "-color_trc", "bt709",
             args.out_webm,
         ]
         subprocess.run(cmd_webm, check=True)

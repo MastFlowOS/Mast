@@ -68,20 +68,44 @@ SRC = os.path.join(ROOT, "public", "images", "mast-gold-flow.png")
 OUT = os.path.join(ROOT, "public", "images", "mast-gold-flow-animated.webp")
 
 # ---- timing ---------------------------------------------------------------
-# 24 frames / 6.4s (3.75 fps), scale 0.5 (768x1024→768x512 output) —
-# LANDING PERFORMANCE PHASE 1: dropped from the original 48 frames @ native
-# 1536x1024 after profiling showed the main-thread WebP decode cost of that
-# asset (64 ImageDecodeTask events, 4.84s cumulative, one decode as long as
-# 910ms) was the primary cause of scroll jank on the landing page. Content
-# is soft, diffuse dust, not a sharp-edged animation, so the eye doesn't
-# need a high frame rate or full resolution to read it as smooth motion —
-# and each frame here is a full new render + a real decode cost in the
-# browser, not a cheap inter-frame delta. See landing-performance-phase1.md.
+# PHASE 9 — MOTION-BLUR SMOOTHING. Phase 1's 24 frames / 3.75 fps fixed the
+# decode-cost jank but is slow enough that the fine dust grain visibly steps
+# from frame to frame instead of drifting — at 267ms/frame, a ~13px-per-frame
+# shift on high-frequency texture reads as discrete jumps, not flow. Two
+# independent levers fix that read without undoing Phase 1:
+#
+#   1. N_FRAMES 24 -> 32 (fps 3.75 -> 5.0). Pixel-frames (frames x output
+#      pixels) go from 9.4M to 12.6M — still ~6x below the 75.5M of the
+#      original 48-frames-@-native-1536x1024 version that actually caused
+#      the scroll jank (that version was 4x the pixels AND 2x the frames of
+#      today's baseline; this change only takes the frame factor, not the
+#      resolution factor, so decode cost grows ~33%, nowhere near back to
+#      the jank threshold profiling found).
+#   2. MOTION_BLUR_SAMPLES: each output frame is now the average of several
+#      renders spread across a shutter window around its nominal phi (see
+#      render_frame_blurred), exactly like a camera's motion blur is the
+#      sensor integrating light over the time the shutter is open. This is
+#      pure offline compute — it costs render time, not decode time or file
+#      structure — and it's what actually removes the stepping: instead of
+#      each frame being one sharp instant 267ms apart, each frame already
+#      contains the in-between motion, so consecutive frames overlap and the
+#      eye reads continuous drift instead of a slideshow.
+#
+# LOOP_SECONDS is unchanged, so the loop still closes seamlessly (see
+# render_frame_blurred for how the shutter wraps at the phi=0/1 seam).
 # --frames / --scale below can override these for one-off experiments
 # without touching what a plain, no-args invocation regenerates.
 LOOP_SECONDS = 6.4
-N_FRAMES = 24
+N_FRAMES = 32
 FPS = N_FRAMES / LOOP_SECONDS
+
+# Motion-blur shutter: each output frame averages this many renders spread
+# across MOTION_BLUR_SHUTTER of one inter-frame gap (1.0 = full gap, no dead
+# time between shutters; <1.0 leaves a gap so motion still reads as distinct
+# per-frame steps instead of one continuous smear). 3 samples over ~0.7 of a
+# gap softens the step without turning the dust into mush.
+MOTION_BLUR_SAMPLES = 3
+MOTION_BLUR_SHUTTER = 0.7
 
 # ---- flow -----------------------------------------------------------------
 # The stream's TRUE ridge is traced from the still itself: a minimum-cost path
@@ -112,8 +136,13 @@ ORB_FREEZE_IN = 0.55       # xr: dust fully frozen inside this radius
 ORB_FREEZE_OUT = 2.1       # xr: dust flows fully normally beyond this radius
 
 # ---- encode ---------------------------------------------------------------
-WEBP_QUALITY = 50
-WEBP_ALPHA_QUALITY = 60
+# PHASE 9: nudged up from 50/60. Motion-blurred frames have less high-frequency
+# noise per frame than the old sharp-instant renders (blur is a low-pass in
+# time, and it also softens fine detail in space slightly), so they compress
+# more efficiently at a given quality — this bump buys back cleaner-looking
+# grain without giving back all of that headroom in file size.
+WEBP_QUALITY = 60
+WEBP_ALPHA_QUALITY = 68
 WEBP_METHOD = 6
 RNG = np.random.default_rng(5150)
 
@@ -401,6 +430,32 @@ class Renderer:
         return rgb, a
 
 
+def render_frame_blurred(r, phi, n_frames, samples=MOTION_BLUR_SAMPLES, shutter=MOTION_BLUR_SHUTTER):
+    """One output frame = the average of several Renderer.frame() renders
+    spread across a shutter window centred on phi, in premultiplied RGBA —
+    the same math a camera sensor does by integrating light while its
+    shutter is open, which is what turns a series of sharp instants into
+    continuous-looking motion.
+
+    Sub-sample phis are wrapped with `% 1.0`, so a window that straddles the
+    phi=0/1 seam (e.g. the very first or last output frame) blends across
+    the loop point using the *other* end of the loop's own motion — exactly
+    what should happen, since the loop is seamless: the content just before
+    phi=1 is the same continuous flow as the content just after phi=0.
+    """
+    if samples <= 1:
+        return r.frame(phi)
+    gap = 1.0 / n_frames
+    offsets = (np.linspace(-0.5, 0.5, samples) * gap * shutter)
+    rgb_sum = 0.0
+    a_sum = 0.0
+    for off in offsets:
+        rgb, a = r.frame(float(np.mod(phi + off, 1.0)))
+        rgb_sum = rgb_sum + rgb
+        a_sum = a_sum + a
+    return rgb_sum / samples, a_sum / samples
+
+
 def to_rgba8(rgb, a):
     with np.errstate(divide="ignore", invalid="ignore"):
         col = np.where(a > 1.0 / 512, rgb / np.maximum(a, 1e-6), 0)
@@ -415,6 +470,8 @@ def main():
     ap.add_argument("--alpha-quality", type=int, default=WEBP_ALPHA_QUALITY)
     ap.add_argument("--scale", type=float, default=0.5, help="output scale (1.0 = native 1536x1024)")
     ap.add_argument("--frames", type=int, default=N_FRAMES, help="frame count (overrides N_FRAMES for this run only; loop length stays LOOP_SECONDS, so fps is recomputed)")
+    ap.add_argument("--blur-samples", type=int, default=MOTION_BLUR_SAMPLES, help="renders averaged per output frame for motion blur (1 = off, matches pre-Phase-9 behaviour)")
+    ap.add_argument("--shutter", type=float, default=MOTION_BLUR_SHUTTER, help="fraction of one inter-frame gap the blur samples spread across")
     args = ap.parse_args()
 
     n_frames = args.frames
@@ -427,7 +484,7 @@ def main():
     if args.preview:
         phis = [k / args.preview for k in range(args.preview)]
     for i, phi in enumerate(phis):
-        rgb, a = r.frame(phi)
+        rgb, a = render_frame_blurred(r, phi, n_frames, args.blur_samples, args.shutter)
         img = Image.fromarray(to_rgba8(rgb, a), "RGBA")
         if args.scale != 1.0:
             img = img.resize((round(img.width * args.scale), round(img.height * args.scale)), Image.LANCZOS)

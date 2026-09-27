@@ -52,6 +52,20 @@
  * background) — no blend trick, so no rectangle, at some cost in decode
  * efficiency versus hardware video.
  *
+ * PHASE 9 — MOTION-BLUR SMOOTHING. The Phase 5B asset played back stiff: it
+ * was baked at 24 frames / 3.75 fps (a Phase-1 performance cut from the
+ * original 48-frames-@-native-resolution version, which caused real scroll
+ * jank), and at that rate the fine dust grain visibly steps between frames
+ * instead of drifting. Fixed entirely offline, in
+ * scripts/generate-gold-flow-animation.py: frame count went to 32 (5 fps,
+ * still ~6x fewer pixel-frames than the version that caused the original
+ * jank) and each output frame is now the average of several renders spread
+ * across a small shutter window (real motion blur, the same thing a camera
+ * does), which removes the stepping without smearing the flow into mush.
+ * Still a single autoplaying <img>, same FLOW_ASSET_ANIMATED path, same
+ * file format and loop mechanism — nothing here or in the DOM changed, only
+ * the bytes of the asset itself.
+ *
  * REDUCED MOTION. Animated WebPs autoplay all their frames the moment
  * they're decoded — there's no CSS to pause an <img>'s own animation — so
  * respecting prefers-reduced-motion means choosing a different SRC, not

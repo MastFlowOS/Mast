@@ -9,6 +9,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { MastWordmark } from "@/components/mast/MastWordmark";
 import { useAccount, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
 import { useNavIndicator } from "@/hooks/use-nav-indicator";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { DevPlanSwitcher } from "@/components/mast/DevPlanSwitcher";
 import {
   Crosshair, Search, Kanban, Bell, Settings, LogOut, X,
@@ -52,6 +53,11 @@ function DashboardLayout() {
   const user    = auth?.user ?? null;
   const { data: account } = useAccount(!!user);
   const logout  = useLogout();
+
+  // ── Sidebar rail (desktop/tablet only — mobile keeps the original
+  // always-expanded layout, since touch devices have no hover state) ────────
+  const isMobile = useIsMobile();
+  const [sidebarHovered, setSidebarHovered] = useState(false);
 
   // ── Auth redirect ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -181,26 +187,63 @@ function DashboardLayout() {
     return <WorkspacePausedScreen user={user} onLogout={handleLogout} />;
   }
 
+  // Collapsed icon rail vs. full-width overlay. Mobile is always "expanded"
+  // (unchanged, in-flow, full-width layout) — only desktop/tablet gets the
+  // hover-to-expand rail.
+  const sidebarExpanded = isMobile ? true : sidebarHovered;
+  const RAIL_WIDTH = 72;
+  const SIDEBAR_WIDTH = 256; // same as the old w-64
+  const sidebarWidth = isMobile ? SIDEBAR_WIDTH : (sidebarExpanded ? SIDEBAR_WIDTH : RAIL_WIDTH);
+  const labelClass = cn(
+    "whitespace-nowrap transition-opacity duration-200",
+    sidebarExpanded ? "opacity-100" : "opacity-0",
+  );
+
   return (
     <div className="h-screen flex bg-background text-foreground overflow-hidden">
 
       {/* ── Sidebar ──────────────────────────────────────────────────────── */}
       {/*
-        No overflow here — the aside is already a well-formed scroll region
-        internally (logo shrink-0 / nav flex-1 overflow-y-auto / credits
-        shrink-0). Adding another overflow-y-auto on this parent would just
-        recreate the nested-scroll-container bug one level up.
+        Desktop/tablet: a slim icon rail by default that expands into an
+        overlay on hover. The `aside` is taken out of flow (fixed) so
+        expanding it never reflows the dashboard — the spacer div below
+        reserves the rail's footprint in the flex row in its place.
+        Mobile (<768px): unchanged from before — the sidebar renders inline
+        at full width, no hover/collapse behavior (touch has no hover).
+        `overflow-hidden` on the aside clips label/branding text during the
+        width transition instead of wrapping or causing a horizontal
+        scrollbar; the nav's own overflow-y-auto still scrolls vertically.
       */}
+      {!isMobile && (
+        <div className="shrink-0" style={{ width: RAIL_WIDTH }} aria-hidden="true" />
+      )}
       <aside
-        className="w-64 shrink-0 border-r border-border flex flex-col"
-        style={{ background: "oklch(0.155 0.028 265)" }}
+        onMouseEnter={!isMobile ? () => setSidebarHovered(true) : undefined}
+        onMouseLeave={!isMobile ? () => setSidebarHovered(false) : undefined}
+        className={cn(
+          "shrink-0 border-r border-border flex flex-col overflow-hidden",
+          !isMobile && "fixed left-0 top-0 h-screen z-40",
+        )}
+        style={{
+          background: "oklch(0.155 0.028 265)",
+          width: sidebarWidth,
+          transition: "width 280ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 280ms ease",
+          boxShadow: !isMobile && sidebarExpanded
+            ? "12px 0 32px -12px rgba(0,0,0,0.55)"
+            : "none",
+        }}
       >
         {/* Logo */}
         <div className="px-5 h-16 flex items-center border-b border-border shrink-0">
-          <Link to="/" className="flex items-center">
+          <Link to="/" className="flex items-center gap-3 min-w-0">
+            {/* Compact brand mark — always present so the rail keeps a
+                clickable, recognizable anchor when collapsed. */}
+            <div className="size-8 shrink-0 rounded-lg bg-brand/15 border border-brand/30 grid place-items-center text-xs font-bold text-brand">
+              M
+            </div>
             {/* items-start: without it the flex-col stretches the wordmark to the
                 tagline's width and distorts its aspect ratio. */}
-            <div className="flex flex-col items-start leading-none">
+            <div className={cn("flex flex-col items-start leading-none", labelClass)}>
               <MastWordmark height={14} />
               <span className="mt-1.5 text-[9px] font-semibold tracking-[0.22em] text-muted-foreground uppercase">
                 Client Acquisition OS
@@ -218,6 +261,9 @@ function DashboardLayout() {
             <nav relative>          ← positioned ancestor for the absolute indicator
               <indicator absolute>  ← translated by safeIdx; accounts for p-3 offset
               <div space-y p-3>     ← normal-flow items; items start at 12px from nav top
+          The rail/expanded states share the same item order and heights, so
+          the indicator's top/height never need to be remeasured on hover —
+          only the row's width changes.
         */}
         <nav ref={(el) => setNavContainer(el)} className="relative flex-1 overflow-y-auto">
           {/* Gliding indicator — positioned to match the p-3 item container */}
@@ -270,12 +316,13 @@ function DashboardLayout() {
                         : "text-muted-foreground hover:text-foreground",
                     )}
                     style={{ height: `${ITEM_H}px` }}
+                    title={sidebarExpanded ? undefined : item.label}
                   >
                     <item.icon className={cn(
                       "size-4 shrink-0 transition-colors",
                       active ? "text-brand" : "text-muted-foreground",
                     )} />
-                    {item.label}
+                    <span className={labelClass}>{item.label}</span>
                   </Link>
                 </Fragment>
               );
@@ -302,13 +349,16 @@ function DashboardLayout() {
                         : "text-amber-600/60 hover:text-amber-400",
                     )}
                     style={{ height: `${ITEM_H}px` }}
+                    title={sidebarExpanded ? undefined : "Ops"}
                   >
                     <Bug className={cn(
                       "size-4 shrink-0 transition-colors",
                       opsActive ? "text-amber-400" : "text-amber-600/60",
                     )} />
-                    Ops
-                    <span className="ml-auto text-[9px] font-bold tracking-wider uppercase text-amber-600/60 border border-amber-600/30 rounded px-1">eng</span>
+                    <span className={labelClass}>Ops</span>
+                    {sidebarExpanded && (
+                      <span className="ml-auto text-[9px] font-bold tracking-wider uppercase text-amber-600/60 border border-amber-600/30 rounded px-1 whitespace-nowrap">eng</span>
+                    )}
                   </Link>
                 </>
               );
@@ -316,30 +366,48 @@ function DashboardLayout() {
           </div>
         </nav>
 
-        {/* Credits widget */}
+        {/* Credits / profile — collapsed: a minimal avatar anchor only.
+            Expanded: the existing credits widget, with a compact profile
+            row folded in above it instead of a separate large card. */}
         <div className="p-3 border-t border-border shrink-0">
-          <div className="rounded-xl border border-border bg-background p-4">
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Credits</p>
-              <span className="text-[10px] font-bold text-brand">{planName}</span>
+          {!sidebarExpanded ? (
+            <div className="flex justify-center">
+              <div className="size-8 rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-[11px] font-bold text-brand">
+                {initials}
+              </div>
             </div>
-            <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
-              <div
-                className="h-full bg-brand rounded-full"
-                style={{ width: `${creditPct}%`, transition: "width 1s cubic-bezier(0.16,1,0.3,1)" }}
-              />
+          ) : (
+            <div className="rounded-xl border border-border bg-background p-3">
+              <div className="flex items-center gap-2.5 mb-3">
+                <div className="size-8 rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-[11px] font-bold text-brand shrink-0">
+                  {initials}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-foreground truncate">{user.fullName}</p>
+                  <p className="text-[10px] text-muted-foreground truncate">{planName} Plan</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Credits</p>
+              </div>
+              <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-brand rounded-full"
+                  style={{ width: `${creditPct}%`, transition: "width 1s cubic-bezier(0.16,1,0.3,1)" }}
+                />
+              </div>
+              <p className="mt-2 text-xs text-foreground">
+                {credits.remaining.toLocaleString()}{" "}
+                <span className="text-muted-foreground">/ {credits.limit.toLocaleString()} credits left</span>
+              </p>
+              <Link
+                to="/dashboard/subscription"
+                className="mt-3 block text-center text-[11px] font-semibold text-brand hover:text-brand-dark transition-colors"
+              >
+                Upgrade plan →
+              </Link>
             </div>
-            <p className="mt-2 text-xs text-foreground">
-              {credits.remaining.toLocaleString()}{" "}
-              <span className="text-muted-foreground">/ {credits.limit.toLocaleString()} credits left</span>
-            </p>
-            <Link
-              to="/dashboard/subscription"
-              className="mt-3 block text-center text-[11px] font-semibold text-brand hover:text-brand-dark transition-colors"
-            >
-              Upgrade plan →
-            </Link>
-          </div>
+          )}
         </div>
       </aside>
 

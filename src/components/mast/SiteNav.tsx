@@ -52,9 +52,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
     return pathname === "/" ? "features" : null;
   });
 
-  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
-  const targetKey = hoveredKey ?? activeKey;
-
+  // Active tracking for the floating pill (moves only when selecting a choice)
   const navLinksRef = useRef<HTMLDivElement>(null);
   const [pillStyle, setPillStyle] = useState({ x: 0, y: 0, width: 0, height: 0, opacity: 0 });
   const pillMounted = useRef(false);
@@ -77,27 +75,39 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
     }
   }, [pathname]);
 
+  const isClickScrollingRef = useRef(false);
+  const clickScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Scroll spy on home page: update activeKey as sections scroll into view
   useEffect(() => {
     if (pathname !== "/") return;
 
     let ticking = false;
     const handleScrollSpy = () => {
+      if (isClickScrollingRef.current) return;
       if (ticking) return;
       ticking = true;
       requestAnimationFrame(() => {
         ticking = false;
+        if (isClickScrollingRef.current) return;
         const scrollY = window.scrollY;
         if (scrollY < 300) {
           setActiveKey("features");
           return;
         }
 
-        const navOffset = 180;
+        const navOffset = 200;
+        const isNearBottom =
+          window.innerHeight + window.scrollY >=
+          document.documentElement.scrollHeight - 150;
+
         const testimonialsEl = document.getElementById("testimonials");
         if (testimonialsEl) {
           const rect = testimonialsEl.getBoundingClientRect();
-          if (rect.top <= navOffset) {
+          if (
+            (rect.top <= navOffset && rect.bottom > navOffset) ||
+            isNearBottom
+          ) {
             setActiveKey("customers");
             return;
           }
@@ -106,7 +116,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
         const solutionsEl = document.getElementById("solutions");
         if (solutionsEl) {
           const rect = solutionsEl.getBoundingClientRect();
-          if (rect.top <= navOffset) {
+          if (rect.top <= navOffset && rect.bottom > navOffset) {
             setActiveKey("solutions");
             return;
           }
@@ -120,16 +130,16 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
     return () => window.removeEventListener("scroll", handleScrollSpy);
   }, [pathname]);
 
-  // Measure and position the pill behind targetKey (hovered or active)
+  // Measure and position the pill behind activeKey (selected choice)
   const measurePill = useCallback(() => {
     const container = navLinksRef.current;
-    if (!container || !targetKey) {
+    if (!container || !activeKey) {
       setPillStyle((prev) => ({ ...prev, opacity: 0 }));
       return;
     }
 
     const targetEl = container.querySelector<HTMLElement>(
-      `[data-nav-key="${targetKey}"]`,
+      `[data-nav-key="${activeKey}"]`,
     );
     if (!targetEl) return;
 
@@ -152,7 +162,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
         });
       }
     }
-  }, [targetKey]);
+  }, [activeKey]);
 
   useEffect(() => {
     measurePill();
@@ -241,6 +251,14 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
       setMobileOpen(false);
       setActiveKey(key);
 
+      if (clickScrollTimeoutRef.current) {
+        clearTimeout(clickScrollTimeoutRef.current);
+      }
+      isClickScrollingRef.current = true;
+      clickScrollTimeoutRef.current = setTimeout(() => {
+        isClickScrollingRef.current = false;
+      }, 1200);
+
       const scrollToHash = () => {
         const id = hash.replace("#", "");
         const el = document.getElementById(id);
@@ -313,10 +331,9 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
             <Logo height={22} />
             <div
               ref={navLinksRef}
-              onMouseLeave={() => setHoveredKey(null)}
               className="hidden md:flex items-center gap-1 relative"
             >
-              {/* Shared sliding pill indicator */}
+              {/* Shared sliding pill indicator — moves only to the selected choice */}
               <div
                 aria-hidden="true"
                 className="absolute rounded-full bg-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] pointer-events-none"
@@ -334,14 +351,13 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
                 }}
               />
               {links.map((l) => {
-                const isSelected = targetKey === l.key;
+                const isSelected = activeKey === l.key;
                 return l.anchor ? (
                   // Anchor link — always navigates to /#hash
                   <a
                     key={l.label}
                     data-nav-key={l.key}
                     href={`/${l.anchor}`}
-                    onMouseEnter={() => setHoveredKey(l.key)}
                     onClick={(e) => handleAnchorClick(e, l.anchor!, l.key)}
                     className={`relative z-[1] px-3.5 py-1.5 text-sm font-medium rounded-full transition-colors duration-200 ${
                       isSelected
@@ -356,11 +372,17 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
                     key={l.label}
                     data-nav-key={l.key}
                     to={l.to as "/"}
-                    onMouseEnter={() => setHoveredKey(l.key)}
                     onClick={(e) => {
                       setActiveKey(l.key);
                       if (l.key === "features" && pathname === "/") {
                         e.preventDefault();
+                        if (clickScrollTimeoutRef.current) {
+                          clearTimeout(clickScrollTimeoutRef.current);
+                        }
+                        isClickScrollingRef.current = true;
+                        clickScrollTimeoutRef.current = setTimeout(() => {
+                          isClickScrollingRef.current = false;
+                        }, 1200);
                         window.scrollTo({ top: 0, behavior: "smooth" });
                       }
                     }}

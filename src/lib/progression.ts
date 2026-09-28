@@ -1,5 +1,6 @@
 import type { FollowupWithLead, Lead } from "@/lib/api";
-import { isRelationshipLead, normalizeLeadStatus } from "@/lib/lead-workspace";
+import { normalizeLeadStatus } from "@/lib/lead-workspace";
+import { isEngagedRelationship } from "@/lib/lead-provenance";
 import type { PlanId } from "@/lib/plans";
 
 export type ProgressionMetric =
@@ -308,8 +309,9 @@ export function buildProgressionCounters(ctx: Omit<ProgressionContext, "complete
     // their workspace — manually added, imported, or a Discover result
     // they've since engaged with — not just any row in `leads` (which
     // would make this identical to `opportunities_discovered`). See
-    // `isRelationshipLead` for the exact rule and audit Priority 3.
-    relationships_created: leads.filter((lead) => isRelationshipLead(lead)).length,
+    // `isEngagedRelationship` (lead-provenance.ts) for the exact rule, which
+    // reads the real source values (`discover_*`, `manual`, `csv_import`).
+    relationships_created: leads.filter((lead) => isEngagedRelationship(lead)).length,
     meetings_booked: leadStatuses.filter((status) => status === "meeting_booked").length,
     pipeline_moves: leadStatuses.filter((status) => PIPELINE_STATUSES.has(status)).length,
     followups_completed: ctx.followups.filter((followup) => followup.status === "completed").length,

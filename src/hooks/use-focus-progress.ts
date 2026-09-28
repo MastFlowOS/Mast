@@ -12,7 +12,7 @@ import {
 import { useAwardGoalXp, useCompletedGoalIds, useGoalClaims, useXp } from "@/hooks/use-mast-api";
 import { bumpMilestoneBadge, flyXpToMilestone } from "@/lib/xp-fly";
 
-function todayKey() {
+export function todayKey() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -128,7 +128,7 @@ export function useFocusProgress(goals: FocusGoal[]) {
               setLeveledUpTier(nextMilestone.id);
               window.setTimeout(() => {
                 toast("Milestone Reached", {
-                  description: `+${goal.xp} XP. New milestone completed: ${nextMilestone.name}.`,
+                  description: `+${goal.xp} XP. You reached ${nextMilestone.name}.`,
                   duration: 6000,
                 });
                 addNotification({
@@ -136,7 +136,7 @@ export function useFocusProgress(goals: FocusGoal[]) {
                   iconColor: "text-brand",
                   iconBg: "bg-brand/10 border-brand/20",
                   title: "Milestone Reached",
-                  body: `${nextMilestone.name} completed. Rewards are being prepared.`,
+                  body: `You reached ${nextMilestone.name}.`,
                   category: "notifyAnnouncements",
                 });
               }, 200);
@@ -180,6 +180,7 @@ export function useFocusProgress(goals: FocusGoal[]) {
     isLoading: xpLoading || claimsLoading || completedLoading,
     claimGoal,
     claimedGoalIds: claimedSet,
+    claimedTodayCount: claimedToday.length,
     claimingGoalIds,
     exitingGoalIds,
     xpBumpTick,

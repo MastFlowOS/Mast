@@ -3,7 +3,6 @@ import { Link } from "@tanstack/react-router";
 import {
   ArrowRight,
   Check,
-  Radio,
   Activity,
   Compass,
 } from "lucide-react";
@@ -22,7 +21,7 @@ import {
 import { MILESTONE_XP_BADGE_ID } from "@/lib/xp-fly";
 
 export type FocusTodayContext = {
-  completedGoalsCount: number;
+  readyToClaimCount: number;
   totalGoalsCount: number;
   prioritiesCount: number;
   availableXp: number;
@@ -166,7 +165,7 @@ export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroPr
 
           {/* Primary Action Button */}
           <div className="focus-hero-action-row">
-            <Link to={recommendation.to} className="focus-hero-cta">
+            <Link to={recommendation.to} hash={recommendation.hash} className="focus-hero-cta">
               <span>{recommendation.actionLabel}</span>
               <ArrowRight className="focus-cta-arrow" aria-hidden="true" />
             </Link>
@@ -179,7 +178,6 @@ export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroPr
             {/* Today Summary Header */}
             <div className="focus-context-header">
               <span className="focus-context-title">TODAY</span>
-              <span className="focus-context-status">LIVE</span>
             </div>
 
             {/* High-level status numbers */}
@@ -187,13 +185,13 @@ export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroPr
               <div className="focus-today-stat-row">
                 <span className="focus-today-stat-label">Goals</span>
                 <span className="focus-today-stat-val">
-                  {todayContext.completedGoalsCount} of {todayContext.totalGoalsCount} completed
+                  {todayContext.readyToClaimCount} of {todayContext.totalGoalsCount} ready to claim
                 </span>
               </div>
               <div className="focus-today-stat-row">
                 <span className="focus-today-stat-label">Priorities</span>
                 <span className="focus-today-stat-val">
-                  {todayContext.prioritiesCount} in stack
+                  {todayContext.prioritiesCount} more in stack
                 </span>
               </div>
               <div className="focus-today-stat-row">
@@ -219,14 +217,6 @@ export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroPr
                   <span className="focus-metric-value">{m.value}</span>
                 </div>
               ))}
-            </div>
-
-            {/* Footer filter tag */}
-            <div className="focus-context-footer">
-              <span className="focus-footer-pill">
-                <Radio className="focus-footer-icon" aria-hidden="true" />
-                Intelligent Filter Active
-              </span>
             </div>
           </div>
         </div>
@@ -558,9 +548,11 @@ export function FocusStack({ priorities }: StackProps) {
           <h2 id="focus-stack-title" className="focus-module-title">
             FOCUS STACK
           </h2>
-          <span className="focus-module-badge">{priorities.length} PRIORITIES</span>
+          <span className="focus-module-badge">
+            {priorities.length} {priorities.length === 1 ? "PRIORITY" : "PRIORITIES"}
+          </span>
         </div>
-        <span className="focus-module-hint">Intelligently filtered</span>
+        <span className="focus-module-hint">After your top focus</span>
       </div>
 
       <div className="focus-stack-card">
@@ -584,6 +576,7 @@ export function FocusStack({ priorities }: StackProps) {
               <div className="focus-stack-action">
                 <Link
                   to={item.to}
+                  hash={item.hash}
                   className="focus-stack-link"
                   aria-label={`${item.actionLabel} for ${item.title}`}
                 >
@@ -808,11 +801,11 @@ export function FocusGoals({
       : null;
 
   return (
-    <div className="focus-goals-module" aria-labelledby="todays-goals-title">
+    <div id="focus-goals" className="focus-goals-module" aria-labelledby="todays-goals-title">
       <div className="focus-module-header">
         <div className="focus-module-title-wrap">
           <h2 id="todays-goals-title" className="focus-module-title">
-            TODAY'S GOALS
+            GOALS
           </h2>
           <span className="focus-module-badge">
             {completedCount} / {goals.length}
@@ -1117,14 +1110,17 @@ export function FocusMomentum({ events }: MomentumProps) {
     <div className="focus-momentum-module" aria-label="Recent Momentum">
       <div className="focus-module-header">
         <div className="focus-module-title-wrap">
-          <h2 className="focus-module-title">MOMENTUM</h2>
-          <span className="focus-module-badge">ACTIVITY</span>
+          <h2 className="focus-module-title">RECENT ACTIVITY</h2>
+          <span className="focus-module-badge">7 DAYS</span>
         </div>
         <Activity className="focus-module-icon" aria-hidden="true" />
       </div>
 
       <div className="focus-momentum-card">
         <div className="focus-timeline-list" role="list">
+          {events.length === 0 && (
+            <p className="focus-timeline-detail">No activity recorded in the last 7 days.</p>
+          )}
           {events.map((evt) => (
             <div key={evt.id} className="focus-timeline-item" role="listitem">
               <div className="focus-timeline-bullet" aria-hidden="true" />
@@ -1300,14 +1296,14 @@ export function FocusMilestoneJourney({
         {/* Next Unlock Box */}
         <div className="focus-unlock-box">
           <div className="focus-unlock-left">
-            <span className="focus-unlock-tag">NEXT UNLOCK</span>
+            <span className="focus-unlock-tag">NEXT TIER</span>
             <p className="focus-unlock-name">
-              {nextTier ? nextTier.reward : "Tier completed — rewards banked"}
+              {nextTier ? nextTier.name : "Top tier reached"}
             </p>
           </div>
           {nextTier && (
             <span className="focus-unlock-xp-rem">
-              {xpRemaining} XP remaining
+              {xpRemaining} XP to {nextTier.name}
             </span>
           )}
         </div>
@@ -1479,7 +1475,7 @@ export function FocusSignal({ signal }: SignalProps) {
           <h2 id="mast-signal-title" className="focus-module-title">
             MAST SIGNAL
           </h2>
-          <span className="focus-module-badge">{signal.isQuiet ? "STEADY" : "LIVE"}</span>
+          <span className="focus-module-badge">{signal.isQuiet ? "QUIET" : "SIGNAL"}</span>
         </div>
       </div>
 
@@ -1489,12 +1485,14 @@ export function FocusSignal({ signal }: SignalProps) {
           <p className="focus-signal-detail">{signal.detail}</p>
         </div>
 
-        <div className="focus-signal-action">
-          <Link to={signal.to} className="focus-signal-link">
-            <span>{signal.actionLabel}</span>
-            <ArrowRight className="focus-signal-arrow" aria-hidden="true" />
-          </Link>
-        </div>
+        {signal.to && signal.actionLabel && (
+          <div className="focus-signal-action">
+            <Link to={signal.to} className="focus-signal-link">
+              <span>{signal.actionLabel}</span>
+              <ArrowRight className="focus-signal-arrow" aria-hidden="true" />
+            </Link>
+          </div>
+        )}
       </div>
 
       <style>{`
@@ -1589,29 +1587,21 @@ export function FocusWeeklyPulse({ pulse }: WeeklyPulseProps) {
           </h2>
         </div>
         <div className="focus-pulse-momentum">
-          <span className="focus-pulse-momentum-label">Momentum</span>
-          <span className="focus-pulse-arrow">{pulse.momentum}</span>
+          <span className="focus-pulse-momentum-label">{pulse.basisLabel}</span>
         </div>
       </div>
 
       <div className="focus-pulse-card">
-        <div className="focus-pulse-grid">
-          <div className="focus-pulse-stat">
-            <span className="focus-pulse-label">Discovery</span>
-            <span className="focus-pulse-num">{pulse.discovery}</span>
-          </div>
-          <div className="focus-pulse-stat">
-            <span className="focus-pulse-label">Outreach</span>
-            <span className="focus-pulse-num">{pulse.outreach}</span>
-          </div>
-          <div className="focus-pulse-stat">
-            <span className="focus-pulse-label">Replies</span>
-            <span className="focus-pulse-num">{pulse.replies}</span>
-          </div>
-          <div className="focus-pulse-stat">
-            <span className="focus-pulse-label">Meetings</span>
-            <span className="focus-pulse-num">{pulse.meetings}</span>
-          </div>
+        <div
+          className="focus-pulse-grid"
+          style={{ gridTemplateColumns: `repeat(${pulse.tiles.length}, 1fr)` }}
+        >
+          {pulse.tiles.map((tile) => (
+            <div key={tile.label} className="focus-pulse-stat">
+              <span className="focus-pulse-label">{tile.label}</span>
+              <span className="focus-pulse-num">{tile.value}</span>
+            </div>
+          ))}
         </div>
 
         <p className="focus-pulse-summary">{pulse.summary}</p>
@@ -1703,12 +1693,18 @@ export function FocusWeeklyPulse({ pulse }: WeeklyPulseProps) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 type EmptyStateProps = {
-  goalsCompleted: number;
-  totalGoals: number;
-  xpEarned: number;
+  goalsClaimedToday: number;
+  xp: number;
+  nextTierName: string | null;
+  xpToNextTier: number;
 };
 
-export function FocusEmptyState({ goalsCompleted, totalGoals, xpEarned }: EmptyStateProps) {
+export function FocusEmptyState({
+  goalsClaimedToday,
+  xp,
+  nextTierName,
+  xpToNextTier,
+}: EmptyStateProps) {
   return (
     <section className="focus-empty-section animate-fade-in" aria-label="Command clear state">
       <div className="focus-empty-card">
@@ -1718,31 +1714,32 @@ export function FocusEmptyState({ goalsCompleted, totalGoals, xpEarned }: EmptyS
 
         <h2 className="focus-empty-heading">YOU'RE CLEAR.</h2>
 
-        <p className="focus-empty-sub">
-          Nothing urgent needs your attention right now. Your outbound queue and relationships
-          are currently in steady momentum.
-        </p>
+        <p className="focus-empty-sub">Nothing important needs your attention right now.</p>
 
         <div className="focus-empty-stats">
           <div className="focus-empty-stat">
-            <span className="focus-empty-stat-num">
-              {goalsCompleted}/{totalGoals}
-            </span>
-            <span className="focus-empty-stat-label">Goals completed</span>
+            <span className="focus-empty-stat-num">{goalsClaimedToday}</span>
+            <span className="focus-empty-stat-label">Goals claimed today</span>
           </div>
           <div className="focus-empty-stat-divider" />
           <div className="focus-empty-stat">
-            <span className="focus-empty-stat-num">+{xpEarned}</span>
-            <span className="focus-empty-stat-label">XP bank</span>
+            <span className="focus-empty-stat-num">{xp.toLocaleString()}</span>
+            <span className="focus-empty-stat-label">Total XP</span>
           </div>
+          {nextTierName && (
+            <>
+              <div className="focus-empty-stat-divider" />
+              <div className="focus-empty-stat">
+                <span className="focus-empty-stat-num">{xpToNextTier}</span>
+                <span className="focus-empty-stat-label">XP to {nextTierName}</span>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="focus-empty-actions">
           <Link to="/dashboard/leads" className="focus-empty-primary-btn">
-            Explore discoveries
-          </Link>
-          <Link to="/dashboard/pipeline" className="focus-empty-secondary-btn">
-            View pipeline
+            Discover something new →
           </Link>
         </div>
       </div>

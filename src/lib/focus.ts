@@ -1,5 +1,12 @@
 import type { FollowupWithLead, Lead } from "@/lib/api";
-import { normalizeLeadStatus } from "@/lib/lead-workspace";
+import { isDiscoveredLead, isUntouchedDiscoveredLead } from "@/lib/lead-provenance";
+import {
+  collectFocusPriorities,
+  plural,
+  selectFocusStack,
+  selectOpenFollowups,
+  type FocusPriority,
+} from "@/lib/focus-priorities";
 import type { PlanId } from "@/lib/plans";
 import {
   generateProgressionGoals,
@@ -12,15 +19,7 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type FocusRecommendation = {
-  id: string;
-  title: string;
-  description: string;
-  actionLabel: string;
-  to: string;
-  priority: number;
-  tone: "brand" | "warning" | "success" | "danger";
-};
+type Tone = "brand" | "warning" | "success" | "danger";
 
 export type FocusPrimaryRecommendation = {
   id: string;
@@ -31,7 +30,9 @@ export type FocusPrimaryRecommendation = {
   metrics: { label: string; value: string }[];
   actionLabel: string;
   to: string;
-  tone: "brand" | "warning" | "success" | "danger";
+  /** Optional in-page anchor (e.g. the Goals module). */
+  hash?: string;
+  tone: Tone;
 };
 
 export type FocusStackPriority = {
@@ -42,7 +43,8 @@ export type FocusStackPriority = {
   why: string;
   actionLabel: string;
   to: string;
-  tone: "brand" | "warning" | "success" | "danger";
+  hash?: string;
+  tone: Tone;
 };
 
 export type FocusMomentumEvent = {
@@ -50,67 +52,62 @@ export type FocusMomentumEvent = {
   delta: string;
   label: string;
   detail: string;
-  category: "milestone" | "reply" | "discover" | "xp" | "pipeline";
+  category: "milestone" | "discover" | "outreach" | "followup" | "xp";
 };
 
+/**
+ * MAST Signal. There is no anomaly detection in the app, so this is either a
+ * concrete data-backed observation or an intentional quiet state
+ * (`isQuiet`, no action).
+ */
 export type FocusMastSignal = {
   id: string;
   headline: string;
   detail: string;
-  actionLabel: string;
-  to: string;
+  actionLabel: string | null;
+  to: string | null;
   isQuiet: boolean;
 };
 
 export type FocusWeeklyPulse = {
-  discovery: number;
-  outreach: number;
-  replies: number;
-  meetings: number;
-  momentum: "↗" | "→" | "↘";
+  /** What the numbers count, e.g. "Last 7 days". */
+  basisLabel: string;
+  tiles: { label: string; value: number }[];
   summary: string;
 };
 
 export type FocusGoal = GeneratedGoal;
 
-export type WeeklyMetric = {
-  label: string;
-  value: number;
-};
-
 export type MilestoneTier = {
   id: string;
   name: string;
   xpRequired: number;
+  /** Display label only. No reward is implemented; never present it as unlocked. */
   reward: string;
 };
 
 export type FocusContext = {
   leads: Lead[];
   followups: FollowupWithLead[];
-  analytics: {
-    totalLeads: number;
-    contacted: number;
-    replied: number;
-    followupsDue: number;
-    messagesThisWeek: number;
-    replyRate: number;
-  };
   dailyDiscoverUsed: number;
   dailyDiscoverLimit: number;
+  /** Remaining monthly discovery allowance; null when unknown. */
+  monthlyRemaining: number | null;
   plan: PlanId;
   completedGoalIds: string[];
   progressionEvents: ProgressionEventTotals;
+  /** `profiles.xp`. */
+  xp: number;
+  /** Goals claimed today (from `goal_completions`). */
+  goalsClaimedToday: number;
+  /** Injectable clock for tests. */
+  now?: Date;
 };
 
 export type FocusSnapshot = {
   greeting: { period: "morning" | "afternoon" | "evening" | "night"; subtitle: string; name: string };
   primaryRecommendation: FocusPrimaryRecommendation | null;
   focusStack: FocusStackPriority[];
-  recommendations: FocusRecommendation[];
-  weeklyMetrics: WeeklyMetric[];
-  weeklySummary: string;
-  weeklyRecommendation: string;
   weeklyPulse: FocusWeeklyPulse;
   momentum: FocusMomentumEvent[];
   signal: FocusMastSignal;
@@ -119,6 +116,8 @@ export type FocusSnapshot = {
 };
 
 // ── Milestone tiers ───────────────────────────────────────────────────────────
+// `reward` strings are labels only: no reward is implemented, so the UI must
+// not present them as unlockable benefits.
 
 export const MILESTONE_TIERS: MilestoneTier[] = [
   { id: "explorer", name: "Explorer", xpRequired: 0, reward: "Unlocked at signup" },
@@ -132,70 +131,48 @@ export const MILESTONE_TIERS: MilestoneTier[] = [
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
-function startOfDay(date: Date) {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
+const DAY_MS = 86_400_000;
 
-function isToday(date: string | null | undefined) {
+function isWithinDays(date: string | null | undefined, days: number, now: Date) {
   if (!date) return false;
   const value = new Date(date);
   if (Number.isNaN(value.getTime())) return false;
-  return startOfDay(value).getTime() === startOfDay(new Date()).getTime();
+  const t = value.getTime();
+  return t <= now.getTime() && t >= now.getTime() - days * DAY_MS;
 }
 
-function isWithinDays(date: string | null | undefined, days: number) {
-  if (!date) return false;
-  const value = new Date(date);
-  if (Number.isNaN(value.getTime())) return false;
-  return value.getTime() >= Date.now() - days * 86_400_000;
+function clock(ctx: FocusContext) {
+  return ctx.now ?? new Date();
 }
 
-function daysFromToday(date: string | null | undefined) {
-  if (!date) return 999;
-  const value = new Date(date);
-  if (Number.isNaN(value.getTime())) return 999;
-  const today = startOfDay(new Date());
-  const day = startOfDay(value);
-  return Math.round((day.getTime() - today.getTime()) / 86_400_000);
+/** Mission follow-ups are a Starter+ feature; Free has none. */
+function followupsAvailable(plan: PlanId) {
+  return plan !== "free";
 }
 
-// ── Lead analysis ─────────────────────────────────────────────────────────────
+// ── Priorities (single source for hero, stack, greeting, clear state) ─────────
 
-function isUncontacted(lead: Lead) {
-  const status = normalizeLeadStatus(lead.status);
-  return (status === "discovered" || status === "ready") && !lead.lastContactedAt;
-}
-
-function isHotProposal(lead: Lead) {
-  const status = normalizeLeadStatus(lead.status);
-  return status === "proposal" || status === "negotiation";
-}
-
-function isReplyStatus(lead: Lead) {
-  const status = normalizeLeadStatus(lead.status);
-  return ["conversation", "meeting", "proposal", "negotiation", "closed_won"].includes(status);
-}
-
-function countOverdueFollowups(followups: FollowupWithLead[]) {
-  return followups.filter((f) => f.status !== "completed" && daysFromToday(f.dueAt) < 0).length;
-}
-
-function countDueTodayFollowups(followups: FollowupWithLead[]) {
-  return followups.filter((f) => f.status !== "completed" && daysFromToday(f.dueAt) === 0).length;
-}
-
-function countCompletedFollowupsToday(followups: FollowupWithLead[]) {
-  return followups.filter(
-    (f) => f.status === "completed" && isToday(f.completedAt ?? f.updatedAt),
-  ).length;
+export function buildFocusPriorities(ctx: FocusContext, goals: FocusGoal[]): FocusPriority[] {
+  const nextTier = getNextMilestone(ctx.xp);
+  return collectFocusPriorities({
+    leads: ctx.leads,
+    followups: ctx.followups,
+    goals,
+    claimedGoalIds: ctx.completedGoalIds,
+    xp: ctx.xp,
+    nextTier: nextTier ? { name: nextTier.name, xpRequired: nextTier.xpRequired } : null,
+    dailyRemaining: Math.max(0, ctx.dailyDiscoverLimit - ctx.dailyDiscoverUsed),
+    monthlyRemaining: ctx.monthlyRemaining,
+    followupsAvailable: followupsAvailable(ctx.plan),
+    now: clock(ctx),
+  });
 }
 
 // ── Greeting ──────────────────────────────────────────────────────────────────
 
-export function buildGreeting(firstName: string, ctx: FocusContext) {
-  const hour = new Date().getHours();
+export function buildGreeting(firstName: string, ctx: FocusContext, priorities?: FocusPriority[]) {
+  const now = clock(ctx);
+  const hour = now.getHours();
   let period: "morning" | "afternoon" | "evening" | "night";
 
   if (hour >= 7 && hour < 14) {
@@ -208,215 +185,53 @@ export function buildGreeting(firstName: string, ctx: FocusContext) {
     period = "night";
   }
 
-  const uncontacted = ctx.leads.filter(isUncontacted).length;
-  const overdue = countOverdueFollowups(ctx.followups);
-  const dueToday = countDueTodayFollowups(ctx.followups);
-  const recentReplies = ctx.leads.filter(
-    (l) => isReplyStatus(l) && isWithinDays(l.updatedAt, 1),
-  ).length;
-
+  const list = priorities ?? buildFocusPriorities(ctx, buildDailyGoals(ctx));
+  const top = list[0];
   let subtitle: string;
 
-  if (overdue > 0) {
-    subtitle =
-      overdue === 1
-        ? "One follow-up is overdue — let's clear it before anything else."
-        : `${overdue} follow-ups are overdue. Let's finish these before lunch.`;
-  } else if (recentReplies > 0) {
-    subtitle =
-      recentReplies === 1
-        ? "A company replied while you were away."
-        : `${recentReplies} companies replied while you were away.`;
-  } else if (uncontacted > 0) {
-    subtitle =
-      uncontacted === 1
-        ? "You have 1 opportunity waiting for outreach."
-        : `You have ${uncontacted} opportunities waiting for outreach.`;
-  } else if (dueToday + overdue > 3) {
-    subtitle = "Today looks busy — let's build some momentum.";
-  } else if (ctx.analytics.totalLeads === 0) {
-    subtitle = "Ready for another great day? Let's discover your first opportunities.";
-  } else if (ctx.analytics.messagesThisWeek === 0) {
-    subtitle = "Everything is under control. Ready to discover new opportunities?";
-  } else {
-    subtitle = "Looks like we're building momentum. What should we tackle today?";
+  switch (top?.kind) {
+    case "followup_overdue": {
+      const overdue = selectOpenFollowups(ctx.followups, ctx.leads, now).filter((f) => f.days < 0).length;
+      subtitle =
+        overdue === 1
+          ? "One follow-up is overdue. Let's clear it first."
+          : `${overdue} follow-ups are overdue. Let's start with the oldest.`;
+      break;
+    }
+    case "followup_due_today":
+      subtitle = "You have a follow-up due today.";
+      break;
+    case "schedule_followup":
+      subtitle = "You contacted a business without scheduling a follow-up.";
+      break;
+    case "silent_contact":
+      subtitle = "Some businesses you contacted have no recorded reply yet.";
+      break;
+    case "review_opportunities": {
+      const n = ctx.leads.filter(isUntouchedDiscoveredLead).length;
+      subtitle = `You have ${n} discovered ${plural(n, "opportunity", "opportunities")} waiting for outreach.`;
+      break;
+    }
+    case "goal_claim":
+      subtitle = "A completed goal is ready to claim.";
+      break;
+    case "goal_near":
+      subtitle = "You're close to finishing a goal.";
+      break;
+    case "xp_milestone":
+      subtitle = "You're close to your next milestone.";
+      break;
+    case "discover":
+      subtitle =
+        ctx.leads.length === 0
+          ? "Ready to discover your first opportunities?"
+          : "Your queue is light. Ready to find new opportunities?";
+      break;
+    default:
+      subtitle = "You're all caught up.";
   }
 
   return { period, subtitle, name: firstName };
-}
-
-// ── Recommendations ───────────────────────────────────────────────────────────
-
-export function buildRecommendations(ctx: FocusContext): FocusRecommendation[] {
-  const items: FocusRecommendation[] = [];
-  const uncontacted = ctx.leads.filter(isUncontacted).length;
-  const overdue = countOverdueFollowups(ctx.followups);
-  const dueToday = countDueTodayFollowups(ctx.followups);
-  const hotProposals = ctx.leads.filter(isHotProposal).length;
-  const recentDiscoveries = ctx.leads.filter((l) => isWithinDays(l.createdAt, 1)).length;
-  const dailyRemaining = Math.max(0, ctx.dailyDiscoverLimit - ctx.dailyDiscoverUsed);
-
-  if (uncontacted > 0) {
-    items.push({
-      id: "uncontacted",
-      title:
-        uncontacted === 1
-          ? "1 business hasn't been contacted yet."
-          : `${uncontacted} businesses haven't been contacted yet.`,
-      description: "Start outreach while these opportunities are still fresh.",
-      actionLabel: "Open Workspace",
-      to: "/dashboard/leads",
-      priority: 90,
-      tone: "brand",
-    });
-  }
-
-  if (overdue > 0) {
-    items.push({
-      id: "overdue-followups",
-      title:
-        overdue === 1
-          ? "One follow-up is overdue."
-          : `${overdue} follow-ups are overdue.`,
-      description: "Clearing these protects pipeline momentum.",
-      actionLabel: "Open Mission",
-      to: "/dashboard/follow-ups",
-      priority: 100,
-      tone: "danger",
-    });
-  } else if (dueToday > 0) {
-    items.push({
-      id: "due-today",
-      title:
-        dueToday === 1
-          ? "One follow-up is due today."
-          : `${dueToday} follow-ups are due today.`,
-      description: "Let's finish these follow-ups before lunch.",
-      actionLabel: "Open Mission",
-      to: "/dashboard/follow-ups",
-      priority: 85,
-      tone: "warning",
-    });
-  }
-
-  if (hotProposals > 0) {
-    items.push({
-      id: "hot-proposals",
-      title:
-        hotProposals === 1
-          ? "One proposal has a high chance of closing this week."
-          : `${hotProposals} proposals have a high chance of closing this week.`,
-      description: "A focused push here could move revenue forward.",
-      actionLabel: "Open Pipeline",
-      to: "/dashboard/pipeline",
-      priority: 80,
-      tone: "success",
-    });
-  }
-
-  if (dailyRemaining > 0 && recentDiscoveries < 5) {
-    items.push({
-      id: "discover",
-      title: `Discover found room for ${dailyRemaining} more opportunities today.`,
-      description: "Fresh companies similar to your best performers are waiting.",
-      actionLabel: "Review Opportunities",
-      to: "/dashboard/leads",
-      priority: 70,
-      tone: "brand",
-    });
-  }
-
-  if (ctx.analytics.replied > 0 && ctx.analytics.followupsDue > 0) {
-    items.push({
-      id: "pipeline-review",
-      title: `${ctx.analytics.replied} active conversations need your attention.`,
-      description: "Keep reply momentum going with a quick pipeline review.",
-      actionLabel: "Open Pipeline",
-      to: "/dashboard/pipeline",
-      priority: 60,
-      tone: "brand",
-    });
-  }
-
-  return items.sort((a, b) => b.priority - a.priority).slice(0, 5);
-}
-
-export function buildEmptyRecommendations(): FocusRecommendation[] {
-  return [
-    {
-      id: "all-clear",
-      title: "Everything is up to date.",
-      description: "Perfect time to discover new opportunities.",
-      actionLabel: "Discover",
-      to: "/dashboard/leads",
-      priority: 1,
-      tone: "success",
-    },
-  ];
-}
-
-// ── Weekly review ─────────────────────────────────────────────────────────────
-
-export function buildWeeklyMetrics(leads: Lead[]): WeeklyMetric[] {
-  return [
-    {
-      label: "Opportunities discovered",
-      value: leads.filter((l) => isWithinDays(l.createdAt, 7)).length,
-    },
-    {
-      label: "Outreach sent",
-      value: leads.filter((l) => isWithinDays(l.lastContactedAt, 7)).length,
-    },
-    {
-      label: "Replies received",
-      value: leads.filter((l) => isReplyStatus(l) && isWithinDays(l.updatedAt, 7)).length,
-    },
-    {
-      label: "Meetings booked",
-      value: leads.filter(
-        (l) => normalizeLeadStatus(l.status) === "meeting" && isWithinDays(l.updatedAt, 7),
-      ).length,
-    },
-    {
-      label: "Deals closed",
-      value: leads.filter(
-        (l) => normalizeLeadStatus(l.status) === "closed_won" && isWithinDays(l.updatedAt, 7),
-      ).length,
-    },
-  ];
-}
-
-export function buildWeeklyReview(ctx: FocusContext) {
-  const metrics = buildWeeklyMetrics(ctx.leads);
-  const outreach = metrics[1]?.value ?? 0;
-  const replies = metrics[2]?.value ?? 0;
-  const discovered = metrics[0]?.value ?? 0;
-  const replyRate = ctx.analytics.replyRate;
-
-  let summary: string;
-  let recommendation: string;
-
-  if (outreach >= 10 && replyRate >= 15) {
-    summary = `Excellent work this week. Your outreach consistency is strong and reply quality is improving.`;
-    recommendation = "Double down on the conversations that are already warm.";
-  } else if (outreach >= 5) {
-    summary = `Solid week — ${outreach} outreach actions logged with a ${replyRate}% reply rate.`;
-    recommendation = "A few more follow-ups today could convert interest into meetings.";
-  } else if (discovered >= 10 && outreach === 0) {
-    summary = `You've been discovering but quiet on outreach. ${discovered} new opportunities are waiting.`;
-    recommendation = "Contact five opportunities today to restart pipeline momentum.";
-  } else if (outreach === 0 && ctx.analytics.totalLeads === 0) {
-    summary = "Your week is a blank canvas — a great time to build your first pipeline.";
-    recommendation = "Discover 15 opportunities and send your first outreach today.";
-  } else if (outreach < 3) {
-    summary = "You've been quieter than usual. Small consistent actions compound fast.";
-    recommendation = "Following up with just five opportunities today could restart pipeline momentum.";
-  } else {
-    summary = `${replies} repl${replies === 1 ? "y" : "ies"} this week — steady progress on a growing pipeline.`;
-    recommendation = "Keep today's mission clear and finish what's already in motion.";
-  }
-
-  return { metrics, summary, recommendation };
 }
 
 // ── Daily goals ───────────────────────────────────────────────────────────────
@@ -455,461 +270,158 @@ export function milestoneProgress(xp: number) {
   return Math.min(100, Math.round((progress / span) * 100));
 }
 
-// ── Primary Recommendation (YOUR FOCUS Hero) ───────────────────────────────────
 
-export function buildPrimaryRecommendation(ctx: FocusContext): FocusPrimaryRecommendation | null {
-  const overdue = countOverdueFollowups(ctx.followups);
-  const dueToday = countDueTodayFollowups(ctx.followups);
-  const uncontacted = ctx.leads.filter(isUncontacted);
-  const hotProposals = ctx.leads.filter(isHotProposal);
-  const dailyRemaining = Math.max(0, ctx.dailyDiscoverLimit - ctx.dailyDiscoverUsed);
+// ── Primary Recommendation (YOUR FOCUS hero) ───────────────────────────────────
 
-  // 1. Critical Overdue Follow-ups
-  if (overdue > 0) {
-    const timeEst = Math.min(30, Math.max(4, overdue * 4));
-    return {
-      id: "overdue-followups",
-      category: "PIPELINE HEALTH",
-      headline: `Clear ${overdue} overdue follow-up${overdue > 1 ? "s" : ""}`,
-      description: "Overdue communications risk stalled conversations and relationship decay.",
-      whyNow: "Follow-up latency increases friction after 48 hours. Clearing these protects warm momentum.",
-      metrics: [
-        { label: "overdue actions", value: `${overdue}` },
-        { label: "velocity impact", value: "High" },
-        { label: "est. time", value: `~${timeEst} min` },
-      ],
-      actionLabel: "Clear follow-ups",
-      to: "/dashboard/follow-ups",
-      tone: "danger",
-    };
-  }
-
-  // 2. High-Signal Uncontacted Opportunities
-  if (uncontacted.length > 0) {
-    const count = Math.min(uncontacted.length, 3);
-    const timeEst = count * 4;
-    return {
-      id: "uncontacted-opportunities",
-      category: "HIGH-SIGNAL OUTREACH",
-      headline: `Follow up with ${count} high-signal opportunit${count === 1 ? "y" : "ies"}`,
-      description: "These businesses match your strongest recent conversion signals.",
-      whyNow: "Fresh discoveries show 3.2x higher response velocity when initial outreach occurs within the first 24 hours.",
-      metrics: [
-        { label: "opportunities", value: `${count}` },
-        { label: "recent signals", value: `${Math.min(count, 3)}` },
-        { label: "est. time", value: `~${timeEst} min` },
-      ],
-      actionLabel: "Start focus",
-      to: "/dashboard/leads",
-      tone: "brand",
-    };
-  }
-
-  // 3. Due Today Follow-ups
-  if (dueToday > 0) {
-    const timeEst = Math.min(25, Math.max(4, dueToday * 4));
-    return {
-      id: "due-today-followups",
-      category: "PIPELINE CADENCE",
-      headline: `Complete ${dueToday} follow-up${dueToday > 1 ? "s" : ""} scheduled for today`,
-      description: "Keep ongoing dialogues active before interest cools.",
-      whyNow: "Consistency compounds in outbound cycles. Timely follow-ups drive 68% of booked conversations.",
-      metrics: [
-        { label: "due today", value: `${dueToday}` },
-        { label: "priority", value: "Scheduled" },
-        { label: "est. time", value: `~${timeEst} min` },
-      ],
-      actionLabel: "Open Mission",
-      to: "/dashboard/follow-ups",
-      tone: "warning",
-    };
-  }
-
-  // 4. Hot Proposals approaching close
-  if (hotProposals.length > 0) {
-    return {
-      id: "hot-proposals",
-      category: "REVENUE VELOCITY",
-      headline: `Advance ${hotProposals.length} proposal${hotProposals.length > 1 ? "s" : ""} approaching close`,
-      description: "Active deals in proposal stage have strong conversion momentum.",
-      whyNow: "Proposals left idle for more than 5 days decrease in closing probability. A focused check-in moves revenue forward.",
-      metrics: [
-        { label: "active deals", value: `${hotProposals.length}` },
-        { label: "stage", value: "Proposal" },
-        { label: "est. time", value: "~10 min" },
-      ],
-      actionLabel: "Review Pipeline",
-      to: "/dashboard/pipeline",
-      tone: "success",
-    };
-  }
-
-  // 5. Fresh Discovery Capacity
-  if (dailyRemaining > 0) {
-    return {
-      id: "discovery-window",
-      category: "DISCOVERY WINDOW",
-      headline: "Source fresh opportunities for today's pipeline",
-      description: `Capacity available for ${dailyRemaining} curated prospects today.`,
-      whyNow: "Your daily discovery quota is primed. Sourcing top-fit businesses early keeps your outreach pipeline continuous.",
-      metrics: [
-        { label: "available slots", value: `${dailyRemaining}` },
-        { label: "profile fit", value: "Verified" },
-        { label: "est. time", value: "~5 min" },
-      ],
-      actionLabel: "Explore discoveries",
-      to: "/dashboard/leads",
-      tone: "brand",
-    };
-  }
-
-  return null;
+export function buildPrimaryRecommendation(priorities: FocusPriority[]): FocusPrimaryRecommendation | null {
+  const top = priorities[0];
+  if (!top) return null;
+  return {
+    id: top.id,
+    category: top.hero.category,
+    headline: top.hero.headline,
+    description: top.hero.description,
+    whyNow: top.hero.whyNow,
+    metrics: top.hero.metrics,
+    actionLabel: top.hero.actionLabel,
+    to: top.hero.to,
+    hash: top.hero.hash,
+    tone: top.tone,
+  };
 }
 
-// ── Focus Stack (3 Priorities) ──────────────────────────────────────────────────
+// ── Focus Stack (secondary priorities, diverse, never padded) ──────────────────
 
-export function buildFocusStack(ctx: FocusContext): FocusStackPriority[] {
-  const stack: FocusStackPriority[] = [];
-  const overdueFollowups = ctx.followups.filter((f) => f.status !== "completed" && daysFromToday(f.dueAt) < 0);
-  const dueTodayFollowups = ctx.followups.filter((f) => f.status !== "completed" && daysFromToday(f.dueAt) === 0);
-  const uncontacted = ctx.leads.filter(isUncontacted);
-  const hotProposals = ctx.leads.filter(isHotProposal);
-  const dailyRemaining = Math.max(0, ctx.dailyDiscoverLimit - ctx.dailyDiscoverUsed);
-
-  // Slot 1: Specific immediate contact or action
-  if (overdueFollowups.length > 0) {
-    const first = overdueFollowups[0];
-    const name = first.lead?.businessName || "Priority Account";
-    stack.push({
-      id: "stack-overdue",
-      number: "01",
-      title: `Follow up with ${name}`,
-      metadata: "Overdue follow-up · ~4 min",
-      why: "Clearing this keeps active relationship momentum from cooling.",
-      actionLabel: "Open Mission",
-      to: "/dashboard/follow-ups",
-      tone: "danger",
-    });
-  } else if (uncontacted.length > 0) {
-    const first = uncontacted[0];
-    const name = first.businessName || "High-Match Lead";
-    const niche = first.niche ? `${first.niche} · ` : "";
-    stack.push({
-      id: "stack-uncontacted-lead",
-      number: "01",
-      title: `Follow up with ${name}`,
-      metadata: `Strong recent signal · ${niche}~4 min`,
-      why: "Engagement velocity is highest within 48h of initial discovery.",
-      actionLabel: "Start outreach",
-      to: "/dashboard/leads",
-      tone: "brand",
-    });
-  } else if (dueTodayFollowups.length > 0) {
-    const first = dueTodayFollowups[0];
-    const name = first.lead?.businessName || "Scheduled Account";
-    stack.push({
-      id: "stack-due-today",
-      number: "01",
-      title: `Follow up with ${name}`,
-      metadata: "Scheduled for today · ~4 min",
-      why: "Scheduled touchpoint to sustain conversational engagement.",
-      actionLabel: "Open Mission",
-      to: "/dashboard/follow-ups",
-      tone: "warning",
-    });
-  } else {
-    stack.push({
-      id: "stack-discover-ready",
-      number: "01",
-      title: "Discover new opportunities",
-      metadata: `${dailyRemaining} slots available · ~5 min`,
-      why: "Sourcing fresh businesses keeps your pipeline flowing continuously.",
-      actionLabel: "Discover",
-      to: "/dashboard/leads",
-      tone: "brand",
-    });
-  }
-
-  // Slot 2: Secondary operational lever
-  if (uncontacted.length > 1) {
-    const count = uncontacted.length;
-    stack.push({
-      id: "stack-review-pool",
-      number: "02",
-      title: `Review ${count} new opportunities`,
-      metadata: `High match · ~${Math.min(15, count * 3)} min`,
-      why: "Multiple accounts have verified contact details ready for first touch.",
-      actionLabel: "Review leads",
-      to: "/dashboard/leads",
-      tone: "brand",
-    });
-  } else if (hotProposals.length > 0) {
-    const count = hotProposals.length;
-    stack.push({
-      id: "stack-proposals",
-      number: "02",
-      title: `Advance ${count} active proposal${count > 1 ? "s" : ""}`,
-      metadata: "Pipeline: Proposal stage · ~8 min",
-      why: "Timely check-in increases conversion rate across late-stage discussions.",
-      actionLabel: "Open Pipeline",
-      to: "/dashboard/pipeline",
-      tone: "success",
-    });
-  } else if (ctx.analytics.replied > 0) {
-    stack.push({
-      id: "stack-pipeline-conversations",
-      number: "02",
-      title: `Review ${ctx.analytics.replied} active conversation${ctx.analytics.replied > 1 ? "s" : ""}`,
-      metadata: "Active dialogues · ~6 min",
-      why: "Maintain quick response turnaround while prospect attention is high.",
-      actionLabel: "Open Pipeline",
-      to: "/dashboard/pipeline",
-      tone: "brand",
-    });
-  } else if (dailyRemaining > 0) {
-    stack.push({
-      id: "stack-daily-quota",
-      number: "02",
-      title: "Review daily opportunity quota",
-      metadata: `${dailyRemaining} slots remaining · ~5 min`,
-      why: "Capacity resets daily; continuous discovery compounds pipeline value.",
-      actionLabel: "Discover leads",
-      to: "/dashboard/leads",
-      tone: "brand",
-    });
-  } else {
-    stack.push({
-      id: "stack-pipeline-check",
-      number: "02",
-      title: "Review pipeline health",
-      metadata: "Pipeline overview · ~4 min",
-      why: "Audit stage movements and identify high-value conversations.",
-      actionLabel: "Open Pipeline",
-      to: "/dashboard/pipeline",
-      tone: "brand",
-    });
-  }
-
-  // Slot 3: Milestone / Daily goal progress
-  const uncompletedGoals = buildDailyGoals(ctx).filter((g) => !isGoalComplete(g));
-  const xp = Object.values(ctx.progressionEvents).reduce((acc, v) => acc + (typeof v === "number" ? v : 0), 0);
-  const nextTier = getNextMilestone(xp);
-  const xpRemaining = nextTier ? Math.max(0, nextTier.xpRequired - xp) : 0;
-
-  if (uncompletedGoals.length > 0) {
-    const firstGoal = uncompletedGoals[0];
-    stack.push({
-      id: "stack-goal",
-      number: "03",
-      title: firstGoal.label,
-      metadata: `${firstGoal.current}/${firstGoal.target} progress · +${firstGoal.xp} XP`,
-      why: "Completing daily goals advances tier unlocks and XP progression.",
-      actionLabel: "Complete goal",
-      to: "/dashboard/leads",
-      tone: "brand",
-    });
-  } else if (nextTier && xpRemaining > 0) {
-    stack.push({
-      id: "stack-milestone",
-      number: "03",
-      title: `Complete today's milestone`,
-      metadata: `${xpRemaining} XP remaining to ${nextTier.name}`,
-      why: `Reaching ${nextTier.name} unlocks "${nextTier.reward}".`,
-      actionLabel: "View journey",
-      to: "/dashboard/leads",
-      tone: "brand",
-    });
-  } else {
-    stack.push({
-      id: "stack-milestone-complete",
-      number: "03",
-      title: "Maintain daily streak",
-      metadata: "All current goals complete",
-      why: "Consistent daily engagement compounds algorithm matching quality.",
-      actionLabel: "Explore more",
-      to: "/dashboard/leads",
-      tone: "success",
-    });
-  }
-
-  return stack;
+export function buildFocusStack(priorities: FocusPriority[]): FocusStackPriority[] {
+  return selectFocusStack(priorities).map((p, index) => ({
+    id: `stack-${p.id}`,
+    number: String(index + 1).padStart(2, "0"),
+    title: p.stack.title,
+    metadata: p.stack.metadata,
+    why: p.stack.why,
+    actionLabel: p.stack.actionLabel,
+    to: p.stack.to,
+    hash: p.stack.hash,
+    tone: p.tone,
+  }));
 }
 
-// ── Momentum Events (Wins & Activity) ──────────────────────────────────────────
+// ── Recent activity (labelled "Momentum" only where it means something) ────────
+// Every line counts events with a real timestamp inside a stated window. There
+// is no streak: activity history per day is not available from the loaded data
+// (`lastContactedAt` keeps only each lead's latest contact).
 
 export function buildMomentumEvents(ctx: FocusContext): FocusMomentumEvent[] {
+  const now = clock(ctx);
   const events: FocusMomentumEvent[] = [];
-  const completedGoalsCount = ctx.completedGoalIds.length;
-  const recentReplies = ctx.leads.filter((l) => isReplyStatus(l) && isWithinDays(l.updatedAt, 7)).length;
-  const recentDiscovered = ctx.leads.filter((l) => isWithinDays(l.createdAt, 7)).length;
-  const xpEarned = Object.values(ctx.progressionEvents).reduce((acc, v) => acc + (typeof v === "number" ? v : 0), 0);
 
-  if (completedGoalsCount > 0) {
+  if (ctx.goalsClaimedToday > 0) {
     events.push({
-      id: "win-goals",
-      delta: `+${completedGoalsCount}`,
-      label: `objective${completedGoalsCount > 1 ? "s" : ""} completed`,
-      detail: "Daily goals successfully logged today",
+      id: "activity-goals-today",
+      delta: `+${ctx.goalsClaimedToday}`,
+      label: `${plural(ctx.goalsClaimedToday, "goal")} claimed today`,
+      detail: "Claimed from your Focus goals",
       category: "milestone",
     });
   }
 
-  if (recentReplies > 0) {
+  const contacted = ctx.leads.filter((l) => isWithinDays(l.lastContactedAt, 7, now)).length;
+  if (contacted > 0) {
     events.push({
-      id: "win-replies",
-      delta: `+${recentReplies}`,
-      label: `business${recentReplies > 1 ? "es" : ""} replied`,
-      detail: "Positive engagement in active pipeline",
-      category: "reply",
+      id: "activity-contacted",
+      delta: `+${contacted}`,
+      label: `${plural(contacted, "business", "businesses")} contacted`,
+      detail: "Last contact within the past 7 days",
+      category: "outreach",
     });
   }
 
-  if (recentDiscovered > 0) {
+  const followupsDone = followupsAvailable(ctx.plan)
+    ? ctx.followups.filter((f) => f.status === "completed" && isWithinDays(f.completedAt, 7, now)).length
+    : 0;
+  if (followupsDone > 0) {
     events.push({
-      id: "win-discovered",
-      delta: `+${recentDiscovered}`,
-      label: "opportunities discovered",
-      detail: "High-fit businesses added to workspace",
+      id: "activity-followups",
+      delta: `+${followupsDone}`,
+      label: `${plural(followupsDone, "follow-up")} completed`,
+      detail: "Completed in the past 7 days",
+      category: "followup",
+    });
+  }
+
+  const discovered = ctx.leads.filter((l) => isDiscoveredLead(l) && isWithinDays(l.createdAt, 7, now)).length;
+  if (discovered > 0) {
+    events.push({
+      id: "activity-discovered",
+      delta: `+${discovered}`,
+      label: `${plural(discovered, "opportunity", "opportunities")} discovered`,
+      detail: "Delivered by Discover in the past 7 days",
       category: "discover",
     });
-  }
-
-  if (xpEarned > 0) {
-    events.push({
-      id: "win-xp",
-      delta: `+${xpEarned} XP`,
-      label: "earned",
-      detail: "Advancing through milestone journey",
-      category: "xp",
-    });
-  }
-
-  // Graceful baseline if fresh account
-  if (events.length === 0) {
-    events.push(
-      {
-        id: "baseline-1",
-        delta: "+1",
-        label: "workspace initialized",
-        detail: "Command center ready for operations",
-        category: "milestone",
-      },
-      {
-        id: "baseline-2",
-        delta: `+${ctx.dailyDiscoverLimit}`,
-        label: "daily discovery allocation",
-        detail: "Verified capacity ready to search",
-        category: "discover",
-      },
-      {
-        id: "baseline-3",
-        delta: "+100 XP",
-        label: "initial tier target",
-        detail: "Prospector status unlock available",
-        category: "xp",
-      },
-    );
   }
 
   return events.slice(0, 4);
 }
 
-// ── MAST Signal (Single High-Leverage Anomaly/Pattern) ───────────────────────────
+// ── MAST Signal ────────────────────────────────────────────────────────────────
+// The app has no anomaly detection, and the existing Discover/Analytics reply
+// rates use conflicting definitions, so Focus does not present any of them as a
+// "signal". Until a signal with a sound basis exists, this is an intentional
+// quiet state. Add real signals here, gated on sample size, and set
+// `isQuiet: false` only for those.
 
-export function buildMastSignal(ctx: FocusContext): FocusMastSignal {
-  const replyRate = ctx.analytics.replyRate;
-  const overdue = countOverdueFollowups(ctx.followups);
-  const uncontacted = ctx.leads.filter(isUncontacted).length;
-  const recentReplies = ctx.leads.filter((l) => isReplyStatus(l) && isWithinDays(l.updatedAt, 3)).length;
-
-  if (recentReplies >= 2 || replyRate >= 15) {
-    return {
-      id: "signal-response-velocity",
-      headline: "Creative & design businesses are responding 2.4x faster this week.",
-      detail: "Recent interactions indicate higher-than-average open and reply velocity in your active sectors.",
-      actionLabel: "Explore signal",
-      to: "/dashboard/analytics",
-      isQuiet: false,
-    };
-  }
-
-  if (overdue > 0) {
-    return {
-      id: "signal-followup-staleness",
-      headline: "Follow-up latency increases deal staleness after 48 hours.",
-      detail: "Clearing your current overdue follow-up queue will restore conversion velocity across active stages.",
-      actionLabel: "Explore signal",
-      to: "/dashboard/follow-ups",
-      isQuiet: false,
-    };
-  }
-
-  if (uncontacted >= 5) {
-    return {
-      id: "signal-uncontacted-freshness",
-      headline: "Uncontacted opportunities in your queue are averaging 86+ Opportunity Score.",
-      detail: "First-touch outreach within 24 hours of discovery doubles response rates according to historical benchmarks.",
-      actionLabel: "Explore signal",
-      to: "/dashboard/leads",
-      isQuiet: false,
-    };
-  }
-
+export function buildMastSignal(_ctx?: FocusContext): FocusMastSignal {
   return {
-    id: "signal-cadence-steady",
-    headline: "Pipeline cadence is balanced and steady.",
-    detail: "No friction anomalies detected across active channels. High-intent outreach is sustaining conversion velocity.",
-    actionLabel: "Explore signal",
-    to: "/dashboard/pipeline",
+    id: "signal-quiet",
+    headline: "NO NOTABLE SIGNAL",
+    detail: "No meaningful pattern detected yet.",
+    actionLabel: null,
+    to: null,
     isQuiet: true,
   };
 }
 
-// ── Weekly Pulse (Compact Preview of Analytics) ─────────────────────────────────
+// ── Weekly Pulse (compact, basis stated) ───────────────────────────────────────
+// Time basis: the last 7 days, using each record's own timestamp.
+//  - Discovered: Discover-delivered leads created in the window
+//  - Added: manual / CSV leads created in the window
+//  - Contacted: leads whose latest recorded contact is in the window
+//  - Follow-ups done: follow-ups completed in the window (Starter+)
+// Replies and meetings are not included: no reply or meeting date is recorded.
 
 export function buildWeeklyPulse(ctx: FocusContext): FocusWeeklyPulse {
-  const metrics = buildWeeklyMetrics(ctx.leads);
-  const discovery = metrics[0]?.value ?? 0;
-  const outreach = metrics[1]?.value ?? 0;
-  const replies = metrics[2]?.value ?? 0;
-  const meetings = metrics[3]?.value ?? 0;
-  const momentum = outreach >= 5 || replies >= 2 ? "↗" : outreach > 0 ? "→" : "↘";
+  const now = clock(ctx);
+  const created = ctx.leads.filter((l) => isWithinDays(l.createdAt, 7, now));
+  const discovered = created.filter(isDiscoveredLead).length;
+  const added = created.length - discovered;
+  const contacted = ctx.leads.filter((l) => isWithinDays(l.lastContactedAt, 7, now)).length;
+  const hasFollowups = followupsAvailable(ctx.plan);
+  const followupsDone = hasFollowups
+    ? ctx.followups.filter((f) => f.status === "completed" && isWithinDays(f.completedAt, 7, now)).length
+    : 0;
 
-  let summary: string;
-  if (outreach >= 8 && replies >= 2) {
-    summary = "High outbound consistency is translating into strong response momentum.";
-  } else if (outreach > 0) {
-    summary = "Steady pipeline activity; continue compounding daily outreach for conversion lift.";
-  } else {
-    summary = "Quiet week across channels. A quick batch of 5 outreaches will restore momentum.";
-  }
+  const tiles = [
+    { label: "Discovered", value: discovered },
+    { label: "Added", value: added },
+    { label: "Contacted", value: contacted },
+    ...(hasFollowups ? [{ label: "Follow-ups done", value: followupsDone }] : []),
+  ];
 
-  return {
-    discovery,
-    outreach,
-    replies,
-    meetings,
-    momentum,
-    summary,
-  };
+  const total = discovered + added + contacted + followupsDone;
+  const summary =
+    total === 0
+      ? "No activity recorded in the last 7 days."
+      : "Counts use each record's latest recorded date within the last 7 days.";
+
+  return { basisLabel: "Last 7 days", tiles, summary };
 }
 
 // ── Full snapshot ─────────────────────────────────────────────────────────────
 
 export function buildFocusSnapshot(firstName: string, ctx: FocusContext): FocusSnapshot {
-  const greeting = buildGreeting(firstName, ctx);
-  const recommendations = buildRecommendations(ctx);
-  const weekly = buildWeeklyReview(ctx);
   const goals = buildDailyGoals(ctx);
-  const primaryRecommendation = buildPrimaryRecommendation(ctx);
-  const focusStack = buildFocusStack(ctx);
-  const momentum = buildMomentumEvents(ctx);
-  const signal = buildMastSignal(ctx);
-  const weeklyPulse = buildWeeklyPulse(ctx);
-
-  const overdue = countOverdueFollowups(ctx.followups);
-  const uncontacted = ctx.leads.filter(isUncontacted).length;
-  const isClear = goals.length > 0 && goals.every(isGoalComplete) && overdue === 0 && uncontacted === 0;
+  const priorities = buildFocusPriorities(ctx, goals);
+  const greeting = buildGreeting(firstName, ctx, priorities);
 
   return {
     greeting: {
@@ -917,17 +429,13 @@ export function buildFocusSnapshot(firstName: string, ctx: FocusContext): FocusS
       subtitle: greeting.subtitle,
       name: firstName,
     },
-    primaryRecommendation,
-    focusStack,
-    recommendations: recommendations.length > 0 ? recommendations : buildEmptyRecommendations(),
-    weeklyMetrics: weekly.metrics,
-    weeklySummary: weekly.summary,
-    weeklyRecommendation: weekly.recommendation,
-    weeklyPulse,
-    momentum,
-    signal,
+    primaryRecommendation: buildPrimaryRecommendation(priorities),
+    focusStack: buildFocusStack(priorities),
+    weeklyPulse: buildWeeklyPulse(ctx),
+    momentum: buildMomentumEvents(ctx),
+    signal: buildMastSignal(ctx),
     goals,
-    isClear,
+    isClear: priorities.length === 0,
   };
 }
 

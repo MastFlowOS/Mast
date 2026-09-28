@@ -133,170 +133,52 @@ export function FocusGreeting({ period, name, subtitle }: GreetingProps) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 2. YOUR FOCUS (Dominant Composed Module: Left Recommendation + Right TODAY)
+// 2. YOUR FOCUS (Single Composed Command Surface)
 // ══════════════════════════════════════════════════════════════════════════════
 
 type PrimaryHeroProps = {
   recommendation: FocusPrimaryRecommendation | null;
-  todayContext: FocusTodayContext;
+  todayContext?: FocusTodayContext;
 };
 
-// Human-friendly translations for recommendation metric keys
-const HUMAN_METRIC_LABELS: Record<string, string> = {
-  "overdue": "Overdue",
-  "most overdue": "Longest wait",
-  "est. time": "Est. duration",
-  "due today": "Scheduled today",
-  "no follow-up": "Awaiting next action",
-  "last contacted": "Last contact",
-  "no recorded reply": "Awaiting reply",
-  "since contact": "Time since contact",
-  "not contacted": "Uncontacted leads",
-  "top score": "Highest score",
-  "opportunity score": "Opportunity score",
-  "progress": "Goal progress",
-  "remaining": "Units remaining",
-  "reward": "Reward",
-  "xp remaining": "XP to next tier",
-  "next tier": "Target tier",
-  "current xp": "Current balance",
-  "discoveries left today": "Discovery allowance",
-  "leads in workspace": "Workspace volume",
-};
-
-export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroProps) {
+export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
   if (!recommendation) return null;
 
   const tone = recommendation.tone;
 
-  // Tone styling parameters
-  const toneBadgeClasses: Record<string, string> = {
-    danger: "focus-tone-danger",
-    warning: "focus-tone-warning",
-    success: "focus-tone-success",
-    brand: "focus-tone-brand",
-  };
-
-  const badgeClass = toneBadgeClasses[tone] || "focus-tone-brand";
-
-  // User-facing discovery capacity context
-  let discoveryStatus = "Searches available today";
-  if (todayContext.dailyDiscoverLimit > 0) {
-    const remaining = Math.max(0, todayContext.dailyDiscoverLimit - todayContext.dailyDiscoverUsed);
-    if (remaining === 0) {
-      discoveryStatus = "Daily allowance reached";
-    } else if (todayContext.dailyDiscoverUsed > 0) {
-      discoveryStatus = `${remaining} available today`;
-    } else {
-      discoveryStatus = `${todayContext.dailyDiscoverLimit} available today`;
-    }
-  }
-
   return (
     <section className="focus-hero-module animate-fade-up" aria-labelledby="your-focus-heading">
-      <div className="focus-hero-grid">
-        {/* LEFT: Dominant recommendation (~66% on desktop) */}
-        <div className="focus-hero-left">
-          <div className="focus-hero-content-block">
-            <div className="focus-hero-badge-row">
-              <span className={cn("focus-hero-category-tag", badgeClass)}>
-                <span className="focus-hero-dot" aria-hidden="true" />
-                {recommendation.category}
-              </span>
-              <span className="focus-hero-anchor-label">PRIMARY DIRECTIVE</span>
-            </div>
-
-            <h2 id="your-focus-heading" className="focus-hero-headline">
-              {recommendation.headline}
-            </h2>
-
-            <p className="focus-hero-desc">{recommendation.description}</p>
-
-            {/* WHY NOW Callout */}
-            <div className="focus-why-callout">
-              <div className="focus-why-header">
-                <span className="focus-why-tag">WHY NOW</span>
-              </div>
-              <p className="focus-why-text">{recommendation.whyNow}</p>
-            </div>
-          </div>
-
-          {/* Primary Action Button (firmly connected to the recommendation) */}
-          <div className="focus-hero-action-row">
-            <Link
-              to={recommendation.to}
-              hash={recommendation.hash}
-              className={cn("focus-hero-cta", `focus-cta-${tone}`)}
-            >
-              <span>{recommendation.actionLabel}</span>
-              <ArrowRight className="focus-cta-arrow" aria-hidden="true" />
-            </Link>
-          </div>
+      <div className="focus-hero-surface">
+        {/* 1. QUIET SEMANTIC EYEBROW */}
+        <div className="focus-hero-eyebrow">
+          <span className="focus-hero-eyebrow-dot" aria-hidden="true" />
+          <span className="focus-hero-eyebrow-text">{recommendation.category}</span>
         </div>
 
-        {/* RIGHT: Composed Command Context (~34% on desktop) */}
-        <div className="focus-hero-right">
-          <div className="focus-context-panel">
-            {/* TODAY CONTEXT */}
-            <div className="focus-context-block">
-              <div className="focus-context-header">
-                <span className="focus-context-title">TODAY CONTEXT</span>
-                <span className="focus-context-badge">REAL-TIME</span>
-              </div>
+        {/* 2. PRIMARY RECOMMENDATION */}
+        <h2 id="your-focus-heading" className="focus-hero-headline">
+          {recommendation.headline}
+        </h2>
 
-              <div className="focus-today-metrics">
-                <div className="focus-today-stat-row">
-                  <span className="focus-today-stat-label">Capacity</span>
-                  <span className="focus-today-stat-val focus-stat-accent">{discoveryStatus}</span>
-                </div>
+        {/* 3. SHORT SUPPORTING SENTENCE */}
+        <p className="focus-hero-desc">{recommendation.description}</p>
 
-                <div className="focus-today-stat-row">
-                  <span className="focus-today-stat-label">Goals</span>
-                  <span className="focus-today-stat-val">
-                    {todayContext.readyToClaimCount > 0 ? (
-                      <span className="focus-claim-highlight">
-                        {todayContext.readyToClaimCount} of {todayContext.totalGoalsCount} ready (+{todayContext.availableXp} XP)
-                      </span>
-                    ) : (
-                      `${todayContext.totalGoalsCount} active in progress`
-                    )}
-                  </span>
-                </div>
+        {/* 4. WHY NOW (Visually recessed & subtle) */}
+        <div className="focus-hero-why">
+          <span className="focus-hero-why-label">WHY NOW</span>
+          <p className="focus-hero-why-text">{recommendation.whyNow}</p>
+        </div>
 
-                <div className="focus-today-stat-row">
-                  <span className="focus-today-stat-label">Priorities</span>
-                  <span className="focus-today-stat-val">
-                    {todayContext.prioritiesCount > 0
-                      ? `${todayContext.prioritiesCount} queued in stack`
-                      : "Stack clear"}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Internal Divider */}
-            <div className="focus-context-divider" />
-
-            {/* SIGNAL CONTEXT (Humanized metric layer) */}
-            <div className="focus-context-block">
-              <div className="focus-context-header">
-                <span className="focus-context-title">SIGNAL CONTEXT</span>
-                <span className="focus-context-subtle">FACTORS</span>
-              </div>
-
-              <div className="focus-signal-metrics">
-                {recommendation.metrics.map((m) => {
-                  const humanLabel = HUMAN_METRIC_LABELS[m.label.toLowerCase()] || m.label;
-                  return (
-                    <div key={m.label} className="focus-metric-item">
-                      <span className="focus-metric-label">{humanLabel}</span>
-                      <span className="focus-metric-value">{m.value}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+        {/* 5. PRIMARY CTA */}
+        <div className="focus-hero-action-row">
+          <Link
+            to={recommendation.to}
+            hash={recommendation.hash}
+            className={cn("focus-hero-cta", `focus-cta-${tone}`)}
+          >
+            <span>{recommendation.actionLabel}</span>
+            <ArrowRight className="focus-cta-arrow" aria-hidden="true" />
+          </Link>
         </div>
       </div>
 
@@ -307,156 +189,86 @@ export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroPr
           border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
           border-radius: 16px;
           margin-bottom: 2rem;
-          overflow: hidden;
           box-shadow: 0 4px 24px -6px rgba(0, 0, 0, 0.4);
         }
 
-        .focus-hero-grid {
-          display: grid;
-          grid-template-columns: 1fr 360px;
-          align-items: stretch;
-        }
-
-        .focus-hero-left {
-          padding: 2.25rem 2.5rem;
-          display: flex;
-          flex-direction: column;
-          justify-content: space-between;
-          gap: 1.75rem;
-          min-width: 0;
-        }
-
-        .focus-hero-content-block {
+        .focus-hero-surface {
+          padding: 2.5rem 3rem;
           display: flex;
           flex-direction: column;
         }
 
-        .focus-hero-badge-row {
+        .focus-hero-eyebrow {
           display: flex;
           align-items: center;
-          gap: 0.75rem;
-          margin-bottom: 1rem;
+          gap: 0.5rem;
+          margin-bottom: 0.875rem;
         }
 
-        .focus-hero-category-tag {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.45rem;
-          font-size: 0.6875rem;
-          font-weight: 700;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          padding: 0.2rem 0.625rem;
-          border-radius: 6px;
-          border: 1px solid transparent;
-        }
-
-        .focus-tone-danger {
-          background: rgba(239, 68, 68, 0.12);
-          color: #f87171;
-          border-color: rgba(239, 68, 68, 0.28);
-        }
-        .focus-tone-danger .focus-hero-dot {
-          background: #ef4444;
-          box-shadow: 0 0 8px #ef4444;
-        }
-
-        .focus-tone-warning {
-          background: rgba(245, 158, 11, 0.12);
-          color: #fbbf24;
-          border-color: rgba(245, 158, 11, 0.28);
-        }
-        .focus-tone-warning .focus-hero-dot {
-          background: #f59e0b;
-          box-shadow: 0 0 8px #f59e0b;
-        }
-
-        .focus-tone-success {
-          background: rgba(16, 185, 129, 0.12);
-          color: #34d399;
-          border-color: rgba(16, 185, 129, 0.28);
-        }
-        .focus-tone-success .focus-hero-dot {
-          background: #10b981;
-          box-shadow: 0 0 8px #10b981;
-        }
-
-        .focus-tone-brand {
-          background: rgba(124, 58, 237, 0.12);
-          color: #c084fc;
-          border-color: rgba(124, 58, 237, 0.28);
-        }
-        .focus-tone-brand .focus-hero-dot {
-          background: #a855f7;
-          box-shadow: 0 0 8px #a855f7;
-        }
-
-        .focus-hero-dot {
-          width: 6px;
-          height: 6px;
+        .focus-hero-eyebrow-dot {
+          width: 5px;
+          height: 5px;
           border-radius: 50%;
-          flex-shrink: 0;
+          background: rgba(255, 255, 255, 0.35);
         }
 
-        .focus-hero-anchor-label {
-          font-size: 0.625rem;
-          font-weight: 700;
-          letter-spacing: 0.12em;
+        .focus-hero-eyebrow-text {
+          font-size: 0.6875rem;
+          font-weight: 600;
+          letter-spacing: 0.1em;
           text-transform: uppercase;
-          color: rgba(255, 255, 255, 0.35);
+          color: rgba(255, 255, 255, 0.45);
+          font-family: var(--font-sans, system-ui);
         }
-
         .focus-hero-headline {
-          font-size: clamp(1.625rem, 2.6vw, 2.25rem);
+          font-size: clamp(1.625rem, 2.4vw, 2.125rem);
           font-weight: 600;
           letter-spacing: -0.025em;
-          line-height: 1.22;
+          line-height: 1.25;
           color: #ffffff;
-          margin: 0 0 0.75rem;
-          max-width: 680px;
+          margin: 0 0 0.875rem;
+          max-width: 800px;
         }
 
         .focus-hero-desc {
           font-size: 0.9375rem;
-          color: rgba(255, 255, 255, 0.72);
-          margin: 0 0 1.25rem;
+          color: rgba(255, 255, 255, 0.68);
+          margin: 0 0 1.75rem;
           line-height: 1.55;
-          max-width: 620px;
+          max-width: 720px;
         }
 
-        .focus-why-callout {
+        .focus-hero-why {
           display: flex;
           flex-direction: column;
-          gap: 0.25rem;
-          padding: 0.8125rem 1.125rem;
+          gap: 0.35rem;
+          padding: 0.875rem 1.25rem;
           border-radius: 8px;
-          background: oklch(0.13 0.024 265);
-          border: 1px solid rgba(255, 255, 255, 0.06);
-          max-width: 620px;
+          background: rgba(255, 255, 255, 0.02);
+          border-left: 2px solid rgba(255, 255, 255, 0.12);
+          max-width: 720px;
+          margin-bottom: 2rem;
         }
 
-        .focus-why-header {
-          display: flex;
-          align-items: center;
-        }
-
-        .focus-why-tag {
+        .focus-hero-why-label {
           font-size: 0.625rem;
           font-weight: 700;
           font-family: var(--font-mono, monospace);
-          letter-spacing: 0.12em;
-          color: rgba(255, 255, 255, 0.45);
+          letter-spacing: 0.1em;
+          color: rgba(255, 255, 255, 0.4);
+          text-transform: uppercase;
         }
 
-        .focus-why-text {
+        .focus-hero-why-text {
           font-size: 0.8125rem;
-          color: rgba(255, 255, 255, 0.85);
-          line-height: 1.45;
+          color: rgba(255, 255, 255, 0.8);
+          line-height: 1.5;
           margin: 0;
         }
 
         .focus-hero-action-row {
-          margin-top: 0.25rem;
+          display: flex;
+          align-items: center;
         }
 
         .focus-hero-cta {
@@ -492,6 +304,22 @@ export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroPr
           box-shadow: 0 4px 16px -2px rgba(220, 38, 38, 0.4);
         }
 
+        .focus-cta-warning {
+          background: #d97706;
+        }
+        .focus-cta-warning:hover {
+          background: #b45309;
+          box-shadow: 0 4px 16px -2px rgba(217, 119, 6, 0.4);
+        }
+
+        .focus-cta-success {
+          background: #059669;
+        }
+        .focus-cta-success:hover {
+          background: #047857;
+          box-shadow: 0 4px 16px -2px rgba(5, 150, 105, 0.4);
+        }
+
         .focus-cta-arrow {
           width: 0.9375rem;
           height: 0.9375rem;
@@ -502,155 +330,28 @@ export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroPr
           transform: translateX(3px);
         }
 
-        /* Right Column */
-        .focus-hero-right {
-          background: oklch(0.135 0.024 265);
-          border-left: 1px solid var(--border, rgba(255, 255, 255, 0.08));
-          display: flex;
-          flex-direction: column;
-        }
-
-        .focus-context-panel {
-          padding: 2rem 1.75rem;
-          height: 100%;
-          display: flex;
-          flex-direction: column;
-          justify-content: space-between;
-          gap: 1.5rem;
-        }
-
-        .focus-context-block {
-          display: flex;
-          flex-direction: column;
-          gap: 0.75rem;
-        }
-
-        .focus-context-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-
-        .focus-context-title {
-          font-size: 0.6875rem;
-          font-weight: 700;
-          letter-spacing: 0.12em;
-          text-transform: uppercase;
-          color: rgba(255, 255, 255, 0.5);
-        }
-
-        .focus-context-badge {
-          font-size: 0.5625rem;
-          font-weight: 700;
-          letter-spacing: 0.06em;
-          color: #34d399;
-          background: rgba(52, 211, 153, 0.1);
-          padding: 0.1rem 0.35rem;
-          border-radius: 4px;
-          border: 1px solid rgba(52, 211, 153, 0.2);
-        }
-
-        .focus-context-subtle {
-          font-size: 0.5625rem;
-          font-weight: 700;
-          letter-spacing: 0.08em;
-          color: rgba(255, 255, 255, 0.35);
-          text-transform: uppercase;
-        }
-
-        .focus-today-metrics {
-          display: flex;
-          flex-direction: column;
-          gap: 0.6875rem;
-        }
-
-        .focus-today-stat-row {
-          display: flex;
-          align-items: baseline;
-          justify-content: space-between;
-          font-size: 0.75rem;
-          flex-wrap: wrap;
-          gap: 0.5rem;
-        }
-
-        .focus-today-stat-label {
-          color: rgba(255, 255, 255, 0.45);
-          font-size: 0.75rem;
-        }
-
-        .focus-today-stat-val {
-          color: #ffffff;
-          font-weight: 600;
-          text-align: right;
-          font-size: 0.75rem;
-        }
-
-        .focus-stat-accent {
-          color: rgba(255, 255, 255, 0.85);
-        }
-
-        .focus-claim-highlight {
-          color: #34d399;
-          font-weight: 700;
-        }
-
-        .focus-context-divider {
-          height: 1px;
-          background: rgba(255, 255, 255, 0.06);
-          margin: 0.25rem 0;
-        }
-
-        .focus-signal-metrics {
-          display: flex;
-          flex-direction: column;
-          gap: 0.55rem;
-        }
-
-        .focus-metric-item {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 0.5rem;
-        }
-
-        .focus-metric-label {
-          font-size: 0.75rem;
-          color: rgba(255, 255, 255, 0.45);
-        }
-
-        .focus-metric-value {
-          font-size: 0.75rem;
-          font-weight: 600;
-          color: #ffffff;
-          font-variant-numeric: tabular-nums;
-        }
-
-        @media (max-width: 1024px) {
-          .focus-hero-grid {
-            grid-template-columns: minmax(0, 1fr);
+        @media (max-width: 768px) {
+          .focus-hero-surface {
+            padding: 1.75rem 1.5rem;
           }
-          .focus-hero-right {
-            border-left: none;
-            border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+          .focus-hero-headline {
+            font-size: 1.5rem;
           }
-          .focus-hero-left {
-            padding: 1.75rem 1.75rem;
-          }
-          .focus-context-panel {
-            padding: 1.5rem 1.75rem;
+          .focus-hero-why {
+            margin-bottom: 1.75rem;
           }
         }
 
         @media (max-width: 640px) {
-          .focus-hero-left {
-            padding: 1.25rem 1rem;
-          }
-          .focus-context-panel {
-            padding: 1.125rem 1rem;
+          .focus-hero-surface {
+            padding: 1.5rem 1.25rem;
           }
           .focus-hero-headline {
             font-size: 1.375rem;
             line-height: 1.3;
+          }
+          .focus-hero-why {
+            margin-bottom: 1.5rem;
           }
         }
       `}</style>

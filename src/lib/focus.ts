@@ -171,20 +171,24 @@ export function buildFocusPriorities(ctx: FocusContext, goals: FocusGoal[]): Foc
 
 // ── Greeting ──────────────────────────────────────────────────────────────────
 
+export type GreetingPeriod = "morning" | "afternoon" | "evening" | "night";
+
+export function getTimeOfDayPeriod(now: Date = new Date()): GreetingPeriod {
+  const hour = now.getHours();
+  if (hour >= 7 && hour < 14) {
+    return "morning";
+  } else if (hour >= 14 && hour < 19) {
+    return "afternoon";
+  } else if (hour >= 19 && hour < 24) {
+    return "evening";
+  } else {
+    return "night";
+  }
+}
+
 export function buildGreeting(firstName: string, ctx: FocusContext, priorities?: FocusPriority[]) {
   const now = clock(ctx);
-  const hour = now.getHours();
-  let period: "morning" | "afternoon" | "evening" | "night";
-
-  if (hour >= 7 && hour < 14) {
-    period = "morning";
-  } else if (hour >= 14 && hour < 19) {
-    period = "afternoon";
-  } else if (hour >= 19 && hour < 24) {
-    period = "evening";
-  } else {
-    period = "night";
-  }
+  const period = getTimeOfDayPeriod(now);
 
   const list = priorities ?? buildFocusPriorities(ctx, buildDailyGoals(ctx));
   const top = list[0];

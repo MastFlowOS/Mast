@@ -191,13 +191,14 @@ export function FocusDashboard() {
               </div>
             </div>
 
-            {/* 5. MILESTONE JOURNEY (Full-width progression line) */}
+            {/* 5. MILESTONE JOURNEY (Physical Mountain Route Progression & Environment) */}
             <FocusMilestoneJourney
               xp={xp}
               currentName={currentMilestone.name}
               nextName={nextMilestone?.name ?? null}
               progressPct={milestonePct}
               leveledUpTier={leveledUpTier}
+              period={snapshot.greeting.period}
             />
 
             {/* 6. PAIRED GRID: MAST SIGNAL + WEEKLY PULSE (Compact Intelligence Region) */}

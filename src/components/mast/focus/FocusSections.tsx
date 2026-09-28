@@ -1,4 +1,4 @@
-import React, { useRef } from "react";
+import React, { useRef, useMemo } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   ArrowRight,
@@ -1117,65 +1117,82 @@ export function FocusMilestoneJourney({
   nextName,
   progressPct,
 }: MilestoneProps) {
-  const currentIndex = MILESTONE_TIERS.findIndex((t) => t.name === currentName);
+  const currentIndex = Math.max(0, MILESTONE_TIERS.findIndex((t) => t.name === currentName));
   const nextTier = MILESTONE_TIERS.find((t) => t.name === nextName);
   const xpRemaining = nextTier ? Math.max(0, nextTier.xpRequired - xp) : 0;
+
+  const displayTiers = useMemo(() => {
+    const maxStart = Math.max(0, MILESTONE_TIERS.length - 4);
+    const idealStart = currentIndex > 1 ? currentIndex - 1 : 0;
+    const start = Math.min(idealStart, maxStart);
+    return MILESTONE_TIERS.slice(start, start + 4);
+  }, [currentIndex]);
 
   return (
     <section className="focus-milestone-section animate-fade-up" aria-label="Progression Journey">
       <div className="focus-module-header">
         <div className="focus-module-title-wrap">
           <h2 className="focus-module-title">MILESTONE JOURNEY</h2>
-          <span className="focus-module-badge">{currentName}</span>
-        </div>
-        <div id={MILESTONE_XP_BADGE_ID} className="focus-xp-counter">
-          {xp.toLocaleString()} <span className="focus-xp-unit">XP</span>
         </div>
       </div>
 
       <div className="focus-milestone-card">
-        {/* Compressed Track Row */}
-        <div className="focus-journey-track-wrap">
-          <div className="focus-journey-track">
-            <div
-              className="focus-journey-fill"
-              style={{ width: `${progressPct}%` }}
-              aria-label={`Milestone progress: ${progressPct}%`}
-            />
-          </div>
+        {/* Tier Destinations Track */}
+        <div className="focus-journey-destinations">
+          <div className="focus-journey-connector" aria-hidden="true" />
 
-          {/* Stage Node Indicators */}
-          <div className="focus-journey-stages">
-            {MILESTONE_TIERS.slice(0, 4).map((tier, idx) => {
-              const isPassed = idx < currentIndex;
-              const isCurrent = idx === currentIndex;
-              const isFuture = idx > currentIndex;
+          {displayTiers.map((tier) => {
+            const tierGlobalIndex = MILESTONE_TIERS.findIndex((t) => t.id === tier.id);
+            const isPassed = tierGlobalIndex < currentIndex;
+            const isCurrent = tierGlobalIndex === currentIndex;
+            const isNext = tierGlobalIndex === currentIndex + 1;
+            const isFuture = tierGlobalIndex > currentIndex + 1;
 
-              return (
+            let stateLabel = "LOCKED";
+            if (isPassed) stateLabel = "COMPLETED";
+            else if (isCurrent) stateLabel = "CURRENT";
+            else if (isNext) stateLabel = "NEXT";
+
+            return (
+              <div
+                key={tier.id}
+                className={cn(
+                  "focus-destination-node",
+                  isCurrent && "focus-destination-current",
+                  isPassed && "focus-destination-passed",
+                  isNext && "focus-destination-next",
+                  isFuture && "focus-destination-future",
+                )}
+              >
                 <div
-                  key={tier.id}
-                  className={cn(
-                    "focus-stage-node",
-                    isCurrent && "focus-stage-current",
-                    isPassed && "focus-stage-passed",
-                    isFuture && "focus-stage-future",
-                  )}
+                  id={isCurrent ? MILESTONE_XP_BADGE_ID : undefined}
+                  className="focus-node-circle"
+                  aria-label={`${tier.name}: ${stateLabel}, ${tier.xpRequired} XP`}
                 >
-                  <div className="focus-node-circle">
-                    {isPassed ? (
-                      <Check className="focus-node-check" aria-hidden="true" />
-                    ) : (
-                      <span className="focus-node-inner" />
-                    )}
-                  </div>
-                  <span className="focus-stage-name">{tier.name}</span>
+                  {isPassed ? (
+                    <Check className="focus-node-check" aria-hidden="true" />
+                  ) : isCurrent ? (
+                    <span className="focus-node-current-dot" />
+                  ) : isNext ? (
+                    <span className="focus-node-next-dot" />
+                  ) : (
+                    <span className="focus-node-future-dot" />
+                  )}
                 </div>
-              );
-            })}
-          </div>
+
+                <div className="focus-destination-meta">
+                  <div className="focus-destination-name-wrap">
+                    <span className="focus-stage-tag">{stateLabel}</span>
+                    <span className="focus-stage-name">{tier.name}</span>
+                  </div>
+                  <span className="focus-stage-xp">{tier.xpRequired.toLocaleString()} XP</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        {/* Compressed Hierarchy Strip */}
+        {/* Subordinate Hierarchy Strip */}
         <div className="focus-milestone-status-strip">
           <div className="focus-status-item">
             <span className="focus-status-caption">CURRENT TIER</span>
@@ -1194,7 +1211,7 @@ export function FocusMilestoneJourney({
           <div className="focus-status-item">
             <span className="focus-status-caption">XP TO NEXT TIER</span>
             <span className="focus-status-value focus-status-highlight">
-              {nextTier ? `${xpRemaining} XP to ${nextTier.name}` : "Top tier reached"}
+              {nextTier ? `${xpRemaining.toLocaleString()} XP to ${nextTier.name}` : "Top tier reached"}
             </span>
           </div>
         </div>
@@ -1205,128 +1222,204 @@ export function FocusMilestoneJourney({
           margin-bottom: 1.25rem;
         }
 
-        .focus-xp-counter {
-          font-family: var(--font-mono, monospace);
-          font-size: 0.75rem;
-          font-weight: 600;
-          color: rgba(255, 255, 255, 0.65);
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          padding: 0.15rem 0.5rem;
-          border-radius: 4px;
-        }
-
-        .focus-xp-unit {
-          font-size: 0.625rem;
-          color: rgba(255, 255, 255, 0.4);
-        }
-
         .focus-milestone-card {
           background: var(--card, #12151e);
           border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
           border-radius: 14px;
-          padding: 1.25rem 1.5rem 1rem;
+          padding: 1.5rem 1.75rem 1.25rem;
         }
 
-        .focus-journey-track-wrap {
+        .focus-journey-destinations {
           position: relative;
-          padding: 0.25rem 0 1.125rem;
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          padding: 0.5rem 0 0.25rem;
         }
 
-        .focus-journey-track {
+        .focus-journey-connector {
           position: absolute;
-          top: 0.9rem;
-          left: 3%;
-          right: 3%;
-          height: 3px;
-          background: rgba(255, 255, 255, 0.08);
-          border-radius: 99px;
+          top: 21px;
+          left: 12.5%;
+          right: 12.5%;
+          height: 1px;
+          background: rgba(255, 255, 255, 0.09);
           z-index: 0;
+          pointer-events: none;
         }
 
-        .focus-journey-fill {
-          height: 100%;
-          background: var(--brand, #7c3aed);
-          border-radius: 99px;
-          transition: width 350ms ease;
-        }
-
-        .focus-journey-stages {
+        .focus-destination-node {
           position: relative;
           z-index: 1;
           display: flex;
-          justify-content: space-between;
-        }
-
-        .focus-stage-node {
-          display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 0.35rem;
+          text-align: center;
+          flex: 1;
+          min-width: 0;
         }
 
         .focus-node-circle {
-          width: 18px;
-          height: 18px;
+          width: 26px;
+          height: 26px;
           border-radius: 50%;
-          background: #11141c;
-          border: 1.5px solid rgba(255, 255, 255, 0.15);
+          background: #12151e;
           display: grid;
           place-items: center;
+          margin-bottom: 0.75rem;
+          transition: all 200ms ease;
         }
 
-        .focus-stage-passed .focus-node-circle {
-          border-color: #34d399;
-          background: rgba(52, 211, 153, 0.15);
+        .focus-destination-passed .focus-node-circle {
+          border: 1.5px solid rgba(52, 211, 153, 0.4);
+          background: rgba(52, 211, 153, 0.08);
         }
 
         .focus-node-check {
-          width: 0.5625rem;
-          height: 0.5625rem;
+          width: 0.75rem;
+          height: 0.75rem;
           color: #34d399;
+          stroke-width: 2.5;
         }
 
-        .focus-stage-current .focus-node-circle {
-          border-color: var(--brand, #7c3aed);
-          background: var(--brand, #7c3aed);
-          box-shadow: 0 0 8px rgba(124, 58, 237, 0.5);
+        .focus-destination-current .focus-node-circle {
+          border: 2px solid var(--brand, #8b5cf6);
+          background: #12151e;
+          box-shadow: 0 0 10px rgba(139, 92, 246, 0.45);
         }
 
-        .focus-node-inner {
+        .focus-node-current-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--brand, #a78bfa);
+          box-shadow: 0 0 6px rgba(167, 139, 250, 0.6);
+        }
+
+        .focus-destination-next .focus-node-circle {
+          border: 1.5px solid rgba(245, 158, 11, 0.65);
+          background: #12151e;
+          box-shadow: 0 0 8px rgba(245, 158, 11, 0.15);
+        }
+
+        .focus-node-next-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #f59e0b;
+        }
+
+        .focus-destination-future .focus-node-circle {
+          border: 1.5px solid rgba(255, 255, 255, 0.12);
+          background: #12151e;
+        }
+
+        .focus-node-future-dot {
           width: 4px;
           height: 4px;
           border-radius: 50%;
-          background: #ffffff;
+          background: rgba(255, 255, 255, 0.12);
         }
 
-        .focus-stage-future {
-          opacity: 0.35;
+        .focus-destination-meta {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 0.25rem;
+        }
+
+        .focus-destination-name-wrap {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 0.2rem;
+        }
+
+        .focus-stage-tag {
+          font-size: 0.5625rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+
+        .focus-destination-passed .focus-stage-tag {
+          color: rgba(52, 211, 153, 0.75);
+        }
+
+        .focus-destination-current .focus-stage-tag {
+          color: #c4b5fd;
+        }
+
+        .focus-destination-next .focus-stage-tag {
+          color: #f59e0b;
+        }
+
+        .focus-destination-future .focus-stage-tag {
+          color: rgba(255, 255, 255, 0.28);
         }
 
         .focus-stage-name {
-          font-size: 0.6875rem;
-          font-weight: 500;
-          color: rgba(255, 255, 255, 0.5);
+          font-size: 0.8125rem;
+          line-height: 1.25;
         }
 
-        .focus-stage-current .focus-stage-name {
+        .focus-destination-passed .focus-stage-name {
+          color: rgba(255, 255, 255, 0.7);
+          font-weight: 500;
+        }
+
+        .focus-destination-current .focus-stage-name {
           color: #ffffff;
           font-weight: 700;
+        }
+
+        .focus-destination-next .focus-stage-name {
+          color: rgba(255, 255, 255, 0.9);
+          font-weight: 600;
+        }
+
+        .focus-destination-future .focus-stage-name {
+          color: rgba(255, 255, 255, 0.4);
+          font-weight: 500;
+        }
+
+        .focus-stage-xp {
+          font-size: 0.6875rem;
+          font-family: var(--font-mono, monospace);
+          line-height: 1.25;
+        }
+
+        .focus-destination-passed .focus-stage-xp {
+          color: rgba(255, 255, 255, 0.35);
+        }
+
+        .focus-destination-current .focus-stage-xp {
+          color: rgba(255, 255, 255, 0.75);
+          font-weight: 600;
+        }
+
+        .focus-destination-next .focus-stage-xp {
+          color: rgba(245, 158, 11, 0.75);
+          font-weight: 600;
+        }
+
+        .focus-destination-future .focus-stage-xp {
+          color: rgba(255, 255, 255, 0.25);
         }
 
         .focus-milestone-status-strip {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding-top: 0.75rem;
-          margin-top: 0.25rem;
-          border-top: 1px solid rgba(255, 255, 255, 0.05);
+          padding-top: 1rem;
+          margin-top: 1.25rem;
+          border-top: 1px solid rgba(255, 255, 255, 0.06);
         }
 
         .focus-status-item {
           display: flex;
           flex-direction: column;
-          gap: 0.15rem;
+          gap: 0.2rem;
         }
 
         .focus-status-caption {
@@ -1334,17 +1427,17 @@ export function FocusMilestoneJourney({
           font-weight: 700;
           letter-spacing: 0.08em;
           text-transform: uppercase;
-          color: rgba(255, 255, 255, 0.4);
+          color: rgba(255, 255, 255, 0.38);
         }
 
         .focus-status-value {
           font-size: 0.75rem;
           font-weight: 600;
-          color: #ffffff;
+          color: rgba(255, 255, 255, 0.85);
         }
 
         .focus-status-highlight {
-          color: rgba(255, 255, 255, 0.85);
+          color: rgba(255, 255, 255, 0.9);
           font-family: var(--font-mono, monospace);
         }
 
@@ -1355,11 +1448,58 @@ export function FocusMilestoneJourney({
         }
 
         @media (max-width: 640px) {
+          .focus-milestone-card {
+            padding: 1.25rem 1rem 1rem;
+          }
+
+          .focus-journey-destinations {
+            flex-direction: column;
+            gap: 1.125rem;
+            align-items: stretch;
+            padding: 0.25rem 0;
+          }
+
+          .focus-journey-connector {
+            top: 17px;
+            bottom: 17px;
+            left: 13px;
+            right: auto;
+            width: 1px;
+            height: auto;
+          }
+
+          .focus-destination-node {
+            flex-direction: row;
+            align-items: center;
+            text-align: left;
+            gap: 1rem;
+          }
+
+          .focus-node-circle {
+            margin-bottom: 0;
+            flex-shrink: 0;
+          }
+
+          .focus-destination-meta {
+            flex-direction: row;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            gap: 0.75rem;
+          }
+
+          .focus-destination-name-wrap {
+            align-items: flex-start;
+          }
+
           .focus-milestone-status-strip {
             flex-direction: column;
             align-items: flex-start;
-            gap: 0.5rem;
+            gap: 0.625rem;
+            padding-top: 0.875rem;
+            margin-top: 1rem;
           }
+
           .focus-status-divider {
             display: none;
           }

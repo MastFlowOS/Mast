@@ -14,6 +14,7 @@ import { useFocusProgress } from "@/hooks/use-focus-progress";
 import { usePermissions } from "@/hooks/use-permissions";
 import {
   buildFocusSnapshot,
+  isGoalComplete,
   type FocusContext,
   type FocusPrimaryRecommendation,
 } from "@/lib/focus";
@@ -24,10 +25,12 @@ import {
   FocusPrimaryHero,
   FocusStack,
   FocusGoals,
-  FocusMomentumMilestone,
+  FocusMomentum,
+  FocusMilestoneJourney,
   FocusSignal,
   FocusWeeklyPulse,
   FocusEmptyState,
+  type FocusTodayContext,
 } from "@/components/mast/focus/FocusSections";
 
 export function FocusDashboard() {
@@ -129,6 +132,19 @@ export function FocusDashboard() {
     leveledUpTier,
   } = useFocusProgress(snapshot.goals);
 
+  // Compact today context for the right side of the First Viewport Hero
+  const todayContext: FocusTodayContext = useMemo(() => {
+    const completedGoalsCount = visibleGoals.filter((g) => isGoalComplete(g)).length;
+    const availableXp = visibleGoals.reduce((sum, g) => sum + g.xp, 0);
+    return {
+      completedGoalsCount,
+      totalGoalsCount: visibleGoals.length,
+      prioritiesCount: snapshot.focusStack.length,
+      availableXp,
+      currentXp: xp,
+    };
+  }, [visibleGoals, snapshot.focusStack.length, xp]);
+
   const loading =
     authLoading ||
     analyticsLoading ||
@@ -147,11 +163,8 @@ export function FocusDashboard() {
 
   return (
     <div className="focus-page-root animate-page-enter">
-      {/* Ambient background glow */}
-      <div className="focus-ambient-glow" aria-hidden="true" />
-
       <main className="focus-main-content">
-        {/* 1. WELCOME */}
+        {/* 1. WELCOME (Compact header) */}
         <FocusGreeting
           period={snapshot.greeting.period}
           name={firstName}
@@ -166,29 +179,41 @@ export function FocusDashboard() {
               totalGoals={snapshot.goals.length}
               xpEarned={xp}
             />
-            <FocusWeeklyPulse pulse={weeklyPulse} />
+            <div className="focus-paired-grid">
+              <FocusSignal signal={snapshot.signal} />
+              <FocusWeeklyPulse pulse={weeklyPulse} />
+            </div>
           </>
         ) : (
-          /* STANDARD COMMAND HIERARCHY */
-          <>
-            {/* 2. YOUR FOCUS (Dominant Hero Module) */}
-            <FocusPrimaryHero recommendation={primaryRecommendation} />
-
-            {/* 3. FOCUS STACK (3 Priorities) */}
-            <FocusStack priorities={snapshot.focusStack} />
-
-            {/* 4. TODAY'S GOALS (Single Coherent Module) */}
-            <FocusGoals
-              goals={visibleGoals}
-              onClaim={claimGoal}
-              claimedGoalIds={claimedGoalIds}
-              claimingGoalIds={claimingGoalIds}
-              exitingGoalIds={exitingGoalIds}
+          /* STRUCTURED COMMAND COMPOSITION */
+          <div className="focus-composition-stack">
+            {/* 2. YOUR FOCUS (Dominant Composed Module: Left Recommendation + Right TODAY) */}
+            <FocusPrimaryHero
+              recommendation={primaryRecommendation}
+              todayContext={todayContext}
             />
 
-            {/* 5. MOMENTUM + MILESTONE (Two Columns) */}
-            <FocusMomentumMilestone
-              events={snapshot.momentum}
+            {/* 3. FOCUS STACK (3 Editorial Priorities in Coherent Surface) */}
+            <FocusStack priorities={snapshot.focusStack} />
+
+            {/* 4. PAIRED GRID: TODAY'S GOALS + MOMENTUM */}
+            <div className="focus-paired-grid">
+              <div className="focus-grid-col-left">
+                <FocusGoals
+                  goals={visibleGoals}
+                  onClaim={claimGoal}
+                  claimedGoalIds={claimedGoalIds}
+                  claimingGoalIds={claimingGoalIds}
+                  exitingGoalIds={exitingGoalIds}
+                />
+              </div>
+              <div className="focus-grid-col-right">
+                <FocusMomentum events={snapshot.momentum} />
+              </div>
+            </div>
+
+            {/* 5. MILESTONE JOURNEY (Full-width progression line) */}
+            <FocusMilestoneJourney
               xp={xp}
               currentName={currentMilestone.name}
               nextName={nextMilestone?.name ?? null}
@@ -196,12 +221,16 @@ export function FocusDashboard() {
               leveledUpTier={leveledUpTier}
             />
 
-            {/* 6. MAST SIGNAL (Compact Intelligence Module) */}
-            <FocusSignal signal={snapshot.signal} />
-
-            {/* 7. WEEKLY PULSE (Compact Preview of Analytics) */}
-            <FocusWeeklyPulse pulse={weeklyPulse} />
-          </>
+            {/* 6. PAIRED GRID: MAST SIGNAL + WEEKLY PULSE (Compact Intelligence Region) */}
+            <div className="focus-paired-grid">
+              <div className="focus-grid-col-left">
+                <FocusSignal signal={snapshot.signal} />
+              </div>
+              <div className="focus-grid-col-right">
+                <FocusWeeklyPulse pulse={weeklyPulse} />
+              </div>
+            </div>
+          </div>
         )}
       </main>
 
@@ -210,23 +239,8 @@ export function FocusDashboard() {
           position: relative;
           min-height: 100%;
           width: 100%;
-          background: var(--color-background, #0c0b10);
-        }
-
-        .focus-ambient-glow {
-          position: fixed;
-          top: -15vh;
-          left: 50%;
-          transform: translateX(-50%);
-          width: min(80vw, 920px);
-          height: 35vh;
-          background: radial-gradient(
-            ellipse at 50% 0%,
-            rgba(168, 85, 247, 0.08) 0%,
-            transparent 70%
-          );
-          pointer-events: none;
-          z-index: 0;
+          background: var(--background, #0c0f17);
+          overflow-x: hidden;
         }
 
         .focus-main-content {
@@ -235,11 +249,46 @@ export function FocusDashboard() {
           max-width: 1080px;
           margin: 0 auto;
           padding: 0 2rem 5rem;
+          overflow-x: hidden;
+        }
+
+        .focus-composition-stack {
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+        }
+
+        .focus-paired-grid {
+          display: grid;
+          grid-template-columns: 1.15fr 0.85fr;
+          gap: 1.5rem;
+          margin-bottom: 2rem;
+          align-items: stretch;
+        }
+
+        .focus-grid-col-left,
+        .focus-grid-col-right {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+        }
+
+        @media (max-width: 960px) {
+          .focus-paired-grid {
+            grid-template-columns: 1fr;
+            gap: 1.75rem;
+          }
         }
 
         @media (max-width: 768px) {
           .focus-main-content {
             padding: 0 1.25rem 3.5rem;
+          }
+        }
+
+        @media (max-width: 640px) {
+          .focus-main-content {
+            padding: 0 0.875rem 3rem;
           }
         }
       `}</style>
@@ -250,60 +299,49 @@ export function FocusDashboard() {
 function FocusLoading() {
   return (
     <div className="focus-page-root">
-      <div className="focus-main-content" style={{ paddingTop: "2rem" }}>
+      <div className="focus-main-content" style={{ paddingTop: "1.5rem" }}>
         {/* Greeting Skeleton */}
-        <div style={{ marginBottom: "2rem" }}>
+        <div style={{ marginBottom: "1.75rem" }}>
           <div
             className="mast-skeleton"
-            style={{ height: "0.75rem", width: "140px", borderRadius: "4px", marginBottom: "0.75rem" }}
+            style={{ height: "0.75rem", width: "130px", borderRadius: "4px", marginBottom: "0.625rem" }}
           />
           <div
             className="mast-skeleton"
-            style={{ height: "2.25rem", width: "320px", borderRadius: "8px", marginBottom: "0.5rem" }}
+            style={{ height: "2rem", width: "300px", borderRadius: "8px", marginBottom: "0.35rem" }}
           />
           <div
             className="mast-skeleton"
-            style={{ height: "1rem", width: "420px", borderRadius: "4px" }}
+            style={{ height: "0.875rem", width: "380px", borderRadius: "4px" }}
           />
         </div>
 
-        {/* Hero Module Skeleton */}
+        {/* Hero Composed Module Skeleton */}
         <div
           className="mast-skeleton"
-          style={{ height: "17rem", width: "100%", borderRadius: "20px", marginBottom: "2rem" }}
+          style={{ height: "16rem", width: "100%", borderRadius: "16px", marginBottom: "2rem" }}
         />
 
         {/* Focus Stack Skeleton */}
-        <div style={{ marginBottom: "2.25rem" }}>
+        <div style={{ marginBottom: "2rem" }}>
           <div
             className="mast-skeleton"
-            style={{ height: "1rem", width: "160px", borderRadius: "4px", marginBottom: "1rem" }}
+            style={{ height: "0.875rem", width: "150px", borderRadius: "4px", marginBottom: "0.875rem" }}
           />
           <div
             className="mast-skeleton"
-            style={{ height: "3.5rem", width: "100%", borderRadius: "8px", marginBottom: "0.5rem" }}
-          />
-          <div
-            className="mast-skeleton"
-            style={{ height: "3.5rem", width: "100%", borderRadius: "8px", marginBottom: "0.5rem" }}
-          />
-          <div
-            className="mast-skeleton"
-            style={{ height: "3.5rem", width: "100%", borderRadius: "8px" }}
+            style={{ height: "11rem", width: "100%", borderRadius: "14px" }}
           />
         </div>
 
-        {/* Goals Skeleton */}
-        <div
-          className="mast-skeleton"
-          style={{ height: "12rem", width: "100%", borderRadius: "14px", marginBottom: "2rem" }}
-        />
-
-        {/* Momentum & Milestone Skeleton */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" }}>
-          <div className="mast-skeleton" style={{ height: "11rem", borderRadius: "14px" }} />
-          <div className="mast-skeleton" style={{ height: "11rem", borderRadius: "14px" }} />
+        {/* Paired Grid Skeleton: Goals + Momentum */}
+        <div style={{ display: "grid", gridTemplateColumns: "1.15fr 0.85fr", gap: "1.5rem", marginBottom: "2rem" }}>
+          <div className="mast-skeleton" style={{ height: "12rem", borderRadius: "14px" }} />
+          <div className="mast-skeleton" style={{ height: "12rem", borderRadius: "14px" }} />
         </div>
+
+        {/* Milestone Skeleton */}
+        <div className="mast-skeleton" style={{ height: "8rem", width: "100%", borderRadius: "14px" }} />
       </div>
 
       <style>{`
@@ -311,6 +349,7 @@ function FocusLoading() {
           position: relative;
           min-height: 100%;
           width: 100%;
+          background: var(--background, #0c0f17);
         }
         .focus-main-content {
           max-width: 1080px;

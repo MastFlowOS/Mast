@@ -3,12 +3,7 @@ import { Link } from "@tanstack/react-router";
 import {
   ArrowRight,
   Check,
-  Sparkles,
-  Zap,
-  TrendingUp,
-  Clock,
   Radio,
-  Trophy,
   Activity,
   Compass,
 } from "lucide-react";
@@ -25,6 +20,14 @@ import {
   type FocusWeeklyPulse,
 } from "@/lib/focus";
 import { MILESTONE_XP_BADGE_ID } from "@/lib/xp-fly";
+
+export type FocusTodayContext = {
+  completedGoalsCount: number;
+  totalGoalsCount: number;
+  prioritiesCount: number;
+  availableXp: number;
+  currentXp: number;
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 1. WELCOME (Compact Greeting)
@@ -53,70 +56,55 @@ export function FocusGreeting({ period, name, subtitle }: GreetingProps) {
           <span className="focus-status-beacon" aria-hidden="true" />
           <span className="focus-eyebrow-text">COMMAND LAYER · FOCUS</span>
         </div>
-        <div className="focus-greeting-title-row">
-          <h1 className="focus-greeting-heading">
-            {salutation}, <span className="focus-greeting-name">{name || "MAST"}</span>.
-          </h1>
-          <p className="focus-greeting-sub">{subtitle}</p>
-        </div>
+        <h1 className="focus-greeting-heading">
+          {salutation}, <span className="focus-greeting-name">{name || "MAST"}</span>.
+        </h1>
+        <p className="focus-greeting-sub">{subtitle}</p>
       </div>
 
       <style>{`
         .focus-greeting-section {
-          padding-top: 1.5rem;
-          padding-bottom: 1.75rem;
+          padding-top: 1.25rem;
+          padding-bottom: 1.25rem;
         }
 
         .focus-greeting-container {
           display: flex;
           flex-direction: column;
-          gap: 0.5rem;
+          gap: 0.25rem;
         }
 
         .focus-greeting-eyebrow {
           display: inline-flex;
           align-items: center;
-          gap: 0.5rem;
+          gap: 0.45rem;
+          margin-bottom: 0.15rem;
         }
 
         .focus-status-beacon {
-          width: 6px;
-          height: 6px;
+          width: 5px;
+          height: 5px;
           border-radius: 50%;
-          background: #a855f7;
-          box-shadow: 0 0 10px rgba(168, 85, 247, 0.7);
-          animation: beacon-pulse 2.8s ease-in-out infinite;
-        }
-
-        @keyframes beacon-pulse {
-          0%, 100% { opacity: 0.6; transform: scale(1); }
-          50% { opacity: 1; transform: scale(1.15); box-shadow: 0 0 14px rgba(168, 85, 247, 0.9); }
+          background: var(--brand, #7c3aed);
         }
 
         .focus-eyebrow-text {
           font-size: 0.6875rem;
           font-weight: 700;
-          letter-spacing: 0.14em;
+          letter-spacing: 0.12em;
           text-transform: uppercase;
-          color: rgba(168, 85, 247, 0.9);
+          color: rgba(255, 255, 255, 0.4);
           font-family: var(--font-sans, system-ui);
         }
 
-        .focus-greeting-title-row {
-          display: flex;
-          align-items: baseline;
-          justify-content: space-between;
-          flex-wrap: wrap;
-          gap: 0.75rem 1.5rem;
-        }
-
         .focus-greeting-heading {
-          font-size: clamp(1.5rem, 3.2vw, 2.125rem);
+          font-size: clamp(1.375rem, 2.8vw, 1.875rem);
           font-weight: 600;
           letter-spacing: -0.025em;
           line-height: 1.2;
           color: #ffffff;
           margin: 0;
+          word-break: break-word;
         }
 
         .focus-greeting-name {
@@ -125,17 +113,12 @@ export function FocusGreeting({ period, name, subtitle }: GreetingProps) {
         }
 
         .focus-greeting-sub {
-          font-size: 0.875rem;
-          color: rgba(255, 255, 255, 0.55);
+          font-size: 0.8125rem;
+          color: rgba(255, 255, 255, 0.5);
           margin: 0;
-          max-width: 480px;
-          line-height: 1.45;
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          .focus-status-beacon {
-            animation: none;
-          }
+          max-width: 560px;
+          line-height: 1.4;
+          word-break: break-word;
         }
       `}</style>
     </header>
@@ -143,42 +126,42 @@ export function FocusGreeting({ period, name, subtitle }: GreetingProps) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 2. YOUR FOCUS (Dominant Primary Hero Module)
+// 2. YOUR FOCUS (Dominant Composed Module: Left Recommendation + Right TODAY)
 // ══════════════════════════════════════════════════════════════════════════════
 
 type PrimaryHeroProps = {
   recommendation: FocusPrimaryRecommendation | null;
+  todayContext: FocusTodayContext;
 };
 
-export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
+export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroProps) {
   if (!recommendation) return null;
 
   return (
     <section className="focus-hero-module animate-fade-up" aria-labelledby="your-focus-heading">
-      {/* Ambient restrained light glow */}
-      <div className="focus-hero-ambient" aria-hidden="true" />
-
       <div className="focus-hero-grid">
-        {/* LEFT: Dominant recommendation */}
+        {/* LEFT: Dominant recommendation (~68% on desktop) */}
         <div className="focus-hero-left">
-          <div className="focus-hero-badge-row">
-            <span className="focus-hero-eyebrow">
-              <span className="focus-hero-dot" aria-hidden="true" />
-              YOUR FOCUS
-            </span>
-            <span className="focus-hero-category">{recommendation.category}</span>
-          </div>
+          <div>
+            <div className="focus-hero-badge-row">
+              <span className="focus-hero-eyebrow">
+                <span className="focus-hero-dot" aria-hidden="true" />
+                YOUR FOCUS
+              </span>
+              <span className="focus-hero-category">{recommendation.category}</span>
+            </div>
 
-          <h2 id="your-focus-heading" className="focus-hero-headline">
-            {recommendation.headline}
-          </h2>
+            <h2 id="your-focus-heading" className="focus-hero-headline">
+              {recommendation.headline}
+            </h2>
 
-          <p className="focus-hero-desc">{recommendation.description}</p>
+            <p className="focus-hero-desc">{recommendation.description}</p>
 
-          {/* WHY NOW Callout */}
-          <div className="focus-why-callout">
-            <span className="focus-why-tag">WHY NOW</span>
-            <p className="focus-why-text">{recommendation.whyNow}</p>
+            {/* WHY NOW Callout (restrained neutral) */}
+            <div className="focus-why-callout">
+              <span className="focus-why-tag">WHY NOW</span>
+              <p className="focus-why-text">{recommendation.whyNow}</p>
+            </div>
           </div>
 
           {/* Primary Action Button */}
@@ -190,15 +173,46 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
           </div>
         </div>
 
-        {/* RIGHT: Supporting signal & context */}
+        {/* RIGHT: Compact TODAY Context & Signal Context (~32% on desktop) */}
         <div className="focus-hero-right">
-          <div className="focus-context-card">
+          <div className="focus-context-panel">
+            {/* Today Summary Header */}
             <div className="focus-context-header">
-              <span className="focus-context-title">SIGNAL CONTEXT</span>
+              <span className="focus-context-title">TODAY</span>
               <span className="focus-context-status">LIVE</span>
             </div>
 
-            <div className="focus-metrics-list">
+            {/* High-level status numbers */}
+            <div className="focus-today-metrics">
+              <div className="focus-today-stat-row">
+                <span className="focus-today-stat-label">Goals</span>
+                <span className="focus-today-stat-val">
+                  {todayContext.completedGoalsCount} of {todayContext.totalGoalsCount} completed
+                </span>
+              </div>
+              <div className="focus-today-stat-row">
+                <span className="focus-today-stat-label">Priorities</span>
+                <span className="focus-today-stat-val">
+                  {todayContext.prioritiesCount} in stack
+                </span>
+              </div>
+              <div className="focus-today-stat-row">
+                <span className="focus-today-stat-label">XP Available</span>
+                <span className="focus-today-stat-xp">
+                  +{todayContext.availableXp} XP
+                </span>
+              </div>
+            </div>
+
+            {/* Internal Divider */}
+            <div className="focus-context-divider" />
+
+            {/* Signal Context details from recommendation */}
+            <div className="focus-context-header">
+              <span className="focus-context-subtitle">SIGNAL CONTEXT</span>
+            </div>
+
+            <div className="focus-signal-metrics">
               {recommendation.metrics.map((m) => (
                 <div key={m.label} className="focus-metric-item">
                   <span className="focus-metric-label">{m.label}</span>
@@ -207,6 +221,7 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
               ))}
             </div>
 
+            {/* Footer filter tag */}
             <div className="focus-context-footer">
               <span className="focus-footer-pill">
                 <Radio className="focus-footer-icon" aria-hidden="true" />
@@ -220,52 +235,32 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
       <style>{`
         .focus-hero-module {
           position: relative;
-          background: linear-gradient(175deg, #15131f 0%, #0f0e15 50%, #0a090e 100%);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 20px;
-          padding: 2.25rem 2.25rem 2rem;
+          background: var(--card, #12151e);
+          border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+          border-radius: 16px;
           margin-bottom: 2rem;
-          box-shadow: 0 20px 50px -15px rgba(0, 0, 0, 0.8),
-                      inset 0 1px 0 rgba(255, 255, 255, 0.08);
           overflow: hidden;
         }
 
-        .focus-hero-ambient {
-          position: absolute;
-          top: -40%;
-          left: -10%;
-          width: 70%;
-          height: 90%;
-          background: radial-gradient(ellipse at center, rgba(168, 85, 247, 0.12) 0%, transparent 70%);
-          pointer-events: none;
-          animation: ambient-drift 8s ease-in-out infinite alternate;
-        }
-
-        @keyframes ambient-drift {
-          0% { transform: translateY(0) scale(1); opacity: 0.7; }
-          100% { transform: translateY(12px) scale(1.08); opacity: 1; }
-        }
-
         .focus-hero-grid {
-          position: relative;
-          z-index: 1;
           display: grid;
-          grid-template-columns: 1fr 340px;
-          gap: 2.5rem;
+          grid-template-columns: 1fr 320px;
           align-items: stretch;
         }
 
         .focus-hero-left {
+          padding: 2rem 2.25rem;
           display: flex;
           flex-direction: column;
           justify-content: space-between;
+          gap: 1.5rem;
         }
 
         .focus-hero-badge-row {
           display: flex;
           align-items: center;
           gap: 0.75rem;
-          margin-bottom: 1rem;
+          margin-bottom: 0.875rem;
         }
 
         .focus-hero-eyebrow {
@@ -274,23 +269,22 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
           gap: 0.45rem;
           font-size: 0.6875rem;
           font-weight: 700;
-          letter-spacing: 0.14em;
+          letter-spacing: 0.12em;
           text-transform: uppercase;
-          color: #c084fc;
+          color: var(--brand, #a855f7);
         }
 
         .focus-hero-dot {
-          width: 5px;
-          height: 5px;
+          width: 6px;
+          height: 6px;
           border-radius: 50%;
-          background: #c084fc;
-          box-shadow: 0 0 8px rgba(192, 132, 252, 0.8);
+          background: var(--brand, #a855f7);
         }
 
         .focus-hero-category {
           font-size: 0.625rem;
           font-weight: 600;
-          letter-spacing: 0.1em;
+          letter-spacing: 0.08em;
           text-transform: uppercase;
           color: rgba(255, 255, 255, 0.4);
           padding: 0.15rem 0.5rem;
@@ -300,21 +294,21 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
         }
 
         .focus-hero-headline {
-          font-size: clamp(1.625rem, 2.8vw, 2.25rem);
+          font-size: clamp(1.5rem, 2.6vw, 2.125rem);
           font-weight: 600;
-          letter-spacing: -0.03em;
+          letter-spacing: -0.025em;
           line-height: 1.25;
           color: #ffffff;
-          margin: 0 0 0.75rem;
-          max-width: 620px;
+          margin: 0 0 0.625rem;
+          max-width: 640px;
         }
 
         .focus-hero-desc {
           font-size: 0.9375rem;
           color: rgba(255, 255, 255, 0.7);
           margin: 0 0 1.25rem;
-          line-height: 1.55;
-          max-width: 580px;
+          line-height: 1.5;
+          max-width: 600px;
         }
 
         .focus-why-callout {
@@ -322,25 +316,24 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
           flex-direction: column;
           gap: 0.25rem;
           padding: 0.75rem 1rem;
-          border-radius: 10px;
-          background: rgba(168, 85, 247, 0.05);
-          border: 1px solid rgba(168, 85, 247, 0.15);
-          margin-bottom: 1.5rem;
-          max-width: 580px;
+          border-radius: 8px;
+          background: rgba(255, 255, 255, 0.025);
+          border: 1px solid rgba(255, 255, 255, 0.07);
+          max-width: 600px;
         }
 
         .focus-why-tag {
           font-size: 0.625rem;
           font-weight: 700;
           font-family: var(--font-mono, monospace);
-          letter-spacing: 0.12em;
-          color: #c084fc;
+          letter-spacing: 0.1em;
+          color: rgba(255, 255, 255, 0.45);
         }
 
         .focus-why-text {
           font-size: 0.8125rem;
-          color: rgba(255, 255, 255, 0.75);
-          line-height: 1.5;
+          color: rgba(255, 255, 255, 0.8);
+          line-height: 1.45;
           margin: 0;
         }
 
@@ -351,94 +344,126 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
         .focus-hero-cta {
           display: inline-flex;
           align-items: center;
-          gap: 0.625rem;
-          padding: 0.75rem 1.5rem;
-          border-radius: 10px;
-          background: #7c3aed;
+          gap: 0.5rem;
+          padding: 0.625rem 1.25rem;
+          border-radius: 8px;
+          background: var(--brand, #7c3aed);
           color: #ffffff;
           font-size: 0.875rem;
           font-weight: 600;
-          letter-spacing: 0.01em;
           text-decoration: none;
-          box-shadow: 0 4px 18px rgba(124, 58, 237, 0.45),
-                      inset 0 1px 0 rgba(255, 255, 255, 0.2);
-          transition: background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+          transition: background 150ms ease, opacity 150ms ease;
         }
 
         .focus-hero-cta:hover {
-          background: #6d28d9;
-          transform: translateY(-1px);
-          box-shadow: 0 8px 25px rgba(124, 58, 237, 0.6);
-        }
-
-        .focus-hero-cta:active {
-          transform: translateY(0);
+          background: var(--brand-dark, #6d28d9);
         }
 
         .focus-hero-cta:focus-visible {
-          outline: 2px solid #a855f7;
-          outline-offset: 3px;
+          outline: 2px solid var(--brand, #7c3aed);
+          outline-offset: 2px;
         }
 
         .focus-cta-arrow {
-          width: 1rem;
-          height: 1rem;
-          transition: transform 180ms ease;
+          width: 0.9375rem;
+          height: 0.9375rem;
+          transition: transform 150ms ease;
         }
 
         .focus-hero-cta:hover .focus-cta-arrow {
           transform: translateX(3px);
         }
 
-        /* Context card on the right */
+        /* Right Column */
         .focus-hero-right {
+          background: rgba(255, 255, 255, 0.015);
+          border-left: 1px solid rgba(255, 255, 255, 0.07);
           display: flex;
           flex-direction: column;
         }
 
-        .focus-context-card {
-          flex: 1;
+        .focus-context-panel {
+          padding: 1.75rem 1.5rem;
+          height: 100%;
           display: flex;
           flex-direction: column;
           justify-content: space-between;
-          background: rgba(255, 255, 255, 0.02);
-          border: 1px solid rgba(255, 255, 255, 0.06);
-          border-radius: 14px;
-          padding: 1.25rem 1.25rem 1rem;
         }
 
         .focus-context-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding-bottom: 0.875rem;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+          margin-bottom: 0.875rem;
         }
 
         .focus-context-title {
           font-size: 0.6875rem;
           font-weight: 700;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: rgba(255, 255, 255, 0.5);
+        }
+
+        .focus-context-subtitle {
+          font-size: 0.625rem;
+          font-weight: 700;
           letter-spacing: 0.1em;
           text-transform: uppercase;
-          color: rgba(255, 255, 255, 0.45);
+          color: rgba(255, 255, 255, 0.4);
         }
 
         .focus-context-status {
           font-size: 0.625rem;
           font-weight: 700;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.06em;
           color: #34d399;
           background: rgba(52, 211, 153, 0.1);
-          padding: 0.15rem 0.45rem;
+          padding: 0.1rem 0.4rem;
           border-radius: 4px;
           border: 1px solid rgba(52, 211, 153, 0.25);
         }
 
-        .focus-metrics-list {
+        .focus-today-metrics {
           display: flex;
           flex-direction: column;
-          gap: 0.75rem;
+          gap: 0.625rem;
+        }
+
+        .focus-today-stat-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          font-size: 0.75rem;
+          flex-wrap: wrap;
+          gap: 0.25rem;
+        }
+
+        .focus-today-stat-label {
+          color: rgba(255, 255, 255, 0.45);
+        }
+
+        .focus-today-stat-val {
+          color: #ffffff;
+          font-weight: 600;
+        }
+
+        .focus-today-stat-xp {
+          color: #fbbf24;
+          font-weight: 700;
+          font-family: var(--font-mono, monospace);
+        }
+
+        .focus-context-divider {
+          height: 1px;
+          background: rgba(255, 255, 255, 0.06);
           margin: 1.25rem 0;
+        }
+
+        .focus-signal-metrics {
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
         }
 
         .focus-metric-item {
@@ -448,20 +473,21 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
         }
 
         .focus-metric-label {
-          font-size: 0.75rem;
-          color: rgba(255, 255, 255, 0.5);
+          font-size: 0.6875rem;
+          color: rgba(255, 255, 255, 0.45);
           text-transform: capitalize;
         }
 
         .focus-metric-value {
-          font-size: 0.8125rem;
+          font-size: 0.75rem;
           font-weight: 600;
           color: #ffffff;
           font-variant-numeric: tabular-nums;
         }
 
         .focus-context-footer {
-          padding-top: 0.75rem;
+          padding-top: 1rem;
+          margin-top: 1rem;
           border-top: 1px solid rgba(255, 255, 255, 0.05);
         }
 
@@ -470,31 +496,43 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
           align-items: center;
           gap: 0.35rem;
           font-size: 0.6875rem;
-          color: rgba(255, 255, 255, 0.45);
+          color: rgba(255, 255, 255, 0.4);
         }
 
         .focus-footer-icon {
           width: 0.75rem;
           height: 0.75rem;
-          color: #a855f7;
+          color: var(--brand, #7c3aed);
         }
 
-        @media (max-width: 920px) {
+        @media (max-width: 960px) {
           .focus-hero-grid {
-            grid-template-columns: 1fr;
-            gap: 1.75rem;
+            grid-template-columns: minmax(0, 1fr);
+          }
+          .focus-hero-right {
+            border-left: none;
+            border-top: 1px solid rgba(255, 255, 255, 0.07);
+          }
+          .focus-hero-left {
+            padding: 1.75rem 1.5rem;
+            min-width: 0;
+          }
+          .focus-context-panel {
+            padding: 1.5rem;
+            min-width: 0;
           }
         }
 
         @media (max-width: 640px) {
-          .focus-hero-module {
-            padding: 1.5rem 1.25rem 1.35rem;
+          .focus-hero-left {
+            padding: 1.25rem 1rem;
           }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          .focus-hero-ambient {
-            animation: none;
+          .focus-context-panel {
+            padding: 1.125rem 1rem;
+          }
+          .focus-hero-headline {
+            font-size: 1.35rem;
+            line-height: 1.3;
           }
         }
       `}</style>
@@ -503,7 +541,7 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 3. FOCUS STACK (3 Priorities)
+// 3. FOCUS STACK (3 Priorities - Coherent Surface with Editorial Rows)
 // ══════════════════════════════════════════════════════════════════════════════
 
 type StackProps = {
@@ -511,8 +549,6 @@ type StackProps = {
 };
 
 export function FocusStack({ priorities }: StackProps) {
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-
   if (priorities.length === 0) return null;
 
   return (
@@ -527,17 +563,10 @@ export function FocusStack({ priorities }: StackProps) {
         <span className="focus-module-hint">Intelligently filtered</span>
       </div>
 
-      <div className="focus-stack-list" role="list">
-        {priorities.map((item) => {
-          const isHovered = hoveredId === item.id;
-          return (
-            <div
-              key={item.id}
-              role="listitem"
-              className={cn("focus-stack-row", isHovered && "focus-stack-row-hovered")}
-              onMouseEnter={() => setHoveredId(item.id)}
-              onMouseLeave={() => setHoveredId(null)}
-            >
+      <div className="focus-stack-card">
+        <div className="focus-stack-list" role="list">
+          {priorities.map((item) => (
+            <div key={item.id} role="listitem" className="focus-stack-row">
               <div className="focus-stack-main">
                 <span className="focus-stack-num">{item.number}</span>
 
@@ -546,9 +575,7 @@ export function FocusStack({ priorities }: StackProps) {
                     <span className="focus-stack-title">{item.title}</span>
                     <span className="focus-stack-meta">{item.metadata}</span>
                   </div>
-
-                  {/* Context / Why Explanation */}
-                  <div className={cn("focus-stack-why", isHovered && "focus-stack-why-visible")}>
+                  <div className="focus-stack-why">
                     <span className="focus-why-prefix">WHY:</span> {item.why}
                   </div>
                 </div>
@@ -565,36 +592,35 @@ export function FocusStack({ priorities }: StackProps) {
                 </Link>
               </div>
             </div>
-          );
-        })}
+          ))}
+        </div>
       </div>
 
       <style>{`
         .focus-stack-section {
-          margin-bottom: 2.25rem;
+          margin-bottom: 2rem;
         }
 
         .focus-module-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding-bottom: 0.875rem;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-          margin-bottom: 0.25rem;
+          padding-bottom: 0.625rem;
+          margin-bottom: 0.5rem;
         }
 
         .focus-module-title-wrap {
           display: flex;
           align-items: center;
-          gap: 0.75rem;
+          gap: 0.625rem;
         }
 
         .focus-module-title {
-          font-size: 0.8125rem;
+          font-size: 0.75rem;
           font-weight: 700;
           letter-spacing: 0.12em;
           text-transform: uppercase;
-          color: rgba(255, 255, 255, 0.85);
+          color: rgba(255, 255, 255, 0.7);
           margin: 0;
         }
 
@@ -602,17 +628,24 @@ export function FocusStack({ priorities }: StackProps) {
           font-size: 0.625rem;
           font-weight: 700;
           font-family: var(--font-mono, monospace);
-          letter-spacing: 0.08em;
-          color: #c084fc;
-          background: rgba(168, 85, 247, 0.1);
-          border: 1px solid rgba(168, 85, 247, 0.25);
-          padding: 0.15rem 0.5rem;
+          letter-spacing: 0.06em;
+          color: var(--brand, #a855f7);
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          padding: 0.1rem 0.45rem;
           border-radius: 4px;
         }
 
         .focus-module-hint {
-          font-size: 0.75rem;
-          color: rgba(255, 255, 255, 0.4);
+          font-size: 0.6875rem;
+          color: rgba(255, 255, 255, 0.35);
+        }
+
+        .focus-stack-card {
+          background: var(--card, #12151e);
+          border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+          border-radius: 14px;
+          overflow: hidden;
         }
 
         .focus-stack-list {
@@ -625,18 +658,17 @@ export function FocusStack({ priorities }: StackProps) {
           align-items: center;
           justify-content: space-between;
           gap: 1.25rem;
-          padding: 1.125rem 0.75rem;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-          border-radius: 8px;
-          transition: background 150ms ease, transform 150ms ease, padding 150ms ease;
+          padding: 1.125rem 1.5rem;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+          transition: background 150ms ease;
         }
 
         .focus-stack-row:last-child {
           border-bottom: none;
         }
 
-        .focus-stack-row-hovered {
-          background: rgba(255, 255, 255, 0.025);
+        .focus-stack-row:hover {
+          background: rgba(255, 255, 255, 0.02);
         }
 
         .focus-stack-main {
@@ -650,9 +682,9 @@ export function FocusStack({ priorities }: StackProps) {
         .focus-stack-num {
           font-family: var(--font-mono, monospace);
           font-size: 0.8125rem;
-          font-weight: 600;
+          font-weight: 700;
           color: rgba(255, 255, 255, 0.35);
-          padding-top: 0.125rem;
+          padding-top: 0.1rem;
           flex-shrink: 0;
         }
 
@@ -665,7 +697,7 @@ export function FocusStack({ priorities }: StackProps) {
           display: flex;
           align-items: baseline;
           flex-wrap: wrap;
-          gap: 0.5rem 1rem;
+          gap: 0.35rem 0.875rem;
         }
 
         .focus-stack-title {
@@ -681,15 +713,14 @@ export function FocusStack({ priorities }: StackProps) {
 
         .focus-stack-why {
           font-size: 0.75rem;
-          color: rgba(255, 255, 255, 0.6);
-          line-height: 1.45;
-          margin-top: 0.35rem;
-          transition: opacity 150ms ease, transform 150ms ease;
+          color: rgba(255, 255, 255, 0.55);
+          line-height: 1.4;
+          margin-top: 0.25rem;
         }
 
         .focus-why-prefix {
           font-weight: 700;
-          color: #c084fc;
+          color: rgba(255, 255, 255, 0.4);
         }
 
         .focus-stack-action {
@@ -699,32 +730,27 @@ export function FocusStack({ priorities }: StackProps) {
         .focus-stack-link {
           display: inline-flex;
           align-items: center;
-          gap: 0.45rem;
+          gap: 0.4rem;
           color: rgba(255, 255, 255, 0.65);
           text-decoration: none;
           font-size: 0.8125rem;
           font-weight: 600;
-          padding: 0.4rem 0.75rem;
+          padding: 0.35rem 0.65rem;
           border-radius: 6px;
-          border: 1px solid transparent;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: rgba(255, 255, 255, 0.02);
           transition: all 150ms ease;
         }
 
-        .focus-stack-link:hover,
-        .focus-stack-row-hovered .focus-stack-link {
-          color: #c084fc;
-          background: rgba(168, 85, 247, 0.08);
-          border-color: rgba(168, 85, 247, 0.2);
-        }
-
-        .focus-stack-link:focus-visible {
-          outline: 2px solid #a855f7;
-          outline-offset: 2px;
+        .focus-stack-link:hover {
+          color: #ffffff;
+          background: rgba(255, 255, 255, 0.06);
+          border-color: rgba(255, 255, 255, 0.15);
         }
 
         .focus-link-arrow {
-          width: 0.875rem;
-          height: 0.875rem;
+          width: 0.8125rem;
+          height: 0.8125rem;
           transition: transform 150ms ease;
         }
 
@@ -737,7 +763,7 @@ export function FocusStack({ priorities }: StackProps) {
             flex-direction: column;
             align-items: flex-start;
             gap: 0.75rem;
-            padding: 1rem 0.5rem;
+            padding: 1rem;
           }
           .focus-stack-action {
             align-self: flex-end;
@@ -749,7 +775,7 @@ export function FocusStack({ priorities }: StackProps) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 4. TODAY'S GOALS (Single Coherent Module)
+// 4. TODAY'S GOALS (Row-based with Nearest-to-Completion Emphasis)
 // ══════════════════════════════════════════════════════════════════════════════
 
 type GoalsProps = {
@@ -772,18 +798,27 @@ export function FocusGoals({
   const completedCount = goals.filter((g) => isGoalComplete(g)).length;
   const totalXp = goals.reduce((sum, g) => sum + g.xp, 0);
 
+  // Find nearest-to-completion incomplete goal to emphasize
+  const incompleteGoals = goals.filter((g) => !isGoalComplete(g));
+  const nearestGoalId =
+    incompleteGoals.length > 0
+      ? incompleteGoals.reduce((nearest, g) =>
+          goalProgress(g) > goalProgress(nearest) ? g : nearest,
+        ).id
+      : null;
+
   return (
-    <section className="focus-goals-section animate-fade-up" aria-labelledby="todays-goals-title">
+    <div className="focus-goals-module" aria-labelledby="todays-goals-title">
       <div className="focus-module-header">
         <div className="focus-module-title-wrap">
           <h2 id="todays-goals-title" className="focus-module-title">
             TODAY'S GOALS
           </h2>
           <span className="focus-module-badge">
-            {completedCount} / {goals.length} COMPLETED
+            {completedCount} / {goals.length}
           </span>
         </div>
-        <span className="focus-goals-xp-summary">+{totalXp} XP Available</span>
+        <span className="focus-goals-xp-summary">+{totalXp} XP</span>
       </div>
 
       <div className="focus-goals-card">
@@ -795,6 +830,7 @@ export function FocusGoals({
             const isClaiming = claimingGoalIds.has(goal.id);
             const isExiting = exitingGoalIds.has(goal.id);
             const claimable = complete && !isClaimed && !isClaiming;
+            const isPriority = goal.id === nearestGoalId;
 
             return (
               <GoalEditorialRow
@@ -807,6 +843,7 @@ export function FocusGoals({
                 isClaimed={isClaimed}
                 isClaiming={isClaiming}
                 isExiting={isExiting}
+                isPriority={isPriority}
                 onClaim={onClaim}
               />
             );
@@ -815,43 +852,45 @@ export function FocusGoals({
       </div>
 
       <style>{`
-        .focus-goals-section {
-          margin-bottom: 2.25rem;
+        .focus-goals-module {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
         }
 
         .focus-goals-xp-summary {
-          font-size: 0.75rem;
+          font-size: 0.6875rem;
           font-weight: 700;
           color: #fbbf24;
           font-family: var(--font-mono, monospace);
         }
 
         .focus-goals-card {
-          background: rgba(255, 255, 255, 0.015);
-          border: 1px solid rgba(255, 255, 255, 0.06);
+          flex: 1;
+          background: var(--card, #12151e);
+          border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
           border-radius: 14px;
           overflow: hidden;
-          margin-top: 0.75rem;
         }
 
         .focus-goals-table {
           display: flex;
           flex-direction: column;
+          height: 100%;
         }
       `}</style>
-    </section>
+    </div>
   );
 }
 
 function GoalEditorialRow({
   goal,
-  index,
   pct,
   complete,
   claimable,
-  isClaimed,
   isClaiming,
   isExiting,
+  isPriority,
   onClaim,
 }: {
   goal: FocusGoal;
@@ -862,10 +901,10 @@ function GoalEditorialRow({
   isClaimed: boolean;
   isClaiming: boolean;
   isExiting: boolean;
+  isPriority: boolean;
   onClaim: (goal: FocusGoal, el: HTMLElement | null) => void;
 }) {
   const rowRef = useRef<HTMLDivElement>(null);
-  const numStr = String(index + 1).padStart(2, "0");
 
   function handleClick() {
     if (!claimable) return;
@@ -884,7 +923,11 @@ function GoalEditorialRow({
       ref={rowRef}
       role={claimable ? "button" : "listitem"}
       tabIndex={claimable ? 0 : undefined}
-      aria-label={claimable ? `Claim +${goal.xp} XP for ${goal.label}` : `${goal.label}, ${pct}% complete`}
+      aria-label={
+        claimable
+          ? `Claim +${goal.xp} XP for ${goal.label}`
+          : `${goal.label}, ${pct}% complete`
+      }
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       className={cn(
@@ -893,50 +936,55 @@ function GoalEditorialRow({
         claimable && "focus-goal-claimable",
         isClaiming && "focus-goal-claiming",
         isExiting && "focus-goal-exiting",
+        isPriority && "focus-goal-priority",
       )}
     >
-      <div className="focus-goal-left">
-        <span className="focus-goal-num">{numStr}</span>
-        <span className="focus-goal-label">{goal.label}</span>
-      </div>
-
-      <div className="focus-goal-center">
+      <div className="focus-goal-header-row">
+        <div className="focus-goal-title-wrap">
+          <span className="focus-goal-label">{goal.label}</span>
+          {isPriority && <span className="focus-priority-tag">NEAREST</span>}
+        </div>
         <div className="focus-goal-fraction">
           {Math.min(goal.current, goal.target)} / {goal.target}
         </div>
+      </div>
+
+      <div className="focus-goal-progress-row">
         <div className="focus-goal-track">
           <div
             className={cn("focus-goal-fill", complete ? "focus-fill-complete" : "focus-fill-active")}
             style={{ width: `${pct}%` }}
           />
         </div>
-        <span className="focus-goal-pct">{pct}%</span>
-      </div>
 
-      <div className="focus-goal-right">
-        {complete ? (
-          <span className="focus-goal-badge-complete">
-            <Check className="focus-goal-check" aria-hidden="true" />
-            {claimable ? `CLAIM +${goal.xp} XP` : "COMPLETED"}
-          </span>
-        ) : (
-          <span className="focus-goal-xp">+{goal.xp} XP</span>
-        )}
+        <div className="focus-goal-status-col">
+          {complete ? (
+            <span className="focus-goal-badge-complete">
+              <Check className="focus-goal-check" aria-hidden="true" />
+              {claimable ? `CLAIM +${goal.xp} XP` : "DONE"}
+            </span>
+          ) : (
+            <span className="focus-goal-xp">+{goal.xp} XP</span>
+          )}
+        </div>
       </div>
 
       <style>{`
         .focus-goal-row {
-          display: grid;
-          grid-template-columns: 240px 1fr 140px;
-          align-items: center;
-          gap: 1.5rem;
-          padding: 1rem 1.25rem;
+          padding: 0.875rem 1.25rem;
           border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-          transition: background 160ms ease, border-color 160ms ease;
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+          transition: background 150ms ease;
         }
 
         .focus-goal-row:last-child {
           border-bottom: none;
+        }
+
+        .focus-goal-priority {
+          background: rgba(255, 255, 255, 0.02);
         }
 
         .focus-goal-claimable {
@@ -944,45 +992,55 @@ function GoalEditorialRow({
         }
 
         .focus-goal-claimable:hover {
-          background: rgba(168, 85, 247, 0.05);
+          background: rgba(255, 255, 255, 0.035);
         }
 
         .focus-goal-claimable:focus-visible {
-          outline: 2px solid #a855f7;
+          outline: 2px solid var(--brand, #7c3aed);
           outline-offset: -2px;
         }
 
-        .focus-goal-left {
+        .focus-goal-header-row {
           display: flex;
-          align-items: center;
-          gap: 1rem;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 0.5rem;
         }
 
-        .focus-goal-num {
-          font-family: var(--font-mono, monospace);
-          font-size: 0.75rem;
-          font-weight: 600;
-          color: rgba(255, 255, 255, 0.35);
+        .focus-goal-title-wrap {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
         }
 
         .focus-goal-label {
-          font-size: 0.875rem;
+          font-size: 0.8125rem;
           font-weight: 500;
           color: #ffffff;
         }
 
-        .focus-goal-center {
-          display: flex;
-          align-items: center;
-          gap: 1rem;
+        .focus-priority-tag {
+          font-size: 0.5625rem;
+          font-weight: 700;
+          font-family: var(--font-mono, monospace);
+          letter-spacing: 0.06em;
+          color: rgba(255, 255, 255, 0.45);
+          background: rgba(255, 255, 255, 0.05);
+          padding: 0.1rem 0.35rem;
+          border-radius: 3px;
         }
 
         .focus-goal-fraction {
           font-family: var(--font-mono, monospace);
           font-size: 0.75rem;
           color: rgba(255, 255, 255, 0.5);
-          min-width: 55px;
-          text-align: right;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .focus-goal-progress-row {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
         }
 
         .focus-goal-track {
@@ -996,83 +1054,50 @@ function GoalEditorialRow({
         .focus-goal-fill {
           height: 100%;
           border-radius: 99px;
-          transition: width 600ms cubic-bezier(0.16, 1, 0.3, 1);
+          transition: width 500ms ease;
         }
 
         .focus-fill-active {
-          background: linear-gradient(90deg, #9333ea, #a855f7);
+          background: var(--brand, #7c3aed);
         }
 
         .focus-fill-complete {
-          background: linear-gradient(90deg, #10b981, #34d399);
+          background: #10b981;
         }
 
-        .focus-goal-pct {
-          font-family: var(--font-mono, monospace);
-          font-size: 0.75rem;
-          color: rgba(255, 255, 255, 0.4);
-          min-width: 36px;
-          text-align: right;
-        }
-
-        .focus-goal-right {
-          display: flex;
-          justify-content: flex-end;
+        .focus-goal-status-col {
+          flex-shrink: 0;
         }
 
         .focus-goal-xp {
           font-family: var(--font-mono, monospace);
-          font-size: 0.75rem;
-          font-weight: 700;
+          font-size: 0.6875rem;
+          font-weight: 600;
           color: rgba(255, 255, 255, 0.4);
         }
 
         .focus-goal-badge-complete {
           display: inline-flex;
           align-items: center;
-          gap: 0.35rem;
-          font-size: 0.6875rem;
+          gap: 0.25rem;
+          font-size: 0.625rem;
           font-weight: 700;
           font-family: var(--font-mono, monospace);
           letter-spacing: 0.04em;
           color: #34d399;
           background: rgba(52, 211, 153, 0.1);
           border: 1px solid rgba(52, 211, 153, 0.25);
-          padding: 0.2rem 0.5rem;
-          border-radius: 6px;
+          padding: 0.15rem 0.45rem;
+          border-radius: 4px;
         }
 
         .focus-goal-check {
-          width: 0.75rem;
-          height: 0.75rem;
+          width: 0.6875rem;
+          height: 0.6875rem;
         }
 
         .focus-goal-claiming {
-          animation: goal-claim-rise 700ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-        }
-
-        @keyframes goal-claim-rise {
-          0% { transform: translateY(0); opacity: 1; }
-          40% { transform: translateY(-4px); background: rgba(168, 85, 247, 0.1); }
-          100% { transform: translateY(-8px); opacity: 0; }
-        }
-
-        @media (max-width: 768px) {
-          .focus-goal-row {
-            grid-template-columns: 1fr;
-            gap: 0.75rem;
-            padding: 1rem;
-          }
-          .focus-goal-right {
-            justify-content: flex-start;
-          }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          .focus-goal-claiming {
-            animation: none;
-            opacity: 0.5;
-          }
+          opacity: 0.5;
         }
       `}</style>
     </div>
@@ -1080,179 +1105,65 @@ function GoalEditorialRow({
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 5. MOMENTUM + MILESTONE (Two-Column Section)
+// 5. MOMENTUM (Compact Timeline / Recent Wins)
 // ══════════════════════════════════════════════════════════════════════════════
 
-type MomentumMilestoneProps = {
+type MomentumProps = {
   events: FocusMomentumEvent[];
-  xp: number;
-  currentName: string;
-  nextName: string | null;
-  progressPct: number;
-  leveledUpTier?: string | null;
 };
 
-export function FocusMomentumMilestone({
-  events,
-  xp,
-  currentName,
-  nextName,
-  progressPct,
-  leveledUpTier,
-}: MomentumMilestoneProps) {
-  const currentIndex = MILESTONE_TIERS.findIndex((t) => t.name === currentName);
-  const nextTier = MILESTONE_TIERS.find((t) => t.name === nextName);
-
+export function FocusMomentum({ events }: MomentumProps) {
   return (
-    <section className="focus-momentum-milestone animate-fade-up" aria-label="Momentum and Milestone">
-      {/* LEFT: Momentum Activity */}
-      <div className="focus-col-module">
-        <div className="focus-module-header">
-          <div className="focus-module-title-wrap">
-            <h2 className="focus-module-title">MOMENTUM</h2>
-            <span className="focus-module-badge">RECENT WINS</span>
-          </div>
-          <Activity className="focus-module-icon" aria-hidden="true" />
+    <div className="focus-momentum-module" aria-label="Recent Momentum">
+      <div className="focus-module-header">
+        <div className="focus-module-title-wrap">
+          <h2 className="focus-module-title">MOMENTUM</h2>
+          <span className="focus-module-badge">ACTIVITY</span>
         </div>
-
-        <div className="focus-momentum-card">
-          <div className="focus-timeline-list" role="list">
-            {events.map((evt) => (
-              <div key={evt.id} className="focus-timeline-item" role="listitem">
-                <div className="focus-timeline-dot" aria-hidden="true" />
-                <div className="focus-timeline-content">
-                  <div className="focus-timeline-row">
-                    <span className="focus-timeline-delta">{evt.delta}</span>
-                    <span className="focus-timeline-label">{evt.label}</span>
-                  </div>
-                  <p className="focus-timeline-detail">{evt.detail}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <Activity className="focus-module-icon" aria-hidden="true" />
       </div>
 
-      {/* RIGHT: Milestone Journey */}
-      <div className="focus-col-module">
-        <div className="focus-module-header">
-          <div className="focus-module-title-wrap">
-            <h2 className="focus-module-title">MILESTONE</h2>
-            <span className="focus-module-badge">JOURNEY</span>
-          </div>
-          <div id={MILESTONE_XP_BADGE_ID} className="focus-xp-counter">
-            {xp.toLocaleString()} <span className="focus-xp-unit">XP</span>
-          </div>
-        </div>
-
-        <div className="focus-milestone-card">
-          {/* Journey progress track */}
-          <div className="focus-journey-track-wrap">
-            <div className="focus-journey-track">
-              <div
-                className="focus-journey-fill"
-                style={{ width: `${progressPct}%` }}
-                aria-label={`Milestone progress: ${progressPct}%`}
-              />
+      <div className="focus-momentum-card">
+        <div className="focus-timeline-list" role="list">
+          {events.map((evt) => (
+            <div key={evt.id} className="focus-timeline-item" role="listitem">
+              <div className="focus-timeline-bullet" aria-hidden="true" />
+              <div className="focus-timeline-body">
+                <div className="focus-timeline-header">
+                  <span className="focus-timeline-delta">{evt.delta}</span>
+                  <span className="focus-timeline-label">{evt.label}</span>
+                </div>
+                <p className="focus-timeline-detail">{evt.detail}</p>
+              </div>
             </div>
-
-            {/* Stages node indicators */}
-            <div className="focus-journey-stages">
-              {MILESTONE_TIERS.slice(0, 4).map((tier, idx) => {
-                const isPassed = idx < currentIndex;
-                const isCurrent = idx === currentIndex;
-                const isFuture = idx > currentIndex;
-
-                return (
-                  <div
-                    key={tier.id}
-                    className={cn(
-                      "focus-stage-node",
-                      isCurrent && "focus-stage-current",
-                      isPassed && "focus-stage-passed",
-                      isFuture && "focus-stage-future",
-                    )}
-                  >
-                    <div className="focus-node-circle">
-                      {isPassed ? (
-                        <Check className="focus-node-check" aria-hidden="true" />
-                      ) : (
-                        <span className="focus-node-inner" />
-                      )}
-                    </div>
-                    <span className="focus-stage-name">{tier.name}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Next unlock callout */}
-          <div className="focus-unlock-box">
-            <div className="focus-unlock-left">
-              <span className="focus-unlock-tag">NEXT UNLOCK</span>
-              <p className="focus-unlock-name">
-                {nextTier ? nextTier.reward : "Tier completed — rewards banked"}
-              </p>
-            </div>
-            {nextTier && (
-              <span className="focus-unlock-xp-rem">
-                {Math.max(0, nextTier.xpRequired - xp)} XP remaining
-              </span>
-            )}
-          </div>
+          ))}
         </div>
       </div>
 
       <style>{`
-        .focus-momentum-milestone {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 1.5rem;
-          margin-bottom: 2.25rem;
-        }
-
-        .focus-col-module {
+        .focus-momentum-module {
           display: flex;
           flex-direction: column;
+          height: 100%;
         }
 
         .focus-module-icon {
-          width: 0.875rem;
-          height: 0.875rem;
+          width: 0.8125rem;
+          height: 0.8125rem;
           color: rgba(255, 255, 255, 0.4);
         }
 
-        .focus-xp-counter {
-          font-family: var(--font-mono, monospace);
-          font-size: 0.875rem;
-          font-weight: 700;
-          color: #fbbf24;
-          background: rgba(251, 191, 36, 0.08);
-          border: 1px solid rgba(251, 191, 36, 0.2);
-          padding: 0.2rem 0.55rem;
-          border-radius: 6px;
-        }
-
-        .focus-xp-unit {
-          font-size: 0.625rem;
-          opacity: 0.8;
-        }
-
-        .focus-momentum-card,
-        .focus-milestone-card {
+        .focus-momentum-card {
           flex: 1;
-          background: rgba(255, 255, 255, 0.015);
-          border: 1px solid rgba(255, 255, 255, 0.06);
+          background: var(--card, #12151e);
+          border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
           border-radius: 14px;
-          padding: 1.5rem;
-          margin-top: 0.75rem;
+          padding: 1.25rem 1.5rem;
           display: flex;
           flex-direction: column;
-          justify-content: space-between;
+          justify-content: center;
         }
 
-        /* Timeline in Momentum */
         .focus-timeline-list {
           display: flex;
           flex-direction: column;
@@ -1260,37 +1171,35 @@ export function FocusMomentumMilestone({
         }
 
         .focus-timeline-item {
-          position: relative;
           display: flex;
           align-items: flex-start;
-          gap: 0.875rem;
+          gap: 0.75rem;
         }
 
-        .focus-timeline-dot {
+        .focus-timeline-bullet {
           width: 6px;
           height: 6px;
           border-radius: 50%;
-          background: #a855f7;
-          margin-top: 0.4rem;
-          box-shadow: 0 0 8px rgba(168, 85, 247, 0.5);
+          background: var(--brand, #7c3aed);
+          margin-top: 0.35rem;
           flex-shrink: 0;
         }
 
-        .focus-timeline-content {
+        .focus-timeline-body {
           display: flex;
           flex-direction: column;
           gap: 0.15rem;
         }
 
-        .focus-timeline-row {
+        .focus-timeline-header {
           display: flex;
           align-items: baseline;
-          gap: 0.4rem;
+          gap: 0.35rem;
         }
 
         .focus-timeline-delta {
           font-family: var(--font-mono, monospace);
-          font-size: 0.8125rem;
+          font-size: 0.75rem;
           font-weight: 700;
           color: #34d399;
         }
@@ -1302,23 +1211,146 @@ export function FocusMomentumMilestone({
         }
 
         .focus-timeline-detail {
-          font-size: 0.75rem;
+          font-size: 0.6875rem;
           color: rgba(255, 255, 255, 0.45);
           margin: 0;
-          line-height: 1.4;
+          line-height: 1.35;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 6. MILESTONE JOURNEY (Full-Width Progression Line)
+// ══════════════════════════════════════════════════════════════════════════════
+
+type MilestoneProps = {
+  xp: number;
+  currentName: string;
+  nextName: string | null;
+  progressPct: number;
+  leveledUpTier?: string | null;
+};
+
+export function FocusMilestoneJourney({
+  xp,
+  currentName,
+  nextName,
+  progressPct,
+}: MilestoneProps) {
+  const currentIndex = MILESTONE_TIERS.findIndex((t) => t.name === currentName);
+  const nextTier = MILESTONE_TIERS.find((t) => t.name === nextName);
+  const xpRemaining = nextTier ? Math.max(0, nextTier.xpRequired - xp) : 0;
+
+  return (
+    <section className="focus-milestone-section animate-fade-up" aria-label="Progression Journey">
+      <div className="focus-module-header">
+        <div className="focus-module-title-wrap">
+          <h2 className="focus-module-title">MILESTONE JOURNEY</h2>
+          <span className="focus-module-badge">{currentName}</span>
+        </div>
+        <div id={MILESTONE_XP_BADGE_ID} className="focus-xp-counter">
+          {xp.toLocaleString()} <span className="focus-xp-unit">XP</span>
+        </div>
+      </div>
+
+      <div className="focus-milestone-card">
+        {/* Track Line */}
+        <div className="focus-journey-track-wrap">
+          <div className="focus-journey-track">
+            <div
+              className="focus-journey-fill"
+              style={{ width: `${progressPct}%` }}
+              aria-label={`Milestone progress: ${progressPct}%`}
+            />
+          </div>
+
+          {/* Stage Node Indicators */}
+          <div className="focus-journey-stages">
+            {MILESTONE_TIERS.slice(0, 4).map((tier, idx) => {
+              const isPassed = idx < currentIndex;
+              const isCurrent = idx === currentIndex;
+              const isFuture = idx > currentIndex;
+
+              return (
+                <div
+                  key={tier.id}
+                  className={cn(
+                    "focus-stage-node",
+                    isCurrent && "focus-stage-current",
+                    isPassed && "focus-stage-passed",
+                    isFuture && "focus-stage-future",
+                  )}
+                >
+                  <div className="focus-node-circle">
+                    {isPassed ? (
+                      <Check className="focus-node-check" aria-hidden="true" />
+                    ) : (
+                      <span className="focus-node-inner" />
+                    )}
+                  </div>
+                  <span className="focus-stage-name">{tier.name}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Next Unlock Box */}
+        <div className="focus-unlock-box">
+          <div className="focus-unlock-left">
+            <span className="focus-unlock-tag">NEXT UNLOCK</span>
+            <p className="focus-unlock-name">
+              {nextTier ? nextTier.reward : "Tier completed — rewards banked"}
+            </p>
+          </div>
+          {nextTier && (
+            <span className="focus-unlock-xp-rem">
+              {xpRemaining} XP remaining
+            </span>
+          )}
+        </div>
+      </div>
+
+      <style>{`
+        .focus-milestone-section {
+          margin-bottom: 2rem;
         }
 
-        /* Milestone Track */
+        .focus-xp-counter {
+          font-family: var(--font-mono, monospace);
+          font-size: 0.8125rem;
+          font-weight: 700;
+          color: #fbbf24;
+          background: rgba(251, 191, 36, 0.08);
+          border: 1px solid rgba(251, 191, 36, 0.2);
+          padding: 0.15rem 0.5rem;
+          border-radius: 4px;
+        }
+
+        .focus-xp-unit {
+          font-size: 0.625rem;
+          opacity: 0.8;
+        }
+
+        .focus-milestone-card {
+          background: var(--card, #12151e);
+          border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+          border-radius: 14px;
+          padding: 1.5rem 1.75rem 1.25rem;
+        }
+
         .focus-journey-track-wrap {
           position: relative;
-          padding: 0.75rem 0 1.25rem;
+          padding: 0.5rem 0 1.25rem;
         }
 
         .focus-journey-track {
           position: absolute;
-          top: 1.4rem;
-          left: 5%;
-          right: 5%;
+          top: 1.15rem;
+          left: 4%;
+          right: 4%;
           height: 3px;
           background: rgba(255, 255, 255, 0.08);
           border-radius: 99px;
@@ -1327,9 +1359,9 @@ export function FocusMomentumMilestone({
 
         .focus-journey-fill {
           height: 100%;
-          background: linear-gradient(90deg, #9333ea, #c084fc);
+          background: var(--brand, #7c3aed);
           border-radius: 99px;
-          transition: width 600ms cubic-bezier(0.16, 1, 0.3, 1);
+          transition: width 500ms ease;
         }
 
         .focus-journey-stages {
@@ -1343,18 +1375,17 @@ export function FocusMomentumMilestone({
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 0.5rem;
+          gap: 0.45rem;
         }
 
         .focus-node-circle {
-          width: 22px;
-          height: 22px;
+          width: 20px;
+          height: 20px;
           border-radius: 50%;
-          background: #0f0e15;
+          background: #11141c;
           border: 1.5px solid rgba(255, 255, 255, 0.15);
           display: grid;
           place-items: center;
-          transition: all 200ms ease;
         }
 
         .focus-stage-passed .focus-node-circle {
@@ -1369,14 +1400,13 @@ export function FocusMomentumMilestone({
         }
 
         .focus-stage-current .focus-node-circle {
-          border-color: #a855f7;
-          background: #a855f7;
-          box-shadow: 0 0 12px rgba(168, 85, 247, 0.8);
+          border-color: var(--brand, #7c3aed);
+          background: var(--brand, #7c3aed);
         }
 
         .focus-node-inner {
-          width: 6px;
-          height: 6px;
+          width: 5px;
+          height: 5px;
           border-radius: 50%;
           background: #ffffff;
         }
@@ -1387,8 +1417,8 @@ export function FocusMomentumMilestone({
 
         .focus-stage-name {
           font-size: 0.6875rem;
-          font-weight: 600;
-          color: rgba(255, 255, 255, 0.6);
+          font-weight: 500;
+          color: rgba(255, 255, 255, 0.5);
         }
 
         .focus-stage-current .focus-stage-name {
@@ -1396,22 +1426,21 @@ export function FocusMomentumMilestone({
           font-weight: 700;
         }
 
-        /* Unlock box */
         .focus-unlock-box {
           display: flex;
           align-items: center;
           justify-content: space-between;
           padding: 0.75rem 1rem;
-          border-radius: 10px;
+          border-radius: 8px;
           background: rgba(255, 255, 255, 0.02);
           border: 1px solid rgba(255, 255, 255, 0.06);
-          margin-top: 1rem;
+          margin-top: 0.75rem;
         }
 
         .focus-unlock-tag {
           font-size: 0.5625rem;
           font-weight: 700;
-          letter-spacing: 0.12em;
+          letter-spacing: 0.1em;
           text-transform: uppercase;
           color: #fbbf24;
           display: block;
@@ -1421,7 +1450,7 @@ export function FocusMomentumMilestone({
           font-size: 0.8125rem;
           font-weight: 600;
           color: #ffffff;
-          margin: 0.15rem 0 0;
+          margin: 0.1rem 0 0;
         }
 
         .focus-unlock-xp-rem {
@@ -1429,19 +1458,13 @@ export function FocusMomentumMilestone({
           font-size: 0.6875rem;
           color: rgba(255, 255, 255, 0.45);
         }
-
-        @media (max-width: 860px) {
-          .focus-momentum-milestone {
-            grid-template-columns: 1fr;
-          }
-        }
       `}</style>
     </section>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 6. MAST SIGNAL (Compact Intelligence Module)
+// 7. MAST SIGNAL (Compact Intelligence Module)
 // ══════════════════════════════════════════════════════════════════════════════
 
 type SignalProps = {
@@ -1450,19 +1473,23 @@ type SignalProps = {
 
 export function FocusSignal({ signal }: SignalProps) {
   return (
-    <section className="focus-signal-section animate-fade-up" aria-labelledby="mast-signal-title">
+    <div className="focus-signal-module" aria-labelledby="mast-signal-title">
+      <div className="focus-module-header">
+        <div className="focus-module-title-wrap">
+          <h2 id="mast-signal-title" className="focus-module-title">
+            MAST SIGNAL
+          </h2>
+          <span className="focus-module-badge">{signal.isQuiet ? "STEADY" : "LIVE"}</span>
+        </div>
+      </div>
+
       <div className="focus-signal-card">
-        <div className="focus-signal-left">
-          <div className="focus-signal-eyebrow">
-            <span className="focus-signal-indicator" aria-hidden="true" />
-            <span id="mast-signal-title">MAST SIGNAL</span>
-            {signal.isQuiet && <span className="focus-signal-quiet-tag">STEADY</span>}
-          </div>
+        <div className="focus-signal-body">
           <h3 className="focus-signal-headline">{signal.headline}</h3>
           <p className="focus-signal-detail">{signal.detail}</p>
         </div>
 
-        <div className="focus-signal-right">
+        <div className="focus-signal-action">
           <Link to={signal.to} className="focus-signal-link">
             <span>{signal.actionLabel}</span>
             <ArrowRight className="focus-signal-arrow" aria-hidden="true" />
@@ -1471,120 +1498,80 @@ export function FocusSignal({ signal }: SignalProps) {
       </div>
 
       <style>{`
-        .focus-signal-section {
-          margin-bottom: 2.25rem;
+        .focus-signal-module {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
         }
 
         .focus-signal-card {
+          flex: 1;
           display: flex;
-          align-items: center;
+          flex-direction: column;
           justify-content: space-between;
-          gap: 1.5rem;
+          gap: 1.25rem;
           padding: 1.25rem 1.5rem;
           border-radius: 14px;
-          background: rgba(168, 85, 247, 0.03);
-          border: 1px solid rgba(168, 85, 247, 0.12);
-        }
-
-        .focus-signal-left {
-          flex: 1;
-          min-width: 0;
-        }
-
-        .focus-signal-eyebrow {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.5rem;
-          font-size: 0.6875rem;
-          font-weight: 700;
-          letter-spacing: 0.12em;
-          text-transform: uppercase;
-          color: #c084fc;
-          margin-bottom: 0.35rem;
-        }
-
-        .focus-signal-indicator {
-          width: 5px;
-          height: 5px;
-          border-radius: 50%;
-          background: #c084fc;
-          box-shadow: 0 0 8px rgba(192, 132, 252, 0.8);
-        }
-
-        .focus-signal-quiet-tag {
-          font-size: 0.5625rem;
-          font-weight: 600;
-          color: rgba(255, 255, 255, 0.4);
-          background: rgba(255, 255, 255, 0.04);
-          padding: 0.1rem 0.4rem;
-          border-radius: 4px;
+          background: var(--card, #12151e);
+          border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
         }
 
         .focus-signal-headline {
           font-size: 0.9375rem;
           font-weight: 600;
           color: #ffffff;
-          margin: 0 0 0.25rem;
+          margin: 0 0 0.35rem;
           line-height: 1.35;
         }
 
         .focus-signal-detail {
-          font-size: 0.8125rem;
+          font-size: 0.75rem;
           color: rgba(255, 255, 255, 0.5);
           margin: 0;
           line-height: 1.45;
         }
 
-        .focus-signal-right {
-          flex-shrink: 0;
+        .focus-signal-action {
+          display: flex;
+          justify-content: flex-end;
         }
 
         .focus-signal-link {
           display: inline-flex;
           align-items: center;
           gap: 0.4rem;
-          color: #c084fc;
-          font-size: 0.8125rem;
+          color: rgba(255, 255, 255, 0.7);
+          font-size: 0.75rem;
           font-weight: 600;
           text-decoration: none;
-          padding: 0.45rem 0.85rem;
+          padding: 0.35rem 0.65rem;
           border-radius: 6px;
-          background: rgba(168, 85, 247, 0.08);
-          border: 1px solid rgba(168, 85, 247, 0.2);
-          transition: all 160ms ease;
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          transition: all 150ms ease;
         }
 
         .focus-signal-link:hover {
-          background: rgba(168, 85, 247, 0.15);
-          transform: translateY(-1px);
+          color: #ffffff;
+          background: rgba(255, 255, 255, 0.08);
         }
 
         .focus-signal-arrow {
-          width: 0.875rem;
-          height: 0.875rem;
-          transition: transform 160ms ease;
+          width: 0.75rem;
+          height: 0.75rem;
+          transition: transform 150ms ease;
         }
 
         .focus-signal-link:hover .focus-signal-arrow {
           transform: translateX(3px);
         }
-
-        @media (max-width: 640px) {
-          .focus-signal-card {
-            flex-direction: column;
-            align-items: flex-start;
-          }
-          .focus-signal-right {
-            align-self: flex-end;
-          }
-        }
       `}</style>
-    </section>
+    </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 7. WEEKLY PULSE (Compact Preview of Analytics)
+// 8. WEEKLY PULSE (Compact Preview of Analytics)
 // ══════════════════════════════════════════════════════════════════════════════
 
 type WeeklyPulseProps = {
@@ -1593,21 +1580,21 @@ type WeeklyPulseProps = {
 
 export function FocusWeeklyPulse({ pulse }: WeeklyPulseProps) {
   return (
-    <section className="focus-pulse-section animate-fade-up" aria-labelledby="weekly-pulse-title">
-      <div className="focus-pulse-card">
-        <div className="focus-pulse-header">
-          <div className="focus-pulse-title-wrap">
-            <Compass className="focus-pulse-icon" aria-hidden="true" />
-            <h3 id="weekly-pulse-title" className="focus-pulse-title">
-              WEEKLY PULSE
-            </h3>
-          </div>
-          <div className="focus-pulse-momentum">
-            <span className="focus-pulse-momentum-label">Momentum</span>
-            <span className="focus-pulse-arrow">{pulse.momentum}</span>
-          </div>
+    <div className="focus-pulse-module" aria-labelledby="weekly-pulse-title">
+      <div className="focus-module-header">
+        <div className="focus-module-title-wrap">
+          <Compass className="focus-module-icon" aria-hidden="true" />
+          <h2 id="weekly-pulse-title" className="focus-module-title">
+            WEEKLY PULSE
+          </h2>
         </div>
+        <div className="focus-pulse-momentum">
+          <span className="focus-pulse-momentum-label">Momentum</span>
+          <span className="focus-pulse-arrow">{pulse.momentum}</span>
+        </div>
+      </div>
 
+      <div className="focus-pulse-card">
         <div className="focus-pulse-grid">
           <div className="focus-pulse-stat">
             <span className="focus-pulse-label">Discovery</span>
@@ -1631,45 +1618,10 @@ export function FocusWeeklyPulse({ pulse }: WeeklyPulseProps) {
       </div>
 
       <style>{`
-        .focus-pulse-section {
-          margin-bottom: 2.5rem;
-        }
-
-        .focus-pulse-card {
-          background: rgba(255, 255, 255, 0.015);
-          border: 1px solid rgba(255, 255, 255, 0.06);
-          border-radius: 14px;
-          padding: 1.25rem 1.5rem;
-        }
-
-        .focus-pulse-header {
+        .focus-pulse-module {
           display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding-bottom: 0.875rem;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-          margin-bottom: 1rem;
-        }
-
-        .focus-pulse-title-wrap {
-          display: flex;
-          align-items: center;
-          gap: 0.5rem;
-        }
-
-        .focus-pulse-icon {
-          width: 0.875rem;
-          height: 0.875rem;
-          color: rgba(255, 255, 255, 0.4);
-        }
-
-        .focus-pulse-title {
-          font-size: 0.75rem;
-          font-weight: 700;
-          letter-spacing: 0.12em;
-          text-transform: uppercase;
-          color: rgba(255, 255, 255, 0.6);
-          margin: 0;
+          flex-direction: column;
+          height: 100%;
         }
 
         .focus-pulse-momentum {
@@ -1684,26 +1636,37 @@ export function FocusWeeklyPulse({ pulse }: WeeklyPulseProps) {
         }
 
         .focus-pulse-arrow {
-          font-size: 0.875rem;
+          font-size: 0.8125rem;
           font-weight: 700;
           color: #34d399;
+        }
+
+        .focus-pulse-card {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          background: var(--card, #12151e);
+          border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+          border-radius: 14px;
+          padding: 1.25rem 1.5rem;
         }
 
         .focus-pulse-grid {
           display: grid;
           grid-template-columns: repeat(4, 1fr);
-          gap: 1rem;
-          margin-bottom: 0.875rem;
+          gap: 0.75rem;
+          margin-bottom: 0.75rem;
         }
 
         .focus-pulse-stat {
           display: flex;
           flex-direction: column;
-          gap: 0.25rem;
+          gap: 0.2rem;
         }
 
         .focus-pulse-label {
-          font-size: 0.6875rem;
+          font-size: 0.625rem;
           text-transform: uppercase;
           letter-spacing: 0.06em;
           color: rgba(255, 255, 255, 0.4);
@@ -1718,25 +1681,25 @@ export function FocusWeeklyPulse({ pulse }: WeeklyPulseProps) {
         }
 
         .focus-pulse-summary {
-          font-size: 0.8125rem;
+          font-size: 0.75rem;
           color: rgba(255, 255, 255, 0.5);
           margin: 0;
-          line-height: 1.45;
+          line-height: 1.4;
         }
 
         @media (max-width: 640px) {
           .focus-pulse-grid {
             grid-template-columns: repeat(2, 1fr);
-            gap: 1rem;
+            gap: 0.75rem;
           }
         }
       `}</style>
-    </section>
+    </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 8. EMPTY STATES ("YOU'RE CLEAR.")
+// 9. EMPTY STATE ("YOU'RE CLEAR.")
 // ══════════════════════════════════════════════════════════════════════════════
 
 type EmptyStateProps = {
@@ -1749,143 +1712,167 @@ export function FocusEmptyState({ goalsCompleted, totalGoals, xpEarned }: EmptyS
   return (
     <section className="focus-empty-section animate-fade-in" aria-label="Command clear state">
       <div className="focus-empty-card">
-        <div className="focus-empty-badge">
-          <Sparkles className="focus-empty-icon" aria-hidden="true" />
-          <span>ALL CLEAR</span>
+        <div className="focus-empty-check-wrap">
+          <Check className="focus-empty-check" aria-hidden="true" />
         </div>
 
-        <h2 className="focus-empty-headline">YOU'RE CLEAR.</h2>
+        <h2 className="focus-empty-heading">YOU'RE CLEAR.</h2>
 
-        <p className="focus-empty-desc">
-          Nothing important needs your attention right now. Your queues are quiet and momentum is locked in.
+        <p className="focus-empty-sub">
+          Nothing urgent needs your attention right now. Your outbound queue and relationships
+          are currently in steady momentum.
         </p>
 
         <div className="focus-empty-stats">
-          <span className="focus-empty-stat-item">
-            {goalsCompleted} / {totalGoals} goals complete
-          </span>
-          <span className="focus-empty-dot" aria-hidden="true">·</span>
-          <span className="focus-empty-stat-item">
-            {xpEarned} XP earned
-          </span>
+          <div className="focus-empty-stat">
+            <span className="focus-empty-stat-num">
+              {goalsCompleted}/{totalGoals}
+            </span>
+            <span className="focus-empty-stat-label">Goals completed</span>
+          </div>
+          <div className="focus-empty-stat-divider" />
+          <div className="focus-empty-stat">
+            <span className="focus-empty-stat-num">+{xpEarned}</span>
+            <span className="focus-empty-stat-label">XP bank</span>
+          </div>
         </div>
 
-        <div className="focus-empty-cta-wrap">
-          <Link to="/dashboard/leads" className="focus-empty-cta">
-            <span>Discover something new</span>
-            <ArrowRight className="focus-empty-arrow" aria-hidden="true" />
+        <div className="focus-empty-actions">
+          <Link to="/dashboard/leads" className="focus-empty-primary-btn">
+            Explore discoveries
+          </Link>
+          <Link to="/dashboard/pipeline" className="focus-empty-secondary-btn">
+            View pipeline
           </Link>
         </div>
       </div>
 
       <style>{`
         .focus-empty-section {
-          margin-bottom: 2.5rem;
+          padding: 3rem 0;
+          display: flex;
+          justify-content: center;
         }
 
         .focus-empty-card {
+          width: 100%;
+          max-width: 580px;
+          background: var(--card, #12151e);
+          border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+          border-radius: 16px;
+          padding: 3rem 2.5rem;
           text-align: center;
-          padding: 3.5rem 2rem;
-          border-radius: 20px;
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.005) 100%);
-          border: 1px solid rgba(255, 255, 255, 0.06);
           display: flex;
           flex-direction: column;
           align-items: center;
         }
 
-        .focus-empty-badge {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.4rem;
-          font-size: 0.6875rem;
-          font-weight: 700;
-          letter-spacing: 0.12em;
+        .focus-empty-check-wrap {
+          width: 48px;
+          height: 48px;
+          border-radius: 50%;
+          background: rgba(52, 211, 153, 0.12);
+          border: 1px solid rgba(52, 211, 153, 0.3);
+          display: grid;
+          place-items: center;
+          margin-bottom: 1.5rem;
+        }
+
+        .focus-empty-check {
+          width: 24px;
+          height: 24px;
           color: #34d399;
-          background: rgba(52, 211, 153, 0.1);
-          border: 1px solid rgba(52, 211, 153, 0.25);
-          padding: 0.2rem 0.6rem;
-          border-radius: 99px;
-          margin-bottom: 1.25rem;
         }
 
-        .focus-empty-icon {
-          width: 0.75rem;
-          height: 0.75rem;
-        }
-
-        .focus-empty-headline {
-          font-size: clamp(2rem, 4vw, 2.75rem);
+        .focus-empty-heading {
+          font-size: 1.375rem;
           font-weight: 700;
-          letter-spacing: -0.03em;
+          letter-spacing: 0.06em;
           color: #ffffff;
           margin: 0 0 0.75rem;
         }
 
-        .focus-empty-desc {
-          font-size: 0.9375rem;
-          color: rgba(255, 255, 255, 0.55);
-          max-width: 480px;
-          margin: 0 0 1.5rem;
-          line-height: 1.55;
+        .focus-empty-sub {
+          font-size: 0.875rem;
+          color: rgba(255, 255, 255, 0.6);
+          line-height: 1.5;
+          margin: 0 0 2rem;
+          max-width: 440px;
         }
 
         .focus-empty-stats {
-          display: inline-flex;
+          display: flex;
           align-items: center;
-          gap: 0.6rem;
-          font-family: var(--font-mono, monospace);
-          font-size: 0.8125rem;
-          color: rgba(255, 255, 255, 0.5);
+          gap: 2rem;
+          padding: 1rem 1.75rem;
+          border-radius: 10px;
+          background: rgba(255, 255, 255, 0.02);
+          border: 1px solid rgba(255, 255, 255, 0.06);
           margin-bottom: 2rem;
         }
 
-        .focus-empty-dot {
-          opacity: 0.4;
+        .focus-empty-stat {
+          display: flex;
+          flex-direction: column;
+          gap: 0.2rem;
         }
 
-        .focus-empty-cta {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.5rem;
-          padding: 0.75rem 1.625rem;
-          border-radius: 99px;
-          background: #7c3aed;
+        .focus-empty-stat-num {
+          font-family: var(--font-mono, monospace);
+          font-size: 1.125rem;
+          font-weight: 700;
           color: #ffffff;
-          font-size: 0.875rem;
+        }
+
+        .focus-empty-stat-label {
+          font-size: 0.6875rem;
+          color: rgba(255, 255, 255, 0.45);
+        }
+
+        .focus-empty-stat-divider {
+          width: 1px;
+          height: 24px;
+          background: rgba(255, 255, 255, 0.08);
+        }
+
+        .focus-empty-actions {
+          display: flex;
+          align-items: center;
+          gap: 0.875rem;
+        }
+
+        .focus-empty-primary-btn {
+          font-size: 0.8125rem;
           font-weight: 600;
+          color: #ffffff;
+          background: var(--brand, #7c3aed);
+          padding: 0.55rem 1.25rem;
+          border-radius: 8px;
           text-decoration: none;
-          box-shadow: 0 4px 18px rgba(124, 58, 237, 0.45);
-          transition: all 180ms ease;
+          transition: background 150ms ease;
         }
 
-        .focus-empty-cta:hover {
-          background: #6d28d9;
-          transform: translateY(-1px);
-          box-shadow: 0 8px 24px rgba(124, 58, 237, 0.6);
+        .focus-empty-primary-btn:hover {
+          background: var(--brand-dark, #6d28d9);
         }
 
-        .focus-empty-arrow {
-          width: 0.875rem;
-          height: 0.875rem;
-          transition: transform 180ms ease;
+        .focus-empty-secondary-btn {
+          font-size: 0.8125rem;
+          font-weight: 600;
+          color: rgba(255, 255, 255, 0.7);
+          background: rgba(255, 255, 255, 0.03);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          padding: 0.55rem 1.25rem;
+          border-radius: 8px;
+          text-decoration: none;
+          transition: all 150ms ease;
         }
 
-        .focus-empty-cta:hover .focus-empty-arrow {
-          transform: translateX(3px);
+        .focus-empty-secondary-btn:hover {
+          color: #ffffff;
+          background: rgba(255, 255, 255, 0.06);
         }
       `}</style>
     </section>
   );
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Preserved Legacy Discover CTA (for backward compatibility if imported)
-// ══════════════════════════════════════════════════════════════════════════════
-
-export function FocusDiscoverCta() {
-  return null;
-}
-
-// Preserved Legacy Stubs (to prevent import breakage)
-export { FocusGreeting as FocusHeroGreeting };

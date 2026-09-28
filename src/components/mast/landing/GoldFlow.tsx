@@ -52,27 +52,58 @@
  * background) — no blend trick, so no rectangle, at some cost in decode
  * efficiency versus hardware video.
  *
- * PHASE 9 — MOTION-BLUR SMOOTHING. The Phase 5B asset played back stiff: it
- * was baked at 24 frames / 3.75 fps (a Phase-1 performance cut from the
- * original 48-frames-@-native-resolution version, which caused real scroll
- * jank), and at that rate the fine dust grain visibly steps between frames
- * instead of drifting. Fixed entirely offline, in
- * scripts/generate-gold-flow-animation.py: frame count went to 32 (5 fps,
- * still ~6x fewer pixel-frames than the version that caused the original
- * jank) and each output frame is now the average of several renders spread
- * across a small shutter window (real motion blur, the same thing a camera
- * does), which removes the stepping without smearing the flow into mush.
- * Still a single autoplaying <img>, same FLOW_ASSET_ANIMATED path, same
- * file format and loop mechanism — nothing here or in the DOM changed, only
- * the bytes of the asset itself.
+ * PHASE 9 — MOTION-BLUR SMOOTHING, SUPERSEDED BY 10. First attempt at the
+ * "still stiff" problem: bumped the WebP to 32 frames / 5 fps and added
+ * motion blur (each frame = an average of several renders across a small
+ * shutter window). Measurably smoother (adjacent-frame difference dropped
+ * ~16%) but still visibly stepping — because the animated-WebP format
+ * itself was the ceiling, not this file's choice of frame count. See PHASE
+ * 10.
  *
- * REDUCED MOTION. Animated WebPs autoplay all their frames the moment
- * they're decoded — there's no CSS to pause an <img>'s own animation — so
- * respecting prefers-reduced-motion means choosing a different SRC, not
- * stopping a running one. That's done by tracking the media query in state
- * and swapping the <img src> between the static PHASE 3A.2 PNG (reduced
- * motion) and the animated WebP (default) — no canvas, no RAF, nothing to
- * hydrate beyond the one state read.
+ * PHASE 10 — TRUE VIDEO, TRUE ALPHA. The animated WebP is a SOFTWARE-decoded
+ * image format: the main thread fully decodes every frame, so its frame
+ * budget is capped by decode cost, not by how smooth the motion needs to
+ * look. Phase 1 already found that format's ceiling (48 frames @ native
+ * caused real scroll jank; even Phase 9's eased-up 32 @ half-res still read
+ * as stepping) — there was no frame-count knob left to turn without either
+ * reintroducing jank or staying stiff.
+ *
+ * Video is decoded by the OS/GPU, so frame count is effectively free. FLOW_
+ * ASSET_MOTION is 160 frames / 25 fps over the same 6.4s loop — 5x Phase 9's
+ * temporal resolution — encoded from the exact same offline flow model
+ * (scripts/generate-gold-flow-animation.py's Renderer) at NATIVE 1536x1024,
+ * for less browser CPU cost than Phase 9's WebP, because decode moved to
+ * hardware.
+ *
+ * This is not Phase 8 again. Phase 8 was reverted because it encoded an
+ * OPAQUE video and faked transparency with `mix-blend-mode: screen` over
+ * pure black — lossy compression doesn't preserve exact (0,0,0) black, so
+ * compression noise in the "invisible" areas turned into a visible
+ * rectangle. That bug was in the transparency trick, not in video itself.
+ * Phase 10 never treats any color as transparent: the video's single frame
+ * packs two honest signals, stacked —
+ *
+ *     [ color  — straight RGB,      top half    ]
+ *     [ alpha  — grayscale matte,   bottom half  ]
+ *
+ * — and a two-line WebGL fragment shader (see useAlphaVideoLayer below)
+ * recombines them into one RGBA image on the GPU every frame: rgb from the
+ * top half, alpha from the bottom half's luminance. Compression noise in a
+ * lossy matte just softens its edges slightly; it can never paint color
+ * into a transparent area, because color and alpha are independent channels
+ * of the signal, not one channel standing in for both.
+ *
+ * Degrades safely in three independent ways, in order: no WebGL context →
+ * falls back to the static PNG. WebGL OK but the video errors or autoplay
+ * is blocked → falls back to the static PNG. prefers-reduced-motion → same
+ * static PNG as always, video element never even mounts. The canvas gets
+ * the exact same wrapper box, CSS mask, filter, opacity, and rotation the
+ * <img> always had, so none of the PLACEMENT/TRANSPARENCY math below
+ * changed — only how the pixels inside that box get onto the screen.
+ *
+ * REDUCED MOTION. Same as every prior phase: prefers-reduced-motion swaps in
+ * the static PHASE 3A.2 PNG and skips video/canvas/WebGL entirely — nothing
+ * autoplays, nothing to pause.
  *
  * LAYERING (see Hero in routes/index.tsx)
  *
@@ -111,11 +142,13 @@
  * cut.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-const FLOW_ASSET_ANIMATED = "/images/mast-gold-flow-animated.webp";
+const FLOW_ASSET_MOTION = "/images/mast-gold-flow-motion.mp4";
 const FLOW_ASSET_STATIC = "/images/mast-gold-flow.png";
-// Natural asset proportions (1536 x 1024 px) — 1.5 aspect ratio.
+// Natural asset proportions (1536 x 1024 px per channel) — 1.5 aspect ratio.
+// The video file itself is 1536x2048 (color+matte stacked); this is the
+// displayed/composited aspect ratio, unchanged from every prior phase.
 const FLOW_ASPECT_RATIO = "1536 / 1024";
 
 // Placement of the flow image's top-left corner and its width, as a
@@ -134,6 +167,173 @@ const FLOW_TOP_MASK =
 const FLOW_OPACITY = 0.78;
 const FLOW_FILTER = "brightness(0.9) contrast(0.82) saturate(1.05)";
 
+// ---- alpha-video compositor ------------------------------------------------
+// One video frame = color (top half) stacked on a grayscale alpha matte
+// (bottom half). Each vertex carries its own UV (top of screen = v 0), so the
+// shader just samples the top half for rgb and the bottom half's red channel
+// for alpha and emits premultiplied RGBA. NOTE: UNPACK_FLIP_Y_WEBGL must stay
+// at its default (false) — verified in a real browser; flipping it swaps the
+// halves and renders the matte as the picture.
+const VERT_SRC = `
+attribute vec2 aPos;
+attribute vec2 aUv;
+varying vec2 vUv;
+void main() {
+  vUv = aUv;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+const FRAG_SRC = `
+precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uTex;
+void main() {
+  vec3 rgb = texture2D(uTex, vec2(vUv.x, vUv.y * 0.5)).rgb;
+  float a = texture2D(uTex, vec2(vUv.x, 0.5 + vUv.y * 0.5)).r;
+  gl_FragColor = vec4(rgb * a, a);
+}`;
+
+// x, y, u, v — triangle strip covering the whole canvas.
+const QUAD = new Float32Array([-1, 1, 0, 0, -1, -1, 0, 1, 1, 1, 1, 0, 1, -1, 1, 1]);
+
+type VideoWithVFC = HTMLVideoElement & {
+  requestVideoFrameCallback?: (cb: () => void) => number;
+  cancelVideoFrameCallback?: (id: number) => void;
+};
+
+function useAlphaVideoLayer(
+  enabled: boolean,
+  canvasRef: React.RefObject<HTMLCanvasElement | null>,
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  onFail: () => void,
+) {
+  useEffect(() => {
+    if (!enabled) return;
+    const canvas = canvasRef.current;
+    const video = videoRef.current as VideoWithVFC | null;
+    if (!canvas || !video) return;
+
+    const gl = canvas.getContext("webgl", {
+      alpha: true,
+      premultipliedAlpha: true,
+      antialias: false,
+      depth: false,
+      stencil: false,
+    });
+    if (!gl) {
+      onFail();
+      return;
+    }
+
+    const compile = (type: number, src: string) => {
+      const sh = gl.createShader(type)!;
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      return gl.getShaderParameter(sh, gl.COMPILE_STATUS) ? sh : null;
+    };
+    const vs = compile(gl.VERTEX_SHADER, VERT_SRC);
+    const fs = compile(gl.FRAGMENT_SHADER, FRAG_SRC);
+    const prog = gl.createProgram()!;
+    if (!vs || !fs) {
+      onFail();
+      return;
+    }
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      onFail();
+      return;
+    }
+    gl.useProgram(prog);
+
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, QUAD, gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(prog, "aPos");
+    const aUv = gl.getAttribLocation(prog, "aUv");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aUv);
+    gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
+
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.clearColor(0, 0, 0, 0);
+
+    let stopped = false;
+    let vfcId = 0;
+    let rafId = 0;
+
+    const draw = () => {
+      if (stopped || video.readyState < 2 /* HAVE_CURRENT_DATA */) return;
+      try {
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      } catch {
+        stopped = true;
+        onFail();
+      }
+    };
+
+    // Draw exactly when a new video frame is presented where supported;
+    // otherwise fall back to a plain rAF loop (same visual result).
+    const useVFC = typeof video.requestVideoFrameCallback === "function";
+    const loopVFC = () => {
+      draw();
+      if (!stopped) vfcId = video.requestVideoFrameCallback!(loopVFC);
+    };
+    const loopRAF = () => {
+      draw();
+      if (!stopped) rafId = requestAnimationFrame(loopRAF);
+    };
+    const start = () => (useVFC ? loopVFC() : loopRAF());
+
+    video.muted = true;
+    video.play().then(start, onFail);
+
+    // Don't decode/draw while the flow is scrolled out of view.
+    const io =
+      typeof IntersectionObserver !== "undefined"
+        ? new IntersectionObserver(([entry]) => {
+            if (stopped) return;
+            if (entry.isIntersecting) {
+              if (video.paused) video.play().catch(() => {});
+            } else if (!video.paused) {
+              video.pause();
+            }
+          })
+        : null;
+    io?.observe(canvas);
+
+    const onLost = (e: Event) => {
+      e.preventDefault();
+      stopped = true;
+      onFail();
+    };
+    canvas.addEventListener("webglcontextlost", onLost);
+
+    return () => {
+      stopped = true;
+      io?.disconnect();
+      canvas.removeEventListener("webglcontextlost", onLost);
+      if (vfcId && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(vfcId);
+      if (rafId) cancelAnimationFrame(rafId);
+      video.pause();
+      gl.deleteTexture(tex);
+      gl.deleteBuffer(buf);
+      gl.deleteProgram(prog);
+    };
+  }, [enabled, canvasRef, videoRef, onFail]);
+}
+
 type Frame = { x: number; y: number; w: number; h: number };
 
 export function GoldFlow({
@@ -147,6 +347,22 @@ export function GoldFlow({
   const containerRef = useRef<HTMLDivElement>(null);
   const [frame, setFrame] = useState<Frame | null>(null);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [motionFailed, setMotionFailed] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const onMotionFail = useCallback(() => setMotionFailed(true), []);
+  const useStatic = prefersReducedMotion || motionFailed;
+
+  // Only start the compositor once the flow box exists (canvas + video are
+  // mounted together with it).
+  useAlphaVideoLayer(!useStatic && !!frame, canvasRef, videoRef, onMotionFail);
+
+  // Backing-store size: the flow box's CSS size x DPR, capped at the video's
+  // native per-channel resolution (no point rendering past the source).
+  const dpr = typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = frame ? (frame.w * FLOW_WIDTH_PCT) / 100 : 0;
+  const pxW = Math.max(1, Math.min(1536, Math.round(cssW * dpr)));
+  const pxH = Math.max(1, Math.round((pxW * 1024) / 1536));
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
@@ -182,6 +398,16 @@ export function GoldFlow({
     });
   }, [globeBox]);
 
+  // Identical compositing the <img> always carried, shared by both paths.
+  const flowLayerStyle: React.CSSProperties = {
+    opacity: FLOW_OPACITY,
+    filter: FLOW_FILTER,
+    WebkitMaskImage: FLOW_TOP_MASK,
+    maskImage: FLOW_TOP_MASK,
+    transformOrigin: "0 0",
+    transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
+  };
+
   return (
     <div
       ref={containerRef}
@@ -208,21 +434,40 @@ export function GoldFlow({
               aspectRatio: FLOW_ASPECT_RATIO,
             }}
           >
-            <img
-              src={prefersReducedMotion ? FLOW_ASSET_STATIC : FLOW_ASSET_ANIMATED}
-              alt=""
-              draggable={false}
-              decoding="async"
-              className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
-              style={{
-                opacity: FLOW_OPACITY,
-                filter: FLOW_FILTER,
-                WebkitMaskImage: FLOW_TOP_MASK,
-                maskImage: FLOW_TOP_MASK,
-                transformOrigin: "0 0",
-                transform: `rotate(${FLOW_ROTATE_DEG}deg)`,
-              }}
-            />
+            {useStatic ? (
+              <img
+                src={FLOW_ASSET_STATIC}
+                alt=""
+                draggable={false}
+                decoding="async"
+                className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
+                style={flowLayerStyle}
+              />
+            ) : (
+              <>
+                <canvas
+                  ref={canvasRef}
+                  width={pxW}
+                  height={pxH}
+                  className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
+                  style={flowLayerStyle}
+                />
+                {/* Decode-only source for the canvas; 1px + transparent rather
+                    than display:none so browsers don't throttle its decode. */}
+                <video
+                  ref={videoRef}
+                  src={FLOW_ASSET_MOTION}
+                  muted
+                  loop
+                  playsInline
+                  autoPlay
+                  preload="auto"
+                  onError={onMotionFail}
+                  className="pointer-events-none absolute left-0 top-0"
+                  style={{ width: 1, height: 1, opacity: 0 }}
+                />
+              </>
+            )}
           </div>
         </div>
       )}

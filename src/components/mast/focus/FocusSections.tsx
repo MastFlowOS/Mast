@@ -179,15 +179,16 @@ export function FocusPrimaryHero({ recommendation, todayContext }: PrimaryHeroPr
 
   const badgeClass = toneBadgeClasses[tone] || "focus-tone-brand";
 
-  // Human discovery capacity context
-  let discoveryStatus = "Discovery capacity open today";
+  // User-facing discovery capacity context
+  let discoveryStatus = "Searches available today";
   if (todayContext.dailyDiscoverLimit > 0) {
-    if (todayContext.dailyDiscoverUsed >= todayContext.dailyDiscoverLimit) {
-      discoveryStatus = "Discovery limit reached today";
+    const remaining = Math.max(0, todayContext.dailyDiscoverLimit - todayContext.dailyDiscoverUsed);
+    if (remaining === 0) {
+      discoveryStatus = "Daily allowance reached";
     } else if (todayContext.dailyDiscoverUsed > 0) {
-      discoveryStatus = `Discovery active (${todayContext.dailyDiscoverUsed}/${todayContext.dailyDiscoverLimit} used)`;
+      discoveryStatus = `${remaining} available today`;
     } else {
-      discoveryStatus = "Discovery capacity open today";
+      discoveryStatus = `${todayContext.dailyDiscoverLimit} available today`;
     }
   }
 
@@ -1280,7 +1281,6 @@ export function FocusMomentum({ events }: MomentumProps) {
         .focus-momentum-module {
           display: flex;
           flex-direction: column;
-          height: 100%;
         }
 
         .focus-module-icon {
@@ -1290,19 +1290,21 @@ export function FocusMomentum({ events }: MomentumProps) {
         }
 
         .focus-momentum-card {
-          flex: 1;
           background: var(--card, #12151e);
           border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
           border-radius: 14px;
           padding: 1.25rem 1.5rem;
           display: flex;
           flex-direction: column;
-          justify-content: center;
+          min-height: 90px;
         }
 
         .focus-timeline-empty {
-          padding: 1.5rem 0;
+          padding: 0.875rem 0;
           text-align: center;
+          display: flex;
+          align-items: center;
+          justify-content: center;
         }
 
         .focus-timeline-empty-text {
@@ -1322,7 +1324,7 @@ export function FocusMomentum({ events }: MomentumProps) {
           align-items: flex-start;
           gap: 0.875rem;
           position: relative;
-          padding-bottom: 1.125rem;
+          padding-bottom: 0.875rem;
         }
 
         .focus-timeline-item:last-child {
@@ -1499,23 +1501,23 @@ export function FocusMilestoneJourney({
 
       <style>{`
         .focus-milestone-section {
-          margin-bottom: 2rem;
+          margin-bottom: 1.25rem;
         }
 
         .focus-xp-counter {
           font-family: var(--font-mono, monospace);
-          font-size: 0.8125rem;
-          font-weight: 700;
-          color: #fbbf24;
-          background: rgba(251, 191, 36, 0.08);
-          border: 1px solid rgba(251, 191, 36, 0.2);
+          font-size: 0.75rem;
+          font-weight: 600;
+          color: rgba(255, 255, 255, 0.65);
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.08);
           padding: 0.15rem 0.5rem;
           border-radius: 4px;
         }
 
         .focus-xp-unit {
           font-size: 0.625rem;
-          opacity: 0.8;
+          color: rgba(255, 255, 255, 0.4);
         }
 
         .focus-milestone-card {
@@ -1615,11 +1617,9 @@ export function FocusMilestoneJourney({
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 0.625rem 0.875rem;
-          border-radius: 8px;
-          background: rgba(255, 255, 255, 0.02);
-          border: 1px solid rgba(255, 255, 255, 0.05);
+          padding-top: 0.75rem;
           margin-top: 0.25rem;
+          border-top: 1px solid rgba(255, 255, 255, 0.05);
         }
 
         .focus-status-item {
@@ -1643,13 +1643,13 @@ export function FocusMilestoneJourney({
         }
 
         .focus-status-highlight {
-          color: #fbbf24;
+          color: rgba(255, 255, 255, 0.85);
           font-family: var(--font-mono, monospace);
         }
 
         .focus-status-divider {
           width: 1px;
-          height: 20px;
+          height: 18px;
           background: rgba(255, 255, 255, 0.06);
         }
 

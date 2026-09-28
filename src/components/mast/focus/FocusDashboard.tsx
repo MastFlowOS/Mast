@@ -240,16 +240,18 @@ export function FocusDashboard() {
         .focus-paired-grid {
           display: grid;
           gap: 1.5rem;
-          margin-bottom: 2rem;
+          margin-bottom: 1.25rem;
           align-items: stretch;
         }
 
         .focus-goals-momentum-grid {
           grid-template-columns: 1.35fr 1fr;
+          align-items: start;
         }
 
         .focus-intelligence-grid {
           grid-template-columns: 1.15fr 0.85fr;
+          margin-bottom: 0;
         }
 
         .focus-grid-col-left,
@@ -321,9 +323,9 @@ function FocusLoading() {
         </div>
 
         {/* Paired Grid Skeleton: Goals + Momentum */}
-        <div style={{ display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: "1.5rem", marginBottom: "2rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: "1.5rem", marginBottom: "1.25rem", alignItems: "start" }}>
           <div className="mast-skeleton" style={{ height: "12rem", borderRadius: "14px" }} />
-          <div className="mast-skeleton" style={{ height: "12rem", borderRadius: "14px" }} />
+          <div className="mast-skeleton" style={{ height: "7rem", borderRadius: "14px" }} />
         </div>
 
         {/* Milestone Skeleton */}

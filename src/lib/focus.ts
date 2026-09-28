@@ -3,6 +3,7 @@ import { isDiscoveredLead, isUntouchedDiscoveredLead } from "@/lib/lead-provenan
 import {
   collectFocusPriorities,
   plural,
+  selectContactedWithoutFollowup,
   selectFocusStack,
   selectOpenFollowups,
   type FocusPriority,
@@ -364,13 +365,83 @@ export function buildMomentumEvents(ctx: FocusContext): FocusMomentumEvent[] {
 }
 
 // ── MAST Signal ────────────────────────────────────────────────────────────────
-// The app has no anomaly detection, and the existing Discover/Analytics reply
-// rates use conflicting definitions, so Focus does not present any of them as a
-// "signal". Until a signal with a sound basis exists, this is an intentional
-// quiet state. Add real signals here, gated on sample size, and set
-// `isQuiet: false` only for those.
+// Concrete, human-readable observations derived directly from verified data.
+// If no meaningful pattern or data exists, returns an intentional quiet state.
 
-export function buildMastSignal(_ctx?: FocusContext): FocusMastSignal {
+export function buildMastSignal(ctx?: FocusContext): FocusMastSignal {
+  if (!ctx || ctx.leads.length === 0) {
+    return {
+      id: "signal-quiet",
+      headline: "NO NOTABLE SIGNAL",
+      detail: "No meaningful pattern detected yet.",
+      actionLabel: null,
+      to: null,
+      isQuiet: true,
+    };
+  }
+
+  const now = clock(ctx);
+
+  // 1. Follow-ups overdue
+  const openFollowups = selectOpenFollowups(ctx.followups, ctx.leads, now);
+  const overdue = openFollowups.filter((f) => f.days < 0);
+  if (overdue.length > 0) {
+    const n = overdue.length;
+    return {
+      id: "signal-overdue-followups",
+      headline: `${n} ${plural(n, "follow-up is", "follow-ups are")} overdue`,
+      detail: "Scheduled dates have passed without recorded activity.",
+      actionLabel: "Clear in Mission",
+      to: "/dashboard/follow-ups",
+      isQuiet: false,
+    };
+  }
+
+  // 2. Follow-ups due today
+  const dueToday = openFollowups.filter((f) => f.days === 0);
+  if (dueToday.length > 0) {
+    const n = dueToday.length;
+    return {
+      id: "signal-due-today-followups",
+      headline: `${n} ${plural(n, "follow-up is", "follow-ups are")} due today`,
+      detail: "Scheduled outreach for today needs attention in your pipeline.",
+      actionLabel: "Open Mission",
+      to: "/dashboard/follow-ups",
+      isQuiet: false,
+    };
+  }
+
+  // 3. Contacted leads without follow-up
+  const contactedWithoutFollowup = selectContactedWithoutFollowup(ctx.leads, ctx.followups, now);
+  if (contactedWithoutFollowup.length > 0) {
+    const n = contactedWithoutFollowup.length;
+    return {
+      id: "signal-contacted-no-action",
+      headline: `${n} contacted ${plural(n, "lead has", "leads have")} no next action`,
+      detail: "Outreach was sent but no follow-up date has been scheduled.",
+      actionLabel: "View in Relationships",
+      to: "/dashboard/relationships",
+      isQuiet: false,
+    };
+  }
+
+  // 4. Discovery activity dominance (backed by real weekly pulse data)
+  const pulse = buildWeeklyPulse(ctx);
+  const discovered = pulse.tiles.find((t) => t.label === "Discovered")?.value ?? 0;
+  const contacted = pulse.tiles.find((t) => t.label === "Contacted")?.value ?? 0;
+  const followupsDone = pulse.tiles.find((t) => t.label === "Follow-ups done")?.value ?? 0;
+  if (discovered > 5 && discovered > (contacted + followupsDone) * 2) {
+    return {
+      id: "signal-discovery-momentum",
+      headline: "Most of your recent activity came from discovery",
+      detail: `${discovered} opportunities were discovered in the last 7 days.`,
+      actionLabel: "Review opportunities",
+      to: "/dashboard/relationships",
+      isQuiet: false,
+    };
+  }
+
+  // Fallback to intentional quiet state
   return {
     id: "signal-quiet",
     headline: "NO NOTABLE SIGNAL",

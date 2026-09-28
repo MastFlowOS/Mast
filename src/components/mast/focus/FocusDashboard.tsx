@@ -118,8 +118,10 @@ export function FocusDashboard() {
       prioritiesCount: snapshot.focusStack.length,
       availableXp,
       currentXp: xp,
+      dailyDiscoverUsed: dailyUsed,
+      dailyDiscoverLimit: dailyLimit,
     };
-  }, [visibleGoals, claimedGoalIds, snapshot.focusStack.length, xp]);
+  }, [visibleGoals, claimedGoalIds, snapshot.focusStack.length, xp, dailyUsed, dailyLimit]);
 
   const loading =
     authLoading ||
@@ -156,7 +158,7 @@ export function FocusDashboard() {
               nextTierName={nextTier?.name ?? null}
               xpToNextTier={nextTier ? Math.max(0, nextTier.xpRequired - xp) : 0}
             />
-            <div className="focus-paired-grid">
+            <div className="focus-paired-grid focus-intelligence-grid">
               <FocusSignal signal={snapshot.signal} />
               <FocusWeeklyPulse pulse={weeklyPulse} />
             </div>
@@ -173,8 +175,8 @@ export function FocusDashboard() {
             {/* 3. FOCUS STACK (3 Editorial Priorities in Coherent Surface) */}
             <FocusStack priorities={snapshot.focusStack} />
 
-            {/* 4. PAIRED GRID: TODAY'S GOALS + MOMENTUM */}
-            <div className="focus-paired-grid">
+            {/* 4. PAIRED GRID: TODAY'S GOALS (~60%) + RECENT ACTIVITY (~40%) */}
+            <div className="focus-paired-grid focus-goals-momentum-grid">
               <div className="focus-grid-col-left">
                 <FocusGoals
                   goals={visibleGoals}
@@ -199,7 +201,7 @@ export function FocusDashboard() {
             />
 
             {/* 6. PAIRED GRID: MAST SIGNAL + WEEKLY PULSE (Compact Intelligence Region) */}
-            <div className="focus-paired-grid">
+            <div className="focus-paired-grid focus-intelligence-grid">
               <div className="focus-grid-col-left">
                 <FocusSignal signal={snapshot.signal} />
               </div>
@@ -223,9 +225,9 @@ export function FocusDashboard() {
         .focus-main-content {
           position: relative;
           z-index: 1;
-          max-width: 1080px;
+          max-width: 1400px;
           margin: 0 auto;
-          padding: 0 2rem 5rem;
+          padding: 1.5rem 2.25rem 5rem;
           overflow-x: hidden;
         }
 
@@ -237,10 +239,17 @@ export function FocusDashboard() {
 
         .focus-paired-grid {
           display: grid;
-          grid-template-columns: 1.15fr 0.85fr;
           gap: 1.5rem;
           margin-bottom: 2rem;
           align-items: stretch;
+        }
+
+        .focus-goals-momentum-grid {
+          grid-template-columns: 1.35fr 1fr;
+        }
+
+        .focus-intelligence-grid {
+          grid-template-columns: 1.15fr 0.85fr;
         }
 
         .focus-grid-col-left,
@@ -250,22 +259,22 @@ export function FocusDashboard() {
           flex-direction: column;
         }
 
-        @media (max-width: 960px) {
+        @media (max-width: 1024px) {
           .focus-paired-grid {
-            grid-template-columns: 1fr;
-            gap: 1.75rem;
+            grid-template-columns: 1fr !important;
+            gap: 1.5rem;
           }
         }
 
         @media (max-width: 768px) {
           .focus-main-content {
-            padding: 0 1.25rem 3.5rem;
+            padding: 1rem 1.25rem 3.5rem;
           }
         }
 
         @media (max-width: 640px) {
           .focus-main-content {
-            padding: 0 0.875rem 3rem;
+            padding: 0.75rem 0.875rem 3rem;
           }
         }
       `}</style>
@@ -312,7 +321,7 @@ function FocusLoading() {
         </div>
 
         {/* Paired Grid Skeleton: Goals + Momentum */}
-        <div style={{ display: "grid", gridTemplateColumns: "1.15fr 0.85fr", gap: "1.5rem", marginBottom: "2rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: "1.5rem", marginBottom: "2rem" }}>
           <div className="mast-skeleton" style={{ height: "12rem", borderRadius: "14px" }} />
           <div className="mast-skeleton" style={{ height: "12rem", borderRadius: "14px" }} />
         </div>
@@ -329,13 +338,18 @@ function FocusLoading() {
           background: var(--background, #0c0f17);
         }
         .focus-main-content {
-          max-width: 1080px;
+          max-width: 1400px;
           margin: 0 auto;
-          padding: 0 2rem 5rem;
+          padding: 1.5rem 2.25rem 5rem;
         }
         @media (max-width: 768px) {
           .focus-main-content {
-            padding: 0 1.25rem 3.5rem;
+            padding: 1rem 1.25rem 3.5rem;
+          }
+        }
+        @media (max-width: 640px) {
+          .focus-main-content {
+            padding: 0.75rem 0.875rem 3rem;
           }
         }
       `}</style>

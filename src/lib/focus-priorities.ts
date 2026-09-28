@@ -703,13 +703,27 @@ export function collectFocusPriorities(input: FocusPriorityInput): FocusPriority
   return list.sort((a, b) => a.rank - b.rank);
 }
 
-/** Secondary priorities after the primary: diverse by family, capped. */
+/** Secondary priorities after the primary: diverse by family, capped, no repetitive discovery. */
 export function selectFocusStack(priorities: FocusPriority[]): FocusPriority[] {
   const seen = new Set<FocusPriorityFamily>();
   if (priorities[0]) seen.add(priorities[0].family);
   const out: FocusPriority[] = [];
+
+  const isDiscoveryThemed = (p: FocusPriority) =>
+    p.family === "discover" ||
+    p.family === "opportunities" ||
+    p.goalCategory === "discover" ||
+    p.goalCategory === "search" ||
+    /discover/i.test(p.stack.title);
+
+  let hasDiscovery = priorities[0] ? isDiscoveryThemed(priorities[0]) : false;
+
   for (const p of priorities.slice(1)) {
     if (seen.has(p.family)) continue;
+    if (isDiscoveryThemed(p)) {
+      if (hasDiscovery) continue;
+      hasDiscovery = true;
+    }
     seen.add(p.family);
     out.push(p);
     if (out.length >= MAX_STACK_ITEMS) break;

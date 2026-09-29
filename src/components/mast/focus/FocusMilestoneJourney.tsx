@@ -658,16 +658,13 @@ export function FocusMilestoneJourney({
 
         .focus-beacon-pulse {
           animation: beaconPulse 2s infinite ease-in-out;
-          transform-origin: center;
         }
 
         @keyframes beaconPulse {
           0%, 100% {
-            r: 7.5;
             opacity: 0.85;
           }
           50% {
-            r: 10.5;
             opacity: 0.35;
           }
         }
@@ -752,18 +749,29 @@ export function FocusMilestoneJourney({
           border: 1px solid rgba(255, 255, 255, 0.18);
         }
 
-        /* ── SVG SUMMIT PIN CIRCLES (Locked directly on mountain peaks) ── */
+        /* ── SVG SUMMIT PIN CIRCLES (Physically locked directly on mountain peaks) ── */
+        .focus-summit-node,
+        .focus-summit-pin-group {
+          pointer-events: auto;
+          transform: none !important;
+        }
+
         .focus-summit-circle-svg {
           fill: #0f1420;
           stroke: rgba(255, 255, 255, 0.28);
           stroke-width: 1.5;
-          transition: transform 150ms ease, stroke 150ms ease;
-          transform-origin: center;
+          transform: none !important;
+          transition: stroke 180ms ease, filter 180ms ease, stroke-width 180ms ease;
         }
 
         .focus-summit-passed .focus-summit-circle-svg {
           stroke: #34d399;
           filter: drop-shadow(0 0 6px rgba(52, 211, 153, 0.4));
+        }
+
+        .focus-summit-passed.focus-summit-pin-group:hover .focus-summit-circle-svg {
+          stroke: #6ee7b7;
+          filter: drop-shadow(0 0 10px rgba(52, 211, 153, 0.75));
         }
 
         .focus-summit-current .focus-summit-circle-svg {
@@ -772,21 +780,32 @@ export function FocusMilestoneJourney({
           filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.55));
         }
 
+        .focus-summit-current.focus-summit-pin-group:hover .focus-summit-circle-svg {
+          stroke: #a78bfa;
+          filter: drop-shadow(0 0 14px rgba(139, 92, 246, 0.85));
+        }
+
         .focus-summit-next .focus-summit-circle-svg {
           stroke: #f59e0b;
           filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.35));
+        }
+
+        .focus-summit-next.focus-summit-pin-group:hover .focus-summit-circle-svg {
+          stroke: #fbbf24;
+          filter: drop-shadow(0 0 10px rgba(245, 158, 11, 0.7));
         }
 
         .focus-summit-locked .focus-summit-circle-svg {
           stroke: rgba(255, 255, 255, 0.25);
         }
 
-        .focus-current-core-svg {
-          filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.85));
+        .focus-summit-locked.focus-summit-pin-group:hover .focus-summit-circle-svg {
+          stroke: rgba(255, 255, 255, 0.45);
+          filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.25));
         }
 
-        .focus-summit-pin-group:hover .focus-summit-circle-svg {
-          transform: scale(1.12);
+        .focus-current-core-svg {
+          filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.85));
         }
 
         /* ── BOTTOM STATS STRIP ── */

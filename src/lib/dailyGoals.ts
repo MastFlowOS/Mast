@@ -536,7 +536,7 @@ export const LEGACY_GOAL_AUDIT: ReadonlyArray<{
   { key: "pipeline", metric: "pipeline_moves", disposition: "deferred", becomes: null, reason: "Board drag calls updateLead with no activity record and overlaps outreach statuses; needs a pipeline_stage_moved event first." },
   { key: "meetings", metric: "meetings_booked", disposition: "removed", becomes: null, reason: "Outcome depends on another person's behaviour and is set by a manual status flip." },
   { key: "notes", metric: "notes_added", disposition: "transformed", becomes: "workspace.add_context", reason: "Counted leads with any note text (incl. imports); now distinct leads with a note saved since the goal was issued." },
-  { key: "relationship-review", metric: "relationships_reviewed", disposition: "removed", becomes: null, reason: "Never had an event source (already disabled in progression.ts)." },
+  { key: "relationship-review", metric: "relationships_reviewed", disposition: "removed", becomes: null, reason: "Never had an event source (already disabled in the legacy catalog)." },
   { key: "executive-briefings", metric: "executive_briefings", disposition: "deferred", becomes: null, reason: "Passive auto-generated panel; no discrete user action to verify." },
   { key: "weekly-intelligence", metric: "weekly_intelligence", disposition: "deferred", becomes: null, reason: "Passive panel; no discrete user action to verify." },
   { key: "opportunity-insights", metric: "opportunity_insights", disposition: "deferred", becomes: null, reason: "Insight is generated on view; there is no user action to verify." },

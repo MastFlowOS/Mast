@@ -7,7 +7,6 @@ import {
   getNextMilestone,
   type FocusContext,
 } from "../focus.js";
-import { buildProgressionCounters } from "../progression.js";
 
 const NOW = new Date(2026, 8, 16, 12, 0, 0);
 
@@ -40,8 +39,6 @@ function ctx(over: Partial<FocusContext> = {}): FocusContext {
     dailyDiscoverLimit: 10,
     monthlyRemaining: 100,
     plan: "starter",
-    completedGoalIds: [],
-    progressionEvents: {},
     xp: 5,
     goalsClaimedToday: 0,
     now: NOW,
@@ -158,20 +155,3 @@ test("milestone maths uses XP against MILESTONE_TIERS", () => {
   assert.equal((next?.xpRequired ?? 0) - 120, 130);
 });
 
-test("'Save N relationships' and 'Discover N opportunities' counters differ for untouched discoveries", () => {
-  const leads = [
-    lead(), // untouched discovered
-    lead(),
-    lead({ status: "email_sent", lastContactedAt: daysAgo(1) }), // engaged discovered
-    lead({ source: "manual", businessId: null }),
-    lead({ source: "csv_import", businessId: null }),
-  ];
-  const counters = buildProgressionCounters({
-    plan: "free",
-    leads,
-    followups: [],
-    eventTotals: {},
-  });
-  assert.equal(counters.opportunities_discovered, 5);
-  assert.equal(counters.relationships_created, 3);
-});

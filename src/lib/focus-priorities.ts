@@ -68,6 +68,8 @@ export type FocusGoalInput = {
   current: number;
   xp: number;
   category: string;
+  /** Persisted action route for this goal (Daily Goals metadata). Wins over the category table. */
+  to?: string;
 };
 
 export type FocusPriorityInput = {
@@ -555,7 +557,7 @@ function goalCandidate(input: FocusPriorityInput): FocusPriority | null {
   if (near.length === 0) return null;
   const g = near[0];
   const left = goalRemaining(g);
-  const to = goalRoute(g.category);
+  const to = g.to ?? goalRoute(g.category);
   return {
     id: "goal-near",
     kind: "goal_near",
@@ -599,7 +601,7 @@ function xpCandidate(input: FocusPriorityInput): FocusPriority | null {
   const description = bridge
     ? `Finishing "${bridge.label}" is worth +${bridge.xp} XP.`
     : "Completing goals awards XP toward it.";
-  const to = bridge ? goalRoute(bridge.category) : "/dashboard";
+  const to = bridge ? (bridge.to ?? goalRoute(bridge.category)) : "/dashboard";
   return {
     id: "xp-milestone",
     kind: "xp_milestone",

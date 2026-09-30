@@ -6,17 +6,10 @@ import {
   selectContactedWithoutFollowup,
   selectFocusStack,
   selectOpenFollowups,
+  type FocusGoalInput,
   type FocusPriority,
 } from "@/lib/focus-priorities";
 import type { PlanId } from "@/lib/plans";
-import {
-  generateProgressionGoals,
-  isProgressionGoalComplete,
-  pickGoalCelebration,
-  progressionGoalProgress,
-  type GeneratedGoal,
-  type ProgressionEventTotals,
-} from "@/lib/progression";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -77,8 +70,6 @@ export type FocusWeeklyPulse = {
   summary: string;
 };
 
-export type FocusGoal = GeneratedGoal;
-
 export type MilestoneTier = {
   id: string;
   name: string;
@@ -95,11 +86,9 @@ export type FocusContext = {
   /** Remaining monthly discovery allowance; null when unknown. */
   monthlyRemaining: number | null;
   plan: PlanId;
-  completedGoalIds: string[];
-  progressionEvents: ProgressionEventTotals;
-  /** `profiles.xp`. */
+  /** `profiles.xp` (persistent XP total only — never used to derive daily progress). */
   xp: number;
-  /** Goals claimed today (from `goal_completions`). */
+  /** Persisted Daily Goals claimed today (`daily_goals.claimed_at`). */
   goalsClaimedToday: number;
   /** Injectable clock for tests. */
   now?: Date;
@@ -112,7 +101,6 @@ export type FocusSnapshot = {
   weeklyPulse: FocusWeeklyPulse;
   momentum: FocusMomentumEvent[];
   signal: FocusMastSignal;
-  goals: FocusGoal[];
   isClear: boolean;
 };
 
@@ -153,13 +141,17 @@ function followupsAvailable(plan: PlanId) {
 
 // ── Priorities (single source for hero, stack, greeting, clear state) ─────────
 
-export function buildFocusPriorities(ctx: FocusContext, goals: FocusGoal[]): FocusPriority[] {
+export function buildFocusPriorities(
+  ctx: FocusContext,
+  goals: FocusGoalInput[] = [],
+  claimedGoalIds: string[] = [],
+): FocusPriority[] {
   const nextTier = getNextMilestone(ctx.xp);
   return collectFocusPriorities({
     leads: ctx.leads,
     followups: ctx.followups,
     goals,
-    claimedGoalIds: ctx.completedGoalIds,
+    claimedGoalIds,
     xp: ctx.xp,
     nextTier: nextTier ? { name: nextTier.name, xpRequired: nextTier.xpRequired } : null,
     dailyRemaining: Math.max(0, ctx.dailyDiscoverLimit - ctx.dailyDiscoverUsed),
@@ -190,7 +182,7 @@ export function buildGreeting(firstName: string, ctx: FocusContext, priorities?:
   const now = clock(ctx);
   const period = getTimeOfDayPeriod(now);
 
-  const list = priorities ?? buildFocusPriorities(ctx, buildDailyGoals(ctx));
+  const list = priorities ?? buildFocusPriorities(ctx);
   const top = list[0];
   let subtitle: string;
 
@@ -237,19 +229,6 @@ export function buildGreeting(firstName: string, ctx: FocusContext, priorities?:
   }
 
   return { period, subtitle, name: firstName };
-}
-
-// ── Daily goals ───────────────────────────────────────────────────────────────
-
-export function buildDailyGoals(ctx: FocusContext): FocusGoal[] {
-  return generateProgressionGoals({
-    plan: ctx.plan,
-    leads: ctx.leads,
-    followups: ctx.followups,
-    completedGoalIds: ctx.completedGoalIds,
-    eventTotals: ctx.progressionEvents,
-    activeGoalCount: 4,
-  });
 }
 
 // ── Milestone helpers ─────────────────────────────────────────────────────────
@@ -493,9 +472,16 @@ export function buildWeeklyPulse(ctx: FocusContext): FocusWeeklyPulse {
 
 // ── Full snapshot ─────────────────────────────────────────────────────────────
 
-export function buildFocusSnapshot(firstName: string, ctx: FocusContext): FocusSnapshot {
-  const goals = buildDailyGoals(ctx);
-  const priorities = buildFocusPriorities(ctx, goals);
+export function buildFocusSnapshot(
+  firstName: string,
+  ctx: FocusContext,
+  /** Today's persisted Daily Goals, adapted by `toPriorityGoals`. Empty until they load. */
+  dailyGoals: {
+    goals: FocusGoalInput[];
+    claimedGoalIds: string[];
+  } = { goals: [], claimedGoalIds: [] },
+): FocusSnapshot {
+  const priorities = buildFocusPriorities(ctx, dailyGoals.goals, dailyGoals.claimedGoalIds);
   const greeting = buildGreeting(firstName, ctx, priorities);
 
   return {
@@ -509,19 +495,6 @@ export function buildFocusSnapshot(firstName: string, ctx: FocusContext): FocusS
     weeklyPulse: buildWeeklyPulse(ctx),
     momentum: buildMomentumEvents(ctx),
     signal: buildMastSignal(ctx),
-    goals,
     isClear: priorities.length === 0,
   };
-}
-
-export function goalProgress(goal: FocusGoal) {
-  return progressionGoalProgress(goal);
-}
-
-export function isGoalComplete(goal: FocusGoal) {
-  return isProgressionGoalComplete(goal);
-}
-
-export function pickCelebration(goal: FocusGoal) {
-  return pickGoalCelebration(goal);
 }

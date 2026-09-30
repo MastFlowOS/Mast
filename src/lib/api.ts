@@ -9,7 +9,6 @@ import { UsageService } from "./usage";
 import { parseGeoScope, validateDiscoveryRegion } from "./geo/scope";
 import { GENUINE_SEND_TYPES } from "./outreach/continuity/read";
 import { DAILY_GOAL_COUNT, type DailyGoalDraft, type DailyGoalInstance, type GoalEvidence } from "./dailyGoals";
-import type { ProgressionEventTotals, ProgressionMetric } from "./progression";
 
 
 export type { GenerationMode, PlanId } from "./plans";
@@ -158,8 +157,6 @@ export type LeadActivityType =
   | "message_generated"
   | "note_added"
   | "status_changed";
-
-export type ProgressionEventType = ProgressionMetric;
 
 export type Lead = {
   id: number;
@@ -1664,13 +1661,13 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
   return merged;
 }
 
-// ─── Progression: XP & Goal Completions (Supabase) ────────────────────────────
+// ─── XP (Supabase) ────────────────────────────────────────────────────────────
 //
-// XP lives on `profiles.xp` and only ever increases. Daily goals are never
-// persisted — they're computed live from leads/followups (see lib/focus.ts).
-// Awarding XP for a goal is idempotent per (user, goal, calendar day) via the
-// `award_goal_xp` Postgres function and the unique constraint backing it, so
-// refreshes, duplicate tabs, and multiple devices can never double-award.
+// XP lives on `profiles.xp` and only ever increases. It is awarded solely by
+// `claimDailyGoal` (see the Daily Goals section below), which is idempotent per
+// goal via the `claim_daily_goal` Postgres function and the `goal_completions`
+// ledger, so refreshes, duplicate tabs, and multiple devices can never
+// double-award. This module only reads the running total.
 
 export async function getXp(): Promise<number> {
   const userId = await requireUserId();
@@ -1680,100 +1677,6 @@ export async function getXp(): Promise<number> {
     return 0;
   }
   return (data?.xp as number | null) ?? 0;
-}
-
-/** Goal ids that have already had XP awarded for the given calendar day (YYYY-MM-DD, local time). */
-export async function getGoalClaims(date: string): Promise<string[]> {
-  const userId = await requireUserId();
-  const { data, error } = await supabase!
-    .from("goal_completions")
-    .select("goal_id")
-    .eq("user_id", userId)
-    .eq("completed_on", date);
-
-  if (error) {
-    console.warn("[Mast:getGoalClaims] failed, returning empty", error.message);
-    return [];
-  }
-
-  return (data ?? []).map((row: { goal_id: string }) => row.goal_id);
-}
-
-/** All completed progression goal ids for the current user. Used by the quest generator. */
-export async function getCompletedGoalIds(): Promise<string[]> {
-  const userId = await requireUserId();
-  const { data, error } = await supabase!
-    .from("goal_completions")
-    .select("goal_id")
-    .eq("user_id", userId);
-
-  if (error) {
-    console.warn("[Mast:getCompletedGoalIds] failed, returning empty", error.message);
-    return [];
-  }
-
-  return Array.from(new Set((data ?? []).map((row: { goal_id: string }) => row.goal_id)));
-}
-
-export async function getProgressionEventTotals(): Promise<ProgressionEventTotals> {
-  const userId = await requireUserId();
-  const { data, error } = await supabase!
-    .from("progression_events")
-    .select("event_type, quantity")
-    .eq("user_id", userId);
-
-  if (error) {
-    console.warn("[Mast:getProgressionEventTotals] failed, returning empty", error.message);
-    return {};
-  }
-
-  return (data ?? []).reduce<ProgressionEventTotals>((totals, row: { event_type: string; quantity: number | null }) => {
-    const metric = row.event_type as ProgressionMetric;
-    totals[metric] = (totals[metric] ?? 0) + (row.quantity ?? 1);
-    return totals;
-  }, {});
-}
-
-export async function recordProgressionEvent(
-  eventType: ProgressionEventType,
-  quantity = 1,
-  metadata: Record<string, unknown> = {},
-): Promise<void> {
-  const userId = await requireUserId();
-  const { error } = await supabase!.from("progression_events").insert({
-    user_id: userId,
-    event_type: eventType,
-    quantity,
-    metadata,
-  });
-
-  if (error) {
-    console.warn("[Mast:recordProgressionEvent] failed", error.message);
-  }
-}
-
-/**
- * Award XP for completing `goalId` on `date` (YYYY-MM-DD, local time).
- * Safe to call more than once for the same goal/day: the server only awards
- * XP the first time and reports `awarded: false` on every subsequent call,
- * returning the user's current total either way.
- */
-export async function awardGoalXp(
-  goalId: string,
-  date: string,
-  xp: number,
-): Promise<{ xp: number; awarded: boolean }> {
-  await requireUserId();
-  const { data, error } = await supabase!.rpc("award_goal_xp", {
-    p_goal_id: goalId,
-    p_completed_on: date,
-    p_xp: xp,
-  });
-
-  if (error) throw new ApiError(500, error.message, error);
-
-  const row = Array.isArray(data) ? data[0] : data;
-  return { xp: (row?.xp as number) ?? 0, awarded: !!row?.awarded };
 }
 
 // ─── Daily Goals (Supabase) ───────────────────────────────────────────────────

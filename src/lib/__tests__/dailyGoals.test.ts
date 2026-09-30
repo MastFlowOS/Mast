@@ -28,7 +28,6 @@ import {
   type DailyGoalInstance,
   type GoalEvidence,
 } from "../dailyGoals.js";
-import { GOAL_DEFINITIONS, XP_BY_DIFFICULTY } from "../progression.js";
 import { getCurrentMilestone } from "../focus.js";
 import type { PlanId } from "../plans";
 
@@ -457,7 +456,8 @@ test("22. four persisted goals survive reload", () => {
 
 // ─── 23. Goal XP is awarded exactly once ──────────────────────────────────────
 test("23. goal XP awarded within milestone limits", () => {
-  const allowed = new Set(Object.values(XP_BY_DIFFICULTY));
+  // Milestone-safe XP tiers (easy / medium / hard / very hard).
+  const allowed = new Set([25, 50, 100, 250]);
   for (const d of DAILY_GOAL_DEFINITIONS) {
     assert.ok(allowed.has(d.xp), `${d.id} xp ${d.xp} not valid difficulty tier`);
   }
@@ -530,11 +530,20 @@ test("25-mutation: plan matrix accurately reflects all 8 definitions", () => {
   assert.deepEqual(byId["follow_through.schedule_next_steps"], { free: false, starter: true, pro: true, premium: true });
 });
 
+// The retired generic catalog (src/lib/progression.ts, deleted in Phase 3) had
+// exactly these 15 keys. The audit table is the permanent record of what
+// happened to each one, so it is pinned here against that historical list.
+const RETIRED_CATALOG_KEYS = [
+  "discover", "contact", "relationships", "search-industries", "search-regions",
+  "exports", "ai-actions", "followups", "pipeline", "meetings", "notes",
+  "relationship-review", "executive-briefings", "weekly-intelligence", "opportunity-insights",
+];
+
 test("25-mutation: all 15 legacy definitions audited; none silently active", () => {
-  assert.equal(GOAL_DEFINITIONS.length, 15);
+  assert.equal(RETIRED_CATALOG_KEYS.length, 15);
   assert.deepEqual(
     LEGACY_GOAL_AUDIT.map((a) => a.key).sort(),
-    GOAL_DEFINITIONS.map((d) => d.key).sort(),
+    [...RETIRED_CATALOG_KEYS].sort(),
   );
   const ids = new Set(DAILY_GOAL_DEFINITIONS.map((d) => d.id));
   for (const a of LEGACY_GOAL_AUDIT) {

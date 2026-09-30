@@ -1,29 +1,17 @@
 import { useMemo } from "react";
-import {
-  useAccount,
-  useCompletedGoalIds,
-  useFollowups,
-  useGoalClaims,
-  useLeads,
-  useMe,
-  useProgressionEventTotals,
-  useXp,
-} from "@/hooks/use-mast-api";
-import { todayKey, useFocusProgress } from "@/hooks/use-focus-progress";
-import {
-  buildFocusSnapshot,
-  getNextMilestone,
-  isGoalComplete,
-  type FocusContext,
-} from "@/lib/focus";
+import { useAccount, useFollowups, useLeads, useMe, useXp } from "@/hooks/use-mast-api";
+import { useFocusProgress } from "@/hooks/use-focus-progress";
+import { useDailyGoals } from "@/hooks/use-daily-goals";
+import { buildFocusSnapshot, getNextMilestone, type FocusContext } from "@/lib/focus";
+import { planCan } from "@/lib/dailyGoals";
+import { summarizeDailyGoals, toPriorityGoals } from "@/lib/focusDailyGoals";
 import { getPlan } from "@/lib/plans";
 import type { FollowupWithLead, Lead } from "@/lib/api";
-import type { ProgressionEventTotals } from "@/lib/progression";
+import { FocusDailyGoals } from "@/components/mast/focus/FocusDailyGoals";
 import {
   FocusGreeting,
   FocusPrimaryHero,
   FocusStack,
-  FocusGoals,
   FocusMomentum,
   FocusMilestoneJourney,
   FocusSignal,
@@ -34,20 +22,18 @@ import {
 
 // Stable fallbacks so the memoized context only changes when real data does.
 const NO_FOLLOWUPS: FollowupWithLead[] = [];
-const NO_IDS: string[] = [];
-const NO_EVENTS: ProgressionEventTotals = {};
 
 export function FocusDashboard() {
   const { data: auth, isLoading: authLoading } = useMe();
-  const { data: account } = useAccount();
-  const { data: leadsPayload, isLoading: leadsLoading } = useLeads({ limit: 1000 });
-  const { data: followups = NO_FOLLOWUPS, isLoading: followupsLoading } = useFollowups({ limit: 1000 });
-  const { data: completedGoalIds = NO_IDS, isLoading: completedGoalsLoading } = useCompletedGoalIds();
-  const { data: progressionEvents = NO_EVENTS, isLoading: progressionEventsLoading } =
-    useProgressionEventTotals();
-  // Same query keys as useFocusProgress, so React Query shares the requests.
+  const { data: account, isLoading: accountLoading } = useAccount();
+  const { data: leadsPayload, isLoading: leadsLoading, isSuccess: leadsLoaded } = useLeads({ limit: 1000 });
+  const {
+    data: followups = NO_FOLLOWUPS,
+    isLoading: followupsLoading,
+    isSuccess: followupsLoaded,
+  } = useFollowups({ limit: 1000 });
+  // Persistent XP total only (`profiles.xp`). Never used to derive daily progress.
   const { data: xpTotal = 0 } = useXp();
-  const { data: claimedToday = NO_IDS } = useGoalClaims(todayKey());
 
   const firstName = auth?.user?.fullName?.split(/\s+/)[0] || "MAST";
   const leads = useMemo(() => normalizeLeads(leadsPayload), [leadsPayload]);
@@ -58,6 +44,32 @@ export function FocusDashboard() {
   const monthlyRemaining = account?.monthlyUsage?.remaining ?? null;
   const plan = account?.subscription?.plan ?? auth?.user?.plan ?? "free";
 
+  // Today's Goals: the persisted Daily Goals system is the only goal source.
+  // Never generate from a half-loaded workspace: a Free plan has no follow-up
+  // capability (that query legitimately errors), any other plan must have
+  // loaded its follow-ups.
+  const followupsSettled = followupsLoaded || (!followupsLoading && !planCan(plan, "mission"));
+  const workspaceReady =
+    !authLoading && !accountLoading && !leadsLoading && leadsLoaded && !followupsLoading && followupsSettled;
+
+  const {
+    dateKey,
+    status: goalsStatus,
+    goals: dailyGoals,
+    diagnostic: goalsDiagnostic,
+    refetch: retryGoals,
+  } = useDailyGoals({
+    ready: workspaceReady,
+    plan,
+    leads,
+    followups,
+    dailyUsed,
+    dailyLimit,
+    monthlyRemaining,
+  });
+  const goalSummary = useMemo(() => summarizeDailyGoals(dailyGoals), [dailyGoals]);
+  const priorityGoals = useMemo(() => toPriorityGoals(dailyGoals), [dailyGoals]);
+
   const ctx: FocusContext = useMemo(
     () => ({
       leads,
@@ -66,70 +78,45 @@ export function FocusDashboard() {
       dailyDiscoverLimit: dailyLimit,
       monthlyRemaining,
       plan,
-      completedGoalIds,
-      progressionEvents,
       xp: xpTotal,
-      goalsClaimedToday: claimedToday.length,
+      goalsClaimedToday: goalSummary.claimedCount,
     }),
-    [
-      leads,
-      followups,
-      dailyUsed,
-      dailyLimit,
-      monthlyRemaining,
-      plan,
-      completedGoalIds,
-      progressionEvents,
-      xpTotal,
-      claimedToday,
-    ],
+    [leads, followups, dailyUsed, dailyLimit, monthlyRemaining, plan, xpTotal, goalSummary.claimedCount],
   );
 
-  const snapshot = useMemo(() => buildFocusSnapshot(firstName, ctx), [firstName, ctx]);
+  const snapshot = useMemo(
+    () => buildFocusSnapshot(firstName, ctx, priorityGoals),
+    [firstName, ctx, priorityGoals],
+  );
   const primaryRecommendation = snapshot.primaryRecommendation;
   const weeklyPulse = snapshot.weeklyPulse;
 
   const {
-    visibleGoals,
     xp,
     currentMilestone,
     nextMilestone,
     milestonePct,
     isLoading: progressLoading,
     claimGoal,
-    claimedGoalIds,
-    claimedTodayCount,
     claimingGoalIds,
-    exitingGoalIds,
     leveledUpTier,
-  } = useFocusProgress(snapshot.goals);
+  } = useFocusProgress(dateKey);
 
   // Compact today context for the right side of the First Viewport Hero
-  const todayContext: FocusTodayContext = useMemo(() => {
-    const readyToClaimCount = visibleGoals.filter(
-      (g) => isGoalComplete(g) && !claimedGoalIds.has(g.id),
-    ).length;
-    const availableXp = visibleGoals
-      .filter((g) => !claimedGoalIds.has(g.id))
-      .reduce((sum, g) => sum + g.xp, 0);
-    return {
-      readyToClaimCount,
-      totalGoalsCount: visibleGoals.length,
+  const todayContext: FocusTodayContext = useMemo(
+    () => ({
+      readyToClaimCount: goalSummary.readyToClaimCount,
+      totalGoalsCount: goalSummary.total,
       prioritiesCount: snapshot.focusStack.length,
-      availableXp,
+      availableXp: goalSummary.availableXp,
       currentXp: xp,
       dailyDiscoverUsed: dailyUsed,
       dailyDiscoverLimit: dailyLimit,
-    };
-  }, [visibleGoals, claimedGoalIds, snapshot.focusStack.length, xp, dailyUsed, dailyLimit]);
+    }),
+    [goalSummary, snapshot.focusStack.length, xp, dailyUsed, dailyLimit],
+  );
 
-  const loading =
-    authLoading ||
-    leadsLoading ||
-    followupsLoading ||
-    completedGoalsLoading ||
-    progressionEventsLoading ||
-    progressLoading;
+  const loading = authLoading || leadsLoading || followupsLoading || progressLoading;
 
   if (loading) {
     return <FocusLoading />;
@@ -153,7 +140,7 @@ export function FocusDashboard() {
           /* EMPTY STATE ("YOU'RE CLEAR.") */
           <>
             <FocusEmptyState
-              goalsClaimedToday={claimedTodayCount}
+              goalsClaimedToday={goalSummary.claimedCount}
               xp={xp}
               nextTierName={nextTier?.name ?? null}
               xpToNextTier={nextTier ? Math.max(0, nextTier.xpRequired - xp) : 0}
@@ -178,12 +165,13 @@ export function FocusDashboard() {
             {/* 4. PAIRED GRID: TODAY'S GOALS (~60%) + RECENT ACTIVITY (~40%) */}
             <div className="focus-paired-grid focus-goals-momentum-grid">
               <div className="focus-grid-col-left">
-                <FocusGoals
-                  goals={visibleGoals}
-                  onClaim={claimGoal}
-                  claimedGoalIds={claimedGoalIds}
+                <FocusDailyGoals
+                  status={goalsStatus}
+                  goals={dailyGoals}
+                  diagnostic={goalsDiagnostic}
                   claimingGoalIds={claimingGoalIds}
-                  exitingGoalIds={exitingGoalIds}
+                  onClaim={claimGoal}
+                  onRetry={retryGoals}
                 />
               </div>
               <div className="focus-grid-col-right">

@@ -68,7 +68,7 @@ vi.mock("@/lib/discover-insights", () => ({
 }));
 
 vi.mock("@/hooks/use-mast-api", () => ({
-  queryKeys: { account: ["a"], analytics: ["b"], progressionEvents: ["c"] },
+  queryKeys: { account: ["a"], analytics: ["b"] },
   useAccount: () => ({
     data: {
       dailyUsage: { remaining: 280 },

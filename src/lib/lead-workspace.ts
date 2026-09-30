@@ -291,8 +291,7 @@ export function isDiscoveredOpportunity(lead: Pick<Lead, "source">): boolean {
  *    moved off the default "new" status)
  *
  * A freshly-Discovered lead the user hasn't touched yet is NOT a
- * relationship — see audit Priority 3. This function backs both the
- * `relationships_created` progression counter and the "Save to
+ * relationship — see audit Priority 3. This function backs the "Save to
  * Relationships" button state.
  */
 export function isRelationshipLead(lead: Pick<Lead, "source" | "lastContactedAt" | "status">): boolean {

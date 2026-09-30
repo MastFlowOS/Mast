@@ -22,8 +22,6 @@ function makeContext(hour: number): FocusContext {
     dailyDiscoverLimit: 10,
     monthlyRemaining: 100,
     plan: "starter",
-    completedGoalIds: [],
-    progressionEvents: {},
     xp: 100,
     goalsClaimedToday: 0,
     now: date,

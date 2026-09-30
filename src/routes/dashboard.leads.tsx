@@ -605,7 +605,6 @@ function GetLeads() {
         queryClient.invalidateQueries({ queryKey: queryKeys.account });
         queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
         queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
-        queryClient.invalidateQueries({ queryKey: queryKeys.progressionEvents });
       }, wait);
     };
 

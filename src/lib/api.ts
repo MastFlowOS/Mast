@@ -6,7 +6,9 @@ import { supabase } from "./supabase";
 import { addNotification } from "./notifications";
 import { buildPermissionsManager, getDevPlanOverride, type FeatureId } from "./permissions";
 import { UsageService } from "./usage";
-import { validateDiscoveryRegion } from "./geo/scope";
+import { parseGeoScope, validateDiscoveryRegion } from "./geo/scope";
+import { GENUINE_SEND_TYPES } from "./outreach/continuity/read";
+import { DAILY_GOAL_COUNT, type DailyGoalDraft, type DailyGoalInstance, type GoalEvidence } from "./dailyGoals";
 import type { ProgressionEventTotals, ProgressionMetric } from "./progression";
 
 
@@ -1774,6 +1776,146 @@ export async function awardGoalXp(
   return { xp: (row?.xp as number) ?? 0, awarded: !!row?.awarded };
 }
 
+// ─── Daily Goals (Supabase) ───────────────────────────────────────────────────
+//
+// Persistent per-local-day goal instances (migration 035). Reads are plain
+// selects under RLS; every write goes through a SECURITY DEFINER RPC:
+//   ensure_daily_goals      create today's set once (race-safe)
+//   set_daily_goal_progress monotonic progress, flips to completed at target
+//   claim_daily_goal        awards the STORED xp exactly once via goal_completions
+// The pure engine lives in ./dailyGoals; this section is only I/O.
+
+function dbRowToDailyGoal(row: Record<string, unknown>): DailyGoalInstance {
+  return {
+    id: String(row.id),
+    goalDate: String(row.goal_date),
+    slot: Number(row.slot),
+    definitionId: String(row.goal_definition_id),
+    family: row.family as DailyGoalInstance["family"],
+    title: String(row.title),
+    description: String(row.description ?? ""),
+    target: Number(row.target),
+    progress: Number(row.progress ?? 0),
+    status: row.status === "completed" ? "completed" : "active",
+    xp: Number(row.xp),
+    plan: row.plan as PlanId,
+    metadata: (row.metadata ?? {}) as DailyGoalInstance["metadata"],
+    createdAt: String(row.created_at),
+    completedAt: (row.completed_at as string | null) ?? null,
+    claimed: Boolean(row.claimed_at),
+  };
+}
+
+/** Today's persisted goals for a LOCAL date key (YYYY-MM-DD). Empty = not generated yet. */
+export async function getDailyGoals(goalDate: string): Promise<DailyGoalInstance[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!
+    .from("daily_goals")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("goal_date", goalDate)
+    .order("slot", { ascending: true });
+  if (error) throw new ApiError(500, error.message, error);
+  return (data ?? []).map((row: Record<string, unknown>) => dbRowToDailyGoal(row));
+}
+
+/**
+ * Persist today's set if — and only if — none exists yet. Always returns the
+ * authoritative rows, so a second tab that loses the race adopts the winner's.
+ */
+export async function ensureDailyGoals(goalDate: string, drafts: DailyGoalDraft[]): Promise<DailyGoalInstance[]> {
+  await requireUserId();
+  if (drafts.length !== DAILY_GOAL_COUNT) {
+    throw new ApiError(400, `Cannot persist daily goals: exactly ${DAILY_GOAL_COUNT} goals required, got ${drafts.length}.`, { drafts });
+  }
+  const { data, error } = await supabase!.rpc("ensure_daily_goals", { p_goal_date: goalDate, p_goals: drafts });
+  if (error) throw new ApiError(500, error.message, error);
+  return ((data ?? []) as Record<string, unknown>[]).map(dbRowToDailyGoal);
+}
+
+export async function setDailyGoalProgress(id: string, progress: number): Promise<DailyGoalInstance> {
+  await requireUserId();
+  const { data, error } = await supabase!.rpc("set_daily_goal_progress", { p_id: id, p_progress: progress });
+  if (error) throw new ApiError(500, error.message, error);
+  return dbRowToDailyGoal((Array.isArray(data) ? data[0] : data) as Record<string, unknown>);
+}
+
+/** Claim XP for a COMPLETED daily goal. XP amount is server-side; safe to call repeatedly. */
+export async function claimDailyGoal(id: string): Promise<{ xp: number; awarded: boolean }> {
+  await requireUserId();
+  const { data, error } = await supabase!.rpc("claim_daily_goal", { p_id: id });
+  if (error) throw new ApiError(500, error.message, error);
+  const row = Array.isArray(data) ? data[0] : data;
+  return { xp: (row?.xp as number) ?? 0, awarded: !!row?.awarded };
+}
+
+/**
+ * Durable evidence for goal progress. Each field is read from the record type
+ * that represents exactly one kind of action, so goals cannot cross-count.
+ * `leads` / `followups` are passed in (already loaded by the Focus page).
+ */
+export async function getDailyGoalEvidence(
+  windowStart: string,
+  leads: Lead[],
+  followups: FollowupWithLead[],
+): Promise<GoalEvidence> {
+  const userId = await requireUserId();
+  const sendTypes = [...GENUINE_SEND_TYPES];
+
+  const [sendsRes, notesRes, jobsRes, priorJobsRes] = await Promise.all([
+    supabase!.from("lead_activities").select("lead_id, type, timestamp").eq("user_id", userId).in("type", sendTypes).gte("timestamp", windowStart).limit(1000),
+    supabase!.from("lead_activities").select("lead_id, timestamp").eq("user_id", userId).eq("type", "note_added").gte("timestamp", windowStart).limit(1000),
+    supabase!.from("scrape_jobs").select("created_at, status, results_count, query").eq("user_id", userId).gte("created_at", windowStart).limit(200),
+    supabase!.from("scrape_jobs").select("query").eq("user_id", userId).lt("created_at", windowStart).gt("results_count", 0).limit(2000),
+  ]);
+  for (const res of [sendsRes, notesRes, jobsRes, priorJobsRes]) {
+    if (res.error) throw new ApiError(500, res.error.message, res.error);
+  }
+
+  const sends = ((sendsRes.data ?? []) as { lead_id: number | string; type: string; timestamp: string }[]).map((r) => ({
+    leadId: r.lead_id,
+    type: r.type,
+    timestamp: r.timestamp,
+  }));
+
+  // First-touch = no genuine send BEFORE the window. Only look up leads we saw send today.
+  const sentIds = Array.from(new Set(sends.map((s) => s.leadId)));
+  let priorSendLeadIds = new Set<string>();
+  if (sentIds.length > 0) {
+    const { data: prior, error: priorErr } = await supabase!
+      .from("lead_activities")
+      .select("lead_id")
+      .eq("user_id", userId)
+      .in("type", sendTypes)
+      .in("lead_id", sentIds)
+      .lt("timestamp", windowStart)
+      .limit(5000);
+    if (priorErr) throw new ApiError(500, priorErr.message, priorErr);
+    priorSendLeadIds = new Set(((prior ?? []) as { lead_id: number | string }[]).map((r) => String(r.lead_id)));
+  }
+
+  const regionOf = (q: unknown) => String((q as { region?: unknown } | null)?.region ?? "");
+  const priorSearchedCountryCodes = new Set<string>();
+  for (const row of (priorJobsRes.data ?? []) as { query: unknown }[]) {
+    for (const c of parseGeoScope(regionOf(row.query)).countries) priorSearchedCountryCodes.add(c.code);
+  }
+
+  return {
+    leads,
+    followups,
+    genuineSends: sends,
+    priorSendLeadIds,
+    notes: ((notesRes.data ?? []) as { lead_id: number | string; timestamp: string }[]).map((r) => ({ leadId: r.lead_id, timestamp: r.timestamp })),
+    discoveryJobs: ((jobsRes.data ?? []) as { created_at: string; status: string; results_count: number | null; query: unknown }[]).map((r) => ({
+      createdAt: r.created_at,
+      region: regionOf(r.query),
+      resultsCount: r.results_count ?? 0,
+      status: r.status,
+    })),
+    priorSearchedCountryCodes,
+  };
+}
+
 // ─── Lead Activities (Supabase) ───────────────────────────────────────────────
 
 export async function getLeadActivities(id: number | string): Promise<LeadActivity[]> {
@@ -2153,6 +2295,7 @@ export async function deleteWorkspace(): Promise<void> {
 
   // 4. goal_completions
   await supabase!.from("goal_completions").delete().eq("user_id", userId);
+  await supabase!.from("daily_goals").delete().eq("user_id", userId);
 
   // 5. leads
   await supabase!.from("leads").delete().eq("user_id", userId);

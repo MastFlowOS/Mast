@@ -16,13 +16,11 @@ import {
 import type { DailyGoalsStatus } from "@/hooks/use-daily-goals";
 
 /**
- * TODAY'S GOALS — Compact Premium Daily Agenda
+ * TODAY'S GOALS — Compact Executive Agenda
  *
- * Renders the persisted set of exactly four Daily Goals in slot order as a
- * sleek, compact productivity agenda item.
- *
- * Completing a goal transforms that same row into a completed state with a
- * satisfying micro-interaction. Rows never move, reorder, or get replaced.
+ * Minimal, precision-crafted daily agenda native to MAST's command layer.
+ * Focuses on high-information density, quiet typography, and satisfying,
+ * non-gamified micro-interactions.
  */
 
 type Props = {
@@ -112,22 +110,22 @@ function DailyGoalRow({
   const actionLabel = goal.metadata.actionLabel || "Continue";
 
   const prevCompleteRef = useRef(complete);
-  const [animatingCompletion, setAnimatingCompletion] = useState(false);
+  const [justCompleted, setJustCompleted] = useState(false);
   const [replayTick, setReplayTick] = useState(0);
 
   useEffect(() => {
     if (!prevCompleteRef.current && complete) {
-      setAnimatingCompletion(true);
+      setJustCompleted(true);
       const timer = window.setTimeout(() => {
-        setAnimatingCompletion(false);
-      }, 850);
+        setJustCompleted(false);
+      }, 700);
       return () => window.clearTimeout(timer);
     }
     prevCompleteRef.current = complete;
   }, [complete]);
 
   const handleRowClick = (e: React.MouseEvent) => {
-    // If the click originated inside a link or button, let it perform naturally
+    // Prevent interfering with nested interactive buttons / links
     const target = e.target as HTMLElement;
     if (target.closest("a") || target.closest("button")) {
       return;
@@ -158,8 +156,10 @@ function DailyGoalRow({
         "fdg-row",
         complete && "fdg-row-complete",
         claimed && "fdg-row-claimed",
-        (animatingCompletion || replayTick > 0) && "fdg-row-pulsing"
+        justCompleted && "fdg-row-just-completed",
+        replayTick > 0 && "fdg-row-replaying"
       )}
+      key={replayTick > 0 ? `r-${replayTick}` : undefined}
       data-testid="daily-goal-row"
       data-goal-id={goal.id}
       data-slot={goal.slot}
@@ -170,29 +170,20 @@ function DailyGoalRow({
       role={complete && claimed ? "button" : undefined}
       aria-label={
         complete && claimed
-          ? `${goal.title}, completed. Tap to replay confirmation.`
+          ? `${goal.title}, completed. Tap to confirm.`
           : undefined
       }
     >
-      {/* 1. Leading Slot / Checkmark */}
+      {/* 1. Leading Slot Index / Checkmark */}
       <div className="fdg-leading">
         {complete ? (
           <div
             className={cn(
               "fdg-check-wrap",
-              (animatingCompletion || replayTick > 0) && "fdg-check-animating"
+              (justCompleted || replayTick > 0) && "fdg-check-pop"
             )}
           >
-            <Check className="fdg-check" aria-hidden="true" strokeWidth={2.75} />
-            {(animatingCompletion || replayTick > 0) && (
-              <div className="fdg-spark-container" aria-hidden="true" key={replayTick}>
-                <span className="fdg-glow-ring" />
-                <span className="fdg-spark fdg-spark-1" />
-                <span className="fdg-spark fdg-spark-2" />
-                <span className="fdg-spark fdg-spark-3" />
-                <span className="fdg-spark fdg-spark-4" />
-              </div>
-            )}
+            <Check className="fdg-check-icon" aria-hidden="true" strokeWidth={2.5} />
           </div>
         ) : (
           <span className="fdg-index" aria-hidden="true">
@@ -201,23 +192,27 @@ function DailyGoalRow({
         )}
       </div>
 
-      {/* 2. Main content: Title + (Description or COMPLETED TODAY) */}
+      {/* 2. Middle Content: Title + Subtitle/Description */}
       <div className="fdg-body">
-        <h3 className="fdg-title">{goal.title}</h3>
+        <div className="fdg-header-line">
+          <h3 className="fdg-title">{goal.title}</h3>
+        </div>
+
         {complete ? (
           <div className="fdg-status-line">
             <span className="fdg-status-complete">COMPLETE</span>
-            <span className="fdg-status-sub">TODAY</span>
+            <span className="fdg-status-dot" aria-hidden="true" />
+            <span className="fdg-status-note">Persisted today</span>
           </div>
         ) : (
           goal.description && <p className="fdg-desc">{goal.description}</p>
         )}
       </div>
 
-      {/* 3. Right side: Metadata (fraction / XP) + CTA */}
+      {/* 3. Aside Metadata & Actions */}
       <div className="fdg-aside">
         <span
-          className={cn("fdg-fraction", complete && "fdg-fraction-done")}
+          className={cn("fdg-fraction", complete && "fdg-fraction-complete")}
           aria-label={`${shown} of ${goal.target}`}
         >
           {shown} / {goal.target}
@@ -252,18 +247,11 @@ function DailyGoalRow({
         )}
 
         {complete && claimed && (
-          <span
-            className={cn(
-              "fdg-claimed",
-              (animatingCompletion || replayTick > 0) && "fdg-xp-animating"
-            )}
-          >
-            +{goal.xp} XP CLAIMED
-          </span>
+          <span className="fdg-claimed">+{goal.xp} XP CLAIMED</span>
         )}
       </div>
 
-      {/* 4. Integrated Thin Progress Track (at bottom edge of row) */}
+      {/* 4. Precision 1.5px Integrated Track */}
       <div
         className="fdg-track"
         role="progressbar"
@@ -273,11 +261,7 @@ function DailyGoalRow({
         aria-valuenow={shown}
       >
         <div
-          className={cn(
-            "fdg-fill",
-            complete ? "fdg-fill-complete" : "fdg-fill-active",
-            animatingCompletion && "fdg-fill-animating"
-          )}
+          className={cn("fdg-fill", complete ? "fdg-fill-complete" : "fdg-fill-active")}
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -295,23 +279,23 @@ function GoalsSkeleton() {
           <div className="fdg-leading">
             <div
               className="mast-skeleton"
-              style={{ height: "0.875rem", width: "1.25rem", borderRadius: "4px" }}
+              style={{ height: "0.75rem", width: "1rem", borderRadius: "3px" }}
             />
           </div>
           <div className="fdg-body">
             <div
               className="mast-skeleton"
-              style={{ height: "0.8125rem", width: "55%", borderRadius: "4px", marginBottom: "4px" }}
+              style={{ height: "0.8125rem", width: "55%", borderRadius: "3px", marginBottom: "4px" }}
             />
             <div
               className="mast-skeleton"
-              style={{ height: "0.6875rem", width: "35%", borderRadius: "4px" }}
+              style={{ height: "0.625rem", width: "35%", borderRadius: "3px" }}
             />
           </div>
           <div className="fdg-aside">
             <div
               className="mast-skeleton"
-              style={{ height: "0.75rem", width: "3.5rem", borderRadius: "4px" }}
+              style={{ height: "0.6875rem", width: "3.25rem", borderRadius: "3px" }}
             />
           </div>
         </div>
@@ -381,13 +365,13 @@ function GoalStyles() {
         flex-direction: column;
       }
 
-      /* Compact agenda item row (35–45% height reduction from previous 110px+ card) */
+      /* Compact agenda item row (~46px tall, elegant precision) */
       .fdg-row {
         position: relative;
         display: flex;
         align-items: center;
         gap: 0.875rem;
-        padding: 0.6875rem 1.125rem;
+        padding: 0.5625rem 1.125rem;
         border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         min-width: 0;
         transition: background 150ms ease;
@@ -396,7 +380,7 @@ function GoalStyles() {
         border-bottom: none;
       }
       .fdg-row:hover {
-        background: rgba(255, 255, 255, 0.018);
+        background: rgba(255, 255, 255, 0.02);
       }
       .fdg-row-claimed {
         cursor: pointer;
@@ -405,14 +389,31 @@ function GoalStyles() {
         background: rgba(255, 255, 255, 0.025);
       }
       .fdg-row-claimed:focus-visible {
-        outline: 2px solid var(--brand, #7c3aed);
-        outline-offset: -2px;
+        outline: 1.5px solid var(--brand, #7c3aed);
+        outline-offset: -1px;
       }
 
-      /* Slot / Checkmark Leading */
+      /* Completion & Replay Sheen (Subtle, rewarding ambient wash) */
+      .fdg-row-just-completed {
+        animation: fdg-ambient-wash 700ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      .fdg-row-replaying {
+        animation: fdg-ambient-tap 350ms ease-out forwards;
+      }
+
+      @keyframes fdg-ambient-wash {
+        0% { background: rgba(16, 185, 129, 0.08); }
+        100% { background: transparent; }
+      }
+      @keyframes fdg-ambient-tap {
+        0% { background: rgba(255, 255, 255, 0.035); }
+        100% { background: transparent; }
+      }
+
+      /* Leading Slot Index / Checkmark */
       .fdg-leading {
         flex-shrink: 0;
-        width: 1.5rem;
+        width: 1.25rem;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -421,123 +422,81 @@ function GoalStyles() {
       .fdg-index {
         font-family: var(--font-mono, monospace);
         font-size: 0.6875rem;
-        font-weight: 700;
+        font-weight: 600;
         letter-spacing: 0.04em;
-        color: rgba(255, 255, 255, 0.35);
+        color: rgba(255, 255, 255, 0.3);
         font-variant-numeric: tabular-nums;
       }
 
       .fdg-check-wrap {
-        position: relative;
+        width: 1.125rem;
+        height: 1.125rem;
+        border-radius: 50%;
+        background: rgba(16, 185, 129, 0.12);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        color: #34d399;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 1.25rem;
-        height: 1.25rem;
-        border-radius: 50%;
-        background: rgba(251, 191, 36, 0.12);
-        border: 1px solid rgba(251, 191, 36, 0.32);
-        color: #fbbf24;
+        transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
       }
 
-      .fdg-check {
-        width: 0.75rem;
-        height: 0.75rem;
+      .fdg-check-icon {
+        width: 0.6875rem;
+        height: 0.6875rem;
       }
 
-      .fdg-check-animating {
-        animation: fdg-check-scale 550ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+      .fdg-check-pop {
+        animation: fdg-micro-spring 450ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
       }
-      @keyframes fdg-check-scale {
-        0% { transform: scale(0.6); opacity: 0.6; }
-        60% { transform: scale(1.22); }
+      @keyframes fdg-micro-spring {
+        0% { transform: scale(0.8); opacity: 0.7; }
+        60% { transform: scale(1.18); }
         100% { transform: scale(1); opacity: 1; }
       }
 
-      /* Glow ring & spark particles around checkmark */
-      .fdg-spark-container {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-
-      .fdg-glow-ring {
-        position: absolute;
-        width: 1.25rem;
-        height: 1.25rem;
-        border-radius: 50%;
-        border: 1.5px solid rgba(251, 191, 36, 0.7);
-        box-shadow: 0 0 10px rgba(251, 191, 36, 0.5);
-        animation: fdg-ring-expand 600ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-      }
-      @keyframes fdg-ring-expand {
-        0% { transform: scale(0.7); opacity: 0.9; }
-        100% { transform: scale(1.8); opacity: 0; }
-      }
-
-      .fdg-spark {
-        position: absolute;
-        width: 2.5px;
-        height: 2.5px;
-        border-radius: 50%;
-        background: #fbbf24;
-        box-shadow: 0 0 4px #fbbf24;
-      }
-      .fdg-spark-1 { animation: fdg-spark-fly-1 550ms cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .fdg-spark-2 { animation: fdg-spark-fly-2 550ms cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .fdg-spark-3 { animation: fdg-spark-fly-3 550ms cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .fdg-spark-4 { animation: fdg-spark-fly-4 550ms cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-
-      @keyframes fdg-spark-fly-1 {
-        0% { transform: translate(0, 0) scale(1); opacity: 1; }
-        100% { transform: translate(-10px, -8px) scale(0); opacity: 0; }
-      }
-      @keyframes fdg-spark-fly-2 {
-        0% { transform: translate(0, 0) scale(1); opacity: 1; }
-        100% { transform: translate(10px, -8px) scale(0); opacity: 0; }
-      }
-      @keyframes fdg-spark-fly-3 {
-        0% { transform: translate(0, 0) scale(1); opacity: 1; }
-        100% { transform: translate(-9px, 9px) scale(0); opacity: 0; }
-      }
-      @keyframes fdg-spark-fly-4 {
-        0% { transform: translate(0, 0) scale(1); opacity: 1; }
-        100% { transform: translate(9px, 9px) scale(0); opacity: 0; }
-      }
-
-      /* Row Body: Title + Subtitle */
+      /* Middle Content */
       .fdg-body {
         flex: 1;
         min-width: 0;
         display: flex;
         flex-direction: column;
-        gap: 0.125rem;
+        gap: 0.1rem;
+      }
+
+      .fdg-header-line {
+        display: flex;
+        align-items: baseline;
+        gap: 0.5rem;
+        min-width: 0;
       }
 
       .fdg-title {
         margin: 0;
         font-size: 0.8125rem;
-        font-weight: 600;
+        font-weight: 550;
         line-height: 1.3;
         color: #ffffff;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        transition: color 200ms ease;
+      }
+      .fdg-row-complete .fdg-title {
+        color: rgba(255, 255, 255, 0.78);
       }
 
       .fdg-desc {
         margin: 0;
         font-size: 0.6875rem;
         line-height: 1.35;
-        color: rgba(255, 255, 255, 0.45);
+        color: rgba(255, 255, 255, 0.4);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
 
+      /* Clean, native completion metadata */
       .fdg-status-line {
         display: inline-flex;
         align-items: center;
@@ -548,19 +507,23 @@ function GoalStyles() {
         font-family: var(--font-mono, monospace);
         font-size: 0.625rem;
         font-weight: 700;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.06em;
         color: #34d399;
       }
 
-      .fdg-status-sub {
-        font-family: var(--font-mono, monospace);
-        font-size: 0.625rem;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        color: rgba(255, 255, 255, 0.38);
+      .fdg-status-dot {
+        width: 3px;
+        height: 3px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.2);
       }
 
-      /* Aside: Fraction, XP, CTA */
+      .fdg-status-note {
+        font-size: 0.65rem;
+        color: rgba(255, 255, 255, 0.35);
+      }
+
+      /* Aside Metadata */
       .fdg-aside {
         flex-shrink: 0;
         display: flex;
@@ -574,33 +537,23 @@ function GoalStyles() {
         color: rgba(255, 255, 255, 0.5);
         font-variant-numeric: tabular-nums;
       }
-      .fdg-fraction-done {
-        color: rgba(255, 255, 255, 0.35);
+      .fdg-fraction-complete {
+        color: rgba(255, 255, 255, 0.3);
       }
 
       .fdg-xp {
         font-family: var(--font-mono, monospace);
         font-size: 0.6875rem;
         font-weight: 600;
-        color: #fbbf24;
+        color: rgba(255, 255, 255, 0.55);
       }
 
       .fdg-claimed {
         font-family: var(--font-mono, monospace);
         font-size: 0.625rem;
-        font-weight: 700;
+        font-weight: 600;
         letter-spacing: 0.04em;
-        color: #fbbf24;
-        display: inline-block;
-      }
-
-      .fdg-xp-animating {
-        animation: fdg-xp-pulse 600ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-      }
-      @keyframes fdg-xp-pulse {
-        0% { transform: scale(1); }
-        45% { transform: scale(1.18); color: #fde047; text-shadow: 0 0 10px rgba(251, 191, 36, 0.6); }
-        100% { transform: scale(1); }
+        color: rgba(255, 255, 255, 0.4);
       }
 
       .fdg-link {
@@ -608,7 +561,7 @@ function GoalStyles() {
         align-items: center;
         gap: 0.25rem;
         font-size: 0.6875rem;
-        font-weight: 600;
+        font-weight: 550;
         color: rgba(255, 255, 255, 0.75);
         text-decoration: none;
         padding: 0.2rem 0.45rem;
@@ -655,40 +608,39 @@ function GoalStyles() {
         font-size: 0.625rem;
         font-weight: 700;
         letter-spacing: 0.04em;
-        color: #fbbf24;
-        background: rgba(251, 191, 36, 0.1);
-        border: 1px solid rgba(251, 191, 36, 0.3);
+        color: #34d399;
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.25);
         padding: 0.2rem 0.55rem;
         border-radius: 4px;
         cursor: pointer;
         transition: background 150ms ease, border-color 150ms ease;
       }
       .fdg-btn-claim:hover:not(:disabled) {
-        background: rgba(251, 191, 36, 0.2);
-        border-color: rgba(251, 191, 36, 0.5);
+        background: rgba(16, 185, 129, 0.18);
+        border-color: rgba(16, 185, 129, 0.4);
       }
 
-      /* Integrated thin progress track */
+      /* Precision 1.5px Hairline Integrated Track */
       .fdg-track {
         position: absolute;
         bottom: 0;
         left: 0;
         right: 0;
-        height: 2px;
-        background: rgba(255, 255, 255, 0.05);
+        height: 1.5px;
+        background: rgba(255, 255, 255, 0.04);
         overflow: hidden;
       }
 
       .fdg-fill {
         height: 100%;
-        transition: width 400ms cubic-bezier(0.16, 1, 0.3, 1), background-color 300ms ease;
+        transition: width 450ms cubic-bezier(0.16, 1, 0.3, 1), background-color 300ms ease;
       }
       .fdg-fill-active {
         background: var(--brand, #7c3aed);
       }
       .fdg-fill-complete {
-        background: #fbbf24;
-        box-shadow: 0 0 6px rgba(251, 191, 36, 0.4);
+        background: #10b981;
       }
 
       /* Skeleton */
@@ -719,7 +671,7 @@ function GoalStyles() {
       /* Responsive adjustments */
       @media (max-width: 640px) {
         .fdg-row {
-          padding: 0.5625rem 0.875rem;
+          padding: 0.5rem 0.875rem;
           gap: 0.625rem;
         }
         .fdg-aside {
@@ -735,7 +687,7 @@ function GoalStyles() {
 
       @media (max-width: 420px) {
         .fdg-row {
-          padding: 0.5rem 0.625rem;
+          padding: 0.45rem 0.625rem;
           gap: 0.5rem;
         }
         .fdg-aside {
@@ -750,11 +702,9 @@ function GoalStyles() {
       }
 
       @media (prefers-reduced-motion: reduce) {
-        .fdg-check-animating,
-        .fdg-ring-expand,
-        .fdg-spark,
-        .fdg-glow-ring,
-        .fdg-xp-animating,
+        .fdg-check-pop,
+        .fdg-row-just-completed,
+        .fdg-row-replaying,
         .fdg-fill {
           animation: none !important;
           transition: none !important;

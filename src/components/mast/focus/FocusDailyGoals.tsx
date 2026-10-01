@@ -177,7 +177,7 @@ function useFlipList(listRef: React.RefObject<HTMLOListElement | null>, orderKey
         isMover
           ? [
               { translate: `0 ${dy}px`, scale: "1" },
-              { translate: `0 ${dy * 0.5}px`, scale: "0.975", offset: 0.5 },
+              { translate: `0 ${dy * 0.5}px`, scale: "0.985", offset: 0.5 },
               { translate: "0 0", scale: "1" },
             ]
           : [{ translate: `0 ${dy}px` }, { translate: "0 0" }],
@@ -186,8 +186,12 @@ function useFlipList(listRef: React.RefObject<HTMLOListElement | null>, orderKey
       anim.id = "fdg-flip";
       if (isMover) {
         el.style.zIndex = "2";
+        el.style.backgroundColor = "#0f1320";
+        el.style.boxShadow = "0 10px 28px -8px rgba(0, 0, 0, 0.6)";
         const clear = () => {
           el.style.zIndex = "";
+          el.style.backgroundColor = "";
+          el.style.boxShadow = "";
         };
         anim.onfinish = clear;
         anim.oncancel = clear;
@@ -213,19 +217,21 @@ export function FocusDailyGoals({
 
   return (
     <section id="focus-goals" className="focus-goals-module" aria-labelledby="todays-goals-title">
-      <div className="focus-goals-card">
-        <div className="fdg-head">
-          <h2 id="todays-goals-title" className="fdg-head-title">
-            TODAY'S GOALS
-          </h2>
-          {showCount && (
-            <span className="fdg-head-count" data-testid="goals-complete-count">
-              {summary.completedCount} / {DAILY_GOAL_COUNT}{" "}
-              <span className="fdg-head-count-label">COMPLETE</span>
-            </span>
-          )}
-        </div>
+      <div className="fdg-head">
+        <h2 id="todays-goals-title" className="fdg-head-title">
+          TODAY'S GOALS
+        </h2>
+        {showCount && (
+          <span className="fdg-head-count" data-testid="goals-complete-count">
+            <span className="fdg-head-count-num">
+              {summary.completedCount} / {DAILY_GOAL_COUNT}
+            </span>{" "}
+            <span className="fdg-head-count-label">COMPLETE</span>
+          </span>
+        )}
+      </div>
 
+      <div className="focus-goals-card">
         {status === "ready" && goals.length === DAILY_GOAL_COUNT && (
           <ol className="fdg-list" ref={listRef}>
             {orderedGoals.map((goal) => (
@@ -355,6 +361,7 @@ function DailyGoalRow({
         complete && claimed ? `${goal.title}, completed. Tap to confirm.` : undefined
       }
     >
+      <span className="fdg-tint" aria-hidden="true" />
       <span className="fdg-sheen" aria-hidden="true" />
 
       {/* 1. Leading tile: goal icon morphs into the check badge */}
@@ -444,7 +451,7 @@ function GoalsSkeleton() {
       {Array.from({ length: DAILY_GOAL_COUNT }, (_, i) => (
         <div key={i} className="fdg-row fdg-row-skeleton">
           <div className="fdg-tile fdg-tile-skeleton">
-            <div className="mast-skeleton" style={{ height: "100%", width: "100%", borderRadius: "8px" }} />
+            <div className="mast-skeleton" style={{ height: "1.25rem", width: "1.25rem", borderRadius: "6px" }} />
           </div>
           <div className="fdg-body">
             <div
@@ -501,8 +508,8 @@ function GoalStyles() {
     <style>{`
       .focus-goals-module {
         --fdg-gold: #f7c948;
-        --fdg-gold-soft: rgba(247, 201, 72, 0.14);
-        --fdg-indigo: rgba(129, 140, 248, 0.42);
+        --fdg-muted: #8b93a7;
+        --fdg-line: rgba(255, 255, 255, 0.065);
         --fdg-ease: cubic-bezier(0.22, 1, 0.36, 1);
         display: flex;
         flex-direction: column;
@@ -510,46 +517,38 @@ function GoalStyles() {
         min-width: 0;
       }
 
-      .focus-goals-card {
-        flex: 1;
-        min-width: 0;
-        padding: 0.75rem 0.75rem 0.75rem;
-        background:
-          radial-gradient(120% 80% at 50% -10%, rgba(99, 102, 241, 0.06), transparent 60%),
-          linear-gradient(180deg, rgba(17, 21, 34, 0.96), rgba(11, 14, 24, 0.98));
-        border: 1px solid rgba(255, 255, 255, 0.07);
-        border-radius: 14px;
-        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 28px -20px rgba(0, 0, 0, 0.7);
-      }
-
-      /* Header */
+      /* Header: lives OUTSIDE the container */
       .fdg-head {
         display: flex;
         align-items: baseline;
         justify-content: space-between;
         gap: 1rem;
-        padding: 0.125rem 0.375rem 0.625rem;
+        padding: 0 0.25rem 0.625rem;
       }
       .fdg-head-title {
         margin: 0;
         font-size: 0.75rem;
-        font-weight: 500;
-        letter-spacing: 0.18em;
+        font-weight: 600;
+        letter-spacing: 0.3em;
         line-height: 1.2;
-        color: rgba(255, 255, 255, 0.92);
+        color: rgba(255, 255, 255, 0.95);
       }
       .fdg-head-count {
         font-size: 0.6875rem;
-        font-weight: 450;
-        letter-spacing: 0.04em;
-        color: rgba(255, 255, 255, 0.82);
+        letter-spacing: 0.05em;
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
       }
-      .fdg-head-count-label {
-        font-size: 0.625rem;
-        letter-spacing: 0.08em;
-        color: rgba(255, 255, 255, 0.5);
+      .fdg-head-count-num { color: rgba(255, 255, 255, 0.9); font-weight: 500; }
+      .fdg-head-count-label { color: var(--fdg-muted); letter-spacing: 0.08em; }
+
+      /* Container: only the goal rows */
+      .focus-goals-card {
+        min-width: 0;
+        overflow: hidden;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.012));
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 14px;
       }
 
       .fdg-list {
@@ -559,70 +558,79 @@ function GoalStyles() {
         padding: 0;
         display: flex;
         flex-direction: column;
-        gap: 0.3125rem;
       }
 
       /* ── Row: ACTIVE ───────────────────────────────────────────── */
       .fdg-row {
         position: relative;
+        isolation: isolate;
         display: grid;
-        grid-template-columns: 2rem minmax(0, 1fr) auto 6.25rem;
+        grid-template-columns: 2.25rem minmax(0, 1fr) auto 6.5rem;
         align-items: center;
-        column-gap: 0.625rem;
-        min-height: 2.75rem;
-        padding: 0.3125rem 0.5rem 0.3125rem 0.3125rem;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        background: linear-gradient(90deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.018));
+        column-gap: 0.75rem;
+        min-height: 3rem;
+        padding: 0.4375rem 0.875rem 0.4375rem 0.75rem;
+        background-color: rgba(8, 10, 18, 0);
         overflow: hidden;
         min-width: 0;
-        transition:
-          background 650ms var(--fdg-ease),
-          border-color 650ms var(--fdg-ease),
-          box-shadow 650ms var(--fdg-ease);
+        transition: background-color 650ms var(--fdg-ease);
       }
-      .fdg-row:not(.fdg-row-complete):hover {
-        border-color: rgba(255, 255, 255, 0.11);
+      /* Hairline divider, inset to start under the text */
+      .fdg-row:not(:first-child)::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 3.75rem;
+        right: 0.875rem;
+        height: 1px;
+        background: var(--fdg-line);
+        transition: background 650ms var(--fdg-ease);
+        z-index: 1;
+        pointer-events: none;
       }
 
-      /* Sheen sweep (idle: off-canvas) */
+      /* Gold tint layer (fades in on complete, out on claim) */
+      .fdg-tint {
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        opacity: 0;
+        background:
+          radial-gradient(90px 60px at 1.75rem 50%, rgba(247, 201, 72, 0.16), transparent 100%),
+          linear-gradient(90deg, rgba(247, 201, 72, 0.075), rgba(247, 201, 72, 0.05));
+        transition: opacity 650ms var(--fdg-ease);
+      }
       .fdg-sheen {
         position: absolute;
         inset: 0;
+        z-index: 2;
         pointer-events: none;
         opacity: 0;
         transform: translateX(-110%);
-        background: linear-gradient(105deg, transparent 32%, rgba(255, 220, 120, 0.22) 50%, transparent 68%);
+        background: linear-gradient(105deg, transparent 32%, rgba(255, 220, 120, 0.2) 50%, transparent 68%);
       }
 
-      /* Leading tile */
+      /* Leading icon (no box) */
       .fdg-tile {
         position: relative;
-        width: 2rem;
+        width: 2.25rem;
         height: 2rem;
-        border-radius: 8px;
         display: grid;
         place-items: center;
-        background: rgba(99, 102, 241, 0.07);
-        border: 1px solid var(--fdg-indigo);
-        box-shadow: 0 0 10px -4px rgba(129, 140, 248, 0.45);
-        color: rgba(255, 255, 255, 0.95);
-        transition:
-          background 600ms var(--fdg-ease),
-          border-color 600ms var(--fdg-ease),
-          box-shadow 600ms var(--fdg-ease);
+        color: rgba(255, 255, 255, 0.88);
       }
       .fdg-tile-icon {
         grid-area: 1 / 1;
-        width: 1rem;
-        height: 1rem;
+        width: 1.125rem;
+        height: 1.125rem;
         transition: opacity 320ms ease, transform 420ms var(--fdg-ease);
       }
       .fdg-badge {
         grid-area: 1 / 1;
         position: relative;
-        width: 1.25rem;
-        height: 1.25rem;
+        width: 1.5rem;
+        height: 1.5rem;
         border-radius: 50%;
         display: grid;
         place-items: center;
@@ -637,11 +645,7 @@ function GoalStyles() {
           color 650ms var(--fdg-ease),
           box-shadow 650ms var(--fdg-ease);
       }
-      .fdg-badge-check {
-        width: 0.6875rem;
-        height: 0.6875rem;
-      }
-      /* Ring burst (idle: invisible) */
+      .fdg-badge-check { width: 0.8125rem; height: 0.8125rem; }
       .fdg-badge::after {
         content: "";
         position: absolute;
@@ -666,11 +670,10 @@ function GoalStyles() {
         font-size: 0.8125rem;
         font-weight: 500;
         line-height: 1.25;
-        color: #f4f6fb;
+        color: #f3f5fa;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        /* animatable strike-through */
         background: linear-gradient(currentColor, currentColor) no-repeat 0 56% / 0% 1px;
         transition: color 600ms var(--fdg-ease), background-size 520ms var(--fdg-ease) 120ms;
       }
@@ -678,262 +681,180 @@ function GoalStyles() {
         margin: 0;
         font-size: 0.6875rem;
         line-height: 1.3;
-        color: rgba(255, 255, 255, 0.5);
+        color: var(--fdg-muted);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         transition: color 600ms var(--fdg-ease);
       }
 
-      /* Progress + XP */
+      /* Progress | XP */
       .fdg-meta {
         display: grid;
-        grid-template-columns: 2.5rem 3.25rem;
+        grid-template-columns: 2.75rem 4rem;
         align-items: center;
         justify-items: center;
-        column-gap: 0.25rem;
       }
       .fdg-fraction {
         font-size: 0.75rem;
-        color: rgba(255, 255, 255, 0.78);
+        color: var(--fdg-muted);
         font-variant-numeric: tabular-nums;
         transition: color 600ms var(--fdg-ease);
       }
       .fdg-xp {
+        position: relative;
+        width: 100%;
+        text-align: center;
         font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.01em;
+        font-weight: 500;
         color: var(--fdg-gold);
         white-space: nowrap;
         font-variant-numeric: tabular-nums;
-        transition: color 600ms var(--fdg-ease), opacity 600ms var(--fdg-ease);
+        transition: color 600ms var(--fdg-ease);
+      }
+      .fdg-xp::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 50%;
+        height: 1.375rem;
+        width: 1px;
+        transform: translateY(-50%);
+        background: var(--fdg-line);
       }
 
-      /* Action column */
+      /* Action column: plain content, no boxes */
       .fdg-action {
         display: flex;
         justify-content: flex-end;
         align-items: center;
       }
       .fdg-go {
-        width: 1.75rem;
-        height: 1.75rem;
         display: grid;
         place-items: center;
-        border-radius: 8px;
-        color: rgba(255, 255, 255, 0.9);
-        background: rgba(255, 255, 255, 0.035);
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        width: 1.75rem;
+        height: 1.75rem;
+        color: rgba(255, 255, 255, 0.85);
         text-decoration: none;
-        transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+        border-radius: 6px;
+        transition: color 160ms ease;
       }
-      .fdg-go:hover {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: rgba(255, 255, 255, 0.2);
-      }
+      .fdg-go:hover { color: #fff; }
       .fdg-go:focus-visible,
       .fdg-claim-btn:focus-visible {
         outline: 2px solid rgba(165, 180, 252, 0.8);
-        outline-offset: 2px;
+        outline-offset: 1px;
       }
-      .fdg-go-arrow {
-        width: 0.875rem;
-        height: 0.875rem;
-        transition: transform 160ms ease;
-      }
-      .fdg-go:hover .fdg-go-arrow {
-        transform: translateX(2px);
-      }
+      .fdg-go-arrow { width: 1rem; height: 1rem; transition: transform 160ms ease; }
+      .fdg-go:hover .fdg-go-arrow { transform: translateX(2px); }
 
-      /* Hairline progress (hidden at 0 and when complete) */
+      /* Hairline progress (partial progress only) */
       .fdg-track {
         position: absolute;
-        left: 0.375rem;
-        right: 0.375rem;
+        left: 3.75rem;
+        right: 0.875rem;
         bottom: 0;
         height: 1.5px;
-        border-radius: 2px;
         overflow: hidden;
         opacity: 0;
         transition: opacity 400ms ease;
       }
       .fdg-fill {
         height: 100%;
-        background: linear-gradient(90deg, rgba(129, 140, 248, 0.2), rgba(129, 140, 248, 0.9));
+        background: linear-gradient(90deg, rgba(129, 140, 248, 0.25), rgba(129, 140, 248, 0.9));
         transition: width 450ms var(--fdg-ease);
       }
-      .fdg-row:not(.fdg-row-complete) .fdg-track {
-        opacity: 1;
-      }
+      .fdg-row:not(.fdg-row-complete) .fdg-track { opacity: 1; }
 
       /* ── Row: COMPLETE (before collection) ─────────────────────── */
-      .fdg-row-complete:not(.fdg-row-claimed) {
-        cursor: pointer;
-        border-color: rgba(247, 201, 72, 0.5);
-        background:
-          linear-gradient(90deg, rgba(247, 201, 72, 0.12), rgba(247, 201, 72, 0.045) 60%, rgba(247, 201, 72, 0.07));
-        box-shadow: 0 0 0 1px rgba(247, 201, 72, 0.08) inset, 0 0 16px -6px rgba(247, 190, 60, 0.26);
-        animation: fdg-glow-breathe 3.2s ease-in-out 1.2s infinite;
-      }
-      .fdg-row-complete:not(.fdg-row-claimed) .fdg-tile {
-        background: rgba(247, 201, 72, 0.06);
-        border-color: rgba(247, 201, 72, 0.22);
-        box-shadow: none;
-      }
-      .fdg-row-complete .fdg-tile-icon {
-        opacity: 0;
-        transform: scale(0.5) rotate(-20deg);
-      }
+      .fdg-row-complete:not(.fdg-row-claimed) { cursor: pointer; }
+      .fdg-row-complete:not(.fdg-row-claimed) .fdg-tint { opacity: 1; }
+      .fdg-row-complete:not(.fdg-row-claimed)::before { background: rgba(247, 201, 72, 0.14); }
+      .fdg-row-complete:not(.fdg-row-claimed) + .fdg-row::before { background: rgba(247, 201, 72, 0.14); }
+      .fdg-row-complete .fdg-tile-icon { opacity: 0; transform: scale(0.5) rotate(-20deg); }
       .fdg-row-complete .fdg-badge {
         opacity: 1;
         transform: scale(1);
-        box-shadow: 0 0 18px rgba(247, 201, 72, 0.55);
+        box-shadow: 0 0 16px rgba(247, 201, 72, 0.5);
       }
-      .fdg-row-complete .fdg-fraction {
-        color: rgba(255, 255, 255, 0.82);
+      .fdg-row-complete:not(.fdg-row-claimed) .fdg-badge {
+        animation: fdg-glow-breathe 3.2s ease-in-out 1.2s infinite;
       }
-      .fdg-row-complete .fdg-track {
-        opacity: 0;
-      }
+      .fdg-row-complete .fdg-track { opacity: 0; }
 
-      /* Claim button */
+      /* Claim: plain gold text + sparkle */
       .fdg-claim-btn {
         display: inline-flex;
         align-items: center;
-        justify-content: center;
-        gap: 0.3125rem;
-        width: 100%;
+        justify-content: flex-end;
+        gap: 0.375rem;
         height: 1.75rem;
-        padding: 0 0.5rem;
-        font-size: 0.625rem;
+        padding: 0 0.125rem;
+        font: inherit;
+        font-size: 0.6875rem;
         font-weight: 600;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.02em;
         white-space: nowrap;
         color: var(--fdg-gold);
-        background: rgba(247, 201, 72, 0.07);
-        border: 1px solid rgba(247, 201, 72, 0.85);
-        border-radius: 7px;
-        box-shadow: 0 0 12px -4px rgba(247, 190, 60, 0.45);
+        background: none;
+        border: 0;
+        border-radius: 6px;
+        text-shadow: 0 0 12px rgba(247, 190, 60, 0.45);
         cursor: pointer;
-        transition: background 180ms ease, box-shadow 180ms ease, transform 120ms ease;
+        transition: filter 160ms ease, transform 120ms ease;
       }
-      .fdg-claim-btn:hover:not(:disabled) {
-        background: rgba(247, 201, 72, 0.16);
-        box-shadow: 0 0 16px -2px rgba(247, 190, 60, 0.55);
-      }
-      .fdg-claim-btn:active:not(:disabled) {
-        transform: scale(0.97);
-      }
-      .fdg-claim-btn:disabled {
-        cursor: default;
-      }
-      .fdg-claim-btn-busy {
-        animation: fdg-btn-busy 900ms ease-in-out infinite;
-      }
-      .fdg-claim-spark {
-        width: 0.75rem;
-        height: 0.75rem;
-      }
+      .fdg-claim-btn:hover:not(:disabled) { filter: brightness(1.2); }
+      .fdg-claim-btn:active:not(:disabled) { transform: scale(0.97); }
+      .fdg-claim-btn:disabled { cursor: default; }
+      .fdg-claim-btn-busy { animation: fdg-btn-busy 900ms ease-in-out infinite; }
+      .fdg-claim-spark { width: 1rem; height: 1rem; }
 
-      /* ── Row: CLAIMED (dimmed, dark grey) ──────────────────────── */
+      /* ── Row: CLAIMED (dark grey, dimmed) ──────────────────────── */
       .fdg-row-claimed {
         cursor: pointer;
-        border-color: rgba(255, 255, 255, 0.07);
-        background: linear-gradient(90deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.016));
-        box-shadow: none;
+        background-color: rgba(6, 8, 14, 0.32);
       }
-      .fdg-row-claimed .fdg-tile {
-        background: rgba(255, 255, 255, 0.025);
-        border-color: rgba(255, 255, 255, 0.05);
-        box-shadow: none;
-      }
-      .fdg-row-claimed .fdg-badge {
-        background: #6b7080;
-        color: #1b1e29;
-        box-shadow: none;
-      }
-      .fdg-row-claimed .fdg-title {
-        color: rgba(255, 255, 255, 0.52);
-        background-size: 100% 1px;
-      }
-      .fdg-row-claimed .fdg-desc {
-        color: rgba(255, 255, 255, 0.36);
-      }
-      .fdg-row-claimed .fdg-fraction {
-        color: rgba(255, 255, 255, 0.45);
-      }
-      .fdg-row-claimed .fdg-xp {
-        color: rgba(247, 201, 72, 0.55);
-      }
-      .fdg-row-claimed:hover {
-        background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.022));
-      }
-      .fdg-row-claimed:focus-visible {
-        outline: 1.5px solid rgba(165, 180, 252, 0.7);
-        outline-offset: -1px;
-      }
+      .fdg-row-claimed .fdg-badge { background: #6b7084; color: #181b27; box-shadow: none; }
+      .fdg-row-claimed .fdg-title { color: rgba(255, 255, 255, 0.5); background-size: 100% 1px; }
+      .fdg-row-claimed .fdg-desc { color: rgba(139, 147, 167, 0.6); }
+      .fdg-row-claimed .fdg-fraction { color: rgba(139, 147, 167, 0.6); }
+      .fdg-row-claimed .fdg-xp { color: rgba(247, 201, 72, 0.6); }
+      .fdg-row-claimed:focus-visible { outline: 1.5px solid rgba(165, 180, 252, 0.7); outline-offset: -2px; }
 
       .fdg-claimed-pill {
         display: inline-flex;
         align-items: center;
-        justify-content: center;
-        gap: 0.3125rem;
-        width: 100%;
-        height: 1.75rem;
-        font-size: 0.625rem;
+        justify-content: flex-end;
+        gap: 0.375rem;
+        padding: 0 0.125rem;
+        font-size: 0.6875rem;
         font-weight: 500;
-        letter-spacing: 0.08em;
-        color: rgba(255, 255, 255, 0.4);
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 7px;
+        letter-spacing: 0.04em;
+        color: rgba(160, 168, 190, 0.75);
       }
-      .fdg-claimed-check {
-        width: 0.75rem;
-        height: 0.75rem;
-      }
+      .fdg-claimed-check { width: 0.9375rem; height: 0.9375rem; }
 
       /* ── Motion ────────────────────────────────────────────────── */
 
       /* active -> complete */
-      .fdg-row-just-completed .fdg-sheen {
-        animation: fdg-sheen-gold 950ms var(--fdg-ease) 120ms forwards;
-      }
-      .fdg-row-just-completed .fdg-badge::after {
-        animation: fdg-ring 800ms ease-out 200ms forwards;
-      }
-      .fdg-row-just-completed .fdg-claim-btn {
-        animation: fdg-btn-in 520ms cubic-bezier(0.34, 1.4, 0.64, 1) 350ms backwards;
-      }
-      .fdg-row-complete.fdg-row-just-completed:not(.fdg-row-claimed) {
-        animation: fdg-glow-breathe 3.2s ease-in-out 1.2s infinite;
-      }
+      .fdg-row-just-completed .fdg-sheen { animation: fdg-sheen 950ms var(--fdg-ease) 120ms forwards; }
+      .fdg-row-just-completed .fdg-badge::after { animation: fdg-ring 800ms ease-out 200ms forwards; }
+      .fdg-row-just-completed .fdg-claim-btn { animation: fdg-btn-in 520ms cubic-bezier(0.34, 1.4, 0.64, 1) 350ms backwards; }
 
-      /* complete -> claimed */
+      /* complete -> claimed (dims in place; the FLIP move follows) */
       .fdg-row-just-claimed .fdg-sheen {
-        background: linear-gradient(105deg, transparent 32%, rgba(255, 255, 255, 0.12) 50%, transparent 68%);
-        animation: fdg-sheen-gold 800ms var(--fdg-ease) forwards;
+        background: linear-gradient(105deg, transparent 32%, rgba(255, 255, 255, 0.1) 50%, transparent 68%);
+        animation: fdg-sheen 800ms var(--fdg-ease) forwards;
       }
-      .fdg-row-just-claimed .fdg-badge {
-        animation: fdg-badge-settle 650ms var(--fdg-ease) both;
-      }
-      .fdg-row-just-claimed .fdg-claimed-pill {
-        animation: fdg-pill-in 520ms var(--fdg-ease) both;
-      }
-      .fdg-row-just-claimed .fdg-xp {
-        animation: fdg-xp-release 700ms var(--fdg-ease) both;
-      }
+      .fdg-row-just-claimed .fdg-badge { animation: fdg-badge-settle 650ms var(--fdg-ease) both; }
+      .fdg-row-just-claimed .fdg-claimed-pill { animation: fdg-claimed-in 520ms var(--fdg-ease) both; }
+      .fdg-row-just-claimed .fdg-xp { animation: fdg-xp-release 700ms var(--fdg-ease) both; }
 
       /* replay (tap a claimed row) */
       .fdg-row-replaying { animation: fdg-tap 350ms ease-out; }
       .fdg-badge-pop { animation: fdg-micro-spring 450ms cubic-bezier(0.34, 1.56, 0.64, 1) both; }
 
-      @keyframes fdg-row-lift {
-        0% { transform: scale(0.992); }
-        55% { transform: scale(1.006); }
-        100% { transform: scale(1); }
-      }
-      @keyframes fdg-sheen-gold {
+      @keyframes fdg-sheen {
         0% { opacity: 0; transform: translateX(-110%); }
         15% { opacity: 1; }
         100% { opacity: 0; transform: translateX(110%); }
@@ -947,29 +868,23 @@ function GoalStyles() {
         100% { opacity: 1; transform: none; }
       }
       @keyframes fdg-glow-breathe {
-        0%, 100% { box-shadow: 0 0 0 1px rgba(247, 201, 72, 0.08) inset, 0 0 22px -6px rgba(247, 190, 60, 0.24); }
-        50% { box-shadow: 0 0 0 1px rgba(247, 201, 72, 0.12) inset, 0 0 32px -4px rgba(247, 190, 60, 0.4); }
+        0%, 100% { box-shadow: 0 0 12px rgba(247, 201, 72, 0.4); }
+        50% { box-shadow: 0 0 22px rgba(247, 201, 72, 0.65); }
       }
-      @keyframes fdg-btn-busy {
-        0%, 100% { opacity: 0.55; }
-        50% { opacity: 0.9; }
-      }
-      @keyframes fdg-badge-settle {
-        0% { transform: scale(1.18); }
-        100% { transform: scale(1); }
-      }
-      @keyframes fdg-pill-in {
-        0% { opacity: 0; transform: scale(0.9); }
-        100% { opacity: 1; transform: scale(1); }
+      @keyframes fdg-btn-busy { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.9; } }
+      @keyframes fdg-badge-settle { 0% { transform: scale(1.18); } 100% { transform: scale(1); } }
+      @keyframes fdg-claimed-in {
+        0% { opacity: 0; transform: translateX(6px); }
+        100% { opacity: 1; transform: none; }
       }
       @keyframes fdg-xp-release {
-        0% { transform: translateY(0); opacity: 1; }
-        35% { transform: translateY(-4px); }
+        0% { transform: translateY(0); }
+        35% { transform: translateY(-3px); }
         100% { transform: translateY(0); }
       }
       @keyframes fdg-tap {
-        0% { background: rgba(255, 255, 255, 0.07); }
-        100% { background: linear-gradient(90deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.016)); }
+        0% { background-color: rgba(255, 255, 255, 0.06); }
+        100% { background-color: rgba(6, 8, 14, 0.32); }
       }
       @keyframes fdg-micro-spring {
         0% { transform: scale(0.8); }
@@ -978,36 +893,19 @@ function GoalStyles() {
       }
 
       /* Skeleton */
-      .fdg-row-skeleton {
-        grid-template-columns: 2rem minmax(0, 1fr) auto;
-        pointer-events: none;
-      }
-      .fdg-tile-skeleton {
-        background: transparent;
-        border-color: transparent;
-        box-shadow: none;
-        overflow: hidden;
-      }
+      .fdg-row-skeleton { grid-template-columns: 2.25rem minmax(0, 1fr) auto; pointer-events: none; }
+      .fdg-tile-skeleton { overflow: hidden; }
 
       /* Messages + insufficient-state links */
       .fdg-message {
         display: flex;
         flex-direction: column;
         align-items: flex-start;
-        gap: 0.875rem;
-        padding: 0.25rem 0.375rem 0.125rem;
+        gap: 0.75rem;
+        padding: 0.875rem 1rem;
       }
-      .fdg-message-text {
-        margin: 0;
-        font-size: 0.75rem;
-        line-height: 1.5;
-        color: rgba(255, 255, 255, 0.6);
-      }
-      .fdg-message-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.5rem 1.25rem;
-      }
+      .fdg-message-text { margin: 0; font-size: 0.75rem; line-height: 1.5; color: rgba(255, 255, 255, 0.6); }
+      .fdg-message-actions { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; }
       .fdg-link {
         display: inline-flex;
         align-items: center;
@@ -1022,14 +920,8 @@ function GoalStyles() {
         border: 1px solid rgba(255, 255, 255, 0.1);
         transition: background 150ms ease, border-color 150ms ease;
       }
-      .fdg-link:hover {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: rgba(255, 255, 255, 0.2);
-      }
-      .fdg-arrow {
-        width: 0.8125rem;
-        height: 0.8125rem;
-      }
+      .fdg-link:hover { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.2); }
+      .fdg-arrow { width: 0.8125rem; height: 0.8125rem; }
       .fdg-btn {
         font-size: 0.6875rem;
         font-weight: 600;
@@ -1044,28 +936,30 @@ function GoalStyles() {
 
       /* ── Responsive ────────────────────────────────────────────── */
       @media (max-width: 900px) {
-        .fdg-row { grid-template-columns: 2rem minmax(0, 1fr) auto 5.5rem; column-gap: 0.5rem; }
-        .fdg-meta { grid-template-columns: 2.25rem 3rem; }
+        .fdg-row { grid-template-columns: 2rem minmax(0, 1fr) auto 5.75rem; column-gap: 0.625rem; }
+        .fdg-meta { grid-template-columns: 2.25rem 3.25rem; }
+        .fdg-row:not(:first-child)::before, .fdg-track { left: 3.25rem; }
       }
 
       @media (max-width: 640px) {
         .fdg-row {
           grid-template-columns: 2rem minmax(0, 1fr) auto;
           grid-template-areas: "tile body action" "tile meta action";
-          row-gap: 0;
-          column-gap: 0.5rem;
+          column-gap: 0.625rem;
+          padding: 0.4375rem 0.75rem 0.4375rem 0.5rem;
         }
-        .fdg-tile { grid-area: tile; }
+        .fdg-tile { grid-area: tile; width: 2rem; }
         .fdg-body { grid-area: body; }
-        .fdg-meta { grid-area: meta; display: flex; gap: 0.5rem; justify-content: flex-start; }
+        .fdg-meta { grid-area: meta; display: flex; gap: 0.625rem; justify-content: flex-start; }
+        .fdg-xp { width: auto; }
+        .fdg-xp::before { display: none; }
         .fdg-action { grid-area: action; min-width: 1.75rem; }
-        .fdg-claim-btn, .fdg-claimed-pill { width: auto; padding: 0 0.5rem; }
         .fdg-desc { display: none; }
+        .fdg-row:not(:first-child)::before, .fdg-track { left: 3rem; right: 0.75rem; }
       }
 
       @media (max-width: 380px) {
         .fdg-claimed-pill span { display: none; }
-        .fdg-claimed-pill { width: 1.75rem; padding: 0; }
       }
 
       @media (prefers-reduced-motion: reduce) {

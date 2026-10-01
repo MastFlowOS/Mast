@@ -2,26 +2,22 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  ArrowRight,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  Filter,
+  EllipsisVertical,
   Instagram,
+  Link2,
   Mail,
+  Phone,
   Plus,
   Search,
   Star,
   Trash2,
   X,
 } from "lucide-react";
-import {
-  ApiError,
-  type CreateLeadBody,
-  type Lead,
-  type LeadStatus,
-} from "@/lib/api";
+import { ApiError, type CreateLeadBody, type Lead, type LeadStatus } from "@/lib/api";
 import {
   useBulkDeleteLeads,
   useBulkUpdateLeads,
@@ -29,6 +25,12 @@ import {
   useLeads,
 } from "@/hooks/use-mast-api";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -57,7 +59,7 @@ import {
   normalizeLeadStatus,
 } from "@/lib/lead-workspace";
 import { FeatureGate } from "@/components/mast/FeatureGate";
-
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/dashboard/relationships")({
   head: () => ({ meta: [{ title: "Relationships — Mast" }] }),
@@ -79,14 +81,18 @@ function loadStarred(): Set<number> {
   try {
     const raw = localStorage.getItem(STARRED_STORAGE_KEY);
     if (raw) return new Set(JSON.parse(raw) as number[]);
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return new Set();
 }
 
 function saveStarred(ids: Set<number>) {
   try {
     localStorage.setItem(STARRED_STORAGE_KEY, JSON.stringify(Array.from(ids)));
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 // ─── Bulk status options (communication-oriented) ─────────────────────────────
@@ -112,6 +118,48 @@ const emptyLeadForm = {
   location: "",
 };
 
+// ─── Presentation tokens ─────────────────────────────────────────────────────
+
+// One grid shared by every row so columns line up down the whole list.
+// Contact icons appear at xl, last interaction at md, status/star/menu always.
+const ROW_GRID =
+  "grid items-center gap-x-4 " +
+  "grid-cols-[20px_minmax(0,1fr)_28px_28px] " +
+  "md:grid-cols-[20px_minmax(0,1fr)_144px_120px_28px_28px] " +
+  "xl:grid-cols-[20px_minmax(0,1fr)_136px_148px_132px_28px_28px]";
+
+const CONTROL_SURFACE =
+  "rounded-xl border border-border bg-card/40 text-sm font-medium transition-colors " +
+  "hover:border-muted-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30";
+
+const GHOST_ACTION =
+  "inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium text-muted-foreground " +
+  "transition-colors hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30";
+
+// Status reads as a small coloured dot + label. Colours follow the existing
+// status meaning (outreach sent / replied / meeting / closed / dead), only the
+// treatment changes.
+const STATUS_STYLE: Record<LeadStatus, { dot: string; text: string; bg: string }> = {
+  new: { dot: "bg-sky-400", text: "text-sky-300", bg: "bg-sky-500/10" },
+  email_sent: { dot: "bg-teal-400", text: "text-teal-300", bg: "bg-teal-500/10" },
+  called: { dot: "bg-teal-400", text: "text-teal-300", bg: "bg-teal-500/10" },
+  instagram_sent: { dot: "bg-teal-400", text: "text-teal-300", bg: "bg-teal-500/10" },
+  replied: { dot: "bg-violet-400", text: "text-violet-300", bg: "bg-violet-500/12" },
+  meeting_booked: { dot: "bg-amber-400", text: "text-amber-300", bg: "bg-amber-500/10" },
+  closed: { dot: "bg-emerald-400", text: "text-emerald-300", bg: "bg-emerald-500/10" },
+  dead: { dot: "bg-rose-400", text: "text-rose-300", bg: "bg-rose-500/10" },
+};
+
+const PAGE_BUTTON =
+  "grid h-9 min-w-9 place-items-center rounded-lg border border-border/70 px-2 text-[13px] font-medium text-muted-foreground " +
+  "transition-colors hover:bg-white/[0.04] hover:text-foreground disabled:pointer-events-none disabled:opacity-40 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30";
+
+const CHECKBOX_STYLE =
+  "size-[18px] rounded-[6px] border-muted-foreground/40 bg-transparent shadow-none " +
+  "data-[state=checked]:border-brand data-[state=checked]:bg-brand data-[state=checked]:text-brand-foreground " +
+  "data-[state=indeterminate]:border-brand data-[state=indeterminate]:bg-brand/30";
+
 // ─── Niche Multi-Select ───────────────────────────────────────────────────────
 
 function NicheMultiSelect({
@@ -131,9 +179,9 @@ function NicheMultiSelect({
       NICHES.filter(
         (n) =>
           n.label.toLowerCase().includes(search.toLowerCase()) ||
-          n.value.toLowerCase().includes(search.toLowerCase())
+          n.value.toLowerCase().includes(search.toLowerCase()),
       ),
-    [search]
+    [search],
   );
 
   const toggle = (value: string) => {
@@ -149,48 +197,55 @@ function NicheMultiSelect({
     onChange(selected.filter((v) => v !== value));
   };
 
-  const selectedLabels = selected.map(
-    (v) => NICHES.find((n) => n.value === v)?.label ?? v
-  );
+  const selectedLabels = selected.map((v) => NICHES.find((n) => n.value === v)?.label ?? v);
 
   return (
     <div ref={containerRef} className="relative">
       <button
         type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={selectedLabels.join(", ") || undefined}
         onClick={() => {
           setOpen((o) => !o);
           setTimeout(() => inputRef.current?.focus(), 50);
         }}
-        className="flex min-h-10 w-48 flex-wrap items-center gap-1 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-left hover:border-muted-foreground/40 focus-visible:outline-none"
+        className={cn(
+          CONTROL_SURFACE,
+          "flex h-11 w-48 items-center justify-between gap-2 px-4 text-left",
+        )}
       >
-        <Filter className="size-4 shrink-0 text-muted-foreground" />
         {selected.length === 0 ? (
-          <span className="text-muted-foreground text-sm ml-1">All niches</span>
+          <span className="truncate">All Niches</span>
         ) : (
-          <div className="flex flex-wrap gap-1">
-            {selectedLabels.slice(0, 2).map((label, i) => (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="inline-flex min-w-0 items-center gap-1 rounded-md border border-brand/25 bg-brand/10 px-1.5 py-0.5 text-[12px] font-semibold text-brand">
+              <span className="truncate">{selectedLabels[0]}</span>
               <span
-                key={selected[i]}
-                className="inline-flex items-center gap-1 rounded bg-brand/10 border border-brand/20 px-1.5 py-0.5 text-[11px] font-semibold text-brand"
+                role="button"
+                tabIndex={0}
+                aria-label={`Remove ${selectedLabels[0]}`}
+                onClick={(e) => removeChip(selected[0], e)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onChange(selected.filter((v) => v !== selected[0]));
+                  }
+                }}
+                className="shrink-0 hover:text-brand-dark"
               >
-                {label}
-                <button
-                  type="button"
-                  onClick={(e) => removeChip(selected[i], e)}
-                  className="hover:text-brand-dark"
-                >
-                  <X className="size-4 shrink-0" />
-
-                </button>
+                <X className="size-3.5" />
               </span>
-            ))}
-            {selected.length > 2 && (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                +{selected.length - 2}
+            </span>
+            {selected.length > 1 && (
+              <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[12px] text-muted-foreground">
+                +{selected.length - 1}
               </span>
             )}
-          </div>
+          </span>
         )}
+        <ChevronDown className="size-4 shrink-0 opacity-60" />
       </button>
 
       {open && (
@@ -271,33 +326,260 @@ function NicheMultiSelect({
   );
 }
 
-
 // ─── Star Button ──────────────────────────────────────────────────────────────
 
-function StarButton({
-  starred,
-  onToggle,
-}: {
-  starred: boolean;
-  onToggle: (e: React.MouseEvent) => void;
-}) {
+function StarButton({ starred, onToggle }: { starred: boolean; onToggle: () => void }) {
   return (
     <button
       type="button"
       onClick={onToggle}
+      aria-pressed={starred}
       title={starred ? "Remove from starred" : "Star this relationship"}
-      className={`transition-all duration-150 rounded p-0.5 hover:scale-110 ${
+      className={cn(
+        "grid size-7 place-items-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40",
         starred
           ? "text-amber-400 hover:text-amber-300"
-          : "text-muted-foreground/30 hover:text-amber-400/70"
-      }`}
+          : "text-muted-foreground/50 hover:text-amber-400/80",
+      )}
     >
-      <Star
-        className="size-4"
-        fill={starred ? "currentColor" : "none"}
-        strokeWidth={1.8}
-      />
+      <Star className="size-[18px]" fill={starred ? "currentColor" : "none"} strokeWidth={1.7} />
     </button>
+  );
+}
+
+// ─── Row parts ────────────────────────────────────────────────────────────────
+
+function StatusPill({ status }: { status: string }) {
+  const style = STATUS_STYLE[normalizeLeadStatus(status)];
+  return (
+    <span
+      className={cn(
+        "inline-flex h-7 items-center gap-2 whitespace-nowrap rounded-full pl-2.5 pr-3 text-[13px] font-medium",
+        style.bg,
+        style.text,
+      )}
+    >
+      <span className={cn("size-1.5 shrink-0 rounded-full", style.dot)} />
+      {leadStatusLabel(status)}
+    </span>
+  );
+}
+
+function websiteHref(url: string) {
+  return /^https?:\/\//i.test(url) ? url : `https://${url}`;
+}
+
+// Email / phone / website / Instagram. Channels the business doesn't have stay
+// as a faint placeholder so the icons keep their column across every row.
+function ContactActions({ lead }: { lead: Lead }) {
+  const handle = lead.instagramHandle?.replace(/^@/, "");
+  const channels = [
+    {
+      key: "email",
+      label: "Email",
+      Icon: Mail,
+      value: lead.email,
+      href: lead.email ? `mailto:${lead.email}` : null,
+    },
+    {
+      key: "phone",
+      label: "Call",
+      Icon: Phone,
+      value: lead.phone,
+      href: lead.phone ? `tel:${lead.phone.replace(/\s+/g, "")}` : null,
+    },
+    {
+      key: "website",
+      label: "Website",
+      Icon: Link2,
+      value: lead.website,
+      href: lead.website ? websiteHref(lead.website) : null,
+    },
+    {
+      key: "instagram",
+      label: "Instagram",
+      Icon: Instagram,
+      value: handle ? `@${handle}` : null,
+      href: handle ? `https://instagram.com/${handle}` : null,
+    },
+  ];
+
+  return (
+    <div className="hidden items-center gap-0.5 xl:flex" onClick={(e) => e.stopPropagation()}>
+      {channels.map(({ key, label, Icon, value, href }) =>
+        href ? (
+          <a
+            key={key}
+            href={href}
+            target={key === "email" || key === "phone" ? undefined : "_blank"}
+            rel="noopener noreferrer"
+            title={`${label}: ${value}`}
+            aria-label={`${label} ${lead.businessName}`}
+            className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-brand/10 hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+          >
+            <Icon className="size-[18px]" strokeWidth={1.6} />
+          </a>
+        ) : (
+          <span
+            key={key}
+            aria-hidden="true"
+            className="grid size-8 place-items-center text-muted-foreground/20"
+          >
+            <Icon className="size-[18px]" strokeWidth={1.6} />
+          </span>
+        ),
+      )}
+    </div>
+  );
+}
+
+function RelationshipRow({
+  lead,
+  selected,
+  starred,
+  onOpen,
+  onToggleSelect,
+  onToggleStar,
+}: {
+  lead: Lead;
+  selected: boolean;
+  starred: boolean;
+  onOpen: () => void;
+  onToggleSelect: () => void;
+  onToggleStar: () => void;
+}) {
+  const dead = normalizeLeadStatus(lead.status) === "dead";
+  const nicheLabel = leadNicheDisplay(lead.niche);
+
+  const lastRelative = lead.lastContactedAt ? formatRelative(lead.lastContactedAt) : "-";
+  const contacted = lastRelative !== "-";
+  const addedRelative = formatRelative(lead.createdAt);
+  const addedLabel =
+    addedRelative === "-"
+      ? null
+      : `Added ${addedRelative === "Today" || addedRelative === "Yesterday" ? addedRelative.toLowerCase() : addedRelative}`;
+
+  return (
+    <li
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.target === e.currentTarget && e.key === "Enter") onOpen();
+      }}
+      className={cn(
+        ROW_GRID,
+        "cursor-pointer border-b border-border/40 px-3 py-3 outline-none transition-colors",
+        "hover:bg-white/[0.025] focus-visible:bg-white/[0.04]",
+        selected && "bg-brand/[0.07] hover:bg-brand/[0.09]",
+        dead && "opacity-50",
+      )}
+    >
+      <div
+        className="grid w-5 place-items-center"
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleSelect();
+        }}
+      >
+        <Checkbox
+          className={CHECKBOX_STYLE}
+          aria-label={`Select ${lead.businessName}`}
+          checked={selected}
+          onCheckedChange={() => undefined}
+        />
+      </div>
+
+      <div className="min-w-0">
+        <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+          {lead.businessName}
+        </div>
+        <div className="mt-1 flex min-w-0 items-center gap-2 text-[13px] leading-4 text-muted-foreground">
+          <span className="max-w-[55%] shrink-0 truncate">{nicheLabel}</span>
+          {lead.location && (
+            <>
+              <span
+                aria-hidden="true"
+                className="size-[3px] shrink-0 rounded-full bg-muted-foreground/50"
+              />
+              <span className="min-w-0 truncate">{lead.location}</span>
+            </>
+          )}
+        </div>
+        <div className="mt-2 md:hidden">
+          <StatusPill status={lead.status} />
+        </div>
+      </div>
+
+      <ContactActions lead={lead} />
+
+      <div className="hidden md:flex">
+        <StatusPill status={lead.status} />
+      </div>
+
+      <div className="hidden min-w-0 md:block">
+        <div
+          className={cn(
+            "truncate text-[13px] leading-5",
+            contacted ? "text-foreground/90" : "text-muted-foreground",
+          )}
+        >
+          {contacted ? lastRelative : "Not contacted"}
+        </div>
+        {!contacted && addedLabel && (
+          <div className="truncate text-[12px] leading-4 text-muted-foreground/70">
+            {addedLabel}
+          </div>
+        )}
+      </div>
+
+      <div onClick={(e) => e.stopPropagation()}>
+        <StarButton starred={starred} onToggle={onToggleStar} />
+      </div>
+
+      <div onClick={(e) => e.stopPropagation()}>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label={`More actions for ${lead.businessName}`}
+              className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 data-[state=open]:bg-white/[0.06] data-[state=open]:text-foreground"
+            >
+              <EllipsisVertical className="size-[18px]" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuItem onSelect={onOpen}>Open relationship</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onToggleStar}>
+              {starred ? "Remove from starred" : "Star relationship"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </li>
+  );
+}
+
+function SkeletonRow() {
+  return (
+    <li className={cn(ROW_GRID, "border-b border-border/40 px-3 py-3")}>
+      <Skeleton className="size-[18px] rounded-md" />
+      <div className="space-y-2">
+        <Skeleton className="h-4 w-44" />
+        <Skeleton className="h-3 w-56 max-w-full" />
+      </div>
+      <div className="hidden xl:flex xl:gap-2">
+        <Skeleton className="size-5" />
+        <Skeleton className="size-5" />
+        <Skeleton className="size-5" />
+        <Skeleton className="size-5" />
+      </div>
+      <Skeleton className="h-7 w-24 rounded-full" />
+      <div className="hidden space-y-2 md:block">
+        <Skeleton className="h-3.5 w-16" />
+      </div>
+      <Skeleton className="size-4" />
+      <Skeleton className="size-4" />
+    </li>
   );
 }
 
@@ -356,9 +638,7 @@ function Relationships() {
     // Filter options are NICHES slugs; stored niches may be a slug (manual
     // leads) or the exact discovery string ("Coffee Shop"). Both sides go
     // through the same key — see leadMatchesNicheFilter().
-    return allLeads.filter((lead) =>
-      leadMatchesNicheFilter(lead.niche, nicheFilters)
-    );
+    return allLeads.filter((lead) => leadMatchesNicheFilter(lead.niche, nicheFilters));
   }, [allLeads, nicheFilters]);
 
   // Starred filter
@@ -368,15 +648,12 @@ function Relationships() {
   }, [nicheFiltered, starredOnly, starred]);
 
   const visibleLeads = useMemo(
-    () =>
-      starFiltered.filter(
-        (lead) => showDead || normalizeLeadStatus(lead.status) !== "dead"
-      ),
-    [starFiltered, showDead]
+    () => starFiltered.filter((lead) => showDead || normalizeLeadStatus(lead.status) !== "dead"),
+    [starFiltered, showDead],
   );
 
   const deadCount = starFiltered.filter(
-    (lead) => normalizeLeadStatus(lead.status) === "dead"
+    (lead) => normalizeLeadStatus(lead.status) === "dead",
   ).length;
 
   // Pagination
@@ -389,18 +666,14 @@ function Relationships() {
 
   const resetPage = () => setPage(1);
 
-  const allSelected =
-    pageLeads.length > 0 && pageLeads.every((lead) => selected.has(lead.id));
-  const someSelected =
-    pageLeads.some((lead) => selected.has(lead.id)) && !allSelected;
+  const allSelected = pageLeads.length > 0 && pageLeads.every((lead) => selected.has(lead.id));
+  const someSelected = pageLeads.some((lead) => selected.has(lead.id)) && !allSelected;
   const selectedIds = Array.from(selected);
 
   const clearSelection = () => setSelected(new Set());
 
   const toggleAll = () => {
-    setSelected(
-      allSelected ? new Set() : new Set(pageLeads.map((lead) => lead.id))
-    );
+    setSelected(allSelected ? new Set() : new Set(pageLeads.map((lead) => lead.id)));
   };
 
   const toggleOne = (id: number) => {
@@ -412,8 +685,7 @@ function Relationships() {
     });
   };
 
-  const toggleStar = (id: number, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const toggleStar = (id: number) => {
     setStarred((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -427,7 +699,7 @@ function Relationships() {
     try {
       await bulkUpdate.mutateAsync({ ids: selectedIds, updates: { status } });
       toast.success(
-        `Updated ${selectedIds.length} relationship${selectedIds.length === 1 ? "" : "s"} to ${leadStatusLabel(status)}`
+        `Updated ${selectedIds.length} relationship${selectedIds.length === 1 ? "" : "s"} to ${leadStatusLabel(status)}`,
       );
       clearSelection();
     } catch (err) {
@@ -438,13 +710,13 @@ function Relationships() {
   const doBulkDelete = async () => {
     if (selectedIds.length === 0) return;
     const ok = window.confirm(
-      `Remove ${selectedIds.length} relationship${selectedIds.length === 1 ? "" : "s"}?`
+      `Remove ${selectedIds.length} relationship${selectedIds.length === 1 ? "" : "s"}?`,
     );
     if (!ok) return;
     try {
       await bulkDelete.mutateAsync({ ids: selectedIds });
       toast.success(
-        `${selectedIds.length} relationship${selectedIds.length === 1 ? "" : "s"} removed`
+        `${selectedIds.length} relationship${selectedIds.length === 1 ? "" : "s"} removed`,
       );
       clearSelection();
     } catch (err) {
@@ -456,9 +728,7 @@ function Relationships() {
     if (!newLead.businessName.trim()) return;
     const body: CreateLeadBody = {
       businessName: newLead.businessName.trim(),
-      instagramHandle: cleanOptional(
-        newLead.instagramHandle.replace(/^@/, "")
-      ),
+      instagramHandle: cleanOptional(newLead.instagramHandle.replace(/^@/, "")),
       email: cleanOptional(newLead.email),
       website: cleanOptional(newLead.website),
       phone: cleanOptional(newLead.phone),
@@ -477,23 +747,22 @@ function Relationships() {
         params: { leadId: String(lead.id) },
       });
     } catch (err) {
-      toast.error(
-        err instanceof ApiError ? err.message : "Could not add relationship"
-      );
+      toast.error(err instanceof ApiError ? err.message : "Could not add relationship");
     }
   };
 
+  const openLead = (id: number) =>
+    navigate({
+      to: "/dashboard/leads/$leadId",
+      params: { leadId: String(id) },
+    });
+
   const pageButtons = useMemo(() => {
-    if (totalPages <= 7)
-      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
     const pages: (number | "…")[] = [];
     pages.push(1);
     if (safePage > 3) pages.push("…");
-    for (
-      let p = Math.max(2, safePage - 1);
-      p <= Math.min(totalPages - 1, safePage + 1);
-      p++
-    ) {
+    for (let p = Math.max(2, safePage - 1); p <= Math.min(totalPages - 1, safePage + 1); p++) {
       pages.push(p);
     }
     if (safePage < totalPages - 2) pages.push("…");
@@ -504,253 +773,247 @@ function Relationships() {
   const starredCount = allLeads.filter((l) => starred.has(l.id)).length;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col bg-background">
       {/* Header */}
-      <div className="border-b border-border bg-card px-6 py-4">
-        <div className="flex flex-col gap-4">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight">Relationships</h1>
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                Find, organise, and continue working with every business you've discovered.
-              </p>
-            </div>
-            {/* Focus Mode Toggle */}
+      <div className="px-6 pt-8 md:px-8">
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+          <div>
+            <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground/80">
+              Relationships
+            </p>
+            <h1 className="text-[32px] font-semibold leading-none tracking-tight text-foreground">
+              Relationships
+            </h1>
+            <p className="mt-3 text-[15px] text-muted-foreground">
+              Manage and grow your business relationships.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
+              type="button"
               onClick={() => setFocusMode((prev) => !prev)}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200 shadow-sm shrink-0"
+              className={GHOST_ACTION}
               title={focusMode ? "Exit Focus Mode" : "Focus Mode"}
             >
-              {focusMode ? (
-                <>
-                  <ChevronDown className="size-4" />
-                  <span>Exit Focus Mode</span>
-                </>
-              ) : (
-                <>
-                  <ChevronUp className="size-4" />
-                  <span>Focus Mode</span>
-                </>
-              )}
+              {focusMode ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
+              <span>{focusMode ? "Exit Focus Mode" : "Focus Mode"}</span>
             </button>
-          </div>
 
-          <div
-            className={`transition-all duration-300 ease-in-out origin-top overflow-hidden ${
-              focusMode
-                ? "max-h-0 opacity-0 pointer-events-none -mt-4"
-                : "max-h-[300px] opacity-100"
-            }`}
-          >
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              {/* Search */}
-              <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2">
-                <Search className="size-4 text-muted-foreground shrink-0" />
+            <Link to="/dashboard/import" className={GHOST_ACTION}>
+              Import / Export
+            </Link>
 
-                <input
-                  className="w-48 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-                  placeholder="Search relationships…"
-                  value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value);
-                    clearSelection();
-                    resetPage();
-                  }}
-                />
-              </div>
-
-              {/* Status filter */}
-              <Select
-                value={statusFilter}
-                onValueChange={(value) => {
-                  setStatusFilter(value);
-                  clearSelection();
-                  resetPage();
-                }}
-              >
-                <SelectTrigger className="h-10 w-44 bg-background text-sm">
-                  <Filter className="mr-2 size-4 text-muted-foreground" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL_VALUE}>All statuses</SelectItem>
-                  {LEAD_STATUSES.map((status) => (
-                    <SelectItem key={status.value} value={status.value}>
-                      {status.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              {/* Niche filter */}
-              <NicheMultiSelect
-                selected={nicheFilters}
-                onChange={(next) => {
-                  setNicheFilters(next);
-                  clearSelection();
-                  resetPage();
-                }}
-              />
-
-              {/* Starred filter */}
-              <button
-                type="button"
-                onClick={() => {
-                  setStarredOnly((s) => !s);
-                  clearSelection();
-                  resetPage();
-                }}
-                className={`inline-flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors ${
-                  starredOnly
-                    ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
-                    : "border-border bg-background text-muted-foreground hover:text-foreground"
-                }`}
-                title="Show starred relationships"
-              >
-                <Star
-                  className="size-4 shrink-0"
-                  fill={starredOnly ? "currentColor" : "none"}
-                  strokeWidth={1.8}
-                />
-
-                {starredOnly ? `Starred (${starredCount})` : "Starred"}
-              </button>
-
-              <Link
-                to="/dashboard/import"
-                className="rounded-lg border border-border px-4 py-2 text-sm font-semibold hover:bg-background"
-              >
-                Import / Export
-              </Link>
-
-              <Dialog open={addOpen} onOpenChange={setAddOpen}>
-                <DialogTrigger asChild>
-                  <button className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark">
-                    <Plus className="size-4 shrink-0" /> Add Relationship
-
-                  </button>
-                </DialogTrigger>
-                <DialogContent className="max-w-lg">
-                  <DialogHeader>
-                    <DialogTitle>Add Relationship</DialogTitle>
-                  </DialogHeader>
-                  <div className="space-y-4">
-                    <div className="space-y-1.5">
-                      <Label>Business name</Label>
-                      <Input
-                        value={newLead.businessName}
-                        onChange={(event) =>
-                          setNewLead((current) => ({
-                            ...current,
-                            businessName: event.target.value,
-                          }))
-                        }
-                        placeholder="Acme Studio"
-                        autoFocus
-                      />
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <Field
-                        label="Instagram"
-                        value={newLead.instagramHandle}
-                        onChange={(value) =>
-                          setNewLead((current) => ({
-                            ...current,
-                            instagramHandle: value,
-                          }))
-                        }
-                        placeholder="@handle"
-                      />
-                      <Field
-                        label="Email"
-                        value={newLead.email}
-                        onChange={(value) =>
-                          setNewLead((current) => ({ ...current, email: value }))
-                        }
-                        placeholder="hello@example.com"
-                      />
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <Field
-                        label="Website"
-                        value={newLead.website}
-                        onChange={(value) =>
-                          setNewLead((current) => ({
-                            ...current,
-                            website: value,
-                          }))
-                        }
-                        placeholder="https://example.com"
-                      />
-                      <Field
-                        label="Phone"
-                        value={newLead.phone}
-                        onChange={(value) =>
-                          setNewLead((current) => ({ ...current, phone: value }))
-                        }
-                        placeholder="+1 555 0100"
-                      />
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="space-y-1.5">
-                        <Label>Niche</Label>
-                        <Select
-                          value={newLead.niche}
-                          onValueChange={(value) =>
-                            setNewLead((current) => ({
-                              ...current,
-                              niche: value,
-                            }))
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value={NONE_VALUE}>No niche</SelectItem>
-                            {NICHES.map((niche) => (
-                              <SelectItem key={niche.value} value={niche.value}>
-                                {niche.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <Field
-                        label="Location"
-                        value={newLead.location}
-                        onChange={(value) =>
-                          setNewLead((current) => ({
-                            ...current,
-                            location: value,
-                          }))
-                        }
-                        placeholder="City, State"
-                      />
-                    </div>
-                    <button
-                      onClick={addLead}
-                      disabled={
-                        !newLead.businessName.trim() || createLead.isPending
+            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+              <DialogTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex h-11 items-center gap-2 rounded-xl bg-brand px-5 text-sm font-semibold text-brand-foreground shadow-brand transition-colors hover:bg-brand-dark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                >
+                  <Plus className="size-[18px] shrink-0" strokeWidth={2} /> Add Relationship
+                </button>
+              </DialogTrigger>
+              <DialogContent className="max-w-lg">
+                <DialogHeader>
+                  <DialogTitle>Add Relationship</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <Label>Business name</Label>
+                    <Input
+                      value={newLead.businessName}
+                      onChange={(event) =>
+                        setNewLead((current) => ({
+                          ...current,
+                          businessName: event.target.value,
+                        }))
                       }
-                      className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark disabled:opacity-60"
-                    >
-                      {createLead.isPending ? "Adding…" : "Add Relationship"}
-                    </button>
+                      placeholder="Acme Studio"
+                      autoFocus
+                    />
                   </div>
-                </DialogContent>
-              </Dialog>
-            </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field
+                      label="Instagram"
+                      value={newLead.instagramHandle}
+                      onChange={(value) =>
+                        setNewLead((current) => ({
+                          ...current,
+                          instagramHandle: value,
+                        }))
+                      }
+                      placeholder="@handle"
+                    />
+                    <Field
+                      label="Email"
+                      value={newLead.email}
+                      onChange={(value) => setNewLead((current) => ({ ...current, email: value }))}
+                      placeholder="hello@example.com"
+                    />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field
+                      label="Website"
+                      value={newLead.website}
+                      onChange={(value) =>
+                        setNewLead((current) => ({
+                          ...current,
+                          website: value,
+                        }))
+                      }
+                      placeholder="https://example.com"
+                    />
+                    <Field
+                      label="Phone"
+                      value={newLead.phone}
+                      onChange={(value) => setNewLead((current) => ({ ...current, phone: value }))}
+                      placeholder="+1 555 0100"
+                    />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label>Niche</Label>
+                      <Select
+                        value={newLead.niche}
+                        onValueChange={(value) =>
+                          setNewLead((current) => ({
+                            ...current,
+                            niche: value,
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NONE_VALUE}>No niche</SelectItem>
+                          {NICHES.map((niche) => (
+                            <SelectItem key={niche.value} value={niche.value}>
+                              {niche.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Field
+                      label="Location"
+                      value={newLead.location}
+                      onChange={(value) =>
+                        setNewLead((current) => ({
+                          ...current,
+                          location: value,
+                        }))
+                      }
+                      placeholder="City, State"
+                    />
+                  </div>
+                  <button
+                    onClick={addLead}
+                    disabled={!newLead.businessName.trim() || createLead.isPending}
+                    className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark disabled:opacity-60"
+                  >
+                    {createLead.isPending ? "Adding…" : "Add Relationship"}
+                  </button>
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
+        </div>
+      </div>
+
+      {/* Search + filters */}
+      <div
+        className={cn(
+          "transition-all duration-300 ease-in-out",
+          focusMode
+            ? "pointer-events-none max-h-0 overflow-hidden opacity-0"
+            : "max-h-[200px] opacity-100",
+        )}
+      >
+        <div className="flex flex-wrap items-center gap-3 px-6 pb-5 pt-6 md:px-8">
+          <label
+            className={cn(
+              CONTROL_SURFACE,
+              "flex h-11 min-w-[240px] flex-1 items-center gap-3 px-4 focus-within:border-brand/50 focus-within:ring-2 focus-within:ring-brand/20",
+            )}
+          >
+            <Search className="size-[18px] shrink-0 text-muted-foreground" />
+            <input
+              className="min-w-0 flex-1 bg-transparent text-sm font-normal outline-none placeholder:text-muted-foreground"
+              placeholder="Search relationships…"
+              aria-label="Search relationships"
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                clearSelection();
+                resetPage();
+              }}
+            />
+          </label>
+
+          <Select
+            value={statusFilter}
+            onValueChange={(value) => {
+              setStatusFilter(value);
+              clearSelection();
+              resetPage();
+            }}
+          >
+            <SelectTrigger
+              aria-label="Filter by status"
+              className={cn(CONTROL_SURFACE, "h-11 w-44 px-4 shadow-none")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUE}>All Statuses</SelectItem>
+              {LEAD_STATUSES.map((status) => (
+                <SelectItem key={status.value} value={status.value}>
+                  {status.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <NicheMultiSelect
+            selected={nicheFilters}
+            onChange={(next) => {
+              setNicheFilters(next);
+              clearSelection();
+              resetPage();
+            }}
+          />
+
+          <button
+            type="button"
+            aria-pressed={starredOnly}
+            onClick={() => {
+              setStarredOnly((s) => !s);
+              clearSelection();
+              resetPage();
+            }}
+            className={cn(
+              CONTROL_SURFACE,
+              "inline-flex h-11 items-center gap-2.5 px-4",
+              starredOnly &&
+                "border-amber-400/40 bg-amber-400/10 text-amber-200 hover:border-amber-400/50",
+            )}
+            title="Show starred relationships"
+          >
+            <Star
+              className="size-[18px] shrink-0 text-amber-400"
+              fill="currentColor"
+              strokeWidth={1.8}
+            />
+            {starredOnly ? `Starred (${starredCount})` : "Starred"}
+          </button>
         </div>
       </div>
 
       {/* Bulk actions */}
       {selected.size > 0 && (
-        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-brand/5 px-6 py-3">
-          <span className="mr-1 text-sm font-semibold">
-            {selected.size} selected
-          </span>
+        <div className="mx-6 mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-brand/25 bg-brand/[0.07] px-4 py-2.5 md:mx-8">
+          <span className="mr-1 text-sm font-semibold">{selected.size} selected</span>
           <BulkButton
             onClick={() => void doBulkStatus("instagram_sent")}
             disabled={bulkUpdate.isPending}
@@ -765,10 +1028,8 @@ function Relationships() {
           >
             Email Sent
           </BulkButton>
-          <Select
-            onValueChange={(value) => void doBulkStatus(value as LeadStatus)}
-          >
-            <SelectTrigger className="h-8 w-40 bg-background text-xs">
+          <Select onValueChange={(value) => void doBulkStatus(value as LeadStatus)}>
+            <SelectTrigger className="h-8 w-40 rounded-lg border-border/80 bg-background/60 text-xs shadow-none">
               <SelectValue placeholder="Set status…" />
             </SelectTrigger>
             <SelectContent>
@@ -785,154 +1046,45 @@ function Relationships() {
             className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg bg-destructive px-3 text-xs font-semibold text-destructive-foreground hover:bg-destructive/90 disabled:opacity-60"
           >
             <Trash2 className="size-4 shrink-0" /> Remove
-
           </button>
         </div>
       )}
 
-      {/* Table */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full text-sm">
-          <thead className="sticky top-0 z-10 border-b border-border bg-background/90 backdrop-blur">
-            <tr>
-              <th className="w-10 px-4 py-3 text-left">
-                <Checkbox
-                  checked={someSelected ? "indeterminate" : allSelected}
-                  onCheckedChange={toggleAll}
-                />
-              </th>
-              {/* Star column */}
-              <th className="w-8 px-2 py-3" />
-              <Th>Business</Th>
-              <Th className="hidden md:table-cell">Niche</Th>
-              <Th>Status</Th>
-              <Th className="hidden lg:table-cell">Last Contact</Th>
-              <Th className="hidden lg:table-cell">Location</Th>
-              <th className="w-10 px-3 py-3" />
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading ? (
-              Array.from({ length: 8 }).map((_, index) => (
-                <tr key={index} className="border-b border-border/50">
-                  <td className="px-4 py-3">
-                    <Skeleton className="size-4" />
-                  </td>
-                  <td className="px-2 py-3">
-                    <Skeleton className="size-3.5" />
-                  </td>
-                  <td className="px-3 py-3">
-                    <Skeleton className="h-4 w-48" />
-                  </td>
-                  <td className="hidden px-3 py-3 md:table-cell">
-                    <Skeleton className="h-4 w-20" />
-                  </td>
-                  <td className="px-3 py-3">
-                    <Skeleton className="h-5 w-24" />
-                  </td>
-                  <td className="hidden px-3 py-3 lg:table-cell">
-                    <Skeleton className="h-4 w-20" />
-                  </td>
-                  <td className="hidden px-3 py-3 lg:table-cell">
-                    <Skeleton className="h-4 w-24" />
-                  </td>
-                  <td className="px-3 py-3" />
-                </tr>
-              ))
-            ) : (
-              pageLeads.map((lead) => {
-                const selectedRow = selected.has(lead.id);
-                const dead = normalizeLeadStatus(lead.status) === "dead";
-                const isStarred = starred.has(lead.id);
-                const nicheLabel = leadNicheDisplay(lead.niche);
-                return (
-                  <tr
-                    key={lead.id}
-                    className={`cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/25 ${
-                      selectedRow ? "bg-brand/5" : ""
-                    } ${dead ? "opacity-50" : ""}`}
-                    onClick={() =>
-                      navigate({
-                        to: "/dashboard/leads/$leadId",
-                        params: { leadId: String(lead.id) },
-                      })
-                    }
-                  >
-                    <td
-                      className="px-4 py-3"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        toggleOne(lead.id);
-                      }}
-                    >
-                      <Checkbox
-                        checked={selectedRow}
-                        onCheckedChange={() => undefined}
-                      />
-                    </td>
-                    {/* Star */}
-                    <td
-                      className="px-2 py-3"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <StarButton
-                        starred={isStarred}
-                        onToggle={(e) => toggleStar(lead.id, e)}
-                      />
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="font-semibold text-foreground">
-                        {lead.businessName}
-                      </div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        {lead.instagramHandle && (
-                          <span className="inline-flex items-center gap-1">
-                            <Instagram className="size-4 shrink-0" />@
-                            {lead.instagramHandle.replace(/^@/, "")}
-                          </span>
-                        )}
-                        {lead.email && (
-                          <span className="inline-flex items-center gap-1">
-                            <Mail className="size-4 shrink-0" />
-                            {lead.email}
-                          </span>
-                        )}
+      {/* List */}
+      <div className="flex-1 overflow-auto px-3 md:px-5">
+        <div className="sticky top-0 z-10 flex items-center gap-4 border-b border-border/60 bg-background/95 px-3 py-2.5 backdrop-blur">
+          <div className="grid w-5 place-items-center">
+            <Checkbox
+              className={CHECKBOX_STYLE}
+              aria-label="Select all relationships on this page"
+              checked={someSelected ? "indeterminate" : allSelected}
+              onCheckedChange={toggleAll}
+            />
+          </div>
+          <span className="text-[12px] text-muted-foreground">Select all on page</span>
+        </div>
 
-                      </div>
-                    </td>
-                    <td className="hidden px-3 py-3 text-muted-foreground md:table-cell">
-                      {nicheLabel}
-                    </td>
-                    <td className="px-3 py-3">
-                      <span
-                        className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${leadStatusColor(lead.status)}`}
-                      >
-                        {leadStatusLabel(lead.status)}
-                      </span>
-                    </td>
-                    <td className="hidden px-3 py-3 text-muted-foreground lg:table-cell">
-                      {formatRelative(lead.lastContactedAt)}
-                    </td>
-                    <td className="hidden px-3 py-3 text-muted-foreground lg:table-cell">
-                      {lead.location ?? "—"}
-                    </td>
-                    <td className="px-3 py-3">
-                      <ArrowRight className="size-4 text-muted-foreground shrink-0" />
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+        <ul>
+          {isLoading
+            ? Array.from({ length: 8 }).map((_, index) => <SkeletonRow key={index} />)
+            : pageLeads.map((lead) => (
+                <RelationshipRow
+                  key={lead.id}
+                  lead={lead}
+                  selected={selected.has(lead.id)}
+                  starred={starred.has(lead.id)}
+                  onOpen={() => openLead(lead.id)}
+                  onToggleSelect={() => toggleOne(lead.id)}
+                  onToggleStar={() => toggleStar(lead.id)}
+                />
+              ))}
+        </ul>
 
         {!isLoading && visibleLeads.length === 0 && (
-          <div className="py-16 text-center">
+          <div className="py-20 text-center">
             {starredOnly ? (
               <>
-                <p className="text-sm text-muted-foreground">
-                  No starred relationships yet.
-                </p>
+                <p className="text-sm text-muted-foreground">No starred relationships yet.</p>
                 <button
                   type="button"
                   onClick={() => setStarredOnly(false)}
@@ -943,15 +1095,12 @@ function Relationships() {
               </>
             ) : (
               <>
-                <p className="text-sm text-muted-foreground">
-                  No relationships found.
-                </p>
+                <p className="text-sm text-muted-foreground">No relationships found.</p>
                 <Link
                   to="/dashboard/import"
                   className="mt-2 inline-block text-sm font-semibold text-brand hover:text-brand-dark"
                 >
                   Import / Export from CSV
-
                 </Link>
               </>
             )}
@@ -960,22 +1109,20 @@ function Relationships() {
       </div>
 
       {/* Footer: showing range + pagination */}
-      <div className="border-t border-border bg-background/80 px-6 py-3">
+      <div className="border-t border-border/50 px-6 py-4 md:px-8">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="text-xs text-muted-foreground">
-            {isLoading ? (
-              "Loading relationships…"
-            ) : totalLeads === 0 ? (
-              "No relationships"
-            ) : (
-              `Showing ${pageStart + 1}–${pageEnd} of ${totalLeads.toLocaleString()} relationship${totalLeads === 1 ? "" : "s"}${selected.size > 0 ? ` · ${selected.size} selected` : ""}`
-            )}
+          <span className="text-[13px] text-muted-foreground">
+            {isLoading
+              ? "Loading relationships…"
+              : totalLeads === 0
+                ? "No relationships"
+                : `Showing ${pageStart + 1}–${pageEnd} of ${totalLeads.toLocaleString()} relationship${totalLeads === 1 ? "" : "s"}${selected.size > 0 ? ` · ${selected.size} selected` : ""}`}
           </span>
 
           <div className="flex items-center gap-1.5">
             {deadCount > 0 && statusFilter === ALL_VALUE && (
               <button
-                className="mr-3 text-xs text-muted-foreground hover:text-foreground"
+                className="mr-3 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
                 onClick={() => {
                   setShowDead((current) => !current);
                   resetPage();
@@ -990,16 +1137,17 @@ function Relationships() {
                 <button
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
                   disabled={safePage === 1}
-                  className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-background px-2 text-xs font-medium hover:bg-muted disabled:opacity-40"
+                  aria-label="Previous page"
+                  className={PAGE_BUTTON}
                 >
-                  <ChevronLeft className="size-4 shrink-0" /> Prev
+                  <ChevronLeft className="size-4" />
                 </button>
 
                 {pageButtons.map((btn, idx) =>
                   btn === "…" ? (
                     <span
                       key={`ellipsis-${idx}`}
-                      className="px-1 text-xs text-muted-foreground"
+                      className="px-1.5 text-[13px] text-muted-foreground"
                     >
                       …
                     </span>
@@ -1007,23 +1155,25 @@ function Relationships() {
                     <button
                       key={btn}
                       onClick={() => setPage(btn as number)}
-                      className={`h-7 min-w-7 rounded-lg border px-2 text-xs font-medium ${
-                        btn === safePage
-                          ? "border-brand bg-brand text-brand-foreground"
-                          : "border-border bg-background hover:bg-muted"
-                      }`}
+                      aria-current={btn === safePage ? "page" : undefined}
+                      className={cn(
+                        PAGE_BUTTON,
+                        btn === safePage &&
+                          "border-brand/70 bg-brand/15 text-foreground hover:bg-brand/20",
+                      )}
                     >
                       {btn}
                     </button>
-                  )
+                  ),
                 )}
 
                 <button
                   onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                   disabled={safePage === totalPages}
-                  className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-background px-2 text-xs font-medium hover:bg-muted disabled:opacity-40"
+                  aria-label="Next page"
+                  className={PAGE_BUTTON}
                 >
-                  Next <ChevronRight className="size-4 shrink-0" />
+                  <ChevronRight className="size-4" />
                 </button>
               </>
             )}
@@ -1034,10 +1184,8 @@ function Relationships() {
   );
 }
 
-function normalizeLeads(
-  payload: Lead[] | { leads?: Lead[] } | undefined
-): Lead[] {
-  return Array.isArray(payload) ? payload : payload?.leads ?? [];
+function normalizeLeads(payload: Lead[] | { leads?: Lead[] } | undefined): Lead[] {
+  return Array.isArray(payload) ? payload : (payload?.leads ?? []);
 }
 
 function cleanOptional(value: string) {
@@ -1068,22 +1216,6 @@ function Field({
   );
 }
 
-function Th({
-  children,
-  className = "",
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <th
-      className={`px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground ${className}`}
-    >
-      {children}
-    </th>
-  );
-}
-
 function BulkButton({
   children,
   onClick,
@@ -1099,7 +1231,7 @@ function BulkButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-semibold hover:bg-card disabled:opacity-60"
+      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/80 bg-background/60 px-3 text-xs font-semibold transition-colors hover:bg-card disabled:opacity-60"
     >
       <Icon className="size-4 shrink-0" /> {children}
     </button>

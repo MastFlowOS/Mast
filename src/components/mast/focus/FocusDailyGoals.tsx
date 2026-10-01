@@ -518,12 +518,16 @@ function GoalStyles() {
       }
 
       /* Header: lives OUTSIDE the container */
+      /* Shared header metrics: keep in sync with .focus-momentum-module .focus-module-header */
       .fdg-head {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         justify-content: space-between;
         gap: 1rem;
-        padding: 0 0.25rem 0.625rem;
+        height: 1.5rem;
+        margin: 0 0 0.625rem;
+        padding: 0 0.25rem;
+        box-sizing: border-box;
       }
       .fdg-head-title {
         margin: 0;

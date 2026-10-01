@@ -643,7 +643,45 @@ export function FocusMomentum({ events }: MomentumProps) {
           flex-direction: column;
         }
 
+        /* Header: title + 7 DAYS + icon on ONE line; same box as the Today's Goals header */
+        .focus-momentum-module .focus-module-header {
+          display: flex;
+          flex-wrap: nowrap;
+          align-items: center;
+          justify-content: space-between;
+          gap: 1rem;
+          height: 1.5rem;
+          margin: 0 0 0.625rem;
+          padding: 0 0.25rem;
+          box-sizing: border-box;
+        }
+
+        .focus-momentum-module .focus-module-title-wrap {
+          display: flex;
+          flex-wrap: nowrap;
+          align-items: center;
+          gap: 0.625rem;
+          min-width: 0;
+        }
+
+        .focus-momentum-module .focus-module-title {
+          flex-shrink: 0;
+          white-space: nowrap;
+          font-size: 0.75rem;
+          font-weight: 600;
+          letter-spacing: 0.3em;
+          line-height: 1.2;
+          color: rgba(255, 255, 255, 0.95);
+        }
+
+        .focus-momentum-module .focus-module-badge {
+          flex-shrink: 0;
+          white-space: nowrap;
+          line-height: 1.2;
+        }
+
         .focus-module-icon {
+          flex-shrink: 0;
           width: 0.8125rem;
           height: 0.8125rem;
           color: rgba(255, 255, 255, 0.4);

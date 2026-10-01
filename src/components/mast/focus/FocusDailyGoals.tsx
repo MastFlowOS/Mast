@@ -68,35 +68,38 @@ const goalIcon = (goal: DailyGoalInstance): LucideIcon =>
   ICON_BY_DEFINITION[goal.definitionId] ?? ICON_BY_FAMILY[goal.family] ?? Send;
 
 
-// ─── Completion ordering ─────────────────────────────────────────────────────
+// ─── Claim ordering ──────────────────────────────────────────────────────────
 
-/** Let the completion celebration play in place before the row travels down. */
-const MOVE_DELAY_MS = 800;
+/** After the claim, let the row dim in place, then send it to the bottom. */
+const MOVE_DELAY_MS = 700;
 const MOVE_DURATION_MS = 650;
 
 /**
- * Finished goals sink to the bottom of the list.
+ * Collected goals sink to the bottom of the list.
  *
- * - Goals already finished when first seen (page load, new day) are placed at
+ * Active -> Completed (stays in place, CLAIM visible) -> CLAIM -> dim -> move.
+ *
+ * - A goal that is merely completed never moves; it waits for you to claim it.
+ * - Goals already claimed when first seen (page load, new day) are placed at
  *   the bottom immediately, with no animation.
- * - A goal that finishes while you watch celebrates in place, then moves to
- *   the very bottom after MOVE_DELAY_MS (the FLIP animation lives in the list).
- * - Unfinished goals keep their persisted slot order; finished goals stay in
- *   the order they finished. Data is never touched — display order only.
+ * - A goal claimed while you watch dims in place, then moves to the very bottom
+ *   after MOVE_DELAY_MS (the FLIP animation lives in the list).
+ * - Unclaimed goals keep their persisted slot order; claimed goals stay in the
+ *   order they were claimed. Display order only: data is never touched.
  */
 function useCompletionOrder(goals: DailyGoalInstance[]): DailyGoalInstance[] {
   const [, force] = useReducer((n: number) => n + 1, 0);
   const seen = useRef(new Set<string>());
   const moved = useRef<string[]>([]);
-  const prevDone = useRef(new Map<string, boolean>());
+  const prevClaimed = useRef(new Map<string, boolean>());
   const timers = useRef(new Map<string, number>());
 
   // Render phase (idempotent): drop goals from other days, place goals that
-  // were already finished the first time we see them.
+  // were already claimed the first time we see them.
   const idSet = new Set(goals.map((g) => g.id));
   moved.current = moved.current.filter((id) => idSet.has(id));
   const initial = goals
-    .filter((g) => !seen.current.has(g.id) && isDailyGoalComplete(g))
+    .filter((g) => !seen.current.has(g.id) && Boolean(g.claimed))
     .sort(
       (a, b) =>
         (a.completedAt ? Date.parse(a.completedAt) : Infinity) -
@@ -105,16 +108,16 @@ function useCompletionOrder(goals: DailyGoalInstance[]): DailyGoalInstance[] {
   goals.forEach((g) => seen.current.add(g.id));
   for (const g of initial) if (!moved.current.includes(g.id)) moved.current.push(g.id);
 
-  // Effect: schedule the move for goals that finish while mounted.
+  // Effect: schedule the move for goals claimed while mounted.
   useEffect(() => {
     const reduce =
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     for (const g of goals) {
-      const done = isDailyGoalComplete(g);
-      const was = prevDone.current.get(g.id);
-      prevDone.current.set(g.id, done);
-      if (was !== false || !done) continue;
+      const claimed = Boolean(g.claimed);
+      const was = prevClaimed.current.get(g.id);
+      prevClaimed.current.set(g.id, claimed);
+      if (was !== false || !claimed) continue;
       if (moved.current.includes(g.id) || timers.current.has(g.id)) continue;
       const t = window.setTimeout(
         () => {
@@ -155,7 +158,7 @@ function useFlipList(listRef: React.RefObject<HTMLOListElement | null>, orderKey
     const rows = Array.from(list.children).filter(
       (el): el is HTMLElement => el instanceof HTMLElement && el.hasAttribute("data-goal-id"),
     );
-    // Largest drop = the row that just finished; keep it above the others.
+    // Largest drop = the row that was just claimed; keep it above the others.
     let maxDrop = 0;
     for (const el of rows) {
       const prev = prevTops.current.get(el.dataset.goalId!);
@@ -441,7 +444,7 @@ function GoalsSkeleton() {
       {Array.from({ length: DAILY_GOAL_COUNT }, (_, i) => (
         <div key={i} className="fdg-row fdg-row-skeleton">
           <div className="fdg-tile fdg-tile-skeleton">
-            <div className="mast-skeleton" style={{ height: "100%", width: "100%", borderRadius: "12px" }} />
+            <div className="mast-skeleton" style={{ height: "100%", width: "100%", borderRadius: "8px" }} />
           </div>
           <div className="fdg-body">
             <div
@@ -510,13 +513,13 @@ function GoalStyles() {
       .focus-goals-card {
         flex: 1;
         min-width: 0;
-        padding: 1.125rem 1.125rem 1.25rem;
+        padding: 0.75rem 0.75rem 0.75rem;
         background:
           radial-gradient(120% 80% at 50% -10%, rgba(99, 102, 241, 0.06), transparent 60%),
           linear-gradient(180deg, rgba(17, 21, 34, 0.96), rgba(11, 14, 24, 0.98));
         border: 1px solid rgba(255, 255, 255, 0.07);
-        border-radius: 22px;
-        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 18px 40px -24px rgba(0, 0, 0, 0.7);
+        border-radius: 14px;
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 28px -20px rgba(0, 0, 0, 0.7);
       }
 
       /* Header */
@@ -525,18 +528,18 @@ function GoalStyles() {
         align-items: baseline;
         justify-content: space-between;
         gap: 1rem;
-        padding: 0.25rem 0.5rem 1rem;
+        padding: 0.125rem 0.375rem 0.625rem;
       }
       .fdg-head-title {
         margin: 0;
-        font-size: 1.0625rem;
-        font-weight: 450;
-        letter-spacing: 0.2em;
+        font-size: 0.75rem;
+        font-weight: 500;
+        letter-spacing: 0.18em;
         line-height: 1.2;
         color: rgba(255, 255, 255, 0.92);
       }
       .fdg-head-count {
-        font-size: 0.8125rem;
+        font-size: 0.6875rem;
         font-weight: 450;
         letter-spacing: 0.04em;
         color: rgba(255, 255, 255, 0.82);
@@ -544,9 +547,9 @@ function GoalStyles() {
         white-space: nowrap;
       }
       .fdg-head-count-label {
-        font-size: 0.75rem;
+        font-size: 0.625rem;
         letter-spacing: 0.08em;
-        color: rgba(255, 255, 255, 0.58);
+        color: rgba(255, 255, 255, 0.5);
       }
 
       .fdg-list {
@@ -556,19 +559,19 @@ function GoalStyles() {
         padding: 0;
         display: flex;
         flex-direction: column;
-        gap: 0.5rem;
+        gap: 0.3125rem;
       }
 
       /* ── Row: ACTIVE ───────────────────────────────────────────── */
       .fdg-row {
         position: relative;
         display: grid;
-        grid-template-columns: 3.25rem minmax(0, 1fr) auto 7.75rem;
+        grid-template-columns: 2rem minmax(0, 1fr) auto 6.25rem;
         align-items: center;
-        column-gap: 1rem;
-        min-height: 4.5rem;
-        padding: 0.5rem 0.75rem 0.5rem 0.5rem;
-        border-radius: 14px;
+        column-gap: 0.625rem;
+        min-height: 2.75rem;
+        padding: 0.3125rem 0.5rem 0.3125rem 0.3125rem;
+        border-radius: 10px;
         border: 1px solid rgba(255, 255, 255, 0.06);
         background: linear-gradient(90deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.018));
         overflow: hidden;
@@ -595,14 +598,14 @@ function GoalStyles() {
       /* Leading tile */
       .fdg-tile {
         position: relative;
-        width: 3.25rem;
-        height: 3.25rem;
-        border-radius: 12px;
+        width: 2rem;
+        height: 2rem;
+        border-radius: 8px;
         display: grid;
         place-items: center;
         background: rgba(99, 102, 241, 0.07);
         border: 1px solid var(--fdg-indigo);
-        box-shadow: 0 0 16px -6px rgba(129, 140, 248, 0.5);
+        box-shadow: 0 0 10px -4px rgba(129, 140, 248, 0.45);
         color: rgba(255, 255, 255, 0.95);
         transition:
           background 600ms var(--fdg-ease),
@@ -611,15 +614,15 @@ function GoalStyles() {
       }
       .fdg-tile-icon {
         grid-area: 1 / 1;
-        width: 1.375rem;
-        height: 1.375rem;
+        width: 1rem;
+        height: 1rem;
         transition: opacity 320ms ease, transform 420ms var(--fdg-ease);
       }
       .fdg-badge {
         grid-area: 1 / 1;
         position: relative;
-        width: 1.875rem;
-        height: 1.875rem;
+        width: 1.25rem;
+        height: 1.25rem;
         border-radius: 50%;
         display: grid;
         place-items: center;
@@ -635,8 +638,8 @@ function GoalStyles() {
           box-shadow 650ms var(--fdg-ease);
       }
       .fdg-badge-check {
-        width: 1rem;
-        height: 1rem;
+        width: 0.6875rem;
+        height: 0.6875rem;
       }
       /* Ring burst (idle: invisible) */
       .fdg-badge::after {
@@ -644,7 +647,7 @@ function GoalStyles() {
         position: absolute;
         inset: -1px;
         border-radius: 50%;
-        border: 2px solid var(--fdg-gold);
+        border: 1.5px solid var(--fdg-gold);
         opacity: 0;
         pointer-events: none;
       }
@@ -654,28 +657,28 @@ function GoalStyles() {
         min-width: 0;
         display: flex;
         flex-direction: column;
-        gap: 0.2rem;
+        gap: 0.0625rem;
       }
       .fdg-title {
         margin: 0;
         width: fit-content;
         max-width: 100%;
-        font-size: 1rem;
+        font-size: 0.8125rem;
         font-weight: 500;
-        line-height: 1.3;
+        line-height: 1.25;
         color: #f4f6fb;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         /* animatable strike-through */
-        background: linear-gradient(currentColor, currentColor) no-repeat 0 56% / 0% 1.5px;
+        background: linear-gradient(currentColor, currentColor) no-repeat 0 56% / 0% 1px;
         transition: color 600ms var(--fdg-ease), background-size 520ms var(--fdg-ease) 120ms;
       }
       .fdg-desc {
         margin: 0;
-        font-size: 0.8125rem;
-        line-height: 1.35;
-        color: rgba(255, 255, 255, 0.55);
+        font-size: 0.6875rem;
+        line-height: 1.3;
+        color: rgba(255, 255, 255, 0.5);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -685,19 +688,19 @@ function GoalStyles() {
       /* Progress + XP */
       .fdg-meta {
         display: grid;
-        grid-template-columns: 3.75rem 4.75rem;
+        grid-template-columns: 2.5rem 3.25rem;
         align-items: center;
         justify-items: center;
-        column-gap: 0.5rem;
+        column-gap: 0.25rem;
       }
       .fdg-fraction {
-        font-size: 0.9375rem;
+        font-size: 0.75rem;
         color: rgba(255, 255, 255, 0.78);
         font-variant-numeric: tabular-nums;
         transition: color 600ms var(--fdg-ease);
       }
       .fdg-xp {
-        font-size: 0.9375rem;
+        font-size: 0.75rem;
         font-weight: 600;
         letter-spacing: 0.01em;
         color: var(--fdg-gold);
@@ -713,11 +716,11 @@ function GoalStyles() {
         align-items: center;
       }
       .fdg-go {
-        width: 2.5rem;
-        height: 2.5rem;
+        width: 1.75rem;
+        height: 1.75rem;
         display: grid;
         place-items: center;
-        border-radius: 10px;
+        border-radius: 8px;
         color: rgba(255, 255, 255, 0.9);
         background: rgba(255, 255, 255, 0.035);
         border: 1px solid rgba(255, 255, 255, 0.1);
@@ -734,8 +737,8 @@ function GoalStyles() {
         outline-offset: 2px;
       }
       .fdg-go-arrow {
-        width: 1.0625rem;
-        height: 1.0625rem;
+        width: 0.875rem;
+        height: 0.875rem;
         transition: transform 160ms ease;
       }
       .fdg-go:hover .fdg-go-arrow {
@@ -745,10 +748,10 @@ function GoalStyles() {
       /* Hairline progress (hidden at 0 and when complete) */
       .fdg-track {
         position: absolute;
-        left: 0.5rem;
-        right: 0.5rem;
+        left: 0.375rem;
+        right: 0.375rem;
         bottom: 0;
-        height: 2px;
+        height: 1.5px;
         border-radius: 2px;
         overflow: hidden;
         opacity: 0;
@@ -769,7 +772,7 @@ function GoalStyles() {
         border-color: rgba(247, 201, 72, 0.5);
         background:
           linear-gradient(90deg, rgba(247, 201, 72, 0.12), rgba(247, 201, 72, 0.045) 60%, rgba(247, 201, 72, 0.07));
-        box-shadow: 0 0 0 1px rgba(247, 201, 72, 0.08) inset, 0 0 26px -6px rgba(247, 190, 60, 0.28);
+        box-shadow: 0 0 0 1px rgba(247, 201, 72, 0.08) inset, 0 0 16px -6px rgba(247, 190, 60, 0.26);
         animation: fdg-glow-breathe 3.2s ease-in-out 1.2s infinite;
       }
       .fdg-row-complete:not(.fdg-row-claimed) .fdg-tile {
@@ -798,25 +801,25 @@ function GoalStyles() {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        gap: 0.5rem;
+        gap: 0.3125rem;
         width: 100%;
-        height: 2.5rem;
-        padding: 0 0.75rem;
-        font-size: 0.75rem;
+        height: 1.75rem;
+        padding: 0 0.5rem;
+        font-size: 0.625rem;
         font-weight: 600;
         letter-spacing: 0.04em;
         white-space: nowrap;
         color: var(--fdg-gold);
         background: rgba(247, 201, 72, 0.07);
         border: 1px solid rgba(247, 201, 72, 0.85);
-        border-radius: 8px;
-        box-shadow: 0 0 18px -4px rgba(247, 190, 60, 0.45);
+        border-radius: 7px;
+        box-shadow: 0 0 12px -4px rgba(247, 190, 60, 0.45);
         cursor: pointer;
         transition: background 180ms ease, box-shadow 180ms ease, transform 120ms ease;
       }
       .fdg-claim-btn:hover:not(:disabled) {
         background: rgba(247, 201, 72, 0.16);
-        box-shadow: 0 0 26px -2px rgba(247, 190, 60, 0.6);
+        box-shadow: 0 0 16px -2px rgba(247, 190, 60, 0.55);
       }
       .fdg-claim-btn:active:not(:disabled) {
         transform: scale(0.97);
@@ -828,8 +831,8 @@ function GoalStyles() {
         animation: fdg-btn-busy 900ms ease-in-out infinite;
       }
       .fdg-claim-spark {
-        width: 0.9375rem;
-        height: 0.9375rem;
+        width: 0.75rem;
+        height: 0.75rem;
       }
 
       /* ── Row: CLAIMED (dimmed, dark grey) ──────────────────────── */
@@ -851,7 +854,7 @@ function GoalStyles() {
       }
       .fdg-row-claimed .fdg-title {
         color: rgba(255, 255, 255, 0.52);
-        background-size: 100% 1.5px;
+        background-size: 100% 1px;
       }
       .fdg-row-claimed .fdg-desc {
         color: rgba(255, 255, 255, 0.36);
@@ -874,20 +877,20 @@ function GoalStyles() {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        gap: 0.5rem;
+        gap: 0.3125rem;
         width: 100%;
-        height: 2.5rem;
-        font-size: 0.75rem;
+        height: 1.75rem;
+        font-size: 0.625rem;
         font-weight: 500;
         letter-spacing: 0.08em;
         color: rgba(255, 255, 255, 0.4);
         background: rgba(255, 255, 255, 0.03);
         border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 8px;
+        border-radius: 7px;
       }
       .fdg-claimed-check {
-        width: 0.9375rem;
-        height: 0.9375rem;
+        width: 0.75rem;
+        height: 0.75rem;
       }
 
       /* ── Motion ────────────────────────────────────────────────── */
@@ -976,7 +979,7 @@ function GoalStyles() {
 
       /* Skeleton */
       .fdg-row-skeleton {
-        grid-template-columns: 3.25rem minmax(0, 1fr) auto;
+        grid-template-columns: 2rem minmax(0, 1fr) auto;
         pointer-events: none;
       }
       .fdg-tile-skeleton {
@@ -992,13 +995,13 @@ function GoalStyles() {
         flex-direction: column;
         align-items: flex-start;
         gap: 0.875rem;
-        padding: 0.5rem 0.5rem 0.25rem;
+        padding: 0.25rem 0.375rem 0.125rem;
       }
       .fdg-message-text {
         margin: 0;
-        font-size: 0.875rem;
+        font-size: 0.75rem;
         line-height: 1.5;
-        color: rgba(255, 255, 255, 0.65);
+        color: rgba(255, 255, 255, 0.6);
       }
       .fdg-message-actions {
         display: flex;
@@ -1009,11 +1012,11 @@ function GoalStyles() {
         display: inline-flex;
         align-items: center;
         gap: 0.35rem;
-        font-size: 0.8125rem;
+        font-size: 0.6875rem;
         font-weight: 500;
         color: rgba(255, 255, 255, 0.85);
         text-decoration: none;
-        padding: 0.4rem 0.7rem;
+        padding: 0.3rem 0.55rem;
         border-radius: 8px;
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1028,7 +1031,7 @@ function GoalStyles() {
         height: 0.8125rem;
       }
       .fdg-btn {
-        font-size: 0.8125rem;
+        font-size: 0.6875rem;
         font-weight: 600;
         color: rgba(255, 255, 255, 0.85);
         background: transparent;
@@ -1041,44 +1044,28 @@ function GoalStyles() {
 
       /* ── Responsive ────────────────────────────────────────────── */
       @media (max-width: 900px) {
-        .fdg-row {
-          grid-template-columns: 3rem minmax(0, 1fr) auto 6.75rem;
-          column-gap: 0.75rem;
-        }
-        .fdg-tile { width: 3rem; height: 3rem; }
-        .fdg-meta { grid-template-columns: 3rem 4rem; column-gap: 0.25rem; }
+        .fdg-row { grid-template-columns: 2rem minmax(0, 1fr) auto 5.5rem; column-gap: 0.5rem; }
+        .fdg-meta { grid-template-columns: 2.25rem 3rem; }
       }
 
       @media (max-width: 640px) {
-        .focus-goals-card { padding: 0.875rem 0.75rem 1rem; border-radius: 18px; }
-        .fdg-head { padding: 0.125rem 0.375rem 0.75rem; }
-        .fdg-head-title { font-size: 0.9375rem; letter-spacing: 0.16em; }
         .fdg-row {
-          grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+          grid-template-columns: 2rem minmax(0, 1fr) auto;
           grid-template-areas: "tile body action" "tile meta action";
-          row-gap: 0.125rem;
-          column-gap: 0.75rem;
-          padding: 0.5rem 0.625rem 0.5rem 0.5rem;
+          row-gap: 0;
+          column-gap: 0.5rem;
         }
-        .fdg-tile { grid-area: tile; width: 2.75rem; height: 2.75rem; }
+        .fdg-tile { grid-area: tile; }
         .fdg-body { grid-area: body; }
-        .fdg-meta {
-          grid-area: meta;
-          display: flex;
-          gap: 0.75rem;
-          justify-content: flex-start;
-        }
-        .fdg-action { grid-area: action; min-width: 2.5rem; }
-        .fdg-claim-btn, .fdg-claimed-pill { width: auto; padding: 0 0.625rem; }
-        .fdg-claim-btn span, .fdg-claimed-pill span { font-size: 0.6875rem; }
-        .fdg-title { font-size: 0.9375rem; }
+        .fdg-meta { grid-area: meta; display: flex; gap: 0.5rem; justify-content: flex-start; }
+        .fdg-action { grid-area: action; min-width: 1.75rem; }
+        .fdg-claim-btn, .fdg-claimed-pill { width: auto; padding: 0 0.5rem; }
         .fdg-desc { display: none; }
-        .fdg-fraction, .fdg-xp { font-size: 0.8125rem; }
       }
 
       @media (max-width: 380px) {
         .fdg-claimed-pill span { display: none; }
-        .fdg-claimed-pill { width: 2.5rem; padding: 0; }
+        .fdg-claimed-pill { width: 1.75rem; padding: 0; }
       }
 
       @media (prefers-reduced-motion: reduce) {

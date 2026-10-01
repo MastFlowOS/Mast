@@ -282,7 +282,7 @@ describe("Focus · Today's Goals (persisted Daily Goals)", () => {
     expect(api.getDailyGoals).toHaveBeenCalledTimes(2);
   });
 
-  it("3+4+5+13. a finished goal sinks to the bottom; still 4 rows, nothing replaced or duplicated", async () => {
+  it("3+4+5+13. a completed goal stays put until claimed, then sinks to the bottom; still 4 rows", async () => {
     setWorkspace();
     evidence = noteEvidence();
     renderFocus();
@@ -292,22 +292,21 @@ describe("Focus · Today's Goals (persisted Daily Goals)", () => {
     const done = rowByDefinition("workspace.add_context");
     const doneId = done.getAttribute("data-goal-id");
     await waitFor(() => expect(done.getAttribute("data-state")).toBe("complete"));
-    expect(within(done).getByText("3 / 3")).toBeTruthy(); // finished progress still shown
+    expect(within(done).getByText("3 / 3")).toBeTruthy();
     expect(screen.getByTestId("goals-complete-count").textContent).toBe("1 / 4 COMPLETE");
 
-    // It celebrates in place, then moves to the very bottom.
-    await waitFor(() => expect(rowIds().at(-1)).toBe(doneId), { timeout: 3000 });
-    expect(rowsEl()).toHaveLength(4); // no Goal #5
-    expect(rowIds().slice(0, 3)).toEqual(orderBefore.filter((id) => id !== doneId)); // others keep order, move up
-    expect(done.className).not.toMatch(/exiting/);
+    // Completed but unclaimed: it must NOT move, however long we wait.
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(rowIds()).toEqual(orderBefore);
+    expect(within(done).getByRole("button", { name: /CLAIM \+25 XP/ })).toBeTruthy();
 
-    // Claiming flips state only; it neither removes nor reorders.
-    const orderAfterMove = rowIds();
+    // Claim: dims, then travels to the very bottom.
     fireEvent.click(within(done).getByRole("button", { name: /CLAIM \+25 XP/ }));
     await waitFor(() => expect(done.getAttribute("data-state")).toBe("claimed"));
     expect(within(done).getByText("CLAIMED")).toBeTruthy();
-    expect(rowsEl()).toHaveLength(4);
-    expect(rowIds()).toEqual(orderAfterMove);
+    await waitFor(() => expect(rowIds().at(-1)).toBe(doneId), { timeout: 3000 });
+    expect(rowsEl()).toHaveLength(4); // no Goal #5
+    expect(rowIds().slice(0, 3)).toEqual(orderBefore.filter((id) => id !== doneId));
   });
 
   it("6+15. progress comes from Daily Goal evidence, fetched ONCE for all four goals", async () => {

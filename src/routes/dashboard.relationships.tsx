@@ -603,6 +603,18 @@ function Relationships() {
     }
   }, [focusMode]);
 
+  const [focusAnimating, setFocusAnimating] = useState(false);
+  const focusMounted = useRef(false);
+  useEffect(() => {
+    if (!focusMounted.current) {
+      focusMounted.current = true;
+      return;
+    }
+    setFocusAnimating(true);
+    const t = setTimeout(() => setFocusAnimating(false), 600);
+    return () => clearTimeout(t);
+  }, [focusMode]);
+
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState(ALL_VALUE);
   const [nicheFilters, setNicheFilters] = useState<string[]>([]);
@@ -774,239 +786,276 @@ function Relationships() {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      {/* Header */}
-      <div className="px-6 pt-8 md:px-8">
-        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
-          <div>
-            <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground/80">
-              Relationships
-            </p>
-            <h1 className="text-[32px] font-semibold leading-none tracking-tight text-foreground">
-              Relationships
-            </h1>
-            <p className="mt-3 text-[15px] text-muted-foreground">
-              Manage and grow your business relationships.
-            </p>
-          </div>
+      {/* Top section (header + search/filters). Focus Mode collapses all of it. */}
+      <div
+        aria-hidden={focusMode}
+        inert={focusMode}
+        className={cn(
+          "grid transition-[grid-template-rows,opacity] duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
+          focusMode
+            ? "pointer-events-none grid-rows-[0fr] opacity-0"
+            : "grid-rows-[1fr] opacity-100",
+        )}
+      >
+        <div className={cn("min-h-0", (focusMode || focusAnimating) && "overflow-hidden")}>
+          {/* Header */}
+          <div className="px-6 pt-8 md:px-8">
+            <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+              <div>
+                <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground/80">
+                  Relationships
+                </p>
+                <h1 className="text-[32px] font-semibold leading-none tracking-tight text-foreground">
+                  Relationships
+                </h1>
+                <p className="mt-3 text-[15px] text-muted-foreground">
+                  Manage and grow your business relationships.
+                </p>
+              </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setFocusMode((prev) => !prev)}
-              className={GHOST_ACTION}
-              title={focusMode ? "Exit Focus Mode" : "Focus Mode"}
-            >
-              {focusMode ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
-              <span>{focusMode ? "Exit Focus Mode" : "Focus Mode"}</span>
-            </button>
-
-            <Link to="/dashboard/import" className={GHOST_ACTION}>
-              Import / Export
-            </Link>
-
-            <Dialog open={addOpen} onOpenChange={setAddOpen}>
-              <DialogTrigger asChild>
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
-                  className="inline-flex h-11 items-center gap-2 rounded-xl bg-brand px-5 text-sm font-semibold text-brand-foreground shadow-brand transition-colors hover:bg-brand-dark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                  onClick={() => setFocusMode(true)}
+                  className={GHOST_ACTION}
+                  title="Focus Mode"
                 >
-                  <Plus className="size-[18px] shrink-0" strokeWidth={2} /> Add Relationship
+                  <ChevronUp className="size-4" />
+                  <span>Focus Mode</span>
                 </button>
-              </DialogTrigger>
-              <DialogContent className="max-w-lg">
-                <DialogHeader>
-                  <DialogTitle>Add Relationship</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4">
-                  <div className="space-y-1.5">
-                    <Label>Business name</Label>
-                    <Input
-                      value={newLead.businessName}
-                      onChange={(event) =>
-                        setNewLead((current) => ({
-                          ...current,
-                          businessName: event.target.value,
-                        }))
-                      }
-                      placeholder="Acme Studio"
-                      autoFocus
-                    />
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Field
-                      label="Instagram"
-                      value={newLead.instagramHandle}
-                      onChange={(value) =>
-                        setNewLead((current) => ({
-                          ...current,
-                          instagramHandle: value,
-                        }))
-                      }
-                      placeholder="@handle"
-                    />
-                    <Field
-                      label="Email"
-                      value={newLead.email}
-                      onChange={(value) => setNewLead((current) => ({ ...current, email: value }))}
-                      placeholder="hello@example.com"
-                    />
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Field
-                      label="Website"
-                      value={newLead.website}
-                      onChange={(value) =>
-                        setNewLead((current) => ({
-                          ...current,
-                          website: value,
-                        }))
-                      }
-                      placeholder="https://example.com"
-                    />
-                    <Field
-                      label="Phone"
-                      value={newLead.phone}
-                      onChange={(value) => setNewLead((current) => ({ ...current, phone: value }))}
-                      placeholder="+1 555 0100"
-                    />
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-1.5">
-                      <Label>Niche</Label>
-                      <Select
-                        value={newLead.niche}
-                        onValueChange={(value) =>
-                          setNewLead((current) => ({
-                            ...current,
-                            niche: value,
-                          }))
-                        }
+
+                <Link to="/dashboard/import" className={GHOST_ACTION}>
+                  Import / Export
+                </Link>
+
+                <Dialog open={addOpen} onOpenChange={setAddOpen}>
+                  <DialogTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex h-11 items-center gap-2 rounded-xl bg-brand px-5 text-sm font-semibold text-brand-foreground shadow-brand transition-colors hover:bg-brand-dark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    >
+                      <Plus className="size-[18px] shrink-0" strokeWidth={2} /> Add Relationship
+                    </button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-lg">
+                    <DialogHeader>
+                      <DialogTitle>Add Relationship</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div className="space-y-1.5">
+                        <Label>Business name</Label>
+                        <Input
+                          value={newLead.businessName}
+                          onChange={(event) =>
+                            setNewLead((current) => ({
+                              ...current,
+                              businessName: event.target.value,
+                            }))
+                          }
+                          placeholder="Acme Studio"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field
+                          label="Instagram"
+                          value={newLead.instagramHandle}
+                          onChange={(value) =>
+                            setNewLead((current) => ({
+                              ...current,
+                              instagramHandle: value,
+                            }))
+                          }
+                          placeholder="@handle"
+                        />
+                        <Field
+                          label="Email"
+                          value={newLead.email}
+                          onChange={(value) =>
+                            setNewLead((current) => ({ ...current, email: value }))
+                          }
+                          placeholder="hello@example.com"
+                        />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field
+                          label="Website"
+                          value={newLead.website}
+                          onChange={(value) =>
+                            setNewLead((current) => ({
+                              ...current,
+                              website: value,
+                            }))
+                          }
+                          placeholder="https://example.com"
+                        />
+                        <Field
+                          label="Phone"
+                          value={newLead.phone}
+                          onChange={(value) =>
+                            setNewLead((current) => ({ ...current, phone: value }))
+                          }
+                          placeholder="+1 555 0100"
+                        />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label>Niche</Label>
+                          <Select
+                            value={newLead.niche}
+                            onValueChange={(value) =>
+                              setNewLead((current) => ({
+                                ...current,
+                                niche: value,
+                              }))
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={NONE_VALUE}>No niche</SelectItem>
+                              {NICHES.map((niche) => (
+                                <SelectItem key={niche.value} value={niche.value}>
+                                  {niche.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <Field
+                          label="Location"
+                          value={newLead.location}
+                          onChange={(value) =>
+                            setNewLead((current) => ({
+                              ...current,
+                              location: value,
+                            }))
+                          }
+                          placeholder="City, State"
+                        />
+                      </div>
+                      <button
+                        onClick={addLead}
+                        disabled={!newLead.businessName.trim() || createLead.isPending}
+                        className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark disabled:opacity-60"
                       >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={NONE_VALUE}>No niche</SelectItem>
-                          {NICHES.map((niche) => (
-                            <SelectItem key={niche.value} value={niche.value}>
-                              {niche.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                        {createLead.isPending ? "Adding…" : "Add Relationship"}
+                      </button>
                     </div>
-                    <Field
-                      label="Location"
-                      value={newLead.location}
-                      onChange={(value) =>
-                        setNewLead((current) => ({
-                          ...current,
-                          location: value,
-                        }))
-                      }
-                      placeholder="City, State"
-                    />
-                  </div>
-                  <button
-                    onClick={addLead}
-                    disabled={!newLead.businessName.trim() || createLead.isPending}
-                    className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark disabled:opacity-60"
-                  >
-                    {createLead.isPending ? "Adding…" : "Add Relationship"}
-                  </button>
-                </div>
-              </DialogContent>
-            </Dialog>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </div>
+          </div>
+
+          {/* Search + filters */}
+          <div>
+            <div className="flex flex-wrap items-center gap-3 px-6 pb-5 pt-6 md:px-8">
+              <label
+                className={cn(
+                  CONTROL_SURFACE,
+                  "flex h-11 min-w-[240px] flex-1 items-center gap-3 px-4 focus-within:border-brand/50 focus-within:ring-2 focus-within:ring-brand/20",
+                )}
+              >
+                <Search className="size-[18px] shrink-0 text-muted-foreground" />
+                <input
+                  className="min-w-0 flex-1 bg-transparent text-sm font-normal outline-none placeholder:text-muted-foreground"
+                  placeholder="Search relationships…"
+                  aria-label="Search relationships"
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    clearSelection();
+                    resetPage();
+                  }}
+                />
+              </label>
+
+              <Select
+                value={statusFilter}
+                onValueChange={(value) => {
+                  setStatusFilter(value);
+                  clearSelection();
+                  resetPage();
+                }}
+              >
+                <SelectTrigger
+                  aria-label="Filter by status"
+                  className={cn(CONTROL_SURFACE, "h-11 w-44 px-4 shadow-none")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_VALUE}>All Statuses</SelectItem>
+                  {LEAD_STATUSES.map((status) => (
+                    <SelectItem key={status.value} value={status.value}>
+                      {status.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <NicheMultiSelect
+                selected={nicheFilters}
+                onChange={(next) => {
+                  setNicheFilters(next);
+                  clearSelection();
+                  resetPage();
+                }}
+              />
+
+              <button
+                type="button"
+                aria-pressed={starredOnly}
+                onClick={() => {
+                  setStarredOnly((s) => !s);
+                  clearSelection();
+                  resetPage();
+                }}
+                className={cn(
+                  CONTROL_SURFACE,
+                  "inline-flex h-11 items-center gap-2.5 px-4",
+                  starredOnly &&
+                    "border-amber-400/40 bg-amber-400/10 text-amber-200 hover:border-amber-400/50",
+                )}
+                title="Show starred relationships"
+              >
+                <Star
+                  className="size-[18px] shrink-0 text-amber-400"
+                  fill="currentColor"
+                  strokeWidth={1.8}
+                />
+                {starredOnly ? `Starred (${starredCount})` : "Starred"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Search + filters */}
+      {/* Focus Mode: only a slim exit control stays visible */}
       <div
+        aria-hidden={!focusMode}
+        inert={!focusMode}
         className={cn(
-          "transition-all duration-300 ease-in-out",
+          "grid transition-[grid-template-rows,opacity] duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           focusMode
-            ? "pointer-events-none max-h-0 overflow-hidden opacity-0"
-            : "max-h-[200px] opacity-100",
+            ? "grid-rows-[1fr] opacity-100"
+            : "pointer-events-none grid-rows-[0fr] opacity-0",
         )}
       >
-        <div className="flex flex-wrap items-center gap-3 px-6 pb-5 pt-6 md:px-8">
-          <label
-            className={cn(
-              CONTROL_SURFACE,
-              "flex h-11 min-w-[240px] flex-1 items-center gap-3 px-4 focus-within:border-brand/50 focus-within:ring-2 focus-within:ring-brand/20",
-            )}
-          >
-            <Search className="size-[18px] shrink-0 text-muted-foreground" />
-            <input
-              className="min-w-0 flex-1 bg-transparent text-sm font-normal outline-none placeholder:text-muted-foreground"
-              placeholder="Search relationships…"
-              aria-label="Search relationships"
-              value={search}
-              onChange={(event) => {
-                setSearch(event.target.value);
-                clearSelection();
-                resetPage();
-              }}
-            />
-          </label>
-
-          <Select
-            value={statusFilter}
-            onValueChange={(value) => {
-              setStatusFilter(value);
-              clearSelection();
-              resetPage();
-            }}
-          >
-            <SelectTrigger
-              aria-label="Filter by status"
-              className={cn(CONTROL_SURFACE, "h-11 w-44 px-4 shadow-none")}
+        <div className="min-h-0 overflow-hidden">
+          <div className="flex justify-end px-6 pb-1 pt-3 md:px-8">
+            <button
+              type="button"
+              onClick={() => setFocusMode(false)}
+              className={GHOST_ACTION}
+              title="Exit Focus Mode"
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_VALUE}>All Statuses</SelectItem>
-              {LEAD_STATUSES.map((status) => (
-                <SelectItem key={status.value} value={status.value}>
-                  {status.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <NicheMultiSelect
-            selected={nicheFilters}
-            onChange={(next) => {
-              setNicheFilters(next);
-              clearSelection();
-              resetPage();
-            }}
-          />
-
-          <button
-            type="button"
-            aria-pressed={starredOnly}
-            onClick={() => {
-              setStarredOnly((s) => !s);
-              clearSelection();
-              resetPage();
-            }}
-            className={cn(
-              CONTROL_SURFACE,
-              "inline-flex h-11 items-center gap-2.5 px-4",
-              starredOnly &&
-                "border-amber-400/40 bg-amber-400/10 text-amber-200 hover:border-amber-400/50",
-            )}
-            title="Show starred relationships"
-          >
-            <Star
-              className="size-[18px] shrink-0 text-amber-400"
-              fill="currentColor"
-              strokeWidth={1.8}
-            />
-            {starredOnly ? `Starred (${starredCount})` : "Starred"}
-          </button>
+              <ChevronDown className="size-4" />
+              <span>Exit Focus Mode</span>
+            </button>
+          </div>
         </div>
       </div>
 

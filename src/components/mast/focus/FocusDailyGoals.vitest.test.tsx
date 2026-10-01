@@ -282,7 +282,7 @@ describe("Focus · Today's Goals (persisted Daily Goals)", () => {
     expect(api.getDailyGoals).toHaveBeenCalledTimes(2);
   });
 
-  it("3+4+5+13. completing one does not create a #5, the row stays visible, in place, and nothing is replaced", async () => {
+  it("3+4+5+13. a finished goal sinks to the bottom; still 4 rows, nothing replaced or duplicated", async () => {
     setWorkspace();
     evidence = noteEvidence();
     renderFocus();
@@ -290,18 +290,24 @@ describe("Focus · Today's Goals (persisted Daily Goals)", () => {
     const orderBefore = rowIds();
 
     const done = rowByDefinition("workspace.add_context");
-    await waitFor(() => expect(within(done).getByText("COMPLETE")).toBeTruthy());
-
-    expect(rowsEl()).toHaveLength(4); // no Goal #5
-    expect(rowIds()).toEqual(orderBefore); // same order, same positions
+    const doneId = done.getAttribute("data-goal-id");
+    await waitFor(() => expect(done.getAttribute("data-state")).toBe("complete"));
     expect(within(done).getByText("3 / 3")).toBeTruthy(); // finished progress still shown
     expect(screen.getByTestId("goals-complete-count").textContent).toBe("1 / 4 COMPLETE");
+
+    // It celebrates in place, then moves to the very bottom.
+    await waitFor(() => expect(rowIds().at(-1)).toBe(doneId), { timeout: 3000 });
+    expect(rowsEl()).toHaveLength(4); // no Goal #5
+    expect(rowIds().slice(0, 3)).toEqual(orderBefore.filter((id) => id !== doneId)); // others keep order, move up
     expect(done.className).not.toMatch(/exiting/);
-    // Claiming must not remove or replace it either.
+
+    // Claiming flips state only; it neither removes nor reorders.
+    const orderAfterMove = rowIds();
     fireEvent.click(within(done).getByRole("button", { name: /CLAIM \+25 XP/ }));
-    await waitFor(() => expect(within(done).getByText("+25 XP CLAIMED")).toBeTruthy());
+    await waitFor(() => expect(done.getAttribute("data-state")).toBe("claimed"));
+    expect(within(done).getByText("CLAIMED")).toBeTruthy();
     expect(rowsEl()).toHaveLength(4);
-    expect(rowIds()).toEqual(orderBefore);
+    expect(rowIds()).toEqual(orderAfterMove);
   });
 
   it("6+15. progress comes from Daily Goal evidence, fetched ONCE for all four goals", async () => {
@@ -340,7 +346,7 @@ describe("Focus · Today's Goals (persisted Daily Goals)", () => {
     // Double-click before the first claim resolves.
     fireEvent.click(button);
     fireEvent.click(button);
-    await waitFor(() => expect(within(row).getByText("+25 XP CLAIMED")).toBeTruthy());
+    await waitFor(() => expect(within(row).getByText("CLAIMED")).toBeTruthy());
 
     expect(api.claimDailyGoal).toHaveBeenCalledTimes(1);
     expect(api.claimDailyGoal).toHaveBeenCalledWith(row.getAttribute("data-goal-id")); // id only — no client XP
@@ -394,7 +400,7 @@ describe("Focus · Today's Goals (persisted Daily Goals)", () => {
     await waitFor(() => expect(api.setDailyGoalProgress).toHaveBeenCalled());
     const row = rowByDefinition("workspace.add_context");
     fireEvent.click(await waitFor(() => within(row).getByRole("button", { name: /CLAIM \+25 XP/ })));
-    await waitFor(() => expect(within(row).getByText("+25 XP CLAIMED")).toBeTruthy());
+    await waitFor(() => expect(within(row).getByText("CLAIMED")).toBeTruthy());
     expect(api.claimDailyGoal).toHaveBeenCalledTimes(1);
     expect(server.xp).toBe(125);
 

@@ -606,9 +606,11 @@ export function FocusMomentum({ events }: MomentumProps) {
       <div className="focus-module-header">
         <div className="focus-module-title-wrap">
           <h2 className="focus-module-title">RECENT ACTIVITY</h2>
-          <span className="focus-module-badge">7 DAYS</span>
         </div>
-        <Activity className="focus-module-icon" aria-hidden="true" />
+        <div className="focus-module-meta">
+          <span className="focus-module-badge">7 DAYS</span>
+          <Activity className="focus-module-icon" aria-hidden="true" />
+        </div>
       </div>
 
       <div className="focus-momentum-card">
@@ -678,6 +680,14 @@ export function FocusMomentum({ events }: MomentumProps) {
           flex-shrink: 0;
           white-space: nowrap;
           line-height: 1.2;
+        }
+
+        .focus-momentum-module .focus-module-meta {
+          display: flex;
+          flex-wrap: nowrap;
+          align-items: center;
+          gap: 0.625rem;
+          flex-shrink: 0;
         }
 
         .focus-module-icon {

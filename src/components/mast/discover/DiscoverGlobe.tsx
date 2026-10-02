@@ -1,21 +1,26 @@
 /**
- * Discover's hero visual: a globe wrapped in slowly travelling orbit lines.
+ * Discover's hero visual: the supplied globe artwork (`discover-globe.png`)
+ * with the selection overlay on top.
  *
  * Layers, back to front:
- *   1. atmosphere  — static radial glow
- *   2. orbits (back half)  — CSS, continuous
- *   3. globe disk  — dark sphere (CSS) + canvas map (lazy) + light/rim overlays
- *   4. orbits (front half) — CSS, continuous
- *   5. selection chips — current niche and region, fade in when chosen
+ *   1. artwork  — the PNG, shown as provided. It already contains the planet,
+ *      atmosphere, stars and orbit lines, so nothing else draws any of those.
+ *   2. overlay  — a canvas clipped to the artwork's planet that highlights the
+ *      selected country/region and flies in on it (lazy; see GlobeCanvas).
+ *   3. selection chips — current niche and region, fade in when chosen.
  *
- * The component is sized by the page through the `--g` custom property (globe
- * diameter), so rings, glow and chips all scale together. It is decorative:
- * everything in it is aria-hidden, and the real controls live in the cards.
+ * The component is sized by the page through the `--g` custom property: the
+ * planet's width in the artwork is `--g`, exactly the footprint the old globe
+ * had, so the page layout is unchanged. The artwork is wider than the planet
+ * (its orbit trails reach out to ~2.4 × `--g`); it overflows the stage and is
+ * clipped by the page's hero container. It is decorative: everything here is
+ * aria-hidden, and the real controls live in the cards.
  */
-import { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { Suspense, lazy } from "react";
 import { MapPin } from "lucide-react";
+import globeArtUrl from "@/assets/discover-globe.png";
+import { GLOBE_ART, GLOBE_ASPECT } from "./globeArt";
 import { nicheIcon } from "./nicheVisuals";
-import { OrbitRings } from "./OrbitRings";
 
 // Pulls in d3-geo + the map data only after the form has rendered.
 const GlobeCanvas = lazy(() => import("./GlobeCanvas"));
@@ -33,73 +38,55 @@ function summarize(items: readonly string[]): { label: string; extra: number } |
   return { label: items[items.length - 1], extra: items.length - 1 };
 }
 
+// Artwork placement, in multiples of the planet's width (--g), so the planet
+// in the PNG lands exactly on the stage's centre line and fills `--g`.
+const ART_W = GLOBE_ART.w / (2 * GLOBE_ART.rx); // image width ÷ planet width
+const ART_LEFT = 0.5 - (ART_W * GLOBE_ART.cx) / GLOBE_ART.w;
+const ART_TOP = 0.5 - (ART_W * GLOBE_ART.cy) / GLOBE_ART.w;
+
 export function DiscoverGlobe({ regions, niches, className }: Props) {
-  const stageRef = useRef<HTMLDivElement>(null);
-  const [paused, setPaused] = useState(false);
-
-  // Don't tick animations nobody can see (scrolled away, or a hidden tab's
-  // layer): pause the orbits while the stage is offscreen.
-  useEffect(() => {
-    const el = stageRef.current;
-    if (!el || typeof IntersectionObserver === "undefined") return;
-    const io = new IntersectionObserver(([entry]) => setPaused(!entry.isIntersecting), { rootMargin: "120px" });
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
-
   const region = summarize(regions);
   const niche = summarize(niches);
   const NicheIcon = niche ? nicheIcon(niche.label) : null;
 
   return (
     <div
-      ref={stageRef}
       aria-hidden="true"
-      data-paused={paused}
       className={`dg-stage pointer-events-none relative select-none ${className ?? ""}`}
       style={{ width: "var(--g)", height: "var(--g)" }}
     >
-      {/* 1 — atmosphere */}
-      <div
-        className="absolute left-1/2 top-1/2 rounded-full"
+      {/* 1 — the artwork, untouched: planet + atmosphere + stars + orbits */}
+      <img
+        src={globeArtUrl}
+        alt=""
+        width={GLOBE_ART.w}
+        height={GLOBE_ART.h}
+        draggable={false}
+        decoding="async"
+        className="absolute max-w-none"
         style={{
-          width: "calc(var(--g) * 1.7)",
-          height: "calc(var(--g) * 1.7)",
-          transform: "translate(-50%, -50%)",
-          background:
-            "radial-gradient(closest-side, oklch(0.5 0.2 275 / 0.34), oklch(0.42 0.18 265 / 0.16) 48%, transparent 72%)",
+          width: `calc(var(--g) * ${ART_W})`,
+          height: "auto",
+          left: `calc(var(--g) * ${ART_LEFT})`,
+          top: `calc(var(--g) * ${ART_TOP})`,
         }}
       />
 
-      {/* 2 — orbits behind the planet */}
-      <OrbitRings side="back" />
-
-      {/* 3 — the planet */}
+      {/* 2 — selection overlay, clipped to the artwork's planet */}
       <div
-        className="absolute inset-0 overflow-hidden rounded-full"
+        className="absolute left-0 overflow-hidden rounded-full"
         style={{
-          background: "radial-gradient(circle at 36% 30%, #1d2670, #0f1647 50%, #060a23 100%)",
-          boxShadow:
-            "0 0 0 1px oklch(0.75 0.1 270 / 0.28), 0 0 calc(var(--g) * 0.12) oklch(0.55 0.2 275 / 0.55), inset 0 0 calc(var(--g) * 0.08) oklch(0.6 0.15 265 / 0.35)",
+          width: "100%",
+          height: `${GLOBE_ASPECT * 100}%`,
+          top: `${((1 - GLOBE_ASPECT) / 2) * 100}%`,
         }}
       >
         <Suspense fallback={null}>
           <GlobeCanvas regions={regions} />
         </Suspense>
-        {/* Terminator + vignette: lit from the upper left, falling off to the limb. */}
-        <div
-          className="absolute inset-0 rounded-full"
-          style={{
-            background:
-              "radial-gradient(circle at 34% 28%, oklch(0.8 0.1 265 / 0.2), transparent 46%), radial-gradient(circle at 50% 50%, transparent 52%, oklch(0.1 0.04 270 / 0.78) 100%)",
-          }}
-        />
       </div>
 
-      {/* 4 — orbits in front of the planet */}
-      <OrbitRings side="front" />
-
-      {/* 5 — what's currently selected */}
+      {/* 3 — what's currently selected */}
       {niche && NicheIcon && (
         <Chip key={`n-${niche.label}`} className="left-[-6%] top-[12%]">
           <span className="grid size-6 place-items-center rounded-lg bg-brand/20 text-brand">

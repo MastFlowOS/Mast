@@ -17,12 +17,12 @@ type Props = {
 };
 
 // Card geometry (px). The centre card is larger; neighbours are clipped by the strip.
-const W = 124;
-const H = 108;
-const CW = 184;
-const CH = 138;
-const GAP = 18;
-const STRIP_H = CH + 26;
+const W = 104;
+const H = 84;
+const CW = 152;
+const CH = 108;
+const GAP = 14;
+const STRIP_H = CH + 14;
 // Soft fade where neighbours run out of the strip (reference: partly visible).
 const EDGE_FADE =
   "linear-gradient(90deg, transparent 0, #000 72px, #000 calc(100% - 72px), transparent 100%)";

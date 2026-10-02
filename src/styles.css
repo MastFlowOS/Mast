@@ -1191,118 +1191,17 @@
 }
 
 /* ---------------------------------------------------------------
-   Discover — orbital stage
-   The orbit lines are the page's one continuous ambient animation. They
-   are pure CSS: each orbit is a flattened (scaleY) ring whose bright arc
-   and head dot spin with a single `transform: rotate` — compositor-only,
-   no JS, no repaint. Each ring is drawn twice (back half behind the globe,
-   front half over it) so it visibly passes around the planet.
-   Everything else on the page is static or transition-driven.
+   Discover — globe stage
+   The globe, atmosphere, stars and orbit lines are one supplied PNG (see
+   DiscoverGlobe). The only CSS motion left here is the pin ring that
+   pulses when the camera arrives on a selected country.
 --------------------------------------------------------------- */
-@keyframes dg-orbit-spin {
-  to { transform: rotate(360deg); }
-}
 @keyframes dg-pin-ring {
   0%   { transform: scale(0.35); opacity: 0.85; }
   100% { transform: scale(2.6);  opacity: 0; }
 }
 
-.dg-orbit {
-  --orbit-line: color-mix(in oklab, var(--brand) 62%, oklch(0.85 0.08 250) 14%);
-  --orbit-tail: oklch(0.62 0.21 282 / 0);
-  --orbit-mid:  oklch(0.72 0.17 265 / 0.75);
-  --orbit-head: oklch(0.92 0.06 235);
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: var(--s);
-  height: var(--s);
-  margin-left: calc(var(--s) / -2);
-  margin-top: calc(var(--s) / -2);
-  pointer-events: none;
-}
-.dg-orbit-frame {
-  position: absolute;
-  inset: 0;
-  transform: rotate(var(--rz, 0deg));
-}
-.dg-orbit-half {
-  position: absolute;
-  inset: 0;
-}
-/* Front = lower half of the flattened ring (the side nearest the viewer). */
-.dg-orbit-half[data-side="front"] { clip-path: inset(50% -2% -2% -2%); }
-.dg-orbit-half[data-side="back"]  { clip-path: inset(-2% -2% 50% -2%); opacity: 0.5; }
-
-.dg-orbit-plane {
-  position: absolute;
-  inset: 0;
-  transform: scaleY(var(--squash, 0.3));
-}
-.dg-orbit-line {
-  position: absolute;
-  inset: 0;
-  border-radius: 9999px;
-  border: 1px solid var(--orbit-line);
-  opacity: var(--line-o, 0.55);
-}
-.dg-orbit-spin {
-  position: absolute;
-  inset: 0;
-  animation: dg-orbit-spin var(--dur, 60s) linear infinite;
-  animation-direction: var(--dir, normal);
-  animation-delay: var(--delay, 0s);
-  will-change: transform;
-}
-.dg-orbit-arc {
-  position: absolute;
-  inset: -1px;
-  border-radius: 9999px;
-  background: conic-gradient(
-    from 0deg,
-    transparent 0deg,
-    transparent 130deg,
-    var(--orbit-tail) 130deg,
-    var(--orbit-mid) 300deg,
-    var(--orbit-head) 359deg,
-    transparent 360deg
-  );
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
-  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
-}
-.dg-orbit-head,
-.dg-orbit-sat {
-  position: absolute;
-  left: 50%;
-  border-radius: 9999px;
-}
-.dg-orbit-head {
-  top: 0;
-  width: 30px;
-  height: 30px;
-  margin: -15px 0 0 -15px;
-  background: radial-gradient(
-    closest-side,
-    oklch(0.98 0.02 235) 0 14%,
-    oklch(0.82 0.13 250 / 0.85) 26%,
-    oklch(0.65 0.2 270 / 0.35) 55%,
-    transparent 100%
-  );
-}
-.dg-orbit-sat {
-  bottom: 0;
-  width: 14px;
-  height: 14px;
-  margin: 0 0 -7px -7px;
-  background: radial-gradient(closest-side, oklch(0.95 0.04 240 / 0.9) 0 20%, oklch(0.7 0.17 265 / 0.4) 55%, transparent 100%);
-}
-
-/* Offscreen (see DiscoverGlobe): stop ticking the animations entirely. */
-.dg-stage[data-paused="true"] .dg-orbit-spin { animation-play-state: paused; }
-
-/* Users who ask for reduced motion keep the static rings, minus the travel. */
 @media (prefers-reduced-motion: reduce) {
-  .dg-orbit-spin { animation: none; }
   .dg-pin-ring { animation: none; opacity: 0; }
 }
 

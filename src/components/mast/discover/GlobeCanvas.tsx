@@ -1,35 +1,64 @@
 /**
- * The planet itself: a 2D-canvas orthographic globe that flies to whatever
- * region(s) Discover has selected and lights them up.
+ * Interactive layer over the Discover globe artwork: lights up the selected
+ * countries and, when a selection needs a closer look, flies in on it.
  *
- * Performance model — this is deliberately a *still* globe:
+ * The planet itself (disk, atmosphere, stars, orbit lines) is the supplied
+ * PNG, drawn by DiscoverGlobe. This canvas never repaints it:
+ *   - While the selection is visible in the artwork, only the highlight
+ *     (fill, outline, halo, point markers) is drawn, projected with the view
+ *     the artwork was painted from so it sits on the printed countries.
+ *   - When a selection is off the artwork's side of the planet, or needs a
+ *     zoom, the camera flies there and a dark map "lens" fades in inside the
+ *     disk (the PNG can't rotate or zoom). It fades back out on return.
+ *
+ * Performance model — this is deliberately a *still* layer:
  *   - It only redraws while the camera is moving (~1s after a selection
- *     change) and on resize. At rest there is no rAF loop and no per-frame
- *     work; the continuous motion on the page is the CSS orbit rings.
+ *     change) and on resize. At rest there is no rAF loop.
  *   - Geometry is the 110m Natural Earth atlas (~100KB), loaded on demand in
- *     its own chunk, only once the globe has a real on-screen size. This whole
- *     module is itself lazy-loaded by DiscoverGlobe, so the form is
- *     interactive before any of it arrives.
+ *     its own chunk, only once the globe has a real on-screen size. This
+ *     module is itself lazy-loaded by DiscoverGlobe.
  *   - One path per layer (land / highlight), not one per country.
  *
- * Zoom is a lens: when k > 1 the projection is larger than the disk and the
- * canvas clips to the disk, so zooming in on a country pushes in on the
- * surface instead of growing the planet.
+ * The canvas is laid out as the artwork's (slightly flattened) planet
+ * ellipse; drawing happens in a square space of side `size` that is squashed
+ * vertically by `aspect`.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { geoGraticule10, geoOrthographic, geoPath, geoDistance } from "d3-geo";
 import {
-  DEFAULT_VIEW,
   buildGlobeWorld,
   durationForMove,
   isOutOfView,
   interpolateView,
   resolveGlobeScope,
+  viewDistanceDeg,
   type CountryFeature,
   type GlobeScope,
   type GlobeView,
   type GlobeWorld,
 } from "@/lib/geo/globeScope";
+import { ART_VIEW, GLOBE_ASPECT } from "./globeArt";
+
+/** A selection this close to the artwork's camera is shown on the artwork itself. */
+const ON_ART_DEG = 38;
+
+/**
+ * How much of the map lens to show for a camera position: 0 = camera is on
+ * the artwork's view (highlights only), 1 = fully away (lens opaque).
+ */
+function lensAmount(view: GlobeView): number {
+  const move = viewDistanceDeg(view, ART_VIEW) / 14;
+  const zoom = (view.k - 1) / 0.22;
+  const t = Math.max(0, Math.min(1, Math.max(move, zoom)));
+  return t * t * (3 - 2 * t);
+}
+
+/** The camera a scope should settle on: the artwork's own if that already shows it. */
+function restingView(scope: GlobeScope): GlobeView {
+  if (scope.kind === "none" || scope.kind === "global") return ART_VIEW;
+  const v = scope.view;
+  return v.k <= 1.05 && viewDistanceDeg(v, ART_VIEW) < ON_ART_DEG ? ART_VIEW : v;
+}
 
 const GRATICULE = geoGraticule10();
 
@@ -81,7 +110,8 @@ function drawGlobe(
   moving: boolean,
 ) {
   const R = size / 2;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // Drawing space is a square of `size`; squash it to the artwork's ellipse.
+  ctx.setTransform(dpr, 0, 0, dpr * GLOBE_ASPECT, 0, 0);
   ctx.clearRect(0, 0, size, size);
 
   ctx.save();
@@ -89,13 +119,20 @@ function drawGlobe(
   ctx.arc(R, R, R, 0, Math.PI * 2);
   ctx.clip();
 
-  // Ocean: a lit sphere, brighter toward the upper-left light.
-  const ocean = ctx.createRadialGradient(R * 0.72, R * 0.6, R * 0.05, R, R, R * 1.08);
-  ocean.addColorStop(0, "#1d2670");
-  ocean.addColorStop(0.5, "#0f1647");
-  ocean.addColorStop(1, "#060a23");
-  ctx.fillStyle = ocean;
-  ctx.fillRect(0, 0, size, size);
+  const lens = lensAmount(view);
+
+  // Lens ocean: only once the camera has left the artwork's view. Matches the
+  // artwork's deep navy so the hand-off isn't a colour jump.
+  if (lens > 0.001) {
+    ctx.globalAlpha = Math.min(1, lens * 1.15);
+    const ocean = ctx.createRadialGradient(R * 0.8, R * 0.7, R * 0.05, R, R, R * 1.05);
+    ocean.addColorStop(0, "#0b1648");
+    ocean.addColorStop(0.55, "#050c2c");
+    ocean.addColorStop(1, "#02051a");
+    ctx.fillStyle = ocean;
+    ctx.fillRect(0, 0, size, size);
+    ctx.globalAlpha = 1;
+  }
 
   const projection = geoOrthographic()
     .clipAngle(90)
@@ -107,25 +144,36 @@ function drawGlobe(
 
   ctx.lineJoin = "round";
 
-  if (!moving) {
-    ctx.beginPath();
-    path(GRATICULE);
-    ctx.strokeStyle = "rgba(132,148,255,0.09)";
-    ctx.lineWidth = 0.6;
-    ctx.stroke();
-  }
+  if (lens > 0.001) {
+    ctx.globalAlpha = lens;
+    if (!moving) {
+      ctx.beginPath();
+      path(GRATICULE);
+      ctx.strokeStyle = "rgba(132,148,255,0.09)";
+      ctx.lineWidth = 0.6;
+      ctx.stroke();
+    }
 
-  ctx.beginPath();
-  const { features, caps } = s.world;
-  for (let i = 0; i < features.length; i++) {
-    if (!isOutOfView(caps[i], view)) path(features[i]);
-  }
-  ctx.fillStyle = "rgba(96,108,238,0.17)";
-  ctx.fill();
-  if (!moving) {
-    ctx.strokeStyle = "rgba(152,162,255,0.30)";
-    ctx.lineWidth = 0.6;
-    ctx.stroke();
+    ctx.beginPath();
+    const { features, caps } = s.world;
+    for (let i = 0; i < features.length; i++) {
+      if (!isOutOfView(caps[i], view)) path(features[i]);
+    }
+    ctx.fillStyle = "rgba(96,108,238,0.17)";
+    ctx.fill();
+    if (!moving) {
+      ctx.strokeStyle = "rgba(152,162,255,0.30)";
+      ctx.lineWidth = 0.6;
+      ctx.stroke();
+    }
+
+    // Limb: a blue falloff at the edge, like the artwork's atmosphere rim.
+    const limb = ctx.createRadialGradient(R, R, R * 0.8, R, R, R);
+    limb.addColorStop(0, "rgba(40,80,255,0)");
+    limb.addColorStop(1, "rgba(60,110,255,0.32)");
+    ctx.fillStyle = limb;
+    ctx.fillRect(0, 0, size, size);
+    ctx.globalAlpha = 1;
   }
 
   if (s.highlight.length > 0) {
@@ -179,7 +227,7 @@ export default function GlobeCanvas({ regions }: { regions: readonly string[] })
   sizeRef.current = size;
   const [world, setWorld] = useState<GlobeWorld | null>(null);
 
-  const viewRef = useRef<GlobeView>(DEFAULT_VIEW);
+  const viewRef = useRef<GlobeView>(ART_VIEW);
   const stateRef = useRef<DrawState | null>(null);
   const rafRef = useRef<number | null>(null);
   const hasDrawnRef = useRef(false);
@@ -209,7 +257,7 @@ export default function GlobeCanvas({ regions }: { regions: readonly string[] })
     loadWorld()
       .then((w) => alive && setWorld(w))
       .catch(() => {
-        /* The CSS sphere + orbits still render; the map layer is optional. */
+        /* The artwork still renders; the highlight layer is optional. */
       });
     return () => {
       alive = false;
@@ -234,7 +282,7 @@ export default function GlobeCanvas({ regions }: { regions: readonly string[] })
     if (!canvas || size === 0) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.round(size * dpr);
-    canvas.height = Math.round(size * dpr);
+    canvas.height = Math.round(size * GLOBE_ASPECT * dpr);
     if (stateRef.current) paint(viewRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size]);
@@ -258,8 +306,8 @@ export default function GlobeCanvas({ regions }: { regions: readonly string[] })
     rafRef.current = null;
 
     const from = viewRef.current;
-    const to = scope.view;
-    const wantsPin = scope.kind === "country";
+    const to = restingView(scope);
+    const wantsPin = scope.kind === "country" && to !== ART_VIEW;
     const arrive = () => setPin((p) => ({ key: p.key + 1, show: wantsPin }));
 
     // First paint, and reduced-motion users, snap instead of flying.

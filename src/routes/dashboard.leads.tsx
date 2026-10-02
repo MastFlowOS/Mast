@@ -911,7 +911,7 @@ function GetLeads() {
 
   return (
     <div className="relative mx-auto max-w-[1500px] animate-page-enter px-4 pb-10 pt-6 sm:px-6 lg:px-8">
-      <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_368px]">
+      <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px] xl:grid-cols-[minmax(0,1fr)_320px]">
         {/* ── Left: hero + the five steps + launch ─────────────────── */}
         <div className="@container min-w-0">
           <div style={{ ["--g" as string]: "clamp(190px, 36cqw, 400px)" }}>
@@ -944,7 +944,7 @@ function GetLeads() {
                   icon={Sparkles}
                   title="Business Niche"
                   hint="Required · pick one or more"
-                  className="relative z-10 @2xl:col-span-11"
+                  className="relative z-10 @2xl:col-span-10"
                 >
                   <div className="relative">
                     <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -1033,26 +1033,9 @@ function GetLeads() {
                   step={3}
                   icon={MapPin}
                   title="Target Region"
-                  hint="Top picks"
-                  className="relative z-20 @2xl:col-span-6"
+                  className="relative z-20 @2xl:col-span-7"
                 >
                   <div ref={regionContainerRef} className="relative space-y-2.5">
-                    <div className="flex flex-wrap gap-1.5">
-                      {[...TOP_PICK_COUNTRIES, ...regions.filter((r) => !TOP_PICK_COUNTRIES.includes(r))].map((r) => {
-                        const isSelected = regions.includes(r);
-                        const isLocked = !hasRegionalSearch && !isLocalGeoToken(r);
-                        return (
-                          <ChoiceChip
-                            key={r}
-                            selected={isSelected}
-                            locked={isLocked}
-                            onClick={() => toggleRegion(r)}
-                          >
-                            {r}
-                          </ChoiceChip>
-                        );
-                      })}
-                    </div>
                     <div className="relative">
                       <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                       <input

@@ -933,13 +933,18 @@ function GetLeads() {
             </div>
 
             <div className="relative z-10 mt-7 space-y-4 @2xl:-mt-[calc(var(--g)*0.12)]">
-              {/* Row 1 — niche (full width: the carousel needs the room). */}
-              <div className="relative z-10">
+              {/* Control-card grid — one 24-column grid so the five cards read
+                  as a single composition (proportions from the design ref):
+                  Row 1: Niche (dominant) · Amount · Region
+                  Row 2: Channels (wide) · Method
+                  Below @2xl everything stacks full-width. */}
+              <div className="grid items-stretch gap-3.5 @2xl:grid-cols-24">
                 <StepCard
                   step={1}
                   icon={Sparkles}
                   title="Business Niche"
                   hint="Required · pick one or more"
+                  className="relative z-10 @2xl:col-span-11"
                 >
                   <div className="relative">
                     <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -1007,16 +1012,13 @@ function GetLeads() {
                     />
                   </div>
                 </StepCard>
-              </div>
 
-              {/* Row 2 — amount · region. z-20 so the region dropdown floats
-                  over the cards below it. */}
-              <div className="relative z-20 grid gap-4 @2xl:grid-cols-2">
                 <StepCard
                   step={2}
                   icon={BarChart3}
                   title="Opportunity Amount"
                   hint={`Plan max: ${maxQuantity.toLocaleString()}`}
+                  className="relative z-20 @2xl:col-span-7"
                 >
                   <AmountSlider
                     steps={QUANTITY_STEPS}
@@ -1026,7 +1028,14 @@ function GetLeads() {
                   />
                 </StepCard>
 
-                <StepCard step={3} icon={MapPin} title="Target Region" hint="Top picks">
+                {/* z-20 so the region dropdown floats over the cards below it. */}
+                <StepCard
+                  step={3}
+                  icon={MapPin}
+                  title="Target Region"
+                  hint="Top picks"
+                  className="relative z-20 @2xl:col-span-6"
+                >
                   <div ref={regionContainerRef} className="relative space-y-2.5">
                     <div className="flex flex-wrap gap-1.5">
                       {[...TOP_PICK_COUNTRIES, ...regions.filter((r) => !TOP_PICK_COUNTRIES.includes(r))].map((r) => {
@@ -1121,15 +1130,13 @@ function GetLeads() {
                     </div>
                   </div>
                 </StepCard>
-              </div>
 
-              {/* Rows 3–4 — channels, method */}
-              <div className="relative z-10 space-y-4">
                 <StepCard
                   step={4}
                   icon={Mail}
                   title="Contact Channels"
                   hint="More channels = stricter matching and fewer results"
+                  className="@2xl:col-span-13"
                 >
                   <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-4">
                     {channelOptions.map((c) => {
@@ -1143,7 +1150,7 @@ function GetLeads() {
                           onClick={() => toggleChannel(c.id)}
                           icon={<c.icon className="size-4 shrink-0" />}
                           size="md"
-                          className="h-11 w-full"
+                          className="h-12 w-full"
                         >
                           {c.short}
                         </ChoiceChip>
@@ -1162,13 +1169,14 @@ function GetLeads() {
                   icon={Zap}
                   title="Discovery Method"
                   hint="Choose how MAST finds your opportunities · 1 credit per opportunity"
+                  className="@2xl:col-span-11"
                 >
-                  <ul className="grid gap-2 @3xl:grid-cols-3" aria-label="Discovery methods">
+                  <ul className="grid grid-cols-3 gap-2" aria-label="Discovery methods">
                     {DISCOVERY_METHODS.map((m) => {
                       const isSelected = m.id === selectedMethod.id;
                       const isEligible = isDiscoveryMethodEligible(permissions.plan, m.id);
                       return (
-                        <li key={m.id} className="flex">
+                        <li key={m.id} className="flex min-w-0">
                           <button
                             type="button"
                             role="option"
@@ -1181,8 +1189,9 @@ function GetLeads() {
                               }
                               setSelectedMethodId(m.id);
                             }}
+                            title={`${m.desc}${isEligible ? "" : ` — requires ${m.minPlanLabel}`}`}
                             className={cn(
-                              "flex w-full cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/60",
+                              "flex min-h-[60px] w-full min-w-0 cursor-pointer flex-col justify-between gap-1.5 rounded-xl border px-2.5 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/60",
                               isSelected
                                 ? "border-brand/60 bg-brand/[0.1] shadow-[0_0_22px_-10px_var(--brand)]"
                                 : isEligible
@@ -1190,38 +1199,45 @@ function GetLeads() {
                                   : "border-white/10 bg-black/20 opacity-60",
                             )}
                           >
-                            <span className="min-w-0 flex-1">
-                              <span className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-semibold text-foreground">{m.label}</span>
-                                {/* PLAN BADGE — minimum plan required, always shown. */}
-                                <span className="rounded bg-white/[0.07] px-1.5 py-px text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                                  {m.minPlanLabel}
-                                </span>
-                                {/* SELECTED — the user's current choice, shown separately. */}
-                                {isSelected && (
-                                  <span className="rounded bg-brand/20 px-1.5 py-px text-[10px] font-bold uppercase tracking-wider text-brand">
-                                    Selected
-                                  </span>
-                                )}
+                            <span className="flex items-start justify-between gap-1.5">
+                              <span className="whitespace-nowrap text-[13px] font-semibold leading-tight text-foreground">
+                                <span aria-hidden="true">{m.shortLabel}</span>
+                                <span className="sr-only">{m.label}</span>
                               </span>
-                              <span className="block text-xs leading-snug text-muted-foreground">{m.desc}</span>
-                              {isSelected && (
-                                <span className="mt-1 block text-[11px] text-muted-foreground/80">{m.note}</span>
-                              )}
                               {!isEligible && (
-                                <span className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground/80">
-                                  <Lock className="size-3 shrink-0" aria-label={`Locked — requires ${m.minPlanLabel}`} />
-                                  Requires {m.minPlanLabel}
+                                <Lock
+                                  className="mt-px size-3 shrink-0 text-muted-foreground"
+                                  aria-label={`Locked — requires ${m.minPlanLabel}`}
+                                />
+                              )}
+                              {/* SELECTED — the user's current choice: a check marker, kept
+                                  separate from the plan badge below. */}
+                              {isSelected && (
+                                <span className="mt-px grid size-4 shrink-0 place-items-center rounded-full bg-brand/25 text-brand">
+                                  <Check className="size-3" strokeWidth={3} aria-hidden="true" />
+                                  <span className="sr-only">Selected</span>
                                 </span>
                               )}
                             </span>
-                            <span
-                              className={cn(
-                                "shrink-0 pt-0.5 text-[11px] font-bold uppercase tabular-nums tracking-wider",
-                                isSelected ? "text-brand" : "text-muted-foreground",
-                              )}
-                            >
-                              {m.timeLabel}
+                            <span className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
+                              {/* PLAN BADGE — minimum plan required, always shown. */}
+                              <span className="rounded bg-white/[0.07] px-1 py-px text-[9.5px] font-bold uppercase tracking-normal text-muted-foreground">
+                                {m.minPlanLabel}
+                              </span>
+                              <span
+                                className={cn(
+                                  "text-[9.5px] font-bold uppercase tabular-nums tracking-normal",
+                                  isSelected ? "text-brand" : "text-muted-foreground",
+                                )}
+                              >
+                                {m.timeLabel}
+                              </span>
+                            </span>
+                            {/* Detail copy stays in the DOM for assistive tech; visually it
+                                lives in the tile's tooltip to keep the card compact. */}
+                            <span className="sr-only">
+                              {m.desc}. {isSelected ? m.note : ""}
+                              {isEligible ? "" : ` Requires ${m.minPlanLabel}`}
                             </span>
                           </button>
                         </li>

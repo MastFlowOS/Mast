@@ -7,7 +7,6 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { createPortal } from "react-dom";
 import {
   Zap,
   Sparkles,
@@ -21,6 +20,8 @@ import {
   Check,
   Lock,
   ArrowRight,
+  BarChart3,
+  MapPin,
 } from "lucide-react";
 import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead } from "@/lib/api";
 
@@ -33,6 +34,16 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { type FeatureId } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
+import { DiscoverGlobe } from "@/components/mast/discover/DiscoverGlobe";
+import { NicheCarousel } from "@/components/mast/discover/NicheCarousel";
+import {
+  AmountSlider,
+  PlanCard,
+  StepCard,
+  SummaryCard,
+  panelSurface,
+  type SummaryRow,
+} from "@/components/mast/discover/DiscoverPanels";
 import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
 import { GLOBAL_SCOPE, isLocalGeoToken, parseGeoScope } from "@/lib/geo/scope";
 import {
@@ -228,41 +239,6 @@ function qtyToSliderIndex(qty: number): number {
 
 // ─── Main Component ────────────────────────────────────────────────────────────
 
-// ─── Animated Counter Component ────────────────────────────────────────────────
-function AnimatedCounter({ value }: { value: number }) {
-  const [displayValue, setDisplayValue] = useState(value);
-
-  useEffect(() => {
-    let start = displayValue;
-    const end = value;
-    if (start === end) return;
-
-    const duration = 800; // 0.8 seconds for premium smooth feel
-    const startTime = performance.now();
-    let animationFrameId: number;
-
-    const updateCounter = (now: number) => {
-      const elapsed = now - startTime;
-      const progress = Math.min(elapsed / duration, 1);
-      
-      // Easing: easeOutCubic
-      const easeProgress = 1 - Math.pow(1 - progress, 3);
-      const current = Math.round(start + (end - start) * easeProgress);
-      
-      setDisplayValue(current);
-
-      if (progress < 1) {
-        animationFrameId = requestAnimationFrame(updateCounter);
-      }
-    };
-
-    animationFrameId = requestAnimationFrame(updateCounter);
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [value, displayValue]);
-
-  return <span>{displayValue.toLocaleString()}</span>;
-}
-
 function GetLeads() {
   const navigate = useNavigate();
 
@@ -310,19 +286,10 @@ function GetLeads() {
     }
   }, [settings]);
 
-  // Searchable multi-select niches
+  // Multi-select niches. The search box filters the carousel; the most
+  // recently picked niche (last in the array) is the one brought into focus.
   const [niches, setNiches] = useState<string[]>([]);
   const [nicheSearch, setNicheSearch] = useState("");
-  const [nicheDropdownOpen, setNicheDropdownOpen] = useState(false);
-  const [nicheActiveIndex, setNicheActiveIndex] = useState(0);
-  // Anchor container (chips + input) — used for outside-click detection.
-  const nicheContainerRef = useRef<HTMLDivElement>(null);
-  // Wraps just the search input — the dropdown is positioned directly beneath this.
-  const nicheInputWrapRef = useRef<HTMLDivElement>(null);
-  // The portaled dropdown itself — also needed for outside-click detection,
-  // since it no longer lives inside nicheContainerRef in the DOM.
-  const nicheDropdownRef = useRef<HTMLDivElement>(null);
-  const [dropdownPosition, setDropdownPosition] = useState({ left: 0, top: 0, width: 0 });
 
   // Channels & generation mode
   // Lead-Yield Waste Fix: DEFAULT_CHANNELS is empty on purpose — see
@@ -395,22 +362,6 @@ function GetLeads() {
     setQtyIndex((prev) => Math.min(prev, maxSliderIndex));
   }, [maxSliderIndex]);
 
-  // Close niche dropdown on outside click.
-  // The dropdown is portaled to document.body, so it's no longer a DOM
-  // descendant of the anchor — both refs must be checked.
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      const clickedAnchor = nicheContainerRef.current?.contains(target);
-      const clickedDropdown = nicheDropdownRef.current?.contains(target);
-      if (!clickedAnchor && !clickedDropdown) {
-        setNicheDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
   // Close the region search dropdown on outside click.
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -421,47 +372,6 @@ function GetLeads() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
-
-  // Escape closes the dropdown from anywhere while it's open.
-  useEffect(() => {
-    if (!nicheDropdownOpen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setNicheDropdownOpen(false);
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [nicheDropdownOpen]);
-
-  // Reset keyboard-highlighted option whenever the visible list changes.
-  useEffect(() => {
-    setNicheActiveIndex(0);
-  }, [nicheSearch, nicheDropdownOpen]);
-
-  // Track the dropdown's position off the *input wrapper* (not the whole
-  // chips+input block), recalculated on open, on chip changes (chips can
-  // wrap and shift the input down), and on scroll/resize anywhere in the
-  // page — using the capture phase so scrolling inside a nested scroll
-  // container (which doesn't bubble) still triggers a reposition.
-  useEffect(() => {
-    if (!nicheDropdownOpen) return;
-    const updatePosition = () => {
-      if (nicheInputWrapRef.current) {
-        const rect = nicheInputWrapRef.current.getBoundingClientRect();
-        setDropdownPosition({
-          left: rect.left,
-          top: rect.bottom + 4,
-          width: rect.width,
-        });
-      }
-    };
-    updatePosition();
-    window.addEventListener("scroll", updatePosition, true);
-    window.addEventListener("resize", updatePosition);
-    return () => {
-      window.removeEventListener("scroll", updatePosition, true);
-      window.removeEventListener("resize", updatePosition);
-    };
-  }, [nicheDropdownOpen, niches.length]);
 
   const hasRegionalSearch = permissions.can("regionalSearch");
 
@@ -530,12 +440,6 @@ function GetLeads() {
   const filteredNiches = NICHE_CATALOG.filter((n) =>
     n.toLowerCase().includes(nicheSearch.toLowerCase())
   );
-
-  useEffect(() => {
-    nicheDropdownRef.current
-      ?.querySelector('[data-niche-active="true"]')
-      ?.scrollIntoView({ block: "nearest" });
-  }, [nicheActiveIndex]);
 
   const channelRestricted = channels.some((c) => !permissions.can(channelToFeature[c]));
   const exceedsDailyLimit = account ? quantity > dailyRemaining : false;
@@ -938,19 +842,20 @@ function GetLeads() {
   }
 
   // ─── 3. Main Discover Form ──────────────────────────────────────────────────
-  // Layout principle: PRIMARY DECISIONS (left) → LAUNCH (right, sticky) →
-  // SECONDARY INFORMATION (right, beneath). Every control below is wired to
-  // the exact same state/handlers as before; only the presentation changed.
+  // Composition: a cinematic hero (headline + globe wrapped in orbit lines)
+  // over five numbered step cards, one launch bar, and a live summary rail.
+  // Every control is wired to the same state/handlers as before; only the
+  // presentation changed. The globe is a readout of that state — the last
+  // selected region is what it flies to, the last selected niche is what the
+  // carousel brings into focus.
   const nicheSummary =
     niches.length === 0
       ? null
       : niches.length <= 3
         ? niches.join(", ")
         : `${niches.slice(0, 3).join(", ")} +${niches.length - 3}`;
-  const channelSummary = channelOptions
-    .filter((c) => channels.includes(c.id))
-    .map((c) => c.short)
-    .join(" · ");
+  const selectedChannelOptions = channelOptions.filter((c) => channels.includes(c.id));
+  const channelSummary = selectedChannelOptions.map((c) => c.short).join(" · ");
   // Only real, user-actionable blockers are shown in red. A merely
   // incomplete form gets a quiet muted hint instead of a standing warning.
   const hardBlockMessage = exceedsDailyLimit
@@ -966,448 +871,440 @@ function GetLeads() {
       ? "Select a contact channel to launch"
       : null;
 
+  const focusedNiche = niches.length > 0 ? niches[niches.length - 1] : null;
+
+  const summaryRows: SummaryRow[] = [
+    {
+      icon: Sparkles,
+      label: "Business Niche",
+      value: nicheSummary ?? "Choose a niche",
+      empty: !nicheSummary,
+    },
+    {
+      icon: BarChart3,
+      label: "Opportunity Amount",
+      value: `${quantity.toLocaleString()} ${quantity === 1 ? "business" : "businesses"}`,
+    },
+    { icon: MapPin, label: "Target Region", value: regions.join(", ") },
+    {
+      icon: Mail,
+      label: "Contact Channels",
+      empty: selectedChannelOptions.length === 0,
+      value:
+        selectedChannelOptions.length === 0 ? (
+          "Choose channels"
+        ) : (
+          <span className="inline-flex items-center gap-2" title={channelSummary}>
+            {selectedChannelOptions.map((c) => (
+              <c.icon key={c.id} className="size-4 text-brand" aria-hidden="true" />
+            ))}
+            <span className="sr-only">{channelSummary}</span>
+          </span>
+        ),
+    },
+    {
+      icon: Zap,
+      label: "Discovery Method",
+      value: `${selectedMethod.shortLabel} · ${selectedMethod.timeLabel}`,
+    },
+  ];
+
   return (
-    <div className="p-8 max-w-7xl animate-page-enter">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Discover</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Tell Mast who to find. Verified businesses arrive with contact channels loaded.
-        </p>
-      </div>
-
-      <div className="grid lg:grid-cols-3 gap-6 items-start">
-        {/* ── Primary decisions ─────────────────────────────────── */}
-        <div className="lg:col-span-2 bg-card border border-border rounded-2xl divide-y divide-border/70">
-          {/* Business Niche — selector behavior unchanged */}
-          <Field label="Business Niche" hint="Required · pick one or more">
-            <div ref={nicheContainerRef} className="relative">
-              {niches.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {niches.map((n) => (
-                    <span
-                      key={n}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand/10 border border-brand/20 text-xs font-medium text-foreground"
-                    >
-                      {n}
-                      <button
-                        onClick={() => removeNiche(n)}
-                        aria-label={`Remove ${n}`}
-                        className="text-muted-foreground hover:text-foreground ml-0.5"
-                      >
-                        <X className="size-3.5" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              <div ref={nicheInputWrapRef} className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-                <input
-                  type="text"
-                  role="combobox"
-                  aria-expanded={nicheDropdownOpen}
-                  aria-controls="niche-listbox"
-                  aria-autocomplete="list"
-                  placeholder="Search niches… (e.g. Restaurant, Marketing Agency)"
-                  value={nicheSearch}
-                  onChange={(e) => {
-                    setNicheSearch(e.target.value);
-                    setNicheDropdownOpen(true);
-                  }}
-                  onFocus={() => setNicheDropdownOpen(true)}
-                  onKeyDown={(e) => {
-                    if (e.key === "ArrowDown") {
-                      e.preventDefault();
-                      if (!nicheDropdownOpen) {
-                        setNicheDropdownOpen(true);
-                        return;
-                      }
-                      setNicheActiveIndex((i) => Math.min(i + 1, filteredNiches.length - 1));
-                    } else if (e.key === "ArrowUp") {
-                      e.preventDefault();
-                      setNicheActiveIndex((i) => Math.max(i - 1, 0));
-                    } else if (e.key === "Enter") {
-                      e.preventDefault();
-                      const target = filteredNiches[nicheActiveIndex];
-                      if (target) {
-                        toggleNiche(target);
-                        setNicheSearch("");
-                      }
-                    } else if (e.key === "Escape") {
-                      setNicheDropdownOpen(false);
-                    }
-                  }}
-                  className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-brand placeholder:text-muted-foreground"
-                />
+    <div className="relative mx-auto max-w-[1500px] animate-page-enter px-4 pb-10 pt-6 sm:px-6 lg:px-8">
+      <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_368px]">
+        {/* ── Left: hero + the five steps + launch ─────────────────── */}
+        <div className="@container min-w-0">
+          <div style={{ ["--g" as string]: "clamp(190px, 36cqw, 400px)" }}>
+            {/* Hero */}
+            <div className="relative flex flex-col items-center overflow-x-clip @2xl:block @2xl:h-[var(--g)]">
+              <div className="@2xl:absolute @2xl:left-[63%] @2xl:top-0 @2xl:-translate-x-1/2">
+                <DiscoverGlobe regions={regions} niches={niches} />
               </div>
-
-              {/* Portaled to document.body so no transformed ancestor can
-                  trap or clip it — see the git history for the original
-                  root-cause note. Behavior unchanged. */}
-              {nicheDropdownOpen &&
-                createPortal(
-                  <div
-                    ref={nicheDropdownRef}
-                    className="fixed z-[100]"
-                    style={{
-                      left: dropdownPosition.left,
-                      top: dropdownPosition.top,
-                      width: dropdownPosition.width,
-                    }}
-                  >
-                    <div
-                      id="niche-listbox"
-                      role="listbox"
-                      aria-multiselectable="true"
-                      className="bg-card border border-border rounded-xl shadow-lg max-h-56 overflow-y-auto w-full"
-                    >
-                      {filteredNiches.length > 0 ? (
-                        filteredNiches.map((n, idx) => {
-                          const selected = niches.includes(n);
-                          const active = idx === nicheActiveIndex;
-                          return (
-                            <button
-                              key={n}
-                              role="option"
-                              aria-selected={selected}
-                              data-niche-active={active}
-                              onMouseEnter={() => setNicheActiveIndex(idx)}
-                              // Selecting must never blur the search input — multi-select
-                              // relies on the input staying focused between picks.
-                              onMouseDown={(e) => e.preventDefault()}
-                              onClick={() => {
-                                toggleNiche(n);
-                                setNicheSearch("");
-                              }}
-                              className={cn(
-                                "w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors text-left",
-                                active ? "bg-muted/40" : "hover:bg-muted/40",
-                                selected ? "text-brand font-medium" : "text-foreground"
-                              )}
-                            >
-                              <span>{n}</span>
-                              {selected && (
-                                <CheckSquare className="size-4 text-brand shrink-0" />
-                              )}
-                            </button>
-                          );
-                        })
-                      ) : (
-                        <div className="px-4 py-3 text-sm text-muted-foreground">
-                          No niches match "{nicheSearch}"
-                        </div>
-                      )}
-                    </div>
-                  </div>,
-                  document.body
-                )}
-            </div>
-          </Field>
-
-          {/* Opportunity Amount + Target Region */}
-          <div className="grid md:grid-cols-5 md:divide-x divide-border/70 max-md:divide-y">
-            {/* Opportunity Amount — slider approved as-is */}
-            <Field label="Opportunity Amount" className="md:col-span-2">
-              <div className="space-y-3">
-                <p className="text-2xl font-bold tracking-tight text-foreground tabular-nums text-right leading-none">
-                  {quantity.toLocaleString()}
-                  <span className="ml-1.5 text-sm font-medium text-muted-foreground">
-                    businesses
-                  </span>
+              <div className="relative z-10 mt-8 text-center @2xl:mt-0 @2xl:max-w-[30rem] @2xl:pt-7 @2xl:text-left">
+                <h1 className="whitespace-nowrap text-[clamp(1.9rem,4.2cqw,3.2rem)] font-extrabold leading-[1.04] tracking-[-0.035em] text-foreground">
+                  Find Businesses
+                  <br />
+                  for <span className="text-brand-gradient">Your Niche</span>
+                </h1>
+                <p className="mt-4 max-w-[26rem] text-[15px] leading-relaxed text-muted-foreground max-@2xl:mx-auto">
+                  Tell Mast who to find. Verified businesses arrive with contact channels loaded.
                 </p>
-                <input
-                  type="range"
-                  min={0}
-                  max={maxSliderIndex}
-                  step={1}
-                  value={Math.min(qtyIndex, maxSliderIndex)}
-                  onChange={(e) => setQtyIndex(Number(e.target.value))}
-                  aria-label="Opportunity amount"
-                  className="w-full accent-[color:var(--brand)] cursor-pointer"
-                />
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>1</span>
-                  <span className="text-[11px]">
-                    Plan max: {maxQuantity.toLocaleString()}
-                  </span>
-                  <span>{maxQuantity.toLocaleString()}</span>
-                </div>
               </div>
-            </Field>
+            </div>
 
-            <Field label="Target Region" hint="Top picks" className="md:col-span-3">
-              <div ref={regionContainerRef} className="relative space-y-2.5">
-                <div className="flex flex-wrap gap-1.5">
-                  {[...TOP_PICK_COUNTRIES, ...regions.filter((r) => !TOP_PICK_COUNTRIES.includes(r))].map((r) => {
-                    const isSelected = regions.includes(r);
-                    const isLocked = !hasRegionalSearch && !isLocalGeoToken(r);
-                    return (
-                      <ChoiceChip
-                        key={r}
-                        selected={isSelected}
-                        locked={isLocked}
-                        onClick={() => toggleRegion(r)}
-                      >
-                        {r}
-                      </ChoiceChip>
-                    );
-                  })}
-                </div>
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
-                  <input
-                    type="text"
-                    role="combobox"
-                    aria-expanded={regionDropdownOpen}
-                    aria-controls="region-listbox"
-                    aria-autocomplete="list"
-                    placeholder="Search countries…"
-                    value={regionSearch}
-                    onChange={(e) => {
-                      setRegionSearch(e.target.value);
-                      setRegionDropdownOpen(true);
-                    }}
-                    onFocus={() => setRegionDropdownOpen(true)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") setRegionDropdownOpen(false);
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        if (firstRegionMatch) {
-                          toggleRegion(firstRegionMatch);
-                          setRegionSearch("");
-                          setRegionDropdownOpen(false);
+            <div className="relative z-10 mt-7 space-y-4 @2xl:-mt-[calc(var(--g)*0.12)]">
+              {/* Row 1 — niche (full width: the carousel needs the room). */}
+              <div className="relative z-10">
+                <StepCard
+                  step={1}
+                  icon={Sparkles}
+                  title="Business Niche"
+                  hint="Required · pick one or more"
+                >
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                      type="text"
+                      placeholder="Search niches… (e.g. Restaurant, Marketing Agency)"
+                      aria-label="Search niches"
+                      value={nicheSearch}
+                      onChange={(e) => setNicheSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const target = filteredNiches[0];
+                          if (target) {
+                            toggleNiche(target);
+                            setNicheSearch("");
+                          }
+                        } else if (e.key === "Escape") {
+                          setNicheSearch("");
                         }
-                      }
-                    }}
-                    className="w-full h-9 pl-8 pr-3 rounded-lg border border-border bg-background text-xs focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-brand placeholder:text-muted-foreground"
-                  />
-                  {regionDropdownOpen && (
-                    <div
-                      id="region-listbox"
-                      role="listbox"
-                      aria-multiselectable="true"
-                      className="absolute left-0 right-0 top-full mt-1 z-30 bg-card border border-border rounded-xl shadow-lg max-h-52 overflow-y-auto"
-                    >
-                      {filteredCountries.length + filteredBroadScopes.length > 0 ? (
-                        <>
-                          {filteredCountries.map((r) => (
-                            <RegionOption
-                              key={r}
-                              label={r}
-                              selected={regions.includes(r)}
-                              locked={!hasRegionalSearch && !isLocalGeoToken(r)}
-                              onPick={() => {
-                                toggleRegion(r);
-                                setRegionSearch("");
-                              }}
-                            />
-                          ))}
-                          {filteredBroadScopes.length > 0 && (
-                            <p className="px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground border-t border-border/60">
-                              Regions
-                            </p>
-                          )}
-                          {filteredBroadScopes.map((r) => (
-                            <RegionOption
-                              key={r}
-                              label={r}
-                              selected={regions.includes(r)}
-                              locked={!hasRegionalSearch && !isLocalGeoToken(r)}
-                              onPick={() => {
-                                toggleRegion(r);
-                                setRegionSearch("");
-                              }}
-                            />
-                          ))}
-                        </>
-                      ) : (
-                        <div className="px-3 py-2.5 text-xs text-muted-foreground">
-                          No countries match "{regionSearch}"
-                        </div>
-                      )}
+                      }}
+                      className="h-11 w-full rounded-xl border border-white/10 bg-black/25 pl-10 pr-10 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-brand focus:ring-2 focus:ring-brand/35"
+                    />
+                    {nicheSearch && (
+                      <button
+                        type="button"
+                        aria-label="Clear search"
+                        onClick={() => setNicheSearch("")}
+                        className="absolute right-2.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="size-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  {niches.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {niches.map((n) => (
+                        <span
+                          key={n}
+                          className="inline-flex items-center gap-1 rounded-lg border border-brand/25 bg-brand/10 px-2.5 py-1 text-xs font-medium text-foreground"
+                        >
+                          {n}
+                          <button
+                            type="button"
+                            onClick={() => removeNiche(n)}
+                            aria-label={`Remove ${n}`}
+                            className="ml-0.5 text-muted-foreground hover:text-foreground"
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        </span>
+                      ))}
                     </div>
                   )}
-                </div>
+
+                  <div className="-mx-2 mt-1">
+                    <NicheCarousel
+                      niches={filteredNiches}
+                      selected={niches}
+                      focused={focusedNiche}
+                      query={nicheSearch}
+                      onToggle={toggleNiche}
+                    />
+                  </div>
+                </StepCard>
               </div>
-            </Field>
-          </div>
 
-          {/* Contact Channels */}
-          <Field
-            label="Contact Channels"
-            hint="More channels = stricter matching and fewer results"
-          >
-            <div className="flex flex-wrap gap-2">
-              {channelOptions.map((c) => {
-                const active = channels.includes(c.id);
-                const isLocked = !permissions.can(channelToFeature[c.id]);
-                return (
-                  <ChoiceChip
-                    key={c.id}
-                    selected={active}
-                    locked={isLocked}
-                    onClick={() => toggleChannel(c.id)}
-                    icon={<c.icon className="size-3.5 shrink-0" />}
-                    size="md"
-                  >
-                    {c.short}
-                  </ChoiceChip>
-                );
-              })}
-            </div>
-          </Field>
+              {/* Row 2 — amount · region. z-20 so the region dropdown floats
+                  over the cards below it. */}
+              <div className="relative z-20 grid gap-4 @2xl:grid-cols-2">
+                <StepCard
+                  step={2}
+                  icon={BarChart3}
+                  title="Opportunity Amount"
+                  hint={`Plan max: ${maxQuantity.toLocaleString()}`}
+                >
+                  <AmountSlider
+                    steps={QUANTITY_STEPS}
+                    index={qtyIndex}
+                    maxIndex={maxSliderIndex}
+                    onChange={setQtyIndex}
+                  />
+                </StepCard>
 
-          {/* Discovery Method — an actual selectable option, gated by plan
-              eligibility (isDiscoveryMethodEligible), re-validated by the
-              server. PLAN BADGE (min plan required) and SELECTED (the
-              user's current pick) are deliberately separate signals —
-              never conflate them. */}
-          <Field
-            label="Discovery Method"
-            hint="Choose how MAST finds your opportunities · 1 credit per opportunity"
-          >
-            <ul className="space-y-2" aria-label="Discovery methods">
-              {DISCOVERY_METHODS.map((m) => {
-                const isSelected = m.id === selectedMethod.id;
-                const isEligible = isDiscoveryMethodEligible(permissions.plan, m.id);
-                return (
-                  <li key={m.id}>
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={isSelected}
-                      aria-current={isSelected ? "true" : undefined}
-                      onClick={() => {
-                        if (!isEligible) {
-                          toast.error(`${m.label} requires the ${m.minPlanLabel.toUpperCase()} plan.`);
-                          return;
-                        }
-                        setSelectedMethodId(m.id);
-                      }}
-                      className={cn(
-                        "w-full text-left rounded-xl border px-3.5 py-2.5 flex items-start gap-3 transition-colors cursor-pointer",
-                        isSelected
-                          ? "border-brand/60 bg-brand/[0.07]"
-                          : isEligible
-                          ? "border-border hover:border-muted-foreground/40"
-                          : "border-border opacity-60"
-                      )}
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-semibold text-foreground">{m.label}</span>
-                          {/* PLAN BADGE — minimum plan required, always shown. */}
-                          <span className="rounded px-1.5 py-px text-[10px] font-bold uppercase tracking-wider bg-muted/50 text-muted-foreground">
-                            {m.minPlanLabel}
-                          </span>
-                          {/* SELECTED — the user's current choice, shown separately. */}
-                          {isSelected && (
-                            <span className="rounded px-1.5 py-px text-[10px] font-bold uppercase tracking-wider bg-brand/15 text-brand">
-                              Selected
-                            </span>
+                <StepCard step={3} icon={MapPin} title="Target Region" hint="Top picks">
+                  <div ref={regionContainerRef} className="relative space-y-2.5">
+                    <div className="flex flex-wrap gap-1.5">
+                      {[...TOP_PICK_COUNTRIES, ...regions.filter((r) => !TOP_PICK_COUNTRIES.includes(r))].map((r) => {
+                        const isSelected = regions.includes(r);
+                        const isLocked = !hasRegionalSearch && !isLocalGeoToken(r);
+                        return (
+                          <ChoiceChip
+                            key={r}
+                            selected={isSelected}
+                            locked={isLocked}
+                            onClick={() => toggleRegion(r)}
+                          >
+                            {r}
+                          </ChoiceChip>
+                        );
+                      })}
+                    </div>
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        type="text"
+                        role="combobox"
+                        aria-expanded={regionDropdownOpen}
+                        aria-controls="region-listbox"
+                        aria-autocomplete="list"
+                        placeholder="Search countries…"
+                        value={regionSearch}
+                        onChange={(e) => {
+                          setRegionSearch(e.target.value);
+                          setRegionDropdownOpen(true);
+                        }}
+                        onFocus={() => setRegionDropdownOpen(true)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") setRegionDropdownOpen(false);
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            if (firstRegionMatch) {
+                              toggleRegion(firstRegionMatch);
+                              setRegionSearch("");
+                              setRegionDropdownOpen(false);
+                            }
+                          }
+                        }}
+                        className="h-10 w-full rounded-xl border border-white/10 bg-black/25 pl-8 pr-3 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-brand focus:ring-2 focus:ring-brand/35"
+                      />
+                      {regionDropdownOpen && (
+                        <div
+                          id="region-listbox"
+                          role="listbox"
+                          aria-multiselectable="true"
+                          className="absolute left-0 right-0 top-full z-30 mt-1 max-h-52 overflow-y-auto rounded-xl border border-border bg-card shadow-lg"
+                        >
+                          {filteredCountries.length + filteredBroadScopes.length > 0 ? (
+                            <>
+                              {filteredCountries.map((r) => (
+                                <RegionOption
+                                  key={r}
+                                  label={r}
+                                  selected={regions.includes(r)}
+                                  locked={!hasRegionalSearch && !isLocalGeoToken(r)}
+                                  onPick={() => {
+                                    toggleRegion(r);
+                                    setRegionSearch("");
+                                  }}
+                                />
+                              ))}
+                              {filteredBroadScopes.length > 0 && (
+                                <p className="border-t border-border/60 px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                                  Regions
+                                </p>
+                              )}
+                              {filteredBroadScopes.map((r) => (
+                                <RegionOption
+                                  key={r}
+                                  label={r}
+                                  selected={regions.includes(r)}
+                                  locked={!hasRegionalSearch && !isLocalGeoToken(r)}
+                                  onPick={() => {
+                                    toggleRegion(r);
+                                    setRegionSearch("");
+                                  }}
+                                />
+                              ))}
+                            </>
+                          ) : (
+                            <div className="px-3 py-2.5 text-xs text-muted-foreground">
+                              No countries match "{regionSearch}"
+                            </div>
                           )}
-                        </span>
-                        <span className="block text-xs text-muted-foreground leading-snug">
-                          {m.desc}
-                        </span>
-                        {isSelected && (
-                          <span className="block mt-1 text-[11px] text-muted-foreground/80">
-                            {m.note}
-                          </span>
-                        )}
-                        {!isEligible && (
-                          <span className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground/80">
-                            <Lock className="size-3 shrink-0" aria-label={`Locked — requires ${m.minPlanLabel}`} />
-                            Requires {m.minPlanLabel}
-                          </span>
-                        )}
-                      </span>
-                      <span
-                        className={cn(
-                          "shrink-0 text-[11px] font-bold uppercase tracking-wider tabular-nums pt-0.5",
-                          isSelected ? "text-brand" : "text-muted-foreground"
-                        )}
-                      >
-                        {m.timeLabel}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </Field>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </StepCard>
+              </div>
+
+              {/* Rows 3–4 — channels, method */}
+              <div className="relative z-10 space-y-4">
+                <StepCard
+                  step={4}
+                  icon={Mail}
+                  title="Contact Channels"
+                  hint="More channels = stricter matching and fewer results"
+                >
+                  <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-4">
+                    {channelOptions.map((c) => {
+                      const active = channels.includes(c.id);
+                      const isLocked = !permissions.can(channelToFeature[c.id]);
+                      return (
+                        <ChoiceChip
+                          key={c.id}
+                          selected={active}
+                          locked={isLocked}
+                          onClick={() => toggleChannel(c.id)}
+                          icon={<c.icon className="size-4 shrink-0" />}
+                          size="md"
+                          className="h-11 w-full"
+                        >
+                          {c.short}
+                        </ChoiceChip>
+                      );
+                    })}
+                  </div>
+                </StepCard>
+
+                {/* Discovery Method — an actual selectable option, gated by plan
+                    eligibility (isDiscoveryMethodEligible), re-validated by the
+                    server. PLAN BADGE (min plan required) and SELECTED (the
+                    user's current pick) are deliberately separate signals —
+                    never conflate them. */}
+                <StepCard
+                  step={5}
+                  icon={Zap}
+                  title="Discovery Method"
+                  hint="Choose how MAST finds your opportunities · 1 credit per opportunity"
+                >
+                  <ul className="grid gap-2 @3xl:grid-cols-3" aria-label="Discovery methods">
+                    {DISCOVERY_METHODS.map((m) => {
+                      const isSelected = m.id === selectedMethod.id;
+                      const isEligible = isDiscoveryMethodEligible(permissions.plan, m.id);
+                      return (
+                        <li key={m.id} className="flex">
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            aria-current={isSelected ? "true" : undefined}
+                            onClick={() => {
+                              if (!isEligible) {
+                                toast.error(`${m.label} requires the ${m.minPlanLabel.toUpperCase()} plan.`);
+                                return;
+                              }
+                              setSelectedMethodId(m.id);
+                            }}
+                            className={cn(
+                              "flex w-full cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/60",
+                              isSelected
+                                ? "border-brand/60 bg-brand/[0.1] shadow-[0_0_22px_-10px_var(--brand)]"
+                                : isEligible
+                                  ? "border-white/10 bg-black/20 hover:border-white/25"
+                                  : "border-white/10 bg-black/20 opacity-60",
+                            )}
+                          >
+                            <span className="min-w-0 flex-1">
+                              <span className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-semibold text-foreground">{m.label}</span>
+                                {/* PLAN BADGE — minimum plan required, always shown. */}
+                                <span className="rounded bg-white/[0.07] px-1.5 py-px text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                  {m.minPlanLabel}
+                                </span>
+                                {/* SELECTED — the user's current choice, shown separately. */}
+                                {isSelected && (
+                                  <span className="rounded bg-brand/20 px-1.5 py-px text-[10px] font-bold uppercase tracking-wider text-brand">
+                                    Selected
+                                  </span>
+                                )}
+                              </span>
+                              <span className="block text-xs leading-snug text-muted-foreground">{m.desc}</span>
+                              {isSelected && (
+                                <span className="mt-1 block text-[11px] text-muted-foreground/80">{m.note}</span>
+                              )}
+                              {!isEligible && (
+                                <span className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground/80">
+                                  <Lock className="size-3 shrink-0" aria-label={`Locked — requires ${m.minPlanLabel}`} />
+                                  Requires {m.minPlanLabel}
+                                </span>
+                              )}
+                            </span>
+                            <span
+                              className={cn(
+                                "shrink-0 pt-0.5 text-[11px] font-bold uppercase tabular-nums tracking-wider",
+                                isSelected ? "text-brand" : "text-muted-foreground",
+                              )}
+                            >
+                              {m.timeLabel}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </StepCard>
+              </div>
+
+              {/* Launch */}
+              <div>
+                <button
+                  type="button"
+                  onClick={handleGenerate}
+                  disabled={!canGenerate}
+                  className="group relative flex h-16 w-full cursor-pointer items-center justify-center gap-3 overflow-hidden rounded-2xl border border-white/15 text-base font-semibold text-white shadow-[0_18px_44px_-16px_color-mix(in_oklab,var(--brand)_80%,transparent)] outline-none transition-[filter,transform,box-shadow] duration-200 hover:brightness-110 focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-background active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-55 disabled:shadow-none disabled:hover:brightness-100"
+                  style={{
+                    background:
+                      "linear-gradient(100deg, oklch(0.4 0.19 275) 0%, oklch(0.55 0.23 283) 48%, oklch(0.5 0.2 262) 100%)",
+                  }}
+                >
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 1000 64"
+                    preserveAspectRatio="none"
+                    className="pointer-events-none absolute inset-0 h-full w-full opacity-40"
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="1"
+                  >
+                    <path d="M0 44 C 160 4, 300 70, 470 34 S 760 8, 1000 40" opacity="0.5" />
+                    <path d="M0 52 C 180 16, 320 72, 500 42 S 780 20, 1000 50" opacity="0.35" />
+                    <path d="M0 30 C 200 -6, 340 60, 520 24 S 800 0, 1000 28" opacity="0.25" />
+                  </svg>
+                  <Search className="relative size-5 shrink-0" />
+                  <span className="relative">{isGenerating ? "Analyzing..." : "Launch Discovery"}</span>
+                  {!isGenerating && (
+                    <ArrowRight className="relative size-5 shrink-0 transition-transform group-hover:translate-x-1" />
+                  )}
+                </button>
+                {hardBlockMessage ? (
+                  <p role="alert" className="mt-2 text-center text-xs leading-relaxed text-destructive">
+                    {hardBlockMessage}
+                  </p>
+                ) : incompleteHint ? (
+                  <p className="mt-2 text-center text-xs text-muted-foreground">{incompleteHint}</p>
+                ) : null}
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/* ── Launch + secondary information ────────────────────── */}
+        {/* ── Right rail: live summary, plan, upgrade ─────────────── */}
         <aside className="space-y-4 lg:sticky lg:top-6">
-          <div className="bg-card border border-border rounded-2xl p-5 shadow-md">
-            <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-              Discovery Summary
-            </h3>
-            <p className="mt-2 text-xl font-bold tracking-tight tabular-nums">
-              {quantity.toLocaleString()}{" "}
-              <span className="text-sm font-medium text-muted-foreground">
-                {quantity === 1 ? "opportunity" : "opportunities"}
-              </span>
-            </p>
-            <ul className="mt-3 space-y-1.5 text-[13px]">
-              <SummaryLine value={regions.join(", ")} />
-              <SummaryLine value={nicheSummary} placeholder="Choose a niche" />
-              <SummaryLine value={channelSummary || null} placeholder="Choose contact channels" />
-              <SummaryLine value={`${selectedMethod.shortLabel} · ${selectedMethod.timeLabel}`} />
-            </ul>
-
-            <div className="my-4 h-px bg-border" />
-
-            <div className="space-y-1">
-              <p className="text-sm font-semibold tabular-nums">
-                {quantity.toLocaleString()} {quantity === 1 ? "credit" : "credits"}
-              </p>
-              <p className="text-[11px] text-muted-foreground tabular-nums">
-                Today: <AnimatedCounter value={dailyRemaining} /> remaining
-              </p>
-              <p className="text-[11px] text-muted-foreground tabular-nums">
-                Month: <AnimatedCounter value={monthlyRemaining} /> remaining
-              </p>
-            </div>
-
-            <button
-              onClick={handleGenerate}
-              disabled={!canGenerate}
-              className="mt-4 w-full bg-brand hover:bg-brand-dark text-brand-foreground py-3 rounded-xl font-bold shadow-brand inline-flex items-center justify-center gap-2 disabled:opacity-55 disabled:hover:bg-brand disabled:shadow-none cursor-pointer disabled:cursor-not-allowed transition-all active:scale-[0.99] group"
-            >
-              {isGenerating ? "Analyzing..." : "Launch Discovery"}
-              {!isGenerating && (
-                <ArrowRight className="size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
-              )}
-            </button>
-            {hardBlockMessage ? (
-              <p role="alert" className="text-[11px] text-destructive text-center mt-2 leading-relaxed">
-                {hardBlockMessage}
-              </p>
-            ) : incompleteHint ? (
-              <p className="text-[11px] text-muted-foreground text-center mt-2">{incompleteHint}</p>
-            ) : null}
-          </div>
-
-          <DiscoverAiOverview insights={discoverInsights} loading={!account || !analytics} />
+          <SummaryCard rows={summaryRows} credits={{ amount: quantity }} />
+          <PlanCard
+            planName={account?.subscription?.name ?? permissions.plan}
+            daily={{
+              used: account?.dailyUsage?.used,
+              limit: account?.dailyUsage?.limit,
+              remaining: dailyRemaining,
+            }}
+            monthly={{
+              used: account?.monthlyUsage?.used,
+              limit: account?.monthlyUsage?.limit,
+              remaining: monthlyRemaining,
+            }}
+          />
 
           {upgradeMethod && (
-            <div className="flex items-center gap-3 rounded-xl border border-brand/10 bg-brand/5 px-4 py-3">
-              <Zap className="size-4 text-brand/70 shrink-0" />
+            <div className="flex items-center gap-3 rounded-xl border border-brand/15 bg-brand/[0.06] px-4 py-3">
+              <Zap className="size-4 shrink-0 text-brand/70" />
               <div className="min-w-0 flex-1">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-brand/80">
                   {upgradeMethod.label}
                 </p>
-                <p className="text-xs text-muted-foreground truncate">
+                <p className="truncate text-xs text-muted-foreground">
                   {upgradeMethod.minPlanLabel}+ · {upgradeMethod.pitch}
                 </p>
               </div>
               <Link
                 to="/dashboard/subscription"
                 title={`Runs on the ${upgradeMethod.minPlanLabel} plan and above`}
-                className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-foreground/80 text-background px-3 py-1.5 text-xs font-bold transition-colors hover:bg-foreground/90"
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-foreground/80 px-3 py-1.5 text-xs font-bold text-background transition-colors hover:bg-foreground/90"
               >
                 Upgrade <ArrowRight className="size-3.5" />
               </Link>
@@ -1415,34 +1312,16 @@ function GetLeads() {
           )}
         </aside>
       </div>
+
+      {/* ── AI Overview band ─────────────────────────────────────── */}
+      <div className="mt-6">
+        <DiscoverAiOverview insights={discoverInsights} loading={!account || !analytics} />
+      </div>
     </div>
   );
 }
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
-
-/** Compact labelled setting row. */
-function Field({
-  label,
-  hint,
-  children,
-  className,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={cn("px-5 py-4", className)}>
-      <div className="flex items-baseline justify-between gap-3 mb-2.5">
-        <h3 className="text-xs font-semibold text-foreground">{label}</h3>
-        {hint && <p className="text-[11px] text-muted-foreground text-right">{hint}</p>}
-      </div>
-      {children}
-    </div>
-  );
-}
 
 /** Compact selectable chip. A locked chip stays clickable on purpose: the
  * parent handler shows the plan-upgrade toast, exactly as before. */
@@ -1452,6 +1331,7 @@ function ChoiceChip({
   onClick,
   icon,
   size = "sm",
+  className,
   children,
 }: {
   selected: boolean;
@@ -1459,6 +1339,7 @@ function ChoiceChip({
   onClick: () => void;
   icon?: React.ReactNode;
   size?: "sm" | "md";
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -1470,9 +1351,10 @@ function ChoiceChip({
         "inline-flex items-center gap-1.5 rounded-lg border font-medium transition-colors cursor-pointer",
         size === "md" ? "h-9 px-3 text-[13px]" : "h-8 px-2.5 text-xs",
         selected
-          ? "border-brand/60 bg-brand/10 text-foreground"
-          : "border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40",
-        locked && "opacity-60"
+          ? "border-brand/60 bg-brand/[0.14] text-foreground shadow-[0_0_18px_-8px_var(--brand)]"
+          : "border-white/10 bg-black/20 text-muted-foreground hover:text-foreground hover:border-white/25",
+        locked && "opacity-60",
+        className,
       )}
     >
       {icon}
@@ -1517,14 +1399,6 @@ function RegionOption({
   );
 }
 
-function SummaryLine({ value, placeholder }: { value: string | null; placeholder?: string }) {
-  return (
-    <li className={cn("truncate", value ? "text-foreground" : "text-muted-foreground/70")}>
-      {value ?? placeholder}
-    </li>
-  );
-}
-
 const INSIGHT_ACTION_STYLES: Record<DiscoverInsight["tone"], string> = {
   brand: "text-brand hover:text-brand/80",
   success: "text-emerald-500 hover:text-emerald-400",
@@ -1539,9 +1413,9 @@ const CONFIDENCE_STYLES: Record<DiscoverInsight["confidence"], string> = {
   "Watch Closely": "text-muted-foreground",
 };
 
-/** Compact AI Overview. Content is exactly buildDiscoverInsights()'s output
+/** AI Overview band. Content is exactly buildDiscoverInsights()'s output
  * — nothing is generated here. The top insight leads; the remaining ones
- * (up to the same 3 as before) are one click away. */
+ * (up to the same 3 as before) are one click away and fill the row. */
 function DiscoverAiOverview({
   insights,
   loading,
@@ -1558,31 +1432,54 @@ function DiscoverAiOverview({
   const hiddenCount = pool.length - shown.length;
 
   return (
-    <div className="bg-card border border-border/60 rounded-xl px-4 py-3.5">
-      <div className="flex items-center gap-1.5 mb-2">
-        <Sparkles className="size-3.5 text-brand/70 shrink-0" />
-        <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-          AI Overview
-        </h3>
+    <section className={cn(panelSurface, "p-4 sm:p-5")}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span
+            aria-hidden="true"
+            className="grid size-9 place-items-center rounded-xl border border-brand/25 bg-brand/[0.13] text-brand"
+          >
+            <Sparkles className="size-[18px]" />
+          </span>
+          <h2 className="text-[15px] font-semibold text-foreground">AI Overview</h2>
+        </div>
+        {!loading && pool.length > 1 && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="cursor-pointer text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            {expanded ? "Show less" : `${hiddenCount} more insight${hiddenCount === 1 ? "" : "s"}`}
+          </button>
+        )}
       </div>
 
       {loading ? (
-        <div className="space-y-2">
-          <div className="h-3.5 w-2/3 rounded bg-muted/40 animate-pulse" />
-          <div className="h-3 w-full rounded bg-muted/40 animate-pulse" />
+        <div className="mt-4 space-y-2">
+          <div className="h-3.5 w-2/3 animate-pulse rounded bg-muted/40" />
+          <div className="h-3 w-full animate-pulse rounded bg-muted/40" />
         </div>
       ) : (
-        <div className="divide-y divide-border/60">
+        <div
+          className={cn(
+            "mt-4 grid gap-3",
+            shown.length === 2 && "md:grid-cols-2",
+            shown.length >= 3 && "md:grid-cols-3",
+          )}
+        >
           {shown.map((insight) => {
             const isRoute = insight.actionHref.startsWith("/");
             const actionClass = `inline-flex items-center text-xs font-semibold transition-colors cursor-pointer ${INSIGHT_ACTION_STYLES[insight.tone]}`;
             return (
-              <div key={insight.id} className="py-2 first:pt-0 last:pb-0 space-y-1">
+              <div
+                key={insight.id}
+                className="space-y-1 rounded-xl border border-white/[0.06] bg-black/20 p-4"
+              >
                 <p className={`text-[10px] font-bold uppercase tracking-wider ${CONFIDENCE_STYLES[insight.confidence]}`}>
                   {insight.confidence}
                 </p>
-                <p className="text-[13px] font-medium text-foreground/90 leading-snug">{insight.title}</p>
-                <p className="text-xs text-muted-foreground leading-snug line-clamp-2">{insight.reason}</p>
+                <p className="text-[13px] font-medium leading-snug text-foreground/90">{insight.title}</p>
+                <p className="line-clamp-2 text-xs leading-snug text-muted-foreground">{insight.reason}</p>
                 {isRoute ? (
                   <a href={insight.actionHref} className={actionClass}>
                     {insight.actionLabel}
@@ -1605,16 +1502,6 @@ function DiscoverAiOverview({
           })}
         </div>
       )}
-
-      {!loading && pool.length > 1 && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="mt-2 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-        >
-          {expanded ? "Show less" : `${hiddenCount} more insight${hiddenCount === 1 ? "" : "s"}`}
-        </button>
-      )}
-    </div>
+    </section>
   );
 }

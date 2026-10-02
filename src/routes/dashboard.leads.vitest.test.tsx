@@ -99,9 +99,9 @@ async function renderDiscover(plan: string = "free") {
 
 async function pickNiche(name: string) {
   const input = screen.getByPlaceholderText(/search niches/i);
-  fireEvent.focus(input);
   fireEvent.change(input, { target: { value: name } });
-  fireEvent.click(await screen.findByRole("option", { name: new RegExp(`^${name}`, "i") }));
+  // Niches are toggle tiles in a carousel that the search box filters.
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(`^${name}`, "i") }));
 }
 
 beforeEach(() => {
@@ -322,5 +322,41 @@ describe("Discover redesign — preserved behavior", () => {
     expect(screen.queryByText("Second insight")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /1 more insight/ }));
     expect(screen.getByText("Second insight")).toBeTruthy();
+  });
+});
+
+describe("Discover redesign — niche carousel", () => {
+  it("search filters the carousel; picking a tile marks it selected and adds a removable chip", async () => {
+    await renderDiscover("pro");
+    expect(screen.getByRole("button", { name: /^Gym/ })).toBeTruthy();
+
+    fireEvent.change(screen.getByPlaceholderText(/search niches/i), { target: { value: "coffee" } });
+    expect(screen.queryByRole("button", { name: /^Gym/ })).toBeNull();
+
+    const tile = await screen.findByRole("button", { name: /^Coffee Shop/ });
+    expect(tile.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(tile);
+    expect(screen.getByRole("button", { name: /^Coffee Shop/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Remove Coffee Shop" })).toBeTruthy();
+
+    // Toggling the tile again deselects it.
+    fireEvent.click(screen.getByRole("button", { name: /^Coffee Shop/ }));
+    expect(screen.getByRole("button", { name: /^Coffee Shop/ }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Remove Coffee Shop" })).toBeNull();
+  });
+
+  it("Enter in the search box picks the first match and clears the search", async () => {
+    await renderDiscover("pro");
+    const input = screen.getByPlaceholderText(/search niches/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "coffee" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("");
+    expect(screen.getByRole("button", { name: /^Coffee Shop/ }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("a search with no matches says so instead of showing an empty strip", async () => {
+    await renderDiscover("pro");
+    fireEvent.change(screen.getByPlaceholderText(/search niches/i), { target: { value: "zzzzqq" } });
+    expect(screen.getByText(/No niches match/)).toBeTruthy();
   });
 });

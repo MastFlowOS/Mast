@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>Funeral Home</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#132a28"/><stop offset="1" stop-color="#060e0f"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#1deda7" stop-opacity="0.62"/><stop offset="1" stop-color="#0fbd83" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#47def5"/><stop offset="0.6" stop-color="#47def5" stop-opacity="0.45"/><stop offset="1" stop-color="#47def5" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#47f598" stop-opacity="0.2"/><stop offset="0.85" stop-color="#47f598" stop-opacity="0.75"/><stop offset="1" stop-color="#47f598" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#47f5c7"/><stop offset="0.6" stop-color="#47f5c7" stop-opacity="0.45"/><stop offset="1" stop-color="#47f5c7" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#47def5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#47def5" stop-opacity="0.75"/><stop offset="1" stop-color="#47def5" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#47f598"/><stop offset="0.6" stop-color="#47f598" stop-opacity="0.45"/><stop offset="1" stop-color="#47f598" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#47f5c7" stop-opacity="0.2"/><stop offset="0.85" stop-color="#47f5c7" stop-opacity="0.75"/><stop offset="1" stop-color="#47f5c7" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#47def5"/><stop offset="0.6" stop-color="#47def5" stop-opacity="0.45"/><stop offset="1" stop-color="#47def5" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#47f598" stop-opacity="0.2"/><stop offset="0.85" stop-color="#47f598" stop-opacity="0.75"/><stop offset="1" stop-color="#47f598" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#47f5c7"/><stop offset="0.6" stop-color="#47f5c7" stop-opacity="0.45"/><stop offset="1" stop-color="#47f5c7" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#194d3c" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="233" cy="18" r="14" fill="url(#b0)" opacity="0.37"/><circle cx="180" cy="22" r="8" fill="url(#b1)" opacity="0.64"/><circle cx="91" cy="131" r="22" fill="url(#b2)" opacity="0.78"/><circle cx="166" cy="33" r="14" fill="url(#b3)" opacity="0.58"/><circle cx="297" cy="71" r="20" fill="url(#b4)" opacity="0.51"/><circle cx="98" cy="72" r="14" fill="url(#b5)" opacity="0.39"/><circle cx="135" cy="37" r="15" fill="url(#b6)" opacity="0.78"/><circle cx="259" cy="18" r="23" fill="url(#b7)" opacity="0.66"/><circle cx="265" cy="30" r="26" fill="url(#b8)" opacity="0.38"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#6ef7c9" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#9efadb" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="M11 20a10 10 0 0010-10 25.9 25.9 0 00-1.04-7.281 1 1 0 00-1.755-.325C15.833 5.5 13 5.5 9.8 6.1A7 7 0 0011 20" />
+  <path d="M2 21a5 5 0 012.911-4.544C7.613 15.212 8.351 15.24 11 13" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#66ffcc" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="M11 20a10 10 0 0010-10 25.9 25.9 0 00-1.04-7.281 1 1 0 00-1.755-.325C15.833 5.5 13 5.5 9.8 6.1A7 7 0 0011 20" />
+  <path d="M2 21a5 5 0 012.911-4.544C7.613 15.212 8.351 15.24 11 13" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#d8fdf1" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="M11 20a10 10 0 0010-10 25.9 25.9 0 00-1.04-7.281 1 1 0 00-1.755-.325C15.833 5.5 13 5.5 9.8 6.1A7 7 0 0011 20" />
+  <path d="M2 21a5 5 0 012.911-4.544C7.613 15.212 8.351 15.24 11 13" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

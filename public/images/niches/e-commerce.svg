@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>E-commerce</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22132a"/><stop offset="1" stop-color="#0d060f"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#731ded" stop-opacity="0.62"/><stop offset="1" stop-color="#580fbd" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#e147f5"/><stop offset="0.6" stop-color="#e147f5" stop-opacity="0.45"/><stop offset="1" stop-color="#e147f5" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#6d47f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#6d47f5" stop-opacity="0.75"/><stop offset="1" stop-color="#6d47f5" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#9b47f5"/><stop offset="0.6" stop-color="#9b47f5" stop-opacity="0.45"/><stop offset="1" stop-color="#9b47f5" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#e147f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#e147f5" stop-opacity="0.75"/><stop offset="1" stop-color="#e147f5" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#6d47f5"/><stop offset="0.6" stop-color="#6d47f5" stop-opacity="0.45"/><stop offset="1" stop-color="#6d47f5" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#9b47f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#9b47f5" stop-opacity="0.75"/><stop offset="1" stop-color="#9b47f5" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#e147f5"/><stop offset="0.6" stop-color="#e147f5" stop-opacity="0.45"/><stop offset="1" stop-color="#e147f5" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#6d47f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#6d47f5" stop-opacity="0.75"/><stop offset="1" stop-color="#6d47f5" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#9b47f5"/><stop offset="0.6" stop-color="#9b47f5" stop-opacity="0.45"/><stop offset="1" stop-color="#9b47f5" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f194d" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="146" cy="101" r="13" fill="url(#b0)" opacity="0.65"/><circle cx="62" cy="105" r="23" fill="url(#b1)" opacity="0.76"/><circle cx="180" cy="51" r="19" fill="url(#b2)" opacity="0.53"/><circle cx="187" cy="44" r="18" fill="url(#b3)" opacity="0.70"/><circle cx="103" cy="99" r="16" fill="url(#b4)" opacity="0.66"/><circle cx="226" cy="71" r="16" fill="url(#b5)" opacity="0.56"/><circle cx="55" cy="117" r="20" fill="url(#b6)" opacity="0.48"/><circle cx="275" cy="102" r="17" fill="url(#b7)" opacity="0.70"/><circle cx="103" cy="124" r="13" fill="url(#b8)" opacity="0.53"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#a76ef7" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#c49efa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="m2.05 2.05 1.099-.028a1 1 0 0 1 1.008.815l2.69 14.347A1 1 0 0 0 7.83 18H18" />
+  <path d="M4.563 5h16.435a1 1 0 0 1 .981 1.204l-1.026 6.226A2 2 0 0 1 18.962 14H6.25" />
+  <circle cx="18" cy="20" r="2" />
+  <circle cx="8" cy="20" r="2" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#a666ff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="m2.05 2.05 1.099-.028a1 1 0 0 1 1.008.815l2.69 14.347A1 1 0 0 0 7.83 18H18" />
+  <path d="M4.563 5h16.435a1 1 0 0 1 .981 1.204l-1.026 6.226A2 2 0 0 1 18.962 14H6.25" />
+  <circle cx="18" cy="20" r="2" />
+  <circle cx="8" cy="20" r="2" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#e8d8fd" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="m2.05 2.05 1.099-.028a1 1 0 0 1 1.008.815l2.69 14.347A1 1 0 0 0 7.83 18H18" />
+  <path d="M4.563 5h16.435a1 1 0 0 1 .981 1.204l-1.026 6.226A2 2 0 0 1 18.962 14H6.25" />
+  <circle cx="18" cy="20" r="2" />
+  <circle cx="8" cy="20" r="2" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

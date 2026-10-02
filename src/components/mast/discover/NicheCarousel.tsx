@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { nicheHue, nicheIcon } from "./nicheVisuals";
+import { nicheImage, NICHE_IMAGE_FALLBACK } from "./nicheImages";
 
 type Props = {
-  /** Niches to show, already filtered by the search box. */
-  niches: string[];
+  /** The whole niche catalog, in display order. Search never removes cards. */
+  niches: readonly string[];
+  /** Niches matching the search box; the first one is glided to the centre. */
+  matches: readonly string[];
   /** Everything currently selected (multi-select). */
   selected: string[];
   /** The most recently picked niche — the one brought into focus. */
@@ -14,112 +16,136 @@ type Props = {
   onToggle: (niche: string) => void;
 };
 
+// Card geometry (px). The centre card is larger; neighbours are clipped by the strip.
+const W = 124;
+const H = 108;
+const CW = 184;
+const CH = 138;
+const GAP = 18;
+const STRIP_H = CH + 26;
+// Soft fade where neighbours run out of the strip (reference: partly visible).
+const EDGE_FADE =
+  "linear-gradient(90deg, transparent 0, #000 72px, #000 calc(100% - 72px), transparent 100%)";
+
 const prefersReducedMotion = () =>
   typeof window !== "undefined" &&
   typeof window.matchMedia === "function" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * Horizontally scrolling niche tiles.
+ * Centre-focused image carousel.
  *
- * Selecting a tile marks it (ring + check) and — if it is newly picked —
- * glides it to the centre of the strip where it grows slightly, so the choice
- * is the thing you are looking at. Only transform/opacity/shadow transition;
- * the strip itself scrolls natively. Keyboard: tiles are a roving-tabindex
- * group (←/→ move, Space/Enter toggle), so ~80 tiles are one tab stop.
+ * `center` is the card in the middle (larger, full brightness). Arrows, clicks
+ * on a neighbour and search all just move `center`; the strip glides because
+ * every card is positioned with a transitioned transform. Only cards within
+ * reach of the visible strip are mounted, so only their images are requested
+ * (and they are `loading="lazy"` too) — the other ~60 stay out of the DOM.
+ * Selection is unchanged: click / Enter toggles via `onToggle`; selected cards
+ * get the purple outline, glow and check.
  */
-export function NicheCarousel({ niches, selected, focused, query, onToggle }: Props) {
-  const scrollerRef = useRef<HTMLDivElement>(null);
+export function NicheCarousel({ niches, matches, selected, focused, query, onToggle }: Props) {
+  const stripRef = useRef<HTMLDivElement>(null);
   const tileRefs = useRef(new Map<string, HTMLButtonElement>());
   const prevSelectedCount = useRef(selected.length);
-  const [edges, setEdges] = useState({ start: true, end: false });
-  const [tabStop, setTabStop] = useState<string | null>(null);
+  const [width, setWidth] = useState(0);
+  const [center, setCenter] = useState(() => {
+    const i = focused ? niches.indexOf(focused) : -1;
+    return i >= 0 ? i : 0;
+  });
+  const [failed, setFailed] = useState<Set<string>>(() => new Set());
+  const wantFocus = useRef(false);
 
-  const updateEdges = useCallback(() => {
-    const el = scrollerRef.current;
+  useLayoutEffect(() => {
+    const el = stripRef.current;
     if (!el) return;
-    const start = el.scrollLeft <= 2;
-    const end = el.scrollLeft + el.clientWidth >= el.scrollWidth - 2;
-    setEdges((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
-  }, []);
-
-  // Recompute edge state when the list changes (search) or the strip resizes.
-  useEffect(() => {
-    updateEdges();
-    const el = scrollerRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(updateEdges);
+    setWidth(el.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
     ro.observe(el);
     return () => ro.disconnect();
-  }, [niches, updateEdges]);
+  }, []);
 
-  // A new search starts from the left.
+  const last = niches.length - 1;
+  const clamp = (i: number) => Math.max(0, Math.min(last, i));
+
+  // Search → glide the first match to the middle.
   useEffect(() => {
-    scrollerRef.current?.scrollTo?.({ left: 0 });
-  }, [query]);
+    const first = matches[0];
+    if (!query.trim() || !first) return;
+    const i = niches.indexOf(first);
+    if (i >= 0) setCenter(i);
+  }, [query, matches, niches]);
 
-  // Bring a newly picked niche to the middle of the strip.
+  // A newly picked niche glides to the middle too.
   useEffect(() => {
     const grew = selected.length > prevSelectedCount.current;
     prevSelectedCount.current = selected.length;
     if (!grew || !focused) return;
-    const el = scrollerRef.current;
-    const tile = tileRefs.current.get(focused);
-    if (!el || !tile) return;
-    const left = tile.offsetLeft - (el.clientWidth - tile.offsetWidth) / 2;
-    el.scrollTo?.({ left: Math.max(0, left), behavior: prefersReducedMotion() ? "auto" : "smooth" });
-  }, [focused, selected.length]);
+    const i = niches.indexOf(focused);
+    if (i >= 0) setCenter(i);
+  }, [focused, selected.length, niches]);
 
-  const scrollByPage = (dir: 1 | -1) => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    el.scrollBy?.({
-      left: dir * Math.max(160, el.clientWidth * 0.7),
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-    });
-  };
+  // Keep keyboard focus on the centre card while arrowing.
+  useEffect(() => {
+    if (!wantFocus.current) return;
+    wantFocus.current = false;
+    tileRefs.current.get(niches[center])?.focus();
+  }, [center, niches]);
 
-  const activeStop =
-    tabStop && niches.includes(tabStop) ? tabStop : (focused && niches.includes(focused) ? focused : niches[0]);
+  // Left edge of card i (px from the strip's left), centre card centred.
+  const xOf = (i: number) =>
+    width / 2 - CW / 2 + (i - center) * (W + GAP) + (i > center ? CW - W : 0);
 
-  const onKeyDown = (e: React.KeyboardEvent, index: number) => {
-    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft" && e.key !== "Home" && e.key !== "End") return;
+  // Mount only what can be seen (+2 cards of runway each side).
+  const reach = Math.ceil(width / 2 / (W + GAP)) + 2;
+  const from = clamp(center - reach);
+  const to = clamp(center + reach);
+  const visible = useMemo(() => niches.slice(from, to + 1), [niches, from, to]);
+
+  const move = (delta: number) => setCenter((c) => clamp(c + delta));
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const delta = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      wantFocus.current = true;
+      setCenter(e.key === "Home" ? 0 : last);
+      return;
+    }
+    if (!delta) return;
     e.preventDefault();
-    const next =
-      e.key === "Home" ? 0 : e.key === "End" ? niches.length - 1 : index + (e.key === "ArrowRight" ? 1 : -1);
-    const target = niches[Math.max(0, Math.min(niches.length - 1, next))];
-    if (!target) return;
-    setTabStop(target);
-    tileRefs.current.get(target)?.focus();
+    wantFocus.current = true;
+    move(delta);
   };
 
-  if (niches.length === 0) {
+  if (query.trim() && matches.length === 0) {
     return (
-      <div className="flex h-[132px] items-center justify-center rounded-2xl border border-dashed border-border/80 text-sm text-muted-foreground">
+      <div
+        style={{ height: STRIP_H }}
+        className="flex items-center justify-center rounded-2xl border border-dashed border-border/80 text-sm text-muted-foreground"
+      >
         No niches match “{query}”
       </div>
     );
   }
 
-  const anySelected = selected.length > 0;
-  const fade = `linear-gradient(90deg, ${edges.start ? "#000" : "transparent"}, #000 44px, #000 calc(100% - 44px), ${edges.end ? "#000" : "transparent"})`;
-
   return (
     <div className="relative">
       <div
-        ref={scrollerRef}
+        ref={stripRef}
         role="group"
         aria-label="Business niches"
-        onScroll={updateEdges}
-        // Soft fade only on the side that has more to scroll to.
-        style={{ maskImage: fade, WebkitMaskImage: fade }}
-        className="relative flex gap-3 overflow-x-auto py-4 pl-9 pr-[max(2.25rem,calc(50%-55px))] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        onKeyDown={onKeyDown}
+        style={{ height: STRIP_H, maskImage: EDGE_FADE, WebkitMaskImage: EDGE_FADE }}
+        className="relative overflow-hidden"
       >
-        {niches.map((name, i) => {
+        {visible.map((name, k) => {
+          const i = from + k;
+          const isCenter = i === center;
+          const dist = Math.abs(i - center);
           const isSelected = selected.includes(name);
-          const isFocused = isSelected && name === focused;
-          const Icon = nicheIcon(name);
-          const hue = nicheHue(name);
+          const w = isCenter ? CW : W;
+          const h = isCenter ? CH : H;
           return (
             <button
               key={name}
@@ -129,44 +155,61 @@ export function NicheCarousel({ niches, selected, focused, query, onToggle }: Pr
               }}
               type="button"
               aria-pressed={isSelected}
-              tabIndex={name === activeStop ? 0 : -1}
+              aria-current={isCenter ? "true" : undefined}
+              tabIndex={isCenter ? 0 : -1}
               onClick={() => {
-                setTabStop(name);
+                // Same toggle as before; a neighbour also glides to the middle.
+                setCenter(i);
                 onToggle(name);
               }}
-              onFocus={() => setTabStop(name)}
-              onKeyDown={(e) => onKeyDown(e, i)}
               style={{
-                background: `linear-gradient(155deg, oklch(0.33 0.1 ${hue}), oklch(0.2 0.05 ${hue + 14}))`,
+                width: w,
+                height: h,
+                top: (STRIP_H - h) / 2,
+                transform: `translateX(${xOf(i)}px)`,
+                opacity: isCenter ? 1 : dist === 1 ? 0.72 : 0.45,
+                zIndex: isCenter ? 2 : 1,
               }}
               className={cn(
-                "relative h-[100px] w-[110px] shrink-0 cursor-pointer overflow-hidden rounded-2xl border p-3 text-left outline-none",
-                "transition-[transform,opacity,box-shadow,border-color] duration-[380ms] [transition-timing-function:var(--ease-spring)]",
-                "focus-visible:ring-2 focus-visible:ring-brand/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                "group absolute left-0 cursor-pointer overflow-hidden rounded-2xl border bg-card/60 p-0 text-left outline-none",
+                "transition-[transform,width,height,top,opacity,box-shadow,border-color] duration-500 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+                "hover:opacity-100 focus-visible:ring-2 focus-visible:ring-brand/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                 isSelected
-                  ? "border-brand/70 opacity-100"
-                  : cn("border-white/[0.07] hover:opacity-100 hover:scale-100", anySelected ? "opacity-55" : "opacity-85", "scale-[0.96]"),
-                isFocused
-                  ? "scale-[1.07] shadow-[0_14px_34px_-10px_color-mix(in_oklab,var(--brand)_75%,transparent)]"
-                  : isSelected && "scale-100",
+                  ? "border-2 border-brand shadow-[0_0_0_1px_color-mix(in_oklab,var(--brand)_55%,transparent),0_0_30px_-2px_color-mix(in_oklab,var(--brand)_70%,transparent)]"
+                  : "border-white/[0.08]",
               )}
             >
+              <img
+                src={nicheImage(name)}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                draggable={false}
+                onError={(e) => {
+                  if (failed.has(name)) return;
+                  setFailed((s) => new Set(s).add(name));
+                  e.currentTarget.src = NICHE_IMAGE_FALLBACK;
+                }}
+                className="absolute inset-0 size-full object-cover"
+              />
               <span
                 aria-hidden="true"
-                className="grid size-9 place-items-center rounded-xl bg-white/[0.07]"
-                style={{ color: `oklch(0.88 0.09 ${hue})` }}
+                className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/15 to-transparent"
+              />
+              <span
+                className={cn(
+                  "absolute inset-x-2 bottom-2.5 line-clamp-2 text-center font-medium leading-tight transition-[font-size,color] duration-500 motion-reduce:transition-none",
+                  isCenter ? "text-[16px] text-white" : "text-[12px] text-white/65",
+                )}
               >
-                <Icon className="size-[18px]" />
-              </span>
-              <span className="absolute inset-x-3 bottom-2.5 line-clamp-2 text-[12px] font-semibold leading-[1.15] text-foreground">
                 {name}
               </span>
               {isSelected && (
                 <span
                   aria-hidden="true"
-                  className="absolute right-2 top-2 grid size-5 place-items-center rounded-full bg-brand text-brand-foreground shadow-[0_0_12px_color-mix(in_oklab,var(--brand)_70%,transparent)]"
+                  className="absolute right-2 top-2 grid size-7 place-items-center rounded-full bg-brand text-brand-foreground shadow-[0_0_14px_color-mix(in_oklab,var(--brand)_75%,transparent)]"
                 >
-                  <Check className="size-3" strokeWidth={3.5} />
+                  <Check className="size-4" strokeWidth={3.5} />
                 </span>
               )}
             </button>
@@ -174,8 +217,8 @@ export function NicheCarousel({ niches, selected, focused, query, onToggle }: Pr
         })}
       </div>
 
-      <ArrowButton side="left" disabled={edges.start} onClick={() => scrollByPage(-1)} />
-      <ArrowButton side="right" disabled={edges.end} onClick={() => scrollByPage(1)} />
+      <ArrowButton side="left" disabled={center <= 0} onClick={() => move(-1)} />
+      <ArrowButton side="right" disabled={center >= last} onClick={() => move(1)} />
     </div>
   );
 }
@@ -193,17 +236,17 @@ function ArrowButton({
   return (
     <button
       type="button"
-      aria-label={side === "left" ? "Scroll niches left" : "Scroll niches right"}
+      aria-label={side === "left" ? "Previous niche" : "Next niche"}
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "absolute top-1/2 z-10 grid size-8 -translate-y-1/2 place-items-center rounded-full border border-border bg-card/95 text-muted-foreground shadow-md transition-[opacity,color,border-color] duration-200",
-        "hover:border-brand/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-brand/70 outline-none",
-        "disabled:pointer-events-none disabled:opacity-0",
-        side === "left" ? "left-0" : "right-0",
+        "absolute top-1/2 z-10 grid size-10 -translate-y-1/2 place-items-center rounded-full border border-white/15 bg-background/80 text-foreground/80 shadow-md backdrop-blur transition-[opacity,color,border-color] duration-200",
+        "hover:border-brand/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-brand/70 outline-none",
+        "disabled:pointer-events-none disabled:opacity-30",
+        side === "left" ? "left-1" : "right-1",
       )}
     >
-      <Icon className="size-4" />
+      <Icon className="size-5" />
     </button>
   );
 }

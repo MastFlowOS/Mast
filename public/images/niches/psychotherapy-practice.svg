@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>Psychotherapy Practice</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a1329"/><stop offset="1" stop-color="#0f060d"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#ca1ded" stop-opacity="0.62"/><stop offset="1" stop-color="#a00fbd" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#f547c1"/><stop offset="0.6" stop-color="#f547c1" stop-opacity="0.45"/><stop offset="1" stop-color="#f547c1" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#b547f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#b547f5" stop-opacity="0.75"/><stop offset="1" stop-color="#b547f5" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#e447f5"/><stop offset="0.6" stop-color="#e447f5" stop-opacity="0.45"/><stop offset="1" stop-color="#e447f5" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#f547c1" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f547c1" stop-opacity="0.75"/><stop offset="1" stop-color="#f547c1" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#b547f5"/><stop offset="0.6" stop-color="#b547f5" stop-opacity="0.45"/><stop offset="1" stop-color="#b547f5" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#e447f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#e447f5" stop-opacity="0.75"/><stop offset="1" stop-color="#e447f5" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#f547c1"/><stop offset="0.6" stop-color="#f547c1" stop-opacity="0.45"/><stop offset="1" stop-color="#f547c1" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#b547f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#b547f5" stop-opacity="0.75"/><stop offset="1" stop-color="#b547f5" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#e447f5"/><stop offset="0.6" stop-color="#e447f5" stop-opacity="0.45"/><stop offset="1" stop-color="#e447f5" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#44194d" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="204" cy="55" r="22" fill="url(#b0)" opacity="0.43"/><circle cx="215" cy="104" r="9" fill="url(#b1)" opacity="0.62"/><circle cx="159" cy="106" r="12" fill="url(#b2)" opacity="0.46"/><circle cx="63" cy="86" r="14" fill="url(#b3)" opacity="0.39"/><circle cx="277" cy="22" r="24" fill="url(#b4)" opacity="0.53"/><circle cx="95" cy="110" r="17" fill="url(#b5)" opacity="0.53"/><circle cx="237" cy="129" r="23" fill="url(#b6)" opacity="0.31"/><circle cx="295" cy="105" r="16" fill="url(#b7)" opacity="0.48"/><circle cx="303" cy="46" r="26" fill="url(#b8)" opacity="0.68"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#e06ef7" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#eb9efa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="M12 18V5" />
+  <path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4" />
+  <path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5" />
+  <path d="M17.997 5.125a4 4 0 0 1 2.526 5.77" />
+  <path d="M18 18a4 4 0 0 0 2-7.464" />
+  <path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517" />
+  <path d="M6 18a4 4 0 0 1-2-7.464" />
+  <path d="M6.003 5.125a4 4 0 0 0-2.526 5.77" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#e566ff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="M12 18V5" />
+  <path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4" />
+  <path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5" />
+  <path d="M17.997 5.125a4 4 0 0 1 2.526 5.77" />
+  <path d="M18 18a4 4 0 0 0 2-7.464" />
+  <path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517" />
+  <path d="M6 18a4 4 0 0 1-2-7.464" />
+  <path d="M6.003 5.125a4 4 0 0 0-2.526 5.77" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#f7d8fd" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="M12 18V5" />
+  <path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4" />
+  <path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5" />
+  <path d="M17.997 5.125a4 4 0 0 1 2.526 5.77" />
+  <path d="M18 18a4 4 0 0 0 2-7.464" />
+  <path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517" />
+  <path d="M6 18a4 4 0 0 1-2-7.464" />
+  <path d="M6.003 5.125a4 4 0 0 0-2.526 5.77" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

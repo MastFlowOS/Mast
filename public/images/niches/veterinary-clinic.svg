@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>Veterinary Clinic</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#292a13"/><stop offset="1" stop-color="#0d0f06"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#edca1d" stop-opacity="0.62"/><stop offset="1" stop-color="#bda00f" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#c1f547"/><stop offset="0.6" stop-color="#c1f547" stop-opacity="0.45"/><stop offset="1" stop-color="#c1f547" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#f5b547" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f5b547" stop-opacity="0.75"/><stop offset="1" stop-color="#f5b547" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#f5e447"/><stop offset="0.6" stop-color="#f5e447" stop-opacity="0.45"/><stop offset="1" stop-color="#f5e447" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#c1f547" stop-opacity="0.2"/><stop offset="0.85" stop-color="#c1f547" stop-opacity="0.75"/><stop offset="1" stop-color="#c1f547" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#f5b547"/><stop offset="0.6" stop-color="#f5b547" stop-opacity="0.45"/><stop offset="1" stop-color="#f5b547" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#f5e447" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f5e447" stop-opacity="0.75"/><stop offset="1" stop-color="#f5e447" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#c1f547"/><stop offset="0.6" stop-color="#c1f547" stop-opacity="0.45"/><stop offset="1" stop-color="#c1f547" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#f5b547" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f5b547" stop-opacity="0.75"/><stop offset="1" stop-color="#f5b547" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#f5e447"/><stop offset="0.6" stop-color="#f5e447" stop-opacity="0.45"/><stop offset="1" stop-color="#f5e447" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4d4419" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="302" cy="122" r="23" fill="url(#b0)" opacity="0.62"/><circle cx="162" cy="79" r="24" fill="url(#b1)" opacity="0.76"/><circle cx="226" cy="127" r="10" fill="url(#b2)" opacity="0.43"/><circle cx="165" cy="71" r="19" fill="url(#b3)" opacity="0.35"/><circle cx="265" cy="82" r="17" fill="url(#b4)" opacity="0.59"/><circle cx="89" cy="36" r="9" fill="url(#b5)" opacity="0.74"/><circle cx="147" cy="134" r="22" fill="url(#b6)" opacity="0.56"/><circle cx="288" cy="106" r="16" fill="url(#b7)" opacity="0.50"/><circle cx="171" cy="71" r="26" fill="url(#b8)" opacity="0.31"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#f7e06e" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#faeb9e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="M11 2v2" />
+  <path d="M5 2v2" />
+  <path d="M5 3H4a2 2 0 0 0-2 2v4a6 6 0 0 0 12 0V5a2 2 0 0 0-2-2h-1" />
+  <path d="M8 15a6 6 0 0 0 12 0v-3" />
+  <circle cx="20" cy="10" r="2" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#ffe566" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="M11 2v2" />
+  <path d="M5 2v2" />
+  <path d="M5 3H4a2 2 0 0 0-2 2v4a6 6 0 0 0 12 0V5a2 2 0 0 0-2-2h-1" />
+  <path d="M8 15a6 6 0 0 0 12 0v-3" />
+  <circle cx="20" cy="10" r="2" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#fdf7d8" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="M11 2v2" />
+  <path d="M5 2v2" />
+  <path d="M5 3H4a2 2 0 0 0-2 2v4a6 6 0 0 0 12 0V5a2 2 0 0 0-2-2h-1" />
+  <path d="M8 15a6 6 0 0 0 12 0v-3" />
+  <circle cx="20" cy="10" r="2" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

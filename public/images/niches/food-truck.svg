@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>Food Truck</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2713"/><stop offset="1" stop-color="#0e0f06"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#eda01d" stop-opacity="0.62"/><stop offset="1" stop-color="#bd7d0f" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#e4f547"/><stop offset="0.6" stop-color="#e4f547" stop-opacity="0.45"/><stop offset="1" stop-color="#e4f547" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#f59247" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f59247" stop-opacity="0.75"/><stop offset="1" stop-color="#f59247" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#f5c147"/><stop offset="0.6" stop-color="#f5c147" stop-opacity="0.45"/><stop offset="1" stop-color="#f5c147" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#e4f547" stop-opacity="0.2"/><stop offset="0.85" stop-color="#e4f547" stop-opacity="0.75"/><stop offset="1" stop-color="#e4f547" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#f59247"/><stop offset="0.6" stop-color="#f59247" stop-opacity="0.45"/><stop offset="1" stop-color="#f59247" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#f5c147" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f5c147" stop-opacity="0.75"/><stop offset="1" stop-color="#f5c147" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#e4f547"/><stop offset="0.6" stop-color="#e4f547" stop-opacity="0.45"/><stop offset="1" stop-color="#e4f547" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#f59247" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f59247" stop-opacity="0.75"/><stop offset="1" stop-color="#f59247" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#f5c147"/><stop offset="0.6" stop-color="#f5c147" stop-opacity="0.45"/><stop offset="1" stop-color="#f5c147" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4d3a19" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="280" cy="132" r="9" fill="url(#b0)" opacity="0.66"/><circle cx="30" cy="52" r="9" fill="url(#b1)" opacity="0.54"/><circle cx="110" cy="57" r="19" fill="url(#b2)" opacity="0.57"/><circle cx="153" cy="125" r="9" fill="url(#b3)" opacity="0.74"/><circle cx="207" cy="115" r="23" fill="url(#b4)" opacity="0.34"/><circle cx="80" cy="70" r="10" fill="url(#b5)" opacity="0.44"/><circle cx="169" cy="117" r="10" fill="url(#b6)" opacity="0.62"/><circle cx="71" cy="130" r="26" fill="url(#b7)" opacity="0.66"/><circle cx="50" cy="101" r="19" fill="url(#b8)" opacity="0.69"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#f7c56e" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#fad89e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" />
+  <path d="M15 18H9" />
+  <path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14" />
+  <circle cx="17" cy="18" r="2" />
+  <circle cx="7" cy="18" r="2" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#ffc766" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" />
+  <path d="M15 18H9" />
+  <path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14" />
+  <circle cx="17" cy="18" r="2" />
+  <circle cx="7" cy="18" r="2" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#fdefd8" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" />
+  <path d="M15 18H9" />
+  <path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14" />
+  <circle cx="17" cy="18" r="2" />
+  <circle cx="7" cy="18" r="2" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

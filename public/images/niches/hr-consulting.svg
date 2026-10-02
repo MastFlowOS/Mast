@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>HR Consulting</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a132a"/><stop offset="1" stop-color="#0a060f"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#2e1ded" stop-opacity="0.62"/><stop offset="1" stop-color="#1e0fbd" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#a747f5"/><stop offset="0.6" stop-color="#a747f5" stop-opacity="0.45"/><stop offset="1" stop-color="#a747f5" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#475bf5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#475bf5" stop-opacity="0.75"/><stop offset="1" stop-color="#475bf5" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#6147f5"/><stop offset="0.6" stop-color="#6147f5" stop-opacity="0.45"/><stop offset="1" stop-color="#6147f5" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#a747f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#a747f5" stop-opacity="0.75"/><stop offset="1" stop-color="#a747f5" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#475bf5"/><stop offset="0.6" stop-color="#475bf5" stop-opacity="0.45"/><stop offset="1" stop-color="#475bf5" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#6147f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#6147f5" stop-opacity="0.75"/><stop offset="1" stop-color="#6147f5" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#a747f5"/><stop offset="0.6" stop-color="#a747f5" stop-opacity="0.45"/><stop offset="1" stop-color="#a747f5" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#475bf5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#475bf5" stop-opacity="0.75"/><stop offset="1" stop-color="#475bf5" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#6147f5"/><stop offset="0.6" stop-color="#6147f5" stop-opacity="0.45"/><stop offset="1" stop-color="#6147f5" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1e194d" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="85" cy="38" r="22" fill="url(#b0)" opacity="0.40"/><circle cx="171" cy="79" r="18" fill="url(#b1)" opacity="0.37"/><circle cx="167" cy="119" r="26" fill="url(#b2)" opacity="0.48"/><circle cx="219" cy="30" r="25" fill="url(#b3)" opacity="0.64"/><circle cx="183" cy="79" r="25" fill="url(#b4)" opacity="0.62"/><circle cx="75" cy="35" r="14" fill="url(#b5)" opacity="0.37"/><circle cx="219" cy="22" r="24" fill="url(#b6)" opacity="0.66"/><circle cx="258" cy="71" r="10" fill="url(#b7)" opacity="0.55"/><circle cx="92" cy="48" r="9" fill="url(#b8)" opacity="0.59"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#796ef7" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#a69efa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="m11 17 2 2a1 1 0 1 0 3-3" />
+  <path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4" />
+  <path d="m21 3 1 11h-2" />
+  <path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3" />
+  <path d="M3 4h8" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#7366ff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="m11 17 2 2a1 1 0 1 0 3-3" />
+  <path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4" />
+  <path d="m21 3 1 11h-2" />
+  <path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3" />
+  <path d="M3 4h8" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#dbd8fd" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="m11 17 2 2a1 1 0 1 0 3-3" />
+  <path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4" />
+  <path d="m21 3 1 11h-2" />
+  <path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3" />
+  <path d="M3 4h8" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

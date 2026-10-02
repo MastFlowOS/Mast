@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>Tutoring</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16132a"/><stop offset="1" stop-color="#09060f"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#1d2eed" stop-opacity="0.62"/><stop offset="1" stop-color="#0f1ebd" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#8a47f5"/><stop offset="0.6" stop-color="#8a47f5" stop-opacity="0.45"/><stop offset="1" stop-color="#8a47f5" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#4778f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#4778f5" stop-opacity="0.75"/><stop offset="1" stop-color="#4778f5" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#474af5"/><stop offset="0.6" stop-color="#474af5" stop-opacity="0.45"/><stop offset="1" stop-color="#474af5" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#8a47f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#8a47f5" stop-opacity="0.75"/><stop offset="1" stop-color="#8a47f5" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#4778f5"/><stop offset="0.6" stop-color="#4778f5" stop-opacity="0.45"/><stop offset="1" stop-color="#4778f5" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#474af5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#474af5" stop-opacity="0.75"/><stop offset="1" stop-color="#474af5" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#8a47f5"/><stop offset="0.6" stop-color="#8a47f5" stop-opacity="0.45"/><stop offset="1" stop-color="#8a47f5" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#4778f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#4778f5" stop-opacity="0.75"/><stop offset="1" stop-color="#4778f5" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#474af5"/><stop offset="0.6" stop-color="#474af5" stop-opacity="0.45"/><stop offset="1" stop-color="#474af5" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#191e4d" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="80" cy="45" r="23" fill="url(#b0)" opacity="0.71"/><circle cx="124" cy="108" r="25" fill="url(#b1)" opacity="0.62"/><circle cx="132" cy="135" r="17" fill="url(#b2)" opacity="0.56"/><circle cx="51" cy="113" r="8" fill="url(#b3)" opacity="0.69"/><circle cx="145" cy="122" r="13" fill="url(#b4)" opacity="0.54"/><circle cx="86" cy="26" r="15" fill="url(#b5)" opacity="0.51"/><circle cx="203" cy="57" r="11" fill="url(#b6)" opacity="0.33"/><circle cx="179" cy="36" r="13" fill="url(#b7)" opacity="0.75"/><circle cx="87" cy="31" r="17" fill="url(#b8)" opacity="0.51"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#6e79f7" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#9ea6fa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="M12 5v16" />
+  <path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#6673ff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="M12 5v16" />
+  <path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#d8dbfd" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="M12 5v16" />
+  <path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>Personal Trainer</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a1d13"/><stop offset="1" stop-color="#0f0b06"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#ed461d" stop-opacity="0.62"/><stop offset="1" stop-color="#bd320f" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#f5bb47"/><stop offset="0.6" stop-color="#f5bb47" stop-opacity="0.45"/><stop offset="1" stop-color="#f5bb47" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#f54747" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f54747" stop-opacity="0.75"/><stop offset="1" stop-color="#f54747" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#f57547"/><stop offset="0.6" stop-color="#f57547" stop-opacity="0.45"/><stop offset="1" stop-color="#f57547" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#f5bb47" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f5bb47" stop-opacity="0.75"/><stop offset="1" stop-color="#f5bb47" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#f54747"/><stop offset="0.6" stop-color="#f54747" stop-opacity="0.45"/><stop offset="1" stop-color="#f54747" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#f57547" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f57547" stop-opacity="0.75"/><stop offset="1" stop-color="#f57547" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#f5bb47"/><stop offset="0.6" stop-color="#f5bb47" stop-opacity="0.45"/><stop offset="1" stop-color="#f5bb47" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#f54747" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f54747" stop-opacity="0.75"/><stop offset="1" stop-color="#f54747" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#f57547"/><stop offset="0.6" stop-color="#f57547" stop-opacity="0.45"/><stop offset="1" stop-color="#f57547" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4d2419" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="286" cy="82" r="15" fill="url(#b0)" opacity="0.80"/><circle cx="201" cy="43" r="24" fill="url(#b1)" opacity="0.64"/><circle cx="287" cy="39" r="19" fill="url(#b2)" opacity="0.33"/><circle cx="209" cy="37" r="16" fill="url(#b3)" opacity="0.50"/><circle cx="72" cy="110" r="19" fill="url(#b4)" opacity="0.68"/><circle cx="293" cy="66" r="19" fill="url(#b5)" opacity="0.53"/><circle cx="38" cy="94" r="15" fill="url(#b6)" opacity="0.72"/><circle cx="77" cy="16" r="26" fill="url(#b7)" opacity="0.40"/><circle cx="301" cy="25" r="10" fill="url(#b8)" opacity="0.43"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#f7896e" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#fab09e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="M10 14.66V17a1 1 0 0 1-1 1 2 2 0 0 0-2 2v2" />
+  <path d="M14 14.66V17a1 1 0 0 0 1 1 2 2 0 0 1 2 2v2" />
+  <path d="M17.916 10H19.5A2.5 2.5 0 0 0 22 7.5V5a1 1 0 0 0-1-1h-3" />
+  <path d="M4 22h16" />
+  <path d="M6 9a6 6 0 0 0 12 0V3a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1z" />
+  <path d="M6.084 10H4.5A2.5 2.5 0 0 1 2 7.5V5a1 1 0 0 1 1-1h3" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#ff8566" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="M10 14.66V17a1 1 0 0 1-1 1 2 2 0 0 0-2 2v2" />
+  <path d="M14 14.66V17a1 1 0 0 0 1 1 2 2 0 0 1 2 2v2" />
+  <path d="M17.916 10H19.5A2.5 2.5 0 0 0 22 7.5V5a1 1 0 0 0-1-1h-3" />
+  <path d="M4 22h16" />
+  <path d="M6 9a6 6 0 0 0 12 0V3a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1z" />
+  <path d="M6.084 10H4.5A2.5 2.5 0 0 1 2 7.5V5a1 1 0 0 1 1-1h3" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#fde0d8" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="M10 14.66V17a1 1 0 0 1-1 1 2 2 0 0 0-2 2v2" />
+  <path d="M14 14.66V17a1 1 0 0 0 1 1 2 2 0 0 1 2 2v2" />
+  <path d="M17.916 10H19.5A2.5 2.5 0 0 0 22 7.5V5a1 1 0 0 0-1-1h-3" />
+  <path d="M4 22h16" />
+  <path d="M6 9a6 6 0 0 0 12 0V3a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1z" />
+  <path d="M6.084 10H4.5A2.5 2.5 0 0 1 2 7.5V5a1 1 0 0 1 1-1h3" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>SaaS Founders</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#21132a"/><stop offset="1" stop-color="#0d060f"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#691ded" stop-opacity="0.62"/><stop offset="1" stop-color="#4f0fbd" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#d847f5"/><stop offset="0.6" stop-color="#d847f5" stop-opacity="0.45"/><stop offset="1" stop-color="#d847f5" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#6447f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#6447f5" stop-opacity="0.75"/><stop offset="1" stop-color="#6447f5" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#9247f5"/><stop offset="0.6" stop-color="#9247f5" stop-opacity="0.45"/><stop offset="1" stop-color="#9247f5" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#d847f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#d847f5" stop-opacity="0.75"/><stop offset="1" stop-color="#d847f5" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#6447f5"/><stop offset="0.6" stop-color="#6447f5" stop-opacity="0.45"/><stop offset="1" stop-color="#6447f5" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#9247f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#9247f5" stop-opacity="0.75"/><stop offset="1" stop-color="#9247f5" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#d847f5"/><stop offset="0.6" stop-color="#d847f5" stop-opacity="0.45"/><stop offset="1" stop-color="#d847f5" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#6447f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#6447f5" stop-opacity="0.75"/><stop offset="1" stop-color="#6447f5" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#9247f5"/><stop offset="0.6" stop-color="#9247f5" stop-opacity="0.45"/><stop offset="1" stop-color="#9247f5" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2c194d" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="164" cy="56" r="8" fill="url(#b0)" opacity="0.37"/><circle cx="246" cy="45" r="9" fill="url(#b1)" opacity="0.46"/><circle cx="126" cy="81" r="10" fill="url(#b2)" opacity="0.35"/><circle cx="181" cy="97" r="24" fill="url(#b3)" opacity="0.62"/><circle cx="307" cy="102" r="13" fill="url(#b4)" opacity="0.52"/><circle cx="156" cy="71" r="24" fill="url(#b5)" opacity="0.61"/><circle cx="44" cy="52" r="18" fill="url(#b6)" opacity="0.52"/><circle cx="100" cy="54" r="18" fill="url(#b7)" opacity="0.63"/><circle cx="199" cy="61" r="12" fill="url(#b8)" opacity="0.54"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#a06ef7" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#c09efa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
+  <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09" />
+  <path d="M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z" />
+  <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#9e66ff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
+  <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09" />
+  <path d="M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z" />
+  <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#e6d8fd" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
+  <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09" />
+  <path d="M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z" />
+  <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

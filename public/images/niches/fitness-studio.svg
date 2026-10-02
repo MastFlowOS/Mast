@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>Fitness Studio</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a1513"/><stop offset="1" stop-color="#0f0806"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#ed1d3f" stop-opacity="0.62"/><stop offset="1" stop-color="#bd0f2c" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#f57b47"/><stop offset="0.6" stop-color="#f57b47" stop-opacity="0.45"/><stop offset="1" stop-color="#f57b47" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#f54787" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f54787" stop-opacity="0.75"/><stop offset="1" stop-color="#f54787" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#f54758"/><stop offset="0.6" stop-color="#f54758" stop-opacity="0.45"/><stop offset="1" stop-color="#f54758" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#f57b47" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f57b47" stop-opacity="0.75"/><stop offset="1" stop-color="#f57b47" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#f54787"/><stop offset="0.6" stop-color="#f54787" stop-opacity="0.45"/><stop offset="1" stop-color="#f54787" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#f54758" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f54758" stop-opacity="0.75"/><stop offset="1" stop-color="#f54758" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#f57b47"/><stop offset="0.6" stop-color="#f57b47" stop-opacity="0.45"/><stop offset="1" stop-color="#f57b47" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#f54787" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f54787" stop-opacity="0.75"/><stop offset="1" stop-color="#f54787" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#f54758"/><stop offset="0.6" stop-color="#f54758" stop-opacity="0.45"/><stop offset="1" stop-color="#f54758" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4d1922" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="112" cy="119" r="14" fill="url(#b0)" opacity="0.38"/><circle cx="260" cy="67" r="9" fill="url(#b1)" opacity="0.35"/><circle cx="300" cy="90" r="10" fill="url(#b2)" opacity="0.62"/><circle cx="104" cy="96" r="22" fill="url(#b3)" opacity="0.71"/><circle cx="204" cy="80" r="20" fill="url(#b4)" opacity="0.74"/><circle cx="148" cy="65" r="27" fill="url(#b5)" opacity="0.79"/><circle cx="100" cy="96" r="12" fill="url(#b6)" opacity="0.31"/><circle cx="108" cy="33" r="9" fill="url(#b7)" opacity="0.57"/><circle cx="261" cy="92" r="9" fill="url(#b8)" opacity="0.60"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#f76e85" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#fa9ead" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#ff6680" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#fdd8de" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

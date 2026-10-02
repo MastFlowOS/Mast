@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>Spa and Wellness</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#13232a"/><stop offset="1" stop-color="#060a0f"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#1ddbed" stop-opacity="0.62"/><stop offset="1" stop-color="#0faebd" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#4795f5"/><stop offset="0.6" stop-color="#4795f5" stop-opacity="0.45"/><stop offset="1" stop-color="#4795f5" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#47f5e1" stop-opacity="0.2"/><stop offset="0.85" stop-color="#47f5e1" stop-opacity="0.75"/><stop offset="1" stop-color="#47f5e1" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#47dbf5"/><stop offset="0.6" stop-color="#47dbf5" stop-opacity="0.45"/><stop offset="1" stop-color="#47dbf5" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#4795f5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#4795f5" stop-opacity="0.75"/><stop offset="1" stop-color="#4795f5" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#47f5e1"/><stop offset="0.6" stop-color="#47f5e1" stop-opacity="0.45"/><stop offset="1" stop-color="#47f5e1" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#47dbf5" stop-opacity="0.2"/><stop offset="0.85" stop-color="#47dbf5" stop-opacity="0.75"/><stop offset="1" stop-color="#47dbf5" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#4795f5"/><stop offset="0.6" stop-color="#4795f5" stop-opacity="0.45"/><stop offset="1" stop-color="#4795f5" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#47f5e1" stop-opacity="0.2"/><stop offset="0.85" stop-color="#47f5e1" stop-opacity="0.75"/><stop offset="1" stop-color="#47f5e1" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#47dbf5"/><stop offset="0.6" stop-color="#47dbf5" stop-opacity="0.45"/><stop offset="1" stop-color="#47dbf5" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#19484d" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="62" cy="66" r="11" fill="url(#b0)" opacity="0.72"/><circle cx="25" cy="132" r="12" fill="url(#b1)" opacity="0.48"/><circle cx="79" cy="40" r="11" fill="url(#b2)" opacity="0.56"/><circle cx="62" cy="132" r="19" fill="url(#b3)" opacity="0.39"/><circle cx="127" cy="83" r="8" fill="url(#b4)" opacity="0.70"/><circle cx="82" cy="91" r="12" fill="url(#b5)" opacity="0.57"/><circle cx="219" cy="74" r="8" fill="url(#b6)" opacity="0.60"/><circle cx="121" cy="28" r="11" fill="url(#b7)" opacity="0.73"/><circle cx="195" cy="31" r="21" fill="url(#b8)" opacity="0.67"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#6eecf7" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#9ef2fa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <path d="M2 12q2.5 2 5 0t5 0 5 0 5 0" />
+  <path d="M2 19q2.5 2 5 0t5 0 5 0 5 0" />
+  <path d="M2 5q2.5 2 5 0t5 0 5 0 5 0" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#66f2ff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <path d="M2 12q2.5 2 5 0t5 0 5 0 5 0" />
+  <path d="M2 19q2.5 2 5 0t5 0 5 0 5 0" />
+  <path d="M2 5q2.5 2 5 0t5 0 5 0 5 0" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#d8fafd" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <path d="M2 12q2.5 2 5 0t5 0 5 0 5 0" />
+  <path d="M2 19q2.5 2 5 0t5 0 5 0 5 0" />
+  <path d="M2 5q2.5 2 5 0t5 0 5 0 5 0" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

@@ -961,7 +961,7 @@ function GetLeads() {
                           setNicheSearch("");
                         }
                       }}
-                      className="h-11 w-full rounded-xl border border-white/10 bg-black/25 pl-10 pr-10 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-brand focus:ring-2 focus:ring-brand/35"
+                      className="h-12 w-full rounded-xl border border-white/10 bg-black/25 pl-11 pr-10 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-brand focus:ring-2 focus:ring-brand/35"
                     />
                     {nicheSearch && (
                       <button
@@ -998,7 +998,8 @@ function GetLeads() {
 
                   <div className="-mx-2 mt-1">
                     <NicheCarousel
-                      niches={filteredNiches}
+                      niches={NICHE_CATALOG}
+                      matches={filteredNiches}
                       selected={niches}
                       focused={focusedNiche}
                       query={nicheSearch}

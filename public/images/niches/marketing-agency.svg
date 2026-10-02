@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 250" preserveAspectRatio="xMidYMid slice">
+<title>Marketing Agency</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a131b"/><stop offset="1" stop-color="#0f0607"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="38%" r="55%"><stop offset="0" stop-color="#ed1d96" stop-opacity="0.62"/><stop offset="1" stop-color="#bd0f74" stop-opacity="0"/></radialGradient>
+<radialGradient id="b0"><stop offset="0" stop-color="#f5475b"/><stop offset="0.6" stop-color="#f5475b" stop-opacity="0.45"/><stop offset="1" stop-color="#f5475b" stop-opacity="0"/></radialGradient><radialGradient id="b1"><stop offset="0.55" stop-color="#f547d0" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f547d0" stop-opacity="0.75"/><stop offset="1" stop-color="#f547d0" stop-opacity="0"/></radialGradient><radialGradient id="b2"><stop offset="0" stop-color="#f547a1"/><stop offset="0.6" stop-color="#f547a1" stop-opacity="0.45"/><stop offset="1" stop-color="#f547a1" stop-opacity="0"/></radialGradient><radialGradient id="b3"><stop offset="0.55" stop-color="#f5475b" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f5475b" stop-opacity="0.75"/><stop offset="1" stop-color="#f5475b" stop-opacity="0"/></radialGradient><radialGradient id="b4"><stop offset="0" stop-color="#f547d0"/><stop offset="0.6" stop-color="#f547d0" stop-opacity="0.45"/><stop offset="1" stop-color="#f547d0" stop-opacity="0"/></radialGradient><radialGradient id="b5"><stop offset="0.55" stop-color="#f547a1" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f547a1" stop-opacity="0.75"/><stop offset="1" stop-color="#f547a1" stop-opacity="0"/></radialGradient><radialGradient id="b6"><stop offset="0" stop-color="#f5475b"/><stop offset="0.6" stop-color="#f5475b" stop-opacity="0.45"/><stop offset="1" stop-color="#f5475b" stop-opacity="0"/></radialGradient><radialGradient id="b7"><stop offset="0.55" stop-color="#f547d0" stop-opacity="0.2"/><stop offset="0.85" stop-color="#f547d0" stop-opacity="0.75"/><stop offset="1" stop-color="#f547d0" stop-opacity="0"/></radialGradient><radialGradient id="b8"><stop offset="0" stop-color="#f547a1"/><stop offset="0.6" stop-color="#f547a1" stop-opacity="0.45"/><stop offset="1" stop-color="#f547a1" stop-opacity="0"/></radialGradient>
+<linearGradient id="floor" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4d1937" stop-opacity="0.55"/><stop offset="1" stop-color="#05060d" stop-opacity="0.95"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="45%" r="75%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.6"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="refl"><rect x="0" y="170" width="330" height="80" fill="url(#fade)"/></mask>
+</defs>
+<rect width="330" height="250" fill="url(#bg)"/>
+<rect width="330" height="250" fill="url(#glow)"/>
+<circle cx="107" cy="43" r="17" fill="url(#b0)" opacity="0.36"/><circle cx="23" cy="52" r="11" fill="url(#b1)" opacity="0.37"/><circle cx="265" cy="134" r="12" fill="url(#b2)" opacity="0.50"/><circle cx="131" cy="23" r="11" fill="url(#b3)" opacity="0.70"/><circle cx="251" cy="32" r="18" fill="url(#b4)" opacity="0.68"/><circle cx="210" cy="24" r="23" fill="url(#b5)" opacity="0.48"/><circle cx="183" cy="106" r="9" fill="url(#b6)" opacity="0.47"/><circle cx="193" cy="29" r="20" fill="url(#b7)" opacity="0.43"/><circle cx="277" cy="25" r="24" fill="url(#b8)" opacity="0.59"/>
+<rect y="170" width="330" height="80" fill="url(#floor)"/>
+<rect y="169.5" width="330" height="1" fill="#f76ebe" opacity="0.35"/>
+<g mask="url(#refl)"><g transform="translate(110 213) scale(4.6 -4.6)" fill="none" stroke="#fa9ed4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.22">
+  <circle cx="12" cy="12" r="10" />
+  <circle cx="12" cy="12" r="6" />
+  <circle cx="12" cy="12" r="2" />
+</g></g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#ff66bf" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28">
+  <circle cx="12" cy="12" r="10" />
+  <circle cx="12" cy="12" r="6" />
+  <circle cx="12" cy="12" r="2" />
+</g>
+<g transform="translate(110 57) scale(4.6)" fill="none" stroke="#fdd8ee" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+  <circle cx="12" cy="12" r="10" />
+  <circle cx="12" cy="12" r="6" />
+  <circle cx="12" cy="12" r="2" />
+</g>
+<rect width="330" height="250" fill="url(#vig)"/>
+</svg>

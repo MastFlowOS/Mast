@@ -27,14 +27,19 @@ export type FlatView = { cx: number; cy: number; w: number };
 export type FitSpec =
   | { kind: "world" }
   | { kind: "bounds"; x0: number; y0: number; x1: number; y1: number }
-  | { kind: "point"; lon: number; lat: number };
+  | { kind: "point"; lon: number; lat: number }
+  /** A country: stay on the world view, nudged ~10% closer and drifted toward (x, y). */
+  | { kind: "focus"; x: number; y: number };
+
+/** How much closer than the full-world view a picked country gets (1.1 = 10%). */
+export const FOCUS_ZOOM = 1.1;
 
 /** Share of the frame's width / height a focused country's bounding box may fill.
  * Height is tighter: the label pill sits over the bottom of the map. */
-const FILL_W = 0.6;
-const FILL_H = 0.66;
+const FILL_W = 0.42;
+const FILL_H = 0.5;
 /** Lift the country this fraction of the frame height, clear of the label pill. */
-const LIFT = 0.1;
+const LIFT = 0.13;
 /** Never frame a window narrower than this many degrees of longitude. */
 const MIN_SPAN_DEG = 16;
 const MIN_W = (MIN_SPAN_DEG * Math.PI * BASE_SCALE) / 180;
@@ -103,6 +108,16 @@ export function viewForSpec(spec: FitSpec, aspect: number): FlatView {
   if (spec.kind === "world") {
     const [cx, cy] = flatProjection([0, WORLD_CENTER_LAT]) as [number, number];
     return { cx, cy, w: WORLD_W * 1.02 };
+  }
+  if (spec.kind === "focus") {
+    const world = viewForSpec({ kind: "world" }, aspect);
+    const w = world.w / FOCUS_ZOOM;
+    const h = w / aspect;
+    // Slide toward the country, but never off the sheet sideways, and never far from the world's centre line.
+    const maxX = Math.max(0, (WORLD_W - w) / 2);
+    const cx = clamp(spec.x, world.cx - maxX, world.cx + maxX);
+    const cy = clamp(spec.y, world.cy - h * 0.3, world.cy + h * 0.3);
+    return { cx, cy, w };
   }
   if (spec.kind === "point") {
     const [cx, cy] = flatProjection([spec.lon, spec.lat]) as [number, number];

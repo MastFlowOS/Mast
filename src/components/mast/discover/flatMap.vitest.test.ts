@@ -42,6 +42,13 @@ describe("viewForSpec", () => {
     expect(tiny.w).toBeGreaterThanOrEqual(278);
   });
 
+  it("a picked country only zooms ~10% past the world view", () => {
+    const world = viewForSpec({ kind: "world" }, 2.6);
+    const [x, y] = flatProjection([-98, 39]) as [number, number];
+    const v = viewForSpec({ kind: "focus", x, y }, 2.6);
+    expect(world.w / v.w).toBeCloseTo(1.1, 2);
+  });
+
   it("fits tall countries by height", () => {
     const tall = viewForSpec(mainlandBounds([square(-72, -50, 6)])!, 2.6);
     const wide = viewForSpec(mainlandBounds([square(-72, 0, 6)])!, 2.6);

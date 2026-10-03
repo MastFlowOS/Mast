@@ -82,9 +82,12 @@ function specForScope(scope: GlobeScope, world: GlobeWorld, highlight: CountryFe
 
   if (scope.kind === "country") {
     const focus = scope.focusId ? world.byId.get(scope.focusId) : undefined;
-    if (focus) return mainlandBounds([focus]) ?? { kind: "world" };
+    // A country is highlighted, not zoomed to: the world stays in view, just ~10% closer.
+    const b = focus ? mainlandBounds([focus]) : null;
+    if (b && b.kind === "bounds") return { kind: "focus", x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 };
     const p = scope.points.find((pt) => pt.focus);
-    return p ? { kind: "point", lon: p.lon, lat: p.lat } : { kind: "world" };
+    const xy = p ? flatProjection([p.lon, p.lat]) : null;
+    return xy ? { kind: "focus", x: xy[0], y: xy[1] } : { kind: "world" };
   }
 
   // Continent: frame the mainlands of its countries.

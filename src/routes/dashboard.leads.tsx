@@ -877,13 +877,16 @@ function GetLeads() {
       <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px] xl:grid-cols-[minmax(0,1fr)_320px]">
         {/* ── Left: hero + the five steps + launch ─────────────────── */}
         <div className="@container min-w-0">
-          <div style={{ ["--g" as string]: "clamp(190px, 36cqw, 400px)" }}>
-            {/* Hero */}
-            <div className="relative flex flex-col items-center overflow-x-clip @2xl:block @2xl:h-[var(--g)]">
-              <div className="@2xl:absolute @2xl:left-[63%] @2xl:top-0 @2xl:-translate-x-1/2">
-                <DiscoverGlobe regions={regions} niches={niches} />
+          <div style={{ ["--g" as string]: "clamp(230px, 48cqw, 600px)" }}>
+            {/* Hero — the globe is about half hidden: its lower half sits under the cards */}
+            <div
+              style={{ ["--hh" as string]: "max(calc(var(--g) * 0.5 + 2.25rem), 13.5rem)" }}
+              className="relative flex flex-col items-center overflow-x-clip @2xl:block @2xl:h-[var(--hh)]"
+            >
+              <div className="flex h-[calc(var(--g)*0.5+1.5rem)] w-full justify-center overflow-hidden pt-3 @2xl:absolute @2xl:left-[68%] @2xl:top-[calc(var(--hh)-var(--g)*0.5-0.75rem)] @2xl:h-auto @2xl:w-auto @2xl:-translate-x-1/2 @2xl:overflow-visible @2xl:pt-0">
+                <DiscoverGlobe />
               </div>
-              <div className="relative z-10 mt-8 text-center @2xl:mt-0 @2xl:max-w-[30rem] @2xl:pt-7 @2xl:text-left">
+              <div className="relative z-10 mt-6 text-center @2xl:mt-0 @2xl:max-w-[30rem] @2xl:pt-7 @2xl:text-left">
                 <h1 className="whitespace-nowrap text-[clamp(1.9rem,4.2cqw,3.2rem)] font-extrabold leading-[1.04] tracking-[-0.035em] text-foreground">
                   Find Businesses
                   <br />
@@ -895,7 +898,7 @@ function GetLeads() {
               </div>
             </div>
 
-            <div className="relative z-10 mt-7 space-y-4 @2xl:-mt-[calc(var(--g)*0.12)]">
+            <div className="relative z-10 mt-4 space-y-4 @2xl:mt-0">
               {/* Control-card grid — one 24-column grid so the five cards read
                   as a single composition (proportions from the design ref):
                   Row 1: Niche · Region (50 / 50)

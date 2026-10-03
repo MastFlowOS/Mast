@@ -5,7 +5,7 @@
  * sits inside it — measured from the file, not from the design.
  *
  * The planet in the artwork is a very slightly flattened ellipse
- * (rx 370 × ry 349.5), so the interactive overlay is flattened to match.
+ * (rx 370 × ry 349.5).
  */
 
 export const GLOBE_ART = {
@@ -18,13 +18,3 @@ export const GLOBE_ART = {
   rx: 370,
   ry: 349.5,
 } as const;
-
-/** Planet height ÷ planet width. */
-export const GLOBE_ASPECT = GLOBE_ART.ry / GLOBE_ART.rx;
-
-/**
- * The camera the artwork was painted from (Americas facing us). The overlay
- * projects with this view whenever the selection is already on show, so
- * highlighted countries land on the countries printed in the PNG.
- */
-export const ART_VIEW = { lon: -61, lat: 12, k: 1 } as const;

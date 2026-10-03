@@ -35,6 +35,7 @@ import { useLiveDiscoveryState } from "@/hooks/use-live-discovery";
 import { LiveDiscoveryScreen } from "@/components/mast/LiveDiscoveryScreen";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildDiscoverInsights, type DiscoverInsight } from "@/lib/discover-insights";
+import { buildNextSearchSuggestions, type NextSearchSuggestions } from "@/lib/discover-suggestions";
 import { usePermissions } from "@/hooks/use-permissions";
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { type FeatureId } from "@/lib/permissions";
@@ -406,6 +407,22 @@ function GetLeads() {
     }
     setChannels((c) => toggleChannelSelection(c, id));
   };
+
+  const nextSuggestions: NextSearchSuggestions = buildNextSearchSuggestions({
+    leads,
+    nicheCatalog: NICHE_CATALOG,
+    isUsableRegion: (t) =>
+      t !== GLOBAL_SCOPE &&
+      parseGeoScope(t).invalid.length === 0 &&
+      (permissions.can("regionalSearch") || isLocalGeoToken(t)),
+    quantitySteps: QUANTITY_STEPS,
+    maxQuantity: permissions.limits.dailyOpportunities,
+    dailyRemaining,
+    monthlyRemaining,
+    allowedChannels: channelOptions
+      .filter((c) => permissions.can(channelToFeature[c.id]))
+      .map((c) => c.id),
+  });
 
   const filteredNiches = NICHE_CATALOG.filter((n) =>
     n.toLowerCase().includes(nicheSearch.toLowerCase())
@@ -1226,12 +1243,30 @@ function GetLeads() {
         <DiscoverAiOverview
           insights={discoverInsights}
           loading={!account || !analytics}
-          setup={{
-            niches,
-            regions,
-            quantity,
-            channels: selectedChannelOptions.map((c) => c.short),
-            channelTotal: channelOptions.length,
+          suggestions={nextSuggestions}
+          applied={{
+            niche: !!nextSuggestions.niche && niches.includes(nextSuggestions.niche.value),
+            region: !!nextSuggestions.region && regions.includes(nextSuggestions.region.value),
+            amount: !!nextSuggestions.amount && quantity === nextSuggestions.amount.value,
+            channel: !!nextSuggestions.channel && channels.includes(nextSuggestions.channel.value as ChannelId),
+          }}
+          onApply={{
+            niche: () => {
+              const v = nextSuggestions.niche?.value;
+              if (v) setNiches((prev) => (prev.includes(v) ? prev : [...prev, v]));
+            },
+            region: () => {
+              const v = nextSuggestions.region?.value;
+              if (v && !regions.includes(v)) toggleRegion(v);
+            },
+            amount: () => {
+              const v = nextSuggestions.amount?.value;
+              if (v) setQtyIndex(qtyToSliderIndex(v));
+            },
+            channel: () => {
+              const v = nextSuggestions.channel?.value as ChannelId | undefined;
+              if (v && !channels.includes(v)) toggleChannel(v);
+            },
           }}
         />
       </div>
@@ -1452,14 +1487,9 @@ function insightToBriefing(i: DiscoverInsight): AiBriefing {
   };
 }
 
-/** The Discover settings the user has picked, shown as context beside the recommendation. */
-type AiSetup = {
-  niches: readonly string[];
-  regions: readonly string[];
-  quantity: number;
-  channels: readonly string[];
-  channelTotal: number;
-};
+type SuggestionKey = "niche" | "region" | "amount" | "channel";
+type AiApply = Record<SuggestionKey, () => void>;
+type AiApplied = Record<SuggestionKey, boolean>;
 
 const CONFIDENCE_ICON: Record<DiscoverInsight["confidence"], typeof TrendingUp> = {
   "High Confidence": TrendingUp,
@@ -1492,47 +1522,62 @@ function BriefingAction({ action, tone }: { action: { label: string; href: strin
   );
 }
 
-/** One compact "setup" tile: icon, label, the selected value, and a factual one-liner. */
-function SetupTile({
+/** One compact "search next" tile. Clicking it applies the suggestion to the form. */
+function SuggestionTile({
   icon: Icon,
   tint,
   label,
   value,
-  empty,
-  hint,
+  reason,
+  applied,
+  onApply,
 }: {
   icon: typeof Sparkles;
   tint: { bg: string; fg: string };
   label: string;
-  value: string;
-  empty?: boolean;
-  hint: string;
+  /** null = nothing to suggest yet */
+  value: string | null;
+  reason: string;
+  applied: boolean;
+  onApply: () => void;
 }) {
+  const disabled = value === null;
   return (
-    <div className="flex min-w-0 flex-col justify-center gap-1.5 rounded-xl border border-white/[0.06] bg-black/20 px-2.5 py-2.5">
-      <div className="flex min-w-0 items-center gap-2.5">
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onApply}
+      aria-pressed={applied}
+      title={disabled ? reason : applied ? `${value} is already selected` : `Use ${value}`}
+      className={cn(
+        "group relative flex min-w-0 flex-col justify-center gap-1 rounded-xl border px-2.5 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/60",
+        applied ? "border-brand/40 bg-brand/[0.07]" : "border-white/[0.06] bg-black/20",
+        disabled ? "cursor-default" : "cursor-pointer hover:border-white/20",
+      )}
+    >
+      <span className="flex min-w-0 items-center gap-2">
         <span
           aria-hidden="true"
           style={{ background: tint.bg, color: tint.fg }}
-          className="grid size-7 shrink-0 place-items-center rounded-lg"
+          className="grid size-6 shrink-0 place-items-center rounded-md"
         >
-          <Icon className="size-3.5" strokeWidth={2} />
+          <Icon className="size-3" strokeWidth={2.2} />
         </span>
-        <span className="min-w-0">
-          <span className="block text-[10px] leading-none text-muted-foreground">{label}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[9.5px] leading-none text-muted-foreground">{label}</span>
           <span
-            title={value}
             className={cn(
-              "mt-1 block truncate text-xs font-semibold leading-tight",
-              empty ? "text-muted-foreground" : "text-foreground",
+              "mt-0.5 block truncate text-[11.5px] font-semibold leading-tight",
+              disabled ? "text-muted-foreground" : "text-foreground",
             )}
           >
-            {value}
+            {value ?? "—"}
           </span>
         </span>
-      </div>
-      <p className="hidden truncate text-[10.5px] leading-snug text-muted-foreground min-[1500px]:block">{hint}</p>
-    </div>
+        {applied && <Check className="size-3 shrink-0 text-brand" strokeWidth={3} aria-label="Selected" />}
+      </span>
+      <span className="truncate text-[10px] leading-snug text-muted-foreground">{reason}</span>
+    </button>
   );
 }
 
@@ -1543,12 +1588,17 @@ function SetupTile({
 function DiscoverAiOverview({
   insights,
   loading,
-  setup,
+  suggestions,
+  applied,
+  onApply,
   briefing,
 }: {
   insights: DiscoverInsight[];
   loading: boolean;
-  setup: AiSetup;
+  /** What to search next — see buildNextSearchSuggestions(). */
+  suggestions: NextSearchSuggestions;
+  applied: AiApplied;
+  onApply: AiApply;
   /** Optional override, e.g. a real AI-generated recommendation. */
   briefing?: AiBriefing;
 }) {
@@ -1562,9 +1612,9 @@ function DiscoverAiOverview({
   const ConfIcon = main ? CONFIDENCE_ICON[main.confidence] : TrendingUp;
   const [confHead, ...confRest] = (main?.confidence ?? "").split(" ");
 
-  const nicheValue = setup.niches.length === 0 ? "Choose a niche" : setup.niches[0];
-  const regionValue = setup.regions.length === 0 ? "Choose a region" : setup.regions[0];
-  const channelValue = setup.channels.length === 0 ? "Choose channels" : setup.channels.join(", ");
+  const channelLabel = suggestions.channel
+    ? (channelOptions.find((c) => c.id === suggestions.channel!.value)?.short ?? suggestions.channel.value)
+    : null;
 
   return (
     <section className={cn(panelSurface, "p-4 sm:p-5")}>
@@ -1603,7 +1653,7 @@ function DiscoverAiOverview({
         </div>
       ) : (
         <>
-          <div className="mt-3.5 grid gap-2.5 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,2fr)]">
+          <div className="mt-3.5 grid gap-2.5 lg:grid-cols-[minmax(0,2.5fr)_minmax(0,2fr)]">
             {/* main recommendation */}
             <div className="relative flex min-w-0 items-center gap-3 overflow-hidden rounded-xl border border-brand/25 bg-brand/[0.05] py-2.5 pl-4 pr-3 shadow-[0_0_30px_-18px_var(--brand)]">
               <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-brand to-brand/30" />
@@ -1631,38 +1681,43 @@ function DiscoverAiOverview({
               </div>
             </div>
 
-            {/* the selected setup, as context */}
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-              <SetupTile
+            {/* what to search next */}
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <SuggestionTile
                 icon={Building2}
                 tint={{ bg: "rgba(112,84,255,0.2)", fg: "#a99bff" }}
                 label="Niche"
-                value={nicheValue}
-                empty={setup.niches.length === 0}
-                hint={setup.niches.length > 1 ? `+${setup.niches.length - 1} more selected` : "Your target market."}
+                value={suggestions.niche?.value ?? null}
+                reason={suggestions.niche?.reason ?? "Appears after your first run."}
+                applied={applied.niche}
+                onApply={onApply.niche}
               />
-              <SetupTile
+              <SuggestionTile
                 icon={MapPin}
                 tint={{ bg: "rgba(40,110,230,0.2)", fg: "#4c90ff" }}
                 label="Region"
-                value={regionValue}
-                empty={setup.regions.length === 0}
-                hint={setup.regions.length > 1 ? `+${setup.regions.length - 1} more selected` : "Where MAST will look."}
+                value={suggestions.region?.value ?? null}
+                reason={suggestions.region?.reason ?? "Appears after your first run."}
+                applied={applied.region}
+                onApply={onApply.region}
               />
-              <SetupTile
+              <SuggestionTile
                 icon={BarChart3}
                 tint={{ bg: "rgba(20,184,150,0.18)", fg: "#2dd4a8" }}
                 label="Amount"
-                value={`${setup.quantity.toLocaleString()} ${setup.quantity === 1 ? "business" : "businesses"}`}
-                hint={`${setup.quantity.toLocaleString()} credit${setup.quantity === 1 ? "" : "s"} for this run.`}
+                value={suggestions.amount ? `${suggestions.amount.value.toLocaleString()} businesses` : null}
+                reason={suggestions.amount?.reason ?? "No capacity left today."}
+                applied={applied.amount}
+                onApply={onApply.amount}
               />
-              <SetupTile
+              <SuggestionTile
                 icon={Link2}
                 tint={{ bg: "rgba(236,72,153,0.18)", fg: "#ff5fb4" }}
-                label="Contact Channels"
-                value={channelValue}
-                empty={setup.channels.length === 0}
-                hint={`${setup.channels.length} of ${setup.channelTotal} channels selected.`}
+                label="Contact Channel"
+                value={channelLabel}
+                reason={suggestions.channel?.reason ?? "No channels on your plan."}
+                applied={applied.channel}
+                onApply={onApply.channel}
               />
             </div>
           </div>

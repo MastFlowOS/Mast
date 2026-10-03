@@ -1509,21 +1509,21 @@ function SetupTile({
   hint: string;
 }) {
   return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-white/[0.06] bg-black/20 p-3">
+    <div className="flex min-w-0 flex-col justify-center gap-1.5 rounded-xl border border-white/[0.06] bg-black/20 px-2.5 py-2.5">
       <div className="flex min-w-0 items-center gap-2.5">
         <span
           aria-hidden="true"
           style={{ background: tint.bg, color: tint.fg }}
-          className="grid size-8 shrink-0 place-items-center rounded-[10px]"
+          className="grid size-7 shrink-0 place-items-center rounded-lg"
         >
-          <Icon className="size-4" strokeWidth={2} />
+          <Icon className="size-3.5" strokeWidth={2} />
         </span>
         <span className="min-w-0">
-          <span className="block text-[11px] leading-none text-muted-foreground">{label}</span>
+          <span className="block text-[10px] leading-none text-muted-foreground">{label}</span>
           <span
             title={value}
             className={cn(
-              "mt-1 block truncate text-[13px] font-semibold leading-tight",
+              "mt-1 block truncate text-xs font-semibold leading-tight",
               empty ? "text-muted-foreground" : "text-foreground",
             )}
           >
@@ -1531,7 +1531,7 @@ function SetupTile({
           </span>
         </span>
       </div>
-      <p className="text-[11px] leading-snug text-muted-foreground">{hint}</p>
+      <p className="hidden truncate text-[10.5px] leading-snug text-muted-foreground min-[1500px]:block">{hint}</p>
     </div>
   );
 }
@@ -1572,9 +1572,9 @@ function DiscoverAiOverview({
         <div className="flex min-w-0 items-center gap-3">
           <span
             aria-hidden="true"
-            className="grid size-10 shrink-0 place-items-center rounded-xl border border-brand/25 bg-brand/[0.13] text-brand"
+            className="grid size-9 shrink-0 place-items-center rounded-xl border border-brand/25 bg-brand/[0.13] text-brand"
           >
-            <Sparkles className="size-5" />
+            <Sparkles className="size-[18px]" />
           </span>
           <div className="min-w-0">
             <h2 className="text-[15px] font-semibold leading-tight text-foreground">AI Overview</h2>
@@ -1603,36 +1603,36 @@ function DiscoverAiOverview({
         </div>
       ) : (
         <>
-          <div className="mt-4 grid gap-3 @3xl:grid-cols-[minmax(0,1.7fr)_minmax(0,2fr)]">
+          <div className="mt-3.5 grid gap-2.5 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,2fr)]">
             {/* main recommendation */}
-            <div className="relative flex min-w-0 items-start gap-4 overflow-hidden rounded-xl border border-brand/25 bg-brand/[0.05] py-3.5 pl-5 pr-4 shadow-[0_0_30px_-18px_var(--brand)]">
+            <div className="relative flex min-w-0 items-center gap-3 overflow-hidden rounded-xl border border-brand/25 bg-brand/[0.05] py-2.5 pl-4 pr-3 shadow-[0_0_30px_-18px_var(--brand)]">
               <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-brand to-brand/30" />
               <div className="min-w-0 flex-1">
                 <p className="text-[10.5px] font-bold uppercase tracking-wider text-brand">{main.label}</p>
-                <p className="mt-1 text-[15px] font-semibold leading-snug text-foreground">{main.headline}</p>
-                <p className="mt-1.5 line-clamp-3 text-xs leading-relaxed text-muted-foreground">{main.body}</p>
+                <p className="mt-0.5 text-sm font-semibold leading-snug text-foreground">{main.headline}</p>
+                <p className="mt-1 line-clamp-2 text-[11.5px] leading-snug text-muted-foreground">{main.body}</p>
                 {main.action && (
-                  <div className="mt-2">
+                  <div className="mt-1">
                     <BriefingAction action={main.action} tone={main.tone} />
                   </div>
                 )}
               </div>
-              <div className="flex w-[88px] shrink-0 flex-col items-center text-center">
+              <div className="flex w-[72px] shrink-0 flex-col items-center text-center">
                 <span
                   aria-hidden="true"
-                  className="grid size-10 place-items-center rounded-xl border border-brand/20 bg-brand/[0.12] text-brand"
+                  className="grid size-8 place-items-center rounded-lg border border-brand/20 bg-brand/[0.12] text-brand"
                 >
-                  <ConfIcon className="size-[18px]" strokeWidth={2.2} />
+                  <ConfIcon className="size-4" strokeWidth={2.2} />
                 </span>
-                <span className={`mt-1.5 text-[13px] font-semibold leading-none ${CONFIDENCE_STYLES[main.confidence]}`}>
+                <span className={`mt-1 text-xs font-semibold leading-none ${CONFIDENCE_STYLES[main.confidence]}`}>
                   {confHead}
                 </span>
-                <span className="mt-1 text-[11px] leading-tight text-muted-foreground">{confRest.join(" ")}</span>
+                <span className="mt-0.5 text-[10px] leading-tight text-muted-foreground">{confRest.join(" ")}</span>
               </div>
             </div>
 
             {/* the selected setup, as context */}
-            <div className="grid grid-cols-2 gap-3 @xl:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
               <SetupTile
                 icon={Building2}
                 tint={{ bg: "rgba(112,84,255,0.2)", fg: "#a99bff" }}

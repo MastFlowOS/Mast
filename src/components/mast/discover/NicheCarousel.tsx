@@ -16,19 +16,19 @@ type Props = {
   onToggle: (niche: string) => void;
 };
 
-// Card geometry (px) at a 380px-wide strip; everything scales with the strip.
-// Centre card is big with a label band under the photo; neighbours are smaller
-// and tucked *behind* it (OVERLAP px hidden), so three cards read at a glance.
-const W = 124;
-const H = 118;
-const CW = 172;
-const CH = 156;
-const GAP = 10;
-const OVERLAP = 46;
-const LABEL_H = 38;
-const CENTER_LABEL_H = 48;
-const BASE_STRIP = 380;
+// Card geometry, as fractions of the strip width so exactly three cards fit:
+// a big centre card and one smaller neighbour tucked behind it on each side.
+// Anything further out is parked (invisible) behind the neighbours.
+const CENTER_W = 0.48;
+const SIDE_W = 0.33;
+const OVERLAP = 0.04;
+const CENTER_RATIO = 0.92; // height / width
+const SIDE_RATIO = 0.95;
+const LABEL_H = 34;
+const CENTER_LABEL_H = 44;
+const FALLBACK_W = 340;
 const PAD_Y = 22; // room for the centre card's glow
+const ARROW_INSET = 16; // strip margin so arrows only overlap the card corners
 
 /** The carousel opens on the middle card so a neighbour shows on both sides. */
 export const startIndex = (count: number) => Math.max(0, Math.floor((count - 1) / 2));
@@ -98,28 +98,23 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
     tileRefs.current.get(niches[center])?.focus();
   }, [center, niches]);
 
-  // Everything scales with the strip so 3 cards fit on narrow and wide layouts.
-  const k = Math.min(1.35, Math.max(0.8, (width || BASE_STRIP) / BASE_STRIP));
-  const cw = CW * k;
-  const ch = CH * k;
-  const sw = W * k;
-  const sh = H * k;
+  const sw0 = width || FALLBACK_W;
+  const cw = sw0 * CENTER_W;
+  const ch = cw * CENTER_RATIO;
+  const sw = sw0 * SIDE_W;
+  const sh = sw * SIDE_RATIO;
   const stripH = ch + PAD_Y * 2;
 
-  // Left edge of card i: the centre card is centred; neighbours slide in
-  // behind it (OVERLAP hidden), further cards follow edge to edge.
+  // Left edge of card i. The centre card is centred; the neighbours sit just
+  // behind it; cards further out are parked under the neighbours (hidden).
   const xOf = (i: number) => {
-    const cLeft = width / 2 - cw / 2;
-    const d = Math.abs(i - center);
-    if (d === 0) return cLeft;
-    const step = sw + GAP * k;
-    return i < center
-      ? cLeft + OVERLAP * k - sw - (d - 1) * step
-      : cLeft + cw - OVERLAP * k + (d - 1) * step;
+    const cLeft = sw0 / 2 - cw / 2;
+    if (i === center) return cLeft;
+    return i < center ? cLeft + sw0 * OVERLAP - sw : cLeft + cw - sw0 * OVERLAP;
   };
 
   // Mount only what can be seen (+2 cards of runway each side).
-  const reach = Math.ceil(width / 2 / ((W + GAP) * 0.8)) + 2;
+  const reach = 2; // centre ± 1 are shown; ±2 are mounted so they glide in/out
   const from = clamp(center - reach);
   const to = clamp(center + reach);
   const visible = useMemo(() => niches.slice(from, to + 1), [niches, from, to]);
@@ -143,7 +138,7 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
   if (query.trim() && matches.length === 0) {
     return (
       <div
-        style={{ height: CH + PAD_Y * 2 }}
+        style={{ height: stripH }}
         className="flex items-center justify-center rounded-2xl border border-dashed border-border/80 text-sm text-muted-foreground"
       >
         No niches match “{query}”
@@ -158,7 +153,7 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
         role="group"
         aria-label="Business niches"
         onKeyDown={onKeyDown}
-        style={{ height: stripH }}
+        style={{ height: stripH, marginInline: ARROW_INSET }}
         className="relative overflow-x-clip overflow-y-visible"
       >
         {visible.map((name, idx) => {
@@ -179,6 +174,7 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
               aria-pressed={isSelected}
               aria-current={isCenter ? "true" : undefined}
               tabIndex={isCenter ? 0 : -1}
+              aria-hidden={dist > 1 ? true : undefined}
               onClick={() => {
                 // Same toggle as before; a neighbour also glides to the middle.
                 setCenter(i);
@@ -189,8 +185,9 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
                 height: h,
                 top: (stripH - h) / 2,
                 transform: `translateX(${xOf(i)}px)`,
-                opacity: isCenter ? 1 : dist === 1 ? 0.95 : 0.7,
+                opacity: dist === 0 ? 1 : dist === 1 ? 0.95 : 0,
                 zIndex: isCenter ? 3 : dist === 1 ? 2 : 1,
+                pointerEvents: dist > 1 ? "none" : undefined,
               }}
               className={cn(
                 "group absolute left-0 flex cursor-pointer flex-col overflow-hidden rounded-[22px] border bg-card p-0 text-left outline-none",
@@ -226,15 +223,24 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
                 />
               </span>
               <span
-                style={{ height: (isCenter ? CENTER_LABEL_H : LABEL_H) * k }}
-                className={cn(
-                  "grid shrink-0 place-items-center bg-card px-2 text-center leading-tight transition-[height,font-size,color] duration-500 motion-reduce:transition-none",
-                  isCenter
-                    ? "text-[18px] font-semibold tracking-tight text-white"
-                    : "text-[13px] font-medium text-white/60",
-                )}
+                style={{
+                  height: isCenter ? CENTER_LABEL_H : LABEL_H,
+                  // neighbours: centre the name in the part that isn't hidden behind the centre card
+                  paddingLeft: !isCenter && i > center ? sw0 * OVERLAP : 0,
+                  paddingRight: !isCenter && i < center ? sw0 * OVERLAP : 0,
+                }}
+                className="grid shrink-0 place-items-center overflow-hidden bg-card px-1.5 transition-[height] duration-500 motion-reduce:transition-none"
               >
-                <span className="line-clamp-1">{name}</span>
+                {/* Fixed size + transform scale: the name never re-wraps or jumps while gliding. */}
+                <span
+                  style={{ transform: `scale(${isCenter ? 1.12 : 0.82})` }}
+                  className={cn(
+                    "block max-w-full origin-center whitespace-nowrap text-center text-[16px] leading-none transition-[transform,color] duration-500 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+                    isCenter ? "font-semibold tracking-tight text-white" : "font-medium text-white/60",
+                  )}
+                >
+                  {name}
+                </span>
               </span>
               {isSelected && (
                 <span
@@ -275,13 +281,13 @@ function ArrowButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "absolute top-1/2 z-10 grid size-11 -translate-y-1/2 place-items-center rounded-full border-[1.5px] border-white/20 bg-card/90 text-foreground shadow-md backdrop-blur transition-[opacity,color,border-color] duration-200",
+        "absolute top-[46%] z-10 grid size-9 -translate-y-1/2 place-items-center rounded-full border-[1.5px] border-white/20 bg-card/90 text-foreground shadow-md backdrop-blur transition-[opacity,color,border-color] duration-200",
         "hover:border-brand/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-brand/70 outline-none",
         "disabled:pointer-events-none disabled:opacity-30",
-        side === "left" ? "left-2" : "right-2",
+        side === "left" ? "left-0" : "right-0",
       )}
     >
-      <Icon className="size-5" strokeWidth={2.4} />
+      <Icon className="size-4" strokeWidth={2.6} />
     </button>
   );
 }

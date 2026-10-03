@@ -36,9 +36,9 @@ import {
 const GRATICULE = geoGraticule10();
 
 /** The sheet is tipped back in CSS perspective (top recedes) for depth. Tweak to taste. */
-const TILT_DEG = 38;
+const TILT_DEG = 30;
 const TILT_PERSPECTIVE = 640; // px; smaller = stronger perspective
-const TILT_SCALE = 1.22; // compensates for the recession so the map still fills the card
+const TILT_SCALE = 1.14; // compensates for the recession so the map still fills the card
 const TILT_ORIGIN = "50% 64%";
 /** Antarctica (ISO numeric 010) only adds a slab of white at the bottom of a Mercator map. */
 const ANTARCTICA = "010";
@@ -116,48 +116,124 @@ function paint(
   ctx.lineJoin = "round";
 
   const pathTo = geoPath(flatProjection, ctx);
+  const top = view.cy - H / (2 * s);
+  const bottom = view.cy + H / (2 * s);
 
   if (!moving) {
     ctx.beginPath();
     pathTo(GRATICULE);
-    ctx.strokeStyle = "rgba(110,130,255,0.13)";
+    ctx.strokeStyle = "rgba(110,130,255,0.10)";
     ctx.lineWidth = px(0.7);
     ctx.stroke();
   }
 
-  // Every country, one path.
-  ctx.beginPath();
-  for (const f of frame.world.features) pathTo(f);
-  // Unselected land is deep navy, edged in a thin cool line — so the selection can glow.
-  ctx.fillStyle = "rgba(14,20,62,0.92)";
-  ctx.fill();
-  ctx.strokeStyle = "rgba(88,108,235,0.42)";
-  ctx.lineWidth = px(0.6);
-  ctx.stroke();
-
-  // Selected countries: a violet body with a soft glow bleeding into the dark land around it.
-  if (frame.highlight.length > 0) {
-    const few = frame.highlight.length <= 6;
+  const landPath = () => {
+    ctx.beginPath();
+    for (const f of frame.world.features) pathTo(f);
+  };
+  const highlightPath = () => {
     ctx.beginPath();
     for (const f of frame.highlight) pathTo(f);
+  };
+
+  // Soft contact shadow under the whole slab, so it floats above the grid.
+  if (!moving) {
     ctx.save();
-    if (few) {
-      ctx.shadowColor = "rgba(124,92,255,0.95)";
-      ctx.shadowBlur = (moving ? 14 : 26) * dpr;
-    }
-    ctx.fillStyle = few ? "rgba(112,84,255,0.78)" : "rgba(112,84,255,0.5)";
+    ctx.translate(0, px(11));
+    landPath();
+    ctx.shadowColor = "rgba(0,0,0,0.85)";
+    ctx.shadowBlur = 18 * dpr;
+    ctx.fillStyle = "rgba(2,4,18,1)";
     ctx.fill();
     ctx.restore();
-    ctx.strokeStyle = "rgba(214,220,255,0.7)";
-    ctx.lineWidth = px(0.9);
-    ctx.stroke();
   }
 
-  if (frame.focus) {
+  // Thickness: the land stacked downward in darkening layers (an extruded slab).
+  const depth = moving ? 4 : 9;
+  for (let d = depth; d >= 1; d--) {
+    ctx.save();
+    ctx.translate(0, px(d));
+    landPath();
+    ctx.fillStyle = `rgb(${6 + (depth - d) * 1.2}, ${10 + (depth - d) * 1.6}, ${30 + (depth - d) * 3})`;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Rim light: the land again, nudged up in a cool highlight, so only its upper edges show.
+  ctx.save();
+  ctx.translate(0, px(-1.3));
+  landPath();
+  ctx.fillStyle = "rgba(120,150,255,0.75)";
+  ctx.fill();
+  ctx.restore();
+
+  // Top surface: navy, lighter toward the far edge, with thin borders.
+  landPath();
+  const land = ctx.createLinearGradient(0, top, 0, bottom);
+  land.addColorStop(0, "rgb(34,52,120)");
+  land.addColorStop(0.55, "rgb(18,28,76)");
+  land.addColorStop(1, "rgb(12,18,52)");
+  ctx.fillStyle = land;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(98,122,240,0.38)";
+  ctx.lineWidth = px(0.55);
+  ctx.stroke();
+
+  // Selected countries: raised violet body, glowing into the dark land around it.
+  if (frame.highlight.length > 0) {
+    const few = frame.highlight.length <= 6;
+    const rise = few ? 6 : 3;
+
+    // Violet glow halo on the surrounding land.
+    if (few) {
+      ctx.save();
+      highlightPath();
+      ctx.shadowColor = "rgba(124,92,255,0.95)";
+      ctx.shadowBlur = (moving ? 16 : 34) * dpr;
+      ctx.fillStyle = "rgba(112,84,255,0.55)";
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Its own thickness, raised above the land.
+    for (let d = rise; d >= 1; d--) {
+      ctx.save();
+      ctx.translate(0, px(d - rise - 1));
+      highlightPath();
+      ctx.fillStyle = `rgb(${52 + (rise - d) * 5}, ${34 + (rise - d) * 3}, ${150 + (rise - d) * 8})`;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Lit top face.
+    ctx.save();
+    ctx.translate(0, px(-rise - 1));
+    highlightPath();
+    const hi = ctx.createLinearGradient(0, top, 0, bottom);
+    hi.addColorStop(0, few ? "rgb(150,118,255)" : "rgba(150,118,255,0.7)");
+    hi.addColorStop(1, few ? "rgb(92,62,238)" : "rgba(92,62,238,0.7)");
+    ctx.fillStyle = hi;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(218,222,255,0.8)";
+    ctx.lineWidth = px(0.8);
+    ctx.stroke();
+    ctx.restore();
+
+    if (frame.focus) {
+      ctx.save();
+      ctx.translate(0, px(-rise - 1));
+      ctx.beginPath();
+      pathTo(frame.focus);
+      ctx.fillStyle = "rgba(170,146,255,0.22)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(238,240,255,0.95)";
+      ctx.lineWidth = px(1.1);
+      ctx.stroke();
+      ctx.restore();
+    }
+  } else if (frame.focus) {
     ctx.beginPath();
     pathTo(frame.focus);
-    ctx.fillStyle = "rgba(150,122,255,0.30)";
-    ctx.fill();
     ctx.strokeStyle = "rgba(236,239,255,0.95)";
     ctx.lineWidth = px(1.2);
     ctx.stroke();

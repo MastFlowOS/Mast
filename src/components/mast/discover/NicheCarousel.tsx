@@ -24,8 +24,8 @@ const SIDE_W = 0.28;
 const OVERLAP = 0.035;
 const CENTER_RATIO = 0.76; // height / width
 const SIDE_RATIO = 0.82;
-const LABEL_H = 30;
-const CENTER_LABEL_H = 38;
+const LABEL_H = 26;
+const CENTER_LABEL_H = 32;
 const FALLBACK_W = 340;
 const PAD_Y = 12; // room for the centre card's glow
 const ARROW_INSET = 16; // strip margin so arrows only overlap the card corners
@@ -233,10 +233,10 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
               >
                 {/* Fixed size + transform scale: the name never re-wraps or jumps while gliding. */}
                 <span
-                  style={{ transform: `scale(${isCenter ? 1.12 : 0.82})` }}
+                  style={{ transform: `scale(${isCenter ? 1.1 : 0.9})` }}
                   className={cn(
-                    "block max-w-full origin-center whitespace-nowrap text-center text-[16px] leading-none transition-[transform,color] duration-500 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
-                    isCenter ? "font-semibold tracking-tight text-white" : "font-medium text-white/60",
+                    "block max-w-full origin-center whitespace-nowrap text-center text-[13px] leading-none transition-[transform,color] duration-500 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+                    isCenter ? "font-medium tracking-[0.01em] text-white/95" : "font-normal tracking-[0.01em] text-white/55",
                   )}
                 >
                   {name}

@@ -1,6 +1,7 @@
 /**
  * Discover's hero visual: the supplied globe artwork (`discover-globe.png`),
- * dimmed a touch, with a few tiny dots drifting around it like satellites.
+ * dimmed a touch and wrapped in a soft blue atmosphere, with a few tiny dots
+ * drifting around it like satellites.
  *
  * It is purely decorative — it no longer reacts to the form (the Target Region
  * card has its own map). The page sizes it through `--g` (the planet's width)
@@ -16,6 +17,11 @@ import { GLOBE_ART } from "./globeArt";
 const ART_W = GLOBE_ART.w / (2 * GLOBE_ART.rx); // image width ÷ planet width
 const ART_LEFT = 0.5 - (ART_W * GLOBE_ART.cx) / GLOBE_ART.w;
 const ART_TOP = 0.5 - (ART_W * GLOBE_ART.cy) / GLOBE_ART.w;
+const ART_H = (ART_W * GLOBE_ART.h) / GLOBE_ART.w; // in planet widths
+// Where the planet's equator sits inside the artwork box (0–1, top to bottom).
+const EQUATOR = (0.5 - ART_TOP) / ART_H;
+// The artwork fades out just below the equator, so the lower half melts away under the cards.
+const FADE = `linear-gradient(to bottom, #000 0, #000 ${(EQUATOR - 0.02) * 100}%, transparent ${(EQUATOR + 0.085) * 100}%)`;
 
 // Everything below is in "planet widths", origin = planet centre.
 const PLANET_RX = 0.5;
@@ -71,31 +77,38 @@ export function DiscoverGlobe({ className }: { className?: string }) {
     <div
       aria-hidden="true"
       className={`dg-stage pointer-events-none relative select-none ${className ?? ""}`}
-      style={{
-        width: "var(--g)",
-        height: "var(--g)",
-        // The lower half sits under the cards: fade out just past the equator.
-        maskImage: "linear-gradient(to bottom, #000 0, #000 47%, transparent 56%)",
-        WebkitMaskImage: "linear-gradient(to bottom, #000 0, #000 47%, transparent 56%)",
-      }}
+      style={{ width: "var(--g)", height: "var(--g)" }}
     >
-      {/* the artwork: planet + atmosphere + stars + orbit lines, a bit dimmer */}
-      <img
-        src={globeArtUrl}
-        alt=""
-        width={GLOBE_ART.w}
-        height={GLOBE_ART.h}
-        draggable={false}
-        decoding="async"
-        className="absolute max-w-none"
+      {/* Masked box = the artwork's own rectangle, so the fade never crops the glow. */}
+      <div
+        className="absolute"
         style={{
           width: `calc(var(--g) * ${ART_W})`,
-          height: "auto",
+          height: `calc(var(--g) * ${ART_H})`,
           left: `calc(var(--g) * ${ART_LEFT})`,
           top: `calc(var(--g) * ${ART_TOP})`,
-          filter: "brightness(0.8) saturate(0.92)",
+          maskImage: FADE,
+          WebkitMaskImage: FADE,
         }}
-      />
+      >
+        {/* atmosphere: a soft blue bloom behind and around the planet */}
+        <div
+          className="absolute inset-0"
+          style={{
+            background: `radial-gradient(ellipse 27% 50% at 50% ${EQUATOR * 100}%, rgba(58,96,255,0.34), rgba(58,96,255,0.12) 55%, transparent 100%)`,
+          }}
+        />
+        <img
+          src={globeArtUrl}
+          alt=""
+          width={GLOBE_ART.w}
+          height={GLOBE_ART.h}
+          draggable={false}
+          decoding="async"
+          className="absolute inset-0 size-full max-w-none"
+          style={{ filter: "brightness(0.86) saturate(0.95)" }}
+        />
+      </div>
 
       {/* tiny dots drifting around the planet */}
       <svg
@@ -110,7 +123,11 @@ export function DiscoverGlobe({ className }: { className?: string }) {
       >
         <defs>
           <mask id="dg-hide-planet" maskUnits="userSpaceOnUse" x="-1.2" y="-0.95" width="2.4" height="1.9">
-            <rect x="-1.2" y="-0.95" width="2.4" height="1.9" fill="#fff" />
+            <linearGradient id="dg-fade" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0.51" stopColor="#fff" />
+              <stop offset="0.565" stopColor="#000" />
+            </linearGradient>
+            <rect x="-1.2" y="-0.95" width="2.4" height="1.9" fill="url(#dg-fade)" />
             <ellipse cx="0" cy="0" rx={PLANET_RX * 1.01} ry={PLANET_RY * 1.01} fill="#000" />
           </mask>
           {ORBITS.map((o, i) => (

@@ -246,6 +246,8 @@ function paint(
     // moves it is a cheap wider, translucent under-fill instead.
     if (few) {
       ctx.save();
+      // Same lift as the lit top face, so the glow is centred on the country itself.
+      ctx.translate(0, px(-rise - 1));
       if (moving) {
         ctx.fillStyle = "rgba(112,84,255,0.28)";
         ctx.strokeStyle = "rgba(124,92,255,0.22)";

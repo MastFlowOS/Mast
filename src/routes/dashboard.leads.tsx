@@ -20,6 +20,8 @@ import {
   Lock,
   ArrowRight,
   BarChart3,
+  Globe,
+  Database,
   MapPin,
 } from "lucide-react";
 import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead } from "@/lib/api";
@@ -1049,6 +1051,8 @@ function GetLeads() {
                     {DISCOVERY_METHODS.map((m) => {
                       const isSelected = m.id === selectedMethod.id;
                       const isEligible = isDiscoveryMethodEligible(permissions.plan, m.id);
+                      const look = METHOD_LOOK[m.id];
+                      const MethodIcon = look.icon;
                       return (
                         <li key={m.id} className="flex min-w-0">
                           <button
@@ -1065,50 +1069,59 @@ function GetLeads() {
                             }}
                             title={`${m.desc}${isEligible ? "" : ` — requires ${m.minPlanLabel}`}`}
                             className={cn(
-                              "flex min-h-[60px] w-full min-w-0 cursor-pointer flex-col justify-between gap-1.5 rounded-xl border px-2.5 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/60",
+                              "relative flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-left outline-none transition-[border-color,box-shadow,background-color] duration-200 focus-visible:ring-2 focus-visible:ring-brand/60",
                               isSelected
-                                ? "border-brand/60 bg-brand/[0.1] shadow-[0_0_22px_-10px_var(--brand)]"
-                                : isEligible
-                                  ? "border-white/10 bg-black/20 hover:border-white/25"
-                                  : "border-white/10 bg-black/20 opacity-60",
+                                ? "border-brand/70 bg-brand/[0.08] shadow-[0_0_22px_-8px_var(--brand)]"
+                                : "border-white/10 bg-black/20 hover:border-white/25",
+                              !isEligible && "opacity-60",
                             )}
                           >
-                            <span className="flex items-start justify-between gap-1.5">
+                            {/* method icon, in its own circle */}
+                            <span
+                              aria-hidden="true"
+                              style={{ background: look.disc, color: look.fg, boxShadow: `inset 0 0 0 1px ${look.ring}` }}
+                              className="grid size-10 shrink-0 place-items-center rounded-full"
+                            >
+                              <MethodIcon className="size-[18px]" strokeWidth={1.8} />
+                            </span>
+
+                            <span className="flex min-w-0 flex-1 flex-col gap-1 pr-6">
                               <span className="whitespace-nowrap text-[13px] font-semibold leading-tight text-foreground">
                                 <span aria-hidden="true">{m.shortLabel}</span>
                                 <span className="sr-only">{m.label}</span>
                               </span>
-                              {!isEligible && (
-                                <Lock
-                                  className="mt-px size-3 shrink-0 text-muted-foreground"
-                                  aria-label={`Locked — requires ${m.minPlanLabel}`}
-                                />
-                              )}
-                              {/* SELECTED — the user's current choice: a check marker, kept
-                                  separate from the plan badge below. */}
-                              {isSelected && (
-                                <span className="mt-px grid size-4 shrink-0 place-items-center rounded-full bg-brand/25 text-brand">
-                                  <Check className="size-3" strokeWidth={3} aria-hidden="true" />
-                                  <span className="sr-only">Selected</span>
+                              <span className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
+                                {/* PLAN BADGE — minimum plan required, always shown. */}
+                                <span className="rounded-full bg-white/[0.07] px-1.5 py-px text-[9.5px] font-bold uppercase tracking-normal text-muted-foreground">
+                                  {m.minPlanLabel}
                                 </span>
+                                <span
+                                  style={{ background: look.badgeBg, color: look.badgeFg }}
+                                  className="rounded-full px-1.5 py-px text-[9.5px] font-bold uppercase tabular-nums tracking-normal"
+                                >
+                                  {m.timeLabel}
+                                </span>
+                              </span>
+                              <span className="text-[11px] leading-snug text-muted-foreground">{METHOD_BLURB[m.id]}</span>
+                            </span>
+
+                            {/* SELECTED — filled check; otherwise an empty ring (a lock when the plan can't run it). */}
+                            <span
+                              aria-hidden={isEligible ? true : undefined}
+                              className={cn(
+                                "absolute right-2.5 top-2.5 grid size-[18px] place-items-center rounded-full transition-colors",
+                                isSelected ? "bg-brand text-brand-foreground" : "border border-white/20 text-muted-foreground",
                               )}
+                            >
+                              {!isEligible ? (
+                                <Lock className="size-2.5" aria-label={`Locked — requires ${m.minPlanLabel}`} />
+                              ) : isSelected ? (
+                                <Check className="size-3" strokeWidth={3.4} />
+                              ) : null}
                             </span>
-                            <span className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
-                              {/* PLAN BADGE — minimum plan required, always shown. */}
-                              <span className="rounded bg-white/[0.07] px-1 py-px text-[9.5px] font-bold uppercase tracking-normal text-muted-foreground">
-                                {m.minPlanLabel}
-                              </span>
-                              <span
-                                className={cn(
-                                  "text-[9.5px] font-bold uppercase tabular-nums tracking-normal",
-                                  isSelected ? "text-brand" : "text-muted-foreground",
-                                )}
-                              >
-                                {m.timeLabel}
-                              </span>
-                            </span>
-                            {/* Detail copy stays in the DOM for assistive tech; visually it
-                                lives in the tile's tooltip to keep the card compact. */}
+                            {isSelected && <span className="sr-only">Selected</span>}
+
+                            {/* Full detail copy stays available to assistive tech. */}
                             <span className="sr-only">
                               {m.desc}. {isSelected ? m.note : ""}
                               {isEligible ? "" : ` Requires ${m.minPlanLabel}`}
@@ -1213,6 +1226,44 @@ function GetLeads() {
 }
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
+
+/** One-line display copy for each discovery method card. */
+const METHOD_BLURB: Record<string, string> = {
+  live: "Real-time search across the web.",
+  instant_pool: "Search from a large pre-built pool.",
+  instant_pool_ranked: "AI-ranked high quality opportunities.",
+};
+
+/** Each method keeps its own icon colour; selection is always the brand outline. */
+const METHOD_LOOK: Record<
+  string,
+  { icon: typeof Globe; disc: string; fg: string; ring: string; badgeBg: string; badgeFg: string }
+> = {
+  live: {
+    icon: Globe,
+    disc: "rgba(94,72,214,0.34)",
+    fg: "#a99bff",
+    ring: "rgba(150,130,255,0.28)",
+    badgeBg: "rgba(112,84,255,0.16)",
+    badgeFg: "#8f86ff",
+  },
+  instant_pool: {
+    icon: Database,
+    disc: "rgba(26,92,150,0.34)",
+    fg: "#43b4ee",
+    ring: "rgba(70,170,235,0.28)",
+    badgeBg: "rgba(40,110,230,0.16)",
+    badgeFg: "#3f8cff",
+  },
+  instant_pool_ranked: {
+    icon: BarChart3,
+    disc: "rgba(150,34,100,0.32)",
+    fg: "#ff5fb4",
+    ring: "rgba(255,95,180,0.28)",
+    badgeBg: "rgba(236,72,153,0.16)",
+    badgeFg: "#ff58a8",
+  },
+};
 
 const CHANNEL_BLURB: Record<ChannelId, string> = {
   email: "Find business email addresses",

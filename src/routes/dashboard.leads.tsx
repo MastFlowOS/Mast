@@ -16,7 +16,6 @@ import {
   Instagram,
   X,
   Search,
-  CheckSquare,
   Check,
   Lock,
   ArrowRight,
@@ -36,6 +35,7 @@ import { type FeatureId } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { DiscoverGlobe } from "@/components/mast/discover/DiscoverGlobe";
 import { NicheCarousel } from "@/components/mast/discover/NicheCarousel";
+import { TargetRegionCard } from "@/components/mast/discover/TargetRegionCard";
 import {
   AmountSlider,
   PlanCard,
@@ -44,7 +44,6 @@ import {
   panelSurface,
   type SummaryRow,
 } from "@/components/mast/discover/DiscoverPanels";
-import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
 import { GLOBAL_SCOPE, isLocalGeoToken, parseGeoScope } from "@/lib/geo/scope";
 import {
   DISCOVERY_METHODS,
@@ -89,15 +88,8 @@ function GetLeadsWrapper() {
  * src/lib/geo/scope.ts — the same parser the server uses). */
 type Region = string;
 
-/** Compact "Top Picks" shown first in the Target Region selector. */
-const TOP_PICK_COUNTRIES: Region[] = ["United States", "United Kingdom", "Canada"];
-
-/** Every supported country, A→Z (the same data discovery searches). */
-const COUNTRY_NAMES: Region[] = COUNTRIES.map((c) => c.name).sort((a, b) => a.localeCompare(b));
-
-/** Broader scopes the backend also supports; offered under "Regions" in the
- * search results so existing continent/Global capability is not lost. */
-const BROAD_SCOPES: Region[] = [...REGION_NAMES, GLOBAL_SCOPE];
+/** Region selected before the user (or their saved settings) picks one. */
+const DEFAULT_REGION: Region = "United States";
 
 /** Full niche catalog — supports prefix search */
 const NICHE_CATALOG = [
@@ -264,12 +256,7 @@ function GetLeads() {
   const quantity = sliderIndexToQty(qtyIndex);
 
   // Multi-select regions
-  const [regions, setRegions] = useState<Region[]>([TOP_PICK_COUNTRIES[0]]);
-  // Target Region selector UI state (Top Picks are always visible; the
-  // search box filters the full REGIONS list).
-  const [regionSearch, setRegionSearch] = useState("");
-  const [regionDropdownOpen, setRegionDropdownOpen] = useState(false);
-  const regionContainerRef = useRef<HTMLDivElement>(null);
+  const [regions, setRegions] = useState<Region[]>([DEFAULT_REGION]);
 
   const hasInitializedRef = useRef(false);
 
@@ -362,17 +349,6 @@ function GetLeads() {
     setQtyIndex((prev) => Math.min(prev, maxSliderIndex));
   }, [maxSliderIndex]);
 
-  // Close the region search dropdown on outside click.
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (!regionContainerRef.current?.contains(e.target as Node)) {
-        setRegionDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
   const hasRegionalSearch = permissions.can("regionalSearch");
 
   const toggleRegion = (r: Region) => {
@@ -423,19 +399,6 @@ function GetLeads() {
     }
     setChannels((c) => toggleChannelSelection(c, id));
   };
-
-  const regionQuery = regionSearch.trim().toLowerCase();
-  const matchesRegionQuery = (r: Region) => r.toLowerCase().includes(regionQuery);
-  // Names that START with the query rank first ("u" → United …, Uganda …),
-  // then the rest; both groups stay A→Z.
-  const startsWithQuery = (r: Region) => r.toLowerCase().startsWith(regionQuery);
-  const filteredCountries = COUNTRY_NAMES.filter(matchesRegionQuery).sort(
-    (a, b) => Number(startsWithQuery(b)) - Number(startsWithQuery(a)),
-  );
-  // Continents / Global only appear once the user is actually searching, so
-  // the default list stays a pure country list.
-  const filteredBroadScopes = regionQuery ? BROAD_SCOPES.filter(matchesRegionQuery) : [];
-  const firstRegionMatch = filteredCountries[0] ?? filteredBroadScopes[0];
 
   const filteredNiches = NICHE_CATALOG.filter((n) =>
     n.toLowerCase().includes(nicheSearch.toLowerCase())
@@ -1029,90 +992,12 @@ function GetLeads() {
                 </StepCard>
 
                 {/* z-20 so the region dropdown floats over the cards below it. */}
-                <StepCard
-                  step={3}
-                  icon={MapPin}
-                  title="Target Region"
+                <TargetRegionCard
+                  regions={regions}
+                  onToggle={toggleRegion}
+                  hasRegionalSearch={hasRegionalSearch}
                   className="relative z-20 @2xl:col-span-7"
-                >
-                  <div ref={regionContainerRef} className="relative space-y-2.5">
-                    <div className="relative">
-                      <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                      <input
-                        type="text"
-                        role="combobox"
-                        aria-expanded={regionDropdownOpen}
-                        aria-controls="region-listbox"
-                        aria-autocomplete="list"
-                        placeholder="Search countries…"
-                        value={regionSearch}
-                        onChange={(e) => {
-                          setRegionSearch(e.target.value);
-                          setRegionDropdownOpen(true);
-                        }}
-                        onFocus={() => setRegionDropdownOpen(true)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") setRegionDropdownOpen(false);
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            if (firstRegionMatch) {
-                              toggleRegion(firstRegionMatch);
-                              setRegionSearch("");
-                              setRegionDropdownOpen(false);
-                            }
-                          }
-                        }}
-                        className="h-10 w-full rounded-xl border border-white/10 bg-black/25 pl-8 pr-3 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-brand focus:ring-2 focus:ring-brand/35"
-                      />
-                      {regionDropdownOpen && (
-                        <div
-                          id="region-listbox"
-                          role="listbox"
-                          aria-multiselectable="true"
-                          className="absolute left-0 right-0 top-full z-30 mt-1 max-h-52 overflow-y-auto rounded-xl border border-border bg-card shadow-lg"
-                        >
-                          {filteredCountries.length + filteredBroadScopes.length > 0 ? (
-                            <>
-                              {filteredCountries.map((r) => (
-                                <RegionOption
-                                  key={r}
-                                  label={r}
-                                  selected={regions.includes(r)}
-                                  locked={!hasRegionalSearch && !isLocalGeoToken(r)}
-                                  onPick={() => {
-                                    toggleRegion(r);
-                                    setRegionSearch("");
-                                  }}
-                                />
-                              ))}
-                              {filteredBroadScopes.length > 0 && (
-                                <p className="border-t border-border/60 px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                                  Regions
-                                </p>
-                              )}
-                              {filteredBroadScopes.map((r) => (
-                                <RegionOption
-                                  key={r}
-                                  label={r}
-                                  selected={regions.includes(r)}
-                                  locked={!hasRegionalSearch && !isLocalGeoToken(r)}
-                                  onPick={() => {
-                                    toggleRegion(r);
-                                    setRegionSearch("");
-                                  }}
-                                />
-                              ))}
-                            </>
-                          ) : (
-                            <div className="px-3 py-2.5 text-xs text-muted-foreground">
-                              No countries match "{regionSearch}"
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </StepCard>
+                />
 
                 <StepCard
                   step={4}
@@ -1361,40 +1246,6 @@ function ChoiceChip({
       {children}
       {selected && !locked && <Check className="size-3 text-brand shrink-0" strokeWidth={3} />}
       {locked && <Lock className="size-3 shrink-0" aria-label="Locked on your plan" />}
-    </button>
-  );
-}
-
-function RegionOption({
-  label,
-  selected,
-  locked,
-  onPick,
-}: {
-  label: string;
-  selected: boolean;
-  locked: boolean;
-  onPick: () => void;
-}) {
-  return (
-    <button
-      role="option"
-      aria-selected={selected}
-      // Keep focus in the search input between picks.
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onPick}
-      className={cn(
-        "w-full flex items-center justify-between px-3 py-2 text-xs transition-colors text-left hover:bg-muted/40",
-        selected ? "text-brand font-medium" : "text-foreground",
-        locked && "opacity-55"
-      )}
-    >
-      <span>{label}</span>
-      {locked ? (
-        <Lock className="size-3 text-muted-foreground shrink-0" />
-      ) : selected ? (
-        <CheckSquare className="size-3.5 text-brand shrink-0" />
-      ) : null}
     </button>
   );
 }

@@ -195,55 +195,79 @@ describe("Discover redesign — removed / replaced UI", () => {
   });
 });
 
+/** The Target Region dropdown: its trigger, opened. */
+const regionTrigger = () => screen.getByRole("combobox", { name: /target region/i });
+const openRegions = () => {
+  if (regionTrigger().getAttribute("aria-expanded") !== "true") fireEvent.click(regionTrigger());
+  return screen.getByPlaceholderText(/search countries/i);
+};
+/** Search for a country in the dropdown and pick it. */
+const pickCountry = async (name: string) => {
+  const search = openRegions();
+  fireEvent.change(search, { target: { value: name } });
+  fireEvent.click(await screen.findByRole("option", { name: new RegExp(`^${name}`) }));
+};
+
 describe("Discover redesign — Target Region is a country selector", () => {
-  it("Top Picks are the three countries; continents are not top picks", async () => {
+  it("is a compact dropdown showing the current selection; no Top Picks chips", async () => {
     await renderDiscover("pro");
-    for (const c of ["United States", "United Kingdom", "Canada"]) {
-      expect(screen.getByRole("button", { name: new RegExp(`^${c}`) })).toBeTruthy();
+    expect(regionTrigger().textContent).toContain("United States");
+    // Top Picks are gone: nothing country-shaped is on the page until the dropdown opens.
+    for (const c of ["United Kingdom", "Canada"]) {
+      expect(screen.queryByRole("button", { name: new RegExp(`^${c}`) })).toBeNull();
+      expect(screen.queryByRole("option", { name: new RegExp(`^${c}`) })).toBeNull();
     }
-    for (const r of ["North America", "Europe", "Asia"]) {
-      expect(screen.queryByRole("button", { name: new RegExp(`^${r}`) })).toBeNull();
-    }
-    // Defaults to the first top pick.
-    expect(screen.getByRole("button", { name: /^United States/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByPlaceholderText(/search countries/i)).toBeNull();
+
+    // Opened: search first, then the country list.
+    const search = openRegions();
+    const listbox = screen.getByRole("listbox");
+    expect(search.compareDocumentPosition(listbox) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("option", { name: /^Canada/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /^United Kingdom/ })).toBeTruthy();
   });
 
   it("country search selects any supported country; regions appear only as a secondary group", async () => {
     await renderDiscover("pro");
-    const search = screen.getByPlaceholderText(/search countries/i);
-    fireEvent.focus(search);
+    const search = openRegions();
     fireEvent.change(search, { target: { value: "un" } });
     // Prefix matches lead: United … before names that merely contain "un".
     const first = (await screen.findAllByRole("option"))[0];
     expect(first.textContent).toMatch(/^Un/);
     fireEvent.change(search, { target: { value: "germ" } });
     fireEvent.click(await screen.findByRole("option", { name: /Germany/ }));
-    expect(screen.getByRole("button", { name: /^Germany/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("option", { name: /^Germany/ }).getAttribute("aria-selected")).toBe("true");
+    expect(regionTrigger().textContent).toContain("Germany");
 
     fireEvent.change(search, { target: { value: "eur" } });
     expect(await screen.findByText("Regions")).toBeTruthy();
     expect(screen.getByRole("option", { name: /^Europe/ })).toBeTruthy();
   });
 
-  it("a saved default (country or continent) is honoured and shown as a selected chip", async () => {
+  it("a saved default (country or continent) is honoured and shown as the selection", async () => {
     h.defaultRegions = "North America";
     await renderDiscover("pro");
-    expect(screen.getByRole("button", { name: /^North America/ }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: /^United States/ }).getAttribute("aria-pressed")).toBe("false");
+    expect(regionTrigger().textContent).toContain("North America");
+    openRegions();
+    fireEvent.change(screen.getByPlaceholderText(/search countries/i), { target: { value: "north" } });
+    expect((await screen.findByRole("option", { name: /^North America/ })).getAttribute("aria-selected")).toBe("true");
+    fireEvent.change(screen.getByPlaceholderText(/search countries/i), { target: { value: "united st" } });
+    expect((await screen.findByRole("option", { name: /^United States/ })).getAttribute("aria-selected")).toBe("false");
   });
 
   it("Free plan: North-American countries selectable, others locked (server rule)", async () => {
     await renderDiscover("free");
-    const uk = screen.getByRole("button", { name: /^United Kingdom/ });
+    openRegions();
+    const uk = screen.getByRole("option", { name: /^United Kingdom/ });
     expect(uk.querySelector("svg[aria-label='Locked on your plan']")).not.toBeNull();
     fireEvent.click(uk);
     expect(h.toastError).toHaveBeenCalledTimes(1);
-    expect(uk.getAttribute("aria-pressed")).toBe("false");
+    expect(uk.getAttribute("aria-selected")).toBe("false");
 
-    const ca = screen.getByRole("button", { name: /^Canada/ });
+    const ca = screen.getByRole("option", { name: /^Canada/ });
     expect(ca.querySelector("svg[aria-label='Locked on your plan']")).toBeNull();
     fireEvent.click(ca);
-    expect(ca.getAttribute("aria-pressed")).toBe("true");
+    expect(ca.getAttribute("aria-selected")).toBe("true");
     expect(h.toastError).toHaveBeenCalledTimes(1);
   });
 });
@@ -253,7 +277,7 @@ describe("Discover redesign — preserved behavior", () => {
     await renderDiscover("pro");
     expect(screen.getByText("Discovery Summary")).toBeTruthy();
     expect(screen.getByText("10 credits")).toBeTruthy();
-    // Once as the selected chip, once as the summary line.
+    // Once on the map's label, once as the summary line.
     expect(screen.getAllByText("United States").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText(/Today:/).textContent).toContain("280");
     expect(screen.getByText(/Month:/).textContent).toContain("2,780");
@@ -271,8 +295,8 @@ describe("Discover redesign — preserved behavior", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Email/ }));
     fireEvent.click(screen.getByRole("button", { name: /^Phone/ }));
     // Switch the selection from the default (United States) to Canada only.
-    fireEvent.click(screen.getByRole("button", { name: /^Canada/ }));
-    fireEvent.click(screen.getByRole("button", { name: /^United States/ }));
+    await pickCountry("Canada");
+    await pickCountry("United States");
 
     const launch = screen.getByRole("button", { name: /Launch Discovery/ }) as HTMLButtonElement;
     await waitFor(() => expect(launch.disabled).toBe(false));
@@ -295,7 +319,7 @@ describe("Discover redesign — preserved behavior", () => {
     await renderDiscover("starter");
     await pickNiche("Coffee Shop");
     fireEvent.click(screen.getByRole("button", { name: /^Email/ }));
-    fireEvent.click(screen.getByRole("button", { name: /^United Kingdom/ }));
+    await pickCountry("United Kingdom");
     const launch = screen.getByRole("button", { name: /Launch Discovery/ }) as HTMLButtonElement;
     await waitFor(() => expect(launch.disabled).toBe(false));
     fireEvent.click(launch);

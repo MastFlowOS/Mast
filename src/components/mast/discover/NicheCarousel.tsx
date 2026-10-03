@@ -19,15 +19,15 @@ type Props = {
 // Card geometry, as fractions of the strip width so exactly three cards fit:
 // a big centre card and one smaller neighbour tucked behind it on each side.
 // Anything further out is parked (invisible) behind the neighbours.
-const CENTER_W = 0.48;
-const SIDE_W = 0.33;
-const OVERLAP = 0.04;
-const CENTER_RATIO = 0.92; // height / width
-const SIDE_RATIO = 0.95;
-const LABEL_H = 34;
-const CENTER_LABEL_H = 44;
+const CENTER_W = 0.40;
+const SIDE_W = 0.28;
+const OVERLAP = 0.035;
+const CENTER_RATIO = 0.76; // height / width
+const SIDE_RATIO = 0.82;
+const LABEL_H = 30;
+const CENTER_LABEL_H = 38;
 const FALLBACK_W = 340;
-const PAD_Y = 22; // room for the centre card's glow
+const PAD_Y = 12; // room for the centre card's glow
 const ARROW_INSET = 16; // strip margin so arrows only overlap the card corners
 
 /** The carousel opens on the middle card so a neighbour shows on both sides. */

@@ -22,6 +22,10 @@ import {
   BarChart3,
   Globe,
   Database,
+  Building2,
+  TrendingUp,
+  Lightbulb,
+  Eye,
   MapPin,
 } from "lucide-react";
 import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead } from "@/lib/api";
@@ -1219,7 +1223,17 @@ function GetLeads() {
 
       {/* ── AI Overview band ─────────────────────────────────────── */}
       <div className="mt-6">
-        <DiscoverAiOverview insights={discoverInsights} loading={!account || !analytics} />
+        <DiscoverAiOverview
+          insights={discoverInsights}
+          loading={!account || !analytics}
+          setup={{
+            niches,
+            regions,
+            quantity,
+            channels: selectedChannelOptions.map((c) => c.short),
+            channelTotal: channelOptions.length,
+          }}
+        />
       </div>
     </div>
   );
@@ -1413,94 +1427,262 @@ const CONFIDENCE_STYLES: Record<DiscoverInsight["confidence"], string> = {
   "Watch Closely": "text-muted-foreground",
 };
 
-/** AI Overview band. Content is exactly buildDiscoverInsights()'s output
- * — nothing is generated here. The top insight leads; the remaining ones
- * (up to the same 3 as before) are one click away and fill the row. */
+/** What the AI Overview shows as its main recommendation. Today it is built from
+ * buildDiscoverInsights() (see insightToBriefing); a real AI service can return this
+ * same shape and be passed as the `briefing` prop with no UI change. */
+export type AiBriefing = {
+  /** Small caps label above the headline. */
+  label: string;
+  headline: string;
+  body: string;
+  /** Trust signal shown at the right of the card, e.g. "High Confidence". */
+  confidence: DiscoverInsight["confidence"];
+  tone: DiscoverInsight["tone"];
+  action?: { label: string; href: string };
+};
+
+function insightToBriefing(i: DiscoverInsight): AiBriefing {
+  return {
+    label: "Recommended",
+    headline: i.title,
+    body: i.reason,
+    confidence: i.confidence,
+    tone: i.tone,
+    action: { label: i.actionLabel, href: i.actionHref },
+  };
+}
+
+/** The Discover settings the user has picked, shown as context beside the recommendation. */
+type AiSetup = {
+  niches: readonly string[];
+  regions: readonly string[];
+  quantity: number;
+  channels: readonly string[];
+  channelTotal: number;
+};
+
+const CONFIDENCE_ICON: Record<DiscoverInsight["confidence"], typeof TrendingUp> = {
+  "High Confidence": TrendingUp,
+  "Recommended": TrendingUp,
+  "Worth Testing": Lightbulb,
+  "Watch Closely": Eye,
+};
+
+function BriefingAction({ action, tone }: { action: { label: string; href: string }; tone: DiscoverInsight["tone"] }) {
+  const cls = `inline-flex items-center text-xs font-semibold transition-colors cursor-pointer ${INSIGHT_ACTION_STYLES[tone]}`;
+  if (action.href.startsWith("/")) {
+    return (
+      <a href={action.href} className={cls}>
+        {action.label}
+      </a>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        const el = document.querySelector(action.href) as HTMLElement | null;
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+        el?.focus?.();
+      }}
+      className={cls}
+    >
+      {action.label}
+    </button>
+  );
+}
+
+/** One compact "setup" tile: icon, label, the selected value, and a factual one-liner. */
+function SetupTile({
+  icon: Icon,
+  tint,
+  label,
+  value,
+  empty,
+  hint,
+}: {
+  icon: typeof Sparkles;
+  tint: { bg: string; fg: string };
+  label: string;
+  value: string;
+  empty?: boolean;
+  hint: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-white/[0.06] bg-black/20 p-3">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span
+          aria-hidden="true"
+          style={{ background: tint.bg, color: tint.fg }}
+          className="grid size-8 shrink-0 place-items-center rounded-[10px]"
+        >
+          <Icon className="size-4" strokeWidth={2} />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-[11px] leading-none text-muted-foreground">{label}</span>
+          <span
+            title={value}
+            className={cn(
+              "mt-1 block truncate text-[13px] font-semibold leading-tight",
+              empty ? "text-muted-foreground" : "text-foreground",
+            )}
+          >
+            {value}
+          </span>
+        </span>
+      </div>
+      <p className="text-[11px] leading-snug text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+/** AI Overview — a compact briefing: one main recommendation plus the selected
+ * setup as context. Recommendation content comes from buildDiscoverInsights()
+ * (or a future `briefing`); the extra insights stay one click away behind
+ * "View detailed analysis". */
 function DiscoverAiOverview({
   insights,
   loading,
+  setup,
+  briefing,
 }: {
   insights: DiscoverInsight[];
   loading: boolean;
+  setup: AiSetup;
+  /** Optional override, e.g. a real AI-generated recommendation. */
+  briefing?: AiBriefing;
 }) {
   const [expanded, setExpanded] = useState(false);
 
-  if (!loading && insights.length === 0) return null;
+  if (!loading && insights.length === 0 && !briefing) return null;
 
   const pool = insights.slice(0, 3);
-  const shown = expanded ? pool : pool.slice(0, 1);
-  const hiddenCount = pool.length - shown.length;
+  const extra = pool.slice(1);
+  const main = briefing ?? (pool[0] ? insightToBriefing(pool[0]) : null);
+  const ConfIcon = main ? CONFIDENCE_ICON[main.confidence] : TrendingUp;
+  const [confHead, ...confRest] = (main?.confidence ?? "").split(" ");
+
+  const nicheValue = setup.niches.length === 0 ? "Choose a niche" : setup.niches[0];
+  const regionValue = setup.regions.length === 0 ? "Choose a region" : setup.regions[0];
+  const channelValue = setup.channels.length === 0 ? "Choose channels" : setup.channels.join(", ");
 
   return (
     <section className={cn(panelSurface, "p-4 sm:p-5")}>
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <span
             aria-hidden="true"
-            className="grid size-9 place-items-center rounded-xl border border-brand/25 bg-brand/[0.13] text-brand"
+            className="grid size-10 shrink-0 place-items-center rounded-xl border border-brand/25 bg-brand/[0.13] text-brand"
           >
-            <Sparkles className="size-[18px]" />
+            <Sparkles className="size-5" />
           </span>
-          <h2 className="text-[15px] font-semibold text-foreground">AI Overview</h2>
+          <div className="min-w-0">
+            <h2 className="text-[15px] font-semibold leading-tight text-foreground">AI Overview</h2>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              MAST’s analysis of your current discovery setup.
+            </p>
+          </div>
         </div>
-        {!loading && pool.length > 1 && (
+        {!loading && extra.length > 0 && (
           <button
             type="button"
+            aria-expanded={expanded}
             onClick={() => setExpanded((v) => !v)}
-            className="cursor-pointer text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            className="inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-1.5 text-xs font-medium text-foreground/90 transition-colors hover:border-white/25 hover:text-foreground"
           >
-            {expanded ? "Show less" : `${hiddenCount} more insight${hiddenCount === 1 ? "" : "s"}`}
+            {expanded ? "Hide detailed analysis" : "View detailed analysis"}
+            <ArrowRight className={cn("size-3.5 transition-transform", expanded && "rotate-90")} />
           </button>
         )}
       </div>
 
-      {loading ? (
+      {loading || !main ? (
         <div className="mt-4 space-y-2">
           <div className="h-3.5 w-2/3 animate-pulse rounded bg-muted/40" />
           <div className="h-3 w-full animate-pulse rounded bg-muted/40" />
         </div>
       ) : (
-        <div
-          className={cn(
-            "mt-4 grid gap-3",
-            shown.length === 2 && "md:grid-cols-2",
-            shown.length >= 3 && "md:grid-cols-3",
-          )}
-        >
-          {shown.map((insight) => {
-            const isRoute = insight.actionHref.startsWith("/");
-            const actionClass = `inline-flex items-center text-xs font-semibold transition-colors cursor-pointer ${INSIGHT_ACTION_STYLES[insight.tone]}`;
-            return (
-              <div
-                key={insight.id}
-                className="space-y-1 rounded-xl border border-white/[0.06] bg-black/20 p-4"
-              >
-                <p className={`text-[10px] font-bold uppercase tracking-wider ${CONFIDENCE_STYLES[insight.confidence]}`}>
-                  {insight.confidence}
-                </p>
-                <p className="text-[13px] font-medium leading-snug text-foreground/90">{insight.title}</p>
-                <p className="line-clamp-2 text-xs leading-snug text-muted-foreground">{insight.reason}</p>
-                {isRoute ? (
-                  <a href={insight.actionHref} className={actionClass}>
-                    {insight.actionLabel}
-                  </a>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const el = document.querySelector(insight.actionHref) as HTMLElement | null;
-                      el?.scrollIntoView({ behavior: "smooth", block: "center" });
-                      el?.focus?.();
-                    }}
-                    className={actionClass}
-                  >
-                    {insight.actionLabel}
-                  </button>
+        <>
+          <div className="mt-4 grid gap-3 @3xl:grid-cols-[minmax(0,1.7fr)_minmax(0,2fr)]">
+            {/* main recommendation */}
+            <div className="relative flex min-w-0 items-start gap-4 overflow-hidden rounded-xl border border-brand/25 bg-brand/[0.05] py-3.5 pl-5 pr-4 shadow-[0_0_30px_-18px_var(--brand)]">
+              <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-brand to-brand/30" />
+              <div className="min-w-0 flex-1">
+                <p className="text-[10.5px] font-bold uppercase tracking-wider text-brand">{main.label}</p>
+                <p className="mt-1 text-[15px] font-semibold leading-snug text-foreground">{main.headline}</p>
+                <p className="mt-1.5 line-clamp-3 text-xs leading-relaxed text-muted-foreground">{main.body}</p>
+                {main.action && (
+                  <div className="mt-2">
+                    <BriefingAction action={main.action} tone={main.tone} />
+                  </div>
                 )}
               </div>
-            );
-          })}
-        </div>
+              <div className="flex w-[88px] shrink-0 flex-col items-center text-center">
+                <span
+                  aria-hidden="true"
+                  className="grid size-10 place-items-center rounded-xl border border-brand/20 bg-brand/[0.12] text-brand"
+                >
+                  <ConfIcon className="size-[18px]" strokeWidth={2.2} />
+                </span>
+                <span className={`mt-1.5 text-[13px] font-semibold leading-none ${CONFIDENCE_STYLES[main.confidence]}`}>
+                  {confHead}
+                </span>
+                <span className="mt-1 text-[11px] leading-tight text-muted-foreground">{confRest.join(" ")}</span>
+              </div>
+            </div>
+
+            {/* the selected setup, as context */}
+            <div className="grid grid-cols-2 gap-3 @xl:grid-cols-4">
+              <SetupTile
+                icon={Building2}
+                tint={{ bg: "rgba(112,84,255,0.2)", fg: "#a99bff" }}
+                label="Niche"
+                value={nicheValue}
+                empty={setup.niches.length === 0}
+                hint={setup.niches.length > 1 ? `+${setup.niches.length - 1} more selected` : "Your target market."}
+              />
+              <SetupTile
+                icon={MapPin}
+                tint={{ bg: "rgba(40,110,230,0.2)", fg: "#4c90ff" }}
+                label="Region"
+                value={regionValue}
+                empty={setup.regions.length === 0}
+                hint={setup.regions.length > 1 ? `+${setup.regions.length - 1} more selected` : "Where MAST will look."}
+              />
+              <SetupTile
+                icon={BarChart3}
+                tint={{ bg: "rgba(20,184,150,0.18)", fg: "#2dd4a8" }}
+                label="Amount"
+                value={`${setup.quantity.toLocaleString()} ${setup.quantity === 1 ? "business" : "businesses"}`}
+                hint={`${setup.quantity.toLocaleString()} credit${setup.quantity === 1 ? "" : "s"} for this run.`}
+              />
+              <SetupTile
+                icon={Link2}
+                tint={{ bg: "rgba(236,72,153,0.18)", fg: "#ff5fb4" }}
+                label="Contact Channels"
+                value={channelValue}
+                empty={setup.channels.length === 0}
+                hint={`${setup.channels.length} of ${setup.channelTotal} channels selected.`}
+              />
+            </div>
+          </div>
+
+          {/* further insights from the same buildDiscoverInsights() output */}
+          {expanded && extra.length > 0 && (
+            <div className={cn("mt-3 grid gap-3", extra.length >= 2 && "md:grid-cols-2")}>
+              {extra.map((insight) => (
+                <div key={insight.id} className="space-y-1 rounded-xl border border-white/[0.06] bg-black/20 p-4">
+                  <p className={`text-[10px] font-bold uppercase tracking-wider ${CONFIDENCE_STYLES[insight.confidence]}`}>
+                    {insight.confidence}
+                  </p>
+                  <p className="text-[13px] font-medium leading-snug text-foreground/90">{insight.title}</p>
+                  <p className="line-clamp-2 text-xs leading-snug text-muted-foreground">{insight.reason}</p>
+                  <BriefingAction action={{ label: insight.actionLabel, href: insight.actionHref }} tone={insight.tone} />
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </section>
   );

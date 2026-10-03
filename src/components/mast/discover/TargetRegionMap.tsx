@@ -39,7 +39,9 @@ import {
 const WRAPS = [-WORLD_W, 0, WORLD_W];
 const GRID_STEP_DEG = 10;
 const GRID_STEP = (GRID_STEP_DEG * Math.PI * BASE_SCALE) / 180;
-const GRID_LATS = Array.from({ length: 17 }, (_, i) => -80 + i * GRID_STEP_DEG);
+const GRID_YS = Array.from({ length: 17 }, (_, i) => flatProjection([0, -80 + i * GRID_STEP_DEG])?.[1]).filter(
+  (y): y is number => y !== undefined,
+);
 
 /** The sheet is tipped back in CSS perspective (top recedes) for depth. Tweak to taste. */
 const TILT_DEG = 30;
@@ -69,6 +71,17 @@ function loadWorld(): Promise<GlobeWorld> {
   return worldPromise;
 }
 
+/** The whole world as one Path2D, projected once per loaded atlas. */
+const landCache = new WeakMap<GlobeWorld, Path2D>();
+function landPathFor(world: GlobeWorld): Path2D {
+  let p = landCache.get(world);
+  if (!p) {
+    p = buildPath(world.features);
+    landCache.set(world, p);
+  }
+  return p;
+}
+
 const prefersReducedMotion = () =>
   typeof window !== "undefined" &&
   typeof window.matchMedia === "function" &&
@@ -80,7 +93,19 @@ type Frame = {
   highlight: CountryFeature[];
   focus: CountryFeature | null;
   spec: FitSpec;
+  /** Projected once per selection (not per frame): every country, the selection, the focus. */
+  landP: Path2D;
+  highlightP: Path2D;
+  focusP: Path2D | null;
 };
+
+/** Project features into a reusable Path2D, in flat map units. */
+function buildPath(features: readonly CountryFeature[]): Path2D {
+  const p = new Path2D();
+  const trace = geoPath(flatProjection, p as unknown as CanvasRenderingContext2D);
+  for (const f of features) trace(f);
+  return p;
+}
 
 /** What the camera should frame for a resolved scope. */
 function specForScope(scope: GlobeScope, world: GlobeWorld, highlight: CountryFeature[]): FitSpec {
@@ -121,9 +146,30 @@ function paint(
   ctx.translate(-view.cx, -view.cy);
   ctx.lineJoin = "round";
 
-  const pathTo = geoPath(flatProjection, ctx);
   const top = view.cy - H / (2 * s);
   const bottom = view.cy + H / (2 * s);
+
+  // Only the sideways copies of the world that are actually on screen.
+  const half = WORLD_W / 2;
+  const offsets = WRAPS.filter((dx) => dx + half > view.cx - view.w / 2 && dx - half < view.cx + view.w / 2);
+
+  const fillAll = (path: Path2D) => {
+    for (const dx of offsets) {
+      ctx.save();
+      ctx.translate(dx, 0);
+      ctx.fill(path);
+      ctx.restore();
+    }
+  };
+  const strokeAll = (path: Path2D) => {
+    for (const dx of offsets) {
+      ctx.save();
+      ctx.translate(dx, 0);
+      ctx.stroke(path);
+      ctx.restore();
+    }
+  };
+  const { landP, highlightP, focusP } = frame;
 
   // One endless grid: it runs past the map in every direction and is drawn while moving too.
   const gridPath = () => {
@@ -136,9 +182,7 @@ function paint(
       ctx.moveTo(x, yTop);
       ctx.lineTo(x, yBot);
     }
-    for (const lat of GRID_LATS) {
-      const y = flatProjection([0, lat])?.[1];
-      if (y === undefined) continue;
+    for (const y of GRID_YS) {
       ctx.moveTo(x0, y);
       ctx.lineTo(x1, y);
     }
@@ -148,67 +192,44 @@ function paint(
   ctx.lineWidth = px(0.8);
   ctx.stroke();
 
-  const landPath = () => {
-    ctx.beginPath();
-    for (const dx of WRAPS) {
-      ctx.save();
-      ctx.translate(dx, 0);
-      for (const f of frame.world.features) pathTo(f);
-      ctx.restore();
-    }
-  };
-  const highlightPath = () => {
-    ctx.beginPath();
-    for (const dx of WRAPS) {
-      ctx.save();
-      ctx.translate(dx, 0);
-      for (const f of frame.highlight) pathTo(f);
-      ctx.restore();
-    }
-  };
-
-  // Soft contact shadow under the whole slab, so it floats above the grid.
+  // Soft contact shadow under the whole slab (blur is only paid for at rest).
   if (!moving) {
     ctx.save();
     ctx.translate(0, px(6));
-    landPath();
     ctx.shadowColor = "rgba(0,0,0,0.85)";
     ctx.shadowBlur = 18 * dpr;
     ctx.fillStyle = "rgba(2,4,18,1)";
-    ctx.fill();
+    fillAll(landP);
     ctx.restore();
   }
 
   // Thickness: the land stacked downward in darkening layers (an extruded slab).
-  const depth = moving ? 3 : 5;
+  const depth = moving ? 2 : 5;
   for (let d = depth; d >= 1; d--) {
     ctx.save();
     ctx.translate(0, px(d));
-    landPath();
     ctx.fillStyle = `rgb(${6 + (depth - d) * 1.2}, ${10 + (depth - d) * 1.6}, ${30 + (depth - d) * 3})`;
-    ctx.fill();
+    fillAll(landP);
     ctx.restore();
   }
 
   // Rim light: the land again, nudged up in a cool highlight, so only its upper edges show.
   ctx.save();
   ctx.translate(0, px(-1));
-  landPath();
   ctx.fillStyle = "rgba(120,150,255,0.75)";
-  ctx.fill();
+  fillAll(landP);
   ctx.restore();
 
   // Top surface: navy, lighter toward the far edge, with thin borders.
-  landPath();
   const land = ctx.createLinearGradient(0, top, 0, bottom);
   land.addColorStop(0, "rgb(34,52,120)");
   land.addColorStop(0.55, "rgb(18,28,76)");
   land.addColorStop(1, "rgb(12,18,52)");
   ctx.fillStyle = land;
-  ctx.fill();
+  fillAll(landP);
   ctx.strokeStyle = "rgba(98,122,240,0.38)";
   ctx.lineWidth = px(0.55);
-  ctx.stroke();
+  strokeAll(landP);
 
   // The same grid, faintly, across the land.
   gridPath();
@@ -221,14 +242,22 @@ function paint(
     const few = frame.highlight.length <= 6;
     const rise = few ? 3 : 2;
 
-    // Violet glow halo on the surrounding land.
+    // Violet glow halo on the surrounding land. Blur is expensive, so while the camera
+    // moves it is a cheap wider, translucent under-fill instead.
     if (few) {
       ctx.save();
-      highlightPath();
-      ctx.shadowColor = "rgba(124,92,255,0.95)";
-      ctx.shadowBlur = (moving ? 16 : 34) * dpr;
-      ctx.fillStyle = "rgba(112,84,255,0.55)";
-      ctx.fill();
+      if (moving) {
+        ctx.fillStyle = "rgba(112,84,255,0.28)";
+        ctx.strokeStyle = "rgba(124,92,255,0.22)";
+        ctx.lineWidth = px(10);
+        strokeAll(highlightP);
+        fillAll(highlightP);
+      } else {
+        ctx.shadowColor = "rgba(124,92,255,0.95)";
+        ctx.shadowBlur = 34 * dpr;
+        ctx.fillStyle = "rgba(112,84,255,0.55)";
+        fillAll(highlightP);
+      }
       ctx.restore();
     }
 
@@ -236,49 +265,35 @@ function paint(
     for (let d = rise; d >= 1; d--) {
       ctx.save();
       ctx.translate(0, px(d - rise - 1));
-      highlightPath();
       ctx.fillStyle = `rgb(${52 + (rise - d) * 5}, ${34 + (rise - d) * 3}, ${150 + (rise - d) * 8})`;
-      ctx.fill();
+      fillAll(highlightP);
       ctx.restore();
     }
 
     // Lit top face.
     ctx.save();
     ctx.translate(0, px(-rise - 1));
-    highlightPath();
     const hi = ctx.createLinearGradient(0, top, 0, bottom);
     hi.addColorStop(0, few ? "rgb(150,118,255)" : "rgba(150,118,255,0.7)");
     hi.addColorStop(1, few ? "rgb(92,62,238)" : "rgba(92,62,238,0.7)");
     ctx.fillStyle = hi;
-    ctx.fill();
+    fillAll(highlightP);
     ctx.strokeStyle = "rgba(218,222,255,0.8)";
     ctx.lineWidth = px(0.8);
-    ctx.stroke();
-    ctx.restore();
+    strokeAll(highlightP);
 
-    if (frame.focus) {
-      ctx.save();
-      ctx.translate(0, px(-rise - 1));
-      ctx.beginPath();
-      for (const dx of WRAPS) {
-        ctx.save();
-        ctx.translate(dx, 0);
-        pathTo(frame.focus);
-        ctx.restore();
-      }
+    if (focusP) {
       ctx.fillStyle = "rgba(170,146,255,0.22)";
-      ctx.fill();
+      fillAll(focusP);
       ctx.strokeStyle = "rgba(238,240,255,0.95)";
       ctx.lineWidth = px(1.1);
-      ctx.stroke();
-      ctx.restore();
+      strokeAll(focusP);
     }
-  } else if (frame.focus) {
-    ctx.beginPath();
-    pathTo(frame.focus);
+    ctx.restore();
+  } else if (focusP) {
     ctx.strokeStyle = "rgba(236,239,255,0.95)";
     ctx.lineWidth = px(1.2);
-    ctx.stroke();
+    strokeAll(focusP);
   }
 
   ctx.restore();
@@ -378,12 +393,16 @@ export default function TargetRegionMap({ regions }: { regions: readonly string[
       .map((id) => world.byId.get(id))
       .filter((f): f is CountryFeature => !!f);
     const spec = specForScope(scope, world, highlight);
+    const focus = scope.focusId ? (world.byId.get(scope.focusId) ?? null) : null;
     frameRef.current = {
       world,
       scope,
       highlight,
-      focus: scope.focusId ? (world.byId.get(scope.focusId) ?? null) : null,
+      focus,
       spec,
+      landP: landPathFor(world),
+      highlightP: buildPath(highlight),
+      focusP: focus ? buildPath([focus]) : null,
     };
 
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
@@ -424,6 +443,7 @@ export default function TargetRegionMap({ regions }: { regions: readonly string[
         style={{
           transform: `perspective(${TILT_PERSPECTIVE}px) rotateX(${TILT_DEG}deg) scale(${TILT_SCALE})`,
           transformOrigin: TILT_ORIGIN,
+          willChange: "transform",
         }}
       >
         <canvas ref={canvasRef} aria-hidden="true" className="absolute inset-0 h-full w-full" />

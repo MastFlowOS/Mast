@@ -34,6 +34,12 @@ import {
 } from "./flatMap";
 
 const GRATICULE = geoGraticule10();
+
+/** The sheet is tipped back in CSS perspective (top recedes) for depth. Tweak to taste. */
+const TILT_DEG = 38;
+const TILT_PERSPECTIVE = 640; // px; smaller = stronger perspective
+const TILT_SCALE = 1.22; // compensates for the recession so the map still fills the card
+const TILT_ORIGIN = "50% 64%";
 /** Antarctica (ISO numeric 010) only adds a slab of white at the bottom of a Mercator map. */
 const ANTARCTICA = "010";
 
@@ -111,44 +117,46 @@ function paint(
   if (!moving) {
     ctx.beginPath();
     pathTo(GRATICULE);
-    ctx.strokeStyle = "rgba(132,148,255,0.07)";
-    ctx.lineWidth = px(0.6);
+    ctx.strokeStyle = "rgba(110,130,255,0.13)";
+    ctx.lineWidth = px(0.7);
     ctx.stroke();
   }
 
   // Every country, one path.
   ctx.beginPath();
   for (const f of frame.world.features) pathTo(f);
-  ctx.fillStyle = "rgba(70,86,205,0.20)";
+  // Unselected land is deep navy, edged in a thin cool line — so the selection can glow.
+  ctx.fillStyle = "rgba(14,20,62,0.92)";
   ctx.fill();
-  ctx.strokeStyle = "rgba(150,165,255,0.34)";
-  ctx.lineWidth = px(0.7);
+  ctx.strokeStyle = "rgba(88,108,235,0.42)";
+  ctx.lineWidth = px(0.6);
   ctx.stroke();
 
-  // Selected countries.
+  // Selected countries: a violet body with a soft glow bleeding into the dark land around it.
   if (frame.highlight.length > 0) {
+    const few = frame.highlight.length <= 6;
     ctx.beginPath();
     for (const f of frame.highlight) pathTo(f);
-    // A halo reads well around one or a few countries; around a whole continent it's mush.
-    if (!moving && frame.highlight.length <= 6) {
-      ctx.strokeStyle = "rgba(124,92,255,0.32)";
-      ctx.lineWidth = px(5);
-      ctx.stroke();
+    ctx.save();
+    if (few) {
+      ctx.shadowColor = "rgba(124,92,255,0.95)";
+      ctx.shadowBlur = (moving ? 14 : 26) * dpr;
     }
-    ctx.fillStyle = frame.highlight.length > 6 ? "rgba(122,96,255,0.42)" : "rgba(122,96,255,0.58)";
+    ctx.fillStyle = few ? "rgba(112,84,255,0.78)" : "rgba(112,84,255,0.5)";
     ctx.fill();
-    ctx.strokeStyle = "rgba(196,204,255,0.95)";
-    ctx.lineWidth = px(1.1);
+    ctx.restore();
+    ctx.strokeStyle = "rgba(214,220,255,0.7)";
+    ctx.lineWidth = px(0.9);
     ctx.stroke();
   }
 
   if (frame.focus) {
     ctx.beginPath();
     pathTo(frame.focus);
-    ctx.fillStyle = "rgba(150,122,255,0.42)";
+    ctx.fillStyle = "rgba(150,122,255,0.30)";
     ctx.fill();
-    ctx.strokeStyle = "rgba(236,239,255,1)";
-    ctx.lineWidth = px(1.5);
+    ctx.strokeStyle = "rgba(236,239,255,0.95)";
+    ctx.lineWidth = px(1.2);
     ctx.stroke();
   }
 
@@ -193,8 +201,8 @@ export default function TargetRegionMap({ regions }: { regions: readonly string[
     const el = wrapRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const measure = () => {
-      const r = el.getBoundingClientRect();
-      setBox({ w: Math.round(r.width), h: Math.round(r.height) });
+      // Layout size (not getBoundingClientRect): the sheet is CSS-tilted, which would skew a rect.
+      setBox({ w: el.clientWidth, h: el.clientHeight });
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -288,8 +296,17 @@ export default function TargetRegionMap({ regions }: { regions: readonly string[
   }, [world, tokens]);
 
   return (
-    <div ref={wrapRef} className="absolute inset-0">
-      <canvas ref={canvasRef} aria-hidden="true" className="absolute inset-0 h-full w-full" />
+    <div className="absolute inset-0">
+      <div
+        ref={wrapRef}
+        className="absolute inset-0"
+        style={{
+          transform: `perspective(${TILT_PERSPECTIVE}px) rotateX(${TILT_DEG}deg) scale(${TILT_SCALE})`,
+          transformOrigin: TILT_ORIGIN,
+        }}
+      >
+        <canvas ref={canvasRef} aria-hidden="true" className="absolute inset-0 h-full w-full" />
+      </div>
     </div>
   );
 }

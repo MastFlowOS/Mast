@@ -898,8 +898,9 @@ function GetLeads() {
             <div className="relative z-10 mt-7 space-y-4 @2xl:-mt-[calc(var(--g)*0.12)]">
               {/* Control-card grid — one 24-column grid so the five cards read
                   as a single composition (proportions from the design ref):
-                  Row 1: Niche (dominant) · Amount · Region
-                  Row 2: Channels (wide) · Method
+                  Row 1: Niche · Region (50 / 50)
+                  Row 2: Amount · Channels
+                  Row 3: Discovery Method (full width)
                   Below @2xl everything stacks full-width. */}
               <div className="grid items-stretch gap-3.5 @2xl:grid-cols-24">
                 <StepCard
@@ -907,7 +908,7 @@ function GetLeads() {
                   icon={Sparkles}
                   title="Business Niche"
                   hint="Required · pick one or more"
-                  className="relative z-10 @2xl:col-span-10"
+                  className="relative z-10 @2xl:col-span-12"
                 >
                   <div className="relative">
                     <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -976,12 +977,20 @@ function GetLeads() {
                   </div>
                 </StepCard>
 
+                {/* z-20 so the region dropdown floats over the cards below it. */}
+                <TargetRegionCard
+                  regions={regions}
+                  onToggle={toggleRegion}
+                  hasRegionalSearch={hasRegionalSearch}
+                  className="relative z-20 @2xl:col-span-12"
+                />
+
                 <StepCard
-                  step={2}
+                  step={3}
                   icon={BarChart3}
                   title="Opportunity Amount"
                   hint={`Plan max: ${maxQuantity.toLocaleString()}`}
-                  className="relative z-20 @2xl:col-span-7"
+                  className="relative z-20 @2xl:col-span-10"
                 >
                   <AmountSlider
                     steps={QUANTITY_STEPS}
@@ -991,20 +1000,12 @@ function GetLeads() {
                   />
                 </StepCard>
 
-                {/* z-20 so the region dropdown floats over the cards below it. */}
-                <TargetRegionCard
-                  regions={regions}
-                  onToggle={toggleRegion}
-                  hasRegionalSearch={hasRegionalSearch}
-                  className="relative z-20 @2xl:col-span-7"
-                />
-
                 <StepCard
                   step={4}
                   icon={Mail}
                   title="Contact Channels"
                   hint="More channels = stricter matching and fewer results"
-                  className="@2xl:col-span-13"
+                  className="@2xl:col-span-14"
                 >
                   <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-4">
                     {channelOptions.map((c) => {
@@ -1037,7 +1038,7 @@ function GetLeads() {
                   icon={Zap}
                   title="Discovery Method"
                   hint="Choose how MAST finds your opportunities · 1 credit per opportunity"
-                  className="@2xl:col-span-11"
+                  className="@2xl:col-span-24"
                 >
                   <ul className="grid grid-cols-3 gap-2" aria-label="Discovery methods">
                     {DISCOVERY_METHODS.map((m) => {

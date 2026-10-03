@@ -97,7 +97,7 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
         <IconTile icon={MapPin} />
         <h2 className="flex min-w-0 items-baseline gap-2 text-[15px] font-semibold leading-tight text-foreground">
           <span aria-hidden="true" className="text-brand tabular-nums">
-            3
+            2
           </span>
           Target Region
         </h2>

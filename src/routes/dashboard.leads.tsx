@@ -1013,7 +1013,7 @@ function GetLeads() {
                   hint="More channels = stricter matching and fewer results"
                   className="@2xl:col-span-14"
                 >
-                  <div className="grid grid-cols-2 gap-3 @2xl:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-4">
                     {channelOptions.map((c) => {
                       const active = channels.includes(c.id);
                       const isLocked = !permissions.can(channelToFeature[c.id]);
@@ -1024,7 +1024,7 @@ function GetLeads() {
                           selected={active}
                           locked={isLocked}
                           onClick={() => toggleChannel(c.id)}
-                          icon={<c.icon className="size-[22px]" strokeWidth={1.9} />}
+                          icon={<c.icon className="size-[17px]" strokeWidth={1.9} />}
                           title={c.short}
                           description={CHANNEL_BLURB[c.id]}
                         />
@@ -1286,58 +1286,50 @@ function ChannelCard({
 }) {
   const t = CHANNEL_THEME[id];
   const on = selected && !locked;
+  // The colour treatment is permanent; only the check badge reflects selection.
   return (
     <button
       type="button"
       aria-pressed={selected}
       onClick={onClick}
       style={{
-        borderColor: on ? t.border : undefined,
-        boxShadow: on ? `0 0 26px -6px ${t.glow}, inset 0 0 22px -12px ${t.glow}` : undefined,
-        backgroundImage: on ? `${t.wash}, linear-gradient(180deg, rgba(8,10,28,0.9), rgba(5,7,20,0.95))` : undefined,
+        borderColor: t.border,
+        boxShadow: `0 0 20px -8px ${t.glow}, inset 0 0 18px -12px ${t.glow}`,
+        backgroundImage: `${t.wash}, linear-gradient(180deg, rgba(8,10,28,0.9), rgba(5,7,20,0.95))`,
       }}
       className={cn(
-        "group relative flex min-h-[158px] cursor-pointer flex-col items-center rounded-[20px] border px-2.5 pb-3.5 pt-5 text-center outline-none transition-[border-color,box-shadow,background-color,opacity] duration-200",
-        "focus-visible:ring-2 focus-visible:ring-brand/60",
-        on ? "" : "border-white/10 bg-black/25 hover:border-white/25",
+        "group relative flex min-w-0 cursor-pointer flex-col items-center rounded-2xl border px-2 pb-2.5 pt-3 text-center outline-none transition-[filter,opacity] duration-200",
+        "hover:brightness-110 focus-visible:ring-2 focus-visible:ring-brand/60",
         locked && "opacity-60",
       )}
     >
-      {/* check badge */}
+      {/* check badge — filled when selected, empty outline when not */}
       <span
         aria-hidden="true"
         style={on ? { background: t.check, color: t.checkText } : undefined}
         className={cn(
-          "absolute right-2.5 top-2.5 grid size-[22px] place-items-center rounded-[7px] transition-colors",
-          on ? "" : "border border-white/15 bg-white/[0.03] text-transparent",
+          "absolute right-1.5 top-1.5 grid size-4 place-items-center rounded-[5px] transition-colors",
+          on ? "" : "border border-white/25 bg-black/30 text-transparent",
         )}
       >
         {locked ? (
-          <Lock className="size-3 text-muted-foreground" aria-label="Locked on your plan" />
+          <Lock className="size-2.5 text-muted-foreground" aria-label="Locked on your plan" />
         ) : (
-          <Check className="size-3.5" strokeWidth={3.4} />
+          <Check className="size-3" strokeWidth={3.4} />
         )}
       </span>
 
       {/* icon disc */}
       <span
         aria-hidden="true"
-        style={{
-          background: on ? t.disc : undefined,
-          boxShadow: on ? `0 0 0 1px ${t.discRing}, 0 6px 18px -6px ${t.glow}` : undefined,
-        }}
-        className={cn(
-          "grid size-[54px] place-items-center rounded-full text-white transition-colors",
-          on ? "" : "bg-white/[0.05] text-muted-foreground ring-1 ring-white/10",
-        )}
+        style={{ background: t.disc, boxShadow: `0 0 0 1px ${t.discRing}, 0 4px 12px -5px ${t.glow}` }}
+        className="grid size-9 place-items-center rounded-full text-white"
       >
         {icon}
       </span>
 
-      <span className="mt-3 text-[16px] font-semibold leading-none tracking-[-0.01em] text-foreground">{title}</span>
-      <span className="mt-2 max-w-[11ch] text-balance text-[11.5px] leading-[1.25] text-muted-foreground @2xl:max-w-[14ch]">
-        {description}
-      </span>
+      <span className="mt-2 text-[13px] font-semibold leading-none tracking-[-0.01em] text-foreground">{title}</span>
+      <span className="mt-1 text-balance text-[10px] leading-[1.25] text-muted-foreground">{description}</span>
     </button>
   );
 }

@@ -1013,22 +1013,21 @@ function GetLeads() {
                   hint="More channels = stricter matching and fewer results"
                   className="@2xl:col-span-14"
                 >
-                  <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-3 @2xl:grid-cols-4">
                     {channelOptions.map((c) => {
                       const active = channels.includes(c.id);
                       const isLocked = !permissions.can(channelToFeature[c.id]);
                       return (
-                        <ChoiceChip
+                        <ChannelCard
                           key={c.id}
+                          id={c.id}
                           selected={active}
                           locked={isLocked}
                           onClick={() => toggleChannel(c.id)}
-                          icon={<c.icon className="size-4 shrink-0" />}
-                          size="md"
-                          className="h-12 w-full"
-                        >
-                          {c.short}
-                        </ChoiceChip>
+                          icon={<c.icon className="size-[22px]" strokeWidth={1.9} />}
+                          title={c.short}
+                          description={CHANNEL_BLURB[c.id]}
+                        />
                       );
                     })}
                   </div>
@@ -1215,44 +1214,130 @@ function GetLeads() {
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
 
-/** Compact selectable chip. A locked chip stays clickable on purpose: the
- * parent handler shows the plan-upgrade toast, exactly as before. */
-function ChoiceChip({
+const CHANNEL_BLURB: Record<ChannelId, string> = {
+  email: "Find business email addresses",
+  phone: "Find business phone numbers",
+  instagram: "Find business Instagram profiles",
+  website: "Find company websites",
+};
+
+/** Per-channel palette: outline, tinted glow, icon disc and check badge. */
+const CHANNEL_THEME: Record<
+  ChannelId,
+  { border: string; glow: string; wash: string; disc: string; discRing: string; check: string; checkText: string }
+> = {
+  email: {
+    border: "rgba(139,123,255,0.95)",
+    glow: "rgba(124,92,255,0.45)",
+    wash: "radial-gradient(120% 90% at 50% 0%, rgba(110,84,255,0.22), transparent 62%)",
+    disc: "radial-gradient(circle at 50% 35%, rgba(120,90,240,0.75), rgba(70,48,170,0.75))",
+    discRing: "rgba(150,130,255,0.35)",
+    check: "#5f7cff",
+    checkText: "#0b1030",
+  },
+  phone: {
+    border: "rgba(56,104,224,0.85)",
+    glow: "rgba(56,104,224,0.28)",
+    wash: "radial-gradient(120% 90% at 50% 0%, rgba(50,96,220,0.18), transparent 62%)",
+    disc: "radial-gradient(circle at 50% 35%, rgba(44,84,190,0.6), rgba(22,44,110,0.7))",
+    discRing: "rgba(90,130,240,0.28)",
+    check: "#5f8bff",
+    checkText: "#0b1030",
+  },
+  instagram: {
+    border: "rgba(236,72,153,0.95)",
+    glow: "rgba(236,72,153,0.38)",
+    wash: "radial-gradient(90% 70% at 0% 100%, rgba(255,110,40,0.38), transparent 62%), radial-gradient(120% 80% at 50% 0%, rgba(214,60,160,0.16), transparent 60%)",
+    disc: "linear-gradient(145deg, #d6249f 10%, #e8345e 55%, #f58529 100%)",
+    discRing: "rgba(255,120,150,0.4)",
+    check: "#b65cff",
+    checkText: "#1a0b2e",
+  },
+  website: {
+    border: "rgba(22,163,134,0.85)",
+    glow: "rgba(20,184,150,0.26)",
+    wash: "radial-gradient(120% 90% at 50% 0%, rgba(20,170,140,0.16), transparent 62%)",
+    disc: "radial-gradient(circle at 50% 35%, rgba(24,130,112,0.6), rgba(10,70,66,0.7))",
+    discRing: "rgba(60,200,170,0.28)",
+    check: "#38d3e6",
+    checkText: "#05222a",
+  },
+};
+
+/** Tall selectable channel card: colour-coded outline + glow, icon disc, title,
+ * one-line blurb and a check badge. A locked card stays clickable on purpose:
+ * the parent handler shows the plan-upgrade toast, exactly as before. */
+function ChannelCard({
+  id,
   selected,
   locked,
   onClick,
   icon,
-  size = "sm",
-  className,
-  children,
+  title,
+  description,
 }: {
+  id: ChannelId;
   selected: boolean;
   locked?: boolean;
   onClick: () => void;
-  icon?: React.ReactNode;
-  size?: "sm" | "md";
-  className?: string;
-  children: React.ReactNode;
+  icon: React.ReactNode;
+  title: string;
+  description: string;
 }) {
+  const t = CHANNEL_THEME[id];
+  const on = selected && !locked;
   return (
     <button
       type="button"
       aria-pressed={selected}
       onClick={onClick}
+      style={{
+        borderColor: on ? t.border : undefined,
+        boxShadow: on ? `0 0 26px -6px ${t.glow}, inset 0 0 22px -12px ${t.glow}` : undefined,
+        backgroundImage: on ? `${t.wash}, linear-gradient(180deg, rgba(8,10,28,0.9), rgba(5,7,20,0.95))` : undefined,
+      }}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-lg border font-medium transition-colors cursor-pointer",
-        size === "md" ? "h-9 px-3 text-[13px]" : "h-8 px-2.5 text-xs",
-        selected
-          ? "border-brand/60 bg-brand/[0.14] text-foreground shadow-[0_0_18px_-8px_var(--brand)]"
-          : "border-white/10 bg-black/20 text-muted-foreground hover:text-foreground hover:border-white/25",
+        "group relative flex min-h-[158px] cursor-pointer flex-col items-center rounded-[20px] border px-2.5 pb-3.5 pt-5 text-center outline-none transition-[border-color,box-shadow,background-color,opacity] duration-200",
+        "focus-visible:ring-2 focus-visible:ring-brand/60",
+        on ? "" : "border-white/10 bg-black/25 hover:border-white/25",
         locked && "opacity-60",
-        className,
       )}
     >
-      {icon}
-      {children}
-      {selected && !locked && <Check className="size-3 text-brand shrink-0" strokeWidth={3} />}
-      {locked && <Lock className="size-3 shrink-0" aria-label="Locked on your plan" />}
+      {/* check badge */}
+      <span
+        aria-hidden="true"
+        style={on ? { background: t.check, color: t.checkText } : undefined}
+        className={cn(
+          "absolute right-2.5 top-2.5 grid size-[22px] place-items-center rounded-[7px] transition-colors",
+          on ? "" : "border border-white/15 bg-white/[0.03] text-transparent",
+        )}
+      >
+        {locked ? (
+          <Lock className="size-3 text-muted-foreground" aria-label="Locked on your plan" />
+        ) : (
+          <Check className="size-3.5" strokeWidth={3.4} />
+        )}
+      </span>
+
+      {/* icon disc */}
+      <span
+        aria-hidden="true"
+        style={{
+          background: on ? t.disc : undefined,
+          boxShadow: on ? `0 0 0 1px ${t.discRing}, 0 6px 18px -6px ${t.glow}` : undefined,
+        }}
+        className={cn(
+          "grid size-[54px] place-items-center rounded-full text-white transition-colors",
+          on ? "" : "bg-white/[0.05] text-muted-foreground ring-1 ring-white/10",
+        )}
+      >
+        {icon}
+      </span>
+
+      <span className="mt-3 text-[16px] font-semibold leading-none tracking-[-0.01em] text-foreground">{title}</span>
+      <span className="mt-2 max-w-[11ch] text-balance text-[11.5px] leading-[1.25] text-muted-foreground @2xl:max-w-[14ch]">
+        {description}
+      </span>
     </button>
   );
 }

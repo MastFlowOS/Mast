@@ -1303,19 +1303,33 @@ function ChannelCard({
         locked && "opacity-60",
       )}
     >
-      {/* check badge — filled when selected, empty outline when not */}
+      {/* selection indicator — a round dot in the channel's own colour (matches the round icon disc):
+          a glowing filled check when selected, a hollow tinted ring when not */}
       <span
         aria-hidden="true"
-        style={on ? { background: t.check, color: t.checkText } : undefined}
+        style={
+          on
+            ? {
+                background: `radial-gradient(circle at 35% 30%, #fff3, transparent 55%), ${t.check}`,
+                boxShadow: `0 0 0 2.5px ${t.glow}, 0 0 12px ${t.glow}`,
+              }
+            : { borderColor: t.discRing, background: "rgba(0,0,0,0.28)" }
+        }
         className={cn(
-          "absolute right-1.5 top-1.5 grid size-4 place-items-center rounded-[5px] transition-colors",
-          on ? "" : "border border-white/25 bg-black/30 text-transparent",
+          "absolute right-2 top-2 grid size-[15px] place-items-center rounded-full transition-[background,box-shadow,border-color] duration-200",
+          on ? "" : "border-[1.5px]",
         )}
       >
         {locked ? (
           <Lock className="size-2.5 text-muted-foreground" aria-label="Locked on your plan" />
         ) : (
-          <Check className="size-3" strokeWidth={3.4} />
+          <Check
+            className={cn(
+              "size-[9px] text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)] transition-[transform,opacity] duration-200",
+              on ? "scale-100 opacity-100" : "scale-50 opacity-0",
+            )}
+            strokeWidth={4}
+          />
         )}
       </span>
 

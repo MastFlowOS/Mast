@@ -15,7 +15,7 @@
  *     at rest.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { geoGraticule10, geoPath } from "d3-geo";
+import { geoPath } from "d3-geo";
 import {
   buildGlobeWorld,
   resolveGlobeScope,
@@ -24,6 +24,8 @@ import {
   type GlobeWorld,
 } from "@/lib/geo/globeScope";
 import {
+  BASE_SCALE,
+  WORLD_W,
   easeInOutCubic,
   flatProjection,
   flight,
@@ -33,7 +35,11 @@ import {
   type FlatView,
 } from "./flatMap";
 
-const GRATICULE = geoGraticule10();
+/** The sheet repeats sideways like a looping map: copies of the world at these x offsets. */
+const WRAPS = [-WORLD_W, 0, WORLD_W];
+const GRID_STEP_DEG = 10;
+const GRID_STEP = (GRID_STEP_DEG * Math.PI * BASE_SCALE) / 180;
+const GRID_LATS = Array.from({ length: 17 }, (_, i) => -80 + i * GRID_STEP_DEG);
 
 /** The sheet is tipped back in CSS perspective (top recedes) for depth. Tweak to taste. */
 const TILT_DEG = 30;
@@ -119,27 +125,52 @@ function paint(
   const top = view.cy - H / (2 * s);
   const bottom = view.cy + H / (2 * s);
 
-  if (!moving) {
+  // One endless grid: it runs past the map in every direction and is drawn while moving too.
+  const gridPath = () => {
+    const x0 = view.cx - view.w / 2 - GRID_STEP;
+    const x1 = view.cx + view.w / 2 + GRID_STEP;
+    const yTop = top - (bottom - top) * 0.6;
+    const yBot = bottom + (bottom - top) * 0.6;
     ctx.beginPath();
-    pathTo(GRATICULE);
-    ctx.strokeStyle = "rgba(110,130,255,0.10)";
-    ctx.lineWidth = px(0.7);
-    ctx.stroke();
-  }
+    for (let x = Math.floor(x0 / GRID_STEP) * GRID_STEP; x <= x1; x += GRID_STEP) {
+      ctx.moveTo(x, yTop);
+      ctx.lineTo(x, yBot);
+    }
+    for (const lat of GRID_LATS) {
+      const y = flatProjection([0, lat])?.[1];
+      if (y === undefined) continue;
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+    }
+  };
+  gridPath();
+  ctx.strokeStyle = "rgba(110,135,255,0.17)";
+  ctx.lineWidth = px(0.8);
+  ctx.stroke();
 
   const landPath = () => {
     ctx.beginPath();
-    for (const f of frame.world.features) pathTo(f);
+    for (const dx of WRAPS) {
+      ctx.save();
+      ctx.translate(dx, 0);
+      for (const f of frame.world.features) pathTo(f);
+      ctx.restore();
+    }
   };
   const highlightPath = () => {
     ctx.beginPath();
-    for (const f of frame.highlight) pathTo(f);
+    for (const dx of WRAPS) {
+      ctx.save();
+      ctx.translate(dx, 0);
+      for (const f of frame.highlight) pathTo(f);
+      ctx.restore();
+    }
   };
 
   // Soft contact shadow under the whole slab, so it floats above the grid.
   if (!moving) {
     ctx.save();
-    ctx.translate(0, px(11));
+    ctx.translate(0, px(6));
     landPath();
     ctx.shadowColor = "rgba(0,0,0,0.85)";
     ctx.shadowBlur = 18 * dpr;
@@ -149,7 +180,7 @@ function paint(
   }
 
   // Thickness: the land stacked downward in darkening layers (an extruded slab).
-  const depth = moving ? 4 : 9;
+  const depth = moving ? 3 : 5;
   for (let d = depth; d >= 1; d--) {
     ctx.save();
     ctx.translate(0, px(d));
@@ -161,7 +192,7 @@ function paint(
 
   // Rim light: the land again, nudged up in a cool highlight, so only its upper edges show.
   ctx.save();
-  ctx.translate(0, px(-1.3));
+  ctx.translate(0, px(-1));
   landPath();
   ctx.fillStyle = "rgba(120,150,255,0.75)";
   ctx.fill();
@@ -179,10 +210,16 @@ function paint(
   ctx.lineWidth = px(0.55);
   ctx.stroke();
 
+  // The same grid, faintly, across the land.
+  gridPath();
+  ctx.strokeStyle = "rgba(140,160,255,0.07)";
+  ctx.lineWidth = px(0.6);
+  ctx.stroke();
+
   // Selected countries: raised violet body, glowing into the dark land around it.
   if (frame.highlight.length > 0) {
     const few = frame.highlight.length <= 6;
-    const rise = few ? 6 : 3;
+    const rise = few ? 3 : 2;
 
     // Violet glow halo on the surrounding land.
     if (few) {
@@ -223,7 +260,12 @@ function paint(
       ctx.save();
       ctx.translate(0, px(-rise - 1));
       ctx.beginPath();
-      pathTo(frame.focus);
+      for (const dx of WRAPS) {
+        ctx.save();
+        ctx.translate(dx, 0);
+        pathTo(frame.focus);
+        ctx.restore();
+      }
       ctx.fillStyle = "rgba(170,146,255,0.22)";
       ctx.fill();
       ctx.strokeStyle = "rgba(238,240,255,0.95)";

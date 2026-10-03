@@ -164,7 +164,7 @@ export const COUNTRIES: CountryInfo[] = [
   { code: "SA", name: "Saudi Arabia", region: "Asia", incomeTier: "high", majorCities: ["Riyadh", "Jeddah", "Mecca"] },
   { code: "KW", name: "Kuwait", region: "Asia", incomeTier: "high", majorCities: ["Kuwait City", "Hawalli", "Salmiya"] },
   { code: "BH", name: "Bahrain", region: "Asia", incomeTier: "high", majorCities: ["Manama", "Riffa", "Muharraq"] },
-  { code: "PS", name: "Palestine", region: "Asia", incomeTier: "lower-middle", majorCities: ["Ramallah", "Nablus", "Hebron"] },
+  { code: "PS", name: "Palestine", region: "Asia", incomeTier: "lower_middle", majorCities: ["Ramallah", "Nablus", "Hebron"] },
   { code: "TW", name: "Taiwan", region: "Asia", incomeTier: "high", majorCities: ["Taipei", "Kaohsiung", "Taichung"] },
   { code: "HK", name: "Hong Kong", region: "Asia", incomeTier: "high", majorCities: ["Hong Kong", "Kowloon", "Tsuen Wan"] },
   { code: "MY", name: "Malaysia", region: "Asia", incomeTier: "upper_middle", majorCities: ["Kuala Lumpur", "George Town", "Johor Bahru"] },

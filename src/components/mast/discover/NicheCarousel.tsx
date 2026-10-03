@@ -16,16 +16,22 @@ type Props = {
   onToggle: (niche: string) => void;
 };
 
-// Card geometry (px). The centre card is larger; neighbours are clipped by the strip.
-const W = 104;
-const H = 84;
-const CW = 152;
-const CH = 108;
-const GAP = 14;
-const STRIP_H = CH + 14;
-// Soft fade where neighbours run out of the strip (reference: partly visible).
-const EDGE_FADE =
-  "linear-gradient(90deg, transparent 0, #000 72px, #000 calc(100% - 72px), transparent 100%)";
+// Card geometry (px) at a 380px-wide strip; everything scales with the strip.
+// Centre card is big with a label band under the photo; neighbours are smaller
+// and tucked *behind* it (OVERLAP px hidden), so three cards read at a glance.
+const W = 124;
+const H = 118;
+const CW = 172;
+const CH = 156;
+const GAP = 10;
+const OVERLAP = 46;
+const LABEL_H = 38;
+const CENTER_LABEL_H = 48;
+const BASE_STRIP = 380;
+const PAD_Y = 22; // room for the centre card's glow
+
+/** The carousel opens on the middle card so a neighbour shows on both sides. */
+export const startIndex = (count: number) => Math.max(0, Math.floor((count - 1) / 2));
 
 const prefersReducedMotion = () =>
   typeof window !== "undefined" &&
@@ -50,7 +56,7 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
   const [width, setWidth] = useState(0);
   const [center, setCenter] = useState(() => {
     const i = focused ? niches.indexOf(focused) : -1;
-    return i >= 0 ? i : 0;
+    return i >= 0 ? i : startIndex(niches.length);
   });
   const [failed, setFailed] = useState<Set<string>>(() => new Set());
   const wantFocus = useRef(false);
@@ -92,12 +98,28 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
     tileRefs.current.get(niches[center])?.focus();
   }, [center, niches]);
 
-  // Left edge of card i (px from the strip's left), centre card centred.
-  const xOf = (i: number) =>
-    width / 2 - CW / 2 + (i - center) * (W + GAP) + (i > center ? CW - W : 0);
+  // Everything scales with the strip so 3 cards fit on narrow and wide layouts.
+  const k = Math.min(1.35, Math.max(0.8, (width || BASE_STRIP) / BASE_STRIP));
+  const cw = CW * k;
+  const ch = CH * k;
+  const sw = W * k;
+  const sh = H * k;
+  const stripH = ch + PAD_Y * 2;
+
+  // Left edge of card i: the centre card is centred; neighbours slide in
+  // behind it (OVERLAP hidden), further cards follow edge to edge.
+  const xOf = (i: number) => {
+    const cLeft = width / 2 - cw / 2;
+    const d = Math.abs(i - center);
+    if (d === 0) return cLeft;
+    const step = sw + GAP * k;
+    return i < center
+      ? cLeft + OVERLAP * k - sw - (d - 1) * step
+      : cLeft + cw - OVERLAP * k + (d - 1) * step;
+  };
 
   // Mount only what can be seen (+2 cards of runway each side).
-  const reach = Math.ceil(width / 2 / (W + GAP)) + 2;
+  const reach = Math.ceil(width / 2 / ((W + GAP) * 0.8)) + 2;
   const from = clamp(center - reach);
   const to = clamp(center + reach);
   const visible = useMemo(() => niches.slice(from, to + 1), [niches, from, to]);
@@ -121,7 +143,7 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
   if (query.trim() && matches.length === 0) {
     return (
       <div
-        style={{ height: STRIP_H }}
+        style={{ height: CH + PAD_Y * 2 }}
         className="flex items-center justify-center rounded-2xl border border-dashed border-border/80 text-sm text-muted-foreground"
       >
         No niches match “{query}”
@@ -136,16 +158,16 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
         role="group"
         aria-label="Business niches"
         onKeyDown={onKeyDown}
-        style={{ height: STRIP_H, maskImage: EDGE_FADE, WebkitMaskImage: EDGE_FADE }}
-        className="relative overflow-hidden"
+        style={{ height: stripH }}
+        className="relative overflow-x-clip overflow-y-visible"
       >
-        {visible.map((name, k) => {
-          const i = from + k;
+        {visible.map((name, idx) => {
+          const i = from + idx;
           const isCenter = i === center;
           const dist = Math.abs(i - center);
           const isSelected = selected.includes(name);
-          const w = isCenter ? CW : W;
-          const h = isCenter ? CH : H;
+          const w = isCenter ? cw : sw;
+          const h = isCenter ? ch : sh;
           return (
             <button
               key={name}
@@ -165,51 +187,64 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
               style={{
                 width: w,
                 height: h,
-                top: (STRIP_H - h) / 2,
+                top: (stripH - h) / 2,
                 transform: `translateX(${xOf(i)}px)`,
-                opacity: isCenter ? 1 : dist === 1 ? 0.72 : 0.45,
-                zIndex: isCenter ? 2 : 1,
+                opacity: isCenter ? 1 : dist === 1 ? 0.95 : 0.7,
+                zIndex: isCenter ? 3 : dist === 1 ? 2 : 1,
               }}
               className={cn(
-                "group absolute left-0 cursor-pointer overflow-hidden rounded-2xl border bg-card/60 p-0 text-left outline-none",
+                "group absolute left-0 flex cursor-pointer flex-col overflow-hidden rounded-[22px] border bg-card p-0 text-left outline-none",
                 "transition-[transform,width,height,top,opacity,box-shadow,border-color] duration-500 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
                 "hover:opacity-100 focus-visible:ring-2 focus-visible:ring-brand/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                isSelected
-                  ? "border-2 border-brand shadow-[0_0_0_1px_color-mix(in_oklab,var(--brand)_55%,transparent),0_0_30px_-2px_color-mix(in_oklab,var(--brand)_70%,transparent)]"
-                  : "border-white/[0.08]",
+                isCenter
+                  ? "border-2 border-brand shadow-[0_0_0_4px_color-mix(in_oklab,var(--brand)_16%,transparent),0_0_34px_-2px_color-mix(in_oklab,var(--brand)_65%,transparent)]"
+                  : isSelected
+                    ? "border-2 border-brand/80"
+                    : "border-white/[0.08]",
               )}
             >
-              <img
-                src={nicheImage(name)}
-                alt=""
-                loading="lazy"
-                decoding="async"
-                draggable={false}
-                onError={(e) => {
-                  if (failed.has(name)) return;
-                  setFailed((s) => new Set(s).add(name));
-                  e.currentTarget.src = NICHE_IMAGE_FALLBACK;
-                }}
-                className="absolute inset-0 size-full object-cover"
-              />
+              <span className="relative min-h-0 flex-1 overflow-hidden">
+                <img
+                  src={nicheImage(name)}
+                  alt=""
+                  loading="lazy"
+                  decoding="async"
+                  draggable={false}
+                  onError={(e) => {
+                    if (failed.has(name)) return;
+                    setFailed((s) => new Set(s).add(name));
+                    e.currentTarget.src = NICHE_IMAGE_FALLBACK;
+                  }}
+                  className={cn(
+                    "absolute inset-0 size-full object-cover transition-[filter] duration-500",
+                    !isCenter && "brightness-75 saturate-[0.85]",
+                  )}
+                />
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent"
+                />
+              </span>
               <span
-                aria-hidden="true"
-                className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/15 to-transparent"
-              />
-              <span
+                style={{ height: (isCenter ? CENTER_LABEL_H : LABEL_H) * k }}
                 className={cn(
-                  "absolute inset-x-2 bottom-2.5 line-clamp-2 text-center font-medium leading-tight transition-[font-size,color] duration-500 motion-reduce:transition-none",
-                  isCenter ? "text-[16px] text-white" : "text-[12px] text-white/65",
+                  "grid shrink-0 place-items-center bg-card px-2 text-center leading-tight transition-[height,font-size,color] duration-500 motion-reduce:transition-none",
+                  isCenter
+                    ? "text-[18px] font-semibold tracking-tight text-white"
+                    : "text-[13px] font-medium text-white/60",
                 )}
               >
-                {name}
+                <span className="line-clamp-1">{name}</span>
               </span>
               {isSelected && (
                 <span
                   aria-hidden="true"
-                  className="absolute right-2 top-2 grid size-7 place-items-center rounded-full bg-brand text-brand-foreground shadow-[0_0_14px_color-mix(in_oklab,var(--brand)_75%,transparent)]"
+                  className={cn(
+                    "absolute grid place-items-center rounded-full bg-brand text-brand-foreground shadow-[0_0_16px_color-mix(in_oklab,var(--brand)_75%,transparent)]",
+                    isCenter ? "right-2.5 top-2.5 size-9" : "right-2 top-2 size-7",
+                  )}
                 >
-                  <Check className="size-4" strokeWidth={3.5} />
+                  <Check className={isCenter ? "size-5" : "size-4"} strokeWidth={3.5} />
                 </span>
               )}
             </button>
@@ -240,13 +275,13 @@ function ArrowButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "absolute top-1/2 z-10 grid size-10 -translate-y-1/2 place-items-center rounded-full border border-white/15 bg-background/80 text-foreground/80 shadow-md backdrop-blur transition-[opacity,color,border-color] duration-200",
+        "absolute top-1/2 z-10 grid size-11 -translate-y-1/2 place-items-center rounded-full border-[1.5px] border-white/20 bg-card/90 text-foreground shadow-md backdrop-blur transition-[opacity,color,border-color] duration-200",
         "hover:border-brand/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-brand/70 outline-none",
         "disabled:pointer-events-none disabled:opacity-30",
-        side === "left" ? "left-1" : "right-1",
+        side === "left" ? "left-2" : "right-2",
       )}
     >
-      <Icon className="size-5" />
+      <Icon className="size-5" strokeWidth={2.4} />
     </button>
   );
 }

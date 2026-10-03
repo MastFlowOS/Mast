@@ -2,11 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { NicheCarousel } from "./NicheCarousel";
+import { NicheCarousel, startIndex } from "./NicheCarousel";
 import { nicheImage, NICHE_IMAGE_FALLBACK } from "./nicheImages";
 import { GENERATED_NICHE_FILES } from "./nicheImages.generated";
 
 const NICHES = Object.keys(GENERATED_NICHE_FILES);
+const START = startIndex(NICHES.length);
 
 class RO {
   constructor(private cb: () => void) {}
@@ -83,12 +84,20 @@ describe("NicheCarousel", () => {
     );
   });
 
+  it("opens on the middle card with a neighbour on each side", () => {
+    setup();
+    const centre = document.querySelector('[aria-current="true"]')!;
+    expect(centre.textContent).toBe(NICHES[START]);
+    expect(screen.getByRole("button", { name: NICHES[START - 1] })).toBeTruthy();
+    expect(screen.getByRole("button", { name: NICHES[START + 1] })).toBeTruthy();
+  });
+
   it("arrows move the centre and clicks toggle selection", () => {
     const { onToggle } = setup();
     fireEvent.click(screen.getByLabelText("Next niche"));
     const centre = document.querySelector('[aria-current="true"]')!;
-    expect(centre.textContent).toBe(NICHES[1]);
+    expect(centre.textContent).toBe(NICHES[START + 1]);
     fireEvent.click(centre);
-    expect(onToggle).toHaveBeenCalledWith(NICHES[1]);
+    expect(onToggle).toHaveBeenCalledWith(NICHES[START + 1]);
   });
 });

@@ -15,7 +15,7 @@ import { CheckSquare, ChevronDown, Globe2, Lock, MapPin, Search } from "lucide-r
 import { cn } from "@/lib/utils";
 import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
 import { GLOBAL_SCOPE, findCountryByName, isLocalGeoToken } from "@/lib/geo/scope";
-import { StepCard } from "./DiscoverPanels";
+import { IconTile, panelSurface } from "./DiscoverPanels";
 
 // d3-geo + the atlas load only after the form has rendered.
 const TargetRegionMap = lazy(() => import("./TargetRegionMap"));
@@ -29,7 +29,7 @@ const BROAD_SCOPES: string[] = [...REGION_NAMES, GLOBAL_SCOPE];
 
 /** Land fades out on all four sides: one gradient across, one down, intersected. */
 const MAP_FADE =
-  "linear-gradient(to right, transparent, #000 16%, #000 84%, transparent), linear-gradient(to bottom, transparent, #000 26%, #000 80%, transparent)";
+  "linear-gradient(to right, transparent, #000 12%, #000 88%, transparent), linear-gradient(to bottom, transparent, #000 14%, #000 84%, transparent)";
 
 type Props = {
   /** Selected scope tokens in pick order; the last one is what the map moves to. */
@@ -66,7 +66,9 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
   // Names that START with the query rank first ("u" → United …, Uganda …),
   // then the rest; both groups stay A→Z.
   const startsWith = (r: string) => r.toLowerCase().startsWith(query);
-  const countries = COUNTRY_NAMES.filter(matches).sort((a, b) => Number(startsWith(b)) - Number(startsWith(a)));
+  const countries = COUNTRY_NAMES.filter(matches).sort(
+    (a, b) => Number(startsWith(b)) - Number(startsWith(a)),
+  );
   // Continents / Global only appear once the user is actually searching, so
   // the default list stays a pure country list.
   const broad = query ? BROAD_SCOPES.filter(matches) : [];
@@ -88,14 +90,26 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
   const locked = (r: string) => !hasRegionalSearch && !isLocalGeoToken(r);
 
   return (
-    <StepCard step={3} icon={MapPin} title="Target Region" className={className}>
-      <div ref={containerRef} className="relative space-y-3">
-        {/* The map — decorative; the dropdown below is the control. */}
-        <div aria-hidden="true" className="relative aspect-[2.7/1] min-h-[88px] w-full">
+    // Same surface and header as every other step card (StepCard), but laid out as a
+    // column that fills the row: the map takes all the space, the dropdown sits at the bottom.
+    <section className={cn(panelSurface, "flex min-w-0 flex-col p-4 sm:p-5", className)}>
+      <header className="flex items-start gap-3">
+        <IconTile icon={MapPin} />
+        <h2 className="flex min-w-0 items-baseline gap-2 text-[15px] font-semibold leading-tight text-foreground">
+          <span aria-hidden="true" className="text-brand tabular-nums">
+            3
+          </span>
+          Target Region
+        </h2>
+      </header>
+
+      <div ref={containerRef} className="relative mt-2 flex flex-1 flex-col">
+        {/* The map — decorative; the dropdown below is the control. It runs edge to edge
+            across the card and fills all the height the row gives it. */}
+        <div aria-hidden="true" className="relative -mx-4 min-h-[128px] flex-1 sm:-mx-5">
           <div
-            className="absolute inset-0 overflow-hidden rounded-xl"
+            className="absolute inset-0"
             style={{
-              // Land melts into the card at the edges, like the reference.
               maskImage: MAP_FADE,
               WebkitMaskImage: MAP_FADE,
               maskComposite: "intersect",
@@ -109,7 +123,7 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
           {current && (
             <div
               key={current}
-              className="animate-scale-in-fast absolute bottom-0 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-lg border border-white/[0.12] px-2.5 py-0.5 text-[11px] font-semibold text-foreground shadow-[0_8px_22px_-10px_rgb(0_0_0/0.9)]"
+              className="animate-scale-in-fast absolute bottom-2 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-lg border border-white/[0.12] px-2.5 py-1 text-[11px] font-semibold text-foreground shadow-[0_8px_22px_-10px_rgb(0_0_0/0.9)]"
               style={{ background: "oklch(0.17 0.03 268 / 0.92)" }}
             >
               {current}
@@ -118,8 +132,8 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
           )}
         </div>
 
-        {/* The dropdown */}
-        <div className="relative">
+        {/* The dropdown — pinned to the bottom of the card */}
+        <div className="relative mt-2">
           <button
             ref={triggerRef}
             type="button"
@@ -143,7 +157,10 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
             {extra > 0 && <span className="shrink-0 text-xs text-muted-foreground">+{extra}</span>}
             <ChevronDown
               aria-hidden="true"
-              className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
+              className={cn(
+                "size-4 shrink-0 text-muted-foreground transition-transform",
+                open && "rotate-180",
+              )}
             />
           </button>
 
@@ -176,11 +193,22 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
               </div>
 
               {/* …followed by the list. */}
-              <div id="region-listbox" role="listbox" aria-multiselectable="true" className="max-h-52 overflow-y-auto">
+              <div
+                id="region-listbox"
+                role="listbox"
+                aria-multiselectable="true"
+                className="max-h-52 overflow-y-auto"
+              >
                 {countries.length + broad.length > 0 ? (
                   <>
                     {countries.map((r) => (
-                      <RegionOption key={r} label={r} selected={regions.includes(r)} locked={locked(r)} onPick={() => pick(r)} />
+                      <RegionOption
+                        key={r}
+                        label={r}
+                        selected={regions.includes(r)}
+                        locked={locked(r)}
+                        onPick={() => pick(r)}
+                      />
                     ))}
                     {broad.length > 0 && (
                       <p className="border-t border-border/60 px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
@@ -188,18 +216,26 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
                       </p>
                     )}
                     {broad.map((r) => (
-                      <RegionOption key={r} label={r} selected={regions.includes(r)} locked={locked(r)} onPick={() => pick(r)} />
+                      <RegionOption
+                        key={r}
+                        label={r}
+                        selected={regions.includes(r)}
+                        locked={locked(r)}
+                        onPick={() => pick(r)}
+                      />
                     ))}
                   </>
                 ) : (
-                  <div className="px-3 py-2.5 text-xs text-muted-foreground">No countries match "{search}"</div>
+                  <div className="px-3 py-2.5 text-xs text-muted-foreground">
+                    No countries match "{search}"
+                  </div>
                 )}
               </div>
             </div>
           )}
         </div>
       </div>
-    </StepCard>
+    </section>
   );
 }
 
@@ -246,13 +282,23 @@ function RegionMark({ name, small }: { name?: string; small?: boolean }) {
   const w = small ? "w-4" : "w-5";
 
   if (!code) {
-    return <Globe2 aria-hidden="true" className={cn("shrink-0 text-muted-foreground", small ? "size-4" : "size-5")} />;
+    return (
+      <Globe2
+        aria-hidden="true"
+        className={cn("shrink-0 text-muted-foreground", small ? "size-4" : "size-5")}
+      />
+    );
   }
   if (failed) {
     // Offline / blocked CDN: fall back to the emoji flag.
-    const emoji = [...code.toUpperCase()].map((c) => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65)).join("");
+    const emoji = [...code.toUpperCase()]
+      .map((c) => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65))
+      .join("");
     return (
-      <span aria-hidden="true" className={cn("shrink-0 text-center leading-none", w, small ? "text-sm" : "text-base")}>
+      <span
+        aria-hidden="true"
+        className={cn("shrink-0 text-center leading-none", w, small ? "text-sm" : "text-base")}
+      >
         {emoji}
       </span>
     );
@@ -267,7 +313,10 @@ function RegionMark({ name, small }: { name?: string; small?: boolean }) {
       loading="lazy"
       draggable={false}
       onError={() => setFailed(true)}
-      className={cn("h-auto shrink-0 rounded-[3px] object-cover shadow-[0_0_0_1px_rgb(255_255_255/0.12)]", w)}
+      className={cn(
+        "h-auto shrink-0 rounded-[3px] object-cover shadow-[0_0_0_1px_rgb(255_255_255/0.12)]",
+        w,
+      )}
     />
   );
 }

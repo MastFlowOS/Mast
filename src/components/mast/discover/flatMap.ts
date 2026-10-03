@@ -31,15 +31,15 @@ export type FitSpec =
 
 /** Share of the frame's width / height a focused country's bounding box may fill.
  * Height is tighter: the label pill sits over the bottom of the map. */
-const FILL_W = 0.6;
+const FILL_W = 0.42;
 const FILL_H = 0.5;
 /** Lift the country this fraction of the frame height, clear of the label pill. */
 const LIFT = 0.13;
 /** Never frame a window narrower than this many degrees of longitude. */
-const MIN_SPAN_DEG = 11;
+const MIN_SPAN_DEG = 16;
 const MIN_W = (MIN_SPAN_DEG * Math.PI * BASE_SCALE) / 180;
 /** Zoom for a point-only country (no polygon in the atlas). */
-const POINT_W = (24 * Math.PI * BASE_SCALE) / 180;
+const POINT_W = (34 * Math.PI * BASE_SCALE) / 180;
 
 /** The world, with Antarctica's emptiness and the far north trimmed off. */
 const WORLD_CENTER_LAT = 12;

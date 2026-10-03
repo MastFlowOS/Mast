@@ -38,8 +38,8 @@ describe("viewForSpec", () => {
 
   it("never zooms past the minimum span for a tiny country", () => {
     const tiny = viewForSpec(mainlandBounds([square(6, 49.4, 0.2)])!, 2.6);
-    // 11° of longitude at BASE_SCALE 1000 ≈ 192 units.
-    expect(tiny.w).toBeGreaterThanOrEqual(190);
+    // 16° of longitude at BASE_SCALE 1000 ≈ 279 units.
+    expect(tiny.w).toBeGreaterThanOrEqual(278);
   });
 
   it("fits tall countries by height", () => {

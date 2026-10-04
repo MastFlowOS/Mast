@@ -49,6 +49,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  EMPTY_NICHE_LABEL,
   LEAD_STATUSES,
   NICHES,
   formatRelative,
@@ -56,6 +57,7 @@ import {
   leadNicheDisplay,
   leadStatusColor,
   leadStatusLabel,
+  nicheMatchKey,
   normalizeLeadStatus,
 } from "@/lib/lead-workspace";
 import { FeatureGate } from "@/components/mast/FeatureGate";
@@ -122,6 +124,22 @@ const emptyLeadForm = {
 
 // One grid shared by every row so columns line up down the whole list.
 // Contact icons appear at xl, last interaction at md, status/star/menu always.
+/** Dot colours for niche labels. A niche always gets the same one (hashed from its
+ * normalised key, so "coffee_shop" and "Coffee Shop" match), so categories can be
+ * told apart at a glance while scrolling. */
+const NICHE_DOT_COLORS = [
+  "#ffa94d", "#ff6fb5", "#6ea8ff", "#4ade9c", "#b18cff",
+  "#ffd24d", "#4dd4e8", "#ff7a6b", "#9bd84d", "#e08cff",
+];
+
+function nicheDotColor(niche: string | null | undefined): string | null {
+  const key = nicheMatchKey(niche);
+  if (!key) return null;
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return NICHE_DOT_COLORS[h % NICHE_DOT_COLORS.length];
+}
+
 const ROW_GRID =
   "grid items-center gap-x-4 " +
   "grid-cols-[20px_minmax(0,1fr)_28px_28px] " +
@@ -450,6 +468,7 @@ function RelationshipRow({
 }) {
   const dead = normalizeLeadStatus(lead.status) === "dead";
   const nicheLabel = leadNicheDisplay(lead.niche);
+  const nicheDot = nicheLabel === EMPTY_NICHE_LABEL ? null : nicheDotColor(lead.niche);
 
   const lastRelative = lead.lastContactedAt ? formatRelative(lead.lastContactedAt) : "-";
   const contacted = lastRelative !== "-";
@@ -494,7 +513,21 @@ function RelationshipRow({
           {lead.businessName}
         </div>
         <div className="mt-1 flex min-w-0 items-center gap-2 text-[13px] leading-4 text-muted-foreground">
-          <span className="max-w-[55%] shrink-0 truncate">{nicheLabel}</span>
+          <span
+            className={cn(
+              "inline-flex max-w-[55%] shrink-0 items-center gap-1.5 font-semibold",
+              nicheDot ? "text-foreground/90" : "font-normal",
+            )}
+          >
+            {nicheDot && (
+              <span
+                aria-hidden="true"
+                style={{ background: nicheDot, boxShadow: `0 0 6px -1px ${nicheDot}` }}
+                className="size-2 shrink-0 rounded-full"
+              />
+            )}
+            <span className="truncate">{nicheLabel}</span>
+          </span>
           {lead.location && (
             <>
               <span

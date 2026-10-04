@@ -1550,33 +1550,31 @@ function SuggestionTile({
       aria-pressed={applied}
       title={disabled ? reason : applied ? `${value} is already selected` : `Use ${value}`}
       className={cn(
-        "group relative flex min-w-0 flex-col justify-center gap-1 rounded-xl border px-2.5 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/60",
+        "group relative flex min-w-0 flex-col justify-center gap-1.5 rounded-xl border px-2.5 py-2.5 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/60",
         applied ? "border-brand/40 bg-brand/[0.07]" : "border-white/[0.06] bg-black/20",
         disabled ? "cursor-default" : "cursor-pointer hover:border-white/20",
       )}
     >
-      <span className="flex min-w-0 items-center gap-2">
+      <span className="flex min-w-0 items-center gap-1.5">
         <span
           aria-hidden="true"
           style={{ background: tint.bg, color: tint.fg }}
-          className="grid size-6 shrink-0 place-items-center rounded-md"
+          className="grid size-5 shrink-0 place-items-center rounded-md"
         >
           <Icon className="size-3" strokeWidth={2.2} />
         </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-[9.5px] leading-none text-muted-foreground">{label}</span>
-          <span
-            className={cn(
-              "mt-0.5 block truncate text-[11.5px] font-semibold leading-tight",
-              disabled ? "text-muted-foreground" : "text-foreground",
-            )}
-          >
-            {value ?? "—"}
-          </span>
-        </span>
+        <span className="min-w-0 flex-1 truncate text-[10px] leading-none text-muted-foreground">{label}</span>
         {applied && <Check className="size-3 shrink-0 text-brand" strokeWidth={3} aria-label="Selected" />}
       </span>
-      <span className="truncate text-[10px] leading-snug text-muted-foreground">{reason}</span>
+      <span
+        className={cn(
+          "break-words text-[12.5px] font-semibold leading-tight",
+          disabled ? "text-muted-foreground" : "text-foreground",
+        )}
+      >
+        {value ?? "—"}
+      </span>
+      <span className="break-words text-[10.5px] leading-snug text-muted-foreground">{reason}</span>
     </button>
   );
 }
@@ -1713,7 +1711,7 @@ function DiscoverAiOverview({
               <SuggestionTile
                 icon={Link2}
                 tint={{ bg: "rgba(236,72,153,0.18)", fg: "#ff5fb4" }}
-                label="Contact Channel"
+                label="Channel"
                 value={channelLabel}
                 reason={suggestions.channel?.reason ?? "No channels on your plan."}
                 applied={applied.channel}

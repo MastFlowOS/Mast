@@ -1255,11 +1255,11 @@ function GetLeads() {
           onApply={{
             niche: () => {
               const v = nextSuggestions.niche?.value;
-              if (v) setNiches((prev) => (prev.includes(v) ? prev : [...prev, v]));
+              if (v) setNiches((prev) => (prev.includes(v) ? prev.filter((n) => n !== v) : [...prev, v]));
             },
             region: () => {
               const v = nextSuggestions.region?.value;
-              if (v && !regions.includes(v)) toggleRegion(v);
+              if (v) toggleRegion(v);
             },
             amount: () => {
               const v = nextSuggestions.amount?.value;
@@ -1267,7 +1267,7 @@ function GetLeads() {
             },
             channel: () => {
               const v = nextSuggestions.channel?.value as ChannelId | undefined;
-              if (v && !channels.includes(v)) toggleChannel(v);
+              if (v) toggleChannel(v);
             },
           }}
         />
@@ -1532,6 +1532,7 @@ function SuggestionTile({
   value,
   reason,
   applied,
+  removable = true,
   onApply,
 }: {
   icon: typeof Sparkles;
@@ -1541,6 +1542,8 @@ function SuggestionTile({
   value: string | null;
   reason: string;
   applied: boolean;
+  /** Whether clicking an already-applied suggestion un-selects it (an amount can't be un-selected). */
+  removable?: boolean;
   onApply: () => void;
 }) {
   const disabled = value === null;
@@ -1550,7 +1553,7 @@ function SuggestionTile({
       disabled={disabled}
       onClick={onApply}
       aria-pressed={applied}
-      title={disabled ? reason : applied ? `${value} is already selected` : `Use ${value}`}
+      title={disabled ? reason : applied ? (removable ? `Click to remove ${value}` : `${value} is already selected`) : `Use ${value}`}
       className={cn(
         "group relative flex min-w-0 flex-col justify-center gap-1.5 rounded-xl border px-2.5 py-2.5 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/60",
         applied ? "border-brand/40 bg-brand/[0.07]" : "border-white/[0.06] bg-black/20",
@@ -1708,6 +1711,7 @@ function DiscoverAiOverview({
                 value={suggestions.amount ? `${suggestions.amount.value.toLocaleString()} businesses` : null}
                 reason={suggestions.amount?.reason ?? "No capacity left today."}
                 applied={applied.amount}
+                removable={false}
                 onApply={onApply.amount}
               />
               <SuggestionTile

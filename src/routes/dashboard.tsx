@@ -5,7 +5,7 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { MastWordmark } from "@/components/mast/MastWordmark";
 import { useAccount, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
 import { useNavIndicator } from "@/hooks/use-nav-indicator";
@@ -104,6 +104,13 @@ function DashboardLayout() {
   // ── Notification state ────────────────────────────────────────────────────
   const [notifOpen, setNotifOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
+
+  // <main> is the one element that scrolls and it stays mounted across tabs, so it would
+  // otherwise keep the previous tab's scroll position. Always start a new page at the top.
+  const mainRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    mainRef.current?.scrollTo({ top: 0, left: 0, behavior: "instant" as ScrollBehavior });
+  }, [pathname]);
   const [notifications, setNotifications] = useState<any[]>(() => {
     try {
       const saved = localStorage.getItem("mast_notifications");
@@ -572,7 +579,7 @@ function DashboardLayout() {
             is the ONE element that actually owns vertical scrolling.
             overscroll-behavior: contain stops any residual scroll chaining
             from ever bleeding into a scrollable ancestor. */}
-        <main className="flex-1 min-h-0 overflow-y-auto" style={{ overscrollBehavior: "contain" }}>
+        <main ref={mainRef} className="flex-1 min-h-0 overflow-y-auto" style={{ overscrollBehavior: "contain" }}>
           <Outlet />
         </main>
       </div>

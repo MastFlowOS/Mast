@@ -658,6 +658,11 @@ function Relationships() {
   const [showDead, setShowDead] = useState(false);
   const [newLead, setNewLead] = useState(emptyLeadForm);
   const [page, setPage] = useState(1);
+  // The list is its own scroll container: send it back to the top on every page change.
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    listScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: "instant" as ScrollBehavior });
+  }, [page]);
 
   // Sync starred to localStorage whenever it changes
   useEffect(() => {
@@ -1133,7 +1138,7 @@ function Relationships() {
       )}
 
       {/* List */}
-      <div className="flex-1 overflow-auto px-3 md:px-5">
+      <div ref={listScrollRef} className="flex-1 overflow-auto px-3 md:px-5">
         <div className="sticky top-0 z-10 flex items-center gap-4 border-b border-border/60 bg-background/95 px-3 py-2.5 backdrop-blur">
           <div className="grid w-5 place-items-center">
             <Checkbox

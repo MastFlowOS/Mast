@@ -182,100 +182,92 @@ export function PipelineHealthStrip({ health }: { health: FlowHealth }) {
 
 /* ─────────────────────────────── The Flow (hero) ─────────────────────────────── */
 
-// Ribbon geometry, in a 1000 × 340 viewBox: five nodes at x = 100, 300, 500, 700, 900.
+// One continuous ribbon. Geometry is in a 1000 × H viewBox that is stretched sideways only
+// (preserveAspectRatio="none"), so 1 unit of y is always 1px and every stage sits at a
+// fixed % of the width: nodes at x = 100, 300, 500, 700, 900.
 const VB_W = 1000;
-const VB_H = 340;
-const CY = 138;
+const FLOW_H = 268;
+const CY = 150; // vertical centre of the stage circles
+const R = 34; // circle radius (68px)
 const NODE_X = [100, 300, 500, 700, 900];
 
-/** A ribbon strand that fans out between nodes and pinches (twists) at each node. */
-function strand(amp: number, phase: number, drift: number): string {
+// How far the ribbon swells above / below the node line in each stretch
+// (index 0 = lead-in from the left edge, 1..4 = between stages, 5 = tail to the right edge).
+const SWELL_UP = [44, 74, 50, 66, 48, 38];
+const SWELL_DOWN = [8, 16, 24, 14, 20, 8];
+const PINCH = 20; // ribbon half-height where it passes behind a circle
+
+function swell(x: number) {
+  const s = Math.max(0, Math.min(5, Math.floor((x + 100) / 200)));
+  const t = (((x + 100) % 200) + 200) % 200 / 200;
+  const k = Math.sin(Math.PI * t) ** 2; // 0 at every node, 1 midway between nodes
+  return { s, k };
+}
+const topY = (x: number) => {
+  const { s, k } = swell(x);
+  return CY - PINCH - SWELL_UP[s] * k;
+};
+const bottomY = (x: number) => {
+  const { s, k } = swell(x);
+  return CY + PINCH + SWELL_DOWN[s] * k;
+};
+const threadY = (x: number) => topY(x) + (bottomY(x) - topY(x)) * 0.36;
+
+function trace(fn: (x: number) => number): string {
   const pts: string[] = [];
-  for (let x = -20; x <= VB_W + 20; x += 8) {
-    const twist = Math.sin((Math.PI * (x - 100)) / 200);
-    const wobble = 1 + 0.22 * Math.sin(x / 85 + phase);
-    const y = CY + amp * twist * wobble + drift * Math.sin(x / 190 + phase * 2);
-    pts.push(`${x === -20 ? "M" : "L"}${x},${y.toFixed(1)}`);
-  }
+  for (let x = -100; x <= VB_W + 100; x += 5) pts.push(`${x === -100 ? "M" : "L"}${x},${fn(x).toFixed(1)}`);
   return pts.join(" ");
 }
-
-const STRANDS: { d: string; w: number; o: number }[] = [
-  { d: strand(46, 0.0, 6), w: 1.1, o: 0.55 },
-  { d: strand(-46, 1.4, 6), w: 1.1, o: 0.55 },
-  { d: strand(34, 0.7, 4), w: 1, o: 0.5 },
-  { d: strand(-34, 2.1, 4), w: 1, o: 0.5 },
-  { d: strand(22, 1.2, 3), w: 1, o: 0.45 },
-  { d: strand(-22, 2.8, 3), w: 1, o: 0.45 },
-  { d: strand(11, 0.3, 2), w: 0.9, o: 0.4 },
-  { d: strand(-11, 1.9, 2), w: 0.9, o: 0.4 },
-];
-const BAND_TOP = strand(46, 0.0, 6);
-const BAND_BOTTOM = strand(-46, 1.4, 6);
-const BAND_PATH = (() => {
-  const bottom = BAND_BOTTOM.split(" L").map((s) => s.replace(/^M/, ""));
-  return `${BAND_TOP} L${bottom.reverse().join(" L")} Z`;
+const TOP_PATH = trace(topY);
+const BOTTOM_PATH = trace(bottomY);
+const THREAD_PATH = trace(threadY);
+const BODY_PATH = (() => {
+  const back: string[] = [];
+  for (let x = VB_W + 100; x >= -100; x -= 5) back.push(`L${x},${bottomY(x).toFixed(1)}`);
+  return `${TOP_PATH} ${back.join(" ")} Z`;
 })();
-const ECHO: string = (() => {
-  const pts: string[] = [];
-  for (let x = -20; x <= VB_W + 20; x += 8) {
-    const y = CY + 150 + 20 * Math.sin(x / 120 + 0.6) + 10 * Math.sin(x / 47);
-    pts.push(`${x === -20 ? "M" : "L"}${x},${y.toFixed(1)}`);
-  }
-  return pts.join(" ");
-})();
+// A single, very faint echo of the wave beneath the metric tiles.
+const ECHO_PATH = trace((x) => FLOW_H - 8 + 5 * Math.sin(x / 95 + 0.6));
 
 function FlowRibbon({ gid }: { gid: string }) {
   return (
     <svg
       aria-hidden="true"
-      viewBox={`0 0 ${VB_W} ${VB_H}`}
+      viewBox={`0 0 ${VB_W} ${FLOW_H}`}
       preserveAspectRatio="none"
       className="pointer-events-none absolute inset-0 size-full"
     >
       <defs>
         <linearGradient id={`${gid}-g`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={VB_W} y2="0">
           <stop offset="0" stopColor={STAGE_COLOR.new} />
-          <stop offset="0.28" stopColor={STAGE_COLOR.contacted} />
-          <stop offset="0.52" stopColor={STAGE_COLOR.replied} />
-          <stop offset="0.74" stopColor={STAGE_COLOR.meeting} />
+          <stop offset="0.3" stopColor={STAGE_COLOR.contacted} />
+          <stop offset="0.55" stopColor={STAGE_COLOR.replied} />
+          <stop offset="0.78" stopColor={STAGE_COLOR.meeting} />
           <stop offset="1" stopColor={STAGE_COLOR.won} />
         </linearGradient>
+        {/* the ribbon thins out at both ends instead of stopping dead */}
         <linearGradient id={`${gid}-fade`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={VB_W} y2="0">
-          <stop offset="0" stopColor="#fff" stopOpacity="0.25" />
-          <stop offset="0.08" stopColor="#fff" stopOpacity="1" />
-          <stop offset="0.92" stopColor="#fff" stopOpacity="1" />
-          <stop offset="1" stopColor="#fff" stopOpacity="0.25" />
+          <stop offset="0" stopColor="#fff" stopOpacity="0" />
+          <stop offset="0.07" stopColor="#fff" stopOpacity="1" />
+          <stop offset="0.93" stopColor="#fff" stopOpacity="1" />
+          <stop offset="1" stopColor="#fff" stopOpacity="0" />
         </linearGradient>
         <mask id={`${gid}-m`}>
-          <rect width={VB_W} height={VB_H} fill={`url(#${gid}-fade)`} />
+          <rect width={VB_W} height={FLOW_H} fill={`url(#${gid}-fade)`} />
         </mask>
-        <filter id={`${gid}-blur`} x="-10%" y="-60%" width="120%" height="220%">
-          <feGaussianBlur stdDeviation="9" />
+        <filter id={`${gid}-soft`} x="-5%" y="-40%" width="110%" height="180%">
+          <feGaussianBlur stdDeviation="14" />
         </filter>
       </defs>
       <g mask={`url(#${gid}-m)`}>
-        {/* soft body of the ribbon */}
-        <path d={BAND_PATH} fill={`url(#${gid}-g)`} opacity="0.10" />
-        <g filter={`url(#${gid}-blur)`} opacity="0.55">
-          <path d={STRANDS[0].d} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="10" vectorEffect="non-scaling-stroke" />
-          <path d={STRANDS[1].d} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="10" vectorEffect="non-scaling-stroke" />
-        </g>
-        {/* fine strands */}
-        {STRANDS.map((s, i) => (
-          <path
-            key={i}
-            d={s.d}
-            fill="none"
-            stroke={`url(#${gid}-g)`}
-            strokeWidth={s.w}
-            opacity={s.o}
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-        {/* faint echo under the stage metrics */}
-        <path d={ECHO} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.28" vectorEffect="non-scaling-stroke" />
-        <path d={ECHO} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="8" opacity="0.10" filter={`url(#${gid}-blur)`} vectorEffect="non-scaling-stroke" />
+        {/* the body: one soft translucent shape, and a blurred copy for the glow */}
+        <path d={BODY_PATH} fill={`url(#${gid}-g)`} opacity="0.32" filter={`url(#${gid}-soft)`} />
+        <path d={BODY_PATH} fill={`url(#${gid}-g)`} opacity="0.19" />
+        {/* three lines only: the two edges and one brighter thread through the middle */}
+        <path d={TOP_PATH} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1.2" opacity="0.6" vectorEffect="non-scaling-stroke" />
+        <path d={BOTTOM_PATH} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.28" vectorEffect="non-scaling-stroke" />
+        <path d={THREAD_PATH} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1.2" opacity="0.8" vectorEffect="non-scaling-stroke" />
+        <path d={ECHO_PATH} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.2" vectorEffect="non-scaling-stroke" />
       </g>
     </svg>
   );
@@ -283,16 +275,21 @@ function FlowRibbon({ gid }: { gid: string }) {
 
 const ALERT_COLOR = { bottleneck: "#f59e0b", low: "#ec4899", good: "#34d399" } as const;
 
+/** Three rising bars; the taller they are, the better the stage converts. */
 function MiniBars({ pct, color }: { pct: number; color: string }) {
-  const h = [0.45, 0.72, 1].map((k) => Math.max(5, Math.round(((Math.max(8, pct) * k) / 100) * 22)));
+  const fill = Math.max(0.25, Math.min(1, pct / 100));
+  const heights = [0.4, 0.68, 1].map((k) => Math.round(8 + 14 * k * (0.45 + 0.55 * fill)));
   return (
     <span aria-hidden="true" className="flex h-[22px] items-end gap-[3px]">
-      {h.map((v, i) => (
-        <span key={i} style={{ height: v, background: color, opacity: 0.55 + i * 0.22 }} className="w-[5px] rounded-[2px]" />
+      {heights.map((h, i) => (
+        <span key={i} style={{ height: h, background: color, opacity: 0.5 + i * 0.25 }} className="w-[4px] rounded-[2px]" />
       ))}
     </span>
   );
 }
+
+const CARD_W = 128;
+const ANCHOR_OFFSET = 56; // viewBox units from the stage centre to where an alert pins to the ribbon
 
 export function PipelineFlowHero({
   nodes,
@@ -307,75 +304,99 @@ export function PipelineFlowHero({
   return (
     <section aria-label="Pipeline flow" className="relative">
       <div className="overflow-x-auto">
-        <div className="relative mx-auto h-[340px] min-w-[780px] max-w-[1400px]">
+        <div className="relative mx-auto min-w-[760px] max-w-[1320px]" style={{ height: FLOW_H }}>
           <FlowRibbon gid={gid} />
 
-          {/* movement between stages, centred on the node row */}
+          {/* movement between stages, sitting on the ribbon */}
           {!loading &&
             nodes.slice(0, -1).map((n, i) => (
               <div
                 key={n.stage}
                 style={{ left: `${(i + 1) * 20}%`, top: CY, color: STAGE_COLOR[STAGE_ORDER[i + 1]] }}
-                className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 text-[15px] font-semibold tabular-nums"
+                className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 text-[14px] font-medium tabular-nums"
               >
                 {n.toNextPct ?? 0}%
-                <ArrowRight className="size-[18px]" strokeWidth={2.2} />
+                <ArrowRight className="size-[15px]" strokeWidth={2.2} />
               </div>
             ))}
 
-          <div className="relative z-10 grid h-full grid-cols-5">
+          {/* alerts: a small card pinned to the ribbon edge beside its stage by a dotted line */}
+          {!loading &&
+            nodes.map((n, i) => {
+              if (!n.alert) return null;
+              const ac = ALERT_COLOR[n.alert.kind];
+              const flip = i === nodes.length - 1; // the last stage pins to its left so the card stays in view
+              const ax = NODE_X[i] + (flip ? -ANCHOR_OFFSET : ANCHOR_OFFSET);
+              const ay = topY(ax);
+              const cardTop = 6;
+              const cardH = 44;
+              return (
+                <div key={`a-${n.stage}`} className="pointer-events-none absolute inset-0 z-10">
+                  <div
+                    style={{
+                      left: `${ax / 10}%`,
+                      top: cardTop,
+                      width: CARD_W,
+                      transform: `translateX(${flip ? `calc(-100% + 14px)` : "-14px"})`,
+                    }}
+                    className="absolute rounded-lg border border-white/10 bg-[#0a0d20]/90 px-3 py-1.5"
+                  >
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
+                      <span style={{ background: ac }} className="size-1.5 shrink-0 rounded-full" />
+                      <span className="truncate">{n.alert.title}</span>
+                    </div>
+                    <div className="mt-0.5 truncate text-[10px] leading-tight text-muted-foreground">{n.alert.sub}</div>
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    style={{ left: `${ax / 10}%`, top: cardTop + cardH, height: ay - (cardTop + cardH) - 3, borderColor: `${ac}80` }}
+                    className="absolute -translate-x-1/2 border-l border-dashed"
+                  />
+                  <span
+                    aria-hidden="true"
+                    style={{ left: `${ax / 10}%`, top: ay - 3, background: ac, boxShadow: `0 0 6px ${ac}` }}
+                    className="absolute size-1.5 -translate-x-1/2 rounded-full"
+                  />
+                </div>
+              );
+            })}
+
+          <div className="relative z-20 grid h-full grid-cols-5">
             {loading
               ? STAGE_ORDER.map((s) => (
-                  <div key={s} className="flex flex-col items-center pt-[88px]">
-                    <Skeleton className="size-[84px] rounded-full" />
+                  <div key={s} className="flex justify-center" style={{ paddingTop: CY - R }}>
+                    <Skeleton className="size-[68px] rounded-full" />
                   </div>
                 ))
               : nodes.map((n, i) => {
                   const last = i === nodes.length - 1;
-                  const ac = n.alert ? ALERT_COLOR[n.alert.kind] : null;
                   return (
-                    <div key={n.stage} className="relative flex flex-col items-center">
-                      {/* contextual alert, hung above its stage */}
-                      {n.alert && ac && (
-                        <div className="absolute left-1/2 top-0 flex -translate-x-1/2 flex-col items-center">
-                          <div className="min-w-[132px] rounded-lg border border-white/10 bg-[#0a0d20]/90 px-3 py-1.5 text-left">
-                            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
-                              <span style={{ background: ac, boxShadow: `0 0 6px ${ac}` }} className="size-1.5 rounded-full" />
-                              {n.alert.title}
-                            </div>
-                            <div className="mt-0.5 text-[10px] leading-tight text-muted-foreground">{n.alert.sub}</div>
-                          </div>
-                          <span aria-hidden="true" style={{ borderColor: `${ac}99` }} className="h-3 border-l border-dashed" />
-                          <span aria-hidden="true" style={{ background: ac, boxShadow: `0 0 6px ${ac}` }} className="size-1.5 rounded-full" />
-                        </div>
-                      )}
-
-                      <div className="flex flex-col items-center" style={{ paddingTop: CY - 42 - 30 }}>
-                        <span className="mb-2 text-[15px] font-semibold tracking-[-0.01em] text-foreground">{n.label}</span>
-                        <button
-                          type="button"
-                          onClick={() => onSelect(n.stage)}
-                          aria-label={`${n.label}: ${n.count} opportunities. Open stage details`}
-                          style={{
-                            background: `linear-gradient(#060918,#060918) padding-box, linear-gradient(140deg, ${n.color}, ${
-                              STAGE_COLOR[STAGE_ORDER[Math.min(i + 1, 4)]]
-                            }) border-box`,
-                            border: "4px solid transparent",
-                            boxShadow: `0 0 30px -6px ${n.color}aa, inset 0 0 18px -8px ${n.color}`,
-                          }}
-                          className="grid size-[84px] cursor-pointer place-items-center rounded-full text-[27px] font-semibold tabular-nums text-foreground outline-none transition-transform duration-200 hover:scale-[1.04] focus-visible:ring-2 focus-visible:ring-brand/60"
-                        >
-                          {n.count.toLocaleString()}
-                        </button>
-                      </div>
+                    <div key={n.stage} className="relative flex flex-col items-center" style={{ paddingTop: CY - R - 26 }}>
+                      <span className="h-[20px] text-[13.5px] font-medium leading-none tracking-[-0.005em] text-foreground">{n.label}</span>
+                      <button
+                        type="button"
+                        onClick={() => onSelect(n.stage)}
+                        aria-label={`${n.label}: ${n.count} opportunities. Open stage details`}
+                        style={{
+                          marginTop: 6,
+                          background: `linear-gradient(#050816,#050816) padding-box, linear-gradient(140deg, ${n.color}, ${
+                            STAGE_COLOR[STAGE_ORDER[Math.min(i + 1, 4)]]
+                          }) border-box`,
+                          border: "3px solid transparent",
+                          boxShadow: `0 0 22px -8px ${n.color}`,
+                        }}
+                        className="grid size-[68px] cursor-pointer place-items-center rounded-full text-[22px] font-semibold tabular-nums text-foreground outline-none transition-transform duration-200 hover:scale-[1.04] focus-visible:ring-2 focus-visible:ring-brand/60"
+                      >
+                        {n.count.toLocaleString()}
+                      </button>
 
                       {/* stage performance */}
-                      <div className="mt-5 flex w-[150px] items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-[#080b1c]/85 px-3 py-2">
+                      <div className="mt-[14px] flex w-[152px] items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-[#080b1c]/85 px-3 py-2">
                         <span className="min-w-0">
                           <span className="block text-[15px] font-semibold leading-none tabular-nums text-foreground">
                             {n.toNextPct ?? 0}%
                           </span>
-                          <span className="mt-1 block truncate text-[10.5px] leading-none text-muted-foreground">
+                          <span className="mt-1 block whitespace-nowrap text-[10.5px] leading-none text-muted-foreground">
                             {last ? "win rate" : `move to ${n.nextLabel}`}
                           </span>
                         </span>

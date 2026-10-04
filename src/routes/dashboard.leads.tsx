@@ -22,6 +22,7 @@ import {
   BarChart3,
   Globe,
   Gauge,
+  Warehouse,
   Database,
   Building2,
   TrendingUp,
@@ -935,7 +936,7 @@ function GetLeads() {
               <div className="grid items-stretch gap-3.5 @2xl:grid-cols-24">
                 <StepCard
                   step={1}
-                  icon={Sparkles}
+                  icon={Warehouse}
                   title="Business Niche"
                   hint="Required · pick one or more"
                   className="relative z-10 @2xl:col-span-12"

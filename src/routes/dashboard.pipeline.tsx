@@ -19,7 +19,12 @@ import {
   ArrowRightLeft, 
   GripVertical,
   HelpCircle,
-  MessageSquare
+  MessageSquare,
+  Search,
+  SlidersHorizontal,
+  CalendarDays,
+  ChevronDown,
+  X
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Lead, LeadStatus } from "@/lib/api";
@@ -38,6 +43,18 @@ import {
 import type { FlowStage } from "@/lib/lead-workspace";
 
 import { FeatureGate } from "@/components/mast/FeatureGate";
+import {
+  PipelineBriefing,
+  PipelineCoach,
+  PipelineFlowHero,
+  PipelineHealthStrip,
+  type CoachCard,
+} from "@/components/mast/pipeline/PipelineFlowView";
+import {
+  buildPipelineFlowModel,
+  countByStage,
+  STAGE_SHORT,
+} from "@/components/mast/pipeline/pipelineFlowModel";
 import { usePermissions } from "@/hooks/use-permissions";
 
 export const Route = createFileRoute("/dashboard/pipeline")({
@@ -523,6 +540,119 @@ function Pipeline() {
     });
   }, [stageCounts, stageConversions]);
 
+  // ── Header controls: search, filters and date range ──
+  const [query, setQuery] = useState("");
+  const [nicheFilter, setNicheFilter] = useState<string>("all");
+  const [range, setRange] = useState<"all" | "7" | "30" | "90">("all");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!filtersOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (filtersRef.current && !filtersRef.current.contains(e.target as Node)) setFiltersOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [filtersOpen]);
+
+  const nicheOptions = useMemo(
+    () => Array.from(new Set(leads.map((l) => l.niche).filter((n): n is string => Boolean(n)))).sort(),
+    [leads],
+  );
+
+  // The leads every view works from after the header filters are applied.
+  const filteredLeads = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const cutoff = range === "all" ? 0 : Date.now() - Number(range) * 24 * 60 * 60 * 1000;
+    return leads.filter((l) => {
+      if (q && !l.businessName.toLowerCase().includes(q)) return false;
+      if (nicheFilter !== "all" && l.niche !== nicheFilter) return false;
+      if (cutoff && new Date(l.createdAt).getTime() < cutoff) return false;
+      return true;
+    });
+  }, [leads, query, nicheFilter, range]);
+  const isFiltered = query.trim() !== "" || nicheFilter !== "all" || range !== "all";
+
+  // Unfiltered: the server's pipeline stats (authoritative). Filtered: counted from the filtered leads.
+  const flowCounts = useMemo(
+    () => (isFiltered || !pipelineStats ? countByStage(filteredLeads) : stageCounts),
+    [isFiltered, pipelineStats, filteredLeads, stageCounts],
+  );
+  const flow = useMemo(() => buildPipelineFlowModel(flowCounts, filteredLeads), [flowCounts, filteredLeads]);
+
+  const flowHeadline = useMemo(() => {
+    if (flow.health.total === 0) return "Your pipeline is empty — discover opportunities to start the flow.";
+    const tone = healthScore >= 75 ? "healthy" : healthScore >= 60 ? "holding steady" : "under pressure";
+    return flow.bottleneckStage
+      ? `Your pipeline is ${tone}, but ${STAGE_SHORT[flow.bottleneckStage]} is becoming a bottleneck.`
+      : `Your pipeline is ${tone}, and opportunities are moving.`;
+  }, [flow, healthScore]);
+
+  // Sales coach cards: actionable recommendations built from the same numbers as the flow.
+  const coachCards = useMemo<CoachCard[]>(() => {
+    const cards: CoachCard[] = [];
+    const go = (to: string) => () => navigate({ to });
+    const alerts = canCoaching && realCoaching && !realCoaching.allClear ? realCoaching.alerts : [];
+
+    if (flow.needAttention > 0) {
+      const lead = alerts[0];
+      cards.push({
+        id: "stalled",
+        tone: "priority",
+        title: `${flow.needAttention} opportunit${flow.needAttention === 1 ? "y is" : "ies are"} stalling`,
+        body: lead ? `${lead.businessName}: ${lead.message}` : "These haven't received an update in 3+ days.",
+        action: `Review ${flow.needAttention} opportunit${flow.needAttention === 1 ? "y" : "ies"}`,
+        onAction: go("/dashboard/relationships"),
+        stages: ["contacted", "replied", "meeting"],
+      });
+    }
+    if (flow.highPotential > 0) {
+      cards.push({
+        id: "potential",
+        tone: "growth",
+        title: `${flow.highPotential} high-potential opportunit${flow.highPotential === 1 ? "y" : "ies"}`,
+        body: "Replied recently and still warm. A quick follow-up is most likely to convert.",
+        action: `View ${flow.highPotential} opportunit${flow.highPotential === 1 ? "y" : "ies"}`,
+        onAction: go("/dashboard/relationships"),
+        stages: ["replied"],
+      });
+    }
+    if (flow.upcomingMeetings > 0) {
+      cards.push({
+        id: "meetings",
+        tone: "upcoming",
+        title: `${flow.upcomingMeetings} meeting${flow.upcomingMeetings === 1 ? "" : "s"} to prepare for`,
+        body: "Send a short pre-meeting summary a day ahead so you walk in ready.",
+        action: "View meetings",
+        onAction: go("/dashboard/relationships"),
+        stages: ["meeting"],
+      });
+    }
+    if (flow.newWaiting > 0) {
+      cards.push({
+        id: "new",
+        tone: "next",
+        title: `${flow.newWaiting} new opportunit${flow.newWaiting === 1 ? "y" : "ies"} to contact`,
+        body: "Start outreach while they're fresh. Early touches get the most replies.",
+        action: "Start outreach",
+        onAction: go("/dashboard/relationships"),
+        stages: ["new"],
+      });
+    }
+    if (cards.length === 0) {
+      cards.push({
+        id: "discover",
+        tone: "next",
+        title: "Your pipeline is clear",
+        body: "Nothing needs attention. Find fresh opportunities to keep the flow moving.",
+        action: "Discover opportunities",
+        onAction: go("/dashboard/leads"),
+        stages: ["new", "contacted", "replied", "meeting", "won"],
+      });
+    }
+    return cards;
+  }, [flow, canCoaching, realCoaching, navigate]);
+
   // Kanban drop handler
   const handleDrop = async (status: LeadStatus) => {
     if (dragging == null) return;
@@ -608,498 +738,269 @@ function Pipeline() {
     }
   };
 
+  const rangeLabel = { all: "All time", "7": "Last 7 days", "30": "Last 30 days", "90": "Last 90 days" }[range];
+
   return (
-    <div className="flex min-h-full flex-col bg-background/50 bg-grid-sm">
-      {/* Top Banner: Header, View Toggle, and Circular Health Score */}
-      <div className="border-b border-border bg-card/45 backdrop-blur-md px-6 py-4 relative z-10">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
-              Pipeline Flow <Sparkles className="size-5 text-brand animate-pulse-glow" />
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              AI-driven layout focusing on deal movement, conversion health, and opportunity velocity.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-4">
-            {/* Kanban / Flow View Toggle Switch */}
-            <div className="flex items-center rounded-lg border border-border bg-background p-1 shadow-inner">
-              <button
-                onClick={() => handleToggleView("flow")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all duration-200 cursor-pointer ${
-                  viewMode === "flow" 
-                    ? "bg-brand text-brand-foreground shadow shadow-brand/40" 
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <GitBranch className="size-4" /> Flow
-              </button>
-              <button
-                onClick={() => handleToggleView("kanban")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all duration-200 cursor-pointer ${
-                  viewMode === "kanban" 
-                    ? "bg-brand text-brand-foreground shadow shadow-brand/40" 
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Kanban className="size-4" /> Kanban
-              </button>
-            </div>
-
-            {/* Signature Feature: Circular Pipeline Health Score */}
-            <div className="flex items-center gap-3 bg-background/80 border border-border px-4 py-2 rounded-xl shadow-sm hover:border-brand/30 transition-colors group relative cursor-help">
-              <div className="relative size-12 flex items-center justify-center shrink-0">
-                {/* SVG Circular Progress Ring */}
-                <svg className="size-full -rotate-90">
-                  <circle 
-                    cx="24" cy="24" r="20" 
-                    className="stroke-border fill-none" 
-                    strokeWidth="3.5" 
-                  />
-                  <circle 
-                    cx="24" cy="24" r="20" 
-                    className="stroke-brand transition-all duration-1000 ease-out fill-none" 
-                    strokeWidth="3.5" 
-                    strokeDasharray="125.6"
-                    strokeDashoffset={125.6 - (125.6 * healthScore) / 100}
-                    strokeLinecap="round"
-                  />
-                </svg>
-                <span className="absolute text-xs font-bold text-foreground font-mono">{healthScore}</span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground leading-none">Pipeline Health</span>
-                <span className={`text-sm font-bold mt-1 ${healthStatus.color}`}>{healthStatus.label}</span>
-              </div>
-
-              {/* Hover details card */}
-              <div className="absolute top-full right-0 mt-2 w-60 p-3 bg-card border border-border rounded-xl shadow-elevated opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all duration-200 z-50">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-foreground mb-2">Health Index Details</h4>
-                <ul className="space-y-1.5 text-xs text-muted-foreground">
-                  <li className="flex justify-between"><span>Conversion rate</span><span className="font-mono text-foreground font-semibold">Optimal</span></li>
-                  <li className="flex justify-between"><span>Activity frequency</span><span className="font-mono text-foreground font-semibold">Active</span></li>
-                  <li className="flex justify-between"><span>Stalled deals</span><span className="font-mono text-foreground font-semibold">Low</span></li>
-                  <li className="flex justify-between"><span>Response rates</span><span className="font-mono text-foreground font-semibold">94%</span></li>
-                </ul>
-              </div>
-            </div>
-          </div>
+    <div className="flex min-h-full flex-col">
+      {/* Header: title, search, filters, view toggle, date range */}
+      <header className="relative z-20 flex flex-wrap items-start justify-between gap-x-4 gap-y-3 px-4 pb-1 pt-6 sm:px-6">
+        <div className="min-w-0">
+          <h1 className="text-[28px] font-semibold leading-none tracking-[-0.02em] text-foreground">Pipeline</h1>
+          <p className="mt-2 text-[13.5px] text-muted-foreground">Move opportunities from discovery to closed clients.</p>
         </div>
-      </div>
 
-      {/* Main Layout Area */}
-      <div className="flex flex-col lg:flex-row gap-6 p-6 lg:items-start">
-        
-        {/* Left Side: Pipeline Views & Funnel (3/4 width) */}
-        <div className="flex-1 flex flex-col space-y-6 min-w-0">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <label className="flex h-10 w-[250px] items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-muted-foreground focus-within:border-brand/50">
+            <Search className="size-4 shrink-0" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search opportunities…"
+              aria-label="Search opportunities"
+              className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+            />
+            {query && (
+              <button type="button" aria-label="Clear search" onClick={() => setQuery("")} className="cursor-pointer text-muted-foreground hover:text-foreground">
+                <X className="size-3.5" />
+              </button>
+            )}
+          </label>
 
-          {/* AI Executive Briefing */}
+          <div ref={filtersRef} className="relative">
+            <button
+              type="button"
+              aria-expanded={filtersOpen}
+              onClick={() => setFiltersOpen((v) => !v)}
+              className={`inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl border px-3.5 text-[13px] transition-colors ${
+                nicheFilter !== "all" ? "border-brand/50 text-foreground" : "border-white/10 text-foreground/90 hover:border-white/25"
+              } bg-white/[0.03]`}
+            >
+              <SlidersHorizontal className="size-4" /> Filters
+              {nicheFilter !== "all" && <span className="size-1.5 rounded-full bg-brand" />}
+            </button>
+            {filtersOpen && (
+              <div className="absolute right-0 top-full z-30 mt-2 w-64 rounded-xl border border-white/10 bg-[#0a0d20] p-3 shadow-2xl">
+                <label className="block text-[11px] font-medium text-muted-foreground">Niche</label>
+                <select
+                  value={nicheFilter}
+                  onChange={(e) => setNicheFilter(e.target.value)}
+                  className="mt-1.5 w-full cursor-pointer rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-[13px] text-foreground outline-none focus:border-brand/50"
+                >
+                  <option value="all">All niches</option>
+                  {nicheOptions.map((n) => (
+                    <option key={n} value={n}>
+                      {n.replace(/_/g, " ")}
+                    </option>
+                  ))}
+                </select>
+                {nicheFilter !== "all" && (
+                  <button type="button" onClick={() => setNicheFilter("all")} className="mt-2.5 cursor-pointer text-[11.5px] font-medium text-brand hover:underline">
+                    Clear filter
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex h-10 items-center rounded-xl border border-brand/40 bg-white/[0.03] p-1 shadow-[0_0_20px_-10px_var(--brand)]">
+            {([
+              ["flow", GitBranch, "Flow"],
+              ["kanban", Kanban, "Kanban"],
+            ] as const).map(([mode, Icon, label]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => handleToggleView(mode)}
+                aria-pressed={viewMode === mode}
+                className={`inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-3.5 text-[13px] font-medium transition-colors ${
+                  viewMode === mode ? "bg-brand text-brand-foreground" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Icon className="size-4" /> {label}
+              </button>
+            ))}
+          </div>
+
+          <label className="relative inline-flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] pl-3.5 pr-9 text-[13px] text-foreground/90 hover:border-white/25">
+            <CalendarDays className="size-4" />
+            <span>{rangeLabel}</span>
+            <ChevronDown className="pointer-events-none absolute right-3 size-4 text-muted-foreground" />
+            <select
+              value={range}
+              onChange={(e) => setRange(e.target.value as typeof range)}
+              aria-label="Date range"
+              className="absolute inset-0 cursor-pointer opacity-0"
+            >
+              <option value="all">All time</option>
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+          </label>
+        </div>
+      </header>
+
+      {viewMode === "flow" ? (
+        <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 pb-8 pt-4 sm:px-6">
           <FeatureGate feature="executiveBriefings" fallback="card">
             {briefingLoading ? (
-              <Skeleton className="h-24 rounded-2xl w-full animate-pulse" />
+              <Skeleton className="h-28 w-full rounded-2xl" />
             ) : (
-              <section className="relative overflow-hidden rounded-2xl border border-brand/20 bg-gradient-to-r from-brand/10 via-brand/5 to-transparent p-5 backdrop-blur-sm shrink-0">
-                <div className="absolute top-0 right-0 p-4 opacity-[0.03] pointer-events-none">
-                  <Sparkles className="size-24 text-brand animate-pulse" />
-                </div>
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
-                  <div className="space-y-1.5 max-w-3xl text-left">
-                    <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-brand">
-                      <Sparkles className="size-4 animate-pulse-glow" /> Dynamic AI Executive Briefing
-                    </div>
-                    <p className="text-sm font-medium text-foreground leading-relaxed">
-                      {displayBriefing.text}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => navigate({ to: displayBriefing.actionTo })}
-                    className="shrink-0 inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark transition-all duration-200 cursor-pointer self-start md:self-center"
-                  >
-                    {displayBriefing.actionLabel} <ArrowRight className="size-4" />
-                  </button>
-                </div>
-              </section>
+              <PipelineBriefing
+                headline={flowHeadline}
+                body={displayBriefing.text}
+                needAttention={flow.needAttention}
+                highPotential={flow.highPotential}
+                conversionPct={flow.health.conversionPct}
+                wonCount={flow.health.won}
+                onViewAttention={() => navigate({ to: "/dashboard/relationships" })}
+                onViewPotential={() => navigate({ to: "/dashboard/relationships" })}
+              />
             )}
           </FeatureGate>
 
-          {/* Funnel Visualization */}
-          <section className="bg-card/30 backdrop-blur-sm border border-border rounded-2xl p-5 relative overflow-hidden shrink-0">
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
-              Conversion Funnel & Stage Volume
-            </h3>
-            
-            <div className="space-y-3">
-              {statsLoading ? (
-                <div className="space-y-2">
-                  {[1, 2, 3].map((i) => <Skeleton key={i} className="h-6 rounded-lg w-full" />)}
-                </div>
-              ) : (
-                FLOW_STAGES.map((stage, idx) => {
-                  const count = stageCounts[stage.value];
-                  const rate = stageConversions[stage.value];
-                  const pctOfMax = Math.round((count / maxStageCount) * 100);
-                  
-                  // Leakage from previous stage
-                  let leakage = 0;
-                  if (idx > 0) {
-                    const prevStage = FLOW_STAGES[idx - 1].value;
-                    const prevRate = stageConversions[prevStage];
-                    if (prevRate > 0) {
-                      leakage = Math.round(((prevRate - rate) / prevRate) * 100);
-                    }
-                  }
+          <PipelineHealthStrip health={flow.health} />
 
-                  return (
-                    <div key={stage.value} className="group/funnel">
-                      <div className="flex items-center justify-between text-xs mb-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold uppercase w-28 text-[10px] text-muted-foreground tracking-wider truncate">{stage.label}</span>
-                          <span className="font-mono font-semibold text-foreground">{count.toLocaleString()} leads</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono text-muted-foreground">{rate}% Conversion</span>
-                          {idx > 0 && leakage > 0 && (
-                            <span className="text-[10px] text-red-400/80 bg-red-500/5 px-1.5 py-0.5 rounded border border-red-500/10">
-                              -{leakage}% Leakage
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      
-                      <div className="h-2.5 w-full bg-background rounded-full overflow-hidden flex border border-border/30">
-                        <div 
-                          className={`h-full bg-gradient-to-r ${stage.color} rounded-full transition-all duration-1000 ease-out`} 
-                          style={{ width: `${Math.max(2, pctOfMax)}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </section>
+          <PipelineFlowHero nodes={flow.nodes} loading={statsLoading && !isFiltered} onSelect={setExpandedStage} />
 
-          {/* Render Active View: Flow (default) or Kanban */}
-          {viewMode === "flow" ? (
-            
-            /* FLOW VIEW (Network of Nodes) */
-            <section className="flex items-center justify-center min-h-[350px] relative">
-              <div className="w-full max-w-4xl flex flex-col md:flex-row items-stretch md:items-center justify-between gap-6 md:gap-4 relative py-8 px-4">
-                
-                {/* SVG Connecting Tracks & Pulses (Behind nodes) */}
-                <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 hidden md:block h-1 z-0">
-                  <div className="absolute inset-0 bg-border/40" />
-                  
-                  {/* Glowing Flow Pulse Line */}
-                  <div className="absolute inset-0 bg-gradient-to-r from-blue-500 via-brand to-success animate-pulse-glow" style={{ mixBlendMode: "screen" }} />
-
-                  {/* Traveling Pulse Particle Dots */}
-                  <div className="pulse-dot-1" />
-                  <div className="pulse-dot-2" />
-                  <div className="pulse-dot-3" />
-                </div>
-
-                {/* Intelligent Flow Nodes */}
-                {statsLoading ? (
-                  Array.from({ length: 6 }).map((_, i) => (
-                    <Skeleton key={i} className="w-full md:w-36 h-36 rounded-2xl" />
-                  ))
-                ) : (
-                  flowNodeData.map((node) => {
-                    const isGlow = glowingNodes[node.value];
-                    return (
-                      <div
-                        key={node.value}
-                        onClick={() => setExpandedStage(node.value)}
-                        className={`flex-1 min-w-0 md:w-36 rounded-2xl border bg-card/65 backdrop-blur-md p-4 transition-all duration-300 relative z-10 cursor-pointer text-left select-none group card-hover ${
-                          isGlow 
-                            ? "border-brand glow-brand scale-[1.03]" 
-                            : "border-border hover:border-brand/40"
-                        }`}
-                      >
-                        {/* Subtle glowing radial hover background */}
-                        <div className="absolute inset-0 bg-gradient-to-b from-brand/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-2xl" />
-                        
-                        {/* Glow outline decoration */}
-                        <div className={`absolute inset-0 rounded-2xl transition-opacity duration-500 border border-brand ${isGlow ? "opacity-100" : "opacity-0"}`} />
-
-                        <div className="flex items-center justify-between relative z-10">
-                          <span className={`text-[10px] font-bold uppercase tracking-wider text-muted-foreground group-hover:text-brand transition-colors`}>
-                            {node.label}
-                          </span>
-                          <span className={`size-1.5 rounded-full ${node.count > 0 ? "bg-brand ping-dot" : "bg-muted"}`} />
-                        </div>
-
-                        <div className="mt-3 relative z-10">
-                          <h4 className="text-2xl font-bold tracking-tight text-foreground font-mono leading-none">
-                            {node.count.toLocaleString()}
-                          </h4>
-                          <p className="text-[10px] text-muted-foreground mt-0.5">Leads</p>
-                        </div>
-
-                        <div className="mt-4 pt-3 border-t border-border/50 relative z-10 space-y-1">
-                          <div className="flex items-center justify-between text-[10px]">
-                            <span className="text-muted-foreground">Conversion</span>
-                            <span className="font-semibold text-foreground font-mono">{node.conversion}%</span>
-                          </div>
-                          
-                          <div className="flex items-center justify-between text-[10px]">
-                            <span className="text-muted-foreground">Value</span>
-                            <span className="font-semibold text-brand font-mono">{node.valueString}</span>
-                          </div>
-
-                          <div className="flex items-center justify-between text-[10px] pt-1">
-                            <span className="text-muted-foreground">Growth</span>
-                            <span className={`font-semibold font-mono flex items-center ${node.trend.isUp ? "text-success" : "text-red-400"}`}>
-                              {node.trend.isUp ? "▲" : "▼"} {node.trend.pct}%
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </section>
-          ) : (
-            
-            /* KANBAN VIEW (Clean Performance Fallback) */
-            <div className="overflow-x-auto min-h-[400px]">
-              <div className="flex h-full gap-4 py-2" style={{ minWidth: `${PIPELINE_COLUMNS.length * 288 + (PIPELINE_COLUMNS.length - 1) * 16}px` }}>
-                {PIPELINE_COLUMNS.map((colStatus) => {
-                  // Filter leads that are in this status from cached list (Virtualizing by rendering only 10 max)
-                  const columnLeads = leads
-                    .filter((lead) => normalizeLeadStatus(lead.status) === colStatus);
-                  const displayLeads = columnLeads.slice(0, 10);
-                  const isOver = dragOver === colStatus;
-                  const count = columnLeads.length;
-                  const pulse = aiPulses[colStatus] || { text: "Stage is stable.", isAlert: false };
-                  const now = Date.now();
-
-                  return (
-                    <section
-                      key={colStatus}
-                      onDragOver={(event) => {
-                        event.preventDefault();
-                        setDragOver(colStatus);
-                      }}
-                      onDragLeave={() => setDragOver(null)}
-                      onDrop={() => void handleDrop(colStatus)}
-                      className={`flex w-72 shrink-0 flex-col rounded-2xl border transition-all duration-300 bg-card/25 backdrop-blur-sm ${
-                        isOver 
-                          ? "border-brand bg-brand/5 shadow-md shadow-brand/5 scale-[1.01]" 
-                          : "border-border/60 hover:border-border/80"
-                      }`}
-                    >
-                      {/* Column Header */}
-                      <div className="border-b border-border/60 px-4 py-3.5 flex flex-col gap-1.5 bg-card/10 rounded-t-2xl">
-                        <div className="flex items-center justify-between">
-                          <span className={`rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${leadStatusColor(colStatus)}`}>
-                            {leadStatusLabel(colStatus)}
-                          </span>
-                          <span className="text-xs font-bold text-muted-foreground font-mono">{count}</span>
-                        </div>
-                        {/* Dynamic AI Pulse */}
-                        <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
-                          <span className={`size-1.5 rounded-full shrink-0 ${pulse.isAlert ? "bg-amber-400 animate-pulse" : "bg-brand/60"}`} />
-                          <span className="text-[11px] leading-tight text-muted-foreground font-medium select-none truncate" title={pulse.text}>
-                            {pulse.text}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Draggable Cards Stack (Limit 10 to protect browser rendering) */}
-                      <div className="flex-1 space-y-2 overflow-y-auto p-2 min-h-0">
-                        {leadsLoading ? (
-                          Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-20 rounded-xl" />)
-                        ) : displayLeads.length === 0 ? (
-                          <div className="h-full flex items-center justify-center py-10 px-4 text-center">
-                            <p className="text-[11px] text-muted-foreground leading-relaxed">No opportunities in this stage.</p>
-                          </div>
-                        ) : (
-                          displayLeads.map((lead) => (
-                            <article
-                              key={lead.id}
-                              draggable
-                              onDragStart={() => setDragging(lead.id)}
-                              onDragEnd={() => {
-                                setDragging(null);
-                                setDragOver(null);
-                              }}
-                              onClick={() => navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(lead.id) } })}
-                              className={`group relative overflow-hidden rounded-xl border border-border/50 bg-card/40 p-4 text-xs transition-all duration-200 hover:border-brand/40 hover:bg-card/80 hover:shadow-md hover:-translate-y-1 cursor-grab active:cursor-grabbing select-none border-l-4 ${
-                                normalizeLeadStatus(lead.status) === "new" ? "border-l-blue-500" :
-                                ["email_sent", "called", "instagram_sent"].includes(normalizeLeadStatus(lead.status)) ? "border-l-indigo-500" :
-                                normalizeLeadStatus(lead.status) === "replied" ? "border-l-brand" :
-                                normalizeLeadStatus(lead.status) === "meeting_booked" ? "border-l-amber-500" :
-                                normalizeLeadStatus(lead.status) === "closed" ? "border-l-success" : "border-l-muted"
-                              } ${dragging === lead.id ? "opacity-35 scale-95" : ""}`}
-                            >
-                              <div className="flex flex-col gap-2">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="min-w-0 flex-1">
-                                    <h4 className="font-bold text-sm tracking-tight text-foreground truncate group-hover:text-brand transition-colors">
-                                      {lead.businessName}
-                                    </h4>
-                                    {lead.instagramHandle && (
-                                      <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground font-mono">
-                                        @{lead.instagramHandle.replace(/^@/, "")}
-                                      </p>
-                                    )}
-                                  </div>
-                                  <ArrowRight className="size-4 text-muted-foreground opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all duration-200 shrink-0" />
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                                  {lead.niche && (
-                                    <span className="rounded-md bg-brand/5 border border-brand/10 px-2 py-0.5 text-[9px] text-brand font-semibold capitalize tracking-wide truncate max-w-[120px]">
-                                      {lead.niche.replace(/_/g, " ")}
-                                    </span>
-                                  )}
-                                  
-                                  {colStatus === "replied" && (now - new Date(lead.updatedAt).getTime()) > (3 * 24 * 60 * 60 * 1000) && (
-                                    <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
-                                      <Clock className="size-4" /> Stalled
-                                    </span>
-                                  )}
-
-                                  {colStatus === "email_sent" && (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000) && (
-                                    <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
-                                      <Clock className="size-4" /> Nudge Due
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </article>
-                          ))
-                        )}
-                      </div>
-
-                      {/* View All leads in column Link */}
-                      {count > 0 && (
-                        <div className="border-t border-border/40 p-2 bg-card/10 rounded-b-2xl">
-                          <button
-                            onClick={() => {
-                              navigate({ to: "/dashboard/relationships" });
-                            }}
-                            className="w-full text-center text-[10px] font-semibold text-brand hover:text-brand-dark py-1"
-                          >
-                            View all {count} leads →
-                          </button>
-                        </div>
-                      )}
-                    </section>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          <FeatureGate feature="pipelineCoaching" fallback="card">
+            <PipelineCoach cards={coachCards} counts={flowCounts} loading={coachingLoading} />
+          </FeatureGate>
         </div>
+      ) : (
+        /* KANBAN VIEW: unchanged board; the only view that shows individual opportunity cards */
+        <div className="px-4 pb-8 pt-4 sm:px-6">
+      <div className="overflow-x-auto min-h-[400px]">
+                    <div className="flex h-full gap-4 py-2" style={{ minWidth: `${PIPELINE_COLUMNS.length * 288 + (PIPELINE_COLUMNS.length - 1) * 16}px` }}>
+                      {PIPELINE_COLUMNS.map((colStatus) => {
+                        // Filter leads that are in this status from cached list (Virtualizing by rendering only 10 max)
+                        const columnLeads = filteredLeads
+                          .filter((lead) => normalizeLeadStatus(lead.status) === colStatus);
+                        const displayLeads = columnLeads.slice(0, 10);
+                        const isOver = dragOver === colStatus;
+                        const count = columnLeads.length;
+                        const pulse = aiPulses[colStatus] || { text: "Stage is stable.", isAlert: false };
+                        const now = Date.now();
 
-        {/* Right Side: AI Coach & Feed (1/4 width) */}
-        <aside className="w-full lg:w-80 shrink-0 flex flex-col rounded-2xl border border-border bg-card/20 backdrop-blur-md overflow-hidden">
-          
-          {/* AI Recommendations Section */}
-          <div className="p-5 border-b border-border">
-            <h3 className="text-sm font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
-              <Sparkles className="size-4 text-brand" /> AI Sales Coach
-            </h3>
-            <p className="text-xs text-muted-foreground mt-1">Recommendations to optimize opportunity conversion.</p>
-            
-            <FeatureGate feature="pipelineCoaching" fallback="card">
-              <div className="mt-4 space-y-3">
-                {coachingLoading ? (
-                  Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl w-full" />)
-                ) : (
-                  displayRecommendations.map((rec) => (
-                    <div 
-                      key={rec.id} 
-                      className={`p-3.5 rounded-xl border bg-background/40 hover:bg-background/80 transition-all duration-200 text-xs text-left border-l-4 ${
-                        rec.type === "warning" ? "border-l-amber-500 border-border/60 hover:border-amber-500/50" :
-                        rec.type === "danger" ? "border-l-red-500 border-border/60 hover:border-red-500/50" :
-                        rec.type === "success" ? "border-l-success border-border/60 hover:border-success/50" :
-                        "border-l-blue-500 border-border/60 hover:border-blue-500/50"
-                      }`}
-                    >
-                      <div className="flex items-start gap-2.5">
-                        <div className="shrink-0 mt-0.5">
-                          {rec.type === "warning" ? (
-                            <AlertCircle className="size-4 text-amber-500" />
-                          ) : rec.type === "danger" ? (
-                            <AlertCircle className="size-4 text-red-500" />
-                          ) : rec.type === "success" ? (
-                            <Sparkles className="size-4 text-success" />
-                          ) : (
-                            <Sparkles className="size-4 text-blue-500" />
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium text-foreground leading-relaxed select-text">{rec.text}</p>
-                          <button
-                            onClick={() => navigate({ to: rec.to })}
-                            className="mt-2.5 inline-flex items-center gap-1 text-[11px] font-bold text-brand hover:text-brand-dark transition-colors cursor-pointer"
+                        return (
+                          <section
+                            key={colStatus}
+                            onDragOver={(event) => {
+                              event.preventDefault();
+                              setDragOver(colStatus);
+                            }}
+                            onDragLeave={() => setDragOver(null)}
+                            onDrop={() => void handleDrop(colStatus)}
+                            className={`flex w-72 shrink-0 flex-col rounded-2xl border transition-all duration-300 bg-card/25 backdrop-blur-sm ${
+                              isOver 
+                                ? "border-brand bg-brand/5 shadow-md shadow-brand/5 scale-[1.01]" 
+                                : "border-border/60 hover:border-border/80"
+                            }`}
                           >
-                            {rec.action}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </FeatureGate>
-          </div>
+                            {/* Column Header */}
+                            <div className="border-b border-border/60 px-4 py-3.5 flex flex-col gap-1.5 bg-card/10 rounded-t-2xl">
+                              <div className="flex items-center justify-between">
+                                <span className={`rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${leadStatusColor(colStatus)}`}>
+                                  {leadStatusLabel(colStatus)}
+                                </span>
+                                <span className="text-xs font-bold text-muted-foreground font-mono">{count}</span>
+                              </div>
+                              {/* Dynamic AI Pulse */}
+                              <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                                <span className={`size-1.5 rounded-full shrink-0 ${pulse.isAlert ? "bg-amber-400 animate-pulse" : "bg-brand/60"}`} />
+                                <span className="text-[11px] leading-tight text-muted-foreground font-medium select-none truncate" title={pulse.text}>
+                                  {pulse.text}
+                                </span>
+                              </div>
+                            </div>
 
-          {/* Recent Activities Section */}
-          <div className="p-5">
-            <h3 className="text-sm font-bold uppercase tracking-wider text-foreground flex items-center gap-2 mb-4">
-              <Activity className="size-4 text-brand" /> Recent Activity
-            </h3>
-            
-            <div className="space-y-4">
-              {activityLoading ? (
-                Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10 rounded-xl" />)
-              ) : recentActivities.length === 0 ? (
-                <div className="text-center py-8">
-                  <p className="text-xs text-muted-foreground">No recent actions.</p>
-                </div>
-              ) : (
-                recentActivities.slice(0, 8).map((act) => {
-                  // Determine appropriate icon/color based on type
-                  const isSent = act.type.includes("sent");
-                  const isLead = act.type.includes("lead");
-                  const isNote = act.type.includes("note");
-                  
-                  return (
-                    <div key={act.id} className="flex gap-3 text-xs items-start">
-                      <div className={`shrink-0 size-6.5 rounded-lg border grid place-items-center ${
-                        isSent 
-                          ? "bg-brand/10 border-brand/20 text-brand" 
-                          : isLead 
-                            ? "bg-blue-500/10 border-blue-500/20 text-blue-400" 
-                            : "bg-muted border-border text-muted-foreground"
-                      }`}>
-                        {isSent ? <MessageSquare className="size-4" /> : <Clock className="size-4" />}
-                      </div>
-                      <div className="flex-1 min-w-0 text-left">
-                        <p className="font-semibold text-foreground">
-                          {act.leadName ? `${act.leadName}: ` : ""}
-                          <span className="font-normal text-muted-foreground">{act.description}</span>
-                        </p>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">
-                          {new Date(act.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
+                            {/* Draggable Cards Stack (Limit 10 to protect browser rendering) */}
+                            <div className="flex-1 space-y-2 overflow-y-auto p-2 min-h-0">
+                              {leadsLoading ? (
+                                Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-20 rounded-xl" />)
+                              ) : displayLeads.length === 0 ? (
+                                <div className="h-full flex items-center justify-center py-10 px-4 text-center">
+                                  <p className="text-[11px] text-muted-foreground leading-relaxed">No opportunities in this stage.</p>
+                                </div>
+                              ) : (
+                                displayLeads.map((lead) => (
+                                  <article
+                                    key={lead.id}
+                                    draggable
+                                    onDragStart={() => setDragging(lead.id)}
+                                    onDragEnd={() => {
+                                      setDragging(null);
+                                      setDragOver(null);
+                                    }}
+                                    onClick={() => navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(lead.id) } })}
+                                    className={`group relative overflow-hidden rounded-xl border border-border/50 bg-card/40 p-4 text-xs transition-all duration-200 hover:border-brand/40 hover:bg-card/80 hover:shadow-md hover:-translate-y-1 cursor-grab active:cursor-grabbing select-none border-l-4 ${
+                                      normalizeLeadStatus(lead.status) === "new" ? "border-l-blue-500" :
+                                      ["email_sent", "called", "instagram_sent"].includes(normalizeLeadStatus(lead.status)) ? "border-l-indigo-500" :
+                                      normalizeLeadStatus(lead.status) === "replied" ? "border-l-brand" :
+                                      normalizeLeadStatus(lead.status) === "meeting_booked" ? "border-l-amber-500" :
+                                      normalizeLeadStatus(lead.status) === "closed" ? "border-l-success" : "border-l-muted"
+                                    } ${dragging === lead.id ? "opacity-35 scale-95" : ""}`}
+                                  >
+                                    <div className="flex flex-col gap-2">
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="min-w-0 flex-1">
+                                          <h4 className="font-bold text-sm tracking-tight text-foreground truncate group-hover:text-brand transition-colors">
+                                            {lead.businessName}
+                                          </h4>
+                                          {lead.instagramHandle && (
+                                            <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground font-mono">
+                                              @{lead.instagramHandle.replace(/^@/, "")}
+                                            </p>
+                                          )}
+                                        </div>
+                                        <ArrowRight className="size-4 text-muted-foreground opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all duration-200 shrink-0" />
+                                      </div>
 
-        </aside>
-      </div>
+                                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                        {lead.niche && (
+                                          <span className="rounded-md bg-brand/5 border border-brand/10 px-2 py-0.5 text-[9px] text-brand font-semibold capitalize tracking-wide truncate max-w-[120px]">
+                                            {lead.niche.replace(/_/g, " ")}
+                                          </span>
+                                        )}
+                                  
+                                        {colStatus === "replied" && (now - new Date(lead.updatedAt).getTime()) > (3 * 24 * 60 * 60 * 1000) && (
+                                          <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
+                                            <Clock className="size-4" /> Stalled
+                                          </span>
+                                        )}
+
+                                        {colStatus === "email_sent" && (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000) && (
+                                          <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
+                                            <Clock className="size-4" /> Nudge Due
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </article>
+                                ))
+                              )}
+                            </div>
+
+                            {/* View All leads in column Link */}
+                            {count > 0 && (
+                              <div className="border-t border-border/40 p-2 bg-card/10 rounded-b-2xl">
+                                <button
+                                  onClick={() => {
+                                    navigate({ to: "/dashboard/relationships" });
+                                  }}
+                                  className="w-full text-center text-[10px] font-semibold text-brand hover:text-brand-dark py-1"
+                                >
+                                  View all {count} leads →
+                                </button>
+                              </div>
+                            )}
+                          </section>
+                        );
+                      })}
+                    </div>
+                  </div>
+        </div>
+      )}
 
       {/* Stage Expansion Side Drawer Panel */}
       <Sheet open={expandedStage !== null} onOpenChange={(open) => !open && setExpandedStage(null)}>
@@ -1271,59 +1172,6 @@ function Pipeline() {
 
         </SheetContent>
       </Sheet>
-
-      {/* Styled Animations CSS block (Stripe-like glowing lines) */}
-      <style>{`
-        .bg-grid-sm {
-          position: relative;
-        }
-        
-        /* Pulse traveling dot along horizontal map line */
-        @keyframes travel-pulse {
-          0% { left: 0%; opacity: 0; }
-          5% { opacity: 1; }
-          95% { opacity: 1; }
-          100% { left: 100%; opacity: 0; }
-        }
-
-        .pulse-dot-1 {
-          position: absolute;
-          width: 5px;
-          height: 5px;
-          border-radius: 50%;
-          background-color: var(--color-brand);
-          box-shadow: 0 0 8px 1px var(--color-brand);
-          top: 50%;
-          transform: translateY(-50%);
-          animation: travel-pulse 8s infinite linear;
-        }
-
-        .pulse-dot-2 {
-          position: absolute;
-          width: 5px;
-          height: 5px;
-          border-radius: 50%;
-          background-color: #3b82f6; /* blue-500 */
-          box-shadow: 0 0 8px 1px #3b82f6;
-          top: 50%;
-          transform: translateY(-50%);
-          animation: travel-pulse 11s infinite linear;
-          animation-delay: 2.5s;
-        }
-
-        .pulse-dot-3 {
-          position: absolute;
-          width: 5px;
-          height: 5px;
-          border-radius: 50%;
-          background-color: var(--color-success);
-          box-shadow: 0 0 8px 1px var(--color-success);
-          top: 50%;
-          transform: translateY(-50%);
-          animation: travel-pulse 14s infinite linear;
-          animation-delay: 5s;
-        }
-      `}</style>
 
     </div>
   );

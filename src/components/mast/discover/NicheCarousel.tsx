@@ -68,6 +68,7 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
     return i >= 0 ? i : startIndex(niches.length);
   });
   const [anchor, setAnchor] = useState(center);
+  const anchorRef = useRef(center);
   const [failed, setFailed] = useState<Set<string>>(() => new Set());
   const wantFocus = useRef(false);
 
@@ -123,14 +124,56 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
   const live = useRef({ sw0, cw, sideOffset, selected, from, to });
   live.current = { sw0, cw, sideOffset, selected, from, to };
 
-  /** Write every mounted card's transform / emphasis for a fractional centre position. */
+  /** Per-card DOM handles and last-written values, so a frame only touches what changed. */
+  const parts = useRef(
+    new WeakMap<
+      HTMLElement,
+      {
+        glow: HTMLElement | null;
+        ring: HTMLElement | null;
+        dim: HTMLElement | null;
+        text: HTMLElement | null;
+        last: Record<string, string>;
+      }
+    >(),
+  );
+
+  /** Write every mounted card's transform / emphasis for a fractional centre position.
+   *  Only compositor-friendly properties are animated (transform, opacity): no padding,
+   *  colour or other layout/paint-triggering writes, and unchanged values are skipped. */
   const apply = (p: number) => {
     const { sw0, cw, sideOffset, selected, from, to } = live.current;
     for (let i = from; i <= to; i++) {
       const el = cardRefs.current.get(i);
       if (!el) continue;
+
+      let h = parts.current.get(el);
+      if (!h) {
+        h = {
+          glow: el.querySelector("[data-glow]"),
+          ring: el.querySelector("[data-ring]"),
+          dim: el.querySelector("[data-dim]"),
+          text: el.querySelector("[data-label-text]"),
+          last: {},
+        };
+        parts.current.set(el, h);
+      }
+      const set = (node: HTMLElement | null, key: string, prop: "opacity" | "transform" | "zIndex" | "pointerEvents", v: string) => {
+        if (!node || h!.last[key] === v) return;
+        h!.last[key] = v;
+        node.style[prop] = v;
+      };
+
       const d = i - p;
       const ad = Math.abs(d);
+
+      // Far outside the strip: fully hidden, nothing else to compute.
+      if (ad > 1 + FADE_OUT) {
+        set(el, "o", "opacity", "0");
+        set(el, "pe", "pointerEvents", "none");
+        continue;
+      }
+
       const dir = d < 0 ? -1 : 1;
       const e = smooth(Math.min(ad, 1)); // 0 = centre … 1 = neighbour
       const c = 1 - e; // how "centre" this card is
@@ -138,25 +181,21 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
       const off = dir * (sideOffset * e + Math.max(0, ad - 1) * sw0 * SIDE_W * PARK_GAP);
       const opacity = ad <= 1 ? 1 - 0.05 * ad : Math.max(0, 0.95 * (1 - (ad - 1) / FADE_OUT));
 
-      el.style.transform = `translate3d(${sw0 / 2 + off - cw / 2}px,0,0) scale(${scale})`;
-      el.style.opacity = String(opacity);
-      el.style.zIndex = String(Math.round(100 - ad * 10));
-      el.style.pointerEvents = ad > 1.3 ? "none" : "";
+      set(el, "t", "transform", `translate3d(${(sw0 / 2 + off - cw / 2).toFixed(2)}px,0,0) scale(${scale.toFixed(4)})`);
+      set(el, "o", "opacity", opacity.toFixed(3));
+      set(el, "z", "zIndex", String(Math.round(100 - ad * 10)));
+      set(el, "pe", "pointerEvents", ad > 1.3 ? "none" : "");
 
       const isSel = selected.includes(el.dataset.name ?? "");
-      (el.querySelector("[data-glow]") as HTMLElement | null)?.style.setProperty("opacity", String(c));
-      (el.querySelector("[data-ring]") as HTMLElement | null)?.style.setProperty("opacity", String(isSel ? 1 : c));
-      (el.querySelector("[data-dim]") as HTMLElement | null)?.style.setProperty("opacity", String(0.28 * e));
-      const label = el.querySelector("[data-label]") as HTMLElement | null;
-      if (label) {
-        label.style.paddingLeft = d > 0 ? `${(e * sw0 * OVERLAP) / SIDE_SCALE}px` : "0px";
-        label.style.paddingRight = d < 0 ? `${(e * sw0 * OVERLAP) / SIDE_SCALE}px` : "0px";
-        const text = label.firstElementChild as HTMLElement | null;
-        if (text) {
-          text.style.transform = `scale(${0.92 + 0.18 * c})`;
-          text.style.color = `rgba(255,255,255,${0.55 + 0.4 * c})`;
-        }
-      }
+      set(h.glow, "g", "opacity", c.toFixed(3));
+      set(h.ring, "r", "opacity", (isSel ? 1 : c).toFixed(3));
+      set(h.dim, "d", "opacity", (0.28 * e).toFixed(3));
+
+      // Label: slid clear of the neighbouring card it tucks under (transform, not padding)
+      // and faded between side/centre emphasis (opacity, not colour).
+      const shift = -(d > 0 ? -1 : d < 0 ? 1 : 0) * ((e * sw0 * OVERLAP) / SIDE_SCALE / 2);
+      set(h.text, "lt", "transform", `translateX(${shift.toFixed(2)}px) scale(${(0.92 + 0.18 * c).toFixed(3)})`);
+      set(h.text, "lo", "opacity", (0.58 + 0.42 * c).toFixed(3));
     }
   };
 
@@ -168,6 +207,7 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
     if (prefersReducedMotion()) {
       pos.current = center;
       vel.current = 0;
+      anchorRef.current = center;
       setAnchor(center);
       return;
     }
@@ -175,7 +215,8 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
     if (Math.abs(center - pos.current) > REACH) {
       pos.current = center - Math.sign(center - pos.current) * (REACH - 0.5);
       vel.current = 0;
-      setAnchor(Math.round(pos.current));
+      anchorRef.current = Math.round(pos.current);
+      setAnchor(anchorRef.current);
     }
 
     let lastT = performance.now();
@@ -192,10 +233,11 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
         vel.current = 0;
       }
       apply(pos.current);
-      setAnchor((a) => {
-        const r = Math.round(pos.current);
-        return r === a ? a : r;
-      });
+      const r = Math.round(pos.current);
+      if (r !== anchorRef.current) {
+        anchorRef.current = r;
+        setAnchor(r);
+      }
       raf.current = settled ? null : requestAnimationFrame(tick);
     };
     raf.current = requestAnimationFrame(tick);
@@ -275,6 +317,7 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
                 height: ch,
                 top: (stripH - ch) / 2,
                 willChange: "transform, opacity",
+                contain: "layout style",
                 // first paint, before the loop has positioned it
                 opacity: 0,
               }}
@@ -331,7 +374,10 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
                   style={{ height: LABEL_H }}
                   className="grid shrink-0 place-items-center overflow-hidden bg-card px-1.5"
                 >
-                  <span className="block max-w-full origin-center whitespace-nowrap text-center text-[13px] font-medium leading-none tracking-[0.01em]">
+                  <span
+                    data-label-text
+                    className="block max-w-full origin-center whitespace-nowrap text-center text-[13px] font-medium leading-none tracking-[0.01em] text-white will-change-transform"
+                  >
                     {name}
                   </span>
                 </span>

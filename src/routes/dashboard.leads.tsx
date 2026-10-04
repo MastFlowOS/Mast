@@ -21,6 +21,7 @@ import {
   ArrowRight,
   BarChart3,
   Globe,
+  Gauge,
   Database,
   Building2,
   TrendingUp,
@@ -1016,7 +1017,7 @@ function GetLeads() {
 
                 <StepCard
                   step={3}
-                  icon={BarChart3}
+                  icon={Gauge}
                   title="Opportunity Amount"
                   hint={`Plan max: ${maxQuantity.toLocaleString()}`}
                   className="relative z-20 @2xl:col-span-10"

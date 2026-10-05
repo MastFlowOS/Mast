@@ -51,11 +51,35 @@ import {
   type CoachCard,
 } from "@/components/mast/pipeline/PipelineFlowView";
 import {
+  KanbanBoard,
+  KanbanBriefing,
+  KanbanCoachPanel,
+  KanbanColumn,
+  KanbanFilterBar,
+  type CoachAction,
+  type CoachInsight,
+  type CoachStrategy,
+  type CoachSuggestion,
+  type Density,
+} from "@/components/mast/pipeline/PipelineKanbanView";
+import { scoreBandOf, timeAgo, type ScoreBand } from "@/components/mast/pipeline/kanbanHelpers";
+import {
   buildPipelineFlowModel,
   countByStage,
+  STAGE_ORDER,
   STAGE_SHORT,
+  STALLED_DAYS,
 } from "@/components/mast/pipeline/pipelineFlowModel";
 import { usePermissions } from "@/hooks/use-permissions";
+
+/** The status a lead takes when it is moved into a flow stage (Contacted defaults to Email Sent). */
+const STAGE_TO_STATUS: Record<FlowStage, LeadStatus> = {
+  new: "new",
+  contacted: "email_sent",
+  replied: "replied",
+  meeting: "meeting_booked",
+  won: "closed",
+};
 
 export const Route = createFileRoute("/dashboard/pipeline")({
   head: () => ({ meta: [{ title: "Pipeline — Mast" }] }),
@@ -93,7 +117,7 @@ function Pipeline() {
 
   // Drag and Drop (Kanban fallback)
   const [dragging, setDragging] = useState<number | null>(null);
-  const [dragOver, setDragOver] = useState<LeadStatus | null>(null);
+  const [dragOver, setDragOver] = useState<FlowStage | null>(null);
 
   // Core Data Fetching
   const { data: pipelineStats, isLoading: statsLoading } = usePipelineStats();
@@ -442,77 +466,6 @@ function Pipeline() {
     : aiRecommendations;
   const coachingLoading = statsLoading || (canCoaching && realCoachingLoading && !realCoaching);
 
-  // Dynamic AI Pulse for Kanban Columns
-  const aiPulses = useMemo(() => {
-    const pulses: Record<LeadStatus, { text: string; isAlert: boolean }> = {} as any;
-    const now = Date.now();
-    
-    for (const colStatus of PIPELINE_COLUMNS) {
-      const columnLeads = leads.filter((lead) => normalizeLeadStatus(lead.status) === colStatus);
-      const count = columnLeads.length;
-      
-      let pulseText = "Stage is stable.";
-      let isAlert = false;
-      
-      switch (colStatus) {
-        case "new":
-          if (count > 0) {
-            pulseText = `${count} opportunities need attention today.`;
-            isAlert = true;
-          } else {
-            pulseText = "Fresh lead queue is empty.";
-          }
-          break;
-        case "email_sent": {
-          const overdue = columnLeads.filter(lead => {
-            const updatedTime = new Date(lead.updatedAt).getTime();
-            return (now - updatedTime) > (4 * 24 * 60 * 60 * 1000);
-          }).length;
-          if (overdue > 0) {
-            pulseText = `${overdue} follow-ups are overdue.`;
-            isAlert = true;
-          } else if (count > 0) {
-            pulseText = `Outreach active for ${count} contacts.`;
-          } else {
-            pulseText = "No active outreach campaigns.";
-          }
-          break;
-        }
-        case "replied": {
-          const inactive = columnLeads.filter(lead => {
-            const updatedTime = new Date(lead.updatedAt).getTime();
-            return (now - updatedTime) > (3 * 24 * 60 * 60 * 1000);
-          }).length;
-          if (inactive > 0) {
-            pulseText = `${inactive} proposals need attention.`;
-            isAlert = true;
-          } else if (count > 0) {
-            pulseText = "High chance of closing this week.";
-          } else {
-            pulseText = "Awaiting new replies.";
-          }
-          break;
-        }
-        case "meeting_booked":
-          if (count > 0) {
-            pulseText = `${count} meetings booked.`;
-          } else {
-            pulseText = "All meetings are scheduled.";
-          }
-          break;
-        case "closed":
-          if (count > 0) {
-            pulseText = `Momentum looks great. ${count} won.`;
-          } else {
-            pulseText = "Ready to close first deal.";
-          }
-          break;
-      }
-      pulses[colStatus] = { text: pulseText, isAlert };
-    }
-    return pulses;
-  }, [leads]);
-
   // Stage detail values for Flow Nodes
   const flowNodeData = useMemo(() => {
     return FLOW_STAGES.map((stage, idx) => {
@@ -653,27 +606,31 @@ function Pipeline() {
     return cards;
   }, [flow, canCoaching, realCoaching, navigate]);
 
-  // Kanban drop handler
-  const handleDrop = async (status: LeadStatus) => {
-    if (dragging == null) return;
+  // Move a lead into a stage (drag-and-drop and the card menu both land here).
+  const moveLeadToStage = async (leadId: number, targetStage: FlowStage) => {
     // Pipeline-specific drag/reordering is the paid Pipeline feature itself
     // (updateLead is a general-purpose lead update and no longer gates
-    // this) — enforce it right at the drag action.
+    // this) — enforce it right at the move action.
     if (!permissions.can("pipeline")) {
       toast.error("Upgrade your plan to reorder the pipeline");
-      setDragging(null);
-      setDragOver(null);
       return;
     }
+    const lead = leads.find((l) => l.id === leadId);
+    if (lead && getStageForStatus(lead.status) === targetStage) return;
     try {
-      await updateLead.mutateAsync({ id: dragging, body: { status } });
-      toast.success(`Moved lead to ${leadStatusLabel(status)}`);
+      await updateLead.mutateAsync({ id: leadId, body: { status: STAGE_TO_STATUS[targetStage] } });
+      toast.success(`Moved lead to ${FLOW_STAGES.find((s) => s.value === targetStage)?.label}`);
     } catch {
       toast.error("Could not move lead");
-    } finally {
-      setDragging(null);
-      setDragOver(null);
     }
+  };
+
+  const handleDrop = async (targetStage: FlowStage) => {
+    const id = dragging;
+    setDragging(null);
+    setDragOver(null);
+    if (id == null) return;
+    await moveLeadToStage(id, targetStage);
   };
 
   // Stage expansion slide panel content
@@ -715,28 +672,163 @@ function Pipeline() {
     };
   }, [expandedStage, stageCounts, stageConversions, leads, recentActivities]);
 
-  const handleMoveLeadStage = async (leadId: number, targetStage: FlowStage) => {
-    // Map stage back to a primary default status
-    const stageToStatus: Record<FlowStage, LeadStatus> = {
-      new: "new",
-      contacted: "email_sent",
-      replied: "replied",
-      meeting: "meeting_booked",
-      won: "closed",
-    };
-    
-    if (!permissions.can("pipeline")) {
-      toast.error("Upgrade your plan to reorder the pipeline");
-      return;
-    }
-    const targetStatus = stageToStatus[targetStage];
-    try {
-      await updateLead.mutateAsync({ id: leadId, body: { status: targetStatus } });
-      toast.success(`Moved lead to ${FLOW_STAGES.find(s => s.value === targetStage)?.label}`);
-    } catch {
-      toast.error("Failed to move lead");
-    }
+  const handleMoveLeadStage = moveLeadToStage;
+
+  // ── Kanban board: filters, density, side panels ──
+  const [boardQuery, setBoardQuery] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [scoreFilter, setScoreFilter] = useState<ScoreBand>("all");
+  const [activityFilter, setActivityFilter] = useState("all");
+  const [density, setDensity] = useState<Density>(() =>
+    localStorage.getItem("mast-pipeline-density") === "compact" ? "compact" : "comfortable",
+  );
+  const [briefingOpen, setBriefingOpen] = useState(true);
+  // Side-by-side only when there is room for five readable columns; otherwise it is one click away.
+  const [coachOpen, setCoachOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1536);
+  const [shownByStage, setShownByStage] = useState<Record<FlowStage, number>>({ new: 5, contacted: 5, replied: 5, meeting: 5, won: 5 });
+
+  const handleDensity = (d: Density) => {
+    setDensity(d);
+    localStorage.setItem("mast-pipeline-density", d);
   };
+
+  const sourceOptions = useMemo(
+    () => Array.from(new Set(leads.map((l) => l.source).filter((x): x is string => Boolean(x)))).sort(),
+    [leads],
+  );
+  const boardFilterActive =
+    boardQuery.trim() !== "" || sourceFilter !== "all" || scoreFilter !== "all" || activityFilter !== "all" || nicheFilter !== "all";
+  const clearBoardFilters = () => {
+    setBoardQuery("");
+    setSourceFilter("all");
+    setScoreFilter("all");
+    setActivityFilter("all");
+    setNicheFilter("all");
+  };
+
+  // Leads per stage after every filter, best opportunity first.
+  const boardColumns = useMemo(() => {
+    const q = boardQuery.trim().toLowerCase();
+    const cutoff = activityFilter === "all" ? 0 : Date.now() - Number(activityFilter) * 24 * 60 * 60 * 1000;
+    const cols: Record<FlowStage, Lead[]> = { new: [], contacted: [], replied: [], meeting: [], won: [] };
+    for (const l of filteredLeads) {
+      if (q && !l.businessName.toLowerCase().includes(q)) continue;
+      if (sourceFilter !== "all" && l.source !== sourceFilter) continue;
+      if (scoreFilter !== "all" && scoreBandOf(l.opportunityScore) !== scoreFilter) continue;
+      if (cutoff && new Date(l.updatedAt).getTime() < cutoff) continue;
+      cols[getStageForStatus(l.status)].push(l);
+    }
+    for (const stage of STAGE_ORDER) {
+      cols[stage].sort(
+        (a, b) =>
+          (b.opportunityScore ?? -1) - (a.opportunityScore ?? -1) ||
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      );
+    }
+    return cols;
+  }, [filteredLeads, boardQuery, sourceFilter, scoreFilter, activityFilter]);
+
+  // Coach: insights reuse the flow cards, with the bottleneck stage called out by name.
+  const kanbanInsights = useMemo<CoachInsight[]>(
+    () =>
+      coachCards.slice(0, 4).map((c): CoachInsight => {
+        if (c.id === "stalled" && flow.bottleneckStage) {
+          const n = flow.idleByStage[flow.bottleneckStage];
+          return {
+            ...c,
+            title: `${STAGE_SHORT[flow.bottleneckStage]} is your main bottleneck`,
+            body: `${n} opportunit${n === 1 ? "y hasn't" : "ies haven't"} been updated in ${STALLED_DAYS}+ days.`,
+          };
+        }
+        return c;
+      }),
+    [coachCards, flow],
+  );
+
+  const stalledLeads = useMemo(() => {
+    const now = Date.now();
+    return filteredLeads
+      .filter((l) => {
+        const stage = getStageForStatus(l.status);
+        return stage !== "new" && stage !== "won" && now - new Date(l.updatedAt).getTime() >= STALLED_DAYS * 24 * 60 * 60 * 1000;
+      })
+      .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+  }, [filteredLeads]);
+
+  const openLead = (id: number) => navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(id) } });
+
+  const coachActions = useMemo<CoachAction[]>(
+    () =>
+      stalledLeads.slice(0, 7).map((l) => ({
+        id: l.id,
+        name: l.businessName,
+        reason: `${STAGE_SHORT[getStageForStatus(l.status)]} · last update ${timeAgo(l.updatedAt)}`,
+        onOpen: () => openLead(l.id),
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stalledLeads],
+  );
+
+  const coachStrategy = useMemo<CoachStrategy[]>(() => {
+    if (flow.health.total === 0) return [];
+    const out: CoachStrategy[] = [];
+    const steps = flow.nodes.filter((n) => n.nextLabel && n.count > 0 && n.toNextPct != null);
+    if (steps.length > 0) {
+      const w = steps.reduce((a, b) => ((b.toNextPct as number) < (a.toNextPct as number) ? b : a));
+      out.push({
+        id: "weakest",
+        title: `Strengthen ${w.label} → ${w.nextLabel}`,
+        body: `${w.toNextPct}% of opportunities that reach ${w.label} go on to ${w.nextLabel}. It's your weakest hand-off, so tighten your follow-up here first.`,
+      });
+    }
+    const wonByNiche = new Map<string, number>();
+    for (const l of filteredLeads) {
+      if (getStageForStatus(l.status) === "won" && l.niche) wonByNiche.set(l.niche, (wonByNiche.get(l.niche) ?? 0) + 1);
+    }
+    const top = [...wonByNiche.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (top) {
+      out.push({
+        id: "niche",
+        title: `Double down on ${top[0].replace(/_/g, " ")}`,
+        body: `${top[1]} of your ${flow.health.won} closed opportunities are in this niche. Discover more businesses like them.`,
+      });
+    }
+    out.push({
+      id: "timing",
+      title: "Follow up within two days",
+      body: "Replies tend to arrive early. A second touch within two days keeps an opportunity from going quiet.",
+    });
+    return out;
+  }, [flow, filteredLeads]);
+
+  const coachSuggestions = useMemo<CoachSuggestion[]>(() => {
+    const go = () => navigate({ to: "/dashboard/relationships" });
+    const list: CoachSuggestion[] = [
+      {
+        id: "followups",
+        icon: "send",
+        title: "Send follow-up messages",
+        sub: flow.needAttention > 0 ? `${flow.needAttention} opportunit${flow.needAttention === 1 ? "y" : "ies"}` : "You're all caught up",
+        onClick: go,
+      },
+      { id: "messaging", icon: "message", title: "Refine your messaging", sub: "Based on recent replies", onClick: go },
+    ];
+    if (flow.highPotential > 0) {
+      list.push({
+        id: "potential",
+        icon: "target",
+        title: "Focus on high-potential",
+        sub: `View ${flow.highPotential} opportunit${flow.highPotential === 1 ? "y" : "ies"}`,
+        onClick: go,
+      });
+    }
+    return list;
+  }, [flow, navigate]);
+
+  const hiddenPanels = [
+    ...(briefingOpen ? [] : [{ id: "briefing", label: "AI Briefing", onClick: () => setBriefingOpen(true) }]),
+    ...(coachOpen ? [] : [{ id: "coach", label: "AI Coach", onClick: () => setCoachOpen(true) }]),
+  ];
 
   const rangeLabel = { all: "All time", "7": "Last 7 days", "30": "Last 30 days", "90": "Last 90 days" }[range];
 
@@ -868,137 +960,100 @@ function Pipeline() {
           </FeatureGate>
         </div>
       ) : (
-        /* KANBAN VIEW: unchanged board; the only view that shows individual opportunity cards */
-        <div className="px-4 pb-8 pt-4 sm:px-6">
-      <div className="overflow-x-auto min-h-[400px]">
-                    <div className="flex h-full gap-4 py-2" style={{ minWidth: `${PIPELINE_COLUMNS.length * 288 + (PIPELINE_COLUMNS.length - 1) * 16}px` }}>
-                      {PIPELINE_COLUMNS.map((colStatus) => {
-                        // Filter leads that are in this status from cached list (Virtualizing by rendering only 10 max)
-                        const columnLeads = filteredLeads
-                          .filter((lead) => normalizeLeadStatus(lead.status) === colStatus);
-                        const displayLeads = columnLeads.slice(0, 10);
-                        const isOver = dragOver === colStatus;
-                        const count = columnLeads.length;
-                        const pulse = aiPulses[colStatus] || { text: "Stage is stable.", isAlert: false };
-                        const now = Date.now();
+        /* KANBAN VIEW: briefing, filters and the five stage columns, with the AI Sales Coach alongside */
+        <div className="mx-auto flex w-full max-w-[1760px] flex-col gap-5 px-4 pb-8 pt-4 sm:px-6 2xl:flex-row 2xl:items-start">
+          <div className="flex min-w-0 flex-1 flex-col gap-4">
+            {briefingOpen && (
+              <FeatureGate feature="executiveBriefings" fallback="card">
+                {briefingLoading ? (
+                  <Skeleton className="h-[132px] w-full rounded-2xl" />
+                ) : (
+                  <KanbanBriefing
+                    headline={flowHeadline}
+                    body={displayBriefing.text}
+                    total={flow.health.total}
+                    totalTrendPct={flow.health.totalTrendPct}
+                    conversionPct={flow.health.conversionPct}
+                    highPotential={flow.highPotential}
+                    needAttention={flow.needAttention}
+                    onClose={() => setBriefingOpen(false)}
+                    onViewAttention={() => navigate({ to: "/dashboard/relationships" })}
+                    onViewPotential={() => navigate({ to: "/dashboard/relationships" })}
+                  />
+                )}
+              </FeatureGate>
+            )}
 
-                        return (
-                          <section
-                            key={colStatus}
-                            onDragOver={(event) => {
-                              event.preventDefault();
-                              setDragOver(colStatus);
-                            }}
-                            onDragLeave={() => setDragOver(null)}
-                            onDrop={() => void handleDrop(colStatus)}
-                            className={`flex w-72 shrink-0 flex-col rounded-2xl border transition-all duration-300 bg-card/25 backdrop-blur-sm ${
-                              isOver 
-                                ? "border-brand bg-brand/5 shadow-md shadow-brand/5 scale-[1.01]" 
-                                : "border-border/60 hover:border-border/80"
-                            }`}
-                          >
-                            {/* Column Header */}
-                            <div className="border-b border-border/60 px-4 py-3.5 flex flex-col gap-1.5 bg-card/10 rounded-t-2xl">
-                              <div className="flex items-center justify-between">
-                                <span className={`rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${leadStatusColor(colStatus)}`}>
-                                  {leadStatusLabel(colStatus)}
-                                </span>
-                                <span className="text-xs font-bold text-muted-foreground font-mono">{count}</span>
-                              </div>
-                              {/* Dynamic AI Pulse */}
-                              <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
-                                <span className={`size-1.5 rounded-full shrink-0 ${pulse.isAlert ? "bg-amber-400 animate-pulse" : "bg-brand/60"}`} />
-                                <span className="text-[11px] leading-tight text-muted-foreground font-medium select-none truncate" title={pulse.text}>
-                                  {pulse.text}
-                                </span>
-                              </div>
-                            </div>
+            <KanbanFilterBar
+              query={boardQuery}
+              onQuery={setBoardQuery}
+              source={sourceFilter}
+              onSource={setSourceFilter}
+              sources={sourceOptions}
+              niche={nicheFilter}
+              onNiche={setNicheFilter}
+              niches={nicheOptions}
+              score={scoreFilter}
+              onScore={setScoreFilter}
+              activity={activityFilter}
+              onActivity={setActivityFilter}
+              density={density}
+              onDensity={handleDensity}
+              hasActiveFilters={boardFilterActive}
+              onClear={clearBoardFilters}
+              hiddenPanels={hiddenPanels}
+            />
 
-                            {/* Draggable Cards Stack (Limit 10 to protect browser rendering) */}
-                            <div className="flex-1 space-y-2 overflow-y-auto p-2 min-h-0">
-                              {leadsLoading ? (
-                                Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-20 rounded-xl" />)
-                              ) : displayLeads.length === 0 ? (
-                                <div className="h-full flex items-center justify-center py-10 px-4 text-center">
-                                  <p className="text-[11px] text-muted-foreground leading-relaxed">No opportunities in this stage.</p>
-                                </div>
-                              ) : (
-                                displayLeads.map((lead) => (
-                                  <article
-                                    key={lead.id}
-                                    draggable
-                                    onDragStart={() => setDragging(lead.id)}
-                                    onDragEnd={() => {
-                                      setDragging(null);
-                                      setDragOver(null);
-                                    }}
-                                    onClick={() => navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(lead.id) } })}
-                                    className={`group relative overflow-hidden rounded-xl border border-border/50 bg-card/40 p-4 text-xs transition-all duration-200 hover:border-brand/40 hover:bg-card/80 hover:shadow-md hover:-translate-y-1 cursor-grab active:cursor-grabbing select-none border-l-4 ${
-                                      normalizeLeadStatus(lead.status) === "new" ? "border-l-blue-500" :
-                                      ["email_sent", "called", "instagram_sent"].includes(normalizeLeadStatus(lead.status)) ? "border-l-indigo-500" :
-                                      normalizeLeadStatus(lead.status) === "replied" ? "border-l-brand" :
-                                      normalizeLeadStatus(lead.status) === "meeting_booked" ? "border-l-amber-500" :
-                                      normalizeLeadStatus(lead.status) === "closed" ? "border-l-success" : "border-l-muted"
-                                    } ${dragging === lead.id ? "opacity-35 scale-95" : ""}`}
-                                  >
-                                    <div className="flex flex-col gap-2">
-                                      <div className="flex items-start justify-between gap-2">
-                                        <div className="min-w-0 flex-1">
-                                          <h4 className="font-bold text-sm tracking-tight text-foreground truncate group-hover:text-brand transition-colors">
-                                            {lead.businessName}
-                                          </h4>
-                                          {lead.instagramHandle && (
-                                            <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground font-mono">
-                                              @{lead.instagramHandle.replace(/^@/, "")}
-                                            </p>
-                                          )}
-                                        </div>
-                                        <ArrowRight className="size-4 text-muted-foreground opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all duration-200 shrink-0" />
-                                      </div>
+            <KanbanBoard>
+              {flow.nodes.map((node) => {
+                const colLeads = boardColumns[node.stage];
+                // Unfiltered, the header shows the server's authoritative count; filtered, what is on the board.
+                const count = isFiltered || boardFilterActive || !pipelineStats ? colLeads.length : flowCounts[node.stage];
+                return (
+                  <KanbanColumn
+                    key={node.stage}
+                    node={node}
+                    count={count}
+                    leads={colLeads}
+                    loading={leadsLoading}
+                    shown={shownByStage[node.stage]}
+                    loadedTotal={colLeads.length}
+                    density={density}
+                    draggingId={dragging}
+                    isOver={dragOver === node.stage}
+                    onShowMore={() => setShownByStage((p) => ({ ...p, [node.stage]: p[node.stage] + 10 }))}
+                    onViewAll={() => navigate({ to: "/dashboard/relationships" })}
+                    onOpenLead={openLead}
+                    onMoveLead={(id, to) => void moveLeadToStage(id, to)}
+                    onDragStartLead={setDragging}
+                    onDragEnd={() => {
+                      setDragging(null);
+                      setDragOver(null);
+                    }}
+                    onDragOver={() => setDragOver(node.stage)}
+                    onDragLeave={() => setDragOver((cur) => (cur === node.stage ? null : cur))}
+                    onDrop={() => void handleDrop(node.stage)}
+                  />
+                );
+              })}
+            </KanbanBoard>
+          </div>
 
-                                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                                        {lead.niche && (
-                                          <span className="rounded-md bg-brand/5 border border-brand/10 px-2 py-0.5 text-[9px] text-brand font-semibold capitalize tracking-wide truncate max-w-[120px]">
-                                            {lead.niche.replace(/_/g, " ")}
-                                          </span>
-                                        )}
-                                  
-                                        {colStatus === "replied" && (now - new Date(lead.updatedAt).getTime()) > (3 * 24 * 60 * 60 * 1000) && (
-                                          <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
-                                            <Clock className="size-4" /> Stalled
-                                          </span>
-                                        )}
-
-                                        {colStatus === "email_sent" && (now - new Date(lead.updatedAt).getTime()) > (4 * 24 * 60 * 60 * 1000) && (
-                                          <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[9px] text-amber-400 font-semibold tracking-wide flex items-center gap-1 shrink-0">
-                                            <Clock className="size-4" /> Nudge Due
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </article>
-                                ))
-                              )}
-                            </div>
-
-                            {/* View All leads in column Link */}
-                            {count > 0 && (
-                              <div className="border-t border-border/40 p-2 bg-card/10 rounded-b-2xl">
-                                <button
-                                  onClick={() => {
-                                    navigate({ to: "/dashboard/relationships" });
-                                  }}
-                                  className="w-full text-center text-[10px] font-semibold text-brand hover:text-brand-dark py-1"
-                                >
-                                  View all {count} leads →
-                                </button>
-                              </div>
-                            )}
-                          </section>
-                        );
-                      })}
-                    </div>
-                  </div>
+          {coachOpen && (
+            <div className="w-full 2xl:sticky 2xl:top-4 2xl:w-[320px] 2xl:shrink-0">
+              <FeatureGate feature="pipelineCoaching" fallback="card">
+                <KanbanCoachPanel
+                  insights={kanbanInsights}
+                  actions={coachActions}
+                  actionsTotal={flow.needAttention}
+                  strategy={coachStrategy}
+                  suggestions={coachSuggestions}
+                  loading={coachingLoading}
+                  onClose={() => setCoachOpen(false)}
+                />
+              </FeatureGate>
+            </div>
+          )}
         </div>
       )}
 

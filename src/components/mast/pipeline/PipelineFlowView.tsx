@@ -16,7 +16,11 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { FlowStage } from "@/lib/lead-workspace";
-import flowArtUrl from "@/assets/pipeline-flow@2x.webp";
+import flowArt1x from "@/assets/pipeline-flow-1x.webp";
+import flowArt2x from "@/assets/pipeline-flow-2x.webp";
+
+/** 1× (2172 px) for normal screens, 2× (4344 px) for high-DPI; the mask below uses the 1×. */
+const flowArtUrl = flowArt1x;
 import { cn } from "@/lib/utils";
 import { STAGE_COLOR, STAGE_ORDER, STAGE_SHORT, type FlowHealth, type FlowNode } from "./pipelineFlowModel";
 
@@ -186,8 +190,8 @@ export function PipelineHealthStrip({ health }: { health: FlowHealth }) {
 // The flow's visual backbone is the supplied artwork (`pipeline-flow.png`, 2172 × 724, transparent).
 // It is shown unmodified and scaled proportionally; everything else is positioned over it using
 // coordinates measured from the artwork itself: its five circles and the top edge of the ribbon.
-// (Shipped at 2× — 4344 × 1448 — so it stays crisp on high-DPI screens; all coordinates below are
-// in the original 2172 × 724 space and scale with the image.)
+// (Both shipped sizes have edge definition restored; all coordinates below are in the original
+// 2172 × 724 space and scale with the image.)
 const ART = { w: 2172, h: 724 };
 // Crop the artwork's empty top and bottom margins (no content is cut: it spans y 81 → 602).
 const CROP = { y0: 60, y1: 640 };
@@ -200,6 +204,10 @@ const ART_NODES = [
   { x: 1558, y: 395 },
   { x: 1957, y: 397.2 },
 ];
+/** Measured radius of the centre-line of each circle's bright ring in the artwork. */
+const ART_RING_R = [62, 65, 65, 70, 66];
+/** Pale tint of each stage colour, used for a crisp core line on top of the artwork's soft ring. */
+const RING_CORE = ["#ecd6ff", "#d3dcff", "#bdeeff", "#bff7ee", "#c2fadb"];
 /** Where an alert pins to the ribbon's upper edge beside each circle (artwork px). */
 const ART_ANCHORS = [
   { x: 403, y: 221 },
@@ -421,13 +429,31 @@ export function PipelineFlowHero({
 
           {/* the artwork: the visual backbone, untouched */}
           <img
-            src={flowArtUrl}
+            src={flowArt1x}
+            srcSet={`${flowArt1x} 2172w, ${flowArt2x} 4344w`}
+            sizes="(min-width: 1380px) 1320px, 94vw"
             alt=""
             aria-hidden="true"
+            decoding="async"
             draggable={false}
             className="pointer-events-none absolute left-0 w-full max-w-none select-none"
             style={{ top: `${-(CROP.y0 / CROP_H) * 100}%`, height: `${(ART.h / CROP_H) * 100}%` }}
           />
+
+          {/* a hairline-crisp core on each of the artwork's rings (vector, so it is sharp at any DPI);
+              the artwork's own soft ring stays underneath as the glow around it */}
+          <svg
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-[5] size-full"
+            viewBox={`0 ${CROP.y0} ${ART.w} ${CROP_H}`}
+          >
+            {ART_NODES.map((n, i) => (
+              <g key={i}>
+                <circle cx={n.x} cy={n.y} r={ART_RING_R[i]} fill="none" stroke={RING_CORE[i]} strokeOpacity="0.28" strokeWidth="5" vectorEffect="non-scaling-stroke" />
+                <circle cx={n.x} cy={n.y} r={ART_RING_R[i]} fill="none" stroke={RING_CORE[i]} strokeOpacity="0.95" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
+              </g>
+            ))}
+          </svg>
 
           {/* energy moving through the ribbon: light sweeps along the artwork's own shape
               (the PNG is used as a mask, so the glow only ever lands on the ribbon) */}

@@ -3,7 +3,7 @@
  * the connected flow ribbon (the hero) and the sales coach. No opportunity cards live
  * here; those belong to the Kanban view only. Data comes from pipelineFlowModel.ts.
  */
-import { useId, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ArrowRight,
   BarChart3,
@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { FlowStage } from "@/lib/lead-workspace";
+import flowArtUrl from "@/assets/pipeline-flow.png";
 import { cn } from "@/lib/utils";
 import { STAGE_COLOR, STAGE_ORDER, STAGE_SHORT, type FlowHealth, type FlowNode } from "./pipelineFlowModel";
 
@@ -182,127 +183,31 @@ export function PipelineHealthStrip({ health }: { health: FlowHealth }) {
 
 /* ─────────────────────────────── The Flow (hero) ─────────────────────────────── */
 
-// The flow is a bundle of translucent silk bands that converge into every stage circle and
-// fan out again between stages, weaving over one another. Geometry lives in a 1000 × H
-// viewBox that is stretched sideways only (preserveAspectRatio="none"), so 1 unit of y is
-// always 1px and every stage sits at a fixed % of the width: nodes at x = 100, 300, 500, 700, 900.
-const VB_W = 1000;
-const FLOW_H = 290;
-const CY = 168; // vertical centre of the stage circles
-const R = 34; // circle radius (68px)
-const NODE_X = [100, 300, 500, 700, 900];
-
-type Band = {
-  /** Vertical offset of the band's centre from the node line at its widest (negative = above). */
-  o: number;
-  /** Half-width of the band at its widest. */
-  w: number;
-  /** Phase / frequency of the slow drift that makes bands weave over each other. */
-  ph: number;
-  f: number;
-  /** Skews where between two stages the band crests (-1 … 1). */
-  s: number;
-  /** Fill opacity. */
-  op: number;
-};
-
-const BANDS: Band[] = [
-  { o: -62, w: 18, ph: 0.0, s: 0.9, f: 1.0, op: 0.15 },
-  { o: -40, w: 30, ph: 0.3, s: -0.7, f: 1.2, op: 0.19 },
-  { o: -16, w: 34, ph: 0.65, s: 0.5, f: 0.9, op: 0.21 },
-  { o: 6, w: 28, ph: 0.15, s: -0.9, f: 1.4, op: 0.19 },
-  { o: 26, w: 25, ph: 0.5, s: 0.8, f: 1.1, op: 0.16 },
-  { o: -72, w: 15, ph: 0.8, s: -0.5, f: 0.8, op: 0.12 },
+// The flow's visual backbone is the supplied artwork (`pipeline-flow.png`, 2172 × 724, transparent).
+// It is shown unmodified and scaled proportionally; everything else is positioned over it using
+// coordinates measured from the artwork itself: its five circles and the top edge of the ribbon.
+const ART = { w: 2172, h: 724 };
+// Crop the artwork's empty top and bottom margins (no content is cut: it spans y 81 → 602).
+const CROP = { y0: 60, y1: 640 };
+const CROP_H = CROP.y1 - CROP.y0;
+/** Centres of the five circles in the artwork, in artwork pixels. */
+const ART_NODES = [
+  { x: 305, y: 389.5 },
+  { x: 723, y: 390.3 },
+  { x: 1142, y: 394.6 },
+  { x: 1558, y: 395 },
+  { x: 1957, y: 397.2 },
 ];
-
-/** 0 at every stage circle, 1 midway between two, with the crest skewed per band. */
-function envelope(x: number, b: Band) {
-  const t = ((((x + 100) % 200) + 200) % 200) / 200;
-  const tw = t + 0.12 * b.s * Math.sin(2 * Math.PI * t);
-  return Math.sin(Math.PI * tw) ** 2;
-}
-function centre(x: number, b: Band) {
-  const m = 0.6 + 0.4 * Math.sin(2 * Math.PI * ((x / 1000) * b.f + b.ph));
-  return CY + b.o * m * envelope(x, b) ** 0.9;
-}
-function half(x: number, b: Band) {
-  const m = 0.6 + 0.4 * Math.sin(2 * Math.PI * ((x / 1000) * b.f * 1.3 + b.ph + 0.25));
-  return 3 + b.w * m * (0.25 + 0.75 * envelope(x, b) ** 0.8);
-}
-const edgeTop = (x: number, b: Band) => centre(x, b) - half(x, b);
-const edgeBottom = (x: number, b: Band) => centre(x, b) + half(x, b);
-/** Highest point of the whole bundle at x; alerts pin themselves to this. */
-const topY = (x: number) => Math.min(...BANDS.map((b) => edgeTop(x, b)));
-
-const STEP = 4;
-function trace(fn: (x: number) => number, from = -100, to = VB_W + 100, step = STEP): string {
-  const pts: string[] = [];
-  if (step > 0) for (let x = from; x <= to; x += step) pts.push(`${x === from ? "M" : "L"}${x},${fn(x).toFixed(1)}`);
-  return pts.join(" ");
-}
-function bodyPath(b: Band): string {
-  const back: string[] = [];
-  for (let x = VB_W + 100; x >= -100; x -= STEP) back.push(`L${x},${edgeBottom(x, b).toFixed(1)}`);
-  return `${trace((x) => edgeTop(x, b))} ${back.join(" ")} Z`;
-}
-const BAND_PATHS = BANDS.map((b) => ({
-  body: bodyPath(b),
-  top: trace((x) => edgeTop(x, b)),
-  bottom: trace((x) => edgeBottom(x, b)),
-  op: b.op,
-}));
-// A single, very faint echo of the wave beneath the metric tiles.
-const ECHO_PATH = trace((x) => FLOW_H - 8 + 5 * Math.sin(x / 95 + 0.6));
-
-function FlowRibbon({ gid }: { gid: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox={`0 0 ${VB_W} ${FLOW_H}`}
-      preserveAspectRatio="none"
-      className="pointer-events-none absolute inset-0 size-full"
-    >
-      <defs>
-        <linearGradient id={`${gid}-g`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={VB_W} y2="0">
-          <stop offset="0" stopColor={STAGE_COLOR.new} />
-          <stop offset="0.3" stopColor={STAGE_COLOR.contacted} />
-          <stop offset="0.55" stopColor={STAGE_COLOR.replied} />
-          <stop offset="0.78" stopColor={STAGE_COLOR.meeting} />
-          <stop offset="1" stopColor={STAGE_COLOR.won} />
-        </linearGradient>
-        {/* the bundle thins out at both ends instead of stopping dead */}
-        <linearGradient id={`${gid}-fade`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={VB_W} y2="0">
-          <stop offset="0" stopColor="#fff" stopOpacity="0" />
-          <stop offset="0.06" stopColor="#fff" stopOpacity="1" />
-          <stop offset="0.94" stopColor="#fff" stopOpacity="1" />
-          <stop offset="1" stopColor="#fff" stopOpacity="0" />
-        </linearGradient>
-        <mask id={`${gid}-m`}>
-          <rect width={VB_W} height={FLOW_H} fill={`url(#${gid}-fade)`} />
-        </mask>
-        <filter id={`${gid}-soft`} x="-5%" y="-40%" width="110%" height="180%">
-          <feGaussianBlur stdDeviation="12" />
-        </filter>
-      </defs>
-      <g mask={`url(#${gid}-m)`}>
-        {/* soft glow under the three central bands */}
-        {BAND_PATHS.slice(1, 4).map((b, i) => (
-          <path key={`glow-${i}`} d={b.body} fill={`url(#${gid}-g)`} opacity="0.5" filter={`url(#${gid}-soft)`} />
-        ))}
-        {/* the bands: a translucent veil with a bright upper edge and a quieter lower one;
-            where they cross, the colours add up */}
-        {BAND_PATHS.map((b, i) => (
-          <g key={i} style={{ mixBlendMode: "screen" }}>
-            <path d={b.body} fill={`url(#${gid}-g)`} opacity={b.op} />
-            <path d={b.top} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.5" vectorEffect="non-scaling-stroke" />
-            <path d={b.bottom} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.3" vectorEffect="non-scaling-stroke" />
-          </g>
-        ))}
-        <path d={ECHO_PATH} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.2" vectorEffect="non-scaling-stroke" />
-      </g>
-    </svg>
-  );
-}
+/** Where an alert pins to the ribbon's upper edge beside each circle (artwork px). */
+const ART_ANCHORS = [
+  { x: 403, y: 221 },
+  { x: 821, y: 163 },
+  { x: 1240, y: 232 },
+  { x: 1656, y: 267 },
+  { x: 1859, y: 306 },
+];
+const xPct = (x: number) => (x / ART.w) * 100;
+const yPct = (y: number) => ((y - CROP.y0) / CROP_H) * 100;
 
 const ALERT_COLOR = { bottleneck: "#f59e0b", low: "#ec4899", good: "#34d399" } as const;
 
@@ -320,7 +225,7 @@ function MiniBars({ pct, color }: { pct: number; color: string }) {
 }
 
 const CARD_W = 128;
-const ANCHOR_OFFSET = 56; // viewBox units from the stage centre to where an alert pins to the ribbon
+const CARD_H = 44;
 
 export function PipelineFlowHero({
   nodes,
@@ -331,23 +236,39 @@ export function PipelineFlowHero({
   loading: boolean;
   onSelect: (stage: FlowStage) => void;
 }) {
-  const gid = useId().replace(/:/g, "");
   return (
     <section aria-label="Pipeline flow" className="relative">
       <div className="overflow-x-auto">
-        <div className="relative mx-auto min-w-[760px] max-w-[1320px]" style={{ height: FLOW_H }}>
-          <FlowRibbon gid={gid} />
+        {/* container-type lets the type and node sizes below scale with the artwork (cqw) */}
+        <div
+          className="relative mx-auto min-w-[760px] max-w-[1320px]"
+          style={{ aspectRatio: `${ART.w} / ${CROP_H}`, containerType: "inline-size" }}
+        >
+          {/* the artwork: the visual backbone, untouched */}
+          <img
+            src={flowArtUrl}
+            alt=""
+            aria-hidden="true"
+            draggable={false}
+            className="pointer-events-none absolute left-0 w-full max-w-none select-none"
+            style={{ top: `${-(CROP.y0 / CROP_H) * 100}%`, height: `${(ART.h / CROP_H) * 100}%` }}
+          />
 
-          {/* movement between stages, sitting on the ribbon */}
+          {/* movement between stages, centred between two circles on the ribbon's centre line */}
           {!loading &&
             nodes.slice(0, -1).map((n, i) => (
               <div
                 key={n.stage}
-                style={{ left: `${(i + 1) * 20}%`, top: CY, color: STAGE_COLOR[STAGE_ORDER[i + 1]] }}
-                className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 text-[14px] font-medium tabular-nums"
+                style={{
+                  left: `${xPct((ART_NODES[i].x + ART_NODES[i + 1].x) / 2)}%`,
+                  top: `${yPct((ART_NODES[i].y + ART_NODES[i + 1].y) / 2)}%`,
+                  color: STAGE_COLOR[STAGE_ORDER[i + 1]],
+                  fontSize: "clamp(12px, 1.1cqw, 15px)",
+                }}
+                className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 font-medium tabular-nums"
               >
                 {n.toNextPct ?? 0}%
-                <ArrowRight className="size-[15px]" strokeWidth={2.2} />
+                <ArrowRight className="size-[1.2em]" strokeWidth={2.2} />
               </div>
             ))}
 
@@ -357,18 +278,16 @@ export function PipelineFlowHero({
               if (!n.alert) return null;
               const ac = ALERT_COLOR[n.alert.kind];
               const flip = i === nodes.length - 1; // the last stage pins to its left so the card stays in view
-              const ax = NODE_X[i] + (flip ? -ANCHOR_OFFSET : ANCHOR_OFFSET);
-              const ay = topY(ax);
-              const cardTop = 6;
-              const cardH = 44;
+              const ax = xPct(ART_ANCHORS[i].x);
+              const ay = yPct(ART_ANCHORS[i].y);
               return (
                 <div key={`a-${n.stage}`} className="pointer-events-none absolute inset-0 z-10">
                   <div
                     style={{
-                      left: `${ax / 10}%`,
-                      top: cardTop,
+                      left: `${ax}%`,
+                      top: 4,
                       width: CARD_W,
-                      transform: `translateX(${flip ? `calc(-100% + 14px)` : "-14px"})`,
+                      transform: flip ? "translateX(calc(-100% + 14px))" : "translateX(-14px)",
                     }}
                     className="absolute rounded-lg border border-white/10 bg-[#0a0d20]/90 px-3 py-1.5"
                   >
@@ -380,63 +299,92 @@ export function PipelineFlowHero({
                   </div>
                   <span
                     aria-hidden="true"
-                    style={{ left: `${ax / 10}%`, top: cardTop + cardH, height: ay - (cardTop + cardH) - 3, borderColor: `${ac}80` }}
+                    style={{
+                      left: `${ax}%`,
+                      top: 4 + CARD_H,
+                      height: `max(0px, calc(${ay}% - ${4 + CARD_H + 3}px))`,
+                      borderColor: `${ac}80`,
+                    }}
                     className="absolute -translate-x-1/2 border-l border-dashed"
                   />
                   <span
                     aria-hidden="true"
-                    style={{ left: `${ax / 10}%`, top: ay - 3, background: ac, boxShadow: `0 0 6px ${ac}` }}
+                    style={{ left: `${ax}%`, top: `calc(${ay}% - 3px)`, background: ac, boxShadow: `0 0 6px ${ac}` }}
                     className="absolute size-1.5 -translate-x-1/2 rounded-full"
                   />
                 </div>
               );
             })}
 
-          <div className="relative z-20 grid h-full grid-cols-5">
-            {loading
-              ? STAGE_ORDER.map((s) => (
-                  <div key={s} className="flex justify-center" style={{ paddingTop: CY - R }}>
-                    <Skeleton className="size-[68px] rounded-full" />
-                  </div>
-                ))
-              : nodes.map((n, i) => {
-                  const last = i === nodes.length - 1;
-                  return (
-                    <div key={n.stage} className="relative flex flex-col items-center" style={{ paddingTop: CY - R - 26 }}>
-                      <span className="h-[20px] text-[13.5px] font-medium leading-none tracking-[-0.005em] text-foreground">{n.label}</span>
-                      <button
-                        type="button"
-                        onClick={() => onSelect(n.stage)}
-                        aria-label={`${n.label}: ${n.count} opportunities. Open stage details`}
-                        style={{
-                          marginTop: 6,
-                          background: `linear-gradient(#050816,#050816) padding-box, linear-gradient(140deg, ${n.color}, ${
-                            STAGE_COLOR[STAGE_ORDER[Math.min(i + 1, 4)]]
-                          }) border-box`,
-                          border: "3px solid transparent",
-                          boxShadow: `0 0 22px -8px ${n.color}`,
-                        }}
-                        className="grid size-[68px] cursor-pointer place-items-center rounded-full text-[22px] font-semibold tabular-nums text-foreground outline-none transition-transform duration-200 hover:scale-[1.04] focus-visible:ring-2 focus-visible:ring-brand/60"
-                      >
-                        {n.count.toLocaleString()}
-                      </button>
+          {/* the five stages, each centred on its circle in the artwork */}
+          {STAGE_ORDER.map((stage, i) => {
+            const n = nodes[i];
+            const node = ART_NODES[i];
+            const last = i === STAGE_ORDER.length - 1;
+            return (
+              <div key={stage}>
+                {/* stage name, just above the circle */}
+                <span
+                  style={{
+                    left: `${xPct(node.x)}%`,
+                    top: `${yPct(node.y)}%`,
+                    transform: "translate(-50%, calc(-100% - 4.1cqw))",
+                    fontSize: "clamp(12px, 1.05cqw, 14.5px)",
+                  }}
+                  className="pointer-events-none absolute z-20 whitespace-nowrap font-medium leading-none text-foreground"
+                >
+                  {STAGE_SHORT[stage]}
+                </span>
 
-                      {/* stage performance */}
-                      <div className="mt-[14px] flex w-[152px] items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-[#080b1c]/85 px-3 py-2">
-                        <span className="min-w-0">
-                          <span className="block text-[15px] font-semibold leading-none tabular-nums text-foreground">
-                            {n.toNextPct ?? 0}%
-                          </span>
-                          <span className="mt-1 block whitespace-nowrap text-[10.5px] leading-none text-muted-foreground">
-                            {last ? "win rate" : `move to ${n.nextLabel}`}
-                          </span>
-                        </span>
-                        <MiniBars pct={n.toNextPct ?? 0} color={n.color} />
-                      </div>
-                    </div>
-                  );
-                })}
-          </div>
+                {/* the count sits inside the artwork's circle (the ring itself is part of the artwork) */}
+                {loading || !n ? (
+                  <Skeleton
+                    style={{ left: `${xPct(node.x)}%`, top: `${yPct(node.y)}%`, width: "5.2cqw", height: "5.2cqw" }}
+                    className="absolute z-20 -translate-x-1/2 -translate-y-1/2 rounded-full"
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onSelect(stage)}
+                    aria-label={`${n.label}: ${n.count} opportunities. Open stage details`}
+                    style={{
+                      left: `${xPct(node.x)}%`,
+                      top: `${yPct(node.y)}%`,
+                      width: "6.4cqw",
+                      height: "6.4cqw",
+                      fontSize: "clamp(16px, 1.75cqw, 24px)",
+                    }}
+                    className="absolute z-20 grid -translate-x-1/2 -translate-y-1/2 cursor-pointer place-items-center rounded-full font-semibold tabular-nums text-foreground outline-none transition-transform duration-200 hover:scale-[1.04] focus-visible:ring-2 focus-visible:ring-brand/60"
+                  >
+                    {n.count.toLocaleString()}
+                  </button>
+                )}
+
+                {/* stage performance, under the circle */}
+                {!loading && n && (
+                  <div
+                    style={{
+                      left: `${xPct(node.x)}%`,
+                      top: `${yPct(node.y)}%`,
+                      width: "clamp(124px, 12.4cqw, 168px)",
+                      transform: "translate(-50%, 4.6cqw)",
+                    }}
+                    className="pointer-events-none absolute z-20 flex items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-[#080b1c]/85 px-3 py-2"
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-[15px] font-semibold leading-none tabular-nums text-foreground">
+                        {n.toNextPct ?? 0}%
+                      </span>
+                      <span className="mt-1 block whitespace-nowrap text-[10.5px] leading-none text-muted-foreground">
+                        {last ? "win rate" : `move to ${n.nextLabel}`}
+                      </span>
+                    </span>
+                    <MiniBars pct={n.toNextPct ?? 0} color={n.color} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </section>

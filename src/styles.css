@@ -1321,16 +1321,18 @@
   .pf-sweep, .pf-travel { opacity: 0; }
 }
 
-@keyframes pf-floor {
-  from { transform: translateY(0); }
-  to   { transform: translateY(56px); }
+/* The current slides by exactly one colour cycle (half its own width), so the loop has no seam.
+   Very slow on purpose: it should read as light drifting, never as something moving. */
+@keyframes pf-current {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(-50%, 0, 0); }
 }
 @keyframes pf-twinkle {
   0%, 100% { opacity: 0.18; }
   50%      { opacity: 0.85; }
 }
-.pf-floor   { animation: pf-floor 3.2s linear infinite; will-change: transform; }
+.pf-current { animation: pf-current 80s linear infinite; will-change: transform; }
 .pf-twinkle { animation: pf-twinkle 4.5s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .pf-floor, .pf-twinkle { animation: none; }
+  .pf-current, .pf-twinkle { animation: none; }
 }

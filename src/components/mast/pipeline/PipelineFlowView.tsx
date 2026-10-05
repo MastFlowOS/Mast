@@ -247,15 +247,25 @@ const DUST = Array.from({ length: 46 }, (_, i) => {
   return { x: r(1) * 100, y: r(2) * 100, s: 0.6 + r(3) * 1.2, o: 0.2 + r(4) * 0.45, d: r(5) * 5, twinkle: r(6) > 0.55 };
 });
 
-const STAGE_GRADIENT = `linear-gradient(90deg, ${STAGE_ORDER.map((s, i) => `${STAGE_COLOR[s]} ${i * 22 + 4}%`).join(", ")})`;
-const GRID = 56;
-const GRID_MASK =
-  `repeating-linear-gradient(90deg, #000 0 1px, transparent 1px ${GRID}px), repeating-linear-gradient(0deg, #000 0 1px, transparent 1px ${GRID}px)`;
+/**
+ * One full cycle of the stage colours, there and back (purple → green → purple), so that two
+ * cycles side by side loop seamlessly when the layer slides by exactly one cycle.
+ */
+const CURRENT_GRADIENT = (() => {
+  const c = STAGE_ORDER.map((st) => STAGE_COLOR[st]);
+  const cycle = [...c, ...c.slice(0, -1).reverse()]; // c0 c1 c2 c3 c4 c3 c2 c1 (then c0 again)
+  const stops = [...cycle, c[0]];
+  const per = 50 / (stops.length - 1); // each cycle is half of the 200%-wide layer
+  const half = stops.map((col, i) => `${col} ${(i * per).toFixed(2)}%`);
+  const rest = stops.map((col, i) => `${col} ${(50 + i * per).toFixed(2)}%`);
+  return `linear-gradient(90deg, ${[...half, ...rest].join(", ")})`;
+})();
 
 /**
- * The space the flow lives in, behind the artwork: a perspective floor of faint stage-coloured
- * grid lines drifting toward you, dotted dividers between the stages, a little dust, and two long
- * echoes of the wave. Everything fades out toward its edges so it never forms a box.
+ * The space the flow lives in, behind the artwork: a slow current of soft stage-coloured light
+ * drifting under the ribbon, dotted dividers between the stages, a little dust, and two long
+ * echoes of the wave. Everything fades out toward its edges so it never forms a box, and nothing
+ * in it has a hard edge, so nothing shimmers.
  */
 function FlowEnvironment() {
   return (
@@ -276,29 +286,16 @@ function FlowEnvironment() {
         }}
       />
 
-      {/* floor: stage-coloured lines in perspective, slowly travelling toward the viewer */}
+      {/* current: soft stage-coloured light drifting slowly under the ribbon, like light moving through
+          water. Smooth gradients only (no lines), moved by transform alone, so it stays calm. */}
       <div
-        className="absolute inset-x-0 bottom-0 h-[58%] overflow-hidden"
+        className="absolute inset-x-0 bottom-[2%] h-[52%] overflow-hidden"
         style={{
-          perspective: "460px",
-          WebkitMaskImage: "linear-gradient(to bottom, transparent, #000 30%, #000 70%, transparent)",
-          maskImage: "linear-gradient(to bottom, transparent, #000 30%, #000 70%, transparent)",
+          WebkitMaskImage: "radial-gradient(ellipse 54% 50% at 50% 50%, #000 0%, rgba(0,0,0,0.55) 45%, transparent 100%)",
+          maskImage: "radial-gradient(ellipse 54% 50% at 50% 50%, #000 0%, rgba(0,0,0,0.55) 45%, transparent 100%)",
         }}
       >
-        <div className="absolute inset-x-[-25%] inset-y-0" style={{ transform: "rotateX(63deg)", transformOrigin: "50% 0" }}>
-          <div
-            className="pf-floor absolute inset-x-0 opacity-[0.34]"
-            style={{
-              top: -GRID,
-              height: `calc(100% + ${GRID * 2}px)`,
-              background: STAGE_GRADIENT,
-              WebkitMaskImage: GRID_MASK,
-              maskImage: GRID_MASK,
-              WebkitMaskComposite: "source-over",
-              maskComposite: "add",
-            }}
-          />
-        </div>
+        <div className="pf-current absolute inset-y-0 left-0 w-[200%] opacity-[0.2]" style={{ background: CURRENT_GRADIENT }} />
       </div>
 
       {/* dotted dividers between the five stage columns */}

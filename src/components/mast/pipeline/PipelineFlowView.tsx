@@ -182,50 +182,75 @@ export function PipelineHealthStrip({ health }: { health: FlowHealth }) {
 
 /* ─────────────────────────────── The Flow (hero) ─────────────────────────────── */
 
-// One continuous ribbon. Geometry is in a 1000 × H viewBox that is stretched sideways only
-// (preserveAspectRatio="none"), so 1 unit of y is always 1px and every stage sits at a
-// fixed % of the width: nodes at x = 100, 300, 500, 700, 900.
+// The flow is a bundle of translucent silk bands that converge into every stage circle and
+// fan out again between stages, weaving over one another. Geometry lives in a 1000 × H
+// viewBox that is stretched sideways only (preserveAspectRatio="none"), so 1 unit of y is
+// always 1px and every stage sits at a fixed % of the width: nodes at x = 100, 300, 500, 700, 900.
 const VB_W = 1000;
-const FLOW_H = 268;
-const CY = 150; // vertical centre of the stage circles
+const FLOW_H = 290;
+const CY = 168; // vertical centre of the stage circles
 const R = 34; // circle radius (68px)
 const NODE_X = [100, 300, 500, 700, 900];
 
-// How far the ribbon swells above / below the node line in each stretch
-// (index 0 = lead-in from the left edge, 1..4 = between stages, 5 = tail to the right edge).
-const SWELL_UP = [44, 74, 50, 66, 48, 38];
-const SWELL_DOWN = [8, 16, 24, 14, 20, 8];
-const PINCH = 20; // ribbon half-height where it passes behind a circle
+type Band = {
+  /** Vertical offset of the band's centre from the node line at its widest (negative = above). */
+  o: number;
+  /** Half-width of the band at its widest. */
+  w: number;
+  /** Phase / frequency of the slow drift that makes bands weave over each other. */
+  ph: number;
+  f: number;
+  /** Skews where between two stages the band crests (-1 … 1). */
+  s: number;
+  /** Fill opacity. */
+  op: number;
+};
 
-function swell(x: number) {
-  const s = Math.max(0, Math.min(5, Math.floor((x + 100) / 200)));
-  const t = (((x + 100) % 200) + 200) % 200 / 200;
-  const k = Math.sin(Math.PI * t) ** 2; // 0 at every node, 1 midway between nodes
-  return { s, k };
+const BANDS: Band[] = [
+  { o: -62, w: 18, ph: 0.0, s: 0.9, f: 1.0, op: 0.15 },
+  { o: -40, w: 30, ph: 0.3, s: -0.7, f: 1.2, op: 0.19 },
+  { o: -16, w: 34, ph: 0.65, s: 0.5, f: 0.9, op: 0.21 },
+  { o: 6, w: 28, ph: 0.15, s: -0.9, f: 1.4, op: 0.19 },
+  { o: 26, w: 25, ph: 0.5, s: 0.8, f: 1.1, op: 0.16 },
+  { o: -72, w: 15, ph: 0.8, s: -0.5, f: 0.8, op: 0.12 },
+];
+
+/** 0 at every stage circle, 1 midway between two, with the crest skewed per band. */
+function envelope(x: number, b: Band) {
+  const t = ((((x + 100) % 200) + 200) % 200) / 200;
+  const tw = t + 0.12 * b.s * Math.sin(2 * Math.PI * t);
+  return Math.sin(Math.PI * tw) ** 2;
 }
-const topY = (x: number) => {
-  const { s, k } = swell(x);
-  return CY - PINCH - SWELL_UP[s] * k;
-};
-const bottomY = (x: number) => {
-  const { s, k } = swell(x);
-  return CY + PINCH + SWELL_DOWN[s] * k;
-};
-const threadY = (x: number) => topY(x) + (bottomY(x) - topY(x)) * 0.36;
+function centre(x: number, b: Band) {
+  const m = 0.6 + 0.4 * Math.sin(2 * Math.PI * ((x / 1000) * b.f + b.ph));
+  return CY + b.o * m * envelope(x, b) ** 0.9;
+}
+function half(x: number, b: Band) {
+  const m = 0.6 + 0.4 * Math.sin(2 * Math.PI * ((x / 1000) * b.f * 1.3 + b.ph + 0.25));
+  return 3 + b.w * m * (0.25 + 0.75 * envelope(x, b) ** 0.8);
+}
+const edgeTop = (x: number, b: Band) => centre(x, b) - half(x, b);
+const edgeBottom = (x: number, b: Band) => centre(x, b) + half(x, b);
+/** Highest point of the whole bundle at x; alerts pin themselves to this. */
+const topY = (x: number) => Math.min(...BANDS.map((b) => edgeTop(x, b)));
 
-function trace(fn: (x: number) => number): string {
+const STEP = 4;
+function trace(fn: (x: number) => number, from = -100, to = VB_W + 100, step = STEP): string {
   const pts: string[] = [];
-  for (let x = -100; x <= VB_W + 100; x += 5) pts.push(`${x === -100 ? "M" : "L"}${x},${fn(x).toFixed(1)}`);
+  if (step > 0) for (let x = from; x <= to; x += step) pts.push(`${x === from ? "M" : "L"}${x},${fn(x).toFixed(1)}`);
   return pts.join(" ");
 }
-const TOP_PATH = trace(topY);
-const BOTTOM_PATH = trace(bottomY);
-const THREAD_PATH = trace(threadY);
-const BODY_PATH = (() => {
+function bodyPath(b: Band): string {
   const back: string[] = [];
-  for (let x = VB_W + 100; x >= -100; x -= 5) back.push(`L${x},${bottomY(x).toFixed(1)}`);
-  return `${TOP_PATH} ${back.join(" ")} Z`;
-})();
+  for (let x = VB_W + 100; x >= -100; x -= STEP) back.push(`L${x},${edgeBottom(x, b).toFixed(1)}`);
+  return `${trace((x) => edgeTop(x, b))} ${back.join(" ")} Z`;
+}
+const BAND_PATHS = BANDS.map((b) => ({
+  body: bodyPath(b),
+  top: trace((x) => edgeTop(x, b)),
+  bottom: trace((x) => edgeBottom(x, b)),
+  op: b.op,
+}));
 // A single, very faint echo of the wave beneath the metric tiles.
 const ECHO_PATH = trace((x) => FLOW_H - 8 + 5 * Math.sin(x / 95 + 0.6));
 
@@ -245,28 +270,34 @@ function FlowRibbon({ gid }: { gid: string }) {
           <stop offset="0.78" stopColor={STAGE_COLOR.meeting} />
           <stop offset="1" stopColor={STAGE_COLOR.won} />
         </linearGradient>
-        {/* the ribbon thins out at both ends instead of stopping dead */}
+        {/* the bundle thins out at both ends instead of stopping dead */}
         <linearGradient id={`${gid}-fade`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={VB_W} y2="0">
           <stop offset="0" stopColor="#fff" stopOpacity="0" />
-          <stop offset="0.07" stopColor="#fff" stopOpacity="1" />
-          <stop offset="0.93" stopColor="#fff" stopOpacity="1" />
+          <stop offset="0.06" stopColor="#fff" stopOpacity="1" />
+          <stop offset="0.94" stopColor="#fff" stopOpacity="1" />
           <stop offset="1" stopColor="#fff" stopOpacity="0" />
         </linearGradient>
         <mask id={`${gid}-m`}>
           <rect width={VB_W} height={FLOW_H} fill={`url(#${gid}-fade)`} />
         </mask>
         <filter id={`${gid}-soft`} x="-5%" y="-40%" width="110%" height="180%">
-          <feGaussianBlur stdDeviation="14" />
+          <feGaussianBlur stdDeviation="12" />
         </filter>
       </defs>
       <g mask={`url(#${gid}-m)`}>
-        {/* the body: one soft translucent shape, and a blurred copy for the glow */}
-        <path d={BODY_PATH} fill={`url(#${gid}-g)`} opacity="0.32" filter={`url(#${gid}-soft)`} />
-        <path d={BODY_PATH} fill={`url(#${gid}-g)`} opacity="0.19" />
-        {/* three lines only: the two edges and one brighter thread through the middle */}
-        <path d={TOP_PATH} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1.2" opacity="0.6" vectorEffect="non-scaling-stroke" />
-        <path d={BOTTOM_PATH} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.28" vectorEffect="non-scaling-stroke" />
-        <path d={THREAD_PATH} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1.2" opacity="0.8" vectorEffect="non-scaling-stroke" />
+        {/* soft glow under the three central bands */}
+        {BAND_PATHS.slice(1, 4).map((b, i) => (
+          <path key={`glow-${i}`} d={b.body} fill={`url(#${gid}-g)`} opacity="0.5" filter={`url(#${gid}-soft)`} />
+        ))}
+        {/* the bands: a translucent veil with a bright upper edge and a quieter lower one;
+            where they cross, the colours add up */}
+        {BAND_PATHS.map((b, i) => (
+          <g key={i} style={{ mixBlendMode: "screen" }}>
+            <path d={b.body} fill={`url(#${gid}-g)`} opacity={b.op} />
+            <path d={b.top} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.5" vectorEffect="non-scaling-stroke" />
+            <path d={b.bottom} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.3" vectorEffect="non-scaling-stroke" />
+          </g>
+        ))}
         <path d={ECHO_PATH} fill="none" stroke={`url(#${gid}-g)`} strokeWidth="1" opacity="0.2" vectorEffect="non-scaling-stroke" />
       </g>
     </svg>

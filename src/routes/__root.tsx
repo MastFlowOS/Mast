@@ -318,10 +318,10 @@ function AuthGate({ queryClient }: { queryClient: QueryClient }) {
     const client = supabase!;
     let cancelled = false;
 
-    // Check initial session with a 5-second safety timeout so we never hang
+    // Check initial session with a safety timeout so we never hang
     withTimeout(
       client.auth.getSession(),
-      5000,
+      import.meta.env.DEV ? 600 : 5000,
       { data: { session: null }, error: null } as Awaited<
         ReturnType<typeof client.auth.getSession>
       >

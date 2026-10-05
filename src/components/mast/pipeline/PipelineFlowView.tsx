@@ -16,12 +16,9 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { FlowStage } from "@/lib/lead-workspace";
-import flowArt1x from "@/assets/pipeline-flow-1x.webp";
-import flowArt2x from "@/assets/pipeline-flow-2x.webp";
-
-/** 1× (2172 px) for normal screens, 2× (4344 px) for high-DPI; the mask below uses the 1×. */
-const flowArtUrl = flowArt1x;
 import { cn } from "@/lib/utils";
+import { FlowRibbonArt } from "./FlowRibbonArt";
+import { ART, ART_ANCHORS, ART_NODES, CROP, CROP_H } from "./flowRibbon";
 import { STAGE_COLOR, STAGE_ORDER, STAGE_SHORT, type FlowHealth, type FlowNode } from "./pipelineFlowModel";
 
 const surface = "rounded-2xl border border-white/[0.07] bg-[#070a18]/70";
@@ -187,35 +184,13 @@ export function PipelineHealthStrip({ health }: { health: FlowHealth }) {
 
 /* ─────────────────────────────── The Flow (hero) ─────────────────────────────── */
 
-// The flow's visual backbone is the supplied artwork (`pipeline-flow.png`, 2172 × 724, transparent).
-// It is shown unmodified and scaled proportionally; everything else is positioned over it using
-// coordinates measured from the artwork itself: its five circles and the top edge of the ribbon.
-// (Both shipped sizes have edge definition restored; all coordinates below are in the original
-// 2172 × 724 space and scale with the image.)
-const ART = { w: 2172, h: 724 };
-// Crop the artwork's empty top and bottom margins (no content is cut: it spans y 81 → 602).
-const CROP = { y0: 60, y1: 640 };
-const CROP_H = CROP.y1 - CROP.y0;
-/** Centres of the five circles in the artwork, in artwork pixels. */
-const ART_NODES = [
-  { x: 305, y: 389.5 },
-  { x: 723, y: 390.3 },
-  { x: 1142, y: 394.6 },
-  { x: 1558, y: 395 },
-  { x: 1957, y: 397.2 },
-];
-/** Measured radius of the centre-line of each circle's bright ring in the artwork. */
-const ART_RING_R = [62, 65, 65, 70, 66];
-/** Pale tint of each stage colour, used for a crisp core line on top of the artwork's soft ring. */
+// The flow's visual backbone is FlowRibbonArt: a small bitmap for the soft glowing body, plus vector
+// threads, seam and rings (sharp at any size or pixel density). Everything else is positioned over it
+// in the same 2172 × 724 artwork space (see flowRibbon.ts): the five circles and the point on the
+// ribbon's upper edge each alert pins to.
+/** Pale tint of each stage colour, used for the bright core of its ring. */
 const RING_CORE = ["#ecd6ff", "#d3dcff", "#bdeeff", "#bff7ee", "#c2fadb"];
-/** Where an alert pins to the ribbon's upper edge beside each circle (artwork px). */
-const ART_ANCHORS = [
-  { x: 403, y: 221 },
-  { x: 821, y: 163 },
-  { x: 1240, y: 232 },
-  { x: 1656, y: 267 },
-  { x: 1859, y: 306 },
-];
+const STAGE_COLORS = STAGE_ORDER.map((s) => STAGE_COLOR[s]);
 const xPct = (x: number) => (x / ART.w) * 100;
 const yPct = (y: number) => ((y - CROP.y0) / CROP_H) * 100;
 
@@ -427,63 +402,8 @@ export function PipelineFlowHero({
             }}
           />
 
-          {/* the artwork: the visual backbone, untouched */}
-          <img
-            src={flowArt1x}
-            srcSet={`${flowArt1x} 2172w, ${flowArt2x} 4344w`}
-            sizes="(min-width: 1380px) 1320px, 94vw"
-            alt=""
-            aria-hidden="true"
-            decoding="async"
-            draggable={false}
-            className="pointer-events-none absolute left-0 w-full max-w-none select-none"
-            style={{ top: `${-(CROP.y0 / CROP_H) * 100}%`, height: `${(ART.h / CROP_H) * 100}%` }}
-          />
-
-          {/* a hairline-crisp core on each of the artwork's rings (vector, so it is sharp at any DPI);
-              the artwork's own soft ring stays underneath as the glow around it */}
-          <svg
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 z-[5] size-full"
-            viewBox={`0 ${CROP.y0} ${ART.w} ${CROP_H}`}
-          >
-            {ART_NODES.map((n, i) => (
-              <g key={i}>
-                <circle cx={n.x} cy={n.y} r={ART_RING_R[i]} fill="none" stroke={RING_CORE[i]} strokeOpacity="0.28" strokeWidth="5" vectorEffect="non-scaling-stroke" />
-                <circle cx={n.x} cy={n.y} r={ART_RING_R[i]} fill="none" stroke={RING_CORE[i]} strokeOpacity="0.95" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
-              </g>
-            ))}
-          </svg>
-
-          {/* energy moving through the ribbon: light sweeps along the artwork's own shape
-              (the PNG is used as a mask, so the glow only ever lands on the ribbon) */}
-          {[0, 3.5].map((delay) => (
-            <div
-              key={delay}
-              aria-hidden="true"
-              className="pointer-events-none absolute left-0 w-full overflow-hidden"
-              style={{
-                top: `${-(CROP.y0 / CROP_H) * 100}%`,
-                height: `${(ART.h / CROP_H) * 100}%`,
-                WebkitMaskImage: `url(${flowArtUrl})`,
-                maskImage: `url(${flowArtUrl})`,
-                WebkitMaskSize: "100% 100%",
-                maskSize: "100% 100%",
-                WebkitMaskRepeat: "no-repeat",
-                maskRepeat: "no-repeat",
-              }}
-            >
-              <div
-                className="pf-sweep absolute inset-y-0 left-[-30%] w-[30%]"
-                style={{
-                  animationDelay: `${delay}s`,
-                  mixBlendMode: "screen",
-                  background:
-                    "linear-gradient(90deg, transparent, rgba(255,255,255,0.28) 45%, rgba(255,255,255,0.5) 50%, rgba(255,255,255,0.28) 55%, transparent)",
-                }}
-              />
-            </div>
-          ))}
+          {/* the ribbon and the five rings: soft bitmap body + sharp vector detail, light travelling along the threads */}
+          <FlowRibbonArt colors={STAGE_COLORS} tints={RING_CORE} />
 
           {/* movement between stages, centred between two circles on the ribbon's centre line */}
           {!loading &&
@@ -496,7 +416,7 @@ export function PipelineFlowHero({
                   color: STAGE_COLOR[STAGE_ORDER[i + 1]],
                   fontSize: "clamp(12px, 1.1cqw, 15px)",
                 }}
-                className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 font-medium tabular-nums"
+                className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full bg-[#050719]/70 px-[0.7em] py-[0.25em] font-semibold tabular-nums shadow-[0_0_14px_6px_rgba(5,7,25,0.7)]"
               >
                 {n.toNextPct ?? 0}%
                 <ArrowRight className="pf-nudge size-[1.2em]" strokeWidth={2.2} />
@@ -549,7 +469,7 @@ export function PipelineFlowHero({
               );
             })}
 
-          {/* the five stages, each centred on its circle in the artwork */}
+          {/* the five stages, each centred on its circle */}
           {STAGE_ORDER.map((stage, i) => {
             const n = nodes[i];
             const node = ART_NODES[i];
@@ -589,7 +509,7 @@ export function PipelineFlowHero({
                   {STAGE_SHORT[stage]}
                 </span>
 
-                {/* the count sits inside the artwork's circle (the ring itself is part of the artwork) */}
+                {/* the count sits inside the ring drawn by FlowRibbonArt */}
                 {loading || !n ? (
                   <Skeleton
                     style={{ left: `${xPct(node.x)}%`, top: `${yPct(node.y)}%`, width: "5.2cqw", height: "5.2cqw" }}

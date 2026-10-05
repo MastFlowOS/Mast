@@ -1276,7 +1276,7 @@
     0 0 0 5px color-mix(in oklab, var(--brand) 75%, transparent);
 }
 
-/* ── Pipeline Flow: life around the supplied artwork (transform / opacity only) ── */
+/* ── Pipeline Flow: life around the vector ribbon (transform / opacity / dash offset only) ── */
 @keyframes pf-sweep {
   0%   { transform: translateX(0); opacity: 0; }
   12%  { opacity: 1; }
@@ -1309,9 +1309,16 @@
 .pf-nudge   { animation: pf-nudge 1.8s ease-in-out infinite; }
 .pf-rise    { animation: pf-rise 650ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards; }
 .pf-bar     { transform-origin: bottom; animation: pf-bar 700ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards; }
+/* A pulse of light running along a ribbon strand (the path has pathLength=1000 and a dash much
+   shorter than the path, so one pulse at a time travels from the start to past the end, then rests). */
+@keyframes pf-travel {
+  0%        { stroke-dashoffset: 140; }
+  78%, 100% { stroke-dashoffset: -1000; }
+}
+.pf-travel  { animation: pf-travel 7.5s cubic-bezier(0.4, 0, 0.35, 1) infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .pf-sweep, .pf-halo, .pf-breathe, .pf-nudge, .pf-rise, .pf-bar { animation: none; }
-  .pf-sweep { opacity: 0; }
+  .pf-sweep, .pf-halo, .pf-breathe, .pf-nudge, .pf-rise, .pf-bar, .pf-travel { animation: none; }
+  .pf-sweep, .pf-travel { opacity: 0; }
 }
 
 @keyframes pf-floor {

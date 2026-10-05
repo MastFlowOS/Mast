@@ -92,10 +92,31 @@ export const queryKeys = {
   opsHistory: (rangeHours: number) => ["mast", "ops", "history", rangeHours] as const,
 };
 
+const DEV_MOCK_USER: AuthUser = {
+  id: 'dev-user-id',
+  fullName: 'MAST Workspace',
+  email: 'dev@mast.internal',
+  plan: 'pro',
+  subscriptionStatus: 'active',
+  creditsLimit: 1000,
+  creditsUsed: 120,
+  creditsRemaining: 880,
+  monthlyLeadsUsed: 48,
+  dailyLeadsUsed: 12,
+  nextDailyReset: null,
+  nextMonthlyReset: null,
+  pendingPlanChange: null,
+  onboardingCompleted: true,
+};
+
 export function useMe(enabled = true) {
   return useQuery({
     queryKey: queryKeys.me,
-    queryFn: getMe,
+    queryFn: async () => {
+      const res = await getMe();
+      if (!res.user && import.meta.env.DEV) return { user: DEV_MOCK_USER };
+      return res;
+    },
     retry: false,
     staleTime: 60_000,
     enabled,
@@ -105,7 +126,24 @@ export function useMe(enabled = true) {
 export function useAccount(enabled = true) {
   return useQuery({
     queryKey: queryKeys.account,
-    queryFn: getAccount,
+    queryFn: async () => {
+      try {
+        return await getAccount();
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          return {
+            user: DEV_MOCK_USER,
+            subscription: { plan: 'pro' as const, name: 'PRO', status: 'active', priceMonthly: 79 },
+            credits: { limit: 1000, used: 120, remaining: 880 },
+            dailyUsage: { used: 12, limit: 400, remaining: 388, resetsAt: null },
+            monthlyUsage: { used: 48, limit: 6000, remaining: 5952, resetsAt: null },
+            limits: { maxLeadRequest: 100, allowedChannels: ['email', 'phone', 'instagram', 'website'], allowInstantPool: true, allowPremiumPool: true, allowApiAccess: true },
+            plans: [],
+          };
+        }
+        throw err;
+      }
+    },
     retry: false,
     enabled,
     staleTime: 30_000,
@@ -476,7 +514,15 @@ export function useLeadFollowups(id: number | string | undefined, enabled = true
 export function useFollowups(params?: Record<string, string | number | undefined>, enabled = true) {
   return useQuery({
     queryKey: queryKeys.followups(params),
-    queryFn: () => getFollowups(params),
+    queryFn: async () => {
+      try {
+        return await getFollowups(params);
+      } catch (err) {
+        if (import.meta.env.DEV) return [];
+        throw err;
+      }
+    },
+    retry: false,
     enabled,
   });
 }

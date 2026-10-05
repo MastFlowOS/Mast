@@ -3,7 +3,7 @@
  * the connected flow ribbon (the hero) and the sales coach. No opportunity cards live
  * here; those belong to the Kanban view only. Data comes from pipelineFlowModel.ts.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   BarChart3,
@@ -218,10 +218,39 @@ function MiniBars({ pct, color }: { pct: number; color: string }) {
   return (
     <span aria-hidden="true" className="flex h-[22px] items-end gap-[3px]">
       {heights.map((h, i) => (
-        <span key={i} style={{ height: h, background: color, opacity: 0.5 + i * 0.25 }} className="w-[4px] rounded-[2px]" />
+        <span key={i} style={{ height: h, background: color, opacity: 0.5 + i * 0.25, animationDelay: `${300 + i * 90}ms` }} className="pf-bar w-[4px] rounded-[2px]" />
       ))}
     </span>
   );
+}
+
+/** Counts up to `value` (and between values when it changes) so numbers arrive, not just appear. */
+function CountUp({ value }: { value: number }) {
+  const [shown, setShown] = useState(0);
+  const from = useRef(0);
+  useEffect(() => {
+    const reduce =
+      typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) {
+      from.current = value;
+      setShown(value);
+      return;
+    }
+    const start = performance.now();
+    const a = from.current;
+    let raf = 0;
+    const tick = () => {
+      const t = Math.min(1, (performance.now() - start) / 900);
+      const eased = 1 - (1 - t) ** 3;
+      const v = Math.round(a + (value - a) * eased);
+      from.current = v;
+      setShown(v);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value]);
+  return <>{shown.toLocaleString()}</>;
 }
 
 const CARD_W = 128;
@@ -237,13 +266,26 @@ export function PipelineFlowHero({
   onSelect: (stage: FlowStage) => void;
 }) {
   return (
-    <section aria-label="Pipeline flow" className="relative">
-      <div className="overflow-x-auto">
+    <section aria-label="Pipeline flow" className="relative overflow-x-clip">
+      {/* No inner scroller: the whole flow scales with the width of the page. */}
+      <div>
         {/* container-type lets the type and node sizes below scale with the artwork (cqw) */}
         <div
-          className="relative mx-auto min-w-[760px] max-w-[1320px]"
+          className="relative mx-auto w-full max-w-[1320px]"
           style={{ aspectRatio: `${ART.w} / ${CROP_H}`, containerType: "inline-size" }}
         >
+          {/* ambient light: a soft purple → green wash that spills past the artwork so it sits in the page */}
+          <div
+            aria-hidden="true"
+            className="pf-breathe pointer-events-none absolute -inset-x-[5%] -inset-y-[14%]"
+            style={{
+              background: STAGE_ORDER.map(
+                (s, i) =>
+                  `radial-gradient(ellipse 17% 46% at ${xPct(ART_NODES[i].x)}% ${yPct(ART_NODES[i].y)}%, ${STAGE_COLOR[s]}33, transparent 72%)`,
+              ).join(","),
+            }}
+          />
+
           {/* the artwork: the visual backbone, untouched */}
           <img
             src={flowArtUrl}
@@ -253,6 +295,36 @@ export function PipelineFlowHero({
             className="pointer-events-none absolute left-0 w-full max-w-none select-none"
             style={{ top: `${-(CROP.y0 / CROP_H) * 100}%`, height: `${(ART.h / CROP_H) * 100}%` }}
           />
+
+          {/* energy moving through the ribbon: light sweeps along the artwork's own shape
+              (the PNG is used as a mask, so the glow only ever lands on the ribbon) */}
+          {[0, 3.5].map((delay) => (
+            <div
+              key={delay}
+              aria-hidden="true"
+              className="pointer-events-none absolute left-0 w-full overflow-hidden"
+              style={{
+                top: `${-(CROP.y0 / CROP_H) * 100}%`,
+                height: `${(ART.h / CROP_H) * 100}%`,
+                WebkitMaskImage: `url(${flowArtUrl})`,
+                maskImage: `url(${flowArtUrl})`,
+                WebkitMaskSize: "100% 100%",
+                maskSize: "100% 100%",
+                WebkitMaskRepeat: "no-repeat",
+                maskRepeat: "no-repeat",
+              }}
+            >
+              <div
+                className="pf-sweep absolute inset-y-0 left-[-30%] w-[30%]"
+                style={{
+                  animationDelay: `${delay}s`,
+                  mixBlendMode: "screen",
+                  background:
+                    "linear-gradient(90deg, transparent, rgba(255,255,255,0.28) 45%, rgba(255,255,255,0.5) 50%, rgba(255,255,255,0.28) 55%, transparent)",
+                }}
+              />
+            </div>
+          ))}
 
           {/* movement between stages, centred between two circles on the ribbon's centre line */}
           {!loading &&
@@ -268,7 +340,7 @@ export function PipelineFlowHero({
                 className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 font-medium tabular-nums"
               >
                 {n.toNextPct ?? 0}%
-                <ArrowRight className="size-[1.2em]" strokeWidth={2.2} />
+                <ArrowRight className="pf-nudge size-[1.2em]" strokeWidth={2.2} />
               </div>
             ))}
 
@@ -311,7 +383,9 @@ export function PipelineFlowHero({
                     aria-hidden="true"
                     style={{ left: `${ax}%`, top: `calc(${ay}% - 3px)`, background: ac, boxShadow: `0 0 6px ${ac}` }}
                     className="absolute size-1.5 -translate-x-1/2 rounded-full"
-                  />
+                  >
+                    <span style={{ background: ac }} className="absolute inset-0 animate-ping rounded-full opacity-60 motion-reduce:animate-none" />
+                  </span>
                 </div>
               );
             })}
@@ -321,8 +395,27 @@ export function PipelineFlowHero({
             const n = nodes[i];
             const node = ART_NODES[i];
             const last = i === STAGE_ORDER.length - 1;
+            const color = STAGE_COLOR[stage];
+            const delay = `${i * 90}ms`;
             return (
               <div key={stage}>
+                {/* a halo that radiates out of the circle, staggered left to right */}
+                {!loading && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      left: `${xPct(node.x)}%`,
+                      top: `${yPct(node.y)}%`,
+                      width: "9.4cqw",
+                      height: "9.4cqw",
+                      border: `1.5px solid ${color}`,
+                      boxShadow: `0 0 18px ${color}66`,
+                      animationDelay: `${i * 0.55}s`,
+                    }}
+                    className="pf-halo pointer-events-none absolute z-10 rounded-full"
+                  />
+                )}
+
                 {/* stage name, just above the circle */}
                 <span
                   style={{
@@ -330,8 +423,9 @@ export function PipelineFlowHero({
                     top: `${yPct(node.y)}%`,
                     transform: "translate(-50%, calc(-100% - 4.1cqw))",
                     fontSize: "clamp(12px, 1.05cqw, 14.5px)",
+                    animationDelay: delay,
                   }}
-                  className="pointer-events-none absolute z-20 whitespace-nowrap font-medium leading-none text-foreground"
+                  className="pf-rise pointer-events-none absolute z-20 whitespace-nowrap font-medium leading-none text-foreground"
                 >
                   {STAGE_SHORT[stage]}
                 </span>
@@ -353,10 +447,11 @@ export function PipelineFlowHero({
                       width: "6.4cqw",
                       height: "6.4cqw",
                       fontSize: "clamp(16px, 1.75cqw, 24px)",
+                      ["--stage" as string]: color,
                     }}
-                    className="absolute z-20 grid -translate-x-1/2 -translate-y-1/2 cursor-pointer place-items-center rounded-full font-semibold tabular-nums text-foreground outline-none transition-transform duration-200 hover:scale-[1.04] focus-visible:ring-2 focus-visible:ring-brand/60"
+                    className="group absolute z-20 grid -translate-x-1/2 -translate-y-1/2 cursor-pointer place-items-center rounded-full font-semibold tabular-nums text-foreground outline-none transition-[transform,box-shadow] duration-300 hover:scale-[1.08] hover:shadow-[0_0_34px_-2px_var(--stage)] focus-visible:ring-2 focus-visible:ring-brand/60"
                   >
-                    {n.count.toLocaleString()}
+                    <CountUp value={n.count} />
                   </button>
                 )}
 
@@ -368,8 +463,11 @@ export function PipelineFlowHero({
                       top: `${yPct(node.y)}%`,
                       width: "clamp(124px, 12.4cqw, 168px)",
                       transform: "translate(-50%, 4.6cqw)",
+                      borderColor: `${color}38`,
+                      boxShadow: `0 8px 24px -14px ${color}, inset 0 1px 0 ${color}22`,
+                      animationDelay: `${180 + i * 90}ms`,
                     }}
-                    className="pointer-events-none absolute z-20 flex items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-[#080b1c]/85 px-3 py-2"
+                    className="pf-rise pointer-events-none absolute z-20 flex items-center justify-between gap-2 rounded-xl border bg-[#080b1c]/70 px-3 py-2 backdrop-blur-sm"
                   >
                     <span className="min-w-0">
                       <span className="block text-[15px] font-semibold leading-none tabular-nums text-foreground">
@@ -379,7 +477,7 @@ export function PipelineFlowHero({
                         {last ? "win rate" : `move to ${n.nextLabel}`}
                       </span>
                     </span>
-                    <MiniBars pct={n.toNextPct ?? 0} color={n.color} />
+                    <MiniBars pct={n.toNextPct ?? 0} color={color} />
                   </div>
                 )}
               </div>

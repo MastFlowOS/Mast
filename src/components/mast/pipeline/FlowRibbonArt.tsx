@@ -28,7 +28,7 @@ function deep(hex: string) {
 export function FlowRibbonArt({
   colors,
   tints,
-  animated = true,
+  animated = false,
 }: {
   /** Stage colours, in flow order. */
   colors: string[];
@@ -89,28 +89,17 @@ export function FlowRibbonArt({
         <g fill="none" stroke={ref("glow")} strokeLinecap="round" strokeLinejoin="round">
           <g filter={ref("soft")}>
             {THREADS.map((t, i) => (
-              <path key={i} d={t.d} strokeWidth={3 + 5 * t.k} strokeOpacity={0.02 + 0.2 * t.k} />
+              <path key={i} d={t.d} strokeWidth={3 + 4 * t.k} strokeOpacity={0.01 + 0.1 * t.k} />
             ))}
           </g>
           {THREADS.map((t, i) => (
-            <path key={i} d={t.d} strokeWidth={0.6 + 0.8 * t.k} strokeOpacity={0.12 + 0.6 * t.k} vectorEffect="non-scaling-stroke" />
+            <path key={i} d={t.d} strokeWidth={0.5 + 0.6 * t.k} strokeOpacity={0.06 + 0.4 * t.k} vectorEffect="non-scaling-stroke" />
           ))}
         </g>
-        <g fill="none" stroke="#fff" strokeLinecap="round">
-          {THREADS.filter((t) => t.k > 0.7).map((t, i) => (
-            <path key={i} d={t.d} strokeWidth={0.5 + 0.6 * t.k} strokeOpacity={Math.min(0.75, (t.k - 0.6) * 1.6)} vectorEffect="non-scaling-stroke" />
-          ))}
-        </g>
-
         {/* the bright seam */}
-        <g filter={ref("soft")} opacity="0.3" fill={ref("glow")} fillRule="evenodd">
-          {SEAM.slice(0, 2).map((d, i) => (
-            <path key={i} d={d} />
-          ))}
-        </g>
         <g filter={ref("seam")} fill="#fff" fillRule="evenodd">
           {SEAM.map((d, i) => (
-            <path key={i} d={d} fillOpacity={[0.12, 0.34, 0.7][i]} />
+            <path key={i} d={d} fillOpacity={[0.08, 0.2, 0.45][i]} />
           ))}
         </g>
 
@@ -129,11 +118,10 @@ export function FlowRibbonArt({
         {/* the five rings */}
         {ART_NODES.map((n, i) => (
           <g key={i}>
-            <circle cx={n.x} cy={n.y} r={RING_R + 4} fill="none" stroke={colors[i]} strokeWidth="20" opacity="0.32" filter={ref("ringglow")} />
+            <circle cx={n.x} cy={n.y} r={RING_R + 4} fill="none" stroke={colors[i]} strokeWidth="16" opacity="0.2" filter={ref("ringglow")} />
             <circle cx={n.x} cy={n.y} r={RING_R} fill={ref(`core${i}`)} />
-            <circle cx={n.x} cy={n.y} r={RING_R} fill="none" stroke={colors[i]} strokeWidth="10" opacity="0.32" />
-            <circle cx={n.x} cy={n.y} r={RING_R} fill="none" stroke={tints[i]} strokeWidth="7" opacity="0.82" />
-            <circle cx={n.x} cy={n.y} r={RING_R + 4.5} fill="none" stroke="#fff" strokeWidth="1" opacity="0.22" vectorEffect="non-scaling-stroke" />
+            <circle cx={n.x} cy={n.y} r={RING_R} fill="none" stroke={colors[i]} strokeWidth="9" opacity="0.22" />
+            <circle cx={n.x} cy={n.y} r={RING_R} fill="none" stroke={tints[i]} strokeWidth="6" opacity="0.7" />
           </g>
         ))}
       </svg>

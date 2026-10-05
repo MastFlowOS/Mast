@@ -416,7 +416,7 @@ export function PipelineFlowHero({
                   color: STAGE_COLOR[STAGE_ORDER[i + 1]],
                   fontSize: "clamp(12px, 1.1cqw, 15px)",
                 }}
-                className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full bg-[#050719]/70 px-[0.7em] py-[0.25em] font-semibold tabular-nums shadow-[0_0_14px_6px_rgba(5,7,25,0.7)]"
+                className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full bg-[#050719]/40 px-[0.6em] py-[0.2em] font-medium tabular-nums"
               >
                 {n.toNextPct ?? 0}%
                 <ArrowRight className="pf-nudge size-[1.2em]" strokeWidth={2.2} />

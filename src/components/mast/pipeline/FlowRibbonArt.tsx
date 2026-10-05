@@ -15,7 +15,7 @@ import { SEAM, THREADS, THREAD_GLOW } from "./flowRibbonTrace";
 /** The three longest bright threads carry a slow pulse of light, left to right. */
 const PULSES = THREADS.filter((t) => t.k >= 0.6)
   .sort((a, b) => b.len - a.len)
-  .slice(0, 3)
+  .slice(0, 2)
   .map((t, i) => ({ d: t.d, delay: i * 2.6, dur: 7 + i * 1.2 }));
 
 /** Near-black with a trace of the stage colour: the inside of a ring. */
@@ -89,28 +89,28 @@ export function FlowRibbonArt({
         <g fill="none" stroke={ref("glow")} strokeLinecap="round" strokeLinejoin="round">
           <g filter={ref("soft")}>
             {THREADS.map((t, i) => (
-              <path key={i} d={t.d} strokeWidth={3 + 7 * t.k} strokeOpacity={0.05 + 0.36 * t.k} />
+              <path key={i} d={t.d} strokeWidth={3 + 5 * t.k} strokeOpacity={0.02 + 0.2 * t.k} />
             ))}
           </g>
           {THREADS.map((t, i) => (
-            <path key={i} d={t.d} strokeWidth={0.7 + 1 * t.k} strokeOpacity={0.22 + 0.78 * t.k} vectorEffect="non-scaling-stroke" />
+            <path key={i} d={t.d} strokeWidth={0.6 + 0.8 * t.k} strokeOpacity={0.12 + 0.6 * t.k} vectorEffect="non-scaling-stroke" />
           ))}
         </g>
         <g fill="none" stroke="#fff" strokeLinecap="round">
-          {THREADS.filter((t) => t.k > 0.5).map((t, i) => (
-            <path key={i} d={t.d} strokeWidth={0.5 + 0.8 * t.k} strokeOpacity={Math.min(1, (t.k - 0.35) * 1.5)} vectorEffect="non-scaling-stroke" />
+          {THREADS.filter((t) => t.k > 0.7).map((t, i) => (
+            <path key={i} d={t.d} strokeWidth={0.5 + 0.6 * t.k} strokeOpacity={Math.min(0.75, (t.k - 0.6) * 1.6)} vectorEffect="non-scaling-stroke" />
           ))}
         </g>
 
         {/* the bright seam */}
-        <g filter={ref("soft")} opacity="0.55" fill={ref("glow")} fillRule="evenodd">
+        <g filter={ref("soft")} opacity="0.3" fill={ref("glow")} fillRule="evenodd">
           {SEAM.slice(0, 2).map((d, i) => (
             <path key={i} d={d} />
           ))}
         </g>
         <g filter={ref("seam")} fill="#fff" fillRule="evenodd">
           {SEAM.map((d, i) => (
-            <path key={i} d={d} fillOpacity={[0.22, 0.5, 0.9][i]} />
+            <path key={i} d={d} fillOpacity={[0.12, 0.34, 0.7][i]} />
           ))}
         </g>
 
@@ -120,8 +120,8 @@ export function FlowRibbonArt({
             const style = { animationDelay: `${p.delay}s`, animationDuration: `${p.dur}s` };
             return (
               <g key={i} fill="none" strokeLinecap="round">
-                <path d={p.d} pathLength={1000} stroke="#fff" strokeWidth="14" strokeOpacity="0.16" strokeDasharray="130 3000" className="pf-travel" style={style} filter={ref("soft")} />
-                <path d={p.d} pathLength={1000} stroke="#fff" strokeWidth="2.2" strokeOpacity="0.95" strokeDasharray="90 3000" className="pf-travel" style={style} vectorEffect="non-scaling-stroke" />
+                <path d={p.d} pathLength={1000} stroke="#fff" strokeWidth="12" strokeOpacity="0.08" strokeDasharray="130 3000" className="pf-travel" style={style} filter={ref("soft")} />
+                <path d={p.d} pathLength={1000} stroke="#fff" strokeWidth="1.8" strokeOpacity="0.6" strokeDasharray="90 3000" className="pf-travel" style={style} vectorEffect="non-scaling-stroke" />
               </g>
             );
           })}
@@ -129,11 +129,11 @@ export function FlowRibbonArt({
         {/* the five rings */}
         {ART_NODES.map((n, i) => (
           <g key={i}>
-            <circle cx={n.x} cy={n.y} r={RING_R + 4} fill="none" stroke={colors[i]} strokeWidth="24" opacity="0.55" filter={ref("ringglow")} />
+            <circle cx={n.x} cy={n.y} r={RING_R + 4} fill="none" stroke={colors[i]} strokeWidth="20" opacity="0.32" filter={ref("ringglow")} />
             <circle cx={n.x} cy={n.y} r={RING_R} fill={ref(`core${i}`)} />
-            <circle cx={n.x} cy={n.y} r={RING_R} fill="none" stroke={colors[i]} strokeWidth="11" opacity="0.45" />
-            <circle cx={n.x} cy={n.y} r={RING_R} fill="none" stroke={tints[i]} strokeWidth="7.5" opacity="0.92" />
-            <circle cx={n.x} cy={n.y} r={RING_R + 4.5} fill="none" stroke="#fff" strokeWidth="1.1" opacity="0.5" vectorEffect="non-scaling-stroke" />
+            <circle cx={n.x} cy={n.y} r={RING_R} fill="none" stroke={colors[i]} strokeWidth="10" opacity="0.32" />
+            <circle cx={n.x} cy={n.y} r={RING_R} fill="none" stroke={tints[i]} strokeWidth="7" opacity="0.82" />
+            <circle cx={n.x} cy={n.y} r={RING_R + 4.5} fill="none" stroke="#fff" strokeWidth="1" opacity="0.22" vectorEffect="non-scaling-stroke" />
           </g>
         ))}
       </svg>

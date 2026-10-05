@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { FlowStage } from "@/lib/lead-workspace";
-import flowArtUrl from "@/assets/pipeline-flow.png";
+import flowArtUrl from "@/assets/pipeline-flow@2x.webp";
 import { cn } from "@/lib/utils";
 import { STAGE_COLOR, STAGE_ORDER, STAGE_SHORT, type FlowHealth, type FlowNode } from "./pipelineFlowModel";
 
@@ -186,6 +186,8 @@ export function PipelineHealthStrip({ health }: { health: FlowHealth }) {
 // The flow's visual backbone is the supplied artwork (`pipeline-flow.png`, 2172 × 724, transparent).
 // It is shown unmodified and scaled proportionally; everything else is positioned over it using
 // coordinates measured from the artwork itself: its five circles and the top edge of the ribbon.
+// (Shipped at 2× — 4344 × 1448 — so it stays crisp on high-DPI screens; all coordinates below are
+// in the original 2172 × 724 space and scale with the image.)
 const ART = { w: 2172, h: 724 };
 // Crop the artwork's empty top and bottom margins (no content is cut: it spans y 81 → 602).
 const CROP = { y0: 60, y1: 640 };
@@ -253,6 +255,135 @@ function CountUp({ value }: { value: number }) {
   return <>{shown.toLocaleString()}</>;
 }
 
+/** Deterministic sparse "dust" (no Math.random, so it never reshuffles between renders). */
+const DUST = Array.from({ length: 46 }, (_, i) => {
+  const r = (n: number) => {
+    const x = Math.sin(i * 127.1 + n * 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  };
+  return { x: r(1) * 100, y: r(2) * 100, s: 0.6 + r(3) * 1.2, o: 0.2 + r(4) * 0.45, d: r(5) * 5, twinkle: r(6) > 0.55 };
+});
+
+const STAGE_GRADIENT = `linear-gradient(90deg, ${STAGE_ORDER.map((s, i) => `${STAGE_COLOR[s]} ${i * 22 + 4}%`).join(", ")})`;
+const GRID = 56;
+const GRID_MASK =
+  `repeating-linear-gradient(90deg, #000 0 1px, transparent 1px ${GRID}px), repeating-linear-gradient(0deg, #000 0 1px, transparent 1px ${GRID}px)`;
+
+/**
+ * The space the flow lives in, behind the artwork: a perspective floor of faint stage-coloured
+ * grid lines drifting toward you, dotted dividers between the stages, a little dust, and two long
+ * echoes of the wave. Everything fades out toward its edges so it never forms a box.
+ */
+function FlowEnvironment() {
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute -inset-x-[7%] -bottom-[8%] -top-[14%] z-0"
+      style={{
+        WebkitMaskImage: "radial-gradient(ellipse 74% 80% at 50% 52%, #000 38%, transparent 100%)",
+        maskImage: "radial-gradient(ellipse 74% 80% at 50% 52%, #000 38%, transparent 100%)",
+      }}
+    >
+      {/* depth: a deep navy pool of light the ribbon sits in */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(ellipse 62% 54% at 50% 50%, rgba(22,30,92,0.55), rgba(8,10,34,0.35) 55%, transparent 80%)",
+        }}
+      />
+
+      {/* floor: stage-coloured lines in perspective, slowly travelling toward the viewer */}
+      <div
+        className="absolute inset-x-0 bottom-0 h-[58%] overflow-hidden"
+        style={{
+          perspective: "460px",
+          WebkitMaskImage: "linear-gradient(to bottom, transparent, #000 30%, #000 70%, transparent)",
+          maskImage: "linear-gradient(to bottom, transparent, #000 30%, #000 70%, transparent)",
+        }}
+      >
+        <div className="absolute inset-x-[-25%] inset-y-0" style={{ transform: "rotateX(63deg)", transformOrigin: "50% 0" }}>
+          <div
+            className="pf-floor absolute inset-x-0 opacity-[0.34]"
+            style={{
+              top: -GRID,
+              height: `calc(100% + ${GRID * 2}px)`,
+              background: STAGE_GRADIENT,
+              WebkitMaskImage: GRID_MASK,
+              maskImage: GRID_MASK,
+              WebkitMaskComposite: "source-over",
+              maskComposite: "add",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* dotted dividers between the five stage columns */}
+      {ART_NODES.slice(0, -1).map((n, i) => (
+        <span
+          key={i}
+          className="absolute"
+          style={{
+            left: `${(((n.x + ART_NODES[i + 1].x) / 2 / ART.w + 0.07) / 1.14) * 100}%`, // container x → this wider layer
+            top: "18%",
+            height: "62%",
+            borderLeft: "1px dotted rgba(140,160,255,0.2)",
+            WebkitMaskImage: "linear-gradient(to bottom, transparent, #000 25%, #000 75%, transparent)",
+            maskImage: "linear-gradient(to bottom, transparent, #000 25%, #000 75%, transparent)",
+          }}
+        />
+      ))}
+
+      {/* dust */}
+      <svg className="absolute inset-0 size-full" width="100%" height="100%">
+        {DUST.map((d, i) => (
+          <circle
+            key={i}
+            cx={`${d.x}%`}
+            cy={`${d.y}%`}
+            r={d.s}
+            fill="#cfd8ff"
+            opacity={d.o}
+            className={d.twinkle ? "pf-twinkle" : undefined}
+            style={d.twinkle ? { animationDelay: `${d.d}s` } : undefined}
+          />
+        ))}
+      </svg>
+
+      {/* two long echoes of the wave, low in the frame */}
+      <svg className="absolute inset-0 size-full" viewBox="0 0 1000 300" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="pf-env-g" gradientUnits="userSpaceOnUse" x1="0" x2="1000" y1="0" y2="0">
+            {STAGE_ORDER.map((s, i) => (
+              <stop key={s} offset={`${i * 25}%`} stopColor={STAGE_COLOR[s]} />
+            ))}
+          </linearGradient>
+          <filter id="pf-env-blur" x="-5%" y="-100%" width="110%" height="300%">
+            <feGaussianBlur stdDeviation="6" />
+          </filter>
+        </defs>
+        <path
+          d="M 0 258 C 180 234, 300 288, 500 264 S 820 234, 1000 270"
+          fill="none"
+          stroke="url(#pf-env-g)"
+          strokeWidth="1"
+          opacity="0.24"
+          vectorEffect="non-scaling-stroke"
+        />
+        <path
+          d="M 0 270 C 220 300, 380 246, 580 276 S 860 294, 1000 258"
+          fill="none"
+          stroke="url(#pf-env-g)"
+          strokeWidth="7"
+          opacity="0.12"
+          filter="url(#pf-env-blur)"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+    </div>
+  );
+}
+
 const CARD_W = 128;
 const CARD_H = 44;
 
@@ -274,6 +405,8 @@ export function PipelineFlowHero({
           className="relative mx-auto w-full max-w-[1320px]"
           style={{ aspectRatio: `${ART.w} / ${CROP_H}`, containerType: "inline-size" }}
         >
+          <FlowEnvironment />
+
           {/* ambient light: a soft purple → green wash that spills past the artwork so it sits in the page */}
           <div
             aria-hidden="true"

@@ -1313,3 +1313,17 @@
   .pf-sweep, .pf-halo, .pf-breathe, .pf-nudge, .pf-rise, .pf-bar { animation: none; }
   .pf-sweep { opacity: 0; }
 }
+
+@keyframes pf-floor {
+  from { transform: translateY(0); }
+  to   { transform: translateY(56px); }
+}
+@keyframes pf-twinkle {
+  0%, 100% { opacity: 0.18; }
+  50%      { opacity: 0.85; }
+}
+.pf-floor   { animation: pf-floor 3.2s linear infinite; will-change: transform; }
+.pf-twinkle { animation: pf-twinkle 4.5s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .pf-floor, .pf-twinkle { animation: none; }
+}

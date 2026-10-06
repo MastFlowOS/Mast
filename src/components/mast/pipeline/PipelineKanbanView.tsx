@@ -11,6 +11,7 @@ import {
   BarChart3,
   CalendarCheck,
   ChevronDown,
+  ChevronUp,
   Clock,
   Inbox,
   LayoutGrid,
@@ -154,13 +155,15 @@ export function KanbanBriefing({
             tint="#a5b4fc"
             value={total.toLocaleString()}
             label="Total"
+            trend={totalTrendPct}
+            trendTitle="New opportunities, last 30 days vs the 30 before"
           />
           <Stat
             icon={<TrendingUp className="size-5" />}
             tint="#2dd4a8"
             value={`${conversionPct}%`}
             label="Conversion"
-            trend={totalTrendPct}
+            hintTitle="Closed opportunities as a share of the whole pipeline"
           />
           <Stat
             icon={<BarChart3 className="size-5" />}
@@ -188,6 +191,8 @@ function Stat({
   value,
   label,
   trend,
+  trendTitle,
+  hintTitle,
   onClick,
 }: {
   icon: React.ReactNode;
@@ -195,6 +200,8 @@ function Stat({
   value: string;
   label: string;
   trend?: number | null;
+  trendTitle?: string;
+  hintTitle?: string;
   onClick?: () => void;
 }) {
   const Tag = onClick ? "button" : "div";
@@ -220,6 +227,7 @@ function Stat({
         </span>
         {trend != null && (
           <span
+            title={trendTitle}
             className={cn(
               "inline-flex items-center gap-0.5 text-[11px] font-medium",
               trend >= 0 ? "text-success" : "text-destructive",
@@ -230,7 +238,10 @@ function Stat({
           </span>
         )}
       </span>
-      <span className="-mt-1 whitespace-nowrap text-[11.5px] leading-none text-muted-foreground">
+      <span
+        title={hintTitle}
+        className="-mt-1 whitespace-nowrap text-[11.5px] leading-none text-muted-foreground"
+      >
         {label}
       </span>
     </Tag>
@@ -613,7 +624,9 @@ export function KanbanColumn({
   density,
   draggingId,
   isOver,
+  pageSize,
   onShowMore,
+  onShowLess,
   onViewAll,
   onOpenLead,
   onMoveLead,
@@ -630,11 +643,14 @@ export function KanbanColumn({
   leads: Lead[];
   loading: boolean;
   shown: number;
+  /** Cards in the collapsed state; "Show less" returns to this. */
+  pageSize: number;
   loadedTotal: number;
   density: Density;
   draggingId: number | null;
   isOver: boolean;
   onShowMore: () => void;
+  onShowLess: () => void;
   onViewAll: () => void;
   onOpenLead: (id: number) => void;
   onMoveLead: (id: number, to: FlowStage) => void;
@@ -648,6 +664,7 @@ export function KanbanColumn({
   const Icon = STAGE_ICON[node.stage];
   const visible = leads.slice(0, shown);
   const remaining = leads.length - visible.length;
+  const expanded = visible.length > pageSize;
   const isLast = node.nextLabel == null;
 
   return (
@@ -701,7 +718,7 @@ export function KanbanColumn({
               isLast ? "Share of all opportunities that are closed" : `Move on to ${node.nextLabel}`
             }
           >
-            {node.toNextPct ?? 0}%{!isLast && <ArrowRight className="size-3.5" />}
+            {node.toNextPct ?? 0}%{isLast ? " won" : <ArrowRight className="size-3.5" />}
           </span>
           <MiniBars color={c} pct={node.toNextPct ?? 0} />
         </div>
@@ -734,25 +751,37 @@ export function KanbanColumn({
         )}
       </div>
 
-      {!loading && (remaining > 0 || count > loadedTotal) && (
-        <div className="px-4 pb-3.5 pt-0.5">
+      {!loading && (remaining > 0 || count > loadedTotal || expanded) && (
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-4 pb-3.5 pt-0.5">
           {remaining > 0 ? (
             <button
               type="button"
               onClick={onShowMore}
               style={{ color: c }}
-              className="cursor-pointer text-[12.5px] font-medium hover:underline"
+              className="cursor-pointer whitespace-nowrap text-[12.5px] font-medium hover:underline"
             >
               + {remaining.toLocaleString()} more opportunities
             </button>
-          ) : (
+          ) : count > loadedTotal ? (
             <button
               type="button"
               onClick={onViewAll}
               style={{ color: c }}
-              className="cursor-pointer text-[12.5px] font-medium hover:underline"
+              className="cursor-pointer whitespace-nowrap text-[12.5px] font-medium hover:underline"
             >
               View all {count.toLocaleString()} →
+            </button>
+          ) : (
+            <span />
+          )}
+          {expanded && (
+            <button
+              type="button"
+              onClick={onShowLess}
+              aria-label={`Show fewer ${node.label} opportunities`}
+              className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap text-[12.5px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Show less <ChevronUp className="size-3.5" />
             </button>
           )}
         </div>

@@ -4,7 +4,14 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { Lead } from "@/lib/api";
 import { countryOf, scoreBandOf, sourceLabel, timeAgo } from "./kanbanHelpers";
 import { KanbanBoard, KanbanColumn, KanbanCoachPanel } from "./PipelineKanbanView";
-import type { FlowNode } from "./pipelineFlowModel";
+import {
+  buildPipelineFlowModel,
+  flowBriefingText,
+  flowHeadlineText,
+  flowTone,
+  stageCountsFromStats,
+  type FlowNode,
+} from "./pipelineFlowModel";
 
 afterEach(cleanup);
 
@@ -37,11 +44,13 @@ const baseColumn = (over: Partial<React.ComponentProps<typeof KanbanColumn>> = {
   leads: [1, 2, 3, 4, 5, 6, 7].map((i) => lead(i)),
   loading: false,
   shown: 5,
+  pageSize: 5,
   loadedTotal: 7,
   density: "comfortable" as const,
   draggingId: null,
   isOver: false,
   onShowMore: vi.fn(),
+  onShowLess: vi.fn(),
   onViewAll: vi.fn(),
   onOpenLead: vi.fn(),
   onMoveLead: vi.fn(),
@@ -191,5 +200,117 @@ describe("KanbanCoachPanel", () => {
 
     fireEvent.click(screen.getByLabelText("Close AI Sales Coach"));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("KanbanColumn show more / show less", () => {
+  const twelve = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((i) => lead(i));
+
+  it("offers no 'Show less' while collapsed", () => {
+    render(
+      <KanbanColumn {...baseColumn({ leads: twelve, loadedTotal: 12, count: 12, shown: 5 })} />,
+    );
+    expect(screen.getByText("+ 7 more opportunities")).toBeTruthy();
+    expect(screen.queryByText("Show less")).toBeNull();
+  });
+
+  it("offers 'Show less' once expanded past the page size, alongside the remainder", () => {
+    const props = baseColumn({ leads: twelve, loadedTotal: 12, count: 12, shown: 10 });
+    render(<KanbanColumn {...props} />);
+    expect(screen.getAllByRole("article")).toHaveLength(10);
+    expect(screen.getByText("+ 2 more opportunities")).toBeTruthy();
+    fireEvent.click(screen.getByText("Show less"));
+    expect(props.onShowLess).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps 'Show less' when everything is showing and nothing remains", () => {
+    render(
+      <KanbanColumn {...baseColumn({ leads: twelve, loadedTotal: 12, count: 12, shown: 12 })} />,
+    );
+    expect(screen.getAllByRole("article")).toHaveLength(12);
+    expect(screen.queryByText(/more opportunities/)).toBeNull();
+    expect(screen.getByText("Show less")).toBeTruthy();
+  });
+
+  it("labels the Closed column's percentage as a win share", () => {
+    render(
+      <KanbanColumn
+        {...baseColumn({
+          node: { ...node, stage: "won", label: "Closed", nextLabel: null, toNextPct: 9 },
+        })}
+      />,
+    );
+    expect(screen.getByText(/9%\s*won/)).toBeTruthy();
+  });
+});
+
+describe("pipeline numbers", () => {
+  const day = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const mk = (id: number, status: string, idleDays: number): Lead =>
+    lead(id, {
+      status,
+      updatedAt: new Date(now - idleDays * day).toISOString(),
+      createdAt: new Date(now - 10 * day).toISOString(),
+    });
+
+  it("does not count dead leads (they would otherwise land in New and inflate everything)", () => {
+    const c = stageCountsFromStats([
+      { status: "new", count: 10 },
+      { status: "dead", count: 6 },
+      { status: "lost", count: 2 },
+      { status: "email_sent", count: 4 },
+      { status: "called", count: 1 },
+      { status: "closed", count: 3 },
+    ]);
+    expect(c).toEqual({ new: 10, contacted: 5, replied: 0, meeting: 0, won: 3 });
+  });
+
+  it("calls the pipeline healthy / steady / under pressure from the stalled share, not a made-up score", () => {
+    const build = (stalled: number, fresh: number) => {
+      const leads = [
+        ...Array.from({ length: stalled }, (_, i) => mk(i + 1, "email_sent", 5)),
+        ...Array.from({ length: fresh }, (_, i) => mk(100 + i, "email_sent", 0)),
+      ];
+      return buildPipelineFlowModel(
+        { new: 0, contacted: stalled + fresh, replied: 0, meeting: 0, won: 0 },
+        leads,
+      );
+    };
+    expect(flowTone(build(1, 19))).toBe("healthy"); // 5%
+    expect(flowTone(build(5, 15))).toBe("steady"); // 25%
+    expect(flowTone(build(12, 8))).toBe("pressure"); // 60%
+    expect(flowTone(build(0, 0))).toBe("healthy"); // nothing in conversation
+  });
+
+  it("headline and body come from the same model, so they agree on the bottleneck and counts", () => {
+    const leads = [
+      ...Array.from({ length: 3 }, (_, i) => mk(i + 1, "email_sent", 5)),
+      ...Array.from({ length: 17 }, (_, i) => mk(50 + i, "email_sent", 0)),
+      mk(90, "replied", 1),
+      mk(91, "meeting_booked", 1),
+    ];
+    const model = buildPipelineFlowModel(
+      { new: 0, contacted: 20, replied: 1, meeting: 1, won: 0 },
+      leads,
+    );
+    expect(model.bottleneckStage).toBe("contacted");
+    expect(flowHeadlineText(model)).toContain("Contacted is becoming a bottleneck");
+    const body = flowBriefingText(model);
+    expect(body).toContain("3 opportunities have been in Contacted for 3+ days.");
+    expect(body).toContain("1 high-potential opportunity is ready for a follow-up.");
+    expect(body).toContain("1 meeting to prepare for.");
+  });
+
+  it("says so plainly when nothing is stalled or the pipeline is empty", () => {
+    const calm = buildPipelineFlowModel({ new: 0, contacted: 1, replied: 0, meeting: 0, won: 0 }, [
+      mk(1, "email_sent", 0),
+    ]);
+    expect(flowBriefingText(calm)).toContain("Nothing has stalled");
+    const empty = buildPipelineFlowModel(
+      { new: 0, contacted: 0, replied: 0, meeting: 0, won: 0 },
+      [],
+    );
+    expect(flowHeadlineText(empty)).toContain("empty");
   });
 });

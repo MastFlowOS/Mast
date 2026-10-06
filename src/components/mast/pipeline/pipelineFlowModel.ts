@@ -5,7 +5,7 @@
  * components stay presentational.
  */
 import type { Lead } from "@/lib/api";
-import { getStageForStatus, type FlowStage } from "@/lib/lead-workspace";
+import { getStageForStatus, normalizeLeadStatus, type FlowStage } from "@/lib/lead-workspace";
 
 export const STAGE_ORDER: FlowStage[] = ["new", "contacted", "replied", "meeting", "won"];
 
@@ -68,11 +68,30 @@ export type PipelineFlowModel = {
   idleByStage: Record<FlowStage, number>;
 };
 
-const emptyCounts = (): Record<FlowStage, number> => ({ new: 0, contacted: 0, replied: 0, meeting: 0, won: 0 });
+const emptyCounts = (): Record<FlowStage, number> => ({
+  new: 0,
+  contacted: 0,
+  replied: 0,
+  meeting: 0,
+  won: 0,
+});
 
 export function countByStage(leads: readonly Lead[]): Record<FlowStage, number> {
   const c = emptyCounts();
   for (const l of leads) c[getStageForStatus(l.status)]++;
+  return c;
+}
+
+/**
+ * Stage totals from the server's per-status counts. Dead leads are not part of the pipeline,
+ * and would otherwise land in New (dead maps to it), inflating New, the total and the conversion rate.
+ */
+export function stageCountsFromStats(stats: readonly { status: string; count: number }[]): Record<FlowStage, number> {
+  const c = emptyCounts();
+  for (const s of stats) {
+    if (normalizeLeadStatus(s.status) === "dead") continue;
+    c[getStageForStatus(s.status)] += s.count;
+  }
   return c;
 }
 
@@ -84,9 +103,13 @@ export function buildPipelineFlowModel(
   const total = STAGE_ORDER.reduce((n, s) => n + stageCounts[s], 0);
 
   // reached[i] = leads that got to stage i or further
-  const reached = STAGE_ORDER.map((_, i) => STAGE_ORDER.slice(i).reduce((n, s) => n + stageCounts[s], 0));
+  const reached = STAGE_ORDER.map((_, i) =>
+    STAGE_ORDER.slice(i).reduce((n, s) => n + stageCounts[s], 0),
+  );
   const toNext = STAGE_ORDER.map((_, i) =>
-    i < STAGE_ORDER.length - 1 && reached[i] > 0 ? Math.round((reached[i + 1] / reached[i]) * 100) : null,
+    i < STAGE_ORDER.length - 1 && reached[i] > 0
+      ? Math.round((reached[i + 1] / reached[i]) * 100)
+      : null,
   );
 
   // Idle time only matters for leads actually in conversation (not fresh, not closed).
@@ -118,7 +141,11 @@ export function buildPipelineFlowModel(
 
   let bottleneckIdx = -1;
   STAGE_ORDER.forEach((s, i) => {
-    if (idleByStage[s] > 0 && (bottleneckIdx < 0 || idleByStage[s] > idleByStage[STAGE_ORDER[bottleneckIdx]])) bottleneckIdx = i;
+    if (
+      idleByStage[s] > 0 &&
+      (bottleneckIdx < 0 || idleByStage[s] > idleByStage[STAGE_ORDER[bottleneckIdx]])
+    )
+      bottleneckIdx = i;
   });
   if (bottleneckIdx >= 0) {
     alerts[bottleneckIdx] = {
@@ -133,19 +160,35 @@ export function buildPipelineFlowModel(
   let lowIdx = -1;
   for (let i = 0; i < STAGE_ORDER.length - 1; i++) {
     if (!sampled(i) || alerts[i]) continue;
-    if ((toNext[i] as number) < 35 && (lowIdx < 0 || (toNext[i] as number) < (toNext[lowIdx] as number))) lowIdx = i;
+    if (
+      (toNext[i] as number) < 35 &&
+      (lowIdx < 0 || (toNext[i] as number) < (toNext[lowIdx] as number))
+    )
+      lowIdx = i;
   }
   if (lowIdx >= 0) {
-    alerts[lowIdx] = { kind: "low", title: "Low conversion", sub: `${toNext[lowIdx]}% to next stage` };
+    alerts[lowIdx] = {
+      kind: "low",
+      title: "Low conversion",
+      sub: `${toNext[lowIdx]}% to next stage`,
+    };
   }
 
   let goodIdx = -1;
   for (let i = 0; i < STAGE_ORDER.length - 1; i++) {
     if (!sampled(i) || alerts[i]) continue;
-    if ((toNext[i] as number) >= 50 && (goodIdx < 0 || (toNext[i] as number) > (toNext[goodIdx] as number))) goodIdx = i;
+    if (
+      (toNext[i] as number) >= 50 &&
+      (goodIdx < 0 || (toNext[i] as number) > (toNext[goodIdx] as number))
+    )
+      goodIdx = i;
   }
   if (goodIdx >= 0) {
-    alerts[goodIdx] = { kind: "good", title: "Good momentum", sub: `${toNext[goodIdx]}% move forward` };
+    alerts[goodIdx] = {
+      kind: "good",
+      title: "Good momentum",
+      sub: `${toNext[goodIdx]}% move forward`,
+    };
   }
 
   const nodes: FlowNode[] = STAGE_ORDER.map((stage, i) => ({
@@ -153,7 +196,8 @@ export function buildPipelineFlowModel(
     label: STAGE_SHORT[stage],
     color: STAGE_COLOR[stage],
     count: stageCounts[stage],
-    toNextPct: i < STAGE_ORDER.length - 1 ? toNext[i] : total > 0 ? Math.round((closed / total) * 100) : 0,
+    toNextPct:
+      i < STAGE_ORDER.length - 1 ? toNext[i] : total > 0 ? Math.round((closed / total) * 100) : 0,
     nextLabel: i < STAGE_ORDER.length - 1 ? STAGE_SHORT[STAGE_ORDER[i + 1]] : null,
     alert: alerts[i],
   }));
@@ -183,4 +227,62 @@ export function buildPipelineFlowModel(
     bottleneckStage: bottleneckIdx >= 0 ? STAGE_ORDER[bottleneckIdx] : null,
     idleByStage,
   };
+}
+
+export type FlowTone = "healthy" | "steady" | "pressure";
+
+/**
+ * How the pipeline is doing, from the data itself: the share of opportunities in conversation
+ * (Contacted, Replied, Meeting) that have gone quiet for STALLED_DAYS+. Under 15% is healthy,
+ * under 35% is holding steady, anything above is under pressure.
+ */
+export function flowTone(model: PipelineFlowModel): FlowTone {
+  const inConversation = model.nodes
+    .filter((n) => n.stage === "contacted" || n.stage === "replied" || n.stage === "meeting")
+    .reduce((sum, n) => sum + n.count, 0);
+  if (inConversation === 0) return "healthy";
+  const ratio = Math.min(1, model.needAttention / inConversation);
+  return ratio < 0.15 ? "healthy" : ratio < 0.35 ? "steady" : "pressure";
+}
+
+const TONE_WORDS: Record<FlowTone, string> = {
+  healthy: "healthy",
+  steady: "holding steady",
+  pressure: "under pressure",
+};
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
+export function flowHeadlineText(model: PipelineFlowModel): string {
+  if (model.health.total === 0)
+    return "Your pipeline is empty — discover opportunities to start the flow.";
+  const tone = TONE_WORDS[flowTone(model)];
+  return model.bottleneckStage
+    ? `Your pipeline is ${tone}, but ${STAGE_SHORT[model.bottleneckStage]} is becoming a bottleneck.`
+    : `Your pipeline is ${tone}, and opportunities are moving.`;
+}
+
+/** The briefing's supporting sentence, built from the same numbers as the headline and stat tiles. */
+export function flowBriefingText(model: PipelineFlowModel): string {
+  if (model.health.total === 0)
+    return "Nothing is in the pipeline yet. Discover opportunities to get the flow started.";
+  const parts: string[] = [];
+  if (model.bottleneckStage) {
+    const n = model.idleByStage[model.bottleneckStage];
+    parts.push(
+      `${n} ${plural(n, "opportunity has", "opportunities have")} been in ${STAGE_SHORT[model.bottleneckStage]} for ${STALLED_DAYS}+ days.`,
+    );
+  } else {
+    parts.push("Nothing has stalled right now.");
+  }
+  if (model.highPotential > 0) {
+    parts.push(
+      `${model.highPotential} high-potential ${plural(model.highPotential, "opportunity is", "opportunities are")} ready for a follow-up.`,
+    );
+  }
+  if (model.upcomingMeetings > 0) {
+    parts.push(
+      `${model.upcomingMeetings} ${plural(model.upcomingMeetings, "meeting", "meetings")} to prepare for.`,
+    );
+  }
+  return parts.join(" ");
 }

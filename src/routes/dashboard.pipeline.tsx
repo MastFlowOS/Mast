@@ -66,11 +66,17 @@ import { scoreBandOf, timeAgo, type ScoreBand } from "@/components/mast/pipeline
 import {
   buildPipelineFlowModel,
   countByStage,
+  flowBriefingText,
+  flowHeadlineText,
+  stageCountsFromStats,
   STAGE_ORDER,
   STAGE_SHORT,
   STALLED_DAYS,
 } from "@/components/mast/pipeline/pipelineFlowModel";
 import { usePermissions } from "@/hooks/use-permissions";
+
+/** Cards shown per column before "+ N more"; "Show less" returns to this. */
+const BOARD_PAGE = 5;
 
 /** The status a lead takes when it is moved into a flow stage (Contacted defaults to Email Sent). */
 const STAGE_TO_STATUS: Record<FlowStage, LeadStatus> = {
@@ -138,21 +144,10 @@ function Pipeline() {
   const [expandedStage, setExpandedStage] = useState<FlowStage | null>(null);
 
   // Group real pipeline stats by flow stage
-  const stageCounts = useMemo(() => {
-    const counts: Record<FlowStage, number> = {
-      new: 0,
-      contacted: 0,
-      replied: 0,
-      meeting: 0,
-      won: 0,
-    };
-    if (!pipelineStats) return counts;
-    for (const stat of pipelineStats) {
-      const stage = getStageForStatus(stat.status);
-      counts[stage] += stat.count;
-    }
-    return counts;
-  }, [pipelineStats]);
+  const stageCounts = useMemo(
+    () => stageCountsFromStats(pipelineStats ?? []),
+    [pipelineStats],
+  );
 
   // Track counts to animate live updates
   const [glowingNodes, setGlowingNodes] = useState<Record<FlowStage, boolean>>({
@@ -533,13 +528,9 @@ function Pipeline() {
   );
   const flow = useMemo(() => buildPipelineFlowModel(flowCounts, filteredLeads), [flowCounts, filteredLeads]);
 
-  const flowHeadline = useMemo(() => {
-    if (flow.health.total === 0) return "Your pipeline is empty — discover opportunities to start the flow.";
-    const tone = healthScore >= 75 ? "healthy" : healthScore >= 60 ? "holding steady" : "under pressure";
-    return flow.bottleneckStage
-      ? `Your pipeline is ${tone}, but ${STAGE_SHORT[flow.bottleneckStage]} is becoming a bottleneck.`
-      : `Your pipeline is ${tone}, and opportunities are moving.`;
-  }, [flow, healthScore]);
+  // Headline + supporting text come from the same model as the numbers, so they can never disagree.
+  const flowHeadline = useMemo(() => flowHeadlineText(flow), [flow]);
+  const briefingBody = canBriefing && realAiBriefing ? realAiBriefing.summary : flowBriefingText(flow);
 
   // Sales coach cards: actionable recommendations built from the same numbers as the flow.
   const coachCards = useMemo<CoachCard[]>(() => {
@@ -685,7 +676,17 @@ function Pipeline() {
   const [briefingOpen, setBriefingOpen] = useState(true);
   // Side-by-side only when there is room for five readable columns; otherwise it is one click away.
   const [coachOpen, setCoachOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1536);
-  const [shownByStage, setShownByStage] = useState<Record<FlowStage, number>>({ new: 5, contacted: 5, replied: 5, meeting: 5, won: 5 });
+  const [shownByStage, setShownByStage] = useState<Record<FlowStage, number>>({
+    new: BOARD_PAGE,
+    contacted: BOARD_PAGE,
+    replied: BOARD_PAGE,
+    meeting: BOARD_PAGE,
+    won: BOARD_PAGE,
+  });
+
+  useEffect(() => {
+    setShownByStage({ new: BOARD_PAGE, contacted: BOARD_PAGE, replied: BOARD_PAGE, meeting: BOARD_PAGE, won: BOARD_PAGE });
+  }, [boardQuery, sourceFilter, scoreFilter, activityFilter, nicheFilter, query, range]);
 
   const handleDensity = (d: Density) => {
     setDensity(d);
@@ -738,6 +739,7 @@ function Pipeline() {
             ...c,
             title: `${STAGE_SHORT[flow.bottleneckStage]} is your main bottleneck`,
             body: `${n} opportunit${n === 1 ? "y hasn't" : "ies haven't"} been updated in ${STALLED_DAYS}+ days.`,
+            action: `Review ${n} opportunit${n === 1 ? "y" : "ies"}`,
           };
         }
         return c;
@@ -796,7 +798,7 @@ function Pipeline() {
     out.push({
       id: "timing",
       title: "Follow up within two days",
-      body: "Replies tend to arrive early. A second touch within two days keeps an opportunity from going quiet.",
+      body: "A prompt second touch keeps an opportunity from going quiet. Anything past 3 days counts as stalled here.",
     });
     return out;
   }, [flow, filteredLeads]);
@@ -811,8 +813,17 @@ function Pipeline() {
         sub: flow.needAttention > 0 ? `${flow.needAttention} opportunit${flow.needAttention === 1 ? "y" : "ies"}` : "You're all caught up",
         onClick: go,
       },
-      { id: "messaging", icon: "message", title: "Refine your messaging", sub: "Based on recent replies", onClick: go },
     ];
+    const replied = flow.nodes.find((n) => n.stage === "replied")?.count ?? 0;
+    if (replied > 0) {
+      list.push({
+        id: "messaging",
+        icon: "message",
+        title: "Refine your messaging",
+        sub: `Learn from ${replied.toLocaleString()} ${replied === 1 ? "reply" : "replies"}`,
+        onClick: go,
+      });
+    }
     if (flow.highPotential > 0) {
       list.push({
         id: "potential",
@@ -940,7 +951,7 @@ function Pipeline() {
             ) : (
               <PipelineBriefing
                 headline={flowHeadline}
-                body={displayBriefing.text}
+                body={briefingBody}
                 needAttention={flow.needAttention}
                 highPotential={flow.highPotential}
                 conversionPct={flow.health.conversionPct}
@@ -970,7 +981,7 @@ function Pipeline() {
                 ) : (
                   <KanbanBriefing
                     headline={flowHeadline}
-                    body={displayBriefing.text}
+                    body={briefingBody}
                     total={flow.health.total}
                     totalTrendPct={flow.health.totalTrendPct}
                     conversionPct={flow.health.conversionPct}
@@ -1017,11 +1028,13 @@ function Pipeline() {
                     leads={colLeads}
                     loading={leadsLoading}
                     shown={shownByStage[node.stage]}
+                    pageSize={BOARD_PAGE}
                     loadedTotal={colLeads.length}
                     density={density}
                     draggingId={dragging}
                     isOver={dragOver === node.stage}
                     onShowMore={() => setShownByStage((p) => ({ ...p, [node.stage]: p[node.stage] + 10 }))}
+                    onShowLess={() => setShownByStage((p) => ({ ...p, [node.stage]: BOARD_PAGE }))}
                     onViewAll={() => navigate({ to: "/dashboard/relationships" })}
                     onOpenLead={openLead}
                     onMoveLead={(id, to) => void moveLeadToStage(id, to)}

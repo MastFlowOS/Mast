@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
 import {
   FileText,
   CreditCard,
@@ -6,9 +7,19 @@ import {
   Check,
   Activity,
   List,
+  AlertCircle,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useAccount } from "@/hooks/use-mast-api";
 import { getPlan } from "@/lib/plans";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/dashboard/billing")({
   head: () => ({ meta: [{ title: "Billing — Mast" }] }),
@@ -27,7 +38,7 @@ function formatDate(iso?: string | null): string {
 }
 
 function formatTimeUntil(iso?: string | null): string {
-  if (!iso) return "23h 33m";
+  if (!iso) return "";
   const ms = new Date(iso).getTime() - Date.now();
   if (ms <= 0) return "soon";
   const hours = Math.floor(ms / 3_600_000);
@@ -37,6 +48,14 @@ function formatTimeUntil(iso?: string | null): string {
   }
   const days = Math.floor(hours / 24);
   return `${days} day${days !== 1 ? "s" : ""}`;
+}
+
+function getTimeUntilUtcMidnight(): string {
+  const now = new Date();
+  const tomorrowUtc = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0)
+  );
+  return formatTimeUntil(tomorrowUtc.toISOString());
 }
 
 const PLAN_BENEFITS: Record<string, string[]> = {
@@ -123,43 +142,120 @@ function ProgressRing({
   );
 }
 
+type RealAccountEvent = {
+  id: string;
+  date: string;
+  event: string;
+  amount: string;
+  status: string;
+};
+
 // ─── Component ────────────────────────────────────────────────────────────────
+
+type ModalType = "manage" | "add_payment" | "invoices_all" | "activity_all" | null;
 
 function Billing() {
   const { data: account, isLoading } = useAccount();
+  const [activeModal, setActiveModal] = useState<ModalType>(null);
 
-  // Support dev override or workspace plan (defaulting gracefully to Free tier matching reference)
+  // Read real account plan (or dev override if set for testing)
   const devOverride =
     typeof window !== "undefined"
       ? localStorage.getItem("mast_dev_plan_override")
       : null;
 
   const currentPlan =
-    devOverride ||
-    (account?.subscription.plan === "pro" && !devOverride
-      ? "free"
-      : account?.subscription.plan ?? "free");
+    devOverride || account?.subscription.plan || "free";
 
   const planConfig = getPlan(currentPlan);
-  const planName = currentPlan === "free" ? "Free" : (account?.subscription.name ?? planConfig.name);
-  const price = currentPlan === "free" ? 0 : (account?.subscription.priceMonthly ?? planConfig.priceMonthly);
-  const renewalDate = account?.subscription.billingPeriodEndsAt ?? null;
+  const planName = planConfig.name;
+  const price = account?.subscription.priceMonthly ?? planConfig.priceMonthly;
 
-  // Opportunities stats
-  const dailyUsed = currentPlan === "free" ? 0 : (account?.dailyUsage?.used ?? 0);
-  const dailyLimit = currentPlan === "free" ? 20 : (account?.dailyUsage?.limit ?? planConfig.dailyLeadLimit ?? 20);
+  // Real opportunities stats from account
+  const dailyUsed = account?.dailyUsage?.used ?? 0;
+  const dailyLimit = account?.dailyUsage?.limit ?? planConfig.dailyLeadLimit ?? 20;
   const dailyResetsAt = account?.dailyUsage?.resetsAt ?? null;
-  const dailyResetString = dailyResetsAt ? formatTimeUntil(dailyResetsAt) : "23h 33m";
+  const dailyResetString = dailyResetsAt ? formatTimeUntil(dailyResetsAt) : getTimeUntilUtcMidnight();
 
-  const monthlyUsed = currentPlan === "free" ? 0 : (account?.monthlyUsage?.used ?? 0);
-  const monthlyLimit = currentPlan === "free" ? 300 : (account?.monthlyUsage?.limit ?? planConfig.monthlyLeadLimit ?? 300);
-  const monthlyResetsAt = account?.monthlyUsage?.resetsAt ?? renewalDate ?? null;
-  const monthlyResetLabel = monthlyResetsAt ? formatDate(monthlyResetsAt) : "Aug 7, 2026";
+  const monthlyUsed = account?.monthlyUsage?.used ?? 0;
+  const monthlyLimit = account?.monthlyUsage?.limit ?? planConfig.monthlyLeadLimit ?? 300;
+  const monthlyResetsAt = account?.monthlyUsage?.resetsAt ?? account?.subscription.billingPeriodEndsAt ?? null;
+  const monthlyResetLabel = monthlyResetsAt ? formatDate(monthlyResetsAt) : "Unavailable";
 
-  const nextBillingDateLabel = renewalDate ? formatDate(renewalDate) : "Aug 7, 2026";
+  // Provider & next billing date (real state: no provider connected)
+  const nextBillingDateLabel = account?.subscription.billingPeriodEndsAt
+    ? formatDate(account.subscription.billingPeriodEndsAt)
+    : "Unavailable";
+
   const benefits = PLAN_BENEFITS[currentPlan] ?? PLAN_BENEFITS.free;
 
-  const headerDateString = "Mon, Sep 29, 2026";
+  // Real date for header
+  const headerDateString = new Date().toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  // Real account activity events (only actual database/account events)
+  const realEvents: RealAccountEvent[] = [];
+  if (account?.subscription.billingPeriodStartedAt) {
+    eventsPushHelper(realEvents, {
+      id: "billing-started",
+      date: formatDate(account.subscription.billingPeriodStartedAt),
+      event: `${account.subscription.name} plan started`,
+      amount: account.subscription.priceMonthly > 0 ? `$${account.subscription.priceMonthly}.00` : "$0.00",
+      status: "Completed",
+    });
+  }
+  if (account?.subscription.pendingPlanChange) {
+    eventsPushHelper(realEvents, {
+      id: "plan-pending",
+      date: "Pending",
+      event: `Scheduled change to ${account.subscription.pendingPlanChange.toUpperCase()}`,
+      amount: "—",
+      status: "Pending",
+    });
+  }
+
+  function eventsPushHelper(arr: RealAccountEvent[], item: RealAccountEvent) {
+    arr.push(item);
+  }
+
+  // Interactive handlers for controls
+  const handleManageClick = () => {
+    setActiveModal("manage");
+    toast.error("Payment provider not connected", {
+      description: "No payment gateway is currently connected to this workspace.",
+    });
+  };
+
+  const handleAddPaymentClick = () => {
+    setActiveModal("add_payment");
+    toast.error("Payment provider not connected", {
+      description: "A payment provider must be connected before adding payment methods.",
+    });
+  };
+
+  const handleViewAllInvoices = () => {
+    setActiveModal("invoices_all");
+    toast.info("No invoices found", {
+      description: "There are no invoice records for this workspace.",
+    });
+  };
+
+  const handleViewAllActivity = () => {
+    setActiveModal("activity_all");
+    if (realEvents.length === 0) {
+      toast.info("No account activity", {
+        description: "No subscription or billing changes have been recorded yet.",
+      });
+    } else {
+      toast.info("Account activity", {
+        description: `Displaying ${realEvents.length} recorded event(s).`,
+      });
+    }
+  };
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6">
@@ -208,7 +304,7 @@ function Billing() {
                 ${price} / month
               </p>
               <p className="text-xs text-zinc-400 mt-1">
-                {currentPlan === "free"
+                {price === 0
                   ? "Perfect for getting started."
                   : "Active subscription tier."}
               </p>
@@ -286,8 +382,10 @@ function Billing() {
                 </h2>
               </div>
               <button
+                id="billing-manage-btn"
                 type="button"
-                className="px-3 py-1.5 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-medium text-zinc-300 transition-colors"
+                onClick={handleManageClick}
+                className="px-3 py-1.5 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-medium text-zinc-300 transition-colors cursor-pointer"
               >
                 Manage
               </button>
@@ -297,13 +395,17 @@ function Billing() {
             <div className="grid grid-cols-2 gap-4 mb-6">
               <div>
                 <span className="text-xs text-zinc-400 block mb-1">Provider</span>
-                <p className="text-sm font-semibold text-zinc-100">Paddle</p>
+                <p className="text-sm font-semibold text-zinc-300">
+                  Not connected
+                </p>
               </div>
               <div>
                 <span className="text-xs text-zinc-400 block mb-1">
                   Billing currency
                 </span>
-                <p className="text-sm font-semibold text-zinc-100">USD ($)</p>
+                <p className="text-sm font-semibold text-zinc-400">
+                  Unavailable
+                </p>
               </div>
             </div>
 
@@ -320,7 +422,7 @@ function Billing() {
                       No payment method connected
                     </p>
                     <p className="text-xs text-zinc-400 mt-1">
-                      Add a payment method to upgrade your plan.
+                      Payment provider is not yet connected.
                     </p>
                   </div>
                 </div>
@@ -330,7 +432,7 @@ function Billing() {
                 <span className="text-xs text-zinc-400 block mb-1">
                   Next billing date
                 </span>
-                <p className="text-sm font-semibold text-zinc-100">
+                <p className="text-sm font-semibold text-zinc-400">
                   {nextBillingDateLabel}
                 </p>
               </div>
@@ -342,7 +444,8 @@ function Billing() {
             <button
               id="billing-connect-btn"
               type="button"
-              className="px-4 py-2 rounded-lg border border-[#223048] bg-[#131b2e] hover:bg-[#1a253f] text-xs font-semibold text-zinc-200 transition-colors shadow-sm"
+              onClick={handleAddPaymentClick}
+              className="px-4 py-2 rounded-lg border border-[#223048] bg-[#131b2e] hover:bg-[#1a253f] text-xs font-semibold text-zinc-200 transition-colors shadow-sm cursor-pointer"
             >
               Add Payment Method
             </button>
@@ -364,42 +467,32 @@ function Billing() {
                 </h2>
               </div>
               <button
+                id="invoices-view-all-btn"
                 type="button"
-                className="px-3 py-1.5 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-medium text-zinc-300 transition-colors"
+                onClick={handleViewAllInvoices}
+                className="px-3 py-1.5 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-medium text-zinc-300 transition-colors cursor-pointer"
               >
                 View All
               </button>
             </div>
 
             {/* Table Header */}
-            <div className="grid grid-cols-4 text-xs font-medium text-zinc-400 pb-3">
+            <div className="grid grid-cols-4 text-xs font-medium text-zinc-400 pb-3 border-b border-[#1c2638]/50">
               <span>Date</span>
               <span>Invoice #</span>
               <span>Amount</span>
               <span className="text-right">Status</span>
             </div>
-
-            {/* Historical Line */}
-            <div className="grid grid-cols-4 items-center text-xs text-zinc-300 py-1">
-              <span>—</span>
-              <span>—</span>
-              <span>$0.00</span>
-              <div className="text-right">
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                  Paid
-                </span>
-              </div>
-            </div>
           </div>
 
-          {/* Centered Empty State */}
-          <div className="flex flex-col items-center justify-center pt-8 pb-4 text-center flex-1">
-            <FileText className="size-8 text-zinc-400 stroke-[1.5] mb-2.5" />
+          {/* Real Empty State - No fake invoices */}
+          <div className="flex flex-col items-center justify-center py-12 text-center flex-1">
+            <FileText className="size-8 text-zinc-500/70 stroke-[1.5] mb-2.5" />
             <p className="text-xs font-semibold text-zinc-200">
               No invoices yet
             </p>
-            <p className="text-[11px] text-zinc-400 mt-0.5">
-              Your invoices will appear here.
+            <p className="text-[11px] text-zinc-400 mt-0.5 max-w-xs leading-relaxed">
+              Your invoices will appear here once payments are processed through a connected payment provider.
             </p>
           </div>
         </section>
@@ -416,59 +509,247 @@ function Billing() {
                 </h2>
               </div>
               <button
+                id="activity-view-all-btn"
                 type="button"
-                className="px-3 py-1.5 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-medium text-zinc-300 transition-colors"
+                onClick={handleViewAllActivity}
+                className="px-3 py-1.5 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-medium text-zinc-300 transition-colors cursor-pointer"
               >
                 View All
               </button>
             </div>
 
             {/* Table Header */}
-            <div className="grid grid-cols-[1.1fr_1.8fr_1fr_1.1fr] text-xs font-medium text-zinc-400 pb-3">
+            <div className="grid grid-cols-[1.1fr_1.8fr_1fr_1.1fr] text-xs font-medium text-zinc-400 pb-3 border-b border-[#1c2638]/50">
               <span>Date</span>
               <span>Event</span>
               <span>Amount</span>
               <span className="text-right">Status</span>
             </div>
 
-            {/* Activity Rows */}
-            <div className="space-y-4">
-              <div className="grid grid-cols-[1.1fr_1.8fr_1fr_1.1fr] items-center text-xs text-zinc-300">
-                <span className="text-zinc-300">Aug 7, 2026</span>
-                <span className="text-zinc-300">Free plan renewal</span>
-                <span className="text-zinc-300">$0.00</span>
-                <div className="text-right">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                    Completed
-                  </span>
-                </div>
+            {/* Real Activity Rows (if any exist) */}
+            {realEvents.length > 0 && (
+              <div className="space-y-4 mt-3">
+                {realEvents.map((ev) => (
+                  <div
+                    key={ev.id}
+                    className="grid grid-cols-[1.1fr_1.8fr_1fr_1.1fr] items-center text-xs text-zinc-300"
+                  >
+                    <span>{ev.date}</span>
+                    <span>{ev.event}</span>
+                    <span>{ev.amount}</span>
+                    <div className="text-right">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+                        {ev.status}
+                      </span>
+                    </div>
+                  </div>
+                ))}
               </div>
-
-              <div className="grid grid-cols-[1.1fr_1.8fr_1fr_1.1fr] items-center text-xs text-zinc-300">
-                <span className="text-zinc-300">Jul 7, 2026</span>
-                <span className="text-zinc-300">Free plan renewal</span>
-                <span className="text-zinc-300">$0.00</span>
-                <div className="text-right">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                    Completed
-                  </span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-[1.1fr_1.8fr_1fr_1.1fr] items-center text-xs text-zinc-300">
-                <span className="text-zinc-300">Jun 7, 2026</span>
-                <span className="text-zinc-300">Free plan renewal</span>
-                <span className="text-zinc-300">$0.00</span>
-                <div className="text-right">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                    Completed
-                  </span>
-                </div>
-              </div>
-            </div>
+            )}
           </div>
+
+          {/* Real Empty State when no activity exists - No fake renewals */}
+          {realEvents.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12 text-center flex-1">
+              <Activity className="size-8 text-zinc-500/70 stroke-[1.5] mb-2.5" />
+              <p className="text-xs font-semibold text-zinc-200">
+                No account activity yet
+              </p>
+              <p className="text-[11px] text-zinc-400 mt-0.5 max-w-xs leading-relaxed">
+                Subscription events and plan updates will appear here once recorded on your account.
+              </p>
+            </div>
+          )}
         </section>
       </div>
+
+      {/* ── Informational Feedback Dialogs for Controls ── */}
+      <Dialog
+        open={activeModal !== null}
+        onOpenChange={(open) => !open && setActiveModal(null)}
+      >
+        <DialogContent className="max-w-md border border-[#1c2638] bg-[#0c1220] text-zinc-100 rounded-2xl shadow-2xl">
+          {activeModal === "manage" && (
+            <>
+              <DialogHeader>
+                <div className="flex items-center gap-2 mb-1">
+                  <CreditCard className="size-5 text-[#3b82f6]" />
+                  <DialogTitle className="text-lg font-bold text-white">
+                    Payment Provider Management
+                  </DialogTitle>
+                </div>
+                <DialogDescription className="text-xs text-zinc-400">
+                  Payment gateway integration status
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="py-4 space-y-3">
+                <div className="p-3.5 rounded-xl border border-amber-500/20 bg-amber-500/10 text-xs text-amber-300 flex items-start gap-2.5">
+                  <AlertCircle className="size-4 shrink-0 mt-0.5 text-amber-400" />
+                  <div>
+                    <p className="font-semibold text-amber-200">
+                      Provider Not Connected
+                    </p>
+                    <p className="mt-0.5 text-amber-300/80 leading-relaxed">
+                      There is currently no payment provider (such as Stripe or Paddle) connected to this Mast workspace.
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs text-zinc-400 leading-relaxed">
+                  Payment management, credit card updates, and subscription billing controls will become available once a payment provider integration is connected.
+                </p>
+              </div>
+
+              <DialogFooter className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setActiveModal(null)}
+                  className="px-4 py-2 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-semibold text-zinc-200 transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </DialogFooter>
+            </>
+          )}
+
+          {activeModal === "add_payment" && (
+            <>
+              <DialogHeader>
+                <div className="flex items-center gap-2 mb-1">
+                  <CreditCard className="size-5 text-[#3b82f6]" />
+                  <DialogTitle className="text-lg font-bold text-white">
+                    Add Payment Method
+                  </DialogTitle>
+                </div>
+                <DialogDescription className="text-xs text-zinc-400">
+                  Payment method setup
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="py-4 space-y-3">
+                <div className="p-3.5 rounded-xl border border-amber-500/20 bg-amber-500/10 text-xs text-amber-300 flex items-start gap-2.5">
+                  <AlertCircle className="size-4 shrink-0 mt-0.5 text-amber-400" />
+                  <div>
+                    <p className="font-semibold text-amber-200">
+                      Gateway Unavailable
+                    </p>
+                    <p className="mt-0.5 text-amber-300/80 leading-relaxed">
+                      Payment methods cannot be attached because no payment provider is connected to process transactions.
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs text-zinc-400 leading-relaxed">
+                  Please connect a supported billing provider to securely link credit cards, debit cards, or regional payment methods.
+                </p>
+              </div>
+
+              <DialogFooter className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setActiveModal(null)}
+                  className="px-4 py-2 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-semibold text-zinc-200 transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </DialogFooter>
+            </>
+          )}
+
+          {activeModal === "invoices_all" && (
+            <>
+              <DialogHeader>
+                <div className="flex items-center gap-2 mb-1">
+                  <FileText className="size-5 text-[#3b82f6]" />
+                  <DialogTitle className="text-lg font-bold text-white">
+                    Invoice History
+                  </DialogTitle>
+                </div>
+                <DialogDescription className="text-xs text-zinc-400">
+                  Workspace invoice and billing records
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="py-6 text-center">
+                <FileText className="size-9 text-zinc-500/70 mx-auto mb-2.5 stroke-[1.5]" />
+                <p className="text-sm font-semibold text-zinc-200">
+                  No Invoices Found
+                </p>
+                <p className="text-xs text-zinc-400 mt-1 max-w-sm mx-auto leading-relaxed">
+                  No invoice records or receipts exist for this account. Paid charges and tax invoices will appear here once payments are processed.
+                </p>
+              </div>
+
+              <DialogFooter className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setActiveModal(null)}
+                  className="px-4 py-2 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-semibold text-zinc-200 transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </DialogFooter>
+            </>
+          )}
+
+          {activeModal === "activity_all" && (
+            <>
+              <DialogHeader>
+                <div className="flex items-center gap-2 mb-1">
+                  <Activity className="size-5 text-[#3b82f6]" />
+                  <DialogTitle className="text-lg font-bold text-white">
+                    Account Activity History
+                  </DialogTitle>
+                </div>
+                <DialogDescription className="text-xs text-zinc-400">
+                  Subscription changes, upgrades, and billing events
+                </DialogDescription>
+              </DialogHeader>
+
+              {realEvents.length === 0 ? (
+                <div className="py-6 text-center">
+                  <Activity className="size-9 text-zinc-500/70 mx-auto mb-2.5 stroke-[1.5]" />
+                  <p className="text-sm font-semibold text-zinc-200">
+                    No Recorded Activity
+                  </p>
+                  <p className="text-xs text-zinc-400 mt-1 max-w-sm mx-auto leading-relaxed">
+                    No subscription or billing changes have been recorded for this workspace yet.
+                  </p>
+                </div>
+              ) : (
+                <div className="py-4 space-y-3">
+                  {realEvents.map((ev) => (
+                    <div
+                      key={ev.id}
+                      className="p-3 rounded-lg border border-[#1c2638] bg-[#0e1626] flex items-center justify-between text-xs"
+                    >
+                      <div>
+                        <p className="font-semibold text-zinc-200">{ev.event}</p>
+                        <p className="text-zinc-400 text-[11px]">{ev.date}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-medium text-zinc-200">{ev.amount}</p>
+                        <span className="text-[10px] text-emerald-400 font-medium">
+                          {ev.status}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <DialogFooter className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setActiveModal(null)}
+                  className="px-4 py-2 rounded-lg border border-[#1c2638] bg-[#121927] hover:bg-[#182236] text-xs font-semibold text-zinc-200 transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

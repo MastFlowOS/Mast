@@ -1116,7 +1116,7 @@ function TodayMissionHero({
         alt=""
         aria-hidden
         draggable={false}
-        className="absolute inset-0 w-full h-full object-cover object-left-bottom pointer-events-none select-none"
+        className="absolute inset-0 w-full h-full object-cover object-left-bottom pointer-events-none select-none opacity-[0.68]"
       />
 
       {/* Content */}

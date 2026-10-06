@@ -156,6 +156,8 @@ export type LeadActivityType =
   | "deal_closed"
   | "message_generated"
   | "note_added"
+  | "followup_scheduled"
+  | "followup_completed"
   | "status_changed";
 
 export type Lead = {
@@ -1569,6 +1571,71 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
   const replyRate = contacted > 0 ? Math.round((replied / contacted) * 100) : 0;
 
   return { totalLeads: leads.length, contacted, replied, interested, closed, dead, followupsDue, messagesThisWeek, replyRate };
+}
+
+export type MissionWeekStats = {
+  /** Sends + completed follow-ups logged in the last 7 days. */
+  actions: number;
+  /** Leads currently at replied / meeting booked / closed that moved this week. */
+  replies: number;
+  /** Leads currently at meeting booked that moved this week. */
+  meetings: number;
+  /** Leads currently closed that moved this week. */
+  closed: number;
+  /** Per-day buckets (oldest → today), 7 entries each, for sparklines. */
+  daily: { actions: number[]; replies: number[]; meetings: number[]; closed: number[] };
+};
+
+/**
+ * Real "This Week" numbers for the Mission page. Actions come from logged
+ * activity (genuine sends + completed follow-ups); replies / meetings / closed
+ * come from the lead's current status and when it last changed.
+ */
+export async function getMissionWeekStats(): Promise<MissionWeekStats> {
+  const userId = await requireUserId();
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - 6);
+  const startIso = start.toISOString();
+
+  const actionTypes = [...GENUINE_SEND_TYPES, "followup_completed"];
+  const [actRes, leadRes] = await Promise.all([
+    supabase!.from("lead_activities").select("type, timestamp").eq("user_id", userId).in("type", actionTypes).gte("timestamp", startIso).limit(2000),
+    supabase!.from("leads").select("status, updated_at").eq("user_id", userId).gte("updated_at", startIso).limit(2000),
+  ]);
+  if (actRes.error) throw new ApiError(500, actRes.error.message, actRes.error);
+  if (leadRes.error) throw new ApiError(500, leadRes.error.message, leadRes.error);
+
+  const bucket = (iso: string | null | undefined) => {
+    if (!iso) return -1;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return -1;
+    d.setHours(0, 0, 0, 0);
+    const idx = Math.round((d.getTime() - start.getTime()) / 86_400_000);
+    return idx >= 0 && idx < 7 ? idx : -1;
+  };
+  const empty = () => new Array<number>(7).fill(0);
+  const daily = { actions: empty(), replies: empty(), meetings: empty(), closed: empty() };
+
+  for (const row of (actRes.data ?? []) as { timestamp: string }[]) {
+    const i = bucket(row.timestamp);
+    if (i >= 0) daily.actions[i] += 1;
+  }
+
+  const REPLIED = new Set(["replied", "interested", "meeting_booked", "closed", "conversation", "meeting", "proposal", "negotiation", "closed_won", "won"]);
+  const MEETING = new Set(["meeting_booked", "meeting"]);
+  const CLOSED = new Set(["closed", "closed_won", "won"]);
+  for (const row of (leadRes.data ?? []) as { status: string; updated_at: string }[]) {
+    const i = bucket(row.updated_at);
+    if (i < 0) continue;
+    const status = (row.status ?? "").toLowerCase().trim();
+    if (REPLIED.has(status)) daily.replies[i] += 1;
+    if (MEETING.has(status)) daily.meetings[i] += 1;
+    if (CLOSED.has(status)) daily.closed[i] += 1;
+  }
+
+  const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
+  return { actions: sum(daily.actions), replies: sum(daily.replies), meetings: sum(daily.meetings), closed: sum(daily.closed), daily };
 }
 
 export async function getPipelineStats(): Promise<PipelineStat[]> {

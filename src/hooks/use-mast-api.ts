@@ -14,6 +14,7 @@ import {
   getAccount,
   getAnalyticsSummary,
   getFollowups,
+  getMissionWeekStats,
   getLead,
   getLeadActivities,
   getLeadFollowups,
@@ -79,6 +80,7 @@ export const queryKeys = {
   leadMessages: (id: number | string | undefined) => ["mast", "lead", String(id), "messages"] as const,
   leadFollowups: (id: number | string | undefined) => ["mast", "lead", String(id), "followups"] as const,
   followups: (params?: Record<string, string | number | undefined>) => ["mast", "followups", params ?? {}] as const,
+  missionWeek: ["mast", "mission-week"] as const,
   pipeline: ["mast", "analytics", "pipeline"] as const,
   activity: ["mast", "analytics", "activity"] as const,
   opportunityExplanation: (leadId: number | string | undefined) => ["mast", "intelligence", "explain", String(leadId)] as const,
@@ -527,6 +529,16 @@ export function useFollowups(params?: Record<string, string | number | undefined
   });
 }
 
+export function useMissionWeekStats(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.missionWeek,
+    queryFn: getMissionWeekStats,
+    retry: false,
+    staleTime: 60_000,
+    enabled,
+  });
+}
+
 export function useCreateFollowup() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -552,6 +564,7 @@ export function useUpdateFollowup() {
       queryClient.invalidateQueries({ queryKey: ["mast", "followups"] });
       queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
+      queryClient.invalidateQueries({ queryKey: queryKeys.missionWeek });
     },
   });
 }

@@ -1,8 +1,9 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertCircle,
+  Bell,
   Calendar,
   Check,
   ChevronRight,
@@ -25,7 +26,13 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { getLead, type FollowupWithLead, type Lead, type OutreachChannel } from "@/lib/api";
-import { useFollowups, useRecordLeadActivity, useUpdateFollowup } from "@/hooks/use-mast-api";
+import {
+  useAnalytics,
+  useFollowups,
+  useMissionWeekStats,
+  useRecordLeadActivity,
+  useUpdateFollowup,
+} from "@/hooks/use-mast-api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
@@ -37,7 +44,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { NICHES, formatRelative } from "@/lib/lead-workspace";
+import { NICHES, formatRelative, normalizeLeadStatus } from "@/lib/lead-workspace";
+import { EmptyState } from "@/components/mast/ui/EmptyState";
 import { FeatureGate } from "@/components/mast/FeatureGate";
 
 export const Route = createFileRoute("/dashboard/follow-ups")({
@@ -67,381 +75,13 @@ type MissionItem = FollowupWithLead & {
   displayDue: string;
 };
 
-// ── Reference Seed Items (Strict match to the visual source of truth) ────────
-
-const REFERENCE_SEED_FOLLOWUPS: FollowupWithLead[] = [
-  // 1. Nova Creative Studio (Overdue 2h ago)
-  {
-    id: 101,
-    leadId: 101,
-    channel: "email",
-    dueAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
-    status: "pending",
-    notes: "Hey! Just checking if you had a chance...",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 101,
-      userId: "seed",
-      businessName: "Nova Creative Studio",
-      niche: "web_design",
-      location: "San Francisco, CA",
-      status: "contacted",
-      priority: "high",
-      lastContactedAt: new Date(Date.now() - 4 * 86400000).toISOString(),
-      email: "hello@novacreative.io",
-      createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 2. Bright Media (Overdue 4h ago)
-  {
-    id: 102,
-    leadId: 102,
-    channel: "phone",
-    dueAt: new Date(Date.now() - 4 * 3600 * 1000).toISOString(),
-    status: "pending",
-    notes: "Follow up call about the proposal",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 102,
-      userId: "seed",
-      businessName: "Bright Media",
-      niche: "marketing_agency",
-      location: "Austin, TX",
-      status: "negotiation",
-      priority: "high",
-      lastContactedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-      phone: "+1 (512) 839-2041",
-      createdAt: new Date(Date.now() - 8 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 3. Lume Studio (Today, 3:00 PM)
-  {
-    id: 103,
-    leadId: 103,
-    channel: "instagram",
-    dueAt: new Date(new Date().setHours(15, 0, 0, 0)).toISOString(),
-    status: "pending",
-    notes: "Respond to their recent story",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 103,
-      userId: "seed",
-      businessName: "Lume Studio",
-      niche: "branding_agency",
-      location: "New York, NY",
-      status: "conversation",
-      priority: "medium",
-      lastContactedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-      instagram: "lumestudio",
-      createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 4. Summit Marketing (Today, 5:00 PM)
-  {
-    id: 104,
-    leadId: 104,
-    channel: "email",
-    dueAt: new Date(new Date().setHours(17, 0, 0, 0)).toISOString(),
-    status: "pending",
-    notes: "Send the updated proposal with new...",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 104,
-      userId: "seed",
-      businessName: "Summit Marketing",
-      niche: "digital_agency",
-      location: "Chicago, IL",
-      status: "proposal",
-      priority: "medium",
-      lastContactedAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-      email: "contact@summitgrowth.com",
-      createdAt: new Date(Date.now() - 6 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 5. Echo Designs (Tomorrow, 11:00 AM)
-  {
-    id: 105,
-    leadId: 105,
-    channel: "linkedin",
-    dueAt: new Date(new Date(Date.now() + 86400000).setHours(11, 0, 0, 0)).toISOString(),
-    status: "pending",
-    notes: "Following up on our last conversation",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 105,
-      userId: "seed",
-      businessName: "Echo Designs",
-      niche: "graphic_design",
-      location: "Seattle, WA",
-      status: "conversation",
-      priority: "low",
-      lastContactedAt: new Date(Date.now() - 1 * 86400000).toISOString(),
-      createdAt: new Date(Date.now() - 4 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 6. Frame Agency (Tomorrow, 2:00 PM)
-  {
-    id: 106,
-    leadId: 106,
-    channel: "email",
-    dueAt: new Date(new Date(Date.now() + 86400000).setHours(14, 0, 0, 0)).toISOString(),
-    status: "pending",
-    notes: "Check if they're available for a call this week",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 106,
-      userId: "seed",
-      businessName: "Frame Agency",
-      niche: "creative_agency",
-      location: "Los Angeles, CA",
-      status: "contacted",
-      priority: "low",
-      lastContactedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-      email: "alex@frameagency.com",
-      createdAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 7. Apex Digital (Today, 11:00 AM)
-  {
-    id: 108,
-    leadId: 108,
-    channel: "phone",
-    dueAt: new Date(new Date().setHours(11, 0, 0, 0)).toISOString(),
-    status: "pending",
-    notes: "Schedule onboarding discovery call",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 108,
-      userId: "seed",
-      businessName: "Apex Digital",
-      niche: "ecommerce_agency",
-      location: "Miami, FL",
-      status: "meeting",
-      priority: "high",
-      lastContactedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-      phone: "+1 (305) 555-0199",
-      createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 8. Studio Pulse (Today, 2:30 PM)
-  {
-    id: 109,
-    leadId: 109,
-    channel: "email",
-    dueAt: new Date(new Date().setHours(14, 30, 0, 0)).toISOString(),
-    status: "pending",
-    notes: "Contract signature reminder and payment terms",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 109,
-      userId: "seed",
-      businessName: "Studio Pulse",
-      niche: "branding_agency",
-      location: "Toronto, ON",
-      status: "negotiation",
-      priority: "medium",
-      lastContactedAt: new Date(Date.now() - 4 * 86400000).toISOString(),
-      email: "hello@studiopulse.design",
-      createdAt: new Date(Date.now() - 9 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 9. Horizon Labs (Today, 4:00 PM)
-  {
-    id: 110,
-    leadId: 110,
-    channel: "instagram",
-    dueAt: new Date(new Date().setHours(16, 0, 0, 0)).toISOString(),
-    status: "pending",
-    notes: "Engage with creative reel and pitch collaboration",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 110,
-      userId: "seed",
-      businessName: "Horizon Labs",
-      niche: "content_studio",
-      location: "Atlanta, GA",
-      status: "conversation",
-      priority: "medium",
-      lastContactedAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-      instagram: "horizonlabs",
-      createdAt: new Date(Date.now() - 6 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 10. Pixel Craft (Today, 10:30 AM)
-  {
-    id: 112,
-    leadId: 112,
-    channel: "phone",
-    dueAt: new Date(new Date().setHours(10, 30, 0, 0)).toISOString(),
-    status: "pending",
-    notes: "Follow up after voice note regarding project kick-off",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 112,
-      userId: "seed",
-      businessName: "Pixel Craft",
-      niche: "ui_ux_studio",
-      location: "Portland, OR",
-      status: "conversation",
-      priority: "low",
-      lastContactedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-      phone: "+1 (503) 555-0144",
-      createdAt: new Date(Date.now() - 4 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 11. Vortex Media (Overdue 3d ago)
-  {
-    id: 107,
-    leadId: 107,
-    channel: "email",
-    dueAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-    status: "pending",
-    notes: "Review feedback on initial scope of work",
-    createdAt: new Date(Date.now() - 86400000 * 4).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 107,
-      userId: "seed",
-      businessName: "Vortex Media",
-      niche: "digital_marketing",
-      location: "Denver, CO",
-      status: "proposal",
-      priority: "high",
-      lastContactedAt: new Date(Date.now() - 14 * 86400000).toISOString(),
-      email: "team@vortexmedia.co",
-      createdAt: new Date(Date.now() - 15 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // 12. Zenith Studio (Today, 6:00 PM)
-  {
-    id: 111,
-    leadId: 111,
-    channel: "email",
-    dueAt: new Date(new Date().setHours(18, 0, 0, 0)).toISOString(),
-    status: "pending",
-    notes: "Send case study deck with client ROI metrics",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: 111,
-      userId: "seed",
-      businessName: "Zenith Studio",
-      niche: "web_development",
-      location: "Boston, MA",
-      status: "contacted",
-      priority: "low",
-      lastContactedAt: new Date(Date.now() - 6 * 86400000).toISOString(),
-      email: "team@zenithstudio.com",
-      createdAt: new Date(Date.now() - 8 * 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  },
-  // Completed items (Completed 2)
-  {
-    id: 113,
-    leadId: 113,
-    channel: "email",
-    dueAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    completedAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    status: "completed",
-    notes: "Sent introductory audit and requested quick review",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    lead: {
-      id: 113,
-      userId: "seed",
-      businessName: "Aurora Design",
-      niche: "branding_agency",
-      location: "San Diego, CA",
-      status: "contacted",
-      priority: "medium",
-      lastContactedAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
-      email: "hello@auroradesign.com",
-      createdAt: new Date(Date.now() - 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    } as Lead,
-  },
-  {
-    id: 114,
-    leadId: 114,
-    channel: "phone",
-    dueAt: new Date(Date.now() - 3600 * 1000 * 5).toISOString(),
-    completedAt: new Date(Date.now() - 3600 * 1000 * 5).toISOString(),
-    status: "completed",
-    notes: "Connected on intro call, sending recap shortly",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 5).toISOString(),
-    lead: {
-      id: 114,
-      userId: "seed",
-      businessName: "Nexus Brand Co",
-      niche: "marketing_agency",
-      location: "Dallas, TX",
-      status: "meeting",
-      priority: "high",
-      lastContactedAt: new Date(Date.now() - 5 * 3600 * 1000).toISOString(),
-      phone: "+1 (214) 555-0182",
-      createdAt: new Date(Date.now() - 86400000).toISOString(),
-      updatedAt: new Date(Date.now() - 3600 * 1000 * 5).toISOString(),
-    } as Lead,
-  },
-  // Upcoming items (8 items)
-  ...[
-    { id: 115, name: "Kinetic Digital", ch: "email", niche: "creative_agency" },
-    { id: 116, name: "Vanguard Studio", ch: "phone", niche: "marketing_agency" },
-    { id: 117, name: "Opal Creative", ch: "instagram", niche: "branding_agency" },
-    { id: 118, name: "Prism Media", ch: "email", niche: "web_design" },
-    { id: 119, name: "Solstice Labs", ch: "linkedin", niche: "digital_agency" },
-    { id: 120, name: "Waveform Agency", ch: "phone", niche: "ui_ux_studio" },
-  ].map((extra, idx) => ({
-    id: extra.id,
-    leadId: extra.id,
-    channel: extra.ch,
-    dueAt: new Date(Date.now() + (idx + 2) * 86400000).toISOString(),
-    status: "pending",
-    notes: "Scheduled check-in on project status",
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    lead: {
-      id: extra.id,
-      userId: "seed",
-      businessName: extra.name,
-      niche: extra.niche,
-      location: "New York, NY",
-      status: "conversation",
-      priority: "low",
-      createdAt: new Date(Date.now() - 86400000 * 3).toISOString(),
-      updatedAt: new Date(Date.now() - 86400000).toISOString(),
-    } as Lead,
-  })),
-];
-
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 function MissionsPage() {
   const navigate = useNavigate();
-  const { data: rawFollowups = [], isLoading } = useFollowups({ limit: 1000 });
+  const { data: rawFollowups = [], isLoading, isError, isFetching, refetch } = useFollowups({ limit: 1000 });
+  const { data: analytics } = useAnalytics();
+  const { data: weekStats } = useMissionWeekStats();
   const updateFollowup = useUpdateFollowup();
   const recordActivity = useRecordLeadActivity();
 
@@ -462,20 +102,17 @@ function MissionsPage() {
   // Local overrides for instant action feedback
   const [completedOverrides, setCompletedOverrides] = useState<Record<string | number, string>>({});
 
-  // Merge real data with reference seed data if user has 0 followups
-  const effectiveFollowups = useMemo(() => {
-    const list = rawFollowups.length > 0 ? rawFollowups : REFERENCE_SEED_FOLLOWUPS;
-    return list.map((item) => {
-      if (completedOverrides[item.id]) {
-        return {
-          ...item,
-          status: "completed",
-          completedAt: completedOverrides[item.id],
-        };
-      }
-      return item;
-    });
-  }, [rawFollowups, completedOverrides]);
+  // Real follow-ups only. Overrides give instant feedback after "complete" and
+  // are rolled back if the save fails.
+  const effectiveFollowups = useMemo(
+    () =>
+      rawFollowups.map((item) =>
+        completedOverrides[item.id]
+          ? { ...item, status: "completed", completedAt: completedOverrides[item.id] }
+          : item,
+      ),
+    [rawFollowups, completedOverrides],
+  );
 
   const mission = useMemo(() => buildMission(effectiveFollowups), [effectiveFollowups]);
   const busy = updateFollowup.isPending || recordActivity.isPending;
@@ -484,9 +121,8 @@ function MissionsPage() {
     navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(leadId) } });
   };
 
-  const completeFollowup = async (followup: MissionItem) => {
+  const completeFollowup = async (followup: MissionItem, opts: { silent?: boolean } = {}): Promise<boolean> => {
     const completedAt = new Date().toISOString();
-    // Instant optimistic update
     setCompletedOverrides((prev) => ({ ...prev, [followup.id]: completedAt }));
 
     try {
@@ -496,24 +132,43 @@ function MissionsPage() {
         body: { status: "completed", completedAt },
       });
 
-      await recordActivity.mutateAsync({
-        lead,
-        activity: {
-          type: "followup_completed",
-          timestamp: completedAt,
-          content: `${channelLabel(followup.channel)} follow-up completed`,
-          channel: toActivityChannel(followup.channel),
-          metadata: {
-            followupId: followup.id,
-            dueAt: followup.dueAt,
-            channel: followup.channel,
-            ...sequenceMetadata(followup),
+      // Completing a follow-up means contact happened: bump last-contacted and,
+      // if no other follow-up is pending for this lead, clear its legacy due date.
+      const otherPending = rawFollowups.some(
+        (f) => f.leadId === followup.leadId && f.id !== followup.id && f.status !== "completed" && !completedOverrides[f.id],
+      );
+      try {
+        await recordActivity.mutateAsync({
+          lead,
+          activity: {
+            type: "followup_completed",
+            timestamp: completedAt,
+            content: `${channelLabel(followup.channel)} follow-up completed`,
+            channel: toActivityChannel(followup.channel),
+            metadata: {
+              followupId: followup.id,
+              dueAt: followup.dueAt,
+              channel: followup.channel,
+              ...sequenceMetadata(followup),
+            },
           },
-        },
+          patch: { lastContactedAt: completedAt, ...(otherPending ? {} : { followUpAt: null }) },
+        });
+      } catch (err) {
+        // The follow-up itself is saved; only the timeline entry failed.
+        console.warn("[Mission] activity log failed", err);
+      }
+      if (!opts.silent) toast.success(`Completed: ${followup.leadName}`);
+      return true;
+    } catch (err) {
+      setCompletedOverrides((prev) => {
+        const next = { ...prev };
+        delete next[followup.id];
+        return next;
       });
-      toast.success(`Completed action for ${followup.leadName}`);
-    } catch {
-      toast.success(`Completed action for ${followup.leadName}`);
+      toast.error(`Couldn't complete ${followup.leadName}. Try again.`);
+      console.warn("[Mission] complete failed", err);
+      return false;
     }
   };
 
@@ -540,11 +195,10 @@ function MissionsPage() {
           ...sequenceMetadata(rescheduleItem),
         },
       });
-      toast.success("Follow-up rescheduled");
+      toast.success(`Rescheduled ${rescheduleItem.leadName} to ${nextDue.toLocaleDateString()}`);
       setRescheduleItem(null);
     } catch {
-      toast.success(`Follow-up rescheduled to ${nextDue.toLocaleDateString()}`);
-      setRescheduleItem(null);
+      toast.error("Couldn't reschedule. Try again.");
     }
   };
 
@@ -593,13 +247,16 @@ function MissionsPage() {
     });
   }, [activeTab, mission, searchQuery, typeFilter, priorityFilter, dueTimeFilter]);
 
-  // Bulk selection handlers
+  // Bulk selection handlers (selection resets when the tab changes)
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [activeTab]);
+
+  const selectedVisible = displayedItems.filter((item) => selectedIds.has(item.id));
+  const allVisibleSelected = displayedItems.length > 0 && selectedVisible.length === displayedItems.length;
+
   const handleSelectAll = () => {
-    if (selectedIds.size === displayedItems.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(displayedItems.map((item) => item.id)));
-    }
+    setSelectedIds(allVisibleSelected ? new Set() : new Set(displayedItems.map((item) => item.id)));
   };
 
   const toggleSelectOne = (id: string | number) => {
@@ -610,6 +267,29 @@ function MissionsPage() {
       return next;
     });
   };
+
+  const completeSelected = async () => {
+    const targets = selectedVisible.filter((item) => item.dueState !== "completed");
+    if (targets.length === 0) return;
+    let ok = 0;
+    for (const item of targets) {
+      if (await completeFollowup(item, { silent: true })) ok += 1;
+    }
+    setSelectedIds(new Set());
+    if (ok > 0) toast.success(`Completed ${ok} action${ok === 1 ? "" : "s"}`);
+  };
+
+  // Derived numbers for the hero / impact cards
+  const todayDone = mission.completedToday.length;
+  const todayTotal = mission.todayPool.length + todayDone;
+  const todayPct = todayTotal > 0 ? Math.round((todayDone / todayTotal) * 100) : 0;
+  const replyRate = analytics?.replyRate ?? null;
+  const estReplies = replyRate !== null ? Math.round((mission.todayPool.length * replyRate) / 100) : null;
+  const warmToday = mission.todayPool.filter(isWarm).length;
+  const meetingsToday = mission.todayPool.filter((item) => stageOf(item.lead) === "meeting_booked").length;
+  const filtersActive =
+    searchQuery.trim() !== "" || typeFilter !== "all" || priorityFilter !== "all" || dueTimeFilter !== "all";
+  const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
 
   // Formatted current date for header control
   const currentDateStr = useMemo(() => {
@@ -648,12 +328,15 @@ function MissionsPage() {
             {/* Quick action / refresh button */}
             <button
               onClick={() => {
-                toast.success("Missions synced with pipeline.");
+                void refetch().then((res) =>
+                  res.isError ? toast.error("Couldn't refresh missions") : toast.success("Missions refreshed"),
+                );
               }}
-              title="Refresh / Sync"
+              disabled={isFetching}
+              title="Refresh"
               className="size-9 rounded-xl bg-[#0E1424] border border-white/[0.08] hover:border-white/20 hover:bg-white/[0.05] flex items-center justify-center text-slate-400 hover:text-white transition-all shadow-sm"
             >
-              <RotateCcw className="size-3.5" />
+              <RotateCcw className={`size-3.5 ${isFetching ? "animate-spin" : ""}`} />
             </button>
           </div>
         </div>
@@ -663,6 +346,27 @@ function MissionsPage() {
       <main className="flex-1 px-6 sm:px-8 pb-12 space-y-4 sm:space-y-5">
         {isLoading ? (
           <LoadingMissionsView />
+        ) : isError ? (
+          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-8 text-center">
+            <AlertCircle className="size-6 text-rose-400 mx-auto mb-2" />
+            <div className="text-sm font-semibold text-white">Couldn&apos;t load your missions</div>
+            <p className="text-xs text-slate-400 mt-1">Check your connection and try again.</p>
+            <button
+              onClick={() => void refetch()}
+              className="mt-4 px-4 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 text-xs font-semibold text-white"
+            >
+              Retry
+            </button>
+          </div>
+        ) : rawFollowups.length === 0 ? (
+          <div className="rounded-2xl border border-white/[0.08] bg-[#0E1424] py-6">
+            <EmptyState
+              icon={Bell}
+              title="No missions yet"
+              description="Missions are your scheduled follow-ups. Open any lead and schedule a follow-up, and it will show up here."
+              action={{ label: "Go to Leads", to: "/dashboard/leads" }}
+            />
+          </div>
         ) : (
           <>
             {/* ── ROW 1: HERO + STATUS + AI COACH ─────────────────────────────── */}
@@ -760,14 +464,18 @@ function MissionsPage() {
                     </span>
                     <div className="flex items-baseline gap-2">
                       <span className="text-4xl sm:text-[42px] font-bold text-white tracking-tight leading-none">
-                        12
+                        {todayTotal}
                       </span>
                       <span className="text-4xl sm:text-[42px] font-bold tracking-tight leading-none bg-gradient-to-r from-[#C084FC] via-[#7C8DF8] to-[#38BDF8] bg-clip-text text-transparent">
-                        Actions
+                        {plural(todayTotal, "Action")}
                       </span>
                     </div>
                     <p className="text-[13px] text-slate-400 leading-snug max-w-[330px] mt-2.5">
-                      Complete today&apos;s actions to keep your pipeline moving and create more opportunities.
+                      {todayTotal === 0
+                        ? "Nothing due today. Check Upcoming or reach out to new prospects."
+                        : mission.todayPool.length === 0
+                          ? "Mission complete. Every action due today is done."
+                          : "Complete today's actions to keep your pipeline moving and create more opportunities."}
                     </p>
                   </div>
 
@@ -799,21 +507,28 @@ function MissionsPage() {
                         fill="none"
                       />
 
-                      {/* Active glowing semicircle arc: from 12 o'clock (50, 12) clockwise to 6 o'clock (50, 88) */}
-                      <path
-                        d="M 50 12 A 38 38 0 0 1 50 88"
-                        stroke="url(#heroArcGradient)"
-                        strokeWidth="6"
-                        strokeLinecap="round"
-                        fill="none"
-                        filter="url(#arcGlow)"
-                      />
+                      {/* Progress arc: starts at 12 o'clock, fills clockwise with real completion */}
+                      {todayPct > 0 && (
+                        <circle
+                          cx="50"
+                          cy="50"
+                          r="38"
+                          pathLength={100}
+                          stroke="url(#heroArcGradient)"
+                          strokeWidth="6"
+                          strokeLinecap="round"
+                          fill="none"
+                          strokeDasharray={`${todayPct} 100`}
+                          transform="rotate(-90 50 50)"
+                          filter="url(#arcGlow)"
+                        />
+                      )}
                     </svg>
 
                     {/* Center text */}
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-center select-none pointer-events-none">
                       <span className="text-lg sm:text-xl font-bold text-white tracking-tight leading-none">
-                        6/12
+                        {todayDone}/{todayTotal}
                       </span>
                       <span className="text-[11px] text-slate-400 font-medium mt-1 leading-none">
                         completed
@@ -831,7 +546,7 @@ function MissionsPage() {
                     <AlertCircle className="size-3.5 text-rose-400" />
                   </div>
                   <span className="text-base sm:text-lg font-bold text-white w-4 text-center">
-                    3
+                    {mission.overdue}
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="text-xs sm:text-sm font-semibold text-slate-200 leading-tight">
@@ -849,7 +564,7 @@ function MissionsPage() {
                     <Clock className="size-3.5 text-amber-400" />
                   </div>
                   <span className="text-base sm:text-lg font-bold text-white w-4 text-center">
-                    5
+                    {mission.dueToday}
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="text-xs sm:text-sm font-semibold text-slate-200 leading-tight">
@@ -867,7 +582,7 @@ function MissionsPage() {
                     <Activity className="size-3.5 text-sky-400" />
                   </div>
                   <span className="text-base sm:text-lg font-bold text-white w-4 text-center">
-                    2
+                    {mission.atRiskPool.length}
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="text-xs sm:text-sm font-semibold text-slate-200 leading-tight">
@@ -885,7 +600,7 @@ function MissionsPage() {
                     <Check className="size-3.5 text-emerald-400" />
                   </div>
                   <span className="text-base sm:text-lg font-bold text-white w-4 text-center">
-                    2
+                    {todayDone}
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="text-xs sm:text-sm font-semibold text-slate-200 leading-tight">
@@ -919,7 +634,7 @@ function MissionsPage() {
 
                   {/* Body Sentence */}
                   <p className="text-xs sm:text-[13px] text-slate-300 leading-relaxed mt-3 mb-2">
-                    You have 3 overdue follow-ups. These leads are 40% more likely to reply if you reach out today.
+                    {mission.missionBriefing}
                   </p>
                 </div>
 
@@ -934,7 +649,7 @@ function MissionsPage() {
                   <div className="flex items-start gap-2.5 min-w-0">
                     <Lightbulb className="size-4 text-amber-400 shrink-0 mt-0.5" />
                     <span className="text-xs text-slate-300 leading-snug line-clamp-2">
-                      Try sending a short, personalized follow-up referencing their recent activity or website.
+                      {mission.coachTip}
                     </span>
                   </div>
                   <ChevronRight className="size-4 text-slate-500 group-hover:text-slate-300 transition-colors shrink-0 self-center" />
@@ -962,114 +677,74 @@ function MissionsPage() {
                   </Link>
                 </div>
 
-                {/* 4 horizontal metrics with mini bar charts */}
+                {/* 4 metrics with 7-day sparklines (real data) */}
                 <div className="grid grid-cols-4 gap-2 mt-3 pt-2 border-t border-white/[0.04]">
-                  {/* Actions */}
-                  <div>
-                    <div className="text-lg font-bold text-white">48</div>
-                    <div className="text-[11px] text-slate-400">Actions</div>
-                    <div className="flex items-end gap-0.5 h-3.5 mt-1.5">
-                      <span className="w-1 bg-blue-500/40 rounded-sm h-[35%]" />
-                      <span className="w-1 bg-blue-500/60 rounded-sm h-[60%]" />
-                      <span className="w-1 bg-blue-500/50 rounded-sm h-[45%]" />
-                      <span className="w-1 bg-blue-500/80 rounded-sm h-[80%]" />
-                      <span className="w-1 bg-blue-500 rounded-sm h-[100%]" />
+                  {[
+                    { label: "Actions", value: weekStats?.actions, series: weekStats?.daily.actions, color: "bg-blue-500" },
+                    { label: "Replies", value: weekStats?.replies, series: weekStats?.daily.replies, color: "bg-blue-500" },
+                    { label: "Meetings", value: weekStats?.meetings, series: weekStats?.daily.meetings, color: "bg-blue-500" },
+                    { label: "Closed", value: weekStats?.closed, series: weekStats?.daily.closed, color: "bg-emerald-500" },
+                  ].map((m) => (
+                    <div key={m.label}>
+                      <div className="text-lg font-bold text-white">{m.value ?? "–"}</div>
+                      <div className="text-[11px] text-slate-400">{m.label}</div>
+                      <WeekSpark series={m.series} color={m.color} />
                     </div>
-                  </div>
-
-                  {/* Replies */}
-                  <div>
-                    <div className="text-lg font-bold text-white">18</div>
-                    <div className="text-[11px] text-slate-400">Replies</div>
-                    <div className="flex items-end gap-0.5 h-3.5 mt-1.5">
-                      <span className="w-1 bg-blue-500/40 rounded-sm h-[25%]" />
-                      <span className="w-1 bg-blue-500/60 rounded-sm h-[50%]" />
-                      <span className="w-1 bg-blue-500/70 rounded-sm h-[70%]" />
-                      <span className="w-1 bg-blue-500/90 rounded-sm h-[90%]" />
-                      <span className="w-1 bg-blue-500 rounded-sm h-[65%]" />
-                    </div>
-                  </div>
-
-                  {/* Meetings */}
-                  <div>
-                    <div className="text-lg font-bold text-white">8</div>
-                    <div className="text-[11px] text-slate-400">Meetings</div>
-                    <div className="flex items-end gap-0.5 h-3.5 mt-1.5">
-                      <span className="w-1 bg-blue-500/40 rounded-sm h-[30%]" />
-                      <span className="w-1 bg-blue-500/60 rounded-sm h-[45%]" />
-                      <span className="w-1 bg-blue-500/50 rounded-sm h-[40%]" />
-                      <span className="w-1 bg-blue-500/80 rounded-sm h-[80%]" />
-                      <span className="w-1 bg-blue-500 rounded-sm h-[95%]" />
-                    </div>
-                  </div>
-
-                  {/* Closed */}
-                  <div>
-                    <div className="text-lg font-bold text-white">4</div>
-                    <div className="text-[11px] text-slate-400">Closed</div>
-                    <div className="flex items-end gap-0.5 h-3.5 mt-1.5">
-                      <span className="w-1 bg-emerald-500/40 rounded-sm h-[20%]" />
-                      <span className="w-1 bg-emerald-500/60 rounded-sm h-[40%]" />
-                      <span className="w-1 bg-emerald-500/70 rounded-sm h-[65%]" />
-                      <span className="w-1 bg-emerald-500/90 rounded-sm h-[85%]" />
-                      <span className="w-1 bg-emerald-500 rounded-sm h-[100%]" />
-                    </div>
-                  </div>
+                  ))}
                 </div>
               </div>
 
               {/* Completing today's actions could... (7 cols) */}
               <div className="lg:col-span-7 rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
                 <div className="text-xs sm:text-sm font-semibold text-slate-300">
-                  Completing today&apos;s actions could...
+                  Completing today&apos;s actions could lead to...
                 </div>
 
-                <div className="grid grid-cols-3 gap-3 mt-3 pt-2">
-                  {/* More replies */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3 pt-2">
+                  {/* Expected replies (from the user's own reply rate) */}
                   <div className="flex items-center gap-3 rounded-xl bg-[#090D18]/50 border border-white/[0.05] p-3">
                     <div className="size-9 rounded-xl bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center text-emerald-400 shrink-0">
                       <MessageSquare className="size-4 fill-emerald-400/20 text-emerald-400" />
                     </div>
                     <div>
                       <div className="text-lg sm:text-xl font-bold text-emerald-400 leading-none">
-                        +12
+                        {estReplies === null ? "–" : `~${estReplies}`}
                       </div>
-                      <div className="text-[11px] text-slate-400 mt-1 leading-none">
-                        More replies
-                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1 leading-none">Expected replies</div>
                     </div>
                   </div>
 
-                  {/* More meetings */}
+                  {/* Warm conversations */}
                   <div className="flex items-center gap-3 rounded-xl bg-[#090D18]/50 border border-white/[0.05] p-3">
                     <div className="size-9 rounded-xl bg-sky-500/15 border border-sky-500/25 flex items-center justify-center text-sky-400 shrink-0">
-                      <Calendar className="size-4 text-sky-400" />
+                      <Activity className="size-4 text-sky-400" />
                     </div>
                     <div>
-                      <div className="text-lg sm:text-xl font-bold text-sky-400 leading-none">
-                        +5
-                      </div>
+                      <div className="text-lg sm:text-xl font-bold text-sky-400 leading-none">{warmToday}</div>
                       <div className="text-[11px] text-slate-400 mt-1 leading-none">
-                        More meetings
+                        Warm {plural(warmToday, "conversation")}
                       </div>
                     </div>
                   </div>
 
-                  {/* Potential deals */}
+                  {/* Meetings to protect */}
                   <div className="flex items-center gap-3 rounded-xl bg-[#090D18]/50 border border-white/[0.05] p-3">
                     <div className="size-9 rounded-xl bg-purple-500/15 border border-purple-500/25 flex items-center justify-center text-purple-400 shrink-0">
                       <Star className="size-4 fill-purple-400 text-purple-400" />
                     </div>
                     <div>
-                      <div className="text-lg sm:text-xl font-bold text-purple-400 leading-none">
-                        +2
-                      </div>
+                      <div className="text-lg sm:text-xl font-bold text-purple-400 leading-none">{meetingsToday}</div>
                       <div className="text-[11px] text-slate-400 mt-1 leading-none">
-                        Potential deals
+                        {plural(meetingsToday, "Meeting")} to protect
                       </div>
                     </div>
                   </div>
                 </div>
+                {replyRate !== null && (
+                  <div className="text-[10px] text-slate-500 mt-2">
+                    Estimated from your {replyRate}% overall reply rate.
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1101,9 +776,13 @@ function MissionsPage() {
                     </div>
                     <div className="min-w-0">
                       <div className="text-xs sm:text-[13px] font-semibold text-slate-200 truncate group-hover:text-white transition-colors">
-                        Follow up on 3 overdue leads
+                        {mission.overdue > 0
+                          ? `Follow up on ${mission.overdue} overdue ${plural(mission.overdue, "lead")}`
+                          : "No overdue follow-ups"}
                       </div>
-                      <div className="text-[11px] text-slate-400">High impact</div>
+                      <div className="text-[11px] text-slate-400">
+                        {mission.overdue > 0 ? "High impact" : "You're all caught up"}
+                      </div>
                     </div>
                   </div>
                   <ChevronRight className="size-4 text-slate-500 group-hover:text-slate-300 transition-colors shrink-0" />
@@ -1111,7 +790,7 @@ function MissionsPage() {
 
                 {/* Focus 2: Due Today */}
                 <div
-                  onClick={() => setActiveTab("today")}
+                  onClick={() => setActiveTab(mission.dueToday > 0 ? "today" : "upcoming")}
                   className="rounded-xl border border-white/[0.06] bg-[#080C16]/50 hover:bg-[#080C16]/90 p-3 flex items-center justify-between gap-3 transition-colors cursor-pointer group"
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
@@ -1120,9 +799,13 @@ function MissionsPage() {
                     </div>
                     <div className="min-w-0">
                       <div className="text-xs sm:text-[13px] font-semibold text-slate-200 truncate group-hover:text-white transition-colors">
-                        Reach out to 5 new prospects
+                        {mission.dueToday > 0
+                          ? `Complete ${mission.dueToday} ${plural(mission.dueToday, "action")} due today`
+                          : "Nothing else due today"}
                       </div>
-                      <div className="text-[11px] text-slate-400">Grow pipeline</div>
+                      <div className="text-[11px] text-slate-400">
+                        {mission.dueToday > 0 ? "Keep momentum going" : "Check what's coming up"}
+                      </div>
                     </div>
                   </div>
                   <ChevronRight className="size-4 text-slate-500 group-hover:text-slate-300 transition-colors shrink-0" />
@@ -1130,7 +813,7 @@ function MissionsPage() {
 
                 {/* Focus 3: Warm Conversations */}
                 <div
-                  onClick={() => setActiveTab("today")}
+                  onClick={() => setActiveTab(warmToday > 0 ? "today" : "upcoming")}
                   className="rounded-xl border border-white/[0.06] bg-[#080C16]/50 hover:bg-[#080C16]/90 p-3 flex items-center justify-between gap-3 transition-colors cursor-pointer group"
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
@@ -1139,9 +822,13 @@ function MissionsPage() {
                     </div>
                     <div className="min-w-0">
                       <div className="text-xs sm:text-[13px] font-semibold text-slate-200 truncate group-hover:text-white transition-colors">
-                        Nurture 2 warm conversations
+                        {mission.warmPool.length > 0
+                          ? `Nurture ${mission.warmPool.length} warm ${plural(mission.warmPool.length, "conversation")}`
+                          : "No warm conversations yet"}
                       </div>
-                      <div className="text-[11px] text-slate-400">Close deals</div>
+                      <div className="text-[11px] text-slate-400">
+                        {mission.warmPool.length > 0 ? "Close deals" : "Replies will show up here"}
+                      </div>
                     </div>
                   </div>
                   <ChevronRight className="size-4 text-slate-500 group-hover:text-slate-300 transition-colors shrink-0" />
@@ -1163,7 +850,7 @@ function MissionsPage() {
                         : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]"
                     }`}
                   >
-                    Today (12)
+                    Today ({mission.todayPool.length})
                   </button>
                   <button
                     onClick={() => setActiveTab("upcoming")}
@@ -1173,7 +860,7 @@ function MissionsPage() {
                         : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]"
                     }`}
                   >
-                    Upcoming (8)
+                    Upcoming ({mission.upcomingPool.length})
                   </button>
                   <button
                     onClick={() => setActiveTab("overdue")}
@@ -1183,7 +870,7 @@ function MissionsPage() {
                         : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]"
                     }`}
                   >
-                    Overdue (3)
+                    Overdue ({mission.overduePool.length})
                   </button>
                   <button
                     onClick={() => setActiveTab("completed")}
@@ -1193,7 +880,7 @@ function MissionsPage() {
                         : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]"
                     }`}
                   >
-                    Completed (2)
+                    Completed ({mission.completedToday.length})
                   </button>
                 </div>
 
@@ -1251,6 +938,30 @@ function MissionsPage() {
                 </div>
               </div>
 
+              {/* Bulk action bar */}
+              {selectedVisible.length > 0 && (
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-4 py-2.5">
+                  <span className="text-xs font-semibold text-indigo-200">{selectedVisible.length} selected</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setSelectedIds(new Set())}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white hover:bg-white/[0.06] transition-colors"
+                    >
+                      Clear
+                    </button>
+                    {activeTab !== "completed" && (
+                      <button
+                        onClick={() => void completeSelected()}
+                        disabled={busy}
+                        className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition-colors disabled:opacity-50"
+                      >
+                        Mark completed
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Table Container */}
               <div className="rounded-2xl border border-white/[0.08] bg-[#0E1424] overflow-hidden shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
                 <div className="overflow-x-auto">
@@ -1260,10 +971,7 @@ function MissionsPage() {
                         <th className="py-3 px-4 w-10">
                           <input
                             type="checkbox"
-                            checked={
-                              displayedItems.length > 0 &&
-                              selectedIds.size === displayedItems.length
-                            }
+                            checked={allVisibleSelected}
                             onChange={handleSelectAll}
                             className="rounded border-white/20 bg-transparent text-indigo-600 focus:ring-0 cursor-pointer"
                           />
@@ -1280,7 +988,15 @@ function MissionsPage() {
                       {displayedItems.length === 0 ? (
                         <tr>
                           <td colSpan={7} className="py-12 text-center text-slate-400">
-                            No missions found matching your criteria.
+                            {filtersActive
+                              ? "No missions match your filters."
+                              : activeTab === "completed"
+                                ? "Nothing completed yet today."
+                                : activeTab === "overdue"
+                                  ? "No overdue missions. You're all caught up."
+                                  : activeTab === "upcoming"
+                                    ? "No upcoming missions scheduled."
+                                    : "No actions due today."}
                           </td>
                         </tr>
                       ) : (
@@ -1358,16 +1074,19 @@ function MissionsPage() {
                               {/* Quick Actions */}
                               <td className="py-3.5 px-4 text-right">
                                 <div className="inline-flex items-center gap-1.5 justify-end">
+                                  {item.dueState !== "completed" && (
+                                    <button
+                                      onClick={() => void completeFollowup(item)}
+                                      disabled={busy}
+                                      title="Mark as completed"
+                                      className="size-8 rounded-lg border border-white/[0.1] bg-[#141B2D] hover:bg-emerald-500/15 hover:border-emerald-500/40 hover:text-emerald-400 flex items-center justify-center text-slate-400 transition-colors disabled:opacity-50"
+                                    >
+                                      <Check className="size-3.5" />
+                                    </button>
+                                  )}
                                   <button
-                                    onClick={() => {
-                                      if (item.dueState === "completed") {
-                                        openLead(item.leadId);
-                                      } else {
-                                        void completeFollowup(item);
-                                      }
-                                    }}
-                                    disabled={busy}
-                                    className="px-3.5 py-1.5 rounded-lg border border-white/[0.1] bg-[#141B2D] hover:bg-[#1C263F] hover:border-white/20 text-xs font-semibold text-slate-200 transition-colors disabled:opacity-50 shadow-sm"
+                                    onClick={() => openLead(item.leadId)}
+                                    className="px-3.5 py-1.5 rounded-lg border border-white/[0.1] bg-[#141B2D] hover:bg-[#1C263F] hover:border-white/20 text-xs font-semibold text-slate-200 transition-colors shadow-sm"
                                   >
                                     {item.dueState === "completed" ? "View Lead" : "Take Action"}
                                   </button>
@@ -1409,7 +1128,11 @@ function MissionsPage() {
                                       <DropdownMenuItem
                                         onClick={() => {
                                           const contact =
-                                            item.lead?.email || item.lead?.phone || item.lead?.instagram;
+                                            channelType(item.channel) === "phone"
+                              ? item.lead?.phone || item.lead?.email || item.lead?.instagramHandle
+                              : channelType(item.channel) === "instagram"
+                                ? item.lead?.instagramHandle || item.lead?.email || item.lead?.phone
+                                : item.lead?.email || item.lead?.phone || item.lead?.instagramHandle;
                                           if (contact) {
                                             navigator.clipboard.writeText(contact);
                                             toast.success("Contact info copied");
@@ -1542,6 +1265,22 @@ function MissionsPage() {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
+function WeekSpark({ series, color }: { series?: number[]; color: string }) {
+  const values = series ?? new Array<number>(7).fill(0);
+  const max = Math.max(...values, 1);
+  return (
+    <div className="flex items-end gap-0.5 h-3.5 mt-1.5">
+      {values.map((v, i) => (
+        <span
+          key={i}
+          className={`w-1 rounded-sm ${color}`}
+          style={{ height: `${v === 0 ? 10 : Math.max(20, Math.round((v / max) * 100))}%`, opacity: v === 0 ? 0.2 : 0.4 + (i / 6) * 0.6 }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function ActionChannelIcon({ channel }: { channel: string }) {
   const type = channelType(channel);
   if (type === "phone") {
@@ -1647,30 +1386,41 @@ function LoadingMissionsView() {
 
 // ── Business Logic & Builders ─────────────────────────────────────────────────
 
+/** Normalised pipeline stage of a lead (handles legacy status values too). */
+function stageOf(lead: Lead | undefined) {
+  return normalizeLeadStatus(lead?.status);
+}
+
+/** A "warm" lead has replied or has a meeting booked. */
+function isWarm(item: MissionItem) {
+  const stage = stageOf(item.lead);
+  return stage === "replied" || stage === "meeting_booked";
+}
+
 function buildMission(followups: FollowupWithLead[]) {
   const items = followups.map(toMissionItem);
 
   const active = items.filter((item) => item.dueState !== "completed");
   const completedToday = items
-    .filter((item) => item.dueState === "completed")
+    .filter((item) => item.dueState === "completed" && isToday(item.completedAt ?? item.updatedAt))
     .sort((a, b) => dateTime(b.completedAt ?? b.updatedAt) - dateTime(a.completedAt ?? a.updatedAt));
 
-  const overduePool = active
-    .filter((item) => item.dueState === "overdue")
-    .sort((a, b) => a.daysOverdue - b.daysOverdue);
+  const byImpact = (a: MissionItem, b: MissionItem) => b.impactScore - a.impactScore;
 
-  // In Today tab: show the exact 12 actions queue matching the reference sequence
-  const todayPool = active.slice(0, 12);
-
-  const upcomingPool = active.filter((item) => item.dueState === "upcoming");
-
-  const atRiskPool = active.filter(isAtRisk).sort((a, b) => b.impactScore - a.impactScore);
+  const overduePool = active.filter((item) => item.dueState === "overdue").sort(byImpact);
+  const dueTodayPool = active.filter((item) => item.dueState === "today").sort(byImpact);
+  // Today's queue: everything overdue plus everything due today, most valuable first.
+  const todayPool = [...overduePool, ...dueTodayPool];
+  const upcomingPool = active
+    .filter((item) => item.dueState === "upcoming")
+    .sort((a, b) => dateTime(a.dueAt) - dateTime(b.dueAt));
+  const atRiskPool = active.filter(isAtRisk).sort(byImpact);
+  const warmPool = active.filter(isWarm).sort(byImpact);
 
   const overdue = overduePool.length;
-  const dueToday = active.filter((item) => item.dueState === "today").length;
+  const dueToday = dueTodayPool.length;
 
   const coachItem = todayPool[0] ?? upcomingPool[0] ?? atRiskPool[0] ?? null;
-  const operationalInsights = buildOperationalInsights(items);
 
   return {
     items,
@@ -1680,20 +1430,20 @@ function buildMission(followups: FollowupWithLead[]) {
     overduePool,
     completedToday,
     atRiskPool,
+    warmPool,
     overdue,
     dueToday,
     coachItem,
-    coachSentence: buildCoachSentence(coachItem, { overdue, atRiskPool }),
+    coachSentence: buildCoachSentence(coachItem),
     coachReasons: coachItem ? buildCoachReasons(coachItem) : [],
+    coachTip: buildCoachTip(coachItem),
     missionBriefing: buildMissionBriefing({
       overdue,
       dueToday,
       atRiskPool,
       completedTodayCount: completedToday.length,
       mustDoPool: todayPool,
-      actionQueuePool: upcomingPool,
     }),
-    operationalInsights,
   };
 }
 
@@ -1704,81 +1454,47 @@ function toMissionItem(followup: FollowupWithLead): MissionItem {
   const daysSinceContact = lead?.lastContactedAt
     ? Math.max(0, Math.floor((Date.now() - dateTime(lead.lastContactedAt)) / 86_400_000))
     : null;
-  const score = lead ? leadScore(lead) : 75;
+  const score = lead ? leadScore(lead) : 60;
   const priority = leadPriority(lead);
-  const nicheLabel =
-    lead?.niche
-      ? (NICHES.find((item) => item.value === lead.niche)?.label ?? formatNicheName(lead.niche))
-      : (lead?.location ?? "General Business");
-  const effort: MissionItem["effort"] =
-    channelType(followup.channel) === "email" || channelType(followup.channel) === "phone"
-      ? "quick"
-      : "standard";
-
-  // Action title
-  let actionTitle = "Follow Up";
+  const nicheLabel = lead?.niche
+    ? (NICHES.find((item) => item.value === lead.niche)?.label ?? formatNicheName(lead.niche))
+    : (lead?.location ?? "General Business");
   const ch = channelType(followup.channel);
-  if (lead?.businessName === "Summit Marketing") {
-    actionTitle = "Send Proposal";
-  } else if (ch === "phone") {
-    actionTitle = "Call";
-  } else if (ch === "instagram") {
-    actionTitle = "DM";
-  } else if (ch === "linkedin") {
-    actionTitle = "Follow Up";
-  }
+  const effort: MissionItem["effort"] = ch === "email" || ch === "phone" ? "quick" : "standard";
+  const stage = stageOf(lead);
 
-  // Details text
+  // Action title: what the user actually has to do
+  let actionTitle = "Follow Up";
+  if (ch === "phone") actionTitle = "Call";
+  else if (ch === "instagram") actionTitle = "DM";
+  else if (ch === "linkedin") actionTitle = "Message";
+  else if (stage === "meeting_booked") actionTitle = "Confirm Meeting";
+  else if (stage === "replied") actionTitle = "Reply";
+
+  // Details: the user's own note first, then a stage-aware reason
   const detailsText =
     followup.notes?.trim() ||
-    actionQueueReason({
-      lead,
-      priority,
-      score,
-      effort,
-      dueAt: followup.dueAt,
-      daysSinceContact,
-    } as any) ||
+    actionQueueReason({ lead, priority, score, daysSinceContact }) ||
     "Following up on our recent outreach.";
 
-  // Display due string matching the reference layout
-  let displayDue = "Today";
-  if (lead?.businessName === "Nova Creative Studio") {
-    displayDue = "2h ago";
-  } else if (lead?.businessName === "Bright Media") {
-    displayDue = "4h ago";
-  } else if (lead?.businessName === "Lume Studio") {
-    displayDue = "Today, 3:00 PM";
-  } else if (lead?.businessName === "Summit Marketing") {
-    displayDue = "Today, 5:00 PM";
-  } else if (lead?.businessName === "Echo Designs") {
-    displayDue = "Tomorrow, 11:00 AM";
-  } else if (lead?.businessName === "Frame Agency") {
-    displayDue = "Tomorrow, 2:00 PM";
-  } else if (dueState === "overdue") {
-    displayDue = daysOverdue === 1 ? "1d overdue" : `${daysOverdue}d overdue`;
-    const hoursAgo = Math.max(1, Math.round((Date.now() - dateTime(followup.dueAt)) / 3600000));
-    if (hoursAgo < 24) displayDue = `${hoursAgo}h ago`;
+  const timeLabel = (d: Date) =>
+    d.getHours() === 0 && d.getMinutes() === 0
+      ? ""
+      : `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
+
+  let displayDue: string;
+  const dueD = parseDate(followup.dueAt);
+  if (dueState === "overdue") {
+    const hoursAgo = Math.max(1, Math.round((Date.now() - dateTime(followup.dueAt)) / 3_600_000));
+    displayDue = hoursAgo < 24 ? `${hoursAgo}h ago` : `${daysOverdue}d overdue`;
   } else if (dueState === "today") {
-    const dueD = parseDate(followup.dueAt);
-    if (dueD) {
-      displayDue = `Today, ${dueD.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
-    } else {
-      displayDue = "Today";
-    }
+    displayDue = `Today${dueD ? timeLabel(dueD) : ""}`;
   } else if (dueState === "completed") {
     const compD = parseDate(followup.completedAt ?? followup.updatedAt);
     displayDue = compD ? `Completed ${formatRelative(compD.toISOString())}` : "Completed";
   } else {
     const days = daysFromToday(followup.dueAt);
-    const dueD = parseDate(followup.dueAt);
-    if (days === 1) {
-      displayDue = dueD
-        ? `Tomorrow, ${dueD.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`
-        : "Tomorrow";
-    } else {
-      displayDue = `In ${days} days`;
-    }
+    displayDue = days === 1 ? `Tomorrow${dueD ? timeLabel(dueD) : ""}` : `In ${days} days`;
   }
 
   const base: Omit<MissionItem, "impactScore"> = {
@@ -1801,26 +1517,17 @@ function toMissionItem(followup: FollowupWithLead): MissionItem {
 }
 
 function formatNicheName(str: string) {
-  if (str === "web_design") return "Web Design Studio";
-  if (str === "marketing_agency") return "Marketing Agency";
-  if (str === "branding_agency") return "Branding Agency";
-  if (str === "digital_agency") return "Digital Agency";
-  if (str === "graphic_design") return "Graphic Design Studio";
-  if (str === "creative_agency") return "Creative Agency";
-  return str
-    .replace(/[_-]/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return str.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function businessImpactScore(item: Omit<MissionItem, "impactScore">): number {
   let pts = 0;
-  const status = (item.lead?.status ?? "").toLowerCase();
-  if (status === "negotiation") pts += 55;
-  else if (status === "proposal") pts += 45;
-  else if (status === "meeting") pts += 35;
-  else if (status === "conversation") pts += 28;
-  else if (status === "contacted") pts += 14;
-  else pts += 5;
+  const stage = stageOf(item.lead);
+  if (stage === "meeting_booked") pts += 45;
+  else if (stage === "replied") pts += 38;
+  else if (stage === "email_sent" || stage === "called" || stage === "instagram_sent") pts += 14;
+  else if (stage === "new") pts += 5;
+  // closed / dead leads add nothing
 
   pts += item.score * 0.45;
 
@@ -1840,109 +1547,99 @@ function buildMissionBriefing({
   atRiskPool,
   completedTodayCount,
   mustDoPool,
-  actionQueuePool,
 }: {
   overdue: number;
   dueToday: number;
   atRiskPool: MissionItem[];
   completedTodayCount: number;
   mustDoPool: MissionItem[];
-  actionQueuePool: MissionItem[];
 }): string {
   if (overdue >= 3) {
-    return `${overdue} follow-ups are overdue. Clear those first — every day of silence reduces the chance of a reply.`;
+    return `You have ${overdue} overdue follow-ups. Clear those first: every day of silence lowers the chance of a reply.`;
   }
-  if (overdue === 1 && mustDoPool.length > 0) {
+  if (overdue >= 1) {
     const lead = mustDoPool.find((item) => item.dueState === "overdue");
-    if (lead) return `${lead.leadName} is overdue. That's your first priority — a quick touch restarts the deal.`;
+    if (overdue === 1 && lead) return `${lead.leadName} is overdue. That's your first priority: a quick touch restarts the conversation.`;
+    return `You have ${overdue} overdue follow-ups. Start there before today's queue.`;
   }
-  const proposals = mustDoPool.filter((item) => {
-    const s = (item.lead?.status ?? "").toLowerCase();
-    return s === "proposal" || s === "negotiation";
-  });
-  if (proposals.length > 0) {
-    return `${proposals.length} active proposal${proposals.length === 1 ? "" : "s"} need follow-up. These are your closest opportunities to closing revenue today.`;
+  const warm = mustDoPool.filter(isWarm);
+  if (warm.length > 0) {
+    return `${warm.length} warm ${warm.length === 1 ? "conversation needs" : "conversations need"} a follow-up. These are your closest opportunities to revenue today.`;
   }
   if (atRiskPool.length >= 3) {
     return `${atRiskPool.length} opportunities are drifting toward inactivity. A focused follow-up session now keeps them alive.`;
   }
-  const total = overdue + dueToday;
-  return total > 0
-    ? `You have ${total} action${total === 1 ? "" : "s"} queued for today. Focus on high-intent conversations to advance deals.`
-    : "Pipeline is healthy and on schedule.";
+  if (dueToday > 0) {
+    return `You have ${dueToday} action${dueToday === 1 ? "" : "s"} queued for today. Work through them in order of impact.`;
+  }
+  return completedTodayCount > 0
+    ? `All done for today: ${completedTodayCount} action${completedTodayCount === 1 ? "" : "s"} completed.`
+    : "Nothing due today. Your pipeline is on schedule.";
 }
 
-function buildCoachSentence(
-  item: MissionItem | null,
-  _ctx: { overdue: number; atRiskPool: MissionItem[] },
-): string {
-  if (!item) return "No urgent actions right now. Your pipeline is in great shape.";
+function buildCoachSentence(item: MissionItem | null): string {
+  if (!item) return "No urgent actions right now. Your pipeline is in good shape.";
   const name = item.leadName;
-  const status = (item.lead?.status ?? "").toLowerCase();
-  if (status === "proposal" || status === "negotiation") {
-    return `Start with ${name}. They have an active proposal in progress — a follow-up now is the highest-value action in your queue.`;
+  const stage = stageOf(item.lead);
+  if (stage === "meeting_booked") {
+    return `Start with ${name}. They have a meeting booked: follow up now so it doesn't slip.`;
   }
-  if (status === "meeting") {
-    return `${name} has a meeting in progress. Follow up now to keep momentum alive before it cools.`;
+  if (stage === "replied") {
+    return `Start with ${name}. They've replied before, so a timely follow-up is the highest-value action in your queue.`;
   }
   if (item.dueState === "overdue") {
     return `${name} is overdue by ${item.daysOverdue} ${item.daysOverdue === 1 ? "day" : "days"}. Clear this first to protect your response rate.`;
   }
-  return `Start with ${name}. Based on stage and timing, this follow-up is primed to move forward today.`;
+  return `Start with ${name}. Based on stage and timing, this is the best follow-up to make next.`;
 }
 
 function buildCoachReasons(item: MissionItem): string[] {
   const reasons: string[] = [];
-  const status = (item.lead?.status ?? "").toLowerCase();
-  if (status === "negotiation") reasons.push("Negotiation stage — revenue is closest here");
-  else if (status === "proposal") reasons.push("Active proposal — high conversion proximity");
-  else if (status === "meeting") reasons.push("Meeting stage — momentum is already established");
-  else if (status === "conversation") reasons.push("In conversation — reply window is active");
+  const stage = stageOf(item.lead);
+  if (stage === "meeting_booked") reasons.push("Meeting booked: momentum is already established");
+  else if (stage === "replied") reasons.push("They've replied: the conversation window is open");
 
   if (item.dueState === "overdue") {
-    reasons.push(`${item.daysOverdue} days overdue — urgency is highest`);
+    reasons.push(`${item.daysOverdue} ${item.daysOverdue === 1 ? "day" : "days"} overdue`);
   } else if (item.dueState === "today") {
-    reasons.push("Due today — optimal window for outreach");
+    reasons.push("Due today");
   }
-  if (item.score >= 90) reasons.push(`Lead score ${item.score} — strong conversion signal`);
+  if (item.daysSinceContact !== null && item.daysSinceContact >= 7) {
+    reasons.push(`${item.daysSinceContact} days since last contact`);
+  }
+  if (item.lead?.opportunityScore != null && item.score >= 80) {
+    reasons.push(`Opportunity score ${item.score}`);
+  }
   return reasons.slice(0, 3);
 }
 
-function buildOperationalInsights(items: MissionItem[]) {
-  const weekAgo = Date.now() - 7 * 86_400_000;
-  const completionsThisWeek = items.filter(
-    (item) => item.dueState === "completed" && dateTime(item.completedAt ?? item.updatedAt) >= weekAgo,
-  ).length;
-
-  const repliesThisWeek = items.filter((item) => {
-    const s = (item.lead?.status ?? "").toLowerCase();
-    return (s === "conversation" || s === "meeting" || s === "proposal") && dateTime(item.lead?.updatedAt) >= weekAgo;
-  }).length;
-
-  const meetingsThisWeek = items.filter(
-    (item) => (item.lead?.status ?? "").toLowerCase() === "meeting" && dateTime(item.lead?.updatedAt) >= weekAgo,
-  ).length;
-
-  return { completionsThisWeek, repliesThisWeek, meetingsThisWeek };
+/** One concrete, channel-aware suggestion for the top item in the queue. */
+function buildCoachTip(item: MissionItem | null): string {
+  if (!item) return "Nothing queued. Schedule follow-ups from a lead to build your next mission.";
+  const type = channelType(item.channel);
+  const since =
+    item.daysSinceContact !== null && item.daysSinceContact > 0
+      ? ` (last contact ${item.daysSinceContact} ${item.daysSinceContact === 1 ? "day" : "days"} ago)`
+      : "";
+  if (type === "phone") return `Call ${item.leadName}${since}. Lead with one specific reason for the call.`;
+  if (type === "instagram") return `Send ${item.leadName} a short DM${since} that references their recent posts.`;
+  if (type === "linkedin") return `Message ${item.leadName}${since} with one line tying back to your last touch.`;
+  return `Send ${item.leadName} a short, personalized email${since} that references something specific about their business.`;
 }
 
 function actionQueueReason(item: {
   lead?: Lead;
   priority: string;
   score: number;
-  effort: string;
-  dueAt: string;
   daysSinceContact: number | null;
 }): string {
-  const status = (item.lead?.status ?? "").toLowerCase();
-  if (status === "negotiation") return "Negotiation in progress — highest revenue proximity";
-  if (status === "proposal") return "Active proposal — high closing potential";
-  if (status === "meeting") return "Meeting stage — keep momentum going";
-  if (status === "conversation") return "In conversation — reply window is open";
+  const stage = stageOf(item.lead);
+  if (stage === "meeting_booked") return "Meeting booked: keep momentum going";
+  if (stage === "replied") return "They've replied: keep the conversation moving";
   if (item.daysSinceContact !== null && item.daysSinceContact >= 14)
-    return `${item.daysSinceContact} days since last contact — at risk of going cold`;
-  if (item.priority === "high") return "High-priority lead — immediate follow-up";
-  return `Opportunity score ${item.score} · Ready for follow-up`;
+    return `${item.daysSinceContact} days since last contact: at risk of going cold`;
+  if (item.priority === "high") return "High-priority lead: follow up promptly";
+  return "Scheduled follow-up";
 }
 
 function dueStateForFollowup(followup: FollowupWithLead): MissionItem["dueState"] {
@@ -1959,6 +1656,11 @@ function isAtRisk(item: MissionItem) {
     (item.daysSinceContact !== null && item.daysSinceContact >= 10) ||
     (item.priority === "high" && item.dueState === "upcoming")
   );
+}
+
+function isToday(date: string | null | undefined) {
+  const d = parseDate(date);
+  return d ? startOfDay(d).getTime() === startOfDay(new Date()).getTime() : false;
 }
 
 function channelType(channel: string) {
@@ -1990,9 +1692,12 @@ function leadPriority(lead: Lead | undefined): MissionItem["priority"] {
 }
 
 function leadScore(lead: Lead) {
-  if (lead.priority === "high") return 94;
-  if (lead.priority === "normal" || lead.priority === "medium") return 78;
-  return 62;
+  if (typeof lead.opportunityScore === "number") {
+    return Math.round(Math.min(100, Math.max(0, lead.opportunityScore)));
+  }
+  if (lead.priority === "high") return 90;
+  if (lead.priority === "normal" || lead.priority === "medium") return 70;
+  return 50;
 }
 
 function sequenceMetadata(followup: FollowupWithLead) {

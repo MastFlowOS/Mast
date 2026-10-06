@@ -48,6 +48,8 @@ export const Route = createFileRoute("/dashboard/import")({
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const LEAD_FIELDS = [
+  { key: "mastId", label: "Mast ID" },
+  { key: "businessId", label: "Business ID" },
   { key: "businessName", label: "Business Name", required: true },
   { key: "instagramHandle", label: "Instagram Handle" },
   { key: "email", label: "Email" },
@@ -69,6 +71,15 @@ const LEAD_FIELDS = [
 type LeadFieldKey = (typeof LEAD_FIELDS)[number]["key"];
 
 const FIELD_ALIASES: Record<string, LeadFieldKey> = {
+  "mast id": "mastId",
+  "mastid": "mastId",
+  "mast_id": "mastId",
+  "id": "mastId",
+  "lead id": "mastId",
+  "business id": "businessId",
+  "businessid": "businessId",
+  "business_id": "businessId",
+  "opportunity id": "businessId",
   "business name": "businessName",
   business: "businessName",
   company: "businessName",
@@ -157,6 +168,8 @@ interface ParsedRow {
   businessName: string;
   instagramHandle: string;
   email: string;
+  isDuplicate: boolean;
+  mastId: string;
 }
 
 interface ImportHistoryEntry {
@@ -178,6 +191,129 @@ interface ExportHistoryEntry {
 type ExportScope = "all" | "selected" | "status" | "niche" | "region" | "pipeline";
 type ExportFormat = "csv" | "xlsx";
 
+// ─── Normalization Helpers ────────────────────────────────────────────────────
+
+/** Normalize an email for comparison: trim, lowercase */
+function normalizeEmail(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return raw.trim().toLowerCase();
+}
+
+/** Normalize an Instagram handle: trim, lowercase, strip leading @ */
+function normalizeHandle(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return raw.trim().toLowerCase().replace(/^@/, "");
+}
+
+/** Extract a comparable domain from a website URL */
+function normalizeDomain(raw: string | null | undefined): string {
+  if (!raw) return "";
+  let url = raw.trim().toLowerCase();
+  // Strip protocol
+  url = url.replace(/^https?:\/\//, "");
+  // Strip www.
+  url = url.replace(/^www\./, "");
+  // Take only the hostname (strip path, query, hash)
+  url = url.split(/[/?#]/)[0] ?? "";
+  // Strip trailing dots/slashes
+  url = url.replace(/[./]+$/, "");
+  return url;
+}
+
+/** Normalize phone: strip non-digits. If prefixed with country code 1 (11 digits), strip 1. Also support 7-digit local numbers. */
+function normalizePhone(raw: string | null | undefined): string {
+  if (!raw) return "";
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length > 7 && digits.startsWith("1")) {
+    digits = digits.slice(1);
+  }
+  return digits;
+}
+
+/** Normalize business name for fuzzy matching: lowercase, strip non-alphanumeric */
+function normalizeBusinessName(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return raw.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// ─── Existing-Lead Index ──────────────────────────────────────────────────────
+
+interface LeadIdentityIndex {
+  byMastId: Set<string>;
+  byBusinessId: Set<string>;
+  byEmail: Set<string>;
+  byHandle: Set<string>;
+  byDomain: Set<string>;
+  byPhone: Set<string>;
+  byNameKey: Set<string>; // normalized businessName
+}
+
+function buildExistingLeadIndex(leads: Lead[]): LeadIdentityIndex {
+  const idx: LeadIdentityIndex = {
+    byMastId: new Set(),
+    byBusinessId: new Set(),
+    byEmail: new Set(),
+    byHandle: new Set(),
+    byDomain: new Set(),
+    byPhone: new Set(),
+    byNameKey: new Set(),
+  };
+  for (const l of leads) {
+    if (l.id != null) idx.byMastId.add(String(l.id));
+    if (l.businessId) idx.byBusinessId.add(l.businessId.trim().toLowerCase());
+    const email = normalizeEmail(l.email);
+    if (email) idx.byEmail.add(email);
+    const handle = normalizeHandle(l.instagramHandle);
+    if (handle) idx.byHandle.add(handle);
+    const domain = normalizeDomain(l.website);
+    if (domain) idx.byDomain.add(domain);
+    const phone = normalizePhone(l.phone);
+    if (phone) idx.byPhone.add(phone);
+    const nameKey = normalizeBusinessName(l.businessName);
+    if (nameKey) idx.byNameKey.add(nameKey);
+  }
+  return idx;
+}
+
+/** Returns true if a mapped CSV row matches ANY existing lead */
+function isExistingLead(
+  mapped: Record<string, string>,
+  existingIndex: LeadIdentityIndex,
+): boolean {
+  // 1. Mast ID — strongest signal (exact primary key match)
+  const mastId = (mapped.mastId ?? "").trim();
+  if (mastId && existingIndex.byMastId.has(mastId)) return true;
+
+  // 2. Business ID (Opportunity Engine UUID)
+  const bizId = (mapped.businessId ?? "").trim().toLowerCase();
+  if (bizId && existingIndex.byBusinessId.has(bizId)) return true;
+
+  // 3. Email
+  const email = normalizeEmail(mapped.email);
+  if (email && existingIndex.byEmail.has(email)) return true;
+
+  // 4. Instagram handle
+  const handle = normalizeHandle(mapped.instagramHandle);
+  if (handle && existingIndex.byHandle.has(handle)) return true;
+
+  // 5. Website domain
+  const domain = normalizeDomain(mapped.website);
+  if (domain && existingIndex.byDomain.has(domain)) return true;
+
+  // 6. Phone
+  const phone = normalizePhone(mapped.phone);
+  if (phone && existingIndex.byPhone.has(phone)) return true;
+
+  // 7. Business name (weakest — only use as fallback when no other identifiers)
+  const hasAnyStrongerField = email || handle || domain || phone || mastId || bizId;
+  if (!hasAnyStrongerField) {
+    const nameKey = normalizeBusinessName(mapped.businessName);
+    if (nameKey && existingIndex.byNameKey.has(nameKey)) return true;
+  }
+
+  return false;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function guessField(column: string): LeadFieldKey | null {
@@ -185,9 +321,11 @@ function guessField(column: string): LeadFieldKey | null {
   return FIELD_ALIASES[key] ?? null;
 }
 
-function buildPreview(rows: CsvRow[], mapping: Record<string, string>) {
-  const seen = new Set<string>();
-  const seenEmails = new Set<string>();
+function buildPreview(rows: CsvRow[], mapping: Record<string, string>, existingLeads: Lead[]) {
+  const existingIndex = buildExistingLeadIndex(existingLeads);
+  // Within-CSV dedup sets
+  const seenInCsv = new Set<string>();
+  const seenEmailsInCsv = new Set<string>();
   const parsed: ParsedRow[] = [];
   let invalid = 0;
   let duplicates = 0;
@@ -205,20 +343,31 @@ function buildPreview(rows: CsvRow[], mapping: Record<string, string>) {
     }
 
     const instagramHandle = mapped.instagramHandle ?? "";
-    const email = (mapped.email ?? "").toLowerCase();
-    const duplicateKey = `${businessName.toLowerCase()}|${instagramHandle.toLowerCase()}`;
-    if (seen.has(duplicateKey) || (email && seenEmails.has(email))) {
+    const email = normalizeEmail(mapped.email);
+    const mastId = (mapped.mastId ?? "").trim();
+
+    // Check against existing DB records
+    if (isExistingLead(mapped, existingIndex)) {
       duplicates += 1;
       return;
     }
 
-    seen.add(duplicateKey);
-    if (email) seenEmails.add(email);
+    // Within-CSV dedup (for rows within the same file that are identical to each other)
+    const duplicateKey = `${normalizeBusinessName(businessName)}|${normalizeHandle(instagramHandle)}`;
+    if (seenInCsv.has(duplicateKey) || (email && seenEmailsInCsv.has(email))) {
+      duplicates += 1;
+      return;
+    }
+
+    seenInCsv.add(duplicateKey);
+    if (email) seenEmailsInCsv.add(email);
     parsed.push({
       rowIndex: index,
       businessName,
       instagramHandle,
       email,
+      isDuplicate: false,
+      mastId,
       data: {
         ...mapped,
         businessName,
@@ -285,6 +434,8 @@ function parseCsv(text: string) {
 
 function leadsToCSV(leads: Lead[]): string {
   const headers = [
+    "Mast ID",
+    "Business ID",
     "Business Name",
     "Instagram Handle",
     "Email",
@@ -301,6 +452,8 @@ function leadsToCSV(leads: Lead[]): string {
     "Created At",
   ];
   const rows = leads.map((lead) => [
+    lead.id != null ? String(lead.id) : "",
+    lead.businessId ?? "",
     lead.businessName,
     lead.instagramHandle ?? "",
     lead.email ?? "",
@@ -495,8 +648,8 @@ function ImportExportPage() {
 
   // Import preview calculation
   const preview = useMemo(() => {
-    return csvRows.length > 0 ? buildPreview(csvRows, mapping) : null;
-  }, [csvRows, mapping]);
+    return csvRows.length > 0 ? buildPreview(csvRows, mapping, allLeads) : null;
+  }, [csvRows, mapping, allLeads]);
 
   const hasBusinessName = Object.values(mapping).includes("businessName");
 

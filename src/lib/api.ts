@@ -1289,20 +1289,111 @@ export async function bulkDeleteLeads(body: { ids: number[] }): Promise<BulkDele
 
 export async function bulkImportLeads(body: { leads: CreateLeadBody[] }): Promise<BulkImportResult> {
   const userId = await requireUserId();
-  
-  // Centralized check for the total batch size before importing
-  await UsageService.checkAllowance(userId, body.leads.length);
+
+  // ── Fetch ALL existing leads for this user to build the dedup index ──
+  // We need the full set to ensure no duplicates slip through.
+  const { data: existingRows, error: fetchErr } = await supabase!
+    .from("leads")
+    .select("id, business_id, business_name, email, instagram_handle, website, phone")
+    .eq("user_id", userId);
+  if (fetchErr) throw new ApiError(500, fetchErr.message, fetchErr);
+
+  // ── Build identity index for O(1) lookups ──
+  const byEmail = new Set<string>();
+  const byHandle = new Set<string>();
+  const byDomain = new Set<string>();
+  const byPhone = new Set<string>();
+  const byNameKey = new Set<string>();
+
+  const normEmail = (v: string | null) => (v ? v.trim().toLowerCase() : "");
+  const normHandle = (v: string | null) => (v ? v.trim().toLowerCase().replace(/^@/, "") : "");
+  const normDomain = (v: string | null) => {
+    if (!v) return "";
+    let u = v.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
+    u = (u.split(/[/?#]/)[0] ?? "").replace(/[./]+$/, "");
+    return u;
+  };
+  const normPhone = (v: string | null) => {
+    if (!v) return "";
+    let digits = v.replace(/\D/g, "");
+    if (digits.length > 7 && digits.startsWith("1")) {
+      digits = digits.slice(1);
+    }
+    return digits;
+  };
+  const normName = (v: string | null) => (v ? v.trim().toLowerCase().replace(/[^a-z0-9]/g, "") : "");
+
+  for (const row of existingRows ?? []) {
+    const e = normEmail(row.email as string | null);
+    if (e) byEmail.add(e);
+    const h = normHandle(row.instagram_handle as string | null);
+    if (h) byHandle.add(h);
+    const d = normDomain(row.website as string | null);
+    if (d) byDomain.add(d);
+    const p = normPhone(row.phone as string | null);
+    if (p) byPhone.add(p);
+    const n = normName(row.business_name as string | null);
+    if (n) byNameKey.add(n);
+  }
+
+  /** Check if a CreateLeadBody matches any existing record */
+  function isDuplicate(lead: CreateLeadBody): boolean {
+    const email = normEmail(lead.email ?? null);
+    if (email && byEmail.has(email)) return true;
+    const handle = normHandle(lead.instagramHandle ?? null);
+    if (handle && byHandle.has(handle)) return true;
+    const domain = normDomain(lead.website ?? null);
+    if (domain && byDomain.has(domain)) return true;
+    const phone = normPhone(lead.phone ?? null);
+    if (phone && byPhone.has(phone)) return true;
+    // Business name is the weakest signal — only use when no stronger identity exists
+    const hasStronger = email || handle || domain || phone;
+    if (!hasStronger) {
+      const nameKey = normName(lead.businessName ?? null);
+      if (nameKey && byNameKey.has(nameKey)) return true;
+    }
+    return false;
+  }
+
+  // ── Partition into new vs duplicate ──
+  const newLeads: Array<{ index: number; lead: CreateLeadBody }> = [];
+  let skipped = 0;
+  for (const [index, lead] of body.leads.entries()) {
+    if (isDuplicate(lead)) {
+      skipped += 1;
+    } else {
+      newLeads.push({ index, lead });
+    }
+  }
+
+  // Only check allowance for the truly-new rows
+  if (newLeads.length > 0) {
+    await UsageService.checkAllowance(userId, newLeads.length);
+  }
 
   const leads: Lead[] = [];
   const errors: Array<{ row: number; reason: string }> = [];
-  for (const [index, lead] of body.leads.entries()) {
+  for (const { index, lead } of newLeads) {
     try {
-      leads.push(await createLead(lead));
+      const created = await createLead(lead);
+      leads.push(created);
+      // Also add the newly created lead to the index so subsequent rows
+      // within the same batch cannot duplicate it (race-safe within batch).
+      const e = normEmail(lead.email ?? null);
+      if (e) byEmail.add(e);
+      const h = normHandle(lead.instagramHandle ?? null);
+      if (h) byHandle.add(h);
+      const d = normDomain(lead.website ?? null);
+      if (d) byDomain.add(d);
+      const p = normPhone(lead.phone ?? null);
+      if (p) byPhone.add(p);
+      const n = normName(lead.businessName ?? null);
+      if (n) byNameKey.add(n);
     } catch (err) {
       errors.push({ row: index + 1, reason: err instanceof Error ? err.message : "Import failed" });
     }
   }
-  return { imported: leads.length, skipped: 0, failed: errors.length, leads, errors };
+  return { imported: leads.length, skipped, failed: errors.length, leads, errors };
 }
 
 // Lead generation is handled by the external Python backend.

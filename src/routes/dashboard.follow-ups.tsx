@@ -24,6 +24,7 @@ import {
   Copy,
 } from "lucide-react";
 import { toast } from "sonner";
+import missionHeroBg from "@/assets/todays-mission-card-background.webp";
 import { getLead, type FollowupWithLead, type Lead, type OutreachChannel } from "@/lib/api";
 import {
   useFollowups,
@@ -1109,68 +1110,14 @@ function TodayMissionHero({
 
   return (
     <div style={{ containerType: "inline-size" }} className="rounded-[22px] border border-blue-400/[0.14] bg-[#070A14] relative overflow-hidden min-h-[236px] shadow-[0_8px_40px_-8px_rgba(0,0,0,0.7),inset_0_1px_0_rgba(255,255,255,0.04)]">
-      {/* Soft blue glow bleeding in from the left edge */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(ellipse 55% 70% at -5% 70%, rgba(37,99,235,0.38) 0%, rgba(29,78,216,0.14) 45%, transparent 75%), radial-gradient(ellipse 60% 40% at 40% 115%, rgba(37,99,235,0.22) 0%, transparent 70%)",
-        }}
-      />
-
-      {/* Silk waves */}
-      <svg
-        className="absolute inset-0 w-full h-full pointer-events-none"
-        viewBox="0 0 600 240"
-        preserveAspectRatio="none"
-        fill="none"
+      {/* Background art */}
+      <img
+        src={missionHeroBg}
+        alt=""
         aria-hidden
-      >
-        <defs>
-          <linearGradient id="silkA" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.85" />
-            <stop offset="45%" stopColor="#2563EB" stopOpacity="0.7" />
-            <stop offset="100%" stopColor="#1D4ED8" stopOpacity="0.15" />
-          </linearGradient>
-          <linearGradient id="silkB" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#60A5FA" stopOpacity="0.45" />
-            <stop offset="60%" stopColor="#3B82F6" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#1E40AF" stopOpacity="0.05" />
-          </linearGradient>
-          <linearGradient id="silkFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#1D4ED8" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#070A14" stopOpacity="0" />
-          </linearGradient>
-          <filter id="silkGlow" x="-5%" y="-40%" width="110%" height="180%">
-            <feGaussianBlur stdDeviation="3" />
-          </filter>
-        </defs>
-        {/* left-edge swell */}
-        <path d="M 0,110 C 22,118 40,150 48,205 C 52,225 56,236 62,240 L 0,240 Z" fill="url(#silkFill)" />
-        <path d="M 0,96 C 26,104 46,140 56,200" stroke="url(#silkB)" strokeWidth="1" />
-        <path d="M 0,128 C 18,136 34,165 42,215" stroke="url(#silkB)" strokeWidth="0.8" />
-        {/* base wave fill */}
-        <path
-          d="M 0,205 C 90,170 170,190 270,210 C 360,226 430,200 520,212 C 560,217 585,222 600,220 L 600,240 L 0,240 Z"
-          fill="url(#silkFill)"
-        />
-        {/* faint secondary silk lines */}
-        <path d="M 0,222 C 100,196 190,214 290,226 C 380,236 470,214 600,230" stroke="url(#silkB)" strokeWidth="1" />
-        <path d="M 0,214 C 110,184 200,206 300,220 C 390,230 480,206 600,226" stroke="url(#silkB)" strokeWidth="0.8" />
-        {/* main crest: blurred halo + crisp line */}
-        <path
-          d="M 0,205 C 90,170 170,190 270,210 C 360,226 430,200 520,212 C 560,217 585,222 600,220"
-          stroke="#3B82F6"
-          strokeOpacity="0.55"
-          strokeWidth="5"
-          filter="url(#silkGlow)"
-        />
-        <path
-          d="M 0,205 C 90,170 170,190 270,210 C 360,226 430,200 520,212 C 560,217 585,222 600,220"
-          stroke="url(#silkA)"
-          strokeWidth="1.6"
-        />
-      </svg>
+        draggable={false}
+        className="absolute inset-0 w-full h-full object-cover object-left-bottom pointer-events-none select-none"
+      />
 
       {/* Content */}
       <div className="relative z-10 h-full px-6 sm:px-8 py-7 flex items-center justify-between gap-3">

@@ -30,7 +30,6 @@ vi.mock("@/components/mast/FeatureGate", () => ({ FeatureGate: ({ children }: { 
 vi.mock("@/lib/api", () => ({ getLead: vi.fn() }));
 vi.mock("@/hooks/use-mast-api", () => ({
   useFollowups: () => ({ data: h.followups, isLoading: false, isError: false, isFetching: false, refetch: vi.fn() }),
-  useAnalytics: () => ({ data: { replyRate: 50 } }),
   useMissionWeekStats: () => ({
     data: { actions: 7, replies: 3, meetings: 1, closed: 0, daily: { actions: [0, 1, 2, 0, 1, 2, 1], replies: [0, 0, 1, 0, 1, 0, 1], meetings: [0, 0, 0, 0, 0, 0, 1], closed: [0, 0, 0, 0, 0, 0, 0] } },
   }),
@@ -57,7 +56,7 @@ function mk(id: number, name: string, dueAt: Date, extra: Record<string, unknown
 }
 
 function Page() {
-  const C = (Route as unknown as { options: { component: () => JSX.Element } }).options.component;
+  const C = (Route as unknown as { options: { component: () => React.ReactElement } }).options.component;
   return <C />;
 }
 
@@ -137,5 +136,32 @@ describe("Mission page (real data)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Take Action" }));
     expect(h.navigate).toHaveBeenCalledWith({ to: "/dashboard/leads/$leadId", params: { leadId: "12" } });
     expect(h.updateMutate).not.toHaveBeenCalled();
+  });
+
+  it("never claims a lead replied just because a follow-up was scheduled", () => {
+    // scheduling a follow-up sets status "follow_up_due"; that is not a reply
+    h.followups = [mk(20, "Scheduled Only", noonToday(), {}, { status: "follow_up_due", lastContactedAt: new Date(Date.now() - 3 * DAY).toISOString() })];
+    render(<Page />);
+    expect(screen.queryByText(/replied/i)).toBeNull();
+    expect(screen.getByText("Last contacted 3 days ago")).toBeTruthy();
+    expect(screen.getByText("No warm conversations yet")).toBeTruthy();
+  });
+
+  it("does not invent a time for date-only due dates", () => {
+    const d = new Date();
+    // what the date picker stores: today's date at 00:00 UTC
+    const dateOnly = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    h.followups = [mk(21, "Date Only", dateOnly)];
+    render(<Page />);
+    const row = screen.getByText("Date Only").closest("tr")!;
+    expect(row.textContent).toContain("Today");
+    expect(row.textContent).not.toMatch(/AM|PM/);
+  });
+
+  it("has no LinkedIn option and no refresh button", () => {
+    h.followups = [mk(22, "Plain", noonToday())];
+    render(<Page />);
+    expect(screen.queryByText("LinkedIn")).toBeNull();
+    expect(screen.queryByTitle("Refresh")).toBeNull();
   });
 });

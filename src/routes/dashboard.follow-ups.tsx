@@ -10,7 +10,6 @@ import {
   Clock,
   Instagram,
   Lightbulb,
-  Linkedin,
   Mail,
   MoreHorizontal,
   Phone,
@@ -27,7 +26,6 @@ import {
 import { toast } from "sonner";
 import { getLead, type FollowupWithLead, type Lead, type OutreachChannel } from "@/lib/api";
 import {
-  useAnalytics,
   useFollowups,
   useMissionWeekStats,
   useRecordLeadActivity,
@@ -79,8 +77,7 @@ type MissionItem = FollowupWithLead & {
 
 function MissionsPage() {
   const navigate = useNavigate();
-  const { data: rawFollowups = [], isLoading, isError, isFetching, refetch } = useFollowups({ limit: 1000 });
-  const { data: analytics } = useAnalytics();
+  const { data: rawFollowups = [], isLoading, isError, refetch } = useFollowups({ limit: 1000 });
   const { data: weekStats } = useMissionWeekStats();
   const updateFollowup = useUpdateFollowup();
   const recordActivity = useRecordLeadActivity();
@@ -230,7 +227,6 @@ function MissionsPage() {
         if (typeFilter === "email" && cType !== "email") return false;
         if (typeFilter === "phone" && cType !== "phone") return false;
         if (typeFilter === "instagram" && cType !== "instagram") return false;
-        if (typeFilter === "linkedin" && cType !== "linkedin") return false;
       }
       // Priority
       if (priorityFilter !== "all" && item.priority !== priorityFilter) {
@@ -283,10 +279,11 @@ function MissionsPage() {
   const todayDone = mission.completedToday.length;
   const todayTotal = mission.todayPool.length + todayDone;
   const todayPct = todayTotal > 0 ? Math.round((todayDone / todayTotal) * 100) : 0;
-  const replyRate = analytics?.replyRate ?? null;
-  const estReplies = replyRate !== null ? Math.round((mission.todayPool.length * replyRate) / 100) : null;
   const warmToday = mission.todayPool.filter(isWarm).length;
-  const meetingsToday = mission.todayPool.filter((item) => stageOf(item.lead) === "meeting_booked").length;
+  const leadsToReach = new Set(mission.todayPool.map((item) => item.leadId)).size;
+  const goingCold = mission.todayPool.filter(
+    (item) => item.daysSinceContact !== null && item.daysSinceContact >= 7,
+  ).length;
   const filtersActive =
     searchQuery.trim() !== "" || typeFilter !== "all" || priorityFilter !== "all" || dueTimeFilter !== "all";
   const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
@@ -325,19 +322,6 @@ function MissionsPage() {
               <span>{currentDateStr}</span>
             </div>
 
-            {/* Quick action / refresh button */}
-            <button
-              onClick={() => {
-                void refetch().then((res) =>
-                  res.isError ? toast.error("Couldn't refresh missions") : toast.success("Missions refreshed"),
-                );
-              }}
-              disabled={isFetching}
-              title="Refresh"
-              className="size-9 rounded-xl bg-[#0E1424] border border-white/[0.08] hover:border-white/20 hover:bg-white/[0.05] flex items-center justify-center text-slate-400 hover:text-white transition-all shadow-sm"
-            >
-              <RotateCcw className={`size-3.5 ${isFetching ? "animate-spin" : ""}`} />
-            </button>
           </div>
         </div>
       </header>
@@ -697,20 +681,20 @@ function MissionsPage() {
               {/* Completing today's actions could... (7 cols) */}
               <div className="lg:col-span-7 rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
                 <div className="text-xs sm:text-sm font-semibold text-slate-300">
-                  Completing today&apos;s actions could lead to...
+                  Completing today&apos;s actions will...
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3 pt-2">
-                  {/* Expected replies (from the user's own reply rate) */}
+                  {/* Leads to reach */}
                   <div className="flex items-center gap-3 rounded-xl bg-[#090D18]/50 border border-white/[0.05] p-3">
                     <div className="size-9 rounded-xl bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center text-emerald-400 shrink-0">
                       <MessageSquare className="size-4 fill-emerald-400/20 text-emerald-400" />
                     </div>
                     <div>
-                      <div className="text-lg sm:text-xl font-bold text-emerald-400 leading-none">
-                        {estReplies === null ? "–" : `~${estReplies}`}
+                      <div className="text-lg sm:text-xl font-bold text-emerald-400 leading-none">{leadsToReach}</div>
+                      <div className="text-[11px] text-slate-400 mt-1 leading-none">
+                        {plural(leadsToReach, "Lead")} to reach
                       </div>
-                      <div className="text-[11px] text-slate-400 mt-1 leading-none">Expected replies</div>
                     </div>
                   </div>
 
@@ -727,24 +711,17 @@ function MissionsPage() {
                     </div>
                   </div>
 
-                  {/* Meetings to protect */}
+                  {/* Going cold */}
                   <div className="flex items-center gap-3 rounded-xl bg-[#090D18]/50 border border-white/[0.05] p-3">
                     <div className="size-9 rounded-xl bg-purple-500/15 border border-purple-500/25 flex items-center justify-center text-purple-400 shrink-0">
-                      <Star className="size-4 fill-purple-400 text-purple-400" />
+                      <Clock className="size-4 text-purple-400" />
                     </div>
                     <div>
-                      <div className="text-lg sm:text-xl font-bold text-purple-400 leading-none">{meetingsToday}</div>
-                      <div className="text-[11px] text-slate-400 mt-1 leading-none">
-                        {plural(meetingsToday, "Meeting")} to protect
-                      </div>
+                      <div className="text-lg sm:text-xl font-bold text-purple-400 leading-none">{goingCold}</div>
+                      <div className="text-[11px] text-slate-400 mt-1 leading-none">Going cold (7+ days)</div>
                     </div>
                   </div>
                 </div>
-                {replyRate !== null && (
-                  <div className="text-[10px] text-slate-500 mt-2">
-                    Estimated from your {replyRate}% overall reply rate.
-                  </div>
-                )}
               </div>
             </div>
 
@@ -908,7 +885,6 @@ function MissionsPage() {
                     <option value="email">Email</option>
                     <option value="phone">Phone</option>
                     <option value="instagram">Instagram</option>
-                    <option value="linkedin">LinkedIn</option>
                   </select>
 
                   {/* Priority Filter */}
@@ -1297,13 +1273,6 @@ function ActionChannelIcon({ channel }: { channel: string }) {
       </div>
     );
   }
-  if (type === "linkedin") {
-    return (
-      <div className="size-7 rounded-lg bg-blue-500/15 border border-blue-500/25 flex items-center justify-center text-blue-400 shrink-0">
-        <Linkedin className="size-3.5" />
-      </div>
-    );
-  }
   return (
     <div className="size-7 rounded-lg bg-sky-500/15 border border-sky-500/25 flex items-center justify-center text-sky-400 shrink-0">
       <Mail className="size-3.5" />
@@ -1388,6 +1357,10 @@ function LoadingMissionsView() {
 
 /** Normalised pipeline stage of a lead (handles legacy status values too). */
 function stageOf(lead: Lead | undefined) {
+  const raw = (lead?.status ?? "").toLowerCase().trim();
+  // "follow_up_due" is only set when a follow-up gets scheduled. It says nothing
+  // about whether the lead replied, so fall back to what we actually know.
+  if (raw === "follow_up_due") return lead?.lastContactedAt ? "email_sent" : "new";
   return normalizeLeadStatus(lead?.status);
 }
 
@@ -1467,14 +1440,13 @@ function toMissionItem(followup: FollowupWithLead): MissionItem {
   let actionTitle = "Follow Up";
   if (ch === "phone") actionTitle = "Call";
   else if (ch === "instagram") actionTitle = "DM";
-  else if (ch === "linkedin") actionTitle = "Message";
   else if (stage === "meeting_booked") actionTitle = "Confirm Meeting";
   else if (stage === "replied") actionTitle = "Reply";
 
   // Details: the user's own note first, then a stage-aware reason
   const detailsText =
     followup.notes?.trim() ||
-    actionQueueReason({ lead, priority, score, daysSinceContact }) ||
+    actionQueueReason({ lead, followup, daysSinceContact }) ||
     "Following up on our recent outreach.";
 
   const timeLabel = (d: Date) =>
@@ -1486,7 +1458,8 @@ function toMissionItem(followup: FollowupWithLead): MissionItem {
   const dueD = parseDate(followup.dueAt);
   if (dueState === "overdue") {
     const hoursAgo = Math.max(1, Math.round((Date.now() - dateTime(followup.dueAt)) / 3_600_000));
-    displayDue = hoursAgo < 24 ? `${hoursAgo}h ago` : `${daysOverdue}d overdue`;
+    const dateOnly = !!dueD && dueD.getHours() === 0 && dueD.getMinutes() === 0;
+    displayDue = hoursAgo < 24 && !dateOnly ? `${hoursAgo}h ago` : `${daysOverdue}d overdue`;
   } else if (dueState === "today") {
     displayDue = `Today${dueD ? timeLabel(dueD) : ""}`;
   } else if (dueState === "completed") {
@@ -1585,7 +1558,7 @@ function buildCoachSentence(item: MissionItem | null): string {
     return `Start with ${name}. They have a meeting booked: follow up now so it doesn't slip.`;
   }
   if (stage === "replied") {
-    return `Start with ${name}. They've replied before, so a timely follow-up is the highest-value action in your queue.`;
+    return `Start with ${name}. You marked them as replied, so a timely follow-up is the highest-value action in your queue.`;
   }
   if (item.dueState === "overdue") {
     return `${name} is overdue by ${item.daysOverdue} ${item.daysOverdue === 1 ? "day" : "days"}. Clear this first to protect your response rate.`;
@@ -1597,7 +1570,7 @@ function buildCoachReasons(item: MissionItem): string[] {
   const reasons: string[] = [];
   const stage = stageOf(item.lead);
   if (stage === "meeting_booked") reasons.push("Meeting booked: momentum is already established");
-  else if (stage === "replied") reasons.push("They've replied: the conversation window is open");
+  else if (stage === "replied") reasons.push("Marked as replied");
 
   if (item.dueState === "overdue") {
     reasons.push(`${item.daysOverdue} ${item.daysOverdue === 1 ? "day" : "days"} overdue`);
@@ -1623,23 +1596,30 @@ function buildCoachTip(item: MissionItem | null): string {
       : "";
   if (type === "phone") return `Call ${item.leadName}${since}. Lead with one specific reason for the call.`;
   if (type === "instagram") return `Send ${item.leadName} a short DM${since} that references their recent posts.`;
-  if (type === "linkedin") return `Message ${item.leadName}${since} with one line tying back to your last touch.`;
   return `Send ${item.leadName} a short, personalized email${since} that references something specific about their business.`;
 }
 
+/** Details line built only from facts stored on the follow-up / lead. */
 function actionQueueReason(item: {
   lead?: Lead;
-  priority: string;
-  score: number;
+  followup: FollowupWithLead;
   daysSinceContact: number | null;
 }): string {
   const stage = stageOf(item.lead);
-  if (stage === "meeting_booked") return "Meeting booked: keep momentum going";
-  if (stage === "replied") return "They've replied: keep the conversation moving";
-  if (item.daysSinceContact !== null && item.daysSinceContact >= 14)
-    return `${item.daysSinceContact} days since last contact: at risk of going cold`;
-  if (item.priority === "high") return "High-priority lead: follow up promptly";
-  return "Scheduled follow-up";
+  const parts: string[] = [];
+  if (item.followup.sequenceName) {
+    parts.push(
+      item.followup.stepNumber
+        ? `${item.followup.sequenceName}, step ${item.followup.stepNumber}`
+        : item.followup.sequenceName,
+    );
+  }
+  if (stage === "meeting_booked") parts.push("Meeting booked");
+  else if (stage === "replied") parts.push("Marked as replied");
+  if (item.daysSinceContact === null) parts.push("No contact logged yet");
+  else if (item.daysSinceContact === 0) parts.push("Contacted today");
+  else parts.push(`Last contacted ${item.daysSinceContact} ${item.daysSinceContact === 1 ? "day" : "days"} ago`);
+  return parts.join(" · ");
 }
 
 function dueStateForFollowup(followup: FollowupWithLead): MissionItem["dueState"] {
@@ -1668,7 +1648,6 @@ function channelType(channel: string) {
   if (normalized === "email") return "email";
   if (normalized === "phone") return "phone";
   if (normalized === "instagram" || normalized === "ig" || normalized === "instagram_dm") return "instagram";
-  if (normalized === "linkedin") return "linkedin";
   return "general";
 }
 
@@ -1719,7 +1698,14 @@ function daysFromToday(date: string | null | undefined) {
 function parseDate(date: string | null | undefined) {
   if (!date) return null;
   const value = new Date(date);
-  return Number.isNaN(value.getTime()) ? null : value;
+  if (Number.isNaN(value.getTime())) return null;
+  // The follow-up date picker stores a date with no time (midnight UTC). Treat it
+  // as that calendar day at local midnight, so it never shows a made-up time
+  // (e.g. "3:00 AM") or lands on the wrong day in other timezones.
+  if (value.getUTCHours() === 0 && value.getUTCMinutes() === 0 && value.getUTCSeconds() === 0 && value.getUTCMilliseconds() === 0) {
+    return new Date(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
+  }
+  return value;
 }
 
 function dateTime(date: string | null | undefined) {

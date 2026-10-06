@@ -51,26 +51,26 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
     if (targetPlan === "starter") {
       features = [
         "Mission Follow-ups to track interactions",
+        "Global Search (expanded from Local + USA)",
         "More daily opportunities (100 Opportunities / Day cap)",
         "AI Discovery Recommendations",
         "Instagram Profiles",
-        "Regional Search",
       ];
     } else if (targetPlan === "pro") {
       features = [
         "Full Pipeline workspace",
+        "AI Pipeline Coaching & Insights",
         "Business Websites",
-        "AI Pipeline Coaching & Recommendations",
         "Higher discovery limits (400 Opportunities / Day cap)",
         "3 Team Seats",
       ];
     } else if (targetPlan === "premium") {
       features = [
-        "AI Executive Briefings",
-        "Weekly Intelligence",
+        "Highest AI Suite: Executive Briefings & Weekly Intelligence",
         "AI Opportunity Insights",
         "Unlimited Team Seats",
         "Highest discovery limits (1,000 Opportunities / Day cap)",
+        "Everything included",
       ];
     }
     return { type: "upgrade", features };
@@ -79,23 +79,22 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
     if (targetPlan === "free") {
       features = [
         "Mission Follow-ups",
+        "Global Search (reverts to Local + USA)",
         "Instagram Profiles",
         "AI Discovery Recommendations",
-        "Regional Search",
         "Daily opportunity discovery above 20 Opportunities / Day",
       ];
     } else if (targetPlan === "starter") {
       features = [
         "Full Pipeline workspace",
         "Business Websites",
-        "AI Pipeline Coaching & Recommendations",
+        "AI Pipeline Coaching & Insights",
         "High daily caps (above 100 Opportunities / Day)",
         "Additional team seats (reduces to 1 Team Seat)",
       ];
     } else if (targetPlan === "pro") {
       features = [
-        "AI Executive Briefings",
-        "Weekly Intelligence",
+        "Highest AI Suite (Executive Briefings & Weekly Intelligence)",
         "AI Opportunity Insights",
         "Unlimited Team Seats (reduces to 3 Team Seats)",
       ];
@@ -212,10 +211,10 @@ const COMPARISON_ROWS: ComparisonRow[] = [
   },
   {
     feature: "Search coverage",
-    free: "Basic",
-    starter: "Extended",
-    pro: "Advanced",
-    premium: "Maximum",
+    free: "Local + USA",
+    starter: "Global",
+    pro: "Global",
+    premium: "Global",
   },
   {
     feature: "Contact channels",
@@ -228,8 +227,8 @@ const COMPARISON_ROWS: ComparisonRow[] = [
     feature: "AI features",
     free: "Basic",
     starter: "Advanced",
-    pro: "Advanced",
-    premium: "Advanced",
+    pro: "Coaching & Insights",
+    premium: "Executive AI (Highest)",
   },
   {
     feature: "Relationships (CRM)",
@@ -239,9 +238,16 @@ const COMPARISON_ROWS: ComparisonRow[] = [
     premium: true,
   },
   {
-    feature: "Pipeline",
-    free: true,
+    feature: "Mission (Follow-ups)",
+    free: false,
     starter: true,
+    pro: true,
+    premium: true,
+  },
+  {
+    feature: "Pipeline",
+    free: false,
+    starter: false,
     pro: true,
     premium: true,
   },

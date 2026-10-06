@@ -354,176 +354,17 @@ function MissionsPage() {
         ) : (
           <>
             {/* ── ROW 1: HERO + STATUS + AI COACH ─────────────────────────────── */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,46fr)_minmax(0,22fr)_minmax(0,32fr)] gap-4 items-stretch">
               {/* Card 1: Today's Mission HERO (5 cols) */}
-              <div className="lg:col-span-5 rounded-2xl border border-white/[0.08] bg-[#0A0E1A] p-5 sm:p-6 relative overflow-hidden flex flex-col justify-between shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)] min-h-[175px]">
-                {/* Ambient glow in top-left & bottom */}
-                <div
-                  className="absolute -top-10 -left-10 w-52 h-52 pointer-events-none rounded-full"
-                  style={{
-                    background: "radial-gradient(circle, rgba(59, 130, 246, 0.16) 0%, rgba(99, 102, 241, 0.08) 45%, transparent 70%)",
-                  }}
-                />
-                <div
-                  className="absolute bottom-0 inset-x-0 h-28 pointer-events-none"
-                  style={{
-                    background: "linear-gradient(to top, rgba(37, 99, 235, 0.12) 0%, rgba(59, 130, 246, 0.04) 40%, transparent 100%)",
-                  }}
-                />
-
-                {/* Glowing Wave Ribbons Background */}
-                <div className="absolute inset-0 pointer-events-none overflow-hidden">
-                  <svg
-                    className="absolute bottom-0 left-0 right-0 w-full h-28"
-                    viewBox="0 0 600 140"
-                    preserveAspectRatio="none"
-                    fill="none"
-                  >
-                    <defs>
-                      <linearGradient id="waveStrokeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="#2563EB" stopOpacity="0.9" />
-                        <stop offset="35%" stopColor="#3B82F6" stopOpacity="1" />
-                        <stop offset="65%" stopColor="#60A5FA" stopOpacity="0.95" />
-                        <stop offset="85%" stopColor="#38BDF8" stopOpacity="0.8" />
-                        <stop offset="100%" stopColor="#1D4ED8" stopOpacity="0.4" />
-                      </linearGradient>
-
-                      <linearGradient id="waveFillGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-                        <stop offset="0%" stopColor="#2563EB" stopOpacity="0.22" />
-                        <stop offset="50%" stopColor="#1E40AF" stopOpacity="0.12" />
-                        <stop offset="100%" stopColor="#0A0E1A" stopOpacity="0.85" />
-                      </linearGradient>
-
-                      <linearGradient id="waveSubtleGrad1" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="#60A5FA" stopOpacity="0.4" />
-                        <stop offset="50%" stopColor="#818CF8" stopOpacity="0.3" />
-                        <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.1" />
-                      </linearGradient>
-
-                      <linearGradient id="waveSubtleGrad2" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="#38BDF8" stopOpacity="0.25" />
-                        <stop offset="60%" stopColor="#6366F1" stopOpacity="0.35" />
-                        <stop offset="100%" stopColor="#1E3A8A" stopOpacity="0.1" />
-                      </linearGradient>
-
-                      <filter id="neonWaveGlow" x="-10%" y="-30%" width="120%" height="160%">
-                        <feDropShadow dx="0" dy="0" stdDeviation="3.5" floodColor="#3B82F6" floodOpacity="0.75" />
-                        <feDropShadow dx="0" dy="0" stdDeviation="1.5" floodColor="#60A5FA" floodOpacity="0.9" />
-                      </filter>
-                    </defs>
-
-                    {/* Underlying filled wave area */}
-                    <path
-                      d="M 0,95 C 60,80 130,110 210,112 C 290,114 360,82 440,92 C 510,100 560,118 600,108 L 600,140 L 0,140 Z"
-                      fill="url(#waveFillGrad)"
-                    />
-
-                    {/* Secondary fine silk wave curves */}
-                    <path
-                      d="M 0,110 C 80,95 150,122 230,118 C 310,114 380,96 460,102 C 530,108 570,122 600,118"
-                      stroke="url(#waveSubtleGrad1)"
-                      strokeWidth="1.2"
-                    />
-                    <path
-                      d="M 0,85 C 70,70 140,98 220,106 C 300,114 370,75 450,86 C 510,95 565,112 600,102"
-                      stroke="url(#waveSubtleGrad2)"
-                      strokeWidth="1"
-                    />
-
-                    {/* Primary brilliant glowing wave crest */}
-                    <path
-                      d="M 0,95 C 60,80 130,110 210,112 C 290,114 360,82 440,92 C 510,100 560,118 600,108"
-                      stroke="url(#waveStrokeGrad)"
-                      strokeWidth="2.2"
-                      filter="url(#neonWaveGlow)"
-                    />
-                  </svg>
-                </div>
-
-                {/* Content */}
-                <div className="relative z-10 flex items-center justify-between gap-4">
-                  <div className="min-w-0 flex-1">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400 block mb-2">
-                      TODAY&apos;S MISSION
-                    </span>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-4xl sm:text-[42px] font-bold text-white tracking-tight leading-none">
-                        {todayTotal}
-                      </span>
-                      <span className="text-4xl sm:text-[42px] font-bold tracking-tight leading-none bg-gradient-to-r from-[#C084FC] via-[#7C8DF8] to-[#38BDF8] bg-clip-text text-transparent">
-                        {plural(todayTotal, "Action")}
-                      </span>
-                    </div>
-                    <p className="text-[13px] text-slate-400 leading-snug max-w-[330px] mt-2.5">
-                      {todayTotal === 0
-                        ? "Nothing due today. Check Upcoming or reach out to new prospects."
-                        : mission.todayPool.length === 0
-                          ? "Mission complete. Every action due today is done."
-                          : "Complete today's actions to keep your pipeline moving and create more opportunities."}
-                    </p>
-                  </div>
-
-                  {/* Circular Progress Ring */}
-                  <div className="relative shrink-0 flex items-center justify-center size-24 sm:size-28">
-                    {/* Dark inner circle disc */}
-                    <div className="absolute inset-1.5 rounded-full bg-[#0B1023] border border-white/[0.04] shadow-inner" />
-
-                    <svg className="size-full" viewBox="0 0 100 100">
-                      <defs>
-                        <linearGradient id="heroArcGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                          <stop offset="0%" stopColor="#C084FC" />
-                          <stop offset="35%" stopColor="#6366F1" />
-                          <stop offset="70%" stopColor="#3B82F6" />
-                          <stop offset="100%" stopColor="#00E5FF" />
-                        </linearGradient>
-                        <filter id="arcGlow" x="-20%" y="-20%" width="140%" height="140%">
-                          <feDropShadow dx="0" dy="0" stdDeviation="2.5" floodColor="#3B82F6" floodOpacity="0.5" />
-                        </filter>
-                      </defs>
-
-                      {/* Unfilled track */}
-                      <circle
-                        cx="50"
-                        cy="50"
-                        r="38"
-                        stroke="#161E35"
-                        strokeWidth="6"
-                        fill="none"
-                      />
-
-                      {/* Progress arc: starts at 12 o'clock, fills clockwise with real completion */}
-                      {todayPct > 0 && (
-                        <circle
-                          cx="50"
-                          cy="50"
-                          r="38"
-                          pathLength={100}
-                          stroke="url(#heroArcGradient)"
-                          strokeWidth="6"
-                          strokeLinecap="round"
-                          fill="none"
-                          strokeDasharray={`${todayPct} 100`}
-                          transform="rotate(-90 50 50)"
-                          filter="url(#arcGlow)"
-                        />
-                      )}
-                    </svg>
-
-                    {/* Center text */}
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center select-none pointer-events-none">
-                      <span className="text-lg sm:text-xl font-bold text-white tracking-tight leading-none">
-                        {todayDone}/{todayTotal}
-                      </span>
-                      <span className="text-[11px] text-slate-400 font-medium mt-1 leading-none">
-                        completed
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <TodayMissionHero
+                total={todayTotal}
+                done={todayDone}
+                pct={todayPct}
+                remaining={mission.todayPool.length}
+              />
 
               {/* Card 2: Mission Status (3 cols) */}
-              <div className="lg:col-span-3 rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between gap-3 shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
+              <div className="rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between gap-3 shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
                 {/* Overdue */}
                 <div className="flex items-center gap-3">
                   <div className="size-7 rounded-full bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
@@ -536,7 +377,7 @@ function MissionsPage() {
                     <div className="text-xs sm:text-sm font-semibold text-slate-200 leading-tight">
                       Overdue
                     </div>
-                    <div className="text-[11px] text-slate-400 leading-tight truncate">
+                    <div className="text-[11px] text-slate-400 leading-tight">
                       Needs immediate attention
                     </div>
                   </div>
@@ -554,7 +395,7 @@ function MissionsPage() {
                     <div className="text-xs sm:text-sm font-semibold text-slate-200 leading-tight">
                       Due Today
                     </div>
-                    <div className="text-[11px] text-slate-400 leading-tight truncate">
+                    <div className="text-[11px] text-slate-400 leading-tight">
                       Keep momentum going
                     </div>
                   </div>
@@ -572,7 +413,7 @@ function MissionsPage() {
                     <div className="text-xs sm:text-sm font-semibold text-slate-200 leading-tight">
                       At Risk
                     </div>
-                    <div className="text-[11px] text-slate-400 leading-tight truncate">
+                    <div className="text-[11px] text-slate-400 leading-tight">
                       May need follow-up
                     </div>
                   </div>
@@ -590,7 +431,7 @@ function MissionsPage() {
                     <div className="text-xs sm:text-sm font-semibold text-slate-200 leading-tight">
                       Completed
                     </div>
-                    <div className="text-[11px] text-slate-400 leading-tight truncate">
+                    <div className="text-[11px] text-slate-400 leading-tight">
                       Great progress!
                     </div>
                   </div>
@@ -598,7 +439,7 @@ function MissionsPage() {
               </div>
 
               {/* Card 3: AI Coach (4 cols) */}
-              <div className="lg:col-span-4 rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
+              <div className="rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
                 <div>
                   {/* Top Header */}
                   <div className="flex items-center justify-between">
@@ -632,7 +473,7 @@ function MissionsPage() {
                 >
                   <div className="flex items-start gap-2.5 min-w-0">
                     <Lightbulb className="size-4 text-amber-400 shrink-0 mt-0.5" />
-                    <span className="text-xs text-slate-300 leading-snug line-clamp-2">
+                    <span className="text-xs text-slate-300 leading-snug line-clamp-3">
                       {mission.coachTip}
                     </span>
                   </div>
@@ -642,9 +483,9 @@ function MissionsPage() {
             </div>
 
             {/* ── ROW 2: THIS WEEK + COMPLETING TODAY'S ACTIONS COULD... ────── */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
-              {/* This Week (5 cols) */}
-              <div className="lg:col-span-5 rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,51fr)_minmax(0,49fr)] gap-4 items-stretch">
+              {/* This Week */}
+              <div className="rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     <TrendingUp className="size-4 text-blue-400" />
@@ -678,8 +519,8 @@ function MissionsPage() {
                 </div>
               </div>
 
-              {/* Completing today's actions could... (7 cols) */}
-              <div className="lg:col-span-7 rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
+              {/* Completing today's actions */}
+              <div className="rounded-2xl border border-white/[0.08] bg-[#0E1424] p-4 sm:p-5 flex flex-col justify-between shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)]">
                 <div className="text-xs sm:text-sm font-semibold text-slate-300">
                   Completing today&apos;s actions will...
                 </div>
@@ -1240,6 +1081,153 @@ function MissionsPage() {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+function TodayMissionHero({
+  total,
+  done,
+  pct,
+  remaining,
+}: {
+  total: number;
+  done: number;
+  pct: number;
+  remaining: number;
+}) {
+  // Progress arc: starts at 12 o'clock and sweeps clockwise.
+  const R = 40;
+  const C = 50;
+  const arcPath = (() => {
+    if (pct <= 0) return "";
+    if (pct >= 100) {
+      return `M ${C} ${C - R} A ${R} ${R} 0 1 1 ${C} ${C + R} A ${R} ${R} 0 1 1 ${C} ${C - R}`;
+    }
+    const theta = (pct / 100) * 2 * Math.PI;
+    const x = C + R * Math.sin(theta);
+    const y = C - R * Math.cos(theta);
+    return `M ${C} ${C - R} A ${R} ${R} 0 ${theta > Math.PI ? 1 : 0} 1 ${x.toFixed(3)} ${y.toFixed(3)}`;
+  })();
+
+  return (
+    <div style={{ containerType: "inline-size" }} className="rounded-[22px] border border-blue-400/[0.14] bg-[#070A14] relative overflow-hidden min-h-[236px] shadow-[0_8px_40px_-8px_rgba(0,0,0,0.7),inset_0_1px_0_rgba(255,255,255,0.04)]">
+      {/* Soft blue glow bleeding in from the left edge */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(ellipse 55% 70% at -5% 70%, rgba(37,99,235,0.38) 0%, rgba(29,78,216,0.14) 45%, transparent 75%), radial-gradient(ellipse 60% 40% at 40% 115%, rgba(37,99,235,0.22) 0%, transparent 70%)",
+        }}
+      />
+
+      {/* Silk waves */}
+      <svg
+        className="absolute inset-0 w-full h-full pointer-events-none"
+        viewBox="0 0 600 240"
+        preserveAspectRatio="none"
+        fill="none"
+        aria-hidden
+      >
+        <defs>
+          <linearGradient id="silkA" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.85" />
+            <stop offset="45%" stopColor="#2563EB" stopOpacity="0.7" />
+            <stop offset="100%" stopColor="#1D4ED8" stopOpacity="0.15" />
+          </linearGradient>
+          <linearGradient id="silkB" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#60A5FA" stopOpacity="0.45" />
+            <stop offset="60%" stopColor="#3B82F6" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="#1E40AF" stopOpacity="0.05" />
+          </linearGradient>
+          <linearGradient id="silkFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#1D4ED8" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="#070A14" stopOpacity="0" />
+          </linearGradient>
+          <filter id="silkGlow" x="-5%" y="-40%" width="110%" height="180%">
+            <feGaussianBlur stdDeviation="3" />
+          </filter>
+        </defs>
+        {/* left-edge swell */}
+        <path d="M 0,110 C 22,118 40,150 48,205 C 52,225 56,236 62,240 L 0,240 Z" fill="url(#silkFill)" />
+        <path d="M 0,96 C 26,104 46,140 56,200" stroke="url(#silkB)" strokeWidth="1" />
+        <path d="M 0,128 C 18,136 34,165 42,215" stroke="url(#silkB)" strokeWidth="0.8" />
+        {/* base wave fill */}
+        <path
+          d="M 0,205 C 90,170 170,190 270,210 C 360,226 430,200 520,212 C 560,217 585,222 600,220 L 600,240 L 0,240 Z"
+          fill="url(#silkFill)"
+        />
+        {/* faint secondary silk lines */}
+        <path d="M 0,222 C 100,196 190,214 290,226 C 380,236 470,214 600,230" stroke="url(#silkB)" strokeWidth="1" />
+        <path d="M 0,214 C 110,184 200,206 300,220 C 390,230 480,206 600,226" stroke="url(#silkB)" strokeWidth="0.8" />
+        {/* main crest: blurred halo + crisp line */}
+        <path
+          d="M 0,205 C 90,170 170,190 270,210 C 360,226 430,200 520,212 C 560,217 585,222 600,220"
+          stroke="#3B82F6"
+          strokeOpacity="0.55"
+          strokeWidth="5"
+          filter="url(#silkGlow)"
+        />
+        <path
+          d="M 0,205 C 90,170 170,190 270,210 C 360,226 430,200 520,212 C 560,217 585,222 600,220"
+          stroke="url(#silkA)"
+          strokeWidth="1.6"
+        />
+      </svg>
+
+      {/* Content */}
+      <div className="relative z-10 h-full px-6 sm:px-8 py-7 flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1 self-start pt-1">
+          <span className="text-[12px] font-medium uppercase tracking-[0.14em] text-[#B9C3E6] block mb-3">
+            TODAY&apos;S MISSION
+          </span>
+          <div className="flex items-baseline gap-[0.28em] flex-wrap" style={{ fontSize: "clamp(34px, 9.2cqw, 60px)" }}>
+            <span style={{ fontSize: "clamp(34px, 9.2cqw, 60px)" }} className="font-bold text-white tracking-tight leading-none">
+              {total}
+            </span>
+            <span style={{ fontSize: "clamp(34px, 9.2cqw, 60px)" }} className="font-bold tracking-tight leading-none bg-gradient-to-r from-[#A55CF6] via-[#7B6CF6] to-[#2F86FF] bg-clip-text text-transparent">
+              {total === 1 ? "Action" : "Actions"}
+            </span>
+          </div>
+          <p className="text-[13px] sm:text-[15px] text-[#C3CBE6] leading-relaxed max-w-[340px] mt-4">
+            {total === 0
+              ? "Nothing due today. Check Upcoming or reach out to new prospects."
+              : remaining === 0
+                ? "Mission complete. Every action due today is done."
+                : "Complete today's actions to keep your pipeline moving and create more opportunities."}
+          </p>
+        </div>
+
+        {/* Progress ring */}
+        <div style={{ width: "clamp(96px, 25cqw, 136px)", height: "clamp(96px, 25cqw, 136px)" }} className="relative shrink-0 self-center">
+          <svg className="size-full overflow-visible" viewBox="0 0 100 100">
+            <defs>
+              <linearGradient id="heroArcGradient" gradientUnits="userSpaceOnUse" x1="50" y1="10" x2="50" y2="90">
+                <stop offset="0%" stopColor="#9B5CF8" />
+                <stop offset="45%" stopColor="#5B6CF9" />
+                <stop offset="100%" stopColor="#1FA2FF" />
+              </linearGradient>
+              <filter id="arcGlow" x="-30%" y="-30%" width="160%" height="160%">
+                <feGaussianBlur stdDeviation="2.2" />
+              </filter>
+            </defs>
+            {/* track */}
+            <circle cx={C} cy={C} r={R} stroke="#1A2340" strokeOpacity="0.9" strokeWidth="7" fill="none" />
+            {arcPath && (
+              <>
+                <path d={arcPath} stroke="url(#heroArcGradient)" strokeOpacity="0.55" strokeWidth="8" strokeLinecap="round" fill="none" filter="url(#arcGlow)" />
+                <path d={arcPath} stroke="url(#heroArcGradient)" strokeWidth="7" strokeLinecap="round" fill="none" />
+              </>
+            )}
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center select-none pointer-events-none">
+            <span style={{ fontSize: "clamp(18px, 4.6cqw, 26px)" }} className="font-bold text-white tracking-tight leading-none">
+              {done}/{total}
+            </span>
+            <span style={{ fontSize: "clamp(11px, 2.3cqw, 13px)" }} className="text-[#C3CBE6] font-medium mt-1.5 leading-none">completed</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function WeekSpark({ series, color }: { series?: number[]; color: string }) {
   const values = series ?? new Array<number>(7).fill(0);

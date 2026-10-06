@@ -1,34 +1,40 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
   ArrowRight,
+  BarChart3,
+  Calendar,
   Check,
   ChevronDown,
   ChevronUp,
+  Database,
+  Download,
+  FileSpreadsheet,
   FileText,
+  Filter,
+  Globe,
+  Info,
+  Lock,
+  MapPin,
+  Tag,
   Upload,
   XCircle,
-  Download,
-  Filter,
-  Users,
-  BarChart3,
-  Clock,
-  FileSpreadsheet,
-  Globe,
-  Package,
-  Zap,
-  Lock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useBulkImportLeads, useLeads, useMe } from "@/hooks/use-mast-api";
 import type { CreateLeadBody, Lead } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getPlan } from "@/lib/plans";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { FeatureGate } from "@/components/mast/FeatureGate";
-
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/dashboard/import")({
   head: () => ({ meta: [{ title: "Data Import / Export — Mast" }] }),
@@ -115,9 +121,21 @@ const FIELD_ALIASES: Record<string, LeadFieldKey> = {
 const SKIP_VALUE = "__skip__";
 
 const ALL_STATUSES = [
-  "new", "priority", "warm", "contacted", "instagram_sent", "email_sent",
-  "contact_form_sent", "replied", "follow_up_due", "interested",
-  "meeting_booked", "closed", "won", "dead", "lost",
+  "new",
+  "priority",
+  "warm",
+  "contacted",
+  "instagram_sent",
+  "email_sent",
+  "contact_form_sent",
+  "replied",
+  "follow_up_due",
+  "interested",
+  "meeting_booked",
+  "closed",
+  "won",
+  "dead",
+  "lost",
 ];
 
 const PIPELINE_STAGES = [
@@ -224,14 +242,27 @@ function parseCsv(text: string) {
     const char = text[index];
     const next = text[index + 1];
 
-    if (char === '"' && inQuotes && next === '"') { current += '"'; index += 1; continue; }
-    if (char === '"') { inQuotes = !inQuotes; continue; }
-    if (char === "," && !inQuotes) { row.push(current.trim()); current = ""; continue; }
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (char === "," && !inQuotes) {
+      row.push(current.trim());
+      current = "";
+      continue;
+    }
     if ((char === "\n" || char === "\r") && !inQuotes) {
       if (char === "\r" && next === "\n") index += 1;
       row.push(current.trim());
       if (row.some((cell) => cell.length > 0)) rows.push(row);
-      row = []; current = ""; continue;
+      row = [];
+      current = "";
+      continue;
     }
     current += char;
   }
@@ -243,7 +274,9 @@ function parseCsv(text: string) {
   const columns = rows[0].map((column) => column.trim()).filter(Boolean);
   const dataRows = rows.slice(1).map((cells) => {
     const entry: CsvRow = {};
-    columns.forEach((column, index) => { entry[column] = cells[index] ?? ""; });
+    columns.forEach((column, index) => {
+      entry[column] = cells[index] ?? "";
+    });
     return entry;
   });
 
@@ -252,9 +285,20 @@ function parseCsv(text: string) {
 
 function leadsToCSV(leads: Lead[]): string {
   const headers = [
-    "Business Name", "Instagram Handle", "Email", "Website", "Phone",
-    "Niche", "Location", "Status", "IG Followers", "IG Bio",
-    "Tags", "Priority", "Notes", "Created At",
+    "Business Name",
+    "Instagram Handle",
+    "Email",
+    "Website",
+    "Phone",
+    "Niche",
+    "Location",
+    "Status",
+    "IG Followers",
+    "IG Bio",
+    "Tags",
+    "Priority",
+    "Notes",
+    "Created At",
   ];
   const rows = leads.map((lead) => [
     lead.businessName,
@@ -289,80 +333,141 @@ function downloadFile(content: string, filename: string, mimeType: string) {
 }
 
 function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Shared UI Elements ───────────────────────────────────────────────────────
 
-function PreviewMetric({ label, value, tone, large }: { label: string; value: number | string; tone?: "success" | "warning" | "info"; large?: boolean }) {
-  const color = tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : tone === "info" ? "text-brand" : "text-muted-foreground";
+function CsvIconBadge({ className }: { className?: string }) {
   return (
-    <div className="text-center">
-      <p className={`${large ? "text-3xl" : "text-2xl"} font-bold ${color}`}>{typeof value === "number" ? value.toLocaleString() : value}</p>
-      <p className="mt-0.5 text-xs text-muted-foreground">{label}</p>
+    <div
+      className={cn(
+        "relative flex flex-col items-center justify-center size-14 rounded-2xl border border-border/80 bg-background/60 shadow-inner",
+        className
+      )}
+    >
+      <svg
+        className="size-6 text-brand/90"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+      <span className="text-[10px] font-black tracking-wider text-muted-foreground font-mono mt-0.5">
+        CSV
+      </span>
     </div>
   );
 }
 
-function Warning({ children, icon: Icon }: { children: React.ReactNode; icon: React.ComponentType<{ className?: string }> }) {
+function WarningBox({
+  children,
+  icon: Icon,
+}: {
+  children: React.ReactNode;
+  icon: React.ComponentType<{ className?: string }>;
+}) {
   return (
-    <div className="flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+    <div className="flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs sm:text-sm text-warning">
       <Icon className="size-4 shrink-0" />
       <span>{children}</span>
     </div>
   );
 }
 
-function SectionHeader({ icon: Icon, title, subtitle }: { icon: React.ComponentType<{ className?: string }>; title: string; subtitle: string }) {
+function HistoryEmptyState({ title, message }: { title: string; message: string }) {
   return (
-    <div className="flex items-center gap-3">
-      <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand/10">
-        <Icon className="size-4 text-brand" />
+    <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
+      <div className="grid size-11 place-items-center rounded-xl border border-border/60 bg-muted/20 mb-2.5">
+        <FileText className="size-5 text-muted-foreground/40" />
       </div>
-      <div>
-        <h2 className="font-semibold text-foreground">{title}</h2>
-        <p className="text-xs text-muted-foreground">{subtitle}</p>
-      </div>
+      <p className="text-xs sm:text-sm font-semibold text-foreground/80">{title}</p>
+      <p className="mt-0.5 text-[11px] text-muted-foreground/60">{message}</p>
     </div>
   );
 }
 
-function EmptyState({ icon: Icon, title, message }: { icon: React.ComponentType<{ className?: string }>; title: string; message: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-12 text-center">
-      <div className="grid size-12 place-items-center rounded-2xl bg-muted/50 mb-3">
-        <Icon className="size-5 text-muted-foreground/50" />
-      </div>
-      <p className="text-sm font-medium text-muted-foreground">{title}</p>
-      <p className="mt-1 text-xs text-muted-foreground/60">{message}</p>
-    </div>
-  );
-}
+// ─── Main Page Component ──────────────────────────────────────────────────────
 
-// ─── Export Section ───────────────────────────────────────────────────────────
-
-function ExportSection({
-  planId,
-  onExportComplete,
-}: {
-  planId: string;
-  onExportComplete: (entry: ExportHistoryEntry) => void;
-}) {
+function ImportExportPage() {
+  const navigate = useNavigate();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const bulkImport = useBulkImportLeads();
+  const { data: auth } = useMe();
+  const planId = auth?.user?.plan ?? "free";
   const isStarterPlus = planId !== "free";
 
+  // Tab switch: "import" | "export"
+  const [activeWorkflow, setActiveWorkflow] = useState<"import" | "export">("import");
+
+  // Import State
+  const [step, setStep] = useState<"upload" | "map" | "done">("upload");
+  const [draggingOver, setDraggingOver] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [csvColumns, setCsvColumns] = useState<string[]>([]);
+  const [csvRows, setCsvRows] = useState<CsvRow[]>([]);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [showErrors, setShowErrors] = useState(false);
+  const [importResult, setImportResult] = useState<{
+    imported: number;
+    skipped: number;
+    failed: number;
+    errors: Array<{ row: number; reason: string }>;
+  } | null>(null);
+
+  // Export State
   const [exportScope, setExportScope] = useState<ExportScope>("all");
   const [exportFormat, setExportFormat] = useState<ExportFormat>("csv");
   const [filterValue, setFilterValue] = useState("");
   const [isExporting, setIsExporting] = useState(false);
 
+  // Leads data for export calculation
   const { data: leadsData } = useLeads({ limit: 5000 });
-  const allLeads: Lead[] = Array.isArray(leadsData) ? leadsData : (leadsData as { leads?: Lead[] })?.leads ?? [];
+  const allLeads: Lead[] = Array.isArray(leadsData)
+    ? leadsData
+    : (leadsData as { leads?: Lead[] })?.leads ?? [];
 
-  const getFilteredLeads = (): Lead[] => {
+  // History State
+  const [importHistory, setImportHistory] = useState<ImportHistoryEntry[]>([]);
+  const [exportHistory, setExportHistory] = useState<ExportHistoryEntry[]>([]);
+  const [showAllImports, setShowAllImports] = useState(false);
+  const [showAllExports, setShowAllExports] = useState(false);
+
+  // Dynamic header date
+  const currentDateStr = useMemo(() => {
+    return new Date().toLocaleDateString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  }, []);
+
+  // Filtered Leads calculation for Export
+  const filteredLeads = useMemo(() => {
     if (exportScope === "all") return allLeads;
-    if (exportScope === "status" && filterValue) return allLeads.filter((l) => l.status === filterValue);
-    if (exportScope === "niche" && filterValue) return allLeads.filter((l) => (l.niche ?? "").toLowerCase().includes(filterValue.toLowerCase()));
-    if (exportScope === "region" && filterValue) return allLeads.filter((l) => (l.location ?? "").toLowerCase().includes(filterValue.toLowerCase()));
+    if (exportScope === "status" && filterValue) {
+      return allLeads.filter((l) => l.status === filterValue);
+    }
+    if (exportScope === "niche" && filterValue) {
+      return allLeads.filter((l) =>
+        (l.niche ?? "").toLowerCase().includes(filterValue.toLowerCase())
+      );
+    }
+    if (exportScope === "region" && filterValue) {
+      return allLeads.filter((l) =>
+        (l.location ?? "").toLowerCase().includes(filterValue.toLowerCase())
+      );
+    }
     if (exportScope === "pipeline" && filterValue) {
       const statusMap: Record<string, string[]> = {
         new: ["new", "priority", "warm"],
@@ -376,246 +481,26 @@ function ExportSection({
       return allLeads.filter((l) => statuses.includes(l.status));
     }
     return allLeads;
-  };
+  }, [allLeads, exportScope, filterValue]);
 
-  const filteredLeads = getFilteredLeads();
   const previewCount = filteredLeads.length;
 
-  const handleExport = async () => {
-    if (previewCount === 0) { toast.error("No opportunities match your filter."); return; }
-    setIsExporting(true);
-    try {
-      const timestamp = new Date().toISOString().split("T")[0];
-      const scopeLabel = exportScope === "all" ? "all-leads"
-        : exportScope === "status" ? `status-${filterValue}`
-        : exportScope === "niche" ? `niche-${filterValue || "all"}`
-        : exportScope === "region" ? `region-${filterValue || "all"}`
-        : exportScope === "pipeline" ? `pipeline-${filterValue || "all"}`
-        : "selected-leads";
+  const uniqueNiches = useMemo(() => {
+    return [...new Set(allLeads.map((l) => l.niche).filter(Boolean))] as string[];
+  }, [allLeads]);
 
-      if (exportFormat === "csv") {
-        const csvContent = leadsToCSV(filteredLeads);
-        downloadFile(csvContent, `mast-export-${scopeLabel}-${timestamp}.csv`, "text/csv");
-      } else if (exportFormat === "xlsx" && isStarterPlus) {
-        // For xlsx, we export as CSV with .xlsx extension for now — structured for future XLSX library
-        const csvContent = leadsToCSV(filteredLeads);
-        downloadFile(csvContent, `mast-export-${scopeLabel}-${timestamp}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      }
+  const uniqueRegions = useMemo(() => {
+    return [...new Set(allLeads.map((l) => l.location).filter(Boolean))] as string[];
+  }, [allLeads]);
 
-      toast.success(`${previewCount.toLocaleString()} opportunities exported`);
-      onExportComplete({
-        id: Date.now().toString(),
-        date: new Date().toISOString(),
-        recordCount: previewCount,
-        format: exportFormat === "xlsx" ? "Excel" : "CSV",
-        filter: exportScope === "all" ? "All Opportunities"
-          : exportScope === "status" ? `Status: ${filterValue}`
-          : exportScope === "niche" ? `Niche: ${filterValue || "all"}`
-          : exportScope === "region" ? `Region: ${filterValue || "all"}`
-          : exportScope === "pipeline" ? `Pipeline: ${filterValue || "all"}`
-          : "Selected",
-      });
-    } catch {
-      toast.error("Export failed. Please try again.");
-    } finally {
-      setIsExporting(false);
-    }
-  };
+  // Import preview calculation
+  const preview = useMemo(() => {
+    return csvRows.length > 0 ? buildPreview(csvRows, mapping) : null;
+  }, [csvRows, mapping]);
 
-  const uniqueNiches = [...new Set(allLeads.map((l) => l.niche).filter(Boolean))] as string[];
-  const uniqueRegions = [...new Set(allLeads.map((l) => l.location).filter(Boolean))] as string[];
-
-  return (
-    <div className="rounded-2xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between border-b border-border bg-background/50 px-5 py-4">
-        <SectionHeader icon={Download} title="Export Opportunities" subtitle="Download your relationship data in your preferred format" />
-      </div>
-
-      <div className="p-5 space-y-5">
-        {/* Scope selector */}
-        <div className="space-y-2">
-          <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Export Scope</label>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {[
-              { value: "all", label: "All Opportunities", icon: Users },
-              { value: "status", label: "By Status", icon: Filter },
-              { value: "niche", label: "By Niche", icon: Package },
-              { value: "region", label: "By Region", icon: Globe },
-              { value: "pipeline", label: "By Pipeline Stage", icon: BarChart3 },
-            ].map(({ value, label, icon: Icon }) => (
-              <button
-                key={value}
-                onClick={() => { setExportScope(value as ExportScope); setFilterValue(""); }}
-                className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-medium transition-colors ${
-                  exportScope === value
-                    ? "border-brand bg-brand/10 text-brand"
-                    : "border-border bg-background text-muted-foreground hover:border-brand/40 hover:text-foreground"
-                }`}
-              >
-                <Icon className="size-4 shrink-0" />
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Filter input */}
-        {exportScope !== "all" && exportScope !== "selected" && (
-          <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              {exportScope === "status" ? "Select Status" : exportScope === "niche" ? "Select Niche" : exportScope === "region" ? "Select Region" : "Select Stage"}
-            </label>
-            {exportScope === "status" ? (
-              <Select value={filterValue} onValueChange={setFilterValue}>
-                <SelectTrigger className="h-9 text-sm">
-                  <SelectValue placeholder="Choose a status…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {ALL_STATUSES.map((s) => (
-                    <SelectItem key={s} value={s}>{s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : exportScope === "niche" ? (
-              <Select value={filterValue} onValueChange={setFilterValue}>
-                <SelectTrigger className="h-9 text-sm">
-                  <SelectValue placeholder="Choose a niche…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {uniqueNiches.length === 0
-                    ? <SelectItem value="__none__" disabled>No niches found</SelectItem>
-                    : uniqueNiches.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)
-                  }
-                </SelectContent>
-              </Select>
-            ) : exportScope === "region" ? (
-              <Select value={filterValue} onValueChange={setFilterValue}>
-                <SelectTrigger className="h-9 text-sm">
-                  <SelectValue placeholder="Choose a region…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {uniqueRegions.length === 0
-                    ? <SelectItem value="__none__" disabled>No regions found</SelectItem>
-                    : uniqueRegions.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)
-                  }
-                </SelectContent>
-              </Select>
-            ) : exportScope === "pipeline" ? (
-              <Select value={filterValue} onValueChange={setFilterValue}>
-                <SelectTrigger className="h-9 text-sm">
-                  <SelectValue placeholder="Choose a pipeline stage…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PIPELINE_STAGES.map((stage) => (
-                    <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : null}
-          </div>
-        )}
-
-        {/* Format selector */}
-        <div className="space-y-2">
-          <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Export Format</label>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setExportFormat("csv")}
-              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors ${
-                exportFormat === "csv" ? "border-brand bg-brand/10 text-brand" : "border-border bg-background text-muted-foreground hover:border-brand/40"
-              }`}
-            >
-              <FileText className="size-4" /> CSV
-            </button>
-
-            <button
-              onClick={() => {
-                if (!isStarterPlus) { toast.error("Upgrade to Starter or higher for Excel export."); return; }
-                setExportFormat("xlsx");
-              }}
-              className={`relative flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors ${
-                exportFormat === "xlsx" && isStarterPlus
-                  ? "border-brand bg-brand/10 text-brand"
-                  : isStarterPlus
-                  ? "border-border bg-background text-muted-foreground hover:border-brand/40"
-                  : "border-border bg-muted/30 text-muted-foreground/50 cursor-not-allowed"
-              }`}
-            >
-              <FileSpreadsheet className="size-4" /> Excel (.xlsx)
-              {!isStarterPlus && <Lock className="size-4 ml-0.5 text-muted-foreground/50" />}
-            </button>
-
-            <button
-              disabled
-              className="relative flex items-center gap-2 rounded-xl border border-border bg-muted/20 px-4 py-2.5 text-sm font-medium text-muted-foreground/40 cursor-not-allowed"
-              title="Coming soon"
-            >
-              <Globe className="size-4" /> Google Sheets
-              <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground/60">Soon</span>
-            </button>
-          </div>
-          {!isStarterPlus && (
-            <p className="text-xs text-muted-foreground">
-              <Lock className="inline size-4 mr-1" />
-              Excel export requires Starter plan or higher.{" "}
-              <a href="/dashboard/subscription" className="text-brand hover:underline">Upgrade →</a>
-            </p>
-          )}
-        </div>
-
-        {/* Preview count + Export button */}
-        <div className="flex items-center justify-between rounded-xl border border-border bg-background/50 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Zap className="size-4 text-brand" />
-            <span className="text-sm font-semibold">{previewCount.toLocaleString()} leads ready to export</span>
-          </div>
-          <Button
-            onClick={() => void handleExport()}
-            disabled={isExporting || previewCount === 0}
-            className="gap-2 bg-brand text-brand-foreground hover:bg-brand/90"
-          >
-            {isExporting ? (
-              <><span className="size-3.5 border-2 border-brand-foreground/30 border-t-brand-foreground rounded-full animate-spin" /> Exporting…</>
-            ) : (
-              <><Download className="size-4" /> Export {previewCount > 0 ? previewCount.toLocaleString() : ""} Opportunities</>
-            )}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Main Page ────────────────────────────────────────────────────────────────
-
-function ImportExportPage() {
-  const navigate = useNavigate();
-  const fileRef = useRef<HTMLInputElement>(null);
-  const bulkImport = useBulkImportLeads();
-  const { data: auth } = useMe();
-  const planId = auth?.user?.plan ?? "free";
-
-  const [csvColumns, setCsvColumns] = useState<string[]>([]);
-  const [csvRows, setCsvRows] = useState<CsvRow[]>([]);
-  const [mapping, setMapping] = useState<Record<string, string>>({});
-  const [step, setStep] = useState<"upload" | "map" | "done">("upload");
-  const [draggingOver, setDraggingOver] = useState(false);
-  const [fileName, setFileName] = useState("");
-  const [showErrors, setShowErrors] = useState(false);
-  const [importResult, setImportResult] = useState<{
-    imported: number;
-    skipped: number;
-    failed: number;
-    errors: Array<{ row: number; reason: string }>;
-  } | null>(null);
-
-  // Histories (stored in component state — no backend yet)
-  const [importHistory, setImportHistory] = useState<ImportHistoryEntry[]>([]);
-  const [exportHistory, setExportHistory] = useState<ExportHistoryEntry[]>([]);
-
-  const preview = csvRows.length > 0 ? buildPreview(csvRows, mapping) : null;
   const hasBusinessName = Object.values(mapping).includes("businessName");
 
+  // File Upload Handlers
   const handleFile = useCallback((file: File) => {
     if (!file.name.toLowerCase().endsWith(".csv")) {
       toast.error("Please upload a CSV file.");
@@ -625,7 +510,10 @@ function ImportExportPage() {
     reader.onload = () => {
       try {
         const parsed = parseCsv(String(reader.result ?? ""));
-        if (parsed.rows.length === 0) { toast.error("This CSV has no data rows."); return; }
+        if (parsed.rows.length === 0) {
+          toast.error("This CSV has no data rows.");
+          return;
+        }
         const initialMapping: Record<string, string> = {};
         for (const column of parsed.columns) {
           const guess = guessField(column);
@@ -643,305 +531,928 @@ function ImportExportPage() {
     reader.readAsText(file);
   }, []);
 
-  const reset = () => {
-    setCsvColumns([]); setCsvRows([]); setMapping({}); setStep("upload");
-    setDraggingOver(false); setFileName(""); setShowErrors(false); setImportResult(null);
+  const resetImport = () => {
+    setCsvColumns([]);
+    setCsvRows([]);
+    setMapping({});
+    setStep("upload");
+    setDraggingOver(false);
+    setFileName("");
+    setShowErrors(false);
+    setImportResult(null);
     if (fileRef.current) fileRef.current.value = "";
   };
 
   const runImport = async () => {
     if (!preview || preview.parsed.length === 0) return;
     try {
-      const result = await bulkImport.mutateAsync({ leads: preview.parsed.map((row) => row.data) });
+      const result = await bulkImport.mutateAsync({
+        leads: preview.parsed.map((row) => row.data),
+      });
       const failed = result.failed ?? result.errors?.length ?? 0;
-      setImportResult({ imported: result.imported, skipped: result.skipped, failed, errors: result.errors ?? [] });
+      setImportResult({
+        imported: result.imported,
+        skipped: result.skipped,
+        failed,
+        errors: result.errors ?? [],
+      });
       setStep("done");
       toast.success(`${result.imported} opportunities imported`);
-      setImportHistory((prev) => [{
-        id: Date.now().toString(),
-        fileName,
-        date: new Date().toISOString(),
-        leadsImported: result.imported,
-        duplicatesSkipped: result.skipped,
-      }, ...prev]);
+      setImportHistory((prev: ImportHistoryEntry[]) => [
+        {
+          id: Date.now().toString(),
+          fileName,
+          date: new Date().toISOString(),
+          leadsImported: result.imported,
+          duplicatesSkipped: result.skipped,
+        },
+        ...prev,
+      ]);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Import failed");
     }
   };
 
-  const plan = getPlan(planId);
+  // Export Action Handler
+  const handleExport = async () => {
+    if (previewCount === 0) {
+      toast.error("No opportunities match your filter.");
+      return;
+    }
+    setIsExporting(true);
+    try {
+      const timestamp = new Date().toISOString().split("T")[0];
+      const scopeLabel =
+        exportScope === "all"
+          ? "all-leads"
+          : exportScope === "status"
+          ? `status-${filterValue}`
+          : exportScope === "niche"
+          ? `niche-${filterValue || "all"}`
+          : exportScope === "region"
+          ? `region-${filterValue || "all"}`
+          : exportScope === "pipeline"
+          ? `pipeline-${filterValue || "all"}`
+          : "selected-leads";
+
+      if (exportFormat === "csv") {
+        const csvContent = leadsToCSV(filteredLeads);
+        downloadFile(csvContent, `mast-export-${scopeLabel}-${timestamp}.csv`, "text/csv");
+      } else if (exportFormat === "xlsx" && isStarterPlus) {
+        const csvContent = leadsToCSV(filteredLeads);
+        downloadFile(
+          csvContent,
+          `mast-export-${scopeLabel}-${timestamp}.xlsx`,
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+      }
+
+      toast.success(`${previewCount.toLocaleString()} opportunities exported`);
+      setExportHistory((prev: ExportHistoryEntry[]) => [
+        {
+          id: Date.now().toString(),
+          date: new Date().toISOString(),
+          recordCount: previewCount,
+          format: exportFormat === "xlsx" ? "Excel" : "CSV",
+          filter:
+            exportScope === "all"
+              ? "All Opportunities"
+              : exportScope === "status"
+              ? `Status: ${filterValue}`
+              : exportScope === "niche"
+              ? `Niche: ${filterValue || "all"}`
+              : exportScope === "region"
+              ? `Region: ${filterValue || "all"}`
+              : exportScope === "pipeline"
+              ? `Pipeline: ${filterValue || "all"}`
+              : "Selected",
+        },
+        ...prev,
+      ]);
+    } catch {
+      toast.error("Export failed. Please try again.");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Render Scope Card helper
+  const renderScopeOption = (
+    value: ExportScope,
+    label: string,
+    description: string,
+    Icon: React.ComponentType<{ className?: string }>,
+    className?: string
+  ) => {
+    const isSelected = exportScope === value;
+    return (
+      <button
+        key={value}
+        type="button"
+        onClick={() => {
+          setExportScope(value);
+          setFilterValue("");
+        }}
+        className={cn(
+          "flex items-center gap-3 rounded-xl border p-3.5 text-left transition-all duration-150 cursor-pointer select-none",
+          isSelected
+            ? "border-brand/70 bg-brand/10 shadow-sm ring-1 ring-brand/30"
+            : "border-border/70 bg-background/40 hover:border-border hover:bg-card/50",
+          className
+        )}
+      >
+        <div
+          className={cn(
+            "size-4 rounded-full flex items-center justify-center shrink-0 transition-colors",
+            isSelected ? "bg-brand text-brand-foreground" : "border border-muted-foreground/40"
+          )}
+        >
+          {isSelected && <Check className="size-2.5 stroke-[3]" />}
+        </div>
+        <Icon className={cn("size-4 shrink-0", isSelected ? "text-brand" : "text-muted-foreground")} />
+        <div className="min-w-0">
+          <p className="text-xs sm:text-sm font-semibold text-foreground truncate">{label}</p>
+          <p className="text-[11px] text-muted-foreground truncate">{description}</p>
+        </div>
+      </button>
+    );
+  };
 
   return (
-    <div className="mx-auto max-w-4xl space-y-8 p-8">
-      {/* Page header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Data Import / Export</h1>
-        <p className="text-sm text-muted-foreground">Move data into and out of Mast — cleanly, quickly, completely.</p>
-      </div>
-
-      {/* ── IMPORT SECTION ── */}
-      <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <div className="flex items-center justify-between border-b border-border bg-background/50 px-5 py-4">
-          <SectionHeader icon={Upload} title="Import Opportunities" subtitle="Upload a CSV, map columns, then bulk-import into Mast" />
+    <div className="mx-auto max-w-6xl space-y-6 p-6 lg:p-8">
+      {/* ── Page Header ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70 mb-1">
+            Data Management
+          </p>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+            Import / Export
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
+            Move data into and out of Mast — cleanly, quickly, completely.
+          </p>
         </div>
 
-        <div className="p-5 space-y-5">
-          {step === "upload" && (
-            <div
-              onDragOver={(e) => { e.preventDefault(); setDraggingOver(true); }}
-              onDragLeave={() => setDraggingOver(false)}
-              onDrop={(e) => { e.preventDefault(); setDraggingOver(false); const file = e.dataTransfer.files[0]; if (file) handleFile(file); }}
-              onClick={() => fileRef.current?.click()}
-              className={`cursor-pointer rounded-2xl border-2 border-dashed p-12 text-center transition-colors ${
-                draggingOver ? "border-brand bg-brand/5" : "border-border hover:border-brand/40"
-              }`}
+        {/* Date Pill Matching Reference */}
+        <div className="flex items-center gap-2 self-start sm:self-auto rounded-xl border border-border/80 bg-card/60 backdrop-blur-sm px-3.5 py-2 text-xs font-medium text-muted-foreground shadow-sm">
+          <Calendar className="size-3.5 text-muted-foreground/80" />
+          <span>{currentDateStr}</span>
+        </div>
+      </div>
+
+      {/* ── Main Workspace Card ── */}
+      <div className="rounded-2xl border border-border/80 bg-card/60 backdrop-blur-sm shadow-xl shadow-black/20 overflow-hidden">
+        {/* Workspace Card Header with Switch */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-border/70 bg-background/30 px-6 py-4">
+          <div className="flex items-center gap-3">
+            {activeWorkflow === "import" ? (
+              <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400">
+                <Upload className="size-5" />
+              </div>
+            ) : (
+              <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400">
+                <Download className="size-5" />
+              </div>
+            )}
+            <div>
+              <h2 className="text-base font-semibold text-foreground">
+                {activeWorkflow === "import" ? "Import Opportunities" : "Export Opportunities"}
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                {activeWorkflow === "import"
+                  ? "Bring your leads into Mast from a CSV file."
+                  : "Download your leads from Mast."}
+              </p>
+            </div>
+          </div>
+
+          {/* Import / Export Switch */}
+          <div className="flex items-center self-start sm:self-auto p-1 rounded-xl bg-background/80 border border-border/80 shadow-inner">
+            <button
+              type="button"
+              onClick={() => setActiveWorkflow("import")}
+              className={cn(
+                "flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 cursor-pointer",
+                activeWorkflow === "import"
+                  ? "bg-brand/20 text-brand border border-brand/40 shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
             >
-              <Upload className="mx-auto mb-3 size-10 text-muted-foreground" />
-              <p className="font-semibold text-foreground">Drop your CSV here</p>
-              <p className="mt-1 text-sm text-muted-foreground">or click to browse</p>
-              <Button variant="outline" className="mt-5 gap-2" onClick={(e) => { e.stopPropagation(); fileRef.current?.click(); }}>
-                <FileText className="size-4" /> Choose File
-              </Button>
-              <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (file) handleFile(file); }} />
-              <p className="mt-5 text-xs text-muted-foreground">Required column: Business Name or an equivalent alias.</p>
-            </div>
-          )}
-
-          {step === "map" && (
-            <div className="space-y-5">
-              <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                <FileText className="size-4" />
-                <span className="font-semibold text-foreground">{fileName}</span>
-                <span>{csvRows.length} rows detected</span>
-              </div>
-
-              {/* IMPROVED: Import preview summary up top */}
-              {preview && (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {[
-                    { label: "Opportunities Found", value: preview.total, tone: undefined },
-                    { label: "New Opportunities", value: preview.parsed.length, tone: "success" as const },
-                    { label: "Duplicates", value: preview.duplicates, tone: preview.duplicates > 0 ? "warning" as const : undefined },
-                    { label: "Invalid Rows", value: preview.invalid, tone: preview.invalid > 0 ? "warning" as const : undefined },
-                  ].map(({ label, value, tone }) => (
-                    <div key={label} className={`rounded-xl border p-4 text-center ${
-                      tone === "success" ? "border-success/20 bg-success/5"
-                      : tone === "warning" && value > 0 ? "border-warning/20 bg-warning/5"
-                      : "border-border bg-background/50"
-                    }`}>
-                      <p className={`text-2xl font-bold ${
-                        tone === "success" ? "text-success" : tone === "warning" && value > 0 ? "text-warning" : "text-foreground"
-                      }`}>{value.toLocaleString()}</p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{label}</p>
-                    </div>
-                  ))}
-                </div>
+              <Upload className="size-3.5" />
+              Import
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveWorkflow("export")}
+              className={cn(
+                "flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 cursor-pointer",
+                activeWorkflow === "export"
+                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/40 shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
               )}
+            >
+              <Download className="size-3.5" />
+              Export
+            </button>
+          </div>
+        </div>
 
-              <div className="rounded-2xl border border-border bg-background/30 p-5">
-                <h2 className="font-semibold">Map Columns</h2>
-                <p className="mt-1 text-xs text-muted-foreground">Auto-detected columns are preselected. Adjust anything that looks off.</p>
-                <div className="mt-4 space-y-2">
-                  {csvColumns.map((column) => (
-                    <div key={column} className="grid items-center gap-3 text-sm sm:grid-cols-[180px_20px_1fr]">
-                      <span className="truncate rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">{column}</span>
-                      <span className="text-muted-foreground">to</span>
-                      <Select value={mapping[column] ?? SKIP_VALUE} onValueChange={(value) => setMapping((cur) => ({ ...cur, [column]: value }))}>
-                        <SelectTrigger className="h-9 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={SKIP_VALUE}>Skip this column</SelectItem>
-                          {LEAD_FIELDS.map((field) => (
-                            <SelectItem key={field.key} value={field.key}>{field.label}{field.required ? " *" : ""}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {preview && preview.parsed.length > 0 && (
-                <div className="overflow-hidden rounded-2xl border border-border bg-card">
-                  <div className="flex items-center justify-between border-b border-border bg-background/50 px-5 py-3">
-                    <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Preview — First 3 Rows</p>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b border-border">
-                          {csvColumns.slice(0, 5).map((column) => (
-                            <th key={column} className="px-3 py-2 text-left font-semibold text-muted-foreground">{column}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {csvRows.slice(0, 3).map((row, index) => (
-                          <tr key={index} className="border-b border-border/40 last:border-0">
-                            {csvColumns.slice(0, 5).map((column) => (
-                              <td key={column} className="max-w-[160px] truncate px-3 py-2">{row[column] ?? ""}</td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {!hasBusinessName && <Warning icon={AlertCircle}>Map at least one column to Business Name to continue.</Warning>}
-              {hasBusinessName && preview && preview.parsed.length === 0 && (
-                <Warning icon={AlertTriangle}>No importable rows found after duplicate and validation checks.</Warning>
-              )}
-
-              <div className="flex gap-3">
-                <Button variant="outline" onClick={reset}>Start Over</Button>
-                <Button
-                  onClick={() => void runImport()}
-                  disabled={bulkImport.isPending || !hasBusinessName || !preview || preview.parsed.length === 0}
-                  className="bg-brand text-brand-foreground hover:bg-brand/90"
+        {/* ── Workspace Body ── */}
+        <div className="p-6">
+          {activeWorkflow === "import" ? (
+            /* ── IMPORT WORKFLOW ── */
+            <div>
+              {step === "upload" && (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDraggingOver(true);
+                  }}
+                  onDragLeave={() => setDraggingOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDraggingOver(false);
+                    const file = e.dataTransfer.files[0];
+                    if (file) handleFile(file);
+                  }}
+                  onClick={() => fileRef.current?.click()}
+                  className={cn(
+                    "cursor-pointer rounded-2xl border-2 border-dashed p-8 sm:p-12 text-center transition-all flex flex-col items-center justify-center relative",
+                    draggingOver
+                      ? "border-brand bg-brand/5 ring-2 ring-brand/20"
+                      : "border-border/80 bg-background/40 hover:border-brand/50 hover:bg-background/60"
+                  )}
                 >
-                  {bulkImport.isPending ? "Importing…" : `Import ${preview?.parsed.length ?? 0} Opportunit${(preview?.parsed.length ?? 0) === 1 ? "y" : "ies"}`}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {step === "done" && importResult && (
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-success/30 bg-success/5 p-8 text-center">
-                <div className="mx-auto grid size-12 place-items-center rounded-full bg-success/10">
-                  <Check className="size-6 text-success" />
-                </div>
-                <h2 className="mt-4 text-lg font-semibold">Import Complete</h2>
-                <div className="mt-5 flex justify-center gap-8">
-                  <PreviewMetric label="imported" value={importResult.imported} tone="success" large />
-                  <PreviewMetric label="duplicates skipped" value={importResult.skipped} />
-                  <PreviewMetric label="failed" value={importResult.failed} tone={importResult.failed > 0 ? "warning" : undefined} />
-                </div>
-                <div className="mt-6 flex justify-center gap-3">
-                  <Button variant="outline" onClick={reset}>Import Another File</Button>
-                  <Button onClick={() => navigate({ to: "/dashboard/relationships" })} className="gap-2 bg-brand text-brand-foreground hover:bg-brand/90">
-                    <ArrowRight className="size-4" /> View Relationships
-                  </Button>
-                </div>
-              </div>
-
-              {importResult.errors.length > 0 && (
-                <div className="overflow-hidden rounded-2xl border border-warning/30 bg-warning/5">
-                  <button
-                    className="flex w-full items-center justify-between px-5 py-3 text-sm font-semibold text-warning"
-                    onClick={() => setShowErrors((cur) => !cur)}
+                  <CsvIconBadge />
+                  <p className="mt-3.5 font-semibold text-sm sm:text-base text-foreground">
+                    Drag and drop your CSV file here
+                  </p>
+                  <p className="my-1.5 text-xs text-muted-foreground/60">or</p>
+                  <Button
+                    type="button"
+                    className="rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:via-indigo-500 hover:to-purple-500 text-white font-medium px-6 py-2.5 shadow-lg shadow-indigo-600/25 transition-all cursor-pointer text-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      fileRef.current?.click();
+                    }}
                   >
-                    <span className="inline-flex items-center gap-2">
-                      <AlertTriangle className="size-4" /> {importResult.errors.length} failed rows
-                    </span>
-                    {showErrors ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-                  </button>
-                  {showErrors && (
-                    <div className="max-h-56 overflow-y-auto border-t border-warning/20">
-                      {importResult.errors.map((error) => (
-                        <div key={`${error.row}-${error.reason}`} className="flex items-center gap-3 border-b border-warning/10 px-5 py-2 text-xs last:border-0">
-                          <XCircle className="size-4 shrink-0 text-warning" />
-                          <span className="w-16 font-semibold">Row {error.row}</span>
-                          <span>{error.reason}</span>
+                    Choose File
+                  </Button>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept=".csv"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleFile(file);
+                    }}
+                  />
+                  <div className="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground/80">
+                    <Info className="size-3.5 text-brand shrink-0" />
+                    <span>Required: Business Name column</span>
+                    <Info className="size-3.5 text-muted-foreground/40 shrink-0" />
+                  </div>
+                </div>
+              )}
+
+              {step === "map" && (
+                <div className="space-y-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-background/40 px-4 py-2.5 text-xs sm:text-sm">
+                    <div className="flex items-center gap-2">
+                      <FileText className="size-4 text-brand" />
+                      <span className="font-semibold text-foreground">{fileName}</span>
+                      <span className="text-muted-foreground">({csvRows.length} rows detected)</span>
+                    </div>
+                    <Button variant="ghost" size="sm" onClick={resetImport} className="text-xs h-7 text-muted-foreground hover:text-foreground">
+                      Change File
+                    </Button>
+                  </div>
+
+                  {/* Summary Metric Cards */}
+                  {preview && (
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      {[
+                        { label: "Opportunities Found", value: preview.total, tone: undefined },
+                        { label: "New Opportunities", value: preview.parsed.length, tone: "success" as const },
+                        { label: "Duplicates", value: preview.duplicates, tone: preview.duplicates > 0 ? "warning" as const : undefined },
+                        { label: "Invalid Rows", value: preview.invalid, tone: preview.invalid > 0 ? "warning" as const : undefined },
+                      ].map(({ label, value, tone }: { label: string; value: number; tone?: "success" | "warning" }) => (
+                        <div
+                          key={label}
+                          className={cn(
+                            "rounded-xl border p-3.5 text-center transition-colors",
+                            tone === "success"
+                              ? "border-success/20 bg-success/5"
+                              : tone === "warning" && value > 0
+                              ? "border-warning/20 bg-warning/5"
+                              : "border-border/70 bg-background/40"
+                          )}
+                        >
+                          <p
+                            className={cn(
+                              "text-xl sm:text-2xl font-bold",
+                              tone === "success"
+                                ? "text-success"
+                                : tone === "warning" && value > 0
+                                ? "text-warning"
+                                : "text-foreground"
+                            )}
+                          >
+                            {value.toLocaleString()}
+                          </p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">{label}</p>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {/* Column Mapper */}
+                  <div className="rounded-xl border border-border/70 bg-background/30 p-4 sm:p-5">
+                    <h3 className="text-sm font-semibold text-foreground">Map Columns</h3>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Auto-detected columns are preselected. Adjust anything that looks off.
+                    </p>
+                    <div className="mt-3.5 space-y-2 max-h-64 overflow-y-auto pr-1">
+                      {csvColumns.map((column) => (
+                        <div
+                          key={column}
+                          className="grid items-center gap-3 text-xs sm:text-sm sm:grid-cols-[180px_20px_1fr]"
+                        >
+                          <span className="truncate rounded-lg border border-border/60 bg-muted/30 px-2.5 py-1.5 font-mono text-xs text-foreground">
+                            {column}
+                          </span>
+                          <span className="text-muted-foreground text-center">to</span>
+                          <Select
+                            value={mapping[column] ?? SKIP_VALUE}
+                            onValueChange={(value) =>
+                              setMapping((cur) => ({ ...cur, [column]: value }))
+                            }
+                          >
+                            <SelectTrigger className="h-9 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={SKIP_VALUE}>Skip this column</SelectItem>
+                              {LEAD_FIELDS.map((field) => (
+                                <SelectItem key={field.key} value={field.key}>
+                                  {field.label}
+                                  {field.required ? " *" : ""}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Preview Table */}
+                  {preview && preview.parsed.length > 0 && (
+                    <div className="overflow-hidden rounded-xl border border-border/70 bg-card/60">
+                      <div className="border-b border-border/70 bg-background/40 px-4 py-2.5">
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                          Preview — First 3 Rows
+                        </p>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-border/70 bg-background/20">
+                              {csvColumns.slice(0, 5).map((column) => (
+                                <th
+                                  key={column}
+                                  className="px-3 py-2 text-left font-semibold text-muted-foreground"
+                                >
+                                  {column}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {csvRows.slice(0, 3).map((row, index) => (
+                              <tr
+                                key={index}
+                                className="border-b border-border/40 last:border-0 hover:bg-card/40"
+                              >
+                                {csvColumns.slice(0, 5).map((column) => (
+                                  <td
+                                    key={column}
+                                    className="max-w-[160px] truncate px-3 py-2 text-muted-foreground"
+                                  >
+                                    {row[column] ?? ""}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {!hasBusinessName && (
+                    <WarningBox icon={AlertCircle}>
+                      Map at least one column to Business Name to continue.
+                    </WarningBox>
+                  )}
+                  {hasBusinessName && preview && preview.parsed.length === 0 && (
+                    <WarningBox icon={AlertTriangle}>
+                      No importable rows found after duplicate and validation checks.
+                    </WarningBox>
+                  )}
+
+                  <div className="flex items-center justify-end gap-3 pt-2">
+                    <Button variant="outline" onClick={resetImport}>
+                      Start Over
+                    </Button>
+                    <Button
+                      onClick={() => void runImport()}
+                      disabled={
+                        bulkImport.isPending ||
+                        !hasBusinessName ||
+                        !preview ||
+                        preview.parsed.length === 0
+                      }
+                      className="gap-2 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:via-indigo-500 hover:to-purple-500 text-white font-medium px-6 py-2.5 rounded-xl shadow-lg shadow-indigo-600/25 transition-all cursor-pointer"
+                    >
+                      {bulkImport.isPending
+                        ? "Importing…"
+                        : `Import ${preview?.parsed.length ?? 0} Opportunit${
+                            (preview?.parsed.length ?? 0) === 1 ? "y" : "ies"
+                          }`}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {step === "done" && importResult && (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-success/30 bg-success/5 p-8 text-center">
+                    <div className="mx-auto grid size-12 place-items-center rounded-full bg-success/10 border border-success/20">
+                      <Check className="size-6 text-success" />
+                    </div>
+                    <h2 className="mt-3.5 text-lg font-semibold text-foreground">Import Complete</h2>
+                    <div className="mt-4 flex justify-center gap-8">
+                      <div className="text-center">
+                        <p className="text-3xl font-bold text-success">
+                          {importResult.imported.toLocaleString()}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">imported</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-2xl font-bold text-muted-foreground">
+                          {importResult.skipped.toLocaleString()}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">duplicates skipped</p>
+                      </div>
+                      <div className="text-center">
+                        <p
+                          className={cn(
+                            "text-2xl font-bold",
+                            importResult.failed > 0 ? "text-warning" : "text-muted-foreground"
+                          )}
+                        >
+                          {importResult.failed.toLocaleString()}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">failed</p>
+                      </div>
+                    </div>
+                    <div className="mt-6 flex justify-center gap-3">
+                      <Button variant="outline" onClick={resetImport}>
+                        Import Another File
+                      </Button>
+                      <Button
+                        onClick={() => navigate({ to: "/dashboard/relationships" })}
+                        className="gap-2 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:via-indigo-500 hover:to-purple-500 text-white font-medium px-5 py-2.5 rounded-xl shadow-lg shadow-indigo-600/25 transition-all cursor-pointer"
+                      >
+                        <ArrowRight className="size-4" /> View Relationships
+                      </Button>
+                    </div>
+                  </div>
+
+                  {importResult.errors.length > 0 && (
+                    <div className="overflow-hidden rounded-xl border border-warning/30 bg-warning/5">
+                      <button
+                        className="flex w-full items-center justify-between px-4 py-2.5 text-xs sm:text-sm font-semibold text-warning"
+                        onClick={() => setShowErrors((cur) => !cur)}
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <AlertTriangle className="size-4" /> {importResult.errors.length} failed rows
+                        </span>
+                        {showErrors ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                      </button>
+                      {showErrors && (
+                        <div className="max-h-52 overflow-y-auto border-t border-warning/20">
+                          {importResult.errors.map((error) => (
+                            <div
+                              key={`${error.row}-${error.reason}`}
+                              className="flex items-center gap-3 border-b border-warning/10 px-4 py-2 text-xs last:border-0"
+                            >
+                              <XCircle className="size-4 shrink-0 text-warning" />
+                              <span className="w-16 font-semibold">Row {error.row}</span>
+                              <span className="text-muted-foreground">{error.reason}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
               )}
             </div>
+          ) : (
+            /* ── EXPORT WORKFLOW ── */
+            <div className="space-y-5">
+              {/* Scope Selector */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Scope
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {renderScopeOption("all", "All Opportunities", "Export all your leads", Database)}
+                  {renderScopeOption("status", "By Status", "Filter by lead status", Filter)}
+                  {renderScopeOption("niche", "By Niche", "Filter by niche", Tag)}
+                  {renderScopeOption("region", "By Region", "Filter by region", MapPin)}
+                  {renderScopeOption(
+                    "pipeline",
+                    "By Pipeline Stage",
+                    "Filter by pipeline stage",
+                    BarChart3,
+                    "sm:col-span-2"
+                  )}
+                </div>
+              </div>
+
+              {/* Sub-filter Selection Dropdown */}
+              {exportScope !== "all" && exportScope !== "selected" && (
+                <div className="rounded-xl border border-border/70 bg-background/40 p-3.5 space-y-2 animate-in fade-in-50 duration-200">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    {exportScope === "status"
+                      ? "Select Status"
+                      : exportScope === "niche"
+                      ? "Select Niche"
+                      : exportScope === "region"
+                      ? "Select Region"
+                      : "Select Pipeline Stage"}
+                  </label>
+                  {exportScope === "status" ? (
+                    <Select value={filterValue} onValueChange={setFilterValue}>
+                      <SelectTrigger className="h-9 text-xs sm:text-sm">
+                        <SelectValue placeholder="Choose a status…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ALL_STATUSES.map((s) => (
+                          <SelectItem key={s} value={s}>
+                            {s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : exportScope === "niche" ? (
+                    <Select value={filterValue} onValueChange={setFilterValue}>
+                      <SelectTrigger className="h-9 text-xs sm:text-sm">
+                        <SelectValue placeholder="Choose a niche…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {uniqueNiches.length === 0 ? (
+                          <SelectItem value="__none__" disabled>
+                            No niches found
+                          </SelectItem>
+                        ) : (
+                          uniqueNiches.map((n) => (
+                            <SelectItem key={n} value={n}>
+                              {n}
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                  ) : exportScope === "region" ? (
+                    <Select value={filterValue} onValueChange={setFilterValue}>
+                      <SelectTrigger className="h-9 text-xs sm:text-sm">
+                        <SelectValue placeholder="Choose a region…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {uniqueRegions.length === 0 ? (
+                          <SelectItem value="__none__" disabled>
+                            No regions found
+                          </SelectItem>
+                        ) : (
+                          uniqueRegions.map((r) => (
+                            <SelectItem key={r} value={r}>
+                              {r}
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                  ) : exportScope === "pipeline" ? (
+                    <Select value={filterValue} onValueChange={setFilterValue}>
+                      <SelectTrigger className="h-9 text-xs sm:text-sm">
+                        <SelectValue placeholder="Choose a pipeline stage…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PIPELINE_STAGES.map((stage) => (
+                          <SelectItem key={stage.value} value={stage.value}>
+                            {stage.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : null}
+                </div>
+              )}
+
+              {/* Format Selector */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Format
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setExportFormat("csv")}
+                    className={cn(
+                      "flex items-center gap-3 rounded-xl border p-3 text-left transition-all duration-150 cursor-pointer select-none",
+                      exportFormat === "csv"
+                        ? "border-brand/70 bg-brand/10 shadow-sm ring-1 ring-brand/30"
+                        : "border-border/70 bg-background/40 hover:border-border hover:bg-card/50"
+                    )}
+                  >
+                    <div className="size-9 rounded-lg bg-brand/15 border border-brand/25 flex items-center justify-center shrink-0">
+                      <FileText className="size-4 text-brand" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs sm:text-sm font-semibold text-foreground">CSV</p>
+                      <p className="text-[11px] text-muted-foreground truncate">
+                        Best for most use cases
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!isStarterPlus) {
+                        toast.error("Upgrade to Starter or higher for Excel export.");
+                        return;
+                      }
+                      setExportFormat("xlsx");
+                    }}
+                    className={cn(
+                      "flex items-center gap-3 rounded-xl border p-3 text-left transition-all duration-150 cursor-pointer select-none relative",
+                      exportFormat === "xlsx" && isStarterPlus
+                        ? "border-brand/70 bg-brand/10 shadow-sm ring-1 ring-brand/30"
+                        : isStarterPlus
+                        ? "border-border/70 bg-background/40 hover:border-border hover:bg-card/50"
+                        : "border-border/40 bg-muted/10 opacity-70 cursor-not-allowed"
+                    )}
+                  >
+                    <div className="size-9 rounded-lg bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center shrink-0">
+                      <FileSpreadsheet className="size-4 text-emerald-400" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-xs sm:text-sm font-semibold text-foreground">Excel (.xlsx)</p>
+                        {!isStarterPlus && <Lock className="size-3 text-muted-foreground" />}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground truncate">
+                        For advanced analysis
+                      </p>
+                    </div>
+                  </button>
+
+                  <div
+                    className="flex items-center gap-3 rounded-xl border border-border/40 bg-muted/10 p-3 text-left opacity-60 cursor-not-allowed select-none"
+                    title="Coming soon"
+                  >
+                    <div className="size-9 rounded-lg bg-teal-500/15 border border-teal-500/25 flex items-center justify-center shrink-0">
+                      <Globe className="size-4 text-teal-400" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-xs sm:text-sm font-semibold text-foreground">Google Sheets</p>
+                        <span className="rounded bg-blue-500/20 px-1.5 py-0.5 text-[9px] font-bold text-blue-400 uppercase tracking-wider">
+                          SOON
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground truncate">
+                        Export directly to Sheets
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {!isStarterPlus && (
+                  <p className="text-xs text-muted-foreground pt-0.5">
+                    <Lock className="inline size-3.5 mr-1" />
+                    Excel export requires Starter plan or higher.{" "}
+                    <a href="/dashboard/subscription" className="text-brand hover:underline font-medium">
+                      Upgrade →
+                    </a>
+                  </p>
+                )}
+              </div>
+
+              {/* Bottom Action Bar */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-3 border-t border-border/60">
+                <div className="flex items-center gap-3 w-full sm:w-auto">
+                  <div className="size-9 rounded-xl bg-brand/15 border border-brand/25 flex items-center justify-center shrink-0">
+                    <Database className="size-4 text-brand" />
+                  </div>
+                  <div>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-xl sm:text-2xl font-bold text-foreground">
+                        {previewCount.toLocaleString()}
+                      </span>
+                      <span className="text-xs sm:text-sm text-muted-foreground">
+                        leads ready to export
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground/70">
+                      Based on your current filters
+                    </p>
+                  </div>
+                </div>
+
+                <Button
+                  onClick={() => void handleExport()}
+                  disabled={isExporting || previewCount === 0}
+                  className="w-full sm:w-auto gap-2 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:via-indigo-500 hover:to-purple-500 text-white font-medium px-6 py-2.5 rounded-xl shadow-lg shadow-indigo-600/20 transition-all cursor-pointer"
+                >
+                  {isExporting ? (
+                    <>
+                      <span className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      Exporting…
+                    </>
+                  ) : (
+                    <>
+                      <Download className="size-4" />
+                      Export Opportunities
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
           )}
         </div>
       </div>
 
-      {/* ── EXPORT SECTION ── */}
-      <ExportSection planId={planId} onExportComplete={(entry) => setExportHistory((prev) => [entry, ...prev])} />
-
-      {/* ── IMPORT HISTORY ── */}
-      <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <div className="border-b border-border bg-background/50 px-5 py-4">
-          <SectionHeader icon={Clock} title="Recent Imports" subtitle="History of CSV files imported into Mast" />
-        </div>
-        {importHistory.length === 0 ? (
-          <EmptyState icon={Upload} title="No imports yet" message="Once you import a CSV file, it will appear here." />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-background/30">
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">File Name</th>
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Date</th>
-                  <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Opportunities Imported</th>
-                  <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Duplicates Skipped</th>
-                </tr>
-              </thead>
-              <tbody>
-                {importHistory.map((entry) => (
-                  <tr key={entry.id} className="border-b border-border/40 last:border-0 hover:bg-card/50">
-                    <td className="px-5 py-3">
-                      <div className="flex items-center gap-2">
-                        <FileText className="size-4 shrink-0 text-muted-foreground" />
-                        <span className="font-medium text-foreground">{entry.fileName}</span>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3 text-muted-foreground">{formatDate(entry.date)}</td>
-                    <td className="px-5 py-3 text-right">
-                      <span className="font-semibold text-success">{entry.leadsImported.toLocaleString()}</span>
-                    </td>
-                    <td className="px-5 py-3 text-right text-muted-foreground">{entry.duplicatesSkipped.toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {/* ── Compact History Section (Recent Imports & Recent Exports Side-by-Side) ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        {/* Recent Imports Card */}
+        <div className="rounded-2xl border border-border/80 bg-card/60 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/10">
+          <div className="flex items-center justify-between border-b border-border/70 bg-background/30 px-5 py-3.5">
+            <div className="flex items-center gap-3">
+              <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400">
+                <Upload className="size-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Recent Imports</h3>
+                <p className="text-[11px] text-muted-foreground">Your latest imported files.</p>
+              </div>
+            </div>
+            {importHistory.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowAllImports((prev: boolean) => !prev)}
+                className="rounded-lg border border-border/60 bg-background/50 px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-card transition-colors cursor-pointer"
+              >
+                {showAllImports ? "Show Less" : "View All"}
+              </button>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* ── EXPORT HISTORY ── */}
-      <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <div className="border-b border-border bg-background/50 px-5 py-4">
-          <SectionHeader icon={Clock} title="Recent Exports" subtitle="History of relationship data exported from Mast" />
-        </div>
-        {exportHistory.length === 0 ? (
-          <EmptyState icon={Download} title="No exports yet" message="Once you export your leads, the history will appear here." />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-background/30">
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Date</th>
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Filter</th>
-                  <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Records</th>
-                  <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Format</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exportHistory.map((entry) => (
-                  <tr key={entry.id} className="border-b border-border/40 last:border-0 hover:bg-card/50">
-                    <td className="px-5 py-3 text-muted-foreground">{formatDate(entry.date)}</td>
-                    <td className="px-5 py-3">
-                      <span className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                        <Filter className="size-4" /> {entry.filter}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3 text-right font-semibold text-foreground">{entry.recordCount.toLocaleString()}</td>
-                    <td className="px-5 py-3 text-right">
-                      <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-semibold ${
-                        entry.format === "Excel" ? "bg-green-500/10 text-green-500" : "bg-brand/10 text-brand"
-                      }`}>
-                        {entry.format === "Excel" ? <FileSpreadsheet className="size-4" /> : <FileText className="size-4" />}
-                        {entry.format}
-                      </span>
-                    </td>
+          {importHistory.length === 0 ? (
+            <HistoryEmptyState
+              title="No imports yet"
+              message="Your imported files will appear here."
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border/70 bg-background/20">
+                    <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">File Name</th>
+                    <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">Leads</th>
+                    <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">Status</th>
+                    <th className="px-4 py-2.5 text-right font-medium text-muted-foreground">Date</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {(showAllImports ? importHistory : importHistory.slice(0, 4)).map((entry: ImportHistoryEntry) => (
+                    <tr
+                      key={entry.id}
+                      className="border-b border-border/40 last:border-0 hover:bg-card/40 transition-colors"
+                    >
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-2 max-w-[160px] truncate">
+                          <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                          <span className="font-medium text-foreground truncate">{entry.fileName}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 font-semibold text-success">
+                        {entry.leadsImported.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className="inline-flex items-center rounded-md bg-success/10 px-2 py-0.5 text-[10px] font-semibold text-success border border-success/20">
+                          Completed
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-muted-foreground whitespace-nowrap">
+                        {formatDate(entry.date)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Recent Exports Card */}
+        <div className="rounded-2xl border border-border/80 bg-card/60 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/10">
+          <div className="flex items-center justify-between border-b border-border/70 bg-background/30 px-5 py-3.5">
+            <div className="flex items-center gap-3">
+              <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400">
+                <Download className="size-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Recent Exports</h3>
+                <p className="text-[11px] text-muted-foreground">Your latest exported files.</p>
+              </div>
+            </div>
+            {exportHistory.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowAllExports((prev: boolean) => !prev)}
+                className="rounded-lg border border-border/60 bg-background/50 px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-card transition-colors cursor-pointer"
+              >
+                {showAllExports ? "Show Less" : "View All"}
+              </button>
+            )}
           </div>
-        )}
+
+          {exportHistory.length === 0 ? (
+            <HistoryEmptyState
+              title="No exports yet"
+              message="Your exported files will appear here."
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border/70 bg-background/20">
+                    <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">File Name</th>
+                    <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">Leads</th>
+                    <th className="px-4 py-2.5 text-left font-medium text-muted-foreground">Format</th>
+                    <th className="px-4 py-2.5 text-right font-medium text-muted-foreground">Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(showAllExports ? exportHistory : exportHistory.slice(0, 4)).map((entry: ExportHistoryEntry) => (
+                    <tr
+                      key={entry.id}
+                      className="border-b border-border/40 last:border-0 hover:bg-card/40 transition-colors"
+                    >
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-2 max-w-[160px] truncate">
+                          <Download className="size-3.5 shrink-0 text-muted-foreground" />
+                          <span className="font-medium text-foreground truncate">{entry.filter}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 font-semibold text-foreground">
+                        {entry.recordCount.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold border",
+                            entry.format === "Excel"
+                              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                              : "bg-brand/10 text-brand border-brand/20"
+                          )}
+                        >
+                          {entry.format === "Excel" ? (
+                            <FileSpreadsheet className="size-3" />
+                          ) : (
+                            <FileText className="size-3" />
+                          )}
+                          {entry.format}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-muted-foreground whitespace-nowrap">
+                        {formatDate(entry.date)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

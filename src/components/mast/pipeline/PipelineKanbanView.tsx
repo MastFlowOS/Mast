@@ -276,10 +276,10 @@ function FilterSelect({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         aria-label={label}
-        className="absolute inset-0 cursor-pointer opacity-0"
+        className="absolute inset-0 cursor-pointer bg-[#0E1424] text-slate-200 opacity-0 [color-scheme:dark]"
       >
         {options.map((o) => (
-          <option key={o.value} value={o.value} className="bg-[#0a0d20] text-foreground">
+          <option key={o.value} value={o.value} className="bg-[#0E1424] text-slate-200">
             {o.label}
           </option>
         ))}

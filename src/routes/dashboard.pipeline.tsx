@@ -887,11 +887,11 @@ function Pipeline() {
                 <select
                   value={nicheFilter}
                   onChange={(e) => setNicheFilter(e.target.value)}
-                  className="mt-1.5 w-full cursor-pointer rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-[13px] text-foreground outline-none focus:border-brand/50"
+                  className="mt-1.5 w-full cursor-pointer rounded-lg border border-white/10 bg-[#0E1424] px-2.5 py-2 text-[13px] text-slate-200 outline-none [color-scheme:dark] focus:border-brand/50"
                 >
-                  <option value="all">All niches</option>
+                  <option value="all" className="bg-[#0E1424] text-slate-200">All niches</option>
                   {nicheOptions.map((n) => (
-                    <option key={n} value={n}>
+                    <option key={n} value={n} className="bg-[#0E1424] text-slate-200">
                       {n.replace(/_/g, " ")}
                     </option>
                   ))}
@@ -932,12 +932,12 @@ function Pipeline() {
               value={range}
               onChange={(e) => setRange(e.target.value as typeof range)}
               aria-label="Date range"
-              className="absolute inset-0 cursor-pointer opacity-0"
+              className="absolute inset-0 cursor-pointer bg-[#0E1424] text-slate-200 opacity-0 [color-scheme:dark]"
             >
-              <option value="all">All time</option>
-              <option value="7">Last 7 days</option>
-              <option value="30">Last 30 days</option>
-              <option value="90">Last 90 days</option>
+              <option value="all" className="bg-[#0E1424] text-slate-200">All time</option>
+              <option value="7" className="bg-[#0E1424] text-slate-200">Last 7 days</option>
+              <option value="30" className="bg-[#0E1424] text-slate-200">Last 30 days</option>
+              <option value="90" className="bg-[#0E1424] text-slate-200">Last 90 days</option>
             </select>
           </label>
         </div>
@@ -1202,11 +1202,11 @@ function Pipeline() {
                                 e.stopPropagation();
                                 void handleMoveLeadStage(lead.id, e.target.value as FlowStage);
                               }}
-                              className="bg-card border border-border rounded px-1.5 py-1 text-[10px] outline-none text-muted-foreground focus:border-brand cursor-pointer"
+                              className="bg-[#0E1424] border border-border rounded px-1.5 py-1 text-[10px] outline-none text-slate-300 [color-scheme:dark] focus:border-brand cursor-pointer"
                               onClick={(e) => e.stopPropagation()}
                             >
                               {FLOW_STAGES.map((s) => (
-                                <option key={s.value} value={s.value}>
+                                <option key={s.value} value={s.value} className="bg-[#0E1424] text-slate-200">
                                   {s.label}
                                 </option>
                               ))}

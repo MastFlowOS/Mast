@@ -6,6 +6,7 @@ import {
   Bell,
   Calendar,
   Check,
+  ChevronDown,
   ChevronRight,
   Clock,
   Instagram,
@@ -95,7 +96,6 @@ function MissionsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [priorityFilter, setPriorityFilter] = useState("all");
-  const [dueTimeFilter, setDueTimeFilter] = useState("all");
 
   // Local overrides for instant action feedback
   const [completedOverrides, setCompletedOverrides] = useState<Record<string | number, string>>({});
@@ -233,16 +233,9 @@ function MissionsPage() {
       if (priorityFilter !== "all" && item.priority !== priorityFilter) {
         return false;
       }
-      // Due Time
-      if (dueTimeFilter !== "all") {
-        if (dueTimeFilter === "overdue" && item.dueState !== "overdue") return false;
-        if (dueTimeFilter === "today" && item.dueState !== "today") return false;
-        if (dueTimeFilter === "tomorrow" && daysFromToday(item.dueAt) !== 1) return false;
-        if (dueTimeFilter === "upcoming" && daysFromToday(item.dueAt) < 2) return false;
-      }
       return true;
     });
-  }, [activeTab, mission, searchQuery, typeFilter, priorityFilter, dueTimeFilter]);
+  }, [activeTab, mission, searchQuery, typeFilter, priorityFilter]);
 
   // Bulk selection handlers (selection resets when the tab changes)
   useEffect(() => {
@@ -286,7 +279,7 @@ function MissionsPage() {
     (item) => item.daysSinceContact !== null && item.daysSinceContact >= 7,
   ).length;
   const filtersActive =
-    searchQuery.trim() !== "" || typeFilter !== "all" || priorityFilter !== "all" || dueTimeFilter !== "all";
+    searchQuery.trim() !== "" || typeFilter !== "all" || priorityFilter !== "all";
   const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
 
   // Formatted current date for header control
@@ -718,41 +711,34 @@ function MissionsPage() {
                   </div>
 
                   {/* Type Filter */}
-                  <select
-                    value={typeFilter}
-                    onChange={(e) => setTypeFilter(e.target.value)}
-                    className="h-8.5 rounded-xl border border-white/[0.08] bg-[#0E1424] px-3 text-xs text-slate-300 focus:outline-none focus:border-indigo-500/50 cursor-pointer"
-                  >
-                    <option value="all">All Types</option>
-                    <option value="email">Email</option>
-                    <option value="phone">Phone</option>
-                    <option value="instagram">Instagram</option>
-                  </select>
+                  <div className="relative">
+                    <select
+                      value={typeFilter}
+                      onChange={(e) => setTypeFilter(e.target.value)}
+                      className="h-8.5 appearance-none rounded-xl border border-white/[0.08] bg-[#0E1424] pl-3 pr-8 text-xs text-slate-300 focus:outline-none focus:border-indigo-500/50 cursor-pointer [color-scheme:dark]"
+                    >
+                      <option value="all">All Types</option>
+                      <option value="email">Email</option>
+                      <option value="phone">Phone</option>
+                      <option value="instagram">Instagram</option>
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                  </div>
 
                   {/* Priority Filter */}
-                  <select
-                    value={priorityFilter}
-                    onChange={(e) => setPriorityFilter(e.target.value)}
-                    className="h-8.5 rounded-xl border border-white/[0.08] bg-[#0E1424] px-3 text-xs text-slate-300 focus:outline-none focus:border-indigo-500/50 cursor-pointer"
-                  >
-                    <option value="all">Priority</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
-                  </select>
-
-                  {/* Due Time Filter */}
-                  <select
-                    value={dueTimeFilter}
-                    onChange={(e) => setDueTimeFilter(e.target.value)}
-                    className="h-8.5 rounded-xl border border-white/[0.08] bg-[#0E1424] px-3 text-xs text-slate-300 focus:outline-none focus:border-indigo-500/50 cursor-pointer"
-                  >
-                    <option value="all">Due Time</option>
-                    <option value="overdue">Overdue</option>
-                    <option value="today">Today</option>
-                    <option value="tomorrow">Tomorrow</option>
-                    <option value="upcoming">Upcoming</option>
-                  </select>
+                  <div className="relative">
+                    <select
+                      value={priorityFilter}
+                      onChange={(e) => setPriorityFilter(e.target.value)}
+                      className="h-8.5 appearance-none rounded-xl border border-white/[0.08] bg-[#0E1424] pl-3 pr-8 text-xs text-slate-300 focus:outline-none focus:border-indigo-500/50 cursor-pointer [color-scheme:dark]"
+                    >
+                      <option value="all">Priority</option>
+                      <option value="high">High</option>
+                      <option value="medium">Medium</option>
+                      <option value="low">Low</option>
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                  </div>
                 </div>
               </div>
 

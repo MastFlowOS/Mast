@@ -258,11 +258,10 @@ export function PipelineFlowHero({
 }) {
   return (
     <section aria-label="Pipeline flow" className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-[#050818]">
-      {/* On narrow screens the map keeps its size and scrolls sideways, so the labels stay legible. */}
-      <div className="overflow-x-auto">
+      <div>
         {/* container-type lets the type and marker sizes below scale with the picture (cqw) */}
         <div
-          className="relative w-full min-w-[980px]"
+          className="relative w-full"
           style={{ aspectRatio: `${BG.w} / ${CROP_H}`, containerType: "inline-size" }}
         >
           {/* the forest */}
@@ -308,15 +307,15 @@ export function PipelineFlowHero({
                   className="pf-rise pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-1/2 border border-white/[0.12] bg-[#080b1e]/72 backdrop-blur-[3px]"
                 >
                   <span
-                    style={{ color, fontSize: "clamp(12px, 1.3cqw, 22px)", textShadow: `0 0 12px ${color}88` }}
+                    style={{ color, fontSize: "clamp(9px, 1.3cqw, 22px)", textShadow: `0 0 12px ${color}88` }}
                     className="flex items-center gap-[0.35em] font-semibold leading-none tabular-nums"
                   >
                     {nodes[i]?.toNextPct ?? 0}%
                     <ArrowRight className="size-[0.95em]" strokeWidth={2.2} />
                   </span>
                   <span
-                    style={{ fontSize: "clamp(9px, 0.82cqw, 14px)", marginTop: px(7) }}
-                    className="block whitespace-nowrap leading-none text-white/70"
+                    style={{ fontSize: "clamp(7px, 0.82cqw, 14px)", marginTop: px(7) }}
+                    className="block whitespace-nowrap leading-none text-white/70 @max-[600px]:hidden"
                   >
                     to next stage
                   </span>
@@ -333,7 +332,7 @@ export function PipelineFlowHero({
               <>
                 <StageTile color={s.color} core={s.core} Icon={Icon} />
                 <span
-                  style={{ fontSize: "clamp(11px, 1.12cqw, 19px)", marginTop: px(25), textShadow: "0 1px 6px rgba(0,0,0,0.9)" }}
+                  style={{ fontSize: "clamp(8px, 1.12cqw, 19px)", marginTop: px(25), textShadow: "0 1px 6px rgba(0,0,0,0.9)" }}
                   className="block whitespace-nowrap font-medium leading-none text-white"
                 >
                   {STAGE_SHORT[stage]}
@@ -342,7 +341,7 @@ export function PipelineFlowHero({
                   <Skeleton style={{ width: px(70), height: px(34), marginTop: px(5) }} className="rounded-lg bg-white/15" />
                 ) : (
                   <span
-                    style={{ fontSize: "clamp(19px, 2.15cqw, 36px)", marginTop: px(5), textShadow: "0 2px 10px rgba(0,0,0,0.9)" }}
+                    style={{ fontSize: "clamp(13px, 2.15cqw, 36px)", marginTop: px(5), textShadow: "0 2px 10px rgba(0,0,0,0.9)" }}
                     className="block font-bold leading-none tabular-nums text-white"
                   >
                     <CountUp value={n.count} />

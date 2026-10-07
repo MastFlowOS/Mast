@@ -412,8 +412,12 @@ function DashboardLayout() {
                     mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
                   }}
                 />
-                <div className="absolute inset-[3px] rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-[10px] font-bold text-brand">
-                  {initials}
+                <div className="absolute inset-[3px] rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-[10px] font-bold text-brand overflow-hidden">
+                  {user.avatarUrl ? (
+                    <img src={user.avatarUrl} alt="" className="size-full object-cover rounded-full" />
+                  ) : (
+                    initials
+                  )}
                 </div>
               </div>
               <div className="min-w-0 overflow-hidden">

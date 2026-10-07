@@ -89,6 +89,8 @@ export type AuthUser = {
   onboardingCompleted: boolean;
   /** Internal engineering role for ops dashboard access. Never set for regular users. */
   internalRole?: "engineer" | "admin" | "support" | null;
+  /** Cropped profile avatar data URL or CDN URL. */
+  avatarUrl?: string | null;
 };
 
 export type Account = {
@@ -1048,6 +1050,7 @@ export async function getMe() {
     onboardingCompleted: (activeProfile?.settings as Record<string, any>)?.onboardingCompleted === "true",
     // Phase 7: expose internal_role for ops dashboard gating (null for all regular users).
     internalRole: (activeProfile?.internal_role as AuthUser["internalRole"]) ?? null,
+    avatarUrl: (activeProfile?.settings as Record<string, any>)?.avatarUrl || null,
   };
   return { user };
 }

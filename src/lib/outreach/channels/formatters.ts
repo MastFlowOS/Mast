@@ -27,7 +27,11 @@ function sentences(content: SlotContent, keys: readonly (keyof SlotContent)[]): 
   return out;
 }
 
-function formatEmail(content: SlotContent, businessName: string): FormattedMessage {
+function formatEmail(
+  content: SlotContent,
+  businessName: string,
+  signature?: string | null,
+): FormattedMessage {
   const paragraphs: string[] = [];
 
   const intro = sentences(content, ["opening", "continuity"]).join(" ");
@@ -38,12 +42,21 @@ function formatEmail(content: SlotContent, businessName: string): FormattedMessa
 
   if (content.cta?.trim()) paragraphs.push(content.cta.trim());
 
-  const body = paragraphs.join("\n\n");
+  let body = paragraphs.join("\n\n");
+  const trimmedSig = signature?.trim();
   const signoff = content.signoff?.trim();
+
+  if (trimmedSig) {
+    if (!body.includes(trimmedSig)) {
+      body = `${body}\n\n${trimmedSig}`;
+    }
+  } else if (signoff) {
+    body = `${body}\n\nBest,\n${signoff}`;
+  }
 
   return {
     subject: `A quick note for ${businessName}`,
-    body: signoff ? `${body}\n\nBest,\n${signoff}` : body,
+    body,
   };
 }
 
@@ -96,10 +109,11 @@ export function formatForChannel(
   channel: OutreachChannel,
   content: SlotContent,
   businessName: string,
+  signature?: string | null,
 ): FormattedMessage {
   switch (channel) {
     case "email":
-      return formatEmail(content, businessName);
+      return formatEmail(content, businessName, signature);
     case "instagram":
       return formatInstagram(content);
     case "phone":

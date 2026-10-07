@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Mail,
@@ -20,6 +21,10 @@ import {
   ChevronDown,
   Power,
   Layers,
+  Search,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { ApiError } from "@/lib/api";
@@ -34,6 +39,9 @@ import {
   useTestSmtpConnection,
 } from "@/hooks/use-mast-api";
 import { cn } from "@/lib/utils";
+import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
+import { GLOBAL_SCOPE } from "@/lib/geo/scope";
+import { RegionMark, RegionOption } from "@/components/mast/discover/TargetRegionCard";
 
 export const Route = createFileRoute("/dashboard/settings")({
   head: () => ({ meta: [{ title: "Settings — Mast" }] }),
@@ -42,19 +50,8 @@ export const Route = createFileRoute("/dashboard/settings")({
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const AVAILABLE_REGIONS = [
-  "United States",
-  "Canada",
-  "United Kingdom",
-  "North America",
-  "Europe",
-  "Asia",
-  "Australia",
-  "South America",
-  "Africa",
-  "Oceania",
-  "Global",
-] as const;
+const COUNTRY_NAMES: string[] = COUNTRIES.map((c) => c.name).sort((a, b) => a.localeCompare(b));
+const BROAD_SCOPES: string[] = [...REGION_NAMES, GLOBAL_SCOPE];
 
 interface SettingsBaseline {
   fullName: string;
@@ -81,6 +78,7 @@ interface SettingsBaseline {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 function SettingsPage() {
+  const queryClient = useQueryClient();
   const { data: auth } = useMe();
   const { data: settings } = useSettings();
   const { data: account } = useAccount(!!auth?.user);
@@ -96,25 +94,28 @@ function SettingsPage() {
   // Profile
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [cropImageSrc, setCropImageSrc] = useState<string | null>(null);
 
   // Workspace
   const [workspaceName, setWorkspaceName] = useState("");
   const [website, setWebsite] = useState("");
 
-  // Default regions (multi-select)
+  // Default regions (multi-select, matching Discover UI)
   const [defaultRegions, setDefaultRegions] = useState<string[]>([
     "United States",
     "Canada",
     "United Kingdom",
   ]);
 
-  // Notifications
-  const [notifyBilling, setNotifyBilling] = useState(true);
+  // Notifications (full original 6 active settings + 2 coming soon)
   const [notifyNewLeads, setNotifyNewLeads] = useState(true);
   const [notifyCreditLimit, setNotifyCreditLimit] = useState(false);
-  const [notifyAnnouncements, setNotifyAnnouncements] = useState(true);
   const [notifyCreditsReset, setNotifyCreditsReset] = useState(false);
   const [notifyPlanChanges, setNotifyPlanChanges] = useState(true);
+  const [notifyBilling, setNotifyBilling] = useState(true);
+  const [notifyAnnouncements, setNotifyAnnouncements] = useState(true);
 
   // Sender identity
   const [senderName, setSenderName] = useState("");
@@ -165,13 +166,15 @@ function SettingsPage() {
 
     const initialFullName = auth?.user?.fullName ?? "";
     const initialEmail = auth?.user?.email ?? "";
+    const initialAvatarUrl = settings.avatarUrl ?? auth?.user?.avatarUrl ?? "";
     setFullName(initialFullName);
     setEmail(initialEmail);
+    setAvatarUrl(initialAvatarUrl);
 
     const initialWorkspaceName = settings.workspaceName ?? "MAST Workspace";
     const initialWebsite = settings.website ?? "";
-    const initialSenderName = settings.senderName ?? auth?.user?.fullName ?? "";
-    const initialSenderEmail = settings.senderEmail ?? auth?.user?.email ?? "";
+    const initialSenderName = settings.senderName ?? settings.smtpSenderName ?? auth?.user?.fullName ?? "";
+    const initialSenderEmail = settings.senderEmail ?? settings.smtpSenderEmail ?? settings.smtpUser ?? auth?.user?.email ?? "";
     const initialReplyTo = settings.replyTo ?? "";
     const initialSignature = settings.signature ?? "";
 
@@ -244,6 +247,11 @@ function SettingsPage() {
     hasInitializedRef.current = true;
   }, [settings, auth?.user]);
 
+  // Check whether SMTP is configured
+  const isSmtpConfigured = Boolean(
+    smtpHost.trim() && smtpPort.trim() && smtpUser.trim() && smtpPassword.trim()
+  );
+
   // Dirty detection: checks if any setting differs from baseline
   const isDirty = useMemo(() => {
     if (!baseline) return false;
@@ -256,7 +264,7 @@ function SettingsPage() {
     if (smtpPassword !== baseline.smtpPassword) return true;
     if (smtpEncryption !== baseline.smtpEncryption) return true;
     if (senderName !== baseline.senderName) return true;
-    if (senderEmail !== baseline.senderEmail) return true;
+    if (!isSmtpConfigured && senderEmail !== baseline.senderEmail) return true;
     if (replyTo !== baseline.replyTo) return true;
     if (signature !== baseline.signature) return true;
     if (notifyBilling !== baseline.notifyBilling) return true;
@@ -284,6 +292,7 @@ function SettingsPage() {
     smtpEncryption,
     senderName,
     senderEmail,
+    isSmtpConfigured,
     replyTo,
     signature,
     notifyBilling,
@@ -381,13 +390,14 @@ function SettingsPage() {
 
   const save = async () => {
     try {
+      const effectiveSenderEmail = isSmtpConfigured ? smtpUser : senderEmail;
       await saveSettings.mutateAsync({
         settings: {
           workspaceName,
           website,
           defaultRegions: defaultRegions.join(", "),
           senderName,
-          senderEmail,
+          senderEmail: effectiveSenderEmail,
           replyTo,
           signature,
           notifyNewLead: notifyNewLeads ? "true" : "false",
@@ -402,7 +412,7 @@ function SettingsPage() {
           smtpPassword,
           smtpEncryption,
           smtpSenderName: senderName,
-          smtpSenderEmail: senderEmail,
+          smtpSenderEmail: effectiveSenderEmail,
         },
         fullName,
       });
@@ -417,6 +427,10 @@ function SettingsPage() {
       };
       localStorage.setItem("mast_notification_preferences", JSON.stringify(prefs));
 
+      if (isSmtpConfigured) {
+        setSenderEmail(smtpUser);
+      }
+
       // Reset baseline to current values so save bar hides immediately
       setBaseline({
         fullName,
@@ -429,7 +443,7 @@ function SettingsPage() {
         smtpPassword,
         smtpEncryption,
         senderName,
-        senderEmail,
+        senderEmail: effectiveSenderEmail,
         replyTo,
         signature,
         notifyBilling,
@@ -497,8 +511,20 @@ function SettingsPage() {
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      toast.success("Profile photo updated.");
+      if (!file.type.startsWith("image/")) {
+        toast.error("Please select a valid image file.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          setCropImageSrc(reader.result);
+          setCropModalOpen(true);
+        }
+      };
+      reader.readAsDataURL(file);
     }
+    e.target.value = "";
   };
 
   // Current date formatted e.g. "Mon, Sep 29, 2026"
@@ -568,8 +594,12 @@ function SettingsPage() {
 
             {/* Avatar & Change Photo */}
             <div className="flex flex-col items-center justify-center shrink-0 sm:pt-2 sm:pl-2">
-              <div className="size-16 rounded-full bg-blue-600 text-white font-bold text-2xl grid place-items-center shadow-lg shadow-blue-600/30 ring-4 ring-blue-600/10">
-                {avatarInitial}
+              <div className="size-16 rounded-full bg-blue-600 text-white font-bold text-2xl grid place-items-center shadow-lg shadow-blue-600/30 ring-4 ring-blue-600/10 overflow-hidden">
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt="Avatar" className="size-full object-cover" />
+                ) : (
+                  avatarInitial
+                )}
               </div>
               <input
                 ref={fileInputRef}
@@ -581,7 +611,7 @@ function SettingsPage() {
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="mt-3 px-3.5 py-1.5 rounded-lg border border-border/80 bg-card hover:bg-muted text-xs font-medium text-foreground transition-colors"
+                className="mt-3 px-3.5 py-1.5 rounded-lg border border-border/80 bg-card hover:bg-muted text-xs font-medium text-foreground transition-colors cursor-pointer"
               >
                 Change Photo
               </button>
@@ -622,9 +652,8 @@ function SettingsPage() {
           <span className="block text-xs font-semibold text-muted-foreground mb-1.5">
             Default Regions
           </span>
-          <RegionMultiSelect
+          <SettingsRegionSelector
             selected={defaultRegions}
-            options={AVAILABLE_REGIONS}
             onToggle={toggleRegion}
             onRemove={removeRegion}
           />
@@ -716,7 +745,7 @@ function SettingsPage() {
                   type="button"
                   disabled={connectionStatus === "testing"}
                   onClick={handleTestConnection}
-                  className="px-4 py-2 rounded-xl bg-card border border-border/80 hover:bg-muted text-foreground text-xs font-semibold disabled:opacity-50 transition-colors shadow-sm"
+                  className="px-4 py-2 rounded-xl bg-card border border-border/80 hover:bg-muted text-foreground text-xs font-semibold disabled:opacity-50 transition-colors shadow-sm cursor-pointer"
                 >
                   {connectionStatus === "testing" ? "Testing..." : "Test Connection"}
                 </button>
@@ -769,18 +798,39 @@ function SettingsPage() {
               onChange={setSenderName}
               placeholder="Beboo"
             />
-            <SettingsInput
-              label="From Email"
-              value={senderEmail}
-              onChange={setSenderEmail}
-              placeholder="bebo@example.com"
-            />
+
+            {isSmtpConfigured ? (
+              <div>
+                <span className="block text-xs font-semibold text-muted-foreground mb-1.5 flex items-center justify-between">
+                  <span>From Email</span>
+                  <span className="text-[10px] text-muted-foreground font-normal flex items-center gap-1">
+                    <Lock className="size-3" /> Auto-populated from SMTP
+                  </span>
+                </span>
+                <input
+                  value={smtpUser}
+                  disabled
+                  readOnly
+                  placeholder="Configured via SMTP"
+                  className="w-full bg-background border border-border/80 px-3.5 py-2.5 rounded-xl text-sm text-muted-foreground cursor-not-allowed select-all"
+                />
+              </div>
+            ) : (
+              <SettingsInput
+                label="From Email"
+                value={senderEmail}
+                onChange={setSenderEmail}
+                placeholder="your-email@example.com"
+              />
+            )}
+
             <SettingsInput
               label="Reply To (optional)"
               value={replyTo}
               onChange={setReplyTo}
               placeholder="reply@example.com"
             />
+
             <div>
               <span className="block text-xs font-semibold text-muted-foreground mb-1.5">
                 Signature (optional)
@@ -793,7 +843,7 @@ function SettingsPage() {
                 placeholder="Best regards,&#10;Beboo"
               />
               <p className="text-xs text-muted-foreground mt-1">
-                This signature will be used in your outreach emails.
+                This signature will be dynamically used in your outreach emails.
               </p>
             </div>
           </div>
@@ -802,7 +852,7 @@ function SettingsPage() {
 
       {/* ── Row 4: Notifications (Left) + Workspace Info (Right) ────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Notifications Card */}
+        {/* Notifications Card (Complete original set restored) */}
         <SettingsCard
           icon={Bell}
           title="Notifications"
@@ -810,34 +860,56 @@ function SettingsPage() {
         >
           <div className="divide-y divide-border/40 -my-1">
             <NotificationRow
-              label="Email notifications"
-              desc="Get notified about important updates."
-              checked={notifyBilling}
-              onChange={setNotifyBilling}
-            />
-            <NotificationRow
-              label="Lead discovery complete"
-              desc="When your lead discovery is finished."
+              label="New Leads Available"
+              desc="When new leads are discovered or imported into your workspace."
               checked={notifyNewLeads}
               onChange={setNotifyNewLeads}
             />
             <NotificationRow
-              label="New opportunities"
-              desc="Get notified about new opportunities."
+              label="Credit Limit Reached"
+              desc="When your monthly or daily credit allowance is depleted."
               checked={notifyCreditLimit}
               onChange={setNotifyCreditLimit}
             />
             <NotificationRow
-              label="Product updates"
-              desc="Receive updates about new features."
+              label="Daily Credits Reset"
+              desc="When your daily opportunity allowance resets."
+              checked={notifyCreditsReset}
+              onChange={setNotifyCreditsReset}
+            />
+            <NotificationRow
+              label="Plan Changes"
+              desc="Updates regarding your subscription tier or quota changes."
+              checked={notifyPlanChanges}
+              onChange={setNotifyPlanChanges}
+            />
+            <NotificationRow
+              label="Billing Updates"
+              desc="Invoices, payment receipts, and billing notifications."
+              checked={notifyBilling}
+              onChange={setNotifyBilling}
+            />
+            <NotificationRow
+              label="System Announcements"
+              desc="Platform updates, maintenance, and major feature releases."
               checked={notifyAnnouncements}
               onChange={setNotifyAnnouncements}
             />
             <NotificationRow
-              label="Marketing emails"
-              desc="Receive tips, guides, and promotional content."
-              checked={notifyCreditsReset}
-              onChange={setNotifyCreditsReset}
+              label="Outreach Replies"
+              desc="Real-time alerts when leads reply to your outreach."
+              checked={false}
+              onChange={() => {}}
+              comingSoon
+              disabled
+            />
+            <NotificationRow
+              label="Weekly Summary"
+              desc="A weekly digest of your workspace activity and progress."
+              checked={false}
+              onChange={() => {}}
+              comingSoon
+              disabled
             />
           </div>
         </SettingsCard>
@@ -974,7 +1046,7 @@ function SettingsPage() {
               type="button"
               onClick={save}
               disabled={saveSettings.isPending}
-              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold shadow-lg shadow-blue-600/25 transition-all inline-flex items-center gap-2 active:scale-95 disabled:opacity-50"
+              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold shadow-lg shadow-blue-600/25 transition-all inline-flex items-center gap-2 active:scale-95 disabled:opacity-50 cursor-pointer"
             >
               <Save className="size-4" />
               {saveSettings.isPending ? "Saving..." : "Save Settings"}
@@ -983,7 +1055,7 @@ function SettingsPage() {
               type="button"
               onClick={discard}
               disabled={saveSettings.isPending}
-              className="px-4 py-2 rounded-xl border border-border/80 bg-background/80 hover:bg-muted text-foreground text-sm font-medium transition-colors active:scale-95"
+              className="px-4 py-2 rounded-xl border border-border/80 bg-background/80 hover:bg-muted text-foreground text-sm font-medium transition-colors active:scale-95 cursor-pointer"
             >
               Discard Changes
             </button>
@@ -994,6 +1066,34 @@ function SettingsPage() {
             <span>Unsaved changes</span>
           </div>
         </div>
+      )}
+
+      {/* ── Circular Crop Photo Modal ────────────────────────────────────────── */}
+      {cropModalOpen && cropImageSrc && (
+        <CropPhotoModal
+          imageSrc={cropImageSrc}
+          onClose={() => {
+            setCropModalOpen(false);
+            setCropImageSrc(null);
+          }}
+          onApply={async (croppedDataUrl) => {
+            try {
+              await saveSettings.mutateAsync({
+                settings: {
+                  avatarUrl: croppedDataUrl,
+                },
+              });
+              setAvatarUrl(croppedDataUrl);
+              queryClient.invalidateQueries({ queryKey: ["settings"] });
+              queryClient.invalidateQueries({ queryKey: ["me"] });
+              setCropModalOpen(false);
+              setCropImageSrc(null);
+              toast.success("Profile photo updated.");
+            } catch (err: any) {
+              toast.error(err?.message || "Failed to update profile photo.");
+            }
+          }}
+        />
       )}
 
       {/* ── Pause Modal ──────────────────────────────────────────────────────── */}
@@ -1333,108 +1433,442 @@ function NotificationRow({
   desc,
   checked,
   onChange,
+  comingSoon,
+  disabled,
 }: {
   label: string;
   desc: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
+  comingSoon?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between py-3 gap-4">
+    <div className={cn("flex items-center justify-between py-3 gap-4", disabled && "opacity-60")}>
       <div className="min-w-0 pr-2">
-        <p className="text-sm font-medium text-foreground">{label}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-medium text-foreground">{label}</p>
+          {comingSoon && (
+            <span className="text-[9px] font-bold uppercase tracking-wider bg-muted-foreground/15 text-muted-foreground px-1.5 py-0.5 rounded border border-muted-foreground/20">
+              Soon
+            </span>
+          )}
+        </div>
         <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
       </div>
-      <SettingsSwitch checked={checked} onChange={onChange} />
+      <SettingsSwitch checked={checked} onChange={onChange} disabled={disabled} />
     </div>
   );
 }
 
-function RegionMultiSelect({
+/**
+ * Discover-identical region selector with search, flags, country list,
+ * broad regions, keyboard navigation, and selected tags display.
+ */
+function SettingsRegionSelector({
   selected,
-  options,
   onToggle,
   onRemove,
 }: {
   selected: string[];
-  options: readonly string[];
   onToggle: (r: string) => void;
   onRemove: (r: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
+  // Close on outside click
   useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+    const handler = (e: MouseEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) {
         setOpen(false);
       }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  // Autofocus search on open
+  useEffect(() => {
+    if (open) searchRef.current?.focus();
+  }, [open]);
+
+  const query = search.trim().toLowerCase();
+  const matches = (r: string) => r.toLowerCase().includes(query);
+  const startsWith = (r: string) => r.toLowerCase().startsWith(query);
+  const countries = COUNTRY_NAMES.filter(matches).sort(
+    (a, b) => Number(startsWith(b)) - Number(startsWith(a))
+  );
+  const broad = query ? BROAD_SCOPES.filter(matches) : [];
+  const firstMatch = countries[0] ?? broad[0];
+
+  const pick = (r: string) => {
+    onToggle(r);
+    setSearch("");
+  };
+
+  const close = () => {
+    setOpen(false);
+    setSearch("");
+    triggerRef.current?.focus();
+  };
+
+  const current = selected[selected.length - 1];
+  const extra = Math.max(0, selected.length - 1);
 
   return (
     <div ref={containerRef} className="relative w-full">
-      <div
-        onClick={() => setOpen(!open)}
-        className="min-h-[46px] w-full bg-background border border-border/80 focus-within:border-blue-500 rounded-xl px-3 py-2 flex items-center justify-between gap-2 flex-wrap cursor-pointer transition-colors"
+      <button
+        ref={triggerRef}
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls="settings-region-listbox"
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setOpen(false);
+        }}
+        className={cn(
+          "flex h-11 w-full cursor-pointer items-center gap-2.5 rounded-xl border bg-black/25 px-3 text-left text-[13px] font-medium text-foreground outline-none transition-colors",
+          "focus-visible:ring-2 focus-visible:ring-brand/45",
+          open ? "border-brand/60" : "border-white/10 hover:border-white/25"
+        )}
       >
-        <div className="flex flex-wrap items-center gap-1.5 flex-1">
-          {selected.length === 0 ? (
-            <span className="text-sm text-muted-foreground">Select default regions...</span>
-          ) : (
-            selected.map((r) => (
-              <span
-                key={r}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-secondary/80 border border-border/60 text-xs font-medium text-foreground hover:bg-secondary transition-colors"
-              >
-                <span>{r}</span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove(r);
-                  }}
-                  className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
-                >
-                  <X className="size-3" />
-                </button>
-              </span>
-            ))
-          )}
-        </div>
+        <RegionMark name={current} />
+        <span className="min-w-0 flex-1 truncate">
+          {selected.length === 0 ? "Select default countries / regions..." : current}
+        </span>
+        {extra > 0 && <span className="shrink-0 text-xs text-muted-foreground">+{extra}</span>}
         <ChevronDown
+          aria-hidden="true"
           className={cn(
-            "size-4 text-muted-foreground shrink-0 transition-transform duration-200",
+            "size-4 shrink-0 text-muted-foreground transition-transform duration-200",
             open && "rotate-180"
           )}
         />
-      </div>
+      </button>
 
-      {open && (
-        <div className="absolute left-0 top-full mt-1.5 z-40 w-full max-h-60 overflow-y-auto bg-card border border-border/90 rounded-xl shadow-2xl p-1.5 space-y-0.5 animate-in fade-in zoom-in-95 duration-150">
-          {options.map((opt) => {
-            const isSelected = selected.includes(opt);
-            return (
+      {/* Selected tags below */}
+      {selected.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+          {selected.map((r) => (
+            <span
+              key={r}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/30 border border-white/10 text-xs font-medium text-foreground hover:border-white/25 transition-colors"
+            >
+              <RegionMark name={r} small />
+              <span>{r}</span>
               <button
-                key={opt}
                 type="button"
-                onClick={() => onToggle(opt)}
-                className={cn(
-                  "w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left",
-                  isSelected
-                    ? "bg-blue-600/15 text-blue-400 font-semibold"
-                    : "text-foreground hover:bg-muted"
-                )}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemove(r);
+                }}
+                className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded cursor-pointer"
+                title={`Remove ${r}`}
               >
-                <span>{opt}</span>
-                {isSelected && <Check className="size-3.5 text-blue-400" />}
+                <X className="size-3" />
               </button>
-            );
-          })}
+            </span>
+          ))}
         </div>
       )}
+
+      {/* Dropdown */}
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-40 mt-1.5 overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+          {/* Search at top of dropdown */}
+          <div className="relative border-b border-border/60 p-2">
+            <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              ref={searchRef}
+              type="text"
+              aria-label="Search countries"
+              aria-controls="settings-region-listbox"
+              aria-autocomplete="list"
+              placeholder="Search countries…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") close();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (firstMatch) {
+                    pick(firstMatch);
+                  }
+                }
+              }}
+              className="h-9 w-full rounded-lg border border-white/10 bg-black/25 pl-8 pr-3 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-brand focus:ring-2 focus:ring-brand/35 text-foreground"
+            />
+          </div>
+
+          {/* Country / region list */}
+          <div
+            id="settings-region-listbox"
+            role="listbox"
+            aria-multiselectable="true"
+            className="max-h-56 overflow-y-auto"
+          >
+            {countries.length + broad.length > 0 ? (
+              <>
+                {countries.map((r) => (
+                  <RegionOption
+                    key={r}
+                    label={r}
+                    selected={selected.includes(r)}
+                    onPick={() => pick(r)}
+                  />
+                ))}
+                {broad.length > 0 && (
+                  <p className="border-t border-border/60 px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                    Regions
+                  </p>
+                )}
+                {broad.map((r) => (
+                  <RegionOption
+                    key={r}
+                    label={r}
+                    selected={selected.includes(r)}
+                    onPick={() => pick(r)}
+                  />
+                ))}
+              </>
+            ) : (
+              <div className="px-3 py-2.5 text-xs text-muted-foreground">
+                No countries match "{search}"
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Circular profile photo cropping modal with pan & zoom like Instagram/TikTok.
+ */
+function CropPhotoModal({
+  imageSrc,
+  onClose,
+  onApply,
+}: {
+  imageSrc: string;
+  onClose: () => void;
+  onApply: (croppedDataUrl: string) => Promise<void>;
+}) {
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0, panX: 0, panY: 0 });
+  const [isSaving, setIsSaving] = useState(false);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Wheel zoom
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const delta = -e.deltaY * 0.002;
+    setZoom((prev) => Math.min(3, Math.max(1, Number((prev + delta).toFixed(3)))));
+  };
+
+  // Mouse pan
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+    setDragStart({ x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y });
+  };
+
+  // Touch pan
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      const touch = e.touches[0];
+      setIsDragging(true);
+      setDragStart({ x: touch.clientX, y: touch.clientY, panX: pan.x, panY: pan.y });
+    }
+  };
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const dx = e.clientX - dragStart.x;
+      const dy = e.clientY - dragStart.y;
+      setPan({ x: dragStart.panX + dx, y: dragStart.panY + dy });
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        const touch = e.touches[0];
+        const dx = touch.clientX - dragStart.x;
+        const dy = touch.clientY - dragStart.y;
+        setPan({ x: dragStart.panX + dx, y: dragStart.panY + dy });
+      }
+    };
+
+    const handleEnd = () => setIsDragging(false);
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleEnd);
+    window.addEventListener("touchmove", handleTouchMove);
+    window.addEventListener("touchend", handleEnd);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleEnd);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleEnd);
+    };
+  }, [isDragging, dragStart]);
+
+  const handleReset = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
+  const handleSave = async () => {
+    if (!imageRef.current) return;
+    setIsSaving(true);
+    try {
+      const img = imageRef.current;
+      const canvas = document.createElement("canvas");
+      const OUTPUT_SIZE = 256;
+      canvas.width = OUTPUT_SIZE;
+      canvas.height = OUTPUT_SIZE;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Could not get canvas context");
+
+      // Circular clip on canvas
+      ctx.beginPath();
+      ctx.arc(OUTPUT_SIZE / 2, OUTPUT_SIZE / 2, OUTPUT_SIZE / 2, 0, Math.PI * 2);
+      ctx.closePath();
+      ctx.clip();
+
+      const PREVIEW_CIRCLE_D = 220;
+      const natW = img.naturalWidth || 1;
+      const natH = img.naturalHeight || 1;
+      const coverScale = Math.max(PREVIEW_CIRCLE_D / natW, PREVIEW_CIRCLE_D / natH);
+      const renderedW = natW * coverScale * zoom;
+      const renderedH = natH * coverScale * zoom;
+
+      const scaleCanvas = OUTPUT_SIZE / PREVIEW_CIRCLE_D;
+      const drawW = renderedW * scaleCanvas;
+      const drawH = renderedH * scaleCanvas;
+      const drawX = (OUTPUT_SIZE - drawW) / 2 + pan.x * scaleCanvas;
+      const drawY = (OUTPUT_SIZE - drawH) / 2 + pan.y * scaleCanvas;
+
+      ctx.drawImage(img, drawX, drawY, drawW, drawH);
+
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+      await onApply(dataUrl);
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to crop photo.");
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/75 backdrop-blur-md" onClick={onClose} />
+      <div className="relative bg-card border border-border rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-base text-foreground">Crop Profile Photo</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="size-7 grid place-items-center rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {/* Viewport container */}
+        <div
+          ref={containerRef}
+          onWheel={handleWheel}
+          onMouseDown={handleMouseDown}
+          onTouchStart={handleTouchStart}
+          className="relative size-72 mx-auto rounded-2xl overflow-hidden bg-zinc-950 flex items-center justify-center cursor-grab active:cursor-grabbing select-none border border-border/80 shadow-inner"
+        >
+          {/* Inner image */}
+          <img
+            ref={imageRef}
+            src={imageSrc}
+            alt="To crop"
+            draggable={false}
+            className="pointer-events-none absolute max-w-none origin-center transition-transform duration-75"
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              minWidth: "220px",
+              minHeight: "220px",
+              objectFit: "cover",
+            }}
+          />
+
+          {/* Circular mask overlay: darkened outer, transparent circular viewport with subtle ring */}
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background: "radial-gradient(circle 110px at center, transparent 110px, rgba(0, 0, 0, 0.72) 111px)",
+            }}
+          />
+          {/* Subtle circle outline */}
+          <div className="pointer-events-none absolute size-[220px] rounded-full border border-white/40 shadow-sm" />
+        </div>
+
+        {/* Controls: Zoom slider & Reset */}
+        <div className="space-y-3 pt-1">
+          <div className="flex items-center gap-3 px-1">
+            <ZoomOut className="size-4 text-muted-foreground shrink-0" />
+            <input
+              type="range"
+              min="1"
+              max="3"
+              step="0.05"
+              value={zoom}
+              onChange={(e) => setZoom(parseFloat(e.target.value))}
+              className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
+            />
+            <ZoomIn className="size-4 text-muted-foreground shrink-0" />
+            <button
+              type="button"
+              onClick={handleReset}
+              title="Reset position"
+              className="p-1.5 rounded-lg border border-border/80 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0 cursor-pointer"
+            >
+              <RotateCcw className="size-3.5" />
+            </button>
+          </div>
+          <p className="text-[11px] text-center text-muted-foreground">
+            Drag to reposition • Scroll or slider to zoom
+          </p>
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center justify-end gap-3 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isSaving}
+            className="px-4 py-2 rounded-xl border border-border/80 bg-background hover:bg-muted text-xs font-semibold text-foreground transition-colors cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={isSaving}
+            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-lg shadow-blue-600/25 transition-all inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+          >
+            <Check className="size-3.5" />
+            {isSaving ? "Saving..." : "Apply Photo"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1470,7 +1904,7 @@ function Modal({
           </div>
           <button
             onClick={onClose}
-            className="size-7 grid place-items-center rounded-lg hover:bg-card border border-transparent hover:border-border transition-colors text-muted-foreground"
+            className="size-7 grid place-items-center rounded-lg hover:bg-card border border-transparent hover:border-border transition-colors text-muted-foreground cursor-pointer"
           >
             <X className="size-4" />
           </button>

@@ -27,6 +27,24 @@ test("EMAIL: omits signoff line entirely when none is supplied", () => {
   assert.equal(result.body.includes("Best,"), false);
 });
 
+test("EMAIL: uses custom signature from settings when supplied", () => {
+  const customSig = "Cheers,\nAlex Rivera\nFounder, Studio Mast";
+  const result = formatForChannel("email", FIXTURE, "Test Biz", customSig);
+  assert.ok(result.body.includes(customSig));
+  assert.equal(result.body.includes("Best,\nJamie"), false);
+});
+
+test("EMAIL: does not duplicate custom signature if body already contains it", () => {
+  const customSig = "Best regards,\nBeboo";
+  const fixtureWithSig: SlotContent = {
+    ...FIXTURE,
+    cta: `Would it be useful if I shared a few thoughts?\n\n${customSig}`,
+  };
+  const result = formatForChannel("email", fixtureWithSig, "Test Biz", customSig);
+  const occurrences = result.body.split(customSig).length - 1;
+  assert.equal(occurrences, 1);
+});
+
 test("INSTAGRAM: no subject", () => {
   const result = formatForChannel("instagram", FIXTURE, "Test Biz");
   assert.equal(result.subject, null);

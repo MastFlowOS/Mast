@@ -115,11 +115,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       requireTLS,
     });
 
+    const signature = settings.signature?.trim();
+    let finalBody = body;
+    if (signature && !finalBody.includes(signature)) {
+      finalBody = `${finalBody.trim()}\n\n${signature}`;
+    }
+
     const mailOptions = {
       from: senderName ? `"${senderName}" <${senderEmail}>` : senderEmail,
       to,
       subject,
-      text: body,
+      text: finalBody,
     };
 
     const info = await transporter.sendMail(mailOptions);

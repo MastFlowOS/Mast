@@ -62,6 +62,7 @@ export type GenerateInput = {
   readonly activities?: readonly LeadActivity[];
   readonly signal?: NormalizedOpportunitySignal;
   readonly senderName?: string | null;
+  readonly signature?: string | null;
   readonly explicitPricingContext?: boolean;
   readonly now?: Date;
 };
@@ -148,7 +149,7 @@ export function generateFreeOutreach(input: GenerateInput): GenerationResult {
   const definition = getTemplateDefinition(templateKey);
   const orderedSlots = angle.text ? definition.orderedSlots : definition.orderedSlots.filter((s) => s !== "angle");
   const slots = resolveSlots(slotInput, orderedSlots, angle);
-  const formatted: FormattedMessage = formatForChannel(channel, slots, safeLead.businessName);
+  const formatted: FormattedMessage = formatForChannel(channel, slots, safeLead.businessName, input.signature);
 
   return {
     ok: true,

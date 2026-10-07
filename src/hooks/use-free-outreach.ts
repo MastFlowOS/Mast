@@ -59,17 +59,25 @@ export function useFreeOutreach(lead: Lead | undefined) {
   );
 
   const generate = useCallback(
-    async (templateKey: FreeTemplateKey, channel: OutreachChannel, senderName?: string | null): Promise<GenerationResult> => {
+    async (
+      templateKey: FreeTemplateKey,
+      channel: OutreachChannel,
+      senderName?: string | null,
+      customSignature?: string | null,
+    ): Promise<GenerationResult> => {
       if (!lead) {
         return { ok: false, reason: "no_profession", detail: "No lead loaded." };
       }
+      const resolvedSenderName = senderName ?? settings?.senderName ?? settings?.smtpSenderName ?? null;
+      const signature = customSignature !== undefined ? customSignature : (settings?.signature ?? null);
       const result = await generateFreeOutreachWithSignal({
         lead,
         profession,
         templateKey,
         channel,
         activities: activities ?? [],
-        senderName: senderName ?? null,
+        senderName: resolvedSenderName,
+        signature,
         explicitPricingContext: false,
       });
       if (result.ok) {
@@ -77,7 +85,7 @@ export function useFreeOutreach(lead: Lead | undefined) {
       }
       return result;
     },
-    [lead, profession, activities],
+    [lead, profession, activities, settings],
   );
 
   return { profession, hasProfession: profession !== null, continuity, checkEligibility, generate };

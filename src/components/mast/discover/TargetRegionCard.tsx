@@ -239,7 +239,7 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
   );
 }
 
-function RegionOption({
+export function RegionOption({
   label,
   selected,
   locked,
@@ -247,7 +247,7 @@ function RegionOption({
 }: {
   label: string;
   selected: boolean;
-  locked: boolean;
+  locked?: boolean;
   onPick: () => void;
 }) {
   return (
@@ -276,7 +276,7 @@ function RegionOption({
 }
 
 /** A country's flag, or a globe for Global / continents. */
-function RegionMark({ name, small }: { name?: string; small?: boolean }) {
+export function RegionMark({ name, small }: { name?: string; small?: boolean }) {
   const code = name ? findCountryByName(name)?.code : undefined;
   const [failed, setFailed] = useState(false);
   const w = small ? "w-4" : "w-5";

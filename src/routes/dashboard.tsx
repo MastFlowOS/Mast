@@ -400,25 +400,31 @@ function DashboardLayout() {
           >
             {/* Identity row */}
             <div className="flex items-center gap-2.5 px-2.5 py-2">
-              <div className="relative shrink-0 size-8" title={`${creditPct}% of credits used`}>
+              <div
+                className="relative shrink-0 size-8 rounded-full overflow-hidden border border-brand/30 bg-brand/20 flex items-center justify-center text-[10px] font-bold text-brand"
+                title={`${creditPct}% of credits used`}
+              >
                 {/* Thin usage ring — doubles as the "tiny usage indicator"
                     for the collapsed rail, without needing extra height. */}
                 <div
                   aria-hidden="true"
-                  className="absolute inset-0 rounded-full"
+                  className="absolute inset-0 rounded-full pointer-events-none z-10"
                   style={{
                     background: `conic-gradient(var(--brand) ${creditPct * 3.6}deg, var(--color-border) 0deg)`,
                     WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
                     mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
                   }}
                 />
-                <div className="absolute inset-[3px] rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-[10px] font-bold text-brand overflow-hidden">
-                  {user.avatarUrl ? (
-                    <img src={user.avatarUrl} alt="" className="size-full object-cover rounded-full" />
-                  ) : (
-                    initials
-                  )}
-                </div>
+                {user.avatarUrl ? (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.fullName || "User avatar"}
+                    className="w-full h-full object-cover object-center shrink-0 block"
+                    style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }}
+                  />
+                ) : (
+                  initials
+                )}
               </div>
               <div className="min-w-0 overflow-hidden">
                 <p className="text-xs font-semibold text-foreground truncate" style={labelStyle}>
@@ -557,8 +563,17 @@ function DashboardLayout() {
 
             {/* User */}
             <div className="flex items-center gap-2.5 shrink-0">
-              <div className="size-9 rounded-full bg-brand/20 border border-brand/30 grid place-items-center text-sm font-bold text-brand shrink-0">
-                {initials}
+              <div className="size-9 rounded-full bg-brand/20 border border-brand/30 flex items-center justify-center text-sm font-bold text-brand shrink-0 overflow-hidden">
+                {user.avatarUrl ? (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.fullName || "User avatar"}
+                    className="w-full h-full object-cover object-center shrink-0 block"
+                    style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }}
+                  />
+                ) : (
+                  initials
+                )}
               </div>
               <div className="hidden md:block">
                 <p className="text-sm font-semibold leading-tight">{user.fullName}</p>

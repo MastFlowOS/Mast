@@ -37,6 +37,7 @@ import {
   useEnableWorkspace,
   useDeleteWorkspace,
   useTestSmtpConnection,
+  queryKeys,
 } from "@/hooks/use-mast-api";
 import { cn } from "@/lib/utils";
 import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
@@ -390,6 +391,7 @@ function SettingsPage() {
       const effectiveSenderEmail = isSmtpConfigured ? smtpUser : senderEmail;
       await saveSettings.mutateAsync({
         settings: {
+          ...(avatarUrl ? { avatarUrl } : {}),
           workspaceName,
           website,
           defaultRegions: defaultRegions.join(", "),
@@ -591,9 +593,14 @@ function SettingsPage() {
 
             {/* Avatar & Change Photo */}
             <div className="flex flex-col items-center justify-center shrink-0 sm:pt-2 sm:pl-2">
-              <div className="size-16 rounded-full bg-blue-600 text-white font-bold text-2xl grid place-items-center shadow-lg shadow-blue-600/30 ring-4 ring-blue-600/10 overflow-hidden">
+              <div className="size-16 rounded-full bg-blue-600 text-white font-bold text-2xl flex items-center justify-center shadow-lg shadow-blue-600/30 ring-4 ring-blue-600/10 overflow-hidden">
                 {avatarUrl ? (
-                  <img src={avatarUrl} alt="Avatar" className="size-full object-cover" />
+                  <img
+                    src={avatarUrl}
+                    alt="Avatar"
+                    className="w-full h-full object-cover object-center block"
+                    style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }}
+                  />
                 ) : (
                   avatarInitial
                 )}
@@ -1081,8 +1088,9 @@ function SettingsPage() {
                 },
               });
               setAvatarUrl(croppedDataUrl);
-              queryClient.invalidateQueries({ queryKey: ["settings"] });
-              queryClient.invalidateQueries({ queryKey: ["me"] });
+              queryClient.invalidateQueries({ queryKey: queryKeys.settings });
+              queryClient.invalidateQueries({ queryKey: queryKeys.me });
+              queryClient.invalidateQueries({ queryKey: queryKeys.account });
               setCropModalOpen(false);
               setCropImageSrc(null);
               toast.success("Profile photo updated.");

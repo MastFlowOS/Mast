@@ -312,7 +312,18 @@ export function useSaveSettings() {
   return useMutation({
     mutationFn: (args: { settings: SettingsMap; fullName?: string }) =>
       updateSettings(args.settings, args.fullName),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      queryClient.setQueryData(queryKeys.me, (old: any) => {
+        if (!old?.user) return old;
+        return {
+          ...old,
+          user: {
+            ...old.user,
+            ...(variables.fullName !== undefined ? { fullName: variables.fullName } : {}),
+            ...(variables.settings?.avatarUrl !== undefined ? { avatarUrl: variables.settings.avatarUrl } : {}),
+          },
+        };
+      });
       queryClient.invalidateQueries({ queryKey: queryKeys.settings });
       queryClient.invalidateQueries({ queryKey: queryKeys.me });
       queryClient.invalidateQueries({ queryKey: queryKeys.account });

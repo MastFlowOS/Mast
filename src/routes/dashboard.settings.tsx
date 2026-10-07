@@ -42,6 +42,7 @@ import { cn } from "@/lib/utils";
 import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
 import { GLOBAL_SCOPE } from "@/lib/geo/scope";
 import { RegionMark, RegionOption } from "@/components/mast/discover/TargetRegionCard";
+import { AVATAR_OUTPUT_SIZE, clampPan, computeMinScale, computeSourceRect } from "@/lib/avatarCrop";
 
 export const Route = createFileRoute("/dashboard/settings")({
   head: () => ({ meta: [{ title: "Settings — Mast" }] }),
@@ -1657,19 +1658,46 @@ function CropPhotoModal({
   onClose: () => void;
   onApply: (croppedDataUrl: string) => Promise<void>;
 }) {
-  const [zoom, setZoom] = useState(1);
+  // Visual size of the circular crop window (px). Viewport is the size-72 box (288px).
+  const CIRCLE_D = 220;
+  const [zoom, setZoom] = useState(1); // multiplier on top of minScale, 1..3
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0, panX: 0, panY: 0 });
   const [isSaving, setIsSaving] = useState(false);
   const imageRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Scale that makes the image's shorter side equal the circle diameter,
+  // derived from the ORIGINAL pixel dimensions.
+  const minScale = natural ? computeMinScale(natural.w, natural.h, CIRCLE_D) : 1;
+  const scale = minScale * zoom;
+
+  const clampTo = (p: { x: number; y: number }, z: number) =>
+    natural ? clampPan(p, natural.w, natural.h, minScale * z, CIRCLE_D) : p;
+
+  const applyZoom = (z: number) => {
+    const next = Math.min(3, Math.max(1, z));
+    setZoom(next);
+    setPan((prev) => clampTo(prev, next));
+  };
+
+  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    if (!img.naturalWidth || !img.naturalHeight) {
+      setLoadError(true);
+      return;
+    }
+    setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
   // Wheel zoom
   const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = -e.deltaY * 0.002;
-    setZoom((prev) => Math.min(3, Math.max(1, Number((prev + delta).toFixed(3)))));
+    applyZoom(Number((zoom - e.deltaY * 0.002).toFixed(3)));
   };
 
   // Mouse pan
@@ -1694,7 +1722,7 @@ function CropPhotoModal({
     const handleMouseMove = (e: MouseEvent) => {
       const dx = e.clientX - dragStart.x;
       const dy = e.clientY - dragStart.y;
-      setPan({ x: dragStart.panX + dx, y: dragStart.panY + dy });
+      setPan(clampTo({ x: dragStart.panX + dx, y: dragStart.panY + dy }, zoom));
     };
 
     const handleTouchMove = (e: TouchEvent) => {
@@ -1702,7 +1730,7 @@ function CropPhotoModal({
         const touch = e.touches[0];
         const dx = touch.clientX - dragStart.x;
         const dy = touch.clientY - dragStart.y;
-        setPan({ x: dragStart.panX + dx, y: dragStart.panY + dy });
+        setPan(clampTo({ x: dragStart.panX + dx, y: dragStart.panY + dy }, zoom));
       }
     };
 
@@ -1719,7 +1747,8 @@ function CropPhotoModal({
       window.removeEventListener("touchmove", handleTouchMove);
       window.removeEventListener("touchend", handleEnd);
     };
-  }, [isDragging, dragStart]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDragging, dragStart, zoom, natural]);
 
   const handleReset = () => {
     setZoom(1);
@@ -1727,39 +1756,48 @@ function CropPhotoModal({
   };
 
   const handleSave = async () => {
-    if (!imageRef.current) return;
+    const img = imageRef.current;
+    if (!img || !natural || !img.complete || !img.naturalWidth) {
+      toast.error("Photo is still loading. Please try again.");
+      return;
+    }
     setIsSaving(true);
     try {
-      const img = imageRef.current;
       const canvas = document.createElement("canvas");
-      const OUTPUT_SIZE = 256;
-      canvas.width = OUTPUT_SIZE;
-      canvas.height = OUTPUT_SIZE;
+      canvas.width = AVATAR_OUTPUT_SIZE;
+      canvas.height = AVATAR_OUTPUT_SIZE;
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Could not get canvas context");
 
-      // Circular clip on canvas
-      ctx.beginPath();
-      ctx.arc(OUTPUT_SIZE / 2, OUTPUT_SIZE / 2, OUTPUT_SIZE / 2, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
+      // Source rectangle in ORIGINAL image pixels, from current zoom + pan.
+      const { sx, sy, sSize } = computeSourceRect(
+        img.naturalWidth,
+        img.naturalHeight,
+        scale,
+        pan,
+        CIRCLE_D,
+      );
 
-      const PREVIEW_CIRCLE_D = 220;
-      const natW = img.naturalWidth || 1;
-      const natH = img.naturalHeight || 1;
-      const coverScale = Math.max(PREVIEW_CIRCLE_D / natW, PREVIEW_CIRCLE_D / natH);
-      const renderedW = natW * coverScale * zoom;
-      const renderedH = natH * coverScale * zoom;
+      // Opaque square output (JPEG has no alpha — a transparent/clipped canvas exports as black).
+      // The UI rounds the avatar with CSS, so no circular clip here.
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, AVATAR_OUTPUT_SIZE, AVATAR_OUTPUT_SIZE);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, AVATAR_OUTPUT_SIZE, AVATAR_OUTPUT_SIZE);
 
-      const scaleCanvas = OUTPUT_SIZE / PREVIEW_CIRCLE_D;
-      const drawW = renderedW * scaleCanvas;
-      const drawH = renderedH * scaleCanvas;
-      const drawX = (OUTPUT_SIZE - drawW) / 2 + pan.x * scaleCanvas;
-      const drawY = (OUTPUT_SIZE - drawH) / 2 + pan.y * scaleCanvas;
-
-      ctx.drawImage(img, drawX, drawY, drawW, drawH);
+      // Sanity check: refuse to save a blank/black canvas.
+      const probe = ctx.getImageData(0, 0, AVATAR_OUTPUT_SIZE, AVATAR_OUTPUT_SIZE).data;
+      let lit = 0;
+      for (let i = 0; i < probe.length; i += 4 * 97) {
+        if (probe[i] + probe[i + 1] + probe[i + 2] > 24) lit++;
+      }
+      if (lit === 0) throw new Error("Cropped photo came out blank. Please try a different image.");
 
       const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+      if (!dataUrl.startsWith("data:image/jpeg;base64,") || dataUrl.length < 500) {
+        throw new Error("Failed to export cropped photo.");
+      }
       await onApply(dataUrl);
     } catch (err: any) {
       toast.error(err?.message || "Failed to crop photo.");
@@ -1790,20 +1828,29 @@ function CropPhotoModal({
           onTouchStart={handleTouchStart}
           className="relative size-72 mx-auto rounded-2xl overflow-hidden bg-zinc-950 flex items-center justify-center cursor-grab active:cursor-grabbing select-none border border-border/80 shadow-inner"
         >
-          {/* Inner image */}
+          {/* Inner image: explicit pixel size = natural size * scale, centred, then panned */}
           <img
             ref={imageRef}
             src={imageSrc}
             alt="To crop"
             draggable={false}
-            className="pointer-events-none absolute max-w-none origin-center transition-transform duration-75"
+            onLoad={handleImageLoad}
+            onError={() => setLoadError(true)}
+            className="pointer-events-none absolute max-w-none select-none"
             style={{
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-              minWidth: "220px",
-              minHeight: "220px",
-              objectFit: "cover",
+              left: "50%",
+              top: "50%",
+              width: natural ? natural.w * scale : undefined,
+              height: natural ? natural.h * scale : undefined,
+              transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px))`,
+              visibility: natural ? "visible" : "hidden",
             }}
           />
+          {loadError && (
+            <p className="absolute inset-0 grid place-items-center text-xs text-red-400">
+              Could not load this image.
+            </p>
+          )}
 
           {/* Circular mask overlay: darkened outer, transparent circular viewport with subtle ring */}
           <div
@@ -1826,7 +1873,7 @@ function CropPhotoModal({
               max="3"
               step="0.05"
               value={zoom}
-              onChange={(e) => setZoom(parseFloat(e.target.value))}
+              onChange={(e) => applyZoom(parseFloat(e.target.value))}
               className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
             />
             <ZoomIn className="size-4 text-muted-foreground shrink-0" />
@@ -1857,7 +1904,7 @@ function CropPhotoModal({
           <button
             type="button"
             onClick={handleSave}
-            disabled={isSaving}
+            disabled={isSaving || !natural}
             className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-lg shadow-blue-600/25 transition-all inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
           >
             <Check className="size-3.5" />

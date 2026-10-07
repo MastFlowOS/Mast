@@ -535,6 +535,7 @@ export type Database = {
           updated_at: string;
           last_contacted_at: string | null;
           follow_up_at: string | null;
+          estimated_value: number | null;
         };
         Insert: {
           id?: number;
@@ -563,6 +564,7 @@ export type Database = {
           updated_at?: string;
           last_contacted_at?: string | null;
           follow_up_at?: string | null;
+          estimated_value?: number | null;
         };
         Update: {
           id?: number;
@@ -591,6 +593,7 @@ export type Database = {
           updated_at?: string;
           last_contacted_at?: string | null;
           follow_up_at?: string | null;
+          estimated_value?: number | null;
         };
         Relationships: [];
       };

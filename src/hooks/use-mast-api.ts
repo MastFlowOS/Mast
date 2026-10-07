@@ -7,6 +7,7 @@ import {
   bulkUpdateLeads,
   createLead,
   createLeadActivity,
+  getStageActivity,
   createFollowup,
   createMessage,
   generateOutreachDraft,
@@ -181,6 +182,19 @@ export function useRecentActivity(enabled = true) {
     queryKey: queryKeys.activity,
     queryFn: getRecentActivity,
     enabled,
+  });
+}
+
+/**
+ * Real activity for one stage's opportunities (lead_activities.lead_id IN stage leads).
+ * Keyed under ["mast","leads"] so every lead/activity mutation that already invalidates
+ * the leads cache also refreshes this.
+ */
+export function useStageActivity(stage: string | null, leadIds: number[]) {
+  return useQuery({
+    queryKey: ["mast", "leads", "stage-activity", stage, leadIds.join(",")] as const,
+    queryFn: () => getStageActivity(leadIds, 5),
+    enabled: stage !== null && leadIds.length > 0,
   });
 }
 

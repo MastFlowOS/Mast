@@ -191,6 +191,8 @@ export type Lead = {
   businessId?: string | null;
   opportunityScore?: number | null;
   professionSlug?: string | null;
+  /** Optional user-entered deal value. null/undefined = not provided (never estimated). */
+  estimatedValue?: number | null;
 };
 
 export type CreateLeadBody = Partial<
@@ -213,6 +215,7 @@ export type CreateLeadBody = Partial<
     | "priority"
     | "tags"
     | "source"
+    | "estimatedValue"
   >
 > & { businessName: string };
 
@@ -252,6 +255,16 @@ export type ActivityItem = {
   description: string;
   leadName?: string | null;
   channel?: string | null;
+  createdAt: string;
+};
+
+/** One lead_activities row, linked to its opportunity by lead_id (never by name). */
+export type StageActivityItem = {
+  id: string;
+  leadId: number;
+  type: string;
+  description: string;
+  channel: string | null;
   createdAt: string;
 };
 
@@ -464,6 +477,7 @@ function dbRowToLead(row: Record<string, unknown>): Lead {
     businessId: (row.business_id as string | null) ?? null,
     opportunityScore: (row.opportunity_score as number | null) ?? null,
     professionSlug: (row.profession_slug as string | null) ?? null,
+    estimatedValue: row.estimated_value == null ? null : Number(row.estimated_value),
   };
 }
 
@@ -489,6 +503,7 @@ function leadToDbRow(body: Partial<Lead & CreateLeadBody>) {
   if (body.source !== undefined) row.source = body.source;
   if (body.lastContactedAt !== undefined) row.last_contacted_at = body.lastContactedAt;
   if (body.followUpAt !== undefined) row.follow_up_at = body.followUpAt;
+  if (body.estimatedValue !== undefined) row.estimated_value = body.estimatedValue;
   return row;
 }
 
@@ -1768,6 +1783,49 @@ export async function getRecentActivity(): Promise<ActivityItem[]> {
     channel: (row.channel as string | null) ?? null,
     createdAt: row.created_at as string,
   }));
+}
+
+/**
+ * Newest activity for a specific set of opportunities, joined on
+ * lead_activities.lead_id -> leads.id. The ids are the caller's stage leads, so a quiet
+ * stage still returns its own (older) activity instead of being crowded out by a global
+ * "newest N". Ids are chunked to keep request URLs small; each chunk returns its own
+ * newest `limit` rows, and the newest `limit` of the union is always inside the union
+ * of those, so the merged result is exact.
+ */
+export async function getStageActivity(leadIds: number[], limit = 5): Promise<StageActivityItem[]> {
+  if (leadIds.length === 0) return [];
+  const userId = await requireUserId();
+  const CHUNK = 100;
+  const chunks: number[][] = [];
+  for (let i = 0; i < leadIds.length; i += CHUNK) chunks.push(leadIds.slice(i, i + CHUNK));
+
+  const results = await Promise.all(
+    chunks.map(async (ids) => {
+      const { data, error } = await supabase!
+        .from("lead_activities")
+        .select("id, lead_id, type, content, channel, created_at")
+        .eq("user_id", userId)
+        .in("lead_id", ids)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      if (error) throw new ApiError(500, error.message, error);
+      return data ?? [];
+    }),
+  );
+
+  return results
+    .flat()
+    .map((row: Record<string, unknown>) => ({
+      id: row.id as string,
+      leadId: row.lead_id as number,
+      type: row.type as string,
+      description: row.content as string,
+      channel: (row.channel as string | null) ?? null,
+      createdAt: row.created_at as string,
+    }))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, limit);
 }
 
 // ─── Settings (Supabase profiles.settings jsonb column) ──────────────────────

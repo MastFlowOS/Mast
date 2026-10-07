@@ -286,3 +286,61 @@ export function flowBriefingText(model: PipelineFlowModel): string {
   }
   return parts.join(" ");
 }
+
+/* ───────────────────────── Stage panel (drawer) helpers ─────────────────────────
+ * Everything the stage drawer shows comes from the same FlowNode / idleByStage the Flow
+ * itself uses, plus these two pure functions. There is no second formula for conversion.
+ */
+
+export type StageValueSummary = {
+  /** Sum of real estimatedValue figures; null when no opportunity in the stage has one. */
+  total: number | null;
+  /** total / valuedCount; null when nothing is valued. */
+  average: number | null;
+  /** How many of the stage's opportunities carry a real value. */
+  valuedCount: number;
+};
+
+/** Aggregates ONLY real, user-entered values. Null/missing/invalid values are ignored, never defaulted. */
+export function summarizeStageValue(leads: readonly Pick<Lead, "estimatedValue">[]): StageValueSummary {
+  let total = 0;
+  let valuedCount = 0;
+  for (const l of leads) {
+    const v = l.estimatedValue;
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+      total += v;
+      valuedCount++;
+    }
+  }
+  return valuedCount === 0
+    ? { total: null, average: null, valuedCount: 0 }
+    : { total, average: total / valuedCount, valuedCount };
+}
+
+export type StageInsight = { available: boolean; text: string };
+
+/**
+ * A factual summary of the selected stage built only from the Flow's own numbers:
+ * its stage-to-next percentage and the stalled/overdue count (STALLED_DAYS+ idle).
+ * Not AI-generated, so it makes no predictions and cites no outside statistics.
+ */
+export function buildStageInsight(node: FlowNode, idleCount: number): StageInsight {
+  if (node.count === 0 || node.toNextPct === null) {
+    return { available: false, text: "Not enough activity yet." };
+  }
+  const parts: string[] = [];
+  if (node.nextLabel) {
+    parts.push(`${node.toNextPct}% of opportunities that reached ${node.label} have moved on to ${node.nextLabel}.`);
+  } else {
+    parts.push(`${node.toNextPct}% of your pipeline is closed.`);
+  }
+  // Idle time is only tracked for leads in conversation (see buildPipelineFlowModel).
+  if (node.stage === "contacted" || node.stage === "replied" || node.stage === "meeting") {
+    parts.push(
+      idleCount > 0
+        ? `${idleCount} of ${node.count} ${plural(idleCount, "has", "have")} had no update for ${STALLED_DAYS}+ days.`
+        : `None have gone ${STALLED_DAYS}+ days without an update.`,
+    );
+  }
+  return { available: true, text: parts.join(" ") };
+}

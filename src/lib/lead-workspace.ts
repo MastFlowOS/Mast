@@ -63,12 +63,12 @@ export const PIPELINE_COLUMNS: LeadStatus[] = [
 
 export type FlowStage = "new" | "contacted" | "replied" | "meeting" | "won";
 
-export const FLOW_STAGES: { value: FlowStage; label: string; color: string; valueMultiplier: number }[] = [
-  { value: "new", label: "New", color: "from-blue-500/25 to-blue-500/5 text-blue-400 border-blue-500/20", valueMultiplier: 50 },
-  { value: "contacted", label: "Contacted", color: "from-indigo-500/25 to-indigo-500/5 text-indigo-400 border-indigo-500/20", valueMultiplier: 150 },
-  { value: "replied", label: "Replied", color: "from-brand/25 to-brand/5 text-brand border-brand/20", valueMultiplier: 500 },
-  { value: "meeting", label: "Meeting Booked", color: "from-amber-500/25 to-amber-500/5 text-amber-400 border-amber-500/20", valueMultiplier: 1200 },
-  { value: "won", label: "Closed", color: "from-success/25 to-success/5 text-success border-success/20", valueMultiplier: 8000 },
+export const FLOW_STAGES: { value: FlowStage; label: string; color: string }[] = [
+  { value: "new", label: "New", color: "from-blue-500/25 to-blue-500/5 text-blue-400 border-blue-500/20" },
+  { value: "contacted", label: "Contacted", color: "from-indigo-500/25 to-indigo-500/5 text-indigo-400 border-indigo-500/20" },
+  { value: "replied", label: "Replied", color: "from-brand/25 to-brand/5 text-brand border-brand/20" },
+  { value: "meeting", label: "Meeting Booked", color: "from-amber-500/25 to-amber-500/5 text-amber-400 border-amber-500/20" },
+  { value: "won", label: "Closed", color: "from-success/25 to-success/5 text-success border-success/20" },
 ];
 
 export const STATUS_TO_STAGE: Record<LeadStatus, FlowStage> = {

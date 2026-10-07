@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Lead, LeadStatus } from "@/lib/api";
-import { useLeads, useUpdateLead, usePipelineStats, useRecentActivity, useExecutiveBriefing, usePipelineCoaching } from "@/hooks/use-mast-api";
+import { useLeads, useRecordLeadActivity, usePipelineStats, useRecentActivity, useStageActivity, useExecutiveBriefing, usePipelineCoaching } from "@/hooks/use-mast-api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { 
@@ -65,6 +65,7 @@ import {
 import { scoreBandOf, timeAgo, type ScoreBand } from "@/components/mast/pipeline/kanbanHelpers";
 import {
   buildPipelineFlowModel,
+  buildStageInsight,
   countByStage,
   flowBriefingText,
   flowHeadlineText,
@@ -72,6 +73,7 @@ import {
   STAGE_ORDER,
   STAGE_SHORT,
   STALLED_DAYS,
+  summarizeStageValue,
 } from "@/components/mast/pipeline/pipelineFlowModel";
 import { usePermissions } from "@/hooks/use-permissions";
 
@@ -87,6 +89,9 @@ const STAGE_TO_STATUS: Record<FlowStage, LeadStatus> = {
   won: "closed",
 };
 
+/** Formats a real, user-entered value. (Currency is not stored per lead; USD matches the prior display.) */
+const formatMoney = (n: number) => (n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${Math.round(n)}`);
+
 export const Route = createFileRoute("/dashboard/pipeline")({
   head: () => ({ meta: [{ title: "Pipeline — Mast" }] }),
   component: () => (
@@ -98,7 +103,7 @@ export const Route = createFileRoute("/dashboard/pipeline")({
 
 function Pipeline() {
   const navigate = useNavigate();
-  const updateLead = useUpdateLead();
+  const recordActivity = useRecordLeadActivity();
   const { permissions } = usePermissions();
 
   // AI Executive Briefing / Pipeline Coaching (Part 3 Phase 8). Only
@@ -204,28 +209,6 @@ function Pipeline() {
     const countsArray = Object.values(stageCounts);
     return countsArray.length > 0 ? Math.max(...countsArray, 1) : 1;
   }, [stageCounts]);
-
-  // Calculate cumulative conversions for stages
-  const stageConversions = useMemo(() => {
-    const stages: FlowStage[] = ["new", "contacted", "replied", "meeting", "won"];
-    const rates: Record<FlowStage, number> = {
-      new: 100,
-      contacted: 0,
-      replied: 0,
-      meeting: 0,
-      won: 0,
-    };
-
-    if (totalLeadsInFunnel === 0) return rates;
-
-    let remaining = totalLeadsInFunnel;
-    rates.contacted = Math.round(((remaining -= stageCounts.new) / totalLeadsInFunnel) * 100);
-    rates.replied = Math.round(((remaining -= stageCounts.contacted) / totalLeadsInFunnel) * 100);
-    rates.meeting = Math.round(((remaining -= stageCounts.replied) / totalLeadsInFunnel) * 100);
-    rates.won = Math.round(((remaining -= stageCounts.meeting) / totalLeadsInFunnel) * 100);
-
-    return rates;
-  }, [stageCounts, totalLeadsInFunnel]);
 
   // Calculate Pipeline Health Score (dynamic)
   const healthScore = useMemo(() => {
@@ -461,33 +444,6 @@ function Pipeline() {
     : aiRecommendations;
   const coachingLoading = statsLoading || (canCoaching && realCoachingLoading && !realCoaching);
 
-  // Stage detail values for Flow Nodes
-  const flowNodeData = useMemo(() => {
-    return FLOW_STAGES.map((stage, idx) => {
-      const count = stageCounts[stage.value];
-      const conversion = stageConversions[stage.value];
-      
-      // Calculate revenue value
-      const val = count * stage.valueMultiplier;
-      const formattedVal = val >= 1000 ? `$${(val / 1000).toFixed(1)}k` : `$${val}`;
-
-      // Trend calculations (consistent seed hash trend or based on count)
-      const isUp = (stage.valueMultiplier % 3) !== 0;
-      const trendPct = Math.round(5 + (val % 15));
-
-      return {
-        ...stage,
-        count,
-        conversion,
-        valueString: formattedVal,
-        trend: {
-          isUp,
-          pct: trendPct,
-        }
-      };
-    });
-  }, [stageCounts, stageConversions]);
-
   // ── Header controls: search, filters and date range ──
   const [query, setQuery] = useState("");
   const [nicheFilter, setNicheFilter] = useState<string>("all");
@@ -607,10 +563,27 @@ function Pipeline() {
       return;
     }
     const lead = leads.find((l) => l.id === leadId);
-    if (lead && getStageForStatus(lead.status) === targetStage) return;
+    if (!lead) {
+      toast.error("Could not find that opportunity");
+      return;
+    }
+    if (getStageForStatus(lead.status) === targetStage) return;
+    const fromStatus = normalizeLeadStatus(lead.status);
+    const toStatus = STAGE_TO_STATUS[targetStage];
     try {
-      await updateLead.mutateAsync({ id: leadId, body: { status: STAGE_TO_STATUS[targetStage] } });
-      toast.success(`Moved lead to ${FLOW_STAGES.find((s) => s.value === targetStage)?.label}`);
+      // Same path the lead workspace uses for a status change: writes a real
+      // status_changed row in lead_activities AND patches leads.status, then invalidates
+      // leads / analytics (pipeline stats) / stage-activity caches.
+      await recordActivity.mutateAsync({
+        lead,
+        activity: {
+          type: "status_changed",
+          content: `Moved from ${leadStatusLabel(fromStatus)} to ${leadStatusLabel(toStatus)}`,
+          metadata: { from: fromStatus, to: toStatus, source: "pipeline" },
+        },
+        patch: { status: toStatus },
+      });
+      toast.success(`Moved lead to ${STAGE_SHORT[targetStage]}`);
     } catch {
       toast.error("Could not move lead");
     }
@@ -624,44 +597,35 @@ function Pipeline() {
     await moveLeadToStage(id, targetStage);
   };
 
-  // Stage expansion slide panel content
+  // Stage expansion slide panel content.
+  // ONE source of truth: the Flow's own model (`flow`, built from the same filtered
+  // counts/leads the Flow renders). The drawer adds no counting or conversion of its own.
   const selectedStageData = useMemo(() => {
     if (!expandedStage) return null;
-    const stageMeta = FLOW_STAGES.find((s) => s.value === expandedStage);
-    const count = stageCounts[expandedStage];
-    const val = count * (stageMeta?.valueMultiplier ?? 100);
-    const conversion = stageConversions[expandedStage];
+    const node = flow.nodes[STAGE_ORDER.indexOf(expandedStage)];
+    if (!node) return null;
 
-    // Filter leads belonging to this stage
-    const stageLeads = leads
+    // Same filtered leads as the Flow; "recent" = most recently updated (leads.updated_at).
+    const stageLeadsAll = filteredLeads
       .filter((lead) => getStageForStatus(lead.status) === expandedStage)
-      .slice(0, 10);
-
-    // AI Insight text for stage
-    const insights: Record<FlowStage, string> = {
-      new: "Verifying contact details prior to outreach reduces bounce rates by 40%.",
-      contacted: "Response rates increased 17% after sending follow-up messages. Sticking to a 2-day delay produces optimal conversions.",
-      replied: "Deals stall in replied phase for 8.4 days on average. Sending a quick video breakdown of the quote cuts this time in half.",
-      meeting: "Meetings have an 82% conversion to won if a pre-meeting summary report is sent 24 hours in advance.",
-      won: "Your sales cycle is averaging 5.2 days. High concentration of Closed-Won deals are in the coffee shop niche.",
-    };
-
-    // Filter activities involving leads in this stage
-    const stageLeadIds = new Set(leads.filter(l => getStageForStatus(l.status) === expandedStage).map(l => l.id));
-    const stageActivities = recentActivities
-      .filter((act) => act.leadName && leads.some(l => l.businessName === act.leadName && stageLeadIds.has(l.id)))
-      .slice(0, 5);
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
     return {
-      meta: stageMeta,
-      count,
-      value: val,
-      conversion,
-      leads: stageLeads,
-      activities: stageActivities,
-      aiInsight: insights[expandedStage] || "Continue tracking conversions for this stage.",
+      node,
+      count: node.count,
+      conversionPct: node.toNextPct,
+      nextLabel: node.nextLabel,
+      value: summarizeStageValue(stageLeadsAll),
+      leads: stageLeadsAll.slice(0, 10),
+      stageLeadIds: stageLeadsAll.map((l) => l.id),
+      insight: buildStageInsight(node, flow.idleByStage[expandedStage]),
     };
-  }, [expandedStage, stageCounts, stageConversions, leads, recentActivities]);
+  }, [expandedStage, flow, filteredLeads]);
+
+  // Real activity for exactly this stage's opportunities (lead_activities.lead_id IN ...).
+  const stageActivityIds = selectedStageData?.stageLeadIds ?? [];
+  const { data: stageActivity, isLoading: stageActivityLoading } = useStageActivity(expandedStage, stageActivityIds);
+  const leadNameById = useMemo(() => new Map(leads.map((l) => [l.id, l.businessName])), [leads]);
 
   const handleMoveLeadStage = moveLeadToStage;
 
@@ -1081,7 +1045,7 @@ function Pipeline() {
               <div className="p-6 relative">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-brand">Stage Context</span>
                 <h2 className="text-2xl font-bold tracking-tight text-foreground uppercase mt-1">
-                  {selectedStageData.meta?.label}
+                  {selectedStageData.node.label}
                 </h2>
                 <p className="text-xs text-muted-foreground mt-1">
                   Analyze leads and convert deals inside this stage.
@@ -1096,16 +1060,23 @@ function Pipeline() {
                     </h4>
                   </div>
                   <div className="p-3 rounded-xl border border-border/80 bg-background/40">
-                    <span className="text-[9px] font-bold text-muted-foreground uppercase">Conversion</span>
+                    <span className="text-[9px] font-bold text-muted-foreground uppercase">
+                      {selectedStageData.nextLabel ? `To ${selectedStageData.nextLabel}` : "Win rate"}
+                    </span>
                     <h4 className="text-lg font-bold font-mono text-foreground mt-1">
-                      {selectedStageData.conversion}%
+                      {selectedStageData.conversionPct === null ? "—" : `${selectedStageData.conversionPct}%`}
                     </h4>
                   </div>
                   <div className="p-3 rounded-xl border border-border/80 bg-background/40">
                     <span className="text-[9px] font-bold text-muted-foreground uppercase">Opportunity</span>
                     <h4 className="text-lg font-bold font-mono text-brand mt-1">
-                      {selectedStageData.value >= 1000 ? `$${(selectedStageData.value / 1000).toFixed(1)}k` : `$${selectedStageData.value}`}
+                      {selectedStageData.value.total === null ? "Unavailable" : formatMoney(selectedStageData.value.total)}
                     </h4>
+                    {selectedStageData.value.total !== null && selectedStageData.value.average !== null && (
+                      <p className="text-[9px] text-muted-foreground mt-0.5">
+                        avg {formatMoney(selectedStageData.value.average)} · {selectedStageData.value.valuedCount} of {selectedStageData.count} valued
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1117,10 +1088,10 @@ function Pipeline() {
                     <Sparkles className="size-16 text-brand" />
                   </div>
                   <h4 className="text-xs font-bold uppercase tracking-wider text-brand flex items-center gap-1.5">
-                    <Sparkles className="size-4" /> Stage AI Insight
+                    <Sparkles className="size-4" /> Stage Insight
                   </h4>
                   <p className="text-xs text-foreground mt-2 leading-relaxed">
-                    {selectedStageData.aiInsight}
+                    {selectedStageData.insight.text}
                   </p>
                 </div>
 
@@ -1134,12 +1105,6 @@ function Pipeline() {
                     >
                       <Plus className="size-4" /> Discover
                     </button>
-                    <button 
-                      onClick={() => toast.info("Triggered stage outreach sequence")}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-semibold hover:bg-card cursor-pointer"
-                    >
-                      Bulk outreach
-                    </button>
                   </div>
                 </div>
               </div>
@@ -1148,18 +1113,20 @@ function Pipeline() {
               <div className="p-6">
                 <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3">Recent Stage Actions</h4>
                 
-                {selectedStageData.activities.length === 0 ? (
+                {stageActivityLoading ? (
+                  <p className="text-xs text-muted-foreground">Loading activity…</p>
+                ) : !stageActivity || stageActivity.length === 0 ? (
                   <p className="text-xs text-muted-foreground">No recent activity recorded for opportunities in this stage.</p>
                 ) : (
                   <div className="space-y-3">
-                    {selectedStageData.activities.map((act) => (
+                    {stageActivity.map((act) => (
                       <div key={act.id} className="flex items-start gap-2.5 text-xs">
                         <div className="shrink-0 mt-0.5">
                           <Activity className="size-4 text-brand" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="font-semibold text-foreground">
-                            {act.leadName}: <span className="font-normal text-muted-foreground">{act.description}</span>
+                            {leadNameById.get(act.leadId) ?? "Opportunity"}: <span className="font-normal text-muted-foreground">{act.description}</span>
                           </p>
                         </div>
                       </div>

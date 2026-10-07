@@ -8,8 +8,13 @@ import {
   ArrowRight,
   BarChart3,
   CalendarCheck,
+  CalendarDays,
   Clock,
+  FileText,
+  Mail,
+  MessageCircleMore,
   Sparkles,
+  Trophy,
   TrendingDown,
   TrendingUp,
   Inbox,
@@ -17,9 +22,10 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { FlowStage } from "@/lib/lead-workspace";
 import { cn } from "@/lib/utils";
-import { FlowRibbonArt } from "./FlowRibbonArt";
-import { ART, ART_ANCHORS, ART_NODES, CROP, CROP_H } from "./flowRibbon";
-import { STAGE_COLOR, STAGE_ORDER, STAGE_SHORT, type FlowHealth, type FlowNode } from "./pipelineFlowModel";
+import forestUrl from "@/assets/pipeline-forest-background.webp";
+import { ForestFlowArt } from "./ForestFlowArt";
+import { BG, CALLOUTS, CROP, CROP_H, STAGES, px, xPct, yPct } from "./forestFlow";
+import { STAGE_ORDER, STAGE_SHORT, type FlowHealth, type FlowNode } from "./pipelineFlowModel";
 
 const surface = "rounded-2xl border border-white/[0.07] bg-[#070a18]/70";
 
@@ -184,30 +190,12 @@ export function PipelineHealthStrip({ health }: { health: FlowHealth }) {
 
 /* ─────────────────────────────── The Flow (hero) ─────────────────────────────── */
 
-// The flow's visual backbone is FlowRibbonArt: a small bitmap for the soft glowing body, plus vector
-// threads, seam and rings (sharp at any size or pixel density). Everything else is positioned over it
-// in the same 2172 × 724 artwork space (see flowRibbon.ts): the five circles and the point on the
-// ribbon's upper edge each alert pins to.
-/** Pale tint of each stage colour, used for the bright core of its ring. */
-const RING_CORE = ["#ecd6ff", "#d3dcff", "#bdeeff", "#bff7ee", "#c2fadb"];
-const STAGE_COLORS = STAGE_ORDER.map((s) => STAGE_COLOR[s]);
-const xPct = (x: number) => (x / ART.w) * 100;
-const yPct = (y: number) => ((y - CROP.y0) / CROP_H) * 100;
+// The Flow is a journey through a night forest: five stone pedestals joined by lit bridges, from New
+// (purple) to Closed (white). The forest is a picture; the glowing path and rings are SVG drawn over
+// it (ForestFlowArt), and the stage markers, counts and conversion callouts are HTML positioned over
+// both in the picture's own pixel space (see forestFlow.ts), so everything lines up at any width.
 
-const ALERT_COLOR = { bottleneck: "#f59e0b", low: "#ec4899", good: "#34d399" } as const;
-
-/** Three rising bars; the taller they are, the better the stage converts. */
-function MiniBars({ pct, color }: { pct: number; color: string }) {
-  const fill = Math.max(0.25, Math.min(1, pct / 100));
-  const heights = [0.4, 0.68, 1].map((k) => Math.round(8 + 14 * k * (0.45 + 0.55 * fill)));
-  return (
-    <span aria-hidden="true" className="flex h-[22px] items-end gap-[3px]">
-      {heights.map((h, i) => (
-        <span key={i} style={{ height: h, background: color, opacity: 0.5 + i * 0.25, animationDelay: `${300 + i * 90}ms` }} className="pf-bar w-[4px] rounded-[2px]" />
-      ))}
-    </span>
-  );
-}
+const STAGE_ICON = [FileText, Mail, MessageCircleMore, CalendarDays, Trophy] as const;
 
 /** Counts up to `value` (and between values when it changes) so numbers arrive, not just appear. */
 function CountUp({ value }: { value: number }) {
@@ -238,134 +226,26 @@ function CountUp({ value }: { value: number }) {
   return <>{shown.toLocaleString()}</>;
 }
 
-/** Deterministic sparse "dust" (no Math.random, so it never reshuffles between renders). */
-const DUST = Array.from({ length: 46 }, (_, i) => {
-  const r = (n: number) => {
-    const x = Math.sin(i * 127.1 + n * 311.7) * 43758.5453;
-    return x - Math.floor(x);
-  };
-  return { x: r(1) * 100, y: r(2) * 100, s: 0.6 + r(3) * 1.2, o: 0.2 + r(4) * 0.45, d: r(5) * 5, twinkle: r(6) > 0.55 };
-});
-
-/**
- * One full cycle of the stage colours, there and back (purple → green → purple), so that two
- * cycles side by side loop seamlessly when the layer slides by exactly one cycle.
- */
-const CURRENT_GRADIENT = (() => {
-  const c = STAGE_ORDER.map((st) => STAGE_COLOR[st]);
-  const cycle = [...c, ...c.slice(0, -1).reverse()]; // c0 c1 c2 c3 c4 c3 c2 c1 (then c0 again)
-  const stops = [...cycle, c[0]];
-  const per = 50 / (stops.length - 1); // each cycle is half of the 200%-wide layer
-  const half = stops.map((col, i) => `${col} ${(i * per).toFixed(2)}%`);
-  const rest = stops.map((col, i) => `${col} ${(50 + i * per).toFixed(2)}%`);
-  return `linear-gradient(90deg, ${[...half, ...rest].join(", ")})`;
-})();
-
-/**
- * The space the flow lives in, behind the artwork: a slow current of soft stage-coloured light
- * drifting under the ribbon, dotted dividers between the stages, a little dust, and two long
- * echoes of the wave. Everything fades out toward its edges so it never forms a box, and nothing
- * in it has a hard edge, so nothing shimmers.
- */
-function FlowEnvironment() {
+/** The glass tile that floats above a pedestal, in the stage colour. */
+function StageTile({ color, core, Icon }: { color: string; core: string; Icon: (typeof STAGE_ICON)[number] }) {
   return (
-    <div
+    <span
       aria-hidden="true"
-      className="pointer-events-none absolute -inset-x-[7%] -bottom-[8%] -top-[14%] z-0"
       style={{
-        WebkitMaskImage: "radial-gradient(ellipse 74% 80% at 50% 52%, #000 38%, transparent 100%)",
-        maskImage: "radial-gradient(ellipse 74% 80% at 50% 52%, #000 38%, transparent 100%)",
+        width: px(62),
+        height: px(62),
+        borderRadius: px(15),
+        border: `${px(2.4)} solid ${color}`,
+        background: `linear-gradient(155deg, ${color}8c 0%, ${color}33 38%, rgba(6,8,24,0.9) 100%)`,
+        boxShadow: `0 0 ${px(26)} ${color}b3, 0 0 ${px(7)} ${color}, inset 0 0 ${px(15)} ${color}66`,
+        color: core,
       }}
+      className="grid shrink-0 place-items-center backdrop-blur-[2px] transition-[box-shadow,transform] duration-300 group-hover:-translate-y-[3%]"
     >
-      {/* depth: a deep navy pool of light the ribbon sits in */}
-      <div
-        className="absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(ellipse 62% 54% at 50% 50%, rgba(22,30,92,0.55), rgba(8,10,34,0.35) 55%, transparent 80%)",
-        }}
-      />
-
-      {/* current: soft stage-coloured light drifting slowly under the ribbon, like light moving through
-          water. Smooth gradients only (no lines), moved by transform alone, so it stays calm. */}
-      <div
-        className="absolute inset-x-0 bottom-[2%] h-[52%] overflow-hidden"
-        style={{
-          WebkitMaskImage: "radial-gradient(ellipse 54% 50% at 50% 50%, #000 0%, rgba(0,0,0,0.55) 45%, transparent 100%)",
-          maskImage: "radial-gradient(ellipse 54% 50% at 50% 50%, #000 0%, rgba(0,0,0,0.55) 45%, transparent 100%)",
-        }}
-      >
-        <div className="pf-current absolute inset-y-0 left-0 w-[200%] opacity-[0.2]" style={{ background: CURRENT_GRADIENT }} />
-      </div>
-
-      {/* dotted dividers between the five stage columns */}
-      {ART_NODES.slice(0, -1).map((n, i) => (
-        <span
-          key={i}
-          className="absolute"
-          style={{
-            left: `${(((n.x + ART_NODES[i + 1].x) / 2 / ART.w + 0.07) / 1.14) * 100}%`, // container x → this wider layer
-            top: "18%",
-            height: "62%",
-            borderLeft: "1px dotted rgba(140,160,255,0.2)",
-            WebkitMaskImage: "linear-gradient(to bottom, transparent, #000 25%, #000 75%, transparent)",
-            maskImage: "linear-gradient(to bottom, transparent, #000 25%, #000 75%, transparent)",
-          }}
-        />
-      ))}
-
-      {/* dust */}
-      <svg className="absolute inset-0 size-full" width="100%" height="100%">
-        {DUST.map((d, i) => (
-          <circle
-            key={i}
-            cx={`${d.x}%`}
-            cy={`${d.y}%`}
-            r={d.s}
-            fill="#cfd8ff"
-            opacity={d.o}
-            className={d.twinkle ? "pf-twinkle" : undefined}
-            style={d.twinkle ? { animationDelay: `${d.d}s` } : undefined}
-          />
-        ))}
-      </svg>
-
-      {/* two long echoes of the wave, low in the frame */}
-      <svg className="absolute inset-0 size-full" viewBox="0 0 1000 300" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="pf-env-g" gradientUnits="userSpaceOnUse" x1="0" x2="1000" y1="0" y2="0">
-            {STAGE_ORDER.map((s, i) => (
-              <stop key={s} offset={`${i * 25}%`} stopColor={STAGE_COLOR[s]} />
-            ))}
-          </linearGradient>
-          <filter id="pf-env-blur" x="-5%" y="-100%" width="110%" height="300%">
-            <feGaussianBlur stdDeviation="6" />
-          </filter>
-        </defs>
-        <path
-          d="M 0 258 C 180 234, 300 288, 500 264 S 820 234, 1000 270"
-          fill="none"
-          stroke="url(#pf-env-g)"
-          strokeWidth="1"
-          opacity="0.24"
-          vectorEffect="non-scaling-stroke"
-        />
-        <path
-          d="M 0 270 C 220 300, 380 246, 580 276 S 860 294, 1000 258"
-          fill="none"
-          stroke="url(#pf-env-g)"
-          strokeWidth="7"
-          opacity="0.12"
-          filter="url(#pf-env-blur)"
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
-    </div>
+      <Icon style={{ width: "54%", height: "54%", filter: `drop-shadow(0 0 4px ${color})` }} strokeWidth={1.9} />
+    </span>
   );
 }
-
-const CARD_W = 128;
-const CARD_H = 44;
 
 export function PipelineFlowHero({
   nodes,
@@ -377,186 +257,124 @@ export function PipelineFlowHero({
   onSelect: (stage: FlowStage) => void;
 }) {
   return (
-    <section aria-label="Pipeline flow" className="relative overflow-x-clip">
-      {/* No inner scroller: the whole flow scales with the width of the page. */}
-      <div>
-        {/* container-type lets the type and node sizes below scale with the artwork (cqw) */}
+    <section aria-label="Pipeline flow" className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-[#050818]">
+      {/* On narrow screens the map keeps its size and scrolls sideways, so the labels stay legible. */}
+      <div className="overflow-x-auto">
+        {/* container-type lets the type and marker sizes below scale with the picture (cqw) */}
         <div
-          className="relative mx-auto w-full max-w-[1320px]"
-          style={{ aspectRatio: `${ART.w} / ${CROP_H}`, containerType: "inline-size" }}
+          className="relative w-full min-w-[980px]"
+          style={{ aspectRatio: `${BG.w} / ${CROP_H}`, containerType: "inline-size" }}
         >
-          <FlowEnvironment />
+          {/* the forest */}
+          <img
+            src={forestUrl}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+            draggable={false}
+            className="pointer-events-none absolute left-0 w-full max-w-none select-none"
+            style={{ top: `${-(CROP.y0 / CROP_H) * 100}%` }}
+          />
 
-          {/* ambient light: a soft purple → green wash that spills past the artwork so it sits in the page */}
+          {/* night grade, and a fade into the page at the bottom and the top */}
           <div
             aria-hidden="true"
-            className="pf-breathe pointer-events-none absolute -inset-x-[5%] -inset-y-[14%]"
+            className="pointer-events-none absolute inset-0"
             style={{
-              background: STAGE_ORDER.map(
-                (s, i) =>
-                  `radial-gradient(ellipse 17% 46% at ${xPct(ART_NODES[i].x)}% ${yPct(ART_NODES[i].y)}%, ${STAGE_COLOR[s]}33, transparent 72%)`,
-              ).join(","),
+              background:
+                "linear-gradient(to top, rgba(5,8,24,0.92) 0%, rgba(5,8,24,0) 15%), linear-gradient(to bottom, rgba(5,8,24,0.5) 0%, rgba(5,8,24,0) 9%), radial-gradient(ellipse 80% 78% at 50% 48%, rgba(5,8,24,0) 55%, rgba(5,8,24,0.5) 100%), rgba(4,6,22,0.12)",
             }}
           />
 
-          {/* the ribbon and the five rings: soft bitmap body + sharp vector detail, light travelling along the threads */}
-          <FlowRibbonArt colors={STAGE_COLORS} tints={RING_CORE} />
+          {/* the glowing journey and the rings */}
+          <ForestFlowArt />
 
-          {/* movement between stages, centred between two circles on the ribbon's centre line */}
+          {/* stage-to-stage conversion, beside each bridge */}
           {!loading &&
-            nodes.slice(0, -1).map((n, i) => (
-              <div
-                key={n.stage}
-                style={{
-                  left: `${xPct((ART_NODES[i].x + ART_NODES[i + 1].x) / 2)}%`,
-                  top: `${yPct((ART_NODES[i].y + ART_NODES[i + 1].y) / 2)}%`,
-                  color: STAGE_COLOR[STAGE_ORDER[i + 1]],
-                  fontSize: "clamp(12px, 1.1cqw, 15px)",
-                }}
-                className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full bg-[#050719]/40 px-[0.6em] py-[0.2em] font-medium tabular-nums"
-              >
-                {n.toNextPct ?? 0}%
-                <ArrowRight className="pf-nudge size-[1.2em]" strokeWidth={2.2} />
-              </div>
-            ))}
-
-          {/* alerts: a small card pinned to the ribbon edge beside its stage by a dotted line */}
-          {!loading &&
-            nodes.map((n, i) => {
-              if (!n.alert) return null;
-              const ac = ALERT_COLOR[n.alert.kind];
-              const flip = i === nodes.length - 1; // the last stage pins to its left so the card stays in view
-              const ax = xPct(ART_ANCHORS[i].x);
-              const ay = yPct(ART_ANCHORS[i].y);
+            CALLOUTS.map(([x, y], i) => {
+              const color = STAGES[i].color;
               return (
-                <div key={`a-${n.stage}`} className="pointer-events-none absolute inset-0 z-10">
-                  <div
-                    style={{
-                      left: `${ax}%`,
-                      top: 4,
-                      width: CARD_W,
-                      transform: flip ? "translateX(calc(-100% + 14px))" : "translateX(-14px)",
-                    }}
-                    className="absolute rounded-lg border border-white/10 bg-[#0a0d20]/90 px-3 py-1.5"
-                  >
-                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
-                      <span style={{ background: ac }} className="size-1.5 shrink-0 rounded-full" />
-                      <span className="truncate">{n.alert.title}</span>
-                    </div>
-                    <div className="mt-0.5 truncate text-[10px] leading-tight text-muted-foreground">{n.alert.sub}</div>
-                  </div>
+                <div
+                  key={`conv-${i}`}
+                  aria-label={`${nodes[i]?.label ?? ""} to ${nodes[i + 1]?.label ?? ""}: ${nodes[i]?.toNextPct ?? 0}%`}
+                  style={{
+                    left: `${xPct(x)}%`,
+                    top: `${yPct(y)}%`,
+                    padding: `${px(10)} ${px(16)}`,
+                    borderRadius: px(14),
+                    boxShadow: `0 ${px(8)} ${px(24)} -${px(10)} #000, inset 0 1px 0 rgba(255,255,255,0.06)`,
+                    animationDelay: `${300 + i * 110}ms`,
+                  }}
+                  className="pf-rise pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-1/2 border border-white/[0.12] bg-[#080b1e]/72 backdrop-blur-[3px]"
+                >
                   <span
-                    aria-hidden="true"
-                    style={{
-                      left: `${ax}%`,
-                      top: 4 + CARD_H,
-                      height: `max(0px, calc(${ay}% - ${4 + CARD_H + 3}px))`,
-                      borderColor: `${ac}80`,
-                    }}
-                    className="absolute -translate-x-1/2 border-l border-dashed"
-                  />
-                  <span
-                    aria-hidden="true"
-                    style={{ left: `${ax}%`, top: `calc(${ay}% - 3px)`, background: ac, boxShadow: `0 0 6px ${ac}` }}
-                    className="absolute size-1.5 -translate-x-1/2 rounded-full"
+                    style={{ color, fontSize: "clamp(12px, 1.3cqw, 22px)", textShadow: `0 0 12px ${color}88` }}
+                    className="flex items-center gap-[0.35em] font-semibold leading-none tabular-nums"
                   >
-                    <span style={{ background: ac }} className="absolute inset-0 animate-ping rounded-full opacity-60 motion-reduce:animate-none" />
+                    {nodes[i]?.toNextPct ?? 0}%
+                    <ArrowRight className="size-[0.95em]" strokeWidth={2.2} />
+                  </span>
+                  <span
+                    style={{ fontSize: "clamp(9px, 0.82cqw, 14px)", marginTop: px(7) }}
+                    className="block whitespace-nowrap leading-none text-white/70"
+                  >
+                    to next stage
                   </span>
                 </div>
               );
             })}
 
-          {/* the five stages, each centred on its circle */}
+          {/* the five stages: a tile floating above each pedestal, its name and count on the stone */}
           {STAGE_ORDER.map((stage, i) => {
             const n = nodes[i];
-            const node = ART_NODES[i];
-            const last = i === STAGE_ORDER.length - 1;
-            const color = STAGE_COLOR[stage];
-            const delay = `${i * 90}ms`;
-            return (
-              <div key={stage}>
-                {/* a halo that radiates out of the circle, staggered left to right */}
-                {!loading && (
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      left: `${xPct(node.x)}%`,
-                      top: `${yPct(node.y)}%`,
-                      width: "9.4cqw",
-                      height: "9.4cqw",
-                      border: `1.5px solid ${color}`,
-                      boxShadow: `0 0 18px ${color}66`,
-                      animationDelay: `${i * 0.55}s`,
-                    }}
-                    className="pf-halo pointer-events-none absolute z-10 rounded-full"
-                  />
-                )}
-
-                {/* stage name, just above the circle */}
+            const s = STAGES[i];
+            const Icon = STAGE_ICON[i];
+            const content = (
+              <>
+                <StageTile color={s.color} core={s.core} Icon={Icon} />
                 <span
-                  style={{
-                    left: `${xPct(node.x)}%`,
-                    top: `${yPct(node.y)}%`,
-                    transform: "translate(-50%, calc(-100% - 4.1cqw))",
-                    fontSize: "clamp(12px, 1.05cqw, 14.5px)",
-                    animationDelay: delay,
-                  }}
-                  className="pf-rise pointer-events-none absolute z-20 whitespace-nowrap font-medium leading-none text-foreground"
+                  style={{ fontSize: "clamp(11px, 1.12cqw, 19px)", marginTop: px(25), textShadow: "0 1px 6px rgba(0,0,0,0.9)" }}
+                  className="block whitespace-nowrap font-medium leading-none text-white"
                 >
                   {STAGE_SHORT[stage]}
                 </span>
-
-                {/* the count sits inside the ring drawn by FlowRibbonArt */}
                 {loading || !n ? (
-                  <Skeleton
-                    style={{ left: `${xPct(node.x)}%`, top: `${yPct(node.y)}%`, width: "5.2cqw", height: "5.2cqw" }}
-                    className="absolute z-20 -translate-x-1/2 -translate-y-1/2 rounded-full"
-                  />
+                  <Skeleton style={{ width: px(70), height: px(34), marginTop: px(5) }} className="rounded-lg bg-white/15" />
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => onSelect(stage)}
-                    aria-label={`${n.label}: ${n.count} opportunities. Open stage details`}
-                    style={{
-                      left: `${xPct(node.x)}%`,
-                      top: `${yPct(node.y)}%`,
-                      width: "6.4cqw",
-                      height: "6.4cqw",
-                      fontSize: "clamp(16px, 1.75cqw, 24px)",
-                      ["--stage" as string]: color,
-                    }}
-                    className="group absolute z-20 grid -translate-x-1/2 -translate-y-1/2 cursor-pointer place-items-center rounded-full font-semibold tabular-nums text-foreground outline-none transition-[transform,box-shadow] duration-300 hover:scale-[1.08] hover:shadow-[0_0_34px_-2px_var(--stage)] focus-visible:ring-2 focus-visible:ring-brand/60"
+                  <span
+                    style={{ fontSize: "clamp(19px, 2.15cqw, 36px)", marginTop: px(5), textShadow: "0 2px 10px rgba(0,0,0,0.9)" }}
+                    className="block font-bold leading-none tabular-nums text-white"
                   >
                     <CountUp value={n.count} />
-                  </button>
+                  </span>
                 )}
-
-                {/* stage performance, under the circle */}
-                {!loading && n && (
-                  <div
-                    style={{
-                      left: `${xPct(node.x)}%`,
-                      top: `${yPct(node.y)}%`,
-                      width: "clamp(124px, 12.4cqw, 168px)",
-                      transform: "translate(-50%, 4.6cqw)",
-                      borderColor: `${color}38`,
-                      boxShadow: `0 8px 24px -14px ${color}, inset 0 1px 0 ${color}22`,
-                      animationDelay: `${180 + i * 90}ms`,
-                    }}
-                    className="pf-rise pointer-events-none absolute z-20 flex items-center justify-between gap-2 rounded-xl border bg-[#080b1c]/70 px-3 py-2 backdrop-blur-sm"
-                  >
-                    <span className="min-w-0">
-                      <span className="block text-[15px] font-semibold leading-none tabular-nums text-foreground">
-                        {n.toNextPct ?? 0}%
-                      </span>
-                      <span className="mt-1 block whitespace-nowrap text-[10.5px] leading-none text-muted-foreground">
-                        {last ? "win rate" : `move to ${n.nextLabel}`}
-                      </span>
-                    </span>
-                    <MiniBars pct={n.toNextPct ?? 0} color={color} />
-                  </div>
-                )}
+              </>
+            );
+            const place = {
+              left: `${xPct(s.top[0])}%`,
+              top: `${yPct(s.top[1] - 65)}%`,
+              width: px(150),
+              ["--stage" as string]: s.color,
+            };
+            const base = "absolute z-30 flex -translate-x-1/2 flex-col items-center rounded-2xl";
+            return loading || !n ? (
+              <div key={stage} style={place} className={base}>
+                {content}
               </div>
+            ) : (
+              <button
+                key={stage}
+                type="button"
+                onClick={() => onSelect(stage)}
+                aria-label={`${n.label}: ${n.count} opportunities. Open stage details`}
+                style={place}
+                className={cn(
+                  base,
+                  "group cursor-pointer outline-none transition-transform duration-300 hover:scale-[1.05] focus-visible:ring-2 focus-visible:ring-brand/60",
+                )}
+              >
+                {content}
+              </button>
             );
           })}
         </div>

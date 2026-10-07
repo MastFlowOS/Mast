@@ -103,11 +103,7 @@ function SettingsPage() {
   const [website, setWebsite] = useState("");
 
   // Default regions (multi-select, matching Discover UI)
-  const [defaultRegions, setDefaultRegions] = useState<string[]>([
-    "United States",
-    "Canada",
-    "United Kingdom",
-  ]);
+  const [defaultRegions, setDefaultRegions] = useState<string[]>([]);
 
   // Notifications (full original 6 active settings + 2 coming soon)
   const [notifyNewLeads, setNotifyNewLeads] = useState(true);
@@ -191,15 +187,15 @@ function SettingsPage() {
     const initialSmtpPassword = settings.smtpPassword ?? "";
     const initialSmtpEncryption = settings.smtpEncryption ?? "None";
 
-    let initialRegions = ["United States", "Canada", "United Kingdom"];
-    if (settings.defaultRegions) {
-      const parsed = settings.defaultRegions
+    let initialRegions: string[];
+    if (typeof settings.defaultRegions === "string") {
+      initialRegions = settings.defaultRegions
         .split(",")
         .map((r) => r.trim())
         .filter(Boolean);
-      if (parsed.length > 0) {
-        initialRegions = parsed;
-      }
+    } else {
+      // Brand-new user with no saved region preference: default to ONLY United States
+      initialRegions = ["United States"];
     }
 
     setWorkspaceName(initialWorkspaceName);

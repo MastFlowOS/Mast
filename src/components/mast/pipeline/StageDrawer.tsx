@@ -135,14 +135,14 @@ export function StageDrawer({
   return (
     <DialogPrimitive.Root open={stage !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-[#02030a]/55 backdrop-blur-[3px] data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-[#02030a]/30 backdrop-blur-[2px] data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
           data-testid="stage-drawer"
           className={cn(
             "fixed inset-y-0 right-0 z-50 flex h-dvh w-full max-w-[440px] flex-col overflow-hidden text-foreground outline-none sm:w-[420px] sm:rounded-l-[28px]",
-            "border border-white/[0.16] border-r-0 bg-[linear-gradient(160deg,rgba(26,22,64,0.78)_0%,rgba(9,12,32,0.86)_45%,rgba(5,7,20,0.92)_100%)] backdrop-blur-2xl backdrop-saturate-150",
-            "shadow-[-24px_0_80px_-20px_rgba(110,90,255,0.45),inset_0_1px_0_rgba(255,255,255,0.12),inset_1px_0_0_rgba(255,255,255,0.08)]",
+            "border border-white/30 border-r-0 bg-[linear-gradient(155deg,rgba(255,255,255,0.14)_0%,rgba(120,100,255,0.16)_28%,rgba(30,40,120,0.20)_62%,rgba(8,10,30,0.34)_100%)] backdrop-blur-[34px] backdrop-saturate-[1.8]",
+            "shadow-[-30px_0_90px_-24px_rgba(130,100,255,0.65),-2px_0_24px_-6px_rgba(140,170,255,0.45),inset_0_1px_0_rgba(255,255,255,0.35),inset_1px_0_0_rgba(255,255,255,0.22),inset_0_0_60px_rgba(255,255,255,0.04)]",
             "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right data-[state=closed]:duration-200 data-[state=open]:duration-300",
           )}
         >
@@ -223,7 +223,7 @@ function DrawerBody({
   return (
     <>
       {/* ── Header (fixed row, never scrolls away) ── */}
-      <header className="relative shrink-0 border-b border-white/[0.07] px-5 pb-4 pt-5">
+      <header className="relative shrink-0 border-b border-white/[0.14] bg-white/[0.05] px-5 pb-4 pt-5">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-0 h-28"
@@ -237,7 +237,7 @@ function DrawerBody({
           </span>
           <DialogPrimitive.Close
             aria-label="Close"
-            className="-mr-1 -mt-1 grid size-8 cursor-pointer place-items-center rounded-full border border-white/15 bg-white/[0.04] text-white/70 transition-colors hover:border-white/35 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+            className="-mr-1 -mt-1 grid size-8 cursor-pointer place-items-center rounded-full border border-white/30 bg-white/[0.10] text-white/85 backdrop-blur-md transition-colors hover:border-white/35 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
           >
             <X className="size-4" />
           </DialogPrimitive.Close>
@@ -281,7 +281,7 @@ function DrawerBody({
             <div
               key={m.key}
               data-metric={m.key}
-              className="min-w-0 rounded-xl border border-white/[0.09] bg-white/[0.04] px-2.5 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+              className="min-w-0 rounded-xl border border-white/[0.18] bg-white/[0.08] px-2.5 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_8px_20px_-12px_rgba(0,0,0,0.5)] backdrop-blur-md"
             >
               <div
                 data-metric-value
@@ -311,7 +311,7 @@ function DrawerBody({
         {data.idleCount > 0 && (
           <div
             data-testid="stage-attention"
-            className="mt-3 flex items-center gap-3 rounded-xl border border-rose-400/25 bg-gradient-to-r from-rose-500/[0.14] to-rose-500/[0.04] px-3.5 py-2.5"
+            className="mt-3 flex items-center gap-3 rounded-xl border border-rose-300/35 bg-gradient-to-r from-rose-500/[0.22] to-rose-500/[0.06] shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] backdrop-blur-md px-3.5 py-2.5"
           >
             <Clock className="size-5 shrink-0 text-rose-300" strokeWidth={1.8} />
             <p className="text-[12.5px] leading-snug text-white/80">
@@ -327,7 +327,7 @@ function DrawerBody({
         {/* Stage insight: computed from the Flow's own numbers, not AI-generated */}
         <section
           data-testid="stage-insight"
-          className="mt-3 rounded-xl border border-white/[0.09] bg-white/[0.035] px-3.5 py-3"
+          className="mt-3 rounded-xl border border-white/[0.18] bg-white/[0.07] px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] backdrop-blur-md"
         >
           <h3
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
@@ -363,7 +363,7 @@ function DrawerBody({
         <div
           role="tablist"
           aria-label="Stage content"
-          className="mt-5 flex gap-5 border-b border-white/[0.09]"
+          className="mt-5 flex gap-5 border-b border-white/[0.16]"
         >
           {(
             [
@@ -412,7 +412,7 @@ function DrawerBody({
                 <p className="px-1 pb-1 text-[11px] text-white/45" data-testid="stage-list-count">
                   Recent opportunities ({data.leads.length} of {count})
                 </p>
-                <ul className="divide-y divide-white/[0.06]">
+                <ul className="divide-y divide-white/[0.12]">
                   {data.leads.map((lead) => (
                     <OpportunityRow
                       key={lead.id}
@@ -428,7 +428,7 @@ function DrawerBody({
             <button
               type="button"
               onClick={onViewAll}
-              className="mt-4 flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] text-[12.5px] font-medium text-white/90 transition-colors hover:border-white/30 hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+              className="mt-4 flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-xl border border-white/30 bg-white/[0.10] text-[12.5px] font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] backdrop-blur-md transition-colors hover:border-white/50 hover:bg-white/[0.16] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
             >
               View all opportunities <ArrowRight className="size-3.5" />
             </button>
@@ -508,7 +508,7 @@ function OpportunityRow({
   return (
     <li
       data-lead-row
-      className="group flex items-center gap-2 rounded-lg px-1 py-2 transition-colors hover:bg-white/[0.045]"
+      className="group flex items-center gap-2 rounded-lg px-1 py-2 transition-colors hover:bg-white/[0.10]"
     >
       <button
         type="button"
@@ -551,7 +551,7 @@ function OpportunityRow({
         aria-label={`Move ${lead.businessName} to stage`}
         value={stage}
         onChange={(e) => onMove(e.target.value as FlowStage)}
-        className="h-7 w-[76px] shrink-0 cursor-pointer rounded-md border border-white/12 bg-[#0b1020] px-1 text-[11px] text-white/75 outline-none [color-scheme:dark] hover:border-white/30 focus:border-white/40"
+        className="h-7 w-[88px] shrink-0 cursor-pointer rounded-md border border-white/25 bg-white/[0.08] px-1 text-[11px] text-white/75 outline-none [color-scheme:dark] hover:border-white/30 focus:border-white/40"
       >
         {FLOW_STAGES.map((s) => (
           <option key={s.value} value={s.value} className="bg-[#0b1020] text-slate-200">

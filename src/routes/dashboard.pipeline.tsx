@@ -30,13 +30,12 @@ import { toast } from "sonner";
 import type { Lead, LeadStatus } from "@/lib/api";
 import { useLeads, useRecordLeadActivity, usePipelineStats, useRecentActivity, useStageActivity, useExecutiveBriefing, usePipelineCoaching } from "@/hooks/use-mast-api";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+import { StageDrawer } from "@/components/mast/pipeline/StageDrawer";
 import { 
   PIPELINE_COLUMNS, 
   leadStatusColor, 
   leadStatusLabel, 
   normalizeLeadStatus,
-  FLOW_STAGES,
   getStageForStatus,
   STATUS_TO_STAGE
 } from "@/lib/lead-workspace";
@@ -89,8 +88,6 @@ const STAGE_TO_STATUS: Record<FlowStage, LeadStatus> = {
   won: "closed",
 };
 
-/** Formats a real, user-entered value. (Currency is not stored per lead; USD matches the prior display.) */
-const formatMoney = (n: number) => (n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${Math.round(n)}`);
 
 export const Route = createFileRoute("/dashboard/pipeline")({
   head: () => ({ meta: [{ title: "Pipeline — Mast" }] }),
@@ -619,6 +616,7 @@ function Pipeline() {
       leads: stageLeadsAll.slice(0, 10),
       stageLeadIds: stageLeadsAll.map((l) => l.id),
       insight: buildStageInsight(node, flow.idleByStage[expandedStage]),
+      idleCount: flow.idleByStage[expandedStage],
     };
   }, [expandedStage, flow, filteredLeads]);
 
@@ -1034,179 +1032,22 @@ function Pipeline() {
         </div>
       )}
 
-      {/* Stage Expansion Side Drawer Panel */}
-      <Sheet open={expandedStage !== null} onOpenChange={(open) => !open && setExpandedStage(null)}>
-        <SheetContent className="sm:max-w-md w-full bg-card border-l border-border flex flex-col h-full text-foreground p-0">
-          
-          {selectedStageData ? (
-            <div className="flex flex-col h-full divide-y divide-border/60">
-              
-              {/* Drawer Header */}
-              <div className="p-6 relative">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-brand">Stage Context</span>
-                <h2 className="text-2xl font-bold tracking-tight text-foreground uppercase mt-1">
-                  {selectedStageData.node.label}
-                </h2>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Analyze leads and convert deals inside this stage.
-                </p>
-
-                {/* Quick stats grid */}
-                <div className="grid grid-cols-3 gap-3 mt-5">
-                  <div className="p-3 rounded-xl border border-border/80 bg-background/40">
-                    <span className="text-[9px] font-bold text-muted-foreground uppercase">Leads</span>
-                    <h4 className="text-lg font-bold font-mono text-foreground mt-1">
-                      {selectedStageData.count.toLocaleString()}
-                    </h4>
-                  </div>
-                  <div className="p-3 rounded-xl border border-border/80 bg-background/40">
-                    <span className="text-[9px] font-bold text-muted-foreground uppercase">
-                      {selectedStageData.nextLabel ? `To ${selectedStageData.nextLabel}` : "Win rate"}
-                    </span>
-                    <h4 className="text-lg font-bold font-mono text-foreground mt-1">
-                      {selectedStageData.conversionPct === null ? "—" : `${selectedStageData.conversionPct}%`}
-                    </h4>
-                  </div>
-                  <div className="p-3 rounded-xl border border-border/80 bg-background/40">
-                    <span className="text-[9px] font-bold text-muted-foreground uppercase">Opportunity</span>
-                    <h4 className="text-lg font-bold font-mono text-brand mt-1">
-                      {selectedStageData.value.total === null ? "Unavailable" : formatMoney(selectedStageData.value.total)}
-                    </h4>
-                    {selectedStageData.value.total !== null && selectedStageData.value.average !== null && (
-                      <p className="text-[9px] text-muted-foreground mt-0.5">
-                        avg {formatMoney(selectedStageData.value.average)} · {selectedStageData.value.valuedCount} of {selectedStageData.count} valued
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* AI Insights & Actions */}
-              <div className="p-6 space-y-4">
-                <div className="p-4 rounded-xl border border-brand/20 bg-brand/5 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 p-2 opacity-15">
-                    <Sparkles className="size-16 text-brand" />
-                  </div>
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-brand flex items-center gap-1.5">
-                    <Sparkles className="size-4" /> Stage Insight
-                  </h4>
-                  <p className="text-xs text-foreground mt-2 leading-relaxed">
-                    {selectedStageData.insight.text}
-                  </p>
-                </div>
-
-                {/* Quick Actions */}
-                <div>
-                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Stage Actions</h4>
-                  <div className="flex flex-wrap gap-2">
-                    <button 
-                      onClick={() => navigate({ to: "/dashboard/leads" })}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark cursor-pointer"
-                    >
-                      <Plus className="size-4" /> Discover
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Recent Activity in Stage */}
-              <div className="p-6">
-                <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3">Recent Stage Actions</h4>
-                
-                {stageActivityLoading ? (
-                  <p className="text-xs text-muted-foreground">Loading activity…</p>
-                ) : !stageActivity || stageActivity.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No recent activity recorded for opportunities in this stage.</p>
-                ) : (
-                  <div className="space-y-3">
-                    {stageActivity.map((act) => (
-                      <div key={act.id} className="flex items-start gap-2.5 text-xs">
-                        <div className="shrink-0 mt-0.5">
-                          <Activity className="size-4 text-brand" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-foreground">
-                            {leadNameById.get(act.leadId) ?? "Opportunity"}: <span className="font-normal text-muted-foreground">{act.description}</span>
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Recent Leads list (Limit 10) */}
-              <div className="p-6 flex-1 overflow-y-auto min-h-0 flex flex-col justify-between">
-                <div>
-                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3">
-                    Recent Opportunities ({Math.min(10, selectedStageData.leads.length)} of {selectedStageData.count})
-                  </h4>
-
-                  {selectedStageData.leads.length === 0 ? (
-                    <div className="text-center py-10">
-                      <p className="text-xs text-muted-foreground">No opportunities in this stage.</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {selectedStageData.leads.map((lead) => (
-                        <div 
-                          key={lead.id} 
-                          className="p-3 rounded-xl border border-border bg-background/40 hover:border-brand/40 transition-colors flex items-center justify-between gap-3 text-xs cursor-pointer group"
-                          onClick={() => navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(lead.id) } })}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <p className="font-bold text-foreground truncate">{lead.businessName}</p>
-                            <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
-                              {lead.instagramHandle ? `@${lead.instagramHandle}` : lead.email || "-"}
-                            </p>
-                          </div>
-                          
-                          {/* Quick Stage Mover Selector */}
-                          <div className="flex items-center gap-2 shrink-0">
-                            <select
-                              value={expandedStage ?? ""}
-                              onChange={(e) => {
-                                e.stopPropagation();
-                                void handleMoveLeadStage(lead.id, e.target.value as FlowStage);
-                              }}
-                              className="bg-[#0E1424] border border-border rounded px-1.5 py-1 text-[10px] outline-none text-slate-300 [color-scheme:dark] focus:border-brand cursor-pointer"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              {FLOW_STAGES.map((s) => (
-                                <option key={s.value} value={s.value} className="bg-[#0E1424] text-slate-200">
-                                  {s.label}
-                                </option>
-                              ))}
-                            </select>
-                            <ArrowRight className="size-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* View All Leads Button */}
-                <div className="pt-6 mt-auto">
-                  <button
-                    onClick={() => {
-                      setExpandedStage(null);
-                      navigate({ to: "/dashboard/relationships" });
-                    }}
-                    className="w-full rounded-xl bg-brand px-4 py-2.5 text-center text-xs font-semibold text-brand-foreground shadow-brand hover:bg-brand-dark cursor-pointer"
-                  >
-                    View Opportunity Network
-                  </button>
-                </div>
-              </div>
-
-            </div>
-          ) : (
-            <div className="p-6 text-center text-muted-foreground">Loading stage data...</div>
-          )}
-
-        </SheetContent>
-      </Sheet>
+      {/* Stage Expansion Side Drawer Panel (presentation lives in StageDrawer; data is computed above) */}
+      <StageDrawer
+        stage={expandedStage}
+        onClose={() => setExpandedStage(null)}
+        data={selectedStageData}
+        activity={stageActivity}
+        activityLoading={stageActivityLoading}
+        leadNameById={leadNameById}
+        onDiscover={() => navigate({ to: "/dashboard/leads" })}
+        onOpenLead={(lead) => navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(lead.id) } })}
+        onMoveLead={(lead, to) => void handleMoveLeadStage(lead.id, to)}
+        onViewAll={() => {
+          setExpandedStage(null);
+          navigate({ to: "/dashboard/relationships" });
+        }}
+      />
 
     </div>
   );

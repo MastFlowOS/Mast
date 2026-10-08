@@ -142,12 +142,28 @@ function flowConversion(container: HTMLElement, label: string) {
 function dialog() {
   return screen.getByRole("dialog");
 }
-function tile(label: RegExp | string) {
-  const el = within(dialog()).getByText(label);
-  return el.parentElement!.querySelector("h4")!.textContent!.trim();
+const METRIC_KEY: Record<string, string> = {
+  Leads: "opportunities",
+  Opportunity: "value",
+  "Avg. opportunity": "average",
+};
+/** Value of one top metric (by its label) in the drawer's metric row. */
+function tile(label: string) {
+  const key = METRIC_KEY[label] ?? (label === "Win rate" || label.startsWith("To ") ? "conversion" : label);
+  const el = dialog().querySelector(`[data-metric="${key}"]`);
+  if (!el) throw new Error(`no metric ${label}`);
+  // the conversion metric's label must name the right next stage (or "Win rate")
+  if (key === "conversion") {
+    const want = label === "Win rate" ? "Win rate" : `→ ${label.slice(3)}`;
+    expect(el.textContent).toContain(want);
+  }
+  return el.querySelector("[data-metric-value]")!.textContent!.trim();
 }
 function listedNames() {
-  return Array.from(dialog().querySelectorAll("p.truncate.font-bold")).map((p) => p.textContent);
+  return Array.from(dialog().querySelectorAll("[data-lead-name]")).map((p) => p.textContent);
+}
+function openActivityTab() {
+  fireEvent.click(within(dialog()).getByRole("tab", { name: /Activity/ }));
 }
 
 describe("Pipeline stage drawer (data + logic)", () => {
@@ -210,11 +226,13 @@ describe("Pipeline stage drawer (data + logic)", () => {
     // New has two real values: 1000 + 3000 (of 7 opportunities)
     fireEvent.click(flowButton(container, "New"));
     expect(tile("Opportunity")).toBe("$4.0k");
-    expect(within(dialog()).getByText(/avg \$2\.0k · 2 of 7 valued/)).toBeTruthy();
+    expect(tile("Avg. opportunity")).toBe("$2.0k");
+    expect(within(dialog()).getByText("2 of 7 valued")).toBeTruthy();
     // old fake figures would have been 7*50=$350, 3*150=$450, 3*500=$1.5k, 1*1200=$1.2k, 1*8000=$8.0k
     for (const name of ["Contacted", "Replied", "Meeting", "Closed"]) {
       fireEvent.click(flowButton(container, name));
       expect(tile("Opportunity")).toBe("Unavailable");
+      expect(tile("Avg. opportunity")).toBe("Unavailable");
       expect(within(dialog()).queryByText(/valued/)).toBeNull();
     }
   });
@@ -230,6 +248,7 @@ describe("Pipeline stage drawer (data + logic)", () => {
     for (const fake of ["bounce rates", "follow-up messages", "8.4 days", "video breakdown", "pre-meeting summary", "5.2 days", "coffee shop", "Stage AI Insight"]) {
       expect(text).not.toContain(fake);
     }
+    expect(text).not.toMatch(/\bAI\b/); // the insight is computed, never labelled AI
   });
 
   it("E: filtered insight uses the filtered idle count", () => {
@@ -260,6 +279,7 @@ describe("Pipeline stage drawer (data + logic)", () => {
     const { container } = render(<Page />);
 
     fireEvent.click(flowButton(container, "New"));
+    openActivityTab();
     let call = [...h.stageActivityCalls].reverse().find((c) => c.stage === "new")!;
     expect(call.ids.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 20]); // New leads only (no dead, no other stage)
     let text = dialog().textContent ?? "";
@@ -269,6 +289,7 @@ describe("Pipeline stage drawer (data + logic)", () => {
     expect(text).not.toContain("ALPHA-FIVE-REPLY");
 
     fireEvent.click(flowButton(container, "Replied"));
+    openActivityTab();
     call = [...h.stageActivityCalls].reverse().find((c) => c.stage === "replied")!;
     expect(call.ids.sort((a, b) => a - b)).toEqual([10, 11, 21]);
     text = dialog().textContent ?? "";
@@ -277,6 +298,7 @@ describe("Pipeline stage drawer (data + logic)", () => {
     expect(text).not.toContain("TWIN-IN-NEW");
 
     fireEvent.click(flowButton(container, "Meeting"));
+    openActivityTab();
     expect(within(dialog()).getByText("No recent activity recorded for opportunities in this stage.")).toBeTruthy();
   });
 
@@ -296,7 +318,7 @@ describe("Pipeline stage drawer (data + logic)", () => {
     expect(names[0]).toBe("Beta Four");
     expect(names.slice(-1)[0]).toBe("Beta Three");
     expect(names).toHaveLength(7);
-    expect(within(dialog()).getByText(/Recent Opportunities \(7 of 7\)/)).toBeTruthy();
+    expect(within(dialog()).getByTestId("stage-list-count").textContent).toBe("Recent opportunities (7 of 7)");
     expect(names).not.toContain("Alpha Three"); // a Contacted lead
     expect(names).not.toContain("Beta Eight"); // dead
   });
@@ -305,20 +327,25 @@ describe("Pipeline stage drawer (data + logic)", () => {
     const { container } = render(<Page />);
     fireEvent.click(flowButton(container, "New"));
     expect(tile("Opportunity")).toBe("$4.0k");
+    openActivityTab();
     expect(dialog().textContent).toContain("BETA-FOUR-OPENED");
     fireEvent.click(flowButton(container, "Replied"));
+    // a stage switch starts on a fresh Opportunities tab: nothing carries over
+    expect(within(dialog()).getByRole("tab", { name: /Opportunities/ }).getAttribute("aria-selected")).toBe("true");
     expect(tile("Leads")).toBe("3");
     expect(tile("To Meeting")).toBe("40%");
     expect(tile("Opportunity")).toBe("Unavailable");
+    openActivityTab();
     expect(dialog().textContent).not.toContain("BETA-FOUR-OPENED");
     expect(dialog().textContent).not.toContain("moved on to Contacted");
+    fireEvent.click(within(dialog()).getByRole("tab", { name: /Opportunities/ }));
     expect(listedNames().sort()).toEqual(["Alpha Five", "Beta Six", "Twin"]);
   });
 
   it("9: moving a lead records a real status_changed activity AND the status patch, for the selected lead", async () => {
     const { container } = render(<Page />);
     fireEvent.click(flowButton(container, "Contacted"));
-    const row = within(dialog()).getByText("Alpha Four").closest("div.cursor-pointer")!;
+    const row = within(dialog()).getByText("Alpha Four").closest("li")!;
     fireEvent.change(row.querySelector("select")!, { target: { value: "replied" } });
     await vi.waitFor(() => expect(h.recordMutate).toHaveBeenCalledTimes(1));
     const arg = h.recordMutate.mock.calls[0][0];
@@ -334,7 +361,7 @@ describe("Pipeline stage drawer (data + logic)", () => {
     h.can = false;
     const { container } = render(<Page />);
     fireEvent.click(flowButton(container, "Contacted"));
-    const row = within(dialog()).getByText("Alpha Four").closest("div.cursor-pointer")!;
+    const row = within(dialog()).getByText("Alpha Four").closest("li")!;
     fireEvent.change(row.querySelector("select")!, { target: { value: "replied" } });
     await vi.waitFor(() => expect(h.toastError).toHaveBeenCalledWith("Upgrade your plan to reorder the pipeline"));
     expect(h.recordMutate).not.toHaveBeenCalled();
@@ -344,7 +371,7 @@ describe("Pipeline stage drawer (data + logic)", () => {
     h.recordMutate.mockRejectedValueOnce(new Error("boom"));
     const { container } = render(<Page />);
     fireEvent.click(flowButton(container, "Contacted"));
-    const row = within(dialog()).getByText("Alpha Four").closest("div.cursor-pointer")!;
+    const row = within(dialog()).getByText("Alpha Four").closest("li")!;
     fireEvent.change(row.querySelector("select")!, { target: { value: "replied" } });
     await vi.waitFor(() => expect(h.toastError).toHaveBeenCalledWith("Could not move lead"));
     expect(h.toastSuccess).not.toHaveBeenCalled();
@@ -355,7 +382,53 @@ describe("Pipeline stage drawer (data + logic)", () => {
     fireEvent.click(flowButton(container, "New"));
     fireEvent.click(within(dialog()).getByText("Discover"));
     expect(h.navigate).toHaveBeenCalledWith({ to: "/dashboard/leads" });
-    fireEvent.click(within(dialog()).getByText("View Opportunity Network"));
+    fireEvent.click(within(dialog()).getByText("View all opportunities"));
     expect(h.navigate).toHaveBeenCalledWith({ to: "/dashboard/relationships" });
+  });
+
+  it("attention: shows the real stalled/overdue count where idle time is tracked, and nothing for New/Closed", () => {
+    const { container } = render(<Page />);
+    fireEvent.click(flowButton(container, "Contacted"));
+    // Alpha Three (10d) + Beta Five (4d) are idle >= 3 days
+    expect(within(dialog()).getByTestId("stage-attention").textContent).toBe("2 opportunities haven't moved in 3+ days");
+    fireEvent.click(flowButton(container, "Replied"));
+    expect(within(dialog()).queryByTestId("stage-attention")).toBeNull();
+    fireEvent.click(flowButton(container, "New"));
+    expect(within(dialog()).queryByTestId("stage-attention")).toBeNull();
+  });
+
+  it("header: stage name and count follow the clicked stage", () => {
+    const { container } = render(<Page />);
+    const counts = [7, 3, 3, 1, 1];
+    NAMES.forEach((name, i) => {
+      fireEvent.click(flowButton(container, name));
+      expect(within(dialog()).getByRole("heading", { name }) ).toBeTruthy();
+      expect(within(dialog()).getByTestId("stage-count-line").textContent).toBe(
+        `${counts[i]} ${counts[i] === 1 ? "opportunity" : "opportunities"}`,
+      );
+    });
+  });
+
+  it("scroll: everything below the fixed header sits inside ONE overflow-y-auto container that can shrink", () => {
+    const { container } = render(<Page />);
+    fireEvent.click(flowButton(container, "New"));
+    const panel = within(document.body).getByTestId("stage-drawer");
+    expect(panel.className).toContain("h-dvh");
+    const scroller = within(panel).getByTestId("stage-drawer-scroll");
+    expect(scroller.className).toContain("overflow-y-auto");
+    expect(scroller.className).toContain("min-h-0");
+    expect(scroller.className).toContain("flex-1");
+    // the last action (View all) and every list row are inside the scroller, not outside it
+    expect(scroller.contains(within(panel).getByText("View all opportunities"))).toBe(true);
+    expect(scroller.querySelectorAll("[data-lead-row]").length).toBe(7);
+    // the header (close control) is not part of the scrolling area
+    expect(scroller.contains(within(panel).getByRole("button", { name: "Close" }))).toBe(false);
+  });
+
+  it("opening a row keeps the real lead-opening navigation", () => {
+    const { container } = render(<Page />);
+    fireEvent.click(flowButton(container, "Contacted"));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Open Alpha Four" }));
+    expect(h.navigate).toHaveBeenCalledWith({ to: "/dashboard/leads/$leadId", params: { leadId: "9" } });
   });
 });

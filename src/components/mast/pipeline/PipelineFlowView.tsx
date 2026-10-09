@@ -271,27 +271,11 @@ export function PipelineFlowHero({
       style={{ containerType: "inline-size" }}
     >
       {/* Compact band: 320–380px tall (by viewport height), as wide as the content. The complete forest
-          picture, with all five stages, is scaled down to the band's height and centred; the same forest,
-          blurred and darkened, fills the sides so the band still spans the content width. */}
+          picture, with all five stages, is scaled down to the band's height and centred; the sides continue
+          the same forest, sharp, as a mirror image so the band still spans the content width. */}
       <div className="relative w-full overflow-hidden" style={{ height: "clamp(320px, 42vh, 380px)" }}>
-        <img
-          src={forestUrl}
-          alt=""
-          aria-hidden="true"
-          decoding="async"
-          draggable={false}
-          className="pointer-events-none absolute inset-0 size-full max-w-none scale-110 select-none object-cover opacity-70 blur-xl"
-        />
-
-        {/* the forest, whole */}
-        <div
-          className="pointer-events-none absolute top-0"
-          style={{
-            ...sceneBox,
-            maskImage: "linear-gradient(to right, transparent 0, #000 7%, #000 93%, transparent 100%)",
-            WebkitMaskImage: "linear-gradient(to right, transparent 0, #000 7%, #000 93%, transparent 100%)",
-          }}
-        >
+        {/* the forest, whole, with a mirrored continuation on each side (the band clips what is not needed) */}
+        <div className="pointer-events-none absolute top-0" style={sceneBox}>
           <img
             src={forestUrl}
             alt=""
@@ -299,6 +283,22 @@ export function PipelineFlowHero({
             decoding="async"
             draggable={false}
             className="absolute inset-0 size-full max-w-none select-none"
+          />
+          <img
+            src={forestUrl}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+            draggable={false}
+            className="absolute right-full top-0 size-full max-w-none -scale-x-100 select-none"
+          />
+          <img
+            src={forestUrl}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+            draggable={false}
+            className="absolute left-full top-0 size-full max-w-none -scale-x-100 select-none"
           />
         </div>
 

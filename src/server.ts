@@ -1,6 +1,11 @@
 import express from "express";
 import cors from "cors";
 import { pinoHttp } from "pino-http";
+import {
+  redactSensitiveData,
+  redactSensitiveHeaders,
+  sanitizeRequestUrl,
+} from "./lib/safeRequestLog.js";
 import { env } from "./config/env.js";
 import { healthRouter } from "./server/routes/health.js";
 import { accountRouter } from "./server/routes/account.js";
@@ -21,7 +26,22 @@ process.on("unhandledRejection", (reason) => {
 
 const app = express();
 
-app.use(pinoHttp());
+app.use(pinoHttp({
+  // pino-http's default request serializer includes headers. Never let
+  // bearer tokens, cookies, or API keys enter Railway's structured logs.
+  serializers: {
+    req(req) {
+      return {
+        id: (req as typeof req & { id?: string }).id,
+        method: req.method,
+        url: sanitizeRequestUrl(req.url ?? ""),
+        headers: redactSensitiveHeaders(req.headers ?? {}),
+        remoteAddress: req.socket.remoteAddress,
+        remotePort: req.socket.remotePort,
+      };
+    },
+  },
+}));
 app.use(express.json({ limit: "1mb" }));
 app.use(
   cors({
@@ -68,16 +88,18 @@ function serializeError(err: unknown): Record<string, unknown> {
 // Centralized error handler — anything thrown/next(err)'d in a route lands here.
 app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const serialized = serializeError(err);
-  const logPayload = { err: serialized, method: req.method, url: req.originalUrl, userId: req.user?.id };
+  // Sanitize both structured and fallback logs. HTTP-client errors can embed
+  // their request config (including Authorization) inside nested properties.
+  const safeSerialized = redactSensitiveData(serialized) as Record<string, unknown>;
+  const safeUrl = sanitizeRequestUrl(req.originalUrl);
+  const logPayload = { err: safeSerialized, method: req.method, url: safeUrl, userId: req.user?.id };
 
   // Primary: structured pino log (JSON, picked up by Railway's log drain).
   req.log?.error(logPayload, "unhandled_request_error");
-  // Fallback: guaranteed plain-text stdout line, independent of pino/its
-  // transport ever being misconfigured — this is the actual fix for
-  // "backend only logs generic HTTP 500s" (problem #8).
-  console.error(`[gateway] ${req.method} ${req.originalUrl} -> 500:`, serialized);
+  // Fallback: guaranteed plain-text stdout line, with the same redaction.
+  console.error(`[gateway] ${req.method} ${safeUrl} -> 500:`, safeSerialized);
 
-  const message = err instanceof Error ? err.message : (serialized.message as string) || "Internal server error";
+  const message = typeof safeSerialized.message === "string" ? safeSerialized.message : "Internal server error";
   res.status(500).json({ code: "internal_error", message });
 });
 

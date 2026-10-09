@@ -148,6 +148,9 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
         p_limit: perNicheLimit,
         p_country_codes: scope.countryCodes,
         p_country_strict: scope.countryStrict,
+        // Apply the AND channel requirements in SQL before its LIMIT, so
+        // incomplete recent rows cannot hide older eligible businesses.
+        p_channels: params.channels,
       });
       if (error) throw error;
 

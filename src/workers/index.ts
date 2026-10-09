@@ -5,7 +5,11 @@ import { handleDiscoverJob, type DiscoverJobPayload } from "../jobs/discoverJob.
 import { handlePoolExpandJob, type PoolExpandJobPayload } from "../jobs/poolExpandJob.js";
 import { handleVerificationJob, type VerificationJobPayload } from "../jobs/verificationJob.js";
 import { handleDiscoveryPlanJob, handleDiscoveryTask, type DiscoveryPlanPayload, type DiscoveryTaskPayload } from "../jobs/discoveryPlanJob.js";
-import { handleBusinessProcessingJob, type BusinessProcessingPayload } from "../jobs/businessProcessingJob.js";
+import {
+  handleBusinessProcessingJob,
+  requeueAdmissionBlockedBusinessTasks,
+  type BusinessProcessingPayload,
+} from "../jobs/businessProcessingJob.js";
 import { sweepStaleScrapeJobs } from "../jobs/staleScrapeJobSweep.js";
 import { env } from "../config/env.js";
 import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance, initBrowserSlotPool } from "../lib/workerCapacity.js";
@@ -157,6 +161,9 @@ async function main() {
     })().catch((err) => console.warn("[worker] enrichment telemetry loop failed (non-fatal):", err));
   }, 30_000);
 
+  // Set after queue subscriptions are registered; cleared on graceful shutdown.
+  let businessTaskRecoveryInterval: NodeJS.Timeout | undefined;
+
   // ── Graceful shutdown ─────────────────────────────────────────────────
   // Railway sends SIGTERM (SIGINT for local Ctrl+C) before killing the
   // container. Without a handler, the process dies immediately and can cut
@@ -186,6 +193,7 @@ async function main() {
 
     clearInterval(workerHeartbeatInterval);
     clearInterval(enrichmentTelemetryInterval);
+    if (businessTaskRecoveryInterval) clearInterval(businessTaskRecoveryInterval);
 
     const forceExitTimer = setTimeout(() => {
       console.error(`[worker] graceful shutdown exceeded ${FORCE_EXIT_TIMEOUT_MS}ms — forcing exit`);
@@ -332,7 +340,34 @@ async function main() {
     }
   });
 
-  console.log(`[worker] subscribed to all queues — effectiveConcurrency=${browserCapacity.effectiveConcurrency} configured=${browserCapacity.configuredConcurrency} freeMb=${browserCapacity.freeMemoryMb}`);
+  // Durable task rows may outlive their pg-boss jobs after retry exhaustion.
+  // Re-dispatch only the known transient PID-admission failures; singletonKey
+  // prevents duplicate queued/active jobs while this sweep repeats.
+  let businessTaskRecoveryRunning = false;
+  const sweepBusinessProcessingTasks = async () => {
+    if (businessTaskRecoveryRunning) return;
+    businessTaskRecoveryRunning = true;
+    try {
+      const result = await requeueAdmissionBlockedBusinessTasks();
+      if (result.candidates > 0) {
+        console.log(
+          `[worker][business-task-recovery] candidates=${result.candidates} newly_enqueued=${result.enqueued}`,
+        );
+      }
+    } catch (err) {
+      console.warn("[worker] business processing task recovery failed (non-fatal):", err);
+    } finally {
+      businessTaskRecoveryRunning = false;
+    }
+  };
+  void sweepBusinessProcessingTasks();
+  businessTaskRecoveryInterval = setInterval(
+    () => { void sweepBusinessProcessingTasks(); },
+    60_000,
+  );
+  businessTaskRecoveryInterval.unref();
+
+    console.log(`[worker] subscribed to all queues — effectiveConcurrency=${browserCapacity.effectiveConcurrency} configured=${browserCapacity.configuredConcurrency} freeMb=${browserCapacity.freeMemoryMb}`);
 }
 
 async function runJob(bossJobId: string, scrapeJobId: string | null, fn: () => Promise<void>) {

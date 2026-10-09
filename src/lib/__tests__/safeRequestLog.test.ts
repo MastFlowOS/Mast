@@ -52,5 +52,5 @@ test("redacts sensitive URL query parameters while preserving useful query value
 });
 
 test("fails closed on malformed URLs with query strings", () => {
-  assert.equal(sanitizeRequestUrl("%not-a-url?token=secret"), "%not-a-url");
+  assert.equal(sanitizeRequestUrl("http://[invalid?token=secret"), "http://[invalid");
 });

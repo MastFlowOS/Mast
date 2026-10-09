@@ -108,23 +108,18 @@ export type PoolLookupResult = {
  *    resolveLeadNiche) — never `businesses.niche`, and never "the first
  *    selected niche" for every result.
  *
- *  - Channel filters: `channels` was previously not even a parameter here,
- *    so Instant Discovery ignored them entirely. `pool_lookup()` can't
- *    filter by channel either (same migrations restriction), so this
- *    over-fetches from the pool (a generous multiple of `quantity`) and
- *    applies `channelsSatisfied()` client-side before capping at
- *    `quantity` — so a channel-filtered request that depletes the pool's
- *    first batch of matches still gets everything the pool actually has to
- *    offer, not just the first `quantity` rows regardless of fit.
+ *  - Channel filters: every requested channel is passed into the
+ *    channel-aware `pool_lookup()` overload (migration 037) and applied
+ *    inside SQL before ordering/limiting. `channelsSatisfied()` remains as
+ *    a final application-side safeguard before delivery.
  */
 export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promise<PoolLookupResult> {
   const niches = splitNicheQuery(params.niche);
-  const hasChannelFilter = params.channels.length > 0;
-  // Over-fetch to leave room for channel-filter attrition — pool_lookup
-  // can't apply that filter itself, so we ask for more candidates than we
-  // need and prune locally. 5x is a conservative buffer; genuinely thin
-  // pools still correctly fall through to `shortfall` below.
-  const perNicheLimit = hasChannelFilter ? params.quantity * 5 : params.quantity;
+  const scopes = poolScopesFor(params.region);
+  // SQL filters requested channels before its limit now. Only over-fetch
+  // when multiple niche/scope queries are unioned, to leave room for the
+  // same business appearing in more than one result set before de-duping.
+  const perNicheLimit = niches.length > 1 || scopes.length > 1 ? params.quantity * 5 : params.quantity;
 
   // First-match-wins attribution: `niches` is in request order, and a
   // business already recorded by an earlier niche is never re-attributed to
@@ -134,8 +129,6 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
     string,
     { business_id: string; opportunity_score: number | null; discoveryNiche: string }
   >();
-
-  const scopes = poolScopesFor(params.region);
 
   for (const singleNiche of niches) {
     for (const scope of scopes) {
@@ -148,6 +141,9 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
         p_limit: perNicheLimit,
         p_country_codes: scope.countryCodes,
         p_country_strict: scope.countryStrict,
+        // Apply the AND channel requirements in SQL before its LIMIT, so
+        // incomplete recent rows cannot hide older eligible businesses.
+        p_channels: params.channels,
       });
       if (error) throw error;
 

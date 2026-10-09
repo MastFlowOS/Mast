@@ -61,11 +61,17 @@ export class FakeDb {
     const inCodes = (b: Row) => codes !== null && b.country_code != null && codes.includes(b.country_code);
     const regionOk = (b: Row) =>
       args.p_country_strict === true ? inCodes(b) : has(b.region ?? "", args.p_region) || inCodes(b);
+    const channels: string[] = args.p_channels ?? [];
+    const channelOk = (b: Row) => channels.every((channel) => {
+      const field = ["email", "phone", "instagram", "website"].includes(channel) ? channel : null;
+      return field !== null && typeof b[field] === "string" && b[field].trim().length > 0;
+    });
     const matches = this.businesses.filter(
       (b) =>
         b.is_disqualified !== true &&
         regionOk(b) &&
         (args.p_niche === "" || has(b.niche, args.p_niche)) &&
+        channelOk(b) &&
         !this.leads.some((l) => l.user_id === args.p_user_id && l.business_id === b.id),
     );
     matches.sort((a, b) => {

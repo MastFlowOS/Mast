@@ -341,8 +341,8 @@ async function main() {
   });
 
   // Durable task rows may outlive their pg-boss jobs after retry exhaustion.
-  // Re-dispatch only the known transient PID-admission failures; singletonKey
-  // prevents duplicate queued/active jobs while this sweep repeats.
+  // Re-dispatch only the known transient PID-admission failures; the task row
+  // itself is compare-and-set to a dispatch marker before each publish.
   let businessTaskRecoveryRunning = false;
   const sweepBusinessProcessingTasks = async () => {
     if (businessTaskRecoveryRunning) return;

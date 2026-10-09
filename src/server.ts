@@ -27,6 +27,20 @@ process.on("unhandledRejection", (reason) => {
 const app = express();
 
 app.use(pinoHttp({
+  // pino-http wraps custom serializers in its default serializers unless
+  // explicitly disabled. We return the final safe shape, so disable wrapping.
+  wrapSerializers: false,
+  redact: {
+    paths: [
+      "req.headers.authorization",
+      "req.headers.proxy-authorization",
+      "req.headers.cookie",
+      "req.headers.set-cookie",
+      "req.headers.x-api-key",
+      "req.headers.x-auth-token",
+    ],
+    censor: "[Redacted]",
+  },
   // pino-http's default request serializer includes headers. Never let
   // bearer tokens, cookies, or API keys enter Railway's structured logs.
   serializers: {

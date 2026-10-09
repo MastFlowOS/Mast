@@ -1,21 +1,25 @@
 /**
  * Geometry and palette of the Pipeline "Flow": the forest journey map.
  *
- * Everything is placed in one coordinate space, the pixels of the supplied forest background
- * (1672 × 941). The glowing path, the five rings, the stage markers and the conversion callouts
+ * Everything is placed in one coordinate space, the pixels of the wide forest background
+ * (2052 × 766). The glowing path, the five rings, the stage markers and the conversion callouts
  * were all traced against that picture (pedestal tops, bridge decks, ground rings), so the
  * overlay lines up with the art at any width. Percentages derived from it are resolution-free.
  */
 
-export const BG = { w: 1672, h: 941 };
-/** The whole picture is shown (no crop): the Flow band is simply scaled down to fit its height. */
+export const BG = { w: 2052, h: 766 };
+/** The whole picture is the coordinate space (the band shows the part of it around the journey). */
 export const CROP = { y0: 0, y1: BG.h };
 export const CROP_H = CROP.y1 - CROP.y0;
+/** The vertical centre of the journey in the picture: the band is centred on this. */
+export const FOCUS_Y = 445;
+/** Sizes below were drawn for a 1672-wide picture; this carries them over to the current one. */
+export const SCALE = BG.w / 1672;
 
 export const xPct = (x: number) => (x / BG.w) * 100;
 export const yPct = (y: number) => ((y - CROP.y0) / CROP_H) * 100;
 /** 1 background pixel, expressed in container-width units (cqw). */
-export const px = (n: number) => `${((n / BG.w) * 100).toFixed(3)}cqw`;
+export const px = (n: number) => `${(((n * SCALE) / BG.w) * 100).toFixed(3)}cqw`;
 
 type Pt = [number, number];
 
@@ -47,170 +51,110 @@ export const STAGES: ForestStage[] = [
   {
     color: PALETTE.purple,
     core: "#f1d6ff",
-    top: [192, 405],
-    ring: { cx: 192, cy: 462, rx: 100, ry: 46 },
+    top: [358, 358],
+    ring: { cx: 356, cy: 410, rx: 100, ry: 28 },
   },
   {
     color: PALETTE.blue,
     core: "#cfe1ff",
-    top: [505, 471],
-    ring: { cx: 500, cy: 552, rx: 102, ry: 42 },
+    top: [652, 424],
+    ring: { cx: 650, cy: 478, rx: 92, ry: 26 },
   },
   {
     color: PALETTE.green,
     core: "#d2ffe9",
-    top: [865, 540],
-    ring: { cx: 865, cy: 630, rx: 118, ry: 46 },
+    top: [989, 468],
+    ring: { cx: 990, cy: 565, rx: 135, ry: 34 },
   },
   {
     color: PALETTE.orange,
     core: "#ffe2bd",
-    top: [1195, 508],
-    ring: { cx: 1195, cy: 570, rx: 102, ry: 50 },
+    top: [1354, 465],
+    ring: { cx: 1355, cy: 520, rx: 92, ry: 28 },
   },
   {
     color: PALETTE.white,
     core: "#ffffff",
-    top: [1550, 338],
-    ring: { cx: 1550, cy: 402, rx: 98, ry: 48 },
+    top: [1707, 355],
+    ring: { cx: 1710, cy: 410, rx: 100, ry: 26 },
   },
 ];
 
 /** Half-width and half-height of a pedestal's top face (its front edge is lit in the stage colour). */
-export const TOP_RIM = { rx: 78, ry: 16 };
+export const TOP_RIM = { rx: 60, ry: 14 };
 
 /**
  * The four bridges, as points along each deck's glowing rail (background px), with the colours the
  * light turns through on the way. Each starts and ends where the deck meets a pedestal (or a ring).
  */
+/**
+ * The four bridges, as points along each deck's glowing rail (background px), with the colours the
+ * light turns through on the way. Each starts and ends where the deck meets a pedestal.
+ */
 export const BRIDGES: { pts: Pt[]; stops: string[] }[] = [
   {
     // New → Contacted
     pts: [
-      [262, 388],
-      [280, 394],
-      [300, 402],
-      [318, 414],
-      [335, 430],
-      [348, 445],
-      [360, 460],
-      [370, 473],
-      [380, 485],
-      [395, 495],
-      [410, 502],
-      [426, 509],
+      [418, 350],
+      [455, 358],
+      [490, 375],
+      [520, 398],
+      [550, 420],
+      [580, 437],
+      [600, 442],
     ],
     stops: [PALETTE.purple, PALETTE.indigo, PALETTE.blue],
   },
   {
     // Contacted → Replied
     pts: [
-      [578, 483],
-      [600, 490],
-      [625, 503],
-      [650, 520],
-      [675, 540],
-      [700, 558],
-      [720, 571],
-      [745, 580],
-      [774, 586],
+      [715, 425],
+      [745, 432],
+      [780, 452],
+      [820, 474],
+      [860, 490],
+      [900, 500],
+      [920, 503],
     ],
     stops: [PALETTE.blue, PALETTE.cyan, PALETTE.green],
   },
   {
-    // Replied → Meeting (runs into the Meeting ring)
+    // Replied → Meeting
     pts: [
-      [950, 542],
-      [975, 544],
-      [1000, 547],
-      [1025, 556],
-      [1050, 567],
-      [1075, 577],
-      [1095, 590],
-      [1107, 596],
+      [1060, 465],
+      [1110, 462],
+      [1160, 472],
+      [1210, 490],
+      [1255, 505],
+      [1290, 512],
+      [1300, 515],
     ],
     stops: [PALETTE.green, PALETTE.lime, PALETTE.orange],
   },
   {
-    // Meeting → Closed (leaves the Meeting ring, climbs to the Closed ring)
+    // Meeting → Closed
     pts: [
-      [1283, 546],
-      [1282, 530],
-      [1292, 514],
-      [1307, 497],
-      [1317, 482],
-      [1327, 465],
-      [1345, 450],
-      [1370, 417],
-      [1387, 400],
-      [1405, 387],
-      [1430, 375],
-      [1452, 368],
-      [1462, 377],
+      [1425, 478],
+      [1470, 456],
+      [1510, 440],
+      [1550, 422],
+      [1600, 392],
+      [1640, 368],
+      [1655, 362],
     ],
     stops: [PALETTE.orange, PALETTE.amber, PALETTE.white],
   },
 ];
 
-/**
- * Short runs of light that carry the path between a ring and the deck of the bridge beside it, so
- * the journey flows through every stage instead of breaking at the pedestals. `stage` is the ring it
- * leaves from (it takes that ring's colour, which is also the colour of the bridge end it meets).
- */
-export const LINKS: { stage: number; pts: Pt[] }[] = [
-  {
-    stage: 0,
-    pts: [
-      [279, 439],
-      [287, 424],
-      [285, 408],
-      [273, 394],
-      [262, 388],
-    ],
-  }, // New ring → bridge 1
-  {
-    stage: 1,
-    pts: [
-      [426, 509],
-      [420, 518],
-      [412, 531],
-    ],
-  }, // bridge 1 → Contacted ring
-  {
-    stage: 1,
-    pts: [
-      [588, 531],
-      [593, 515],
-      [590, 498],
-      [578, 483],
-    ],
-  }, // Contacted ring → bridge 2
-  {
-    stage: 2,
-    pts: [
-      [774, 586],
-      [768, 596],
-      [763, 607],
-    ],
-  }, // bridge 2 → Replied ring
-  {
-    stage: 2,
-    pts: [
-      [967, 607],
-      [972, 590],
-      [968, 568],
-      [958, 552],
-      [950, 542],
-    ],
-  }, // Replied ring → bridge 3
-];
+/** Short runs of light between a ring and a bridge: none needed here, the decks meet the pedestals directly. */
+export const LINKS: { stage: number; pts: Pt[] }[] = [];
 
 /** Where each stage-to-stage conversion callout sits (background px, centre of the card). */
 export const CALLOUTS: Pt[] = [
-  [281, 319],
-  [607, 387],
-  [912, 422],
-  [1228, 369],
+  [510, 306],
+  [822, 392],
+  [1185, 404],
+  [1540, 352],
 ];
 
 /** The ring is drawn from the back-right, round the front, to the back-left; the back disappears behind the pedestal. */

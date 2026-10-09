@@ -16,6 +16,7 @@ import {
   LINKS,
   CROP_H,
   RING_ARC,
+  SCALE,
   STAGES,
   TOP_RIM,
   arcPath,
@@ -27,6 +28,8 @@ export function ForestFlowArt({ animated = true }: { animated?: boolean }) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const id = (n: string) => `${uid}-${n}`;
   const ref = (n: string) => `url(#${id(n)})`;
+  /** Line widths and blurs were drawn for a 1672-wide picture. */
+  const w = (n: number) => Math.round(n * SCALE * 10) / 10;
   const region = {
     filterUnits: "userSpaceOnUse" as const,
     x: -100,
@@ -44,10 +47,10 @@ export function ForestFlowArt({ animated = true }: { animated?: boolean }) {
     >
       <defs>
         <filter id={id("glow")} {...region}>
-          <feGaussianBlur stdDeviation="7" />
+          <feGaussianBlur stdDeviation={w(7)} />
         </filter>
         <filter id={id("soft")} {...region}>
-          <feGaussianBlur stdDeviation="3" />
+          <feGaussianBlur stdDeviation={w(3)} />
         </filter>
 
         {STAGES.map((s, i) => (
@@ -118,19 +121,19 @@ export function ForestFlowArt({ animated = true }: { animated?: boolean }) {
               <path
                 d={d}
                 stroke={ref(`bridge-${i}`)}
-                strokeWidth="26"
+                strokeWidth={w(26)}
                 strokeOpacity="0.7"
                 filter={ref("glow")}
               />
               <path
                 d={d}
                 stroke={ref(`bridge-${i}`)}
-                strokeWidth="8"
+                strokeWidth={w(8)}
                 strokeOpacity="1"
                 filter={ref("soft")}
               />
-              <path d={d} stroke={ref(`bridge-${i}`)} strokeWidth="4" />
-              <path d={d} stroke={ref(`bridge-core-${i}`)} strokeWidth="1.8" strokeOpacity="0.97" />
+              <path d={d} stroke={ref(`bridge-${i}`)} strokeWidth={w(4)} />
+              <path d={d} stroke={ref(`bridge-core-${i}`)} strokeWidth={w(1.8)} strokeOpacity="0.97" />
             </g>
           );
         })}
@@ -141,10 +144,10 @@ export function ForestFlowArt({ animated = true }: { animated?: boolean }) {
           const c = STAGES[l.stage].color;
           return (
             <g key={`link-${i}`}>
-              <path d={d} stroke={c} strokeWidth="20" strokeOpacity="0.5" filter={ref("glow")} />
-              <path d={d} stroke={c} strokeWidth="7" strokeOpacity="0.95" filter={ref("soft")} />
-              <path d={d} stroke={c} strokeWidth="4" />
-              <path d={d} stroke={STAGES[l.stage].core} strokeWidth="1.8" strokeOpacity="0.95" />
+              <path d={d} stroke={c} strokeWidth={w(20)} strokeOpacity="0.5" filter={ref("glow")} />
+              <path d={d} stroke={c} strokeWidth={w(7)} strokeOpacity="0.95" filter={ref("soft")} />
+              <path d={d} stroke={c} strokeWidth={w(4)} />
+              <path d={d} stroke={STAGES[l.stage].core} strokeWidth={w(1.8)} strokeOpacity="0.95" />
             </g>
           );
         })}
@@ -160,7 +163,7 @@ export function ForestFlowArt({ animated = true }: { animated?: boolean }) {
                   d={d}
                   pathLength={1000}
                   stroke="#fff"
-                  strokeWidth="10"
+                  strokeWidth={w(10)}
                   strokeOpacity="0.14"
                   strokeDasharray="120 3000"
                   className="pf-travel"
@@ -170,7 +173,7 @@ export function ForestFlowArt({ animated = true }: { animated?: boolean }) {
                   d={d}
                   pathLength={1000}
                   stroke="#fff"
-                  strokeWidth="2.4"
+                  strokeWidth={w(2.4)}
                   strokeOpacity="0.9"
                   strokeDasharray="70 3000"
                   className="pf-travel"
@@ -191,28 +194,28 @@ export function ForestFlowArt({ animated = true }: { animated?: boolean }) {
             <path
               d={ring}
               stroke={s.color}
-              strokeWidth="22"
+              strokeWidth={w(22)}
               strokeOpacity="0.5"
               filter={ref("glow")}
             />
             <path
               d={ring}
               stroke={s.color}
-              strokeWidth="7"
+              strokeWidth={w(7)}
               strokeOpacity="0.9"
               filter={ref("soft")}
             />
-            <path d={ring} stroke={s.color} strokeWidth="4.2" />
-            <path d={ring} stroke={s.core} strokeWidth="2" strokeOpacity="0.96" />
+            <path d={ring} stroke={s.color} strokeWidth={w(4.2)} />
+            <path d={ring} stroke={s.core} strokeWidth={w(2)} strokeOpacity="0.96" />
 
             <path
               d={rim}
               stroke={s.color}
-              strokeWidth="9"
+              strokeWidth={w(9)}
               strokeOpacity="0.5"
               filter={ref("soft")}
             />
-            <path d={rim} stroke={s.core} strokeWidth="1.8" strokeOpacity="0.85" />
+            <path d={rim} stroke={s.core} strokeWidth={w(1.8)} strokeOpacity="0.85" />
           </g>
         );
       })}

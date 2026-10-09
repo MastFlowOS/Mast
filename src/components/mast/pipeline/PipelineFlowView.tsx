@@ -3,7 +3,7 @@
  * the connected flow ribbon (the hero) and the sales coach. No opportunity cards live
  * here; those belong to the Kanban view only. Data comes from pipelineFlowModel.ts.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowRight,
   BarChart3,
@@ -22,9 +22,9 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { FlowStage } from "@/lib/lead-workspace";
 import { cn } from "@/lib/utils";
-import forestUrl from "@/assets/pipeline-forest-background.webp";
+import forestUrl from "@/assets/pipeline-forest-wide.webp";
 import { ForestFlowArt } from "./ForestFlowArt";
-import { BG, CALLOUTS, CROP_H, STAGES, px, xPct, yPct } from "./forestFlow";
+import { BG, CALLOUTS, CROP_H, FOCUS_Y, SCALE, STAGES, px, xPct, yPct } from "./forestFlow";
 import { STAGE_ORDER, STAGE_SHORT, type FlowHealth, type FlowNode } from "./pipelineFlowModel";
 
 const surface = "rounded-2xl border border-white/[0.07] bg-[#070a18]/70";
@@ -247,13 +247,19 @@ function StageTile({ color, core, Icon }: { color: string; core: string; Icon: (
   );
 }
 
-/** The whole picture, scaled to the band's height and centred; the band's sides are filled with the same forest. */
+/**
+ * The picture covers the band (like background-size: cover) and is centred on the journey.
+ * Its size comes from the band: as wide as the band, or, if the band is unusually narrow, tall enough to fill it.
+ */
 const sceneBox = {
-  aspectRatio: `${BG.w} / ${CROP_H}`,
-  height: "100%",
+  ["--sw" as string]: `max(100cqw, calc(100cqh * ${BG.w} / ${CROP_H}))`,
+  ["--sh" as string]: `calc(var(--sw) * ${CROP_H} / ${BG.w})`,
+  width: "var(--sw)",
+  height: "var(--sh)",
   left: "50%",
   transform: "translateX(-50%)",
-} as const;
+  top: `clamp(calc(100cqh - var(--sh)), calc(50cqh - ${(FOCUS_Y / CROP_H).toFixed(4)} * var(--sh)), 0px)`,
+} as CSSProperties;
 
 export function PipelineFlowHero({
   nodes,
@@ -270,37 +276,21 @@ export function PipelineFlowHero({
       className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-[#050818]"
       style={{ containerType: "inline-size" }}
     >
-      {/* Compact band: 320–380px tall (by viewport height), as wide as the content. The complete forest
-          picture, with all five stages, is scaled down to the band's height and centred; the sides continue
-          the same forest, sharp, as a mirror image so the band still spans the content width. */}
-      <div className="relative w-full overflow-hidden" style={{ height: "clamp(320px, 42vh, 380px)" }}>
-        {/* the forest, whole, with a mirrored continuation on each side (the band clips what is not needed) */}
-        <div className="pointer-events-none absolute top-0" style={sceneBox}>
-          <img
-            src={forestUrl}
-            alt=""
-            aria-hidden="true"
-            decoding="async"
-            draggable={false}
-            className="absolute inset-0 size-full max-w-none select-none"
-          />
-          <img
-            src={forestUrl}
-            alt=""
-            aria-hidden="true"
-            decoding="async"
-            draggable={false}
-            className="absolute right-full top-0 size-full max-w-none -scale-x-100 select-none"
-          />
-          <img
-            src={forestUrl}
-            alt=""
-            aria-hidden="true"
-            decoding="async"
-            draggable={false}
-            className="absolute left-full top-0 size-full max-w-none -scale-x-100 select-none"
-          />
-        </div>
+      {/* Compact band: 320–380px tall (by viewport height), as wide as the content. One wide forest picture
+          covers it, centred on the journey; the markers, path and callouts sit on it and scale with it. */}
+      <div
+        className="relative w-full overflow-hidden"
+        style={{ height: "clamp(320px, 42vh, 380px)", containerType: "size" }}
+      >
+        <img
+          src={forestUrl}
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+          draggable={false}
+          className="pointer-events-none absolute max-w-none select-none"
+          style={sceneBox}
+        />
 
         {/* night grade, and a fade into the page at the top and the bottom: over the picture, under the art */}
         <div
@@ -313,7 +303,7 @@ export function PipelineFlowHero({
         />
 
         {/* container-type lets the type and marker sizes below scale with the picture (cqw) */}
-        <div className="absolute top-0" style={{ ...sceneBox, containerType: "inline-size" }}>
+        <div className="absolute" style={{ ...sceneBox, containerType: "inline-size" }}>
           {/* the glowing journey and the rings */}
           <ForestFlowArt />
 
@@ -380,7 +370,7 @@ export function PipelineFlowHero({
             );
             const place = {
               left: `${xPct(s.top[0])}%`,
-              top: `${yPct(s.top[1] - 58)}%`,
+              top: `${yPct(s.top[1] - 58 * SCALE)}%`,
               width: px(150),
               ["--stage" as string]: s.color,
             };

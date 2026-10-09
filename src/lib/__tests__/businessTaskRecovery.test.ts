@@ -56,6 +56,15 @@ test("does not recycle completed, running, unknown-kind, or unrelated failures",
   }
 });
 
+test("does not redispatch a task already marked as sent to the queue", () => {
+  assert.equal(isRecoverableAdmissionBlockedTask({
+    kind: "enrich",
+    status: "queued",
+    error: `recovery-dispatched-at=2026-10-10T11:59:00.000Z; previous-error=${ADMISSION_BLOCKED_TASK_ERROR_PREFIX} headroom=1`,
+    created_at: oldCreatedAt,
+  }, now), false);
+});
+
 test("fails closed when created_at is not a parseable timestamp", () => {
   assert.equal(isRecoverableAdmissionBlockedTask({
     kind: "enrich",

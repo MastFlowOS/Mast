@@ -11,6 +11,10 @@ import { env } from "../config/env.js";
 import { aiEnabled, generateJSON, AI_MODEL } from "../lib/ai.js";
 import { PROFESSION_SLUGS } from "../scoring/professionWeights.js";
 import { trackActiveEnrichment, trackActiveIntelligence } from "../lib/enrichmentTelemetry.js";
+import {
+  ADMISSION_BLOCKED_TASK_ERROR_PREFIX,
+  isRecoverableAdmissionBlockedTask,
+} from "../lib/businessTaskRecovery.js";
 
 export type ProcessingKind = "enrich" | "score";
 export type BusinessProcessingPayload = { taskId: string };
@@ -117,7 +121,56 @@ export async function enqueueBusinessProcessing(businessId: string, kind: Proces
   const task = await claimOrCreateProcessingTask(businessId, kind);
   if (!task) return; // already queued or running — no new wake-up needed
   const boss = await getBoss();
-  await boss.send(kind === "enrich" ? QUEUES.businessEnrich : QUEUES.businessScore, { taskId: task.id });
+  await boss.send(
+    kind === "enrich" ? QUEUES.businessEnrich : QUEUES.businessScore,
+    { taskId: task.id },
+    { singletonKey: `business-processing:${kind}:${task.id}` },
+  );
+}
+
+/**
+ * Re-dispatch durable task rows that were left queued after the known
+ * transient PID-admission guard rejected their subprocess. pg-boss exhausts
+ * its own retries independently from business_processing_tasks, so without
+ * this sweep a failed/expired queue job can leave a queued DB row forever.
+ *
+ * The narrow error prefix avoids repeatedly retrying unrelated permanent
+ * errors. singletonKey keeps one queued/active pg-boss job per task even when
+ * the sweep runs again before a worker has claimed the DB row.
+ */
+export async function requeueAdmissionBlockedBusinessTasks(
+  maxTasks = 500,
+): Promise<{ candidates: number; enqueued: number }> {
+  const cutoff = new Date(Date.now() - 60_000).toISOString();
+  const { data, error } = await supabaseAdmin.from("business_processing_tasks")
+    .select("id, kind, status, error, created_at")
+    .eq("status", "queued")
+    .in("kind", ["enrich", "score"])
+    .like("error", `${ADMISSION_BLOCKED_TASK_ERROR_PREFIX}%`)
+    .lt("created_at", cutoff)
+    .order("created_at", { ascending: true })
+    .limit(maxTasks);
+  if (error) throw error;
+
+  const nowMs = Date.now();
+  const candidates = (data ?? []).filter((task) =>
+    isRecoverableAdmissionBlockedTask(task, nowMs),
+  );
+  if (candidates.length === 0) return { candidates: 0, enqueued: 0 };
+
+  const boss = await getBoss();
+  let enqueued = 0;
+  for (const task of candidates) {
+    const queueName = task.kind === "enrich" ? QUEUES.businessEnrich : QUEUES.businessScore;
+    const jobId = await boss.send(
+      queueName,
+      { taskId: task.id },
+      { singletonKey: `business-processing:${task.kind}:${task.id}` },
+    );
+    if (jobId) enqueued++;
+  }
+
+  return { candidates: candidates.length, enqueued };
 }
 
 export async function handleBusinessProcessingJob(payload: BusinessProcessingPayload): Promise<void> {

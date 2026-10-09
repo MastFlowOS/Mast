@@ -141,8 +141,7 @@ export function StageDrawer({
           data-testid="stage-drawer"
           className={cn(
             "fixed inset-y-0 right-0 z-50 flex h-dvh w-full max-w-[440px] flex-col overflow-hidden text-foreground outline-none sm:w-[420px] sm:rounded-l-[28px]",
-            "border border-white/30 border-r-0 bg-[linear-gradient(155deg,rgba(255,255,255,0.14)_0%,rgba(120,100,255,0.16)_28%,rgba(30,40,120,0.20)_62%,rgba(8,10,30,0.34)_100%)] backdrop-blur-[34px] backdrop-saturate-[1.8]",
-            "shadow-[-30px_0_90px_-24px_rgba(130,100,255,0.65),-2px_0_24px_-6px_rgba(140,170,255,0.45),inset_0_1px_0_rgba(255,255,255,0.35),inset_1px_0_0_rgba(255,255,255,0.22),inset_0_0_60px_rgba(255,255,255,0.04)]",
+            "lg-panel",
             "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right data-[state=closed]:duration-200 data-[state=open]:duration-300",
           )}
         >
@@ -223,21 +222,14 @@ function DrawerBody({
   return (
     <>
       {/* ── Header (fixed row, never scrolls away) ── */}
-      <header className="relative shrink-0 border-b border-white/[0.14] bg-white/[0.05] px-5 pb-4 pt-5">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 h-28"
-          style={{
-            background: `radial-gradient(70% 100% at 20% 0%, ${accent}2e, transparent 70%)`,
-          }}
-        />
+      <header className="relative shrink-0 border-b border-white/[0.12] px-5 pb-4 pt-5">
         <div className="relative flex items-start justify-between gap-3">
           <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-white/55">
             Stage context
           </span>
           <DialogPrimitive.Close
             aria-label="Close"
-            className="-mr-1 -mt-1 grid size-8 cursor-pointer place-items-center rounded-full border border-white/30 bg-white/[0.10] text-white/85 backdrop-blur-md transition-colors hover:border-white/35 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+            className="lg-pill -mr-1 -mt-1 grid size-8 cursor-pointer place-items-center text-white/90 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
           >
             <X className="size-4" />
           </DialogPrimitive.Close>
@@ -245,18 +237,13 @@ function DrawerBody({
         <div className="relative mt-3 flex items-center gap-3.5">
           <span
             aria-hidden="true"
-            className="grid size-12 shrink-0 place-items-center rounded-2xl border"
+            className="grid size-12 shrink-0 place-items-center rounded-2xl"
             style={{
-              borderColor: `${accent}`,
-              background: `linear-gradient(155deg, ${accent}8c 0%, ${accent}33 45%, rgba(6,8,24,0.85) 100%)`,
-              boxShadow: `0 0 22px ${accent}66, inset 0 0 12px ${accent}4d`,
+              background: `linear-gradient(155deg, ${accent}99 0%, ${accent}40 60%, ${accent}2e 100%)`,
+              boxShadow: `inset 1px 1px 0.5px rgba(255,255,255,0.6), inset -1px -1px 0.5px rgba(255,255,255,0.2), 0 8px 18px -10px rgba(0,0,0,0.5)`,
             }}
           >
-            <Icon
-              className="size-6 text-white"
-              strokeWidth={1.9}
-              style={{ filter: `drop-shadow(0 0 4px ${accent})` }}
-            />
+            <Icon className="size-6 text-white" strokeWidth={1.9} />
           </span>
           <div className="min-w-0">
             <DialogPrimitive.Title className="truncate text-[22px] font-semibold leading-tight tracking-[-0.01em] text-white">
@@ -281,7 +268,7 @@ function DrawerBody({
             <div
               key={m.key}
               data-metric={m.key}
-              className="min-w-0 rounded-xl border border-white/[0.18] bg-white/[0.08] px-2.5 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_8px_20px_-12px_rgba(0,0,0,0.5)] backdrop-blur-md"
+              className="lg-card min-w-0 px-2.5 py-2.5"
             >
               <div
                 data-metric-value
@@ -291,7 +278,7 @@ function DrawerBody({
                 )}
                 style={
                   m.key === "conversion" && !m.muted
-                    ? { color: accent, textShadow: `0 0 14px ${accent}66` }
+                    ? { color: accent }
                     : undefined
                 }
               >
@@ -311,7 +298,7 @@ function DrawerBody({
         {data.idleCount > 0 && (
           <div
             data-testid="stage-attention"
-            className="mt-3 flex items-center gap-3 rounded-xl border border-rose-300/35 bg-gradient-to-r from-rose-500/[0.22] to-rose-500/[0.06] shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] backdrop-blur-md px-3.5 py-2.5"
+            className="lg-card mt-3 flex items-center gap-3 bg-gradient-to-r from-rose-500/[0.28] to-rose-500/[0.08] px-3.5 py-2.5"
           >
             <Clock className="size-5 shrink-0 text-rose-300" strokeWidth={1.8} />
             <p className="text-[12.5px] leading-snug text-white/80">
@@ -327,7 +314,7 @@ function DrawerBody({
         {/* Stage insight: computed from the Flow's own numbers, not AI-generated */}
         <section
           data-testid="stage-insight"
-          className="mt-3 rounded-xl border border-white/[0.18] bg-white/[0.07] px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] backdrop-blur-md"
+          className="lg-card mt-3 px-3.5 py-3"
         >
           <h3
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
@@ -353,7 +340,7 @@ function DrawerBody({
           <button
             type="button"
             onClick={onDiscover}
-            className="mt-2 inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl bg-[linear-gradient(135deg,#6d5cff,#4f6bff)] px-4 text-[13px] font-semibold text-white shadow-[0_8px_24px_-8px_rgba(99,102,255,0.9),inset_0_1px_0_rgba(255,255,255,0.25)] transition-[filter] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+            className="mt-2 inline-flex h-10 cursor-pointer items-center gap-2 rounded-full bg-[linear-gradient(160deg,#7b6dff,#4f6bff)] px-5 text-[13px] font-semibold text-white shadow-[inset_1px_1px_0.5px_rgba(255,255,255,0.55),inset_-1px_-1px_0.5px_rgba(255,255,255,0.18),0_8px_18px_-10px_rgba(0,0,0,0.55)] transition-[filter] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
           >
             <Plus className="size-4" /> Discover
           </button>
@@ -428,7 +415,7 @@ function DrawerBody({
             <button
               type="button"
               onClick={onViewAll}
-              className="mt-4 flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-xl border border-white/30 bg-white/[0.10] text-[12.5px] font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] backdrop-blur-md transition-colors hover:border-white/50 hover:bg-white/[0.16] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+              className="lg-pill mt-4 flex h-10 w-full cursor-pointer items-center justify-center gap-2 text-[12.5px] font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
             >
               View all opportunities <ArrowRight className="size-3.5" />
             </button>
@@ -551,7 +538,7 @@ function OpportunityRow({
         aria-label={`Move ${lead.businessName} to stage`}
         value={stage}
         onChange={(e) => onMove(e.target.value as FlowStage)}
-        className="h-7 w-[88px] shrink-0 cursor-pointer rounded-md border border-white/25 bg-white/[0.08] px-1 text-[11px] text-white/75 outline-none [color-scheme:dark] hover:border-white/30 focus:border-white/40"
+        className="lg-pill h-7 w-[88px] shrink-0 cursor-pointer px-2 text-[11px] text-white/85 outline-none [color-scheme:dark] focus:ring-2 focus:ring-white/40"
       >
         {FLOW_STAGES.map((s) => (
           <option key={s.value} value={s.value} className="bg-[#0b1020] text-slate-200">

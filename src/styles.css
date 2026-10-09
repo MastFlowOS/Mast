@@ -1336,3 +1336,41 @@
 @media (prefers-reduced-motion: reduce) {
   .pf-current, .pf-twinkle { animation: none; }
 }
+
+/* ── Liquid glass (iOS-style): clear and bright. A neutral blurred + saturated backdrop, a thin
+   specular rim lit from the top-left, a soft sheen, and a plain dark drop shadow (no coloured glow). ── */
+.lg-panel {
+  isolation: isolate;
+  background:
+    linear-gradient(160deg, rgba(255,255,255,0.20) 0%, rgba(255,255,255,0.07) 36%, rgba(255,255,255,0.05) 68%, rgba(255,255,255,0.11) 100%),
+    rgba(14,18,36,0.30);
+  -webkit-backdrop-filter: blur(40px) saturate(190%) brightness(1.08);
+  backdrop-filter: blur(40px) saturate(190%) brightness(1.08);
+  box-shadow:
+    inset 1.5px 1.5px 1px -0.5px rgba(255,255,255,0.7),
+    inset -1px -1px 1px -0.5px rgba(255,255,255,0.3),
+    inset 0 0 40px rgba(255,255,255,0.06),
+    -24px 0 70px -24px rgba(0,0,0,0.55);
+}
+.lg-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(130% 36% at 0% 0%, rgba(255,255,255,0.30), rgba(255,255,255,0) 62%);
+}
+.lg-card,
+.lg-pill {
+  background:
+    linear-gradient(160deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.06) 55%, rgba(255,255,255,0.09) 100%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  backdrop-filter: blur(14px) saturate(160%);
+  box-shadow:
+    inset 1px 1px 0.5px rgba(255,255,255,0.55),
+    inset -1px -1px 0.5px rgba(255,255,255,0.18),
+    0 8px 20px -12px rgba(0,0,0,0.45);
+}
+.lg-card { border-radius: 20px; }
+.lg-pill { border-radius: 9999px; transition: background-color 150ms, filter 150ms; }
+.lg-pill:hover { filter: brightness(1.18); }

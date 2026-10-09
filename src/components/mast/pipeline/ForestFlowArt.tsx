@@ -40,7 +40,7 @@ export function ForestFlowArt({ animated = true }: { animated?: boolean }) {
       aria-hidden="true"
       viewBox={`0 ${CROP.y0} ${BG.w} ${CROP_H}`}
       preserveAspectRatio="none"
-      className="pointer-events-none absolute inset-0 z-[2] size-full"
+      className="pointer-events-none absolute inset-0 z-[2] size-full overflow-visible"
     >
       <defs>
         <filter id={id("glow")} {...region}>

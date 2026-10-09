@@ -8,8 +8,8 @@
  */
 
 export const BG = { w: 1672, h: 941 };
-/** The slice of the picture that is shown (the sky above and the dark undergrowth below are cropped). */
-export const CROP = { y0: 70, y1: 800 };
+/** The whole picture is shown (no crop): the Flow band is simply scaled down to fit its height. */
+export const CROP = { y0: 0, y1: BG.h };
 export const CROP_H = CROP.y1 - CROP.y0;
 
 export const xPct = (x: number) => (x / BG.w) * 100;

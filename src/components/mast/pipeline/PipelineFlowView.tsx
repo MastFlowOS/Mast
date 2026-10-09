@@ -24,7 +24,7 @@ import type { FlowStage } from "@/lib/lead-workspace";
 import { cn } from "@/lib/utils";
 import forestUrl from "@/assets/pipeline-forest-background.webp";
 import { ForestFlowArt } from "./ForestFlowArt";
-import { BG, CALLOUTS, CROP, CROP_H, STAGES, px, xPct, yPct } from "./forestFlow";
+import { BG, CALLOUTS, CROP_H, STAGES, px, xPct, yPct } from "./forestFlow";
 import { STAGE_ORDER, STAGE_SHORT, type FlowHealth, type FlowNode } from "./pipelineFlowModel";
 
 const surface = "rounded-2xl border border-white/[0.07] bg-[#070a18]/70";
@@ -232,9 +232,9 @@ function StageTile({ color, core, Icon }: { color: string; core: string; Icon: (
     <span
       aria-hidden="true"
       style={{
-        width: px(62),
-        height: px(62),
-        borderRadius: px(15),
+        width: px(56),
+        height: px(56),
+        borderRadius: px(14),
         border: `${px(2.4)} solid ${color}`,
         background: `linear-gradient(155deg, ${color}8c 0%, ${color}33 38%, rgba(6,8,24,0.9) 100%)`,
         boxShadow: `0 0 ${px(26)} ${color}b3, 0 0 ${px(7)} ${color}, inset 0 0 ${px(15)} ${color}66`,
@@ -247,6 +247,14 @@ function StageTile({ color, core, Icon }: { color: string; core: string; Icon: (
   );
 }
 
+/** The whole picture, scaled to the band's height and centred; the band's sides are filled with the same forest. */
+const sceneBox = {
+  aspectRatio: `${BG.w} / ${CROP_H}`,
+  height: "100%",
+  left: "50%",
+  transform: "translateX(-50%)",
+} as const;
+
 export function PipelineFlowHero({
   nodes,
   loading,
@@ -257,34 +265,55 @@ export function PipelineFlowHero({
   onSelect: (stage: FlowStage) => void;
 }) {
   return (
-    <section aria-label="Pipeline flow" className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-[#050818]">
-      <div>
-        {/* container-type lets the type and marker sizes below scale with the picture (cqw) */}
+    <section
+      aria-label="Pipeline flow"
+      className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-[#050818]"
+      style={{ containerType: "inline-size" }}
+    >
+      {/* Compact band: 320–380px tall (by viewport height), as wide as the content. The complete forest
+          picture, with all five stages, is scaled down to the band's height and centred; the same forest,
+          blurred and darkened, fills the sides so the band still spans the content width. */}
+      <div className="relative w-full overflow-hidden" style={{ height: "clamp(320px, 42vh, 380px)" }}>
+        <img
+          src={forestUrl}
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+          draggable={false}
+          className="pointer-events-none absolute inset-0 size-full max-w-none scale-110 select-none object-cover opacity-70 blur-xl"
+        />
+
+        {/* the forest, whole */}
         <div
-          className="relative w-full"
-          style={{ aspectRatio: `${BG.w} / ${CROP_H}`, containerType: "inline-size" }}
+          className="pointer-events-none absolute top-0"
+          style={{
+            ...sceneBox,
+            maskImage: "linear-gradient(to right, transparent 0, #000 7%, #000 93%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(to right, transparent 0, #000 7%, #000 93%, transparent 100%)",
+          }}
         >
-          {/* the forest */}
           <img
             src={forestUrl}
             alt=""
             aria-hidden="true"
             decoding="async"
             draggable={false}
-            className="pointer-events-none absolute left-0 w-full max-w-none select-none"
-            style={{ top: `${-(CROP.y0 / CROP_H) * 100}%` }}
+            className="absolute inset-0 size-full max-w-none select-none"
           />
+        </div>
 
-          {/* night grade, and a fade into the page at the bottom and the top */}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0"
-            style={{
-              background:
-                "linear-gradient(to top, rgba(5,8,24,0.92) 0%, rgba(5,8,24,0) 15%), linear-gradient(to bottom, rgba(5,8,24,0.5) 0%, rgba(5,8,24,0) 9%), radial-gradient(ellipse 80% 78% at 50% 48%, rgba(5,8,24,0) 55%, rgba(5,8,24,0.5) 100%), rgba(4,6,22,0.12)",
-            }}
-          />
+        {/* night grade, and a fade into the page at the top and the bottom: over the picture, under the art */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background:
+              "linear-gradient(to top, rgba(5,8,24,0.92) 0%, rgba(5,8,24,0) 14%), linear-gradient(to bottom, rgba(5,8,24,0.5) 0%, rgba(5,8,24,0) 9%), radial-gradient(ellipse 80% 78% at 50% 48%, rgba(5,8,24,0) 55%, rgba(5,8,24,0.5) 100%), rgba(4,6,22,0.12)",
+          }}
+        />
 
+        {/* container-type lets the type and marker sizes below scale with the picture (cqw) */}
+        <div className="absolute top-0" style={{ ...sceneBox, containerType: "inline-size" }}>
           {/* the glowing journey and the rings */}
           <ForestFlowArt />
 
@@ -299,23 +328,23 @@ export function PipelineFlowHero({
                   style={{
                     left: `${xPct(x)}%`,
                     top: `${yPct(y)}%`,
-                    padding: `${px(10)} ${px(16)}`,
-                    borderRadius: px(14),
+                    padding: `${px(8)} ${px(14)}`,
+                    borderRadius: px(13),
                     boxShadow: `0 ${px(8)} ${px(24)} -${px(10)} #000, inset 0 1px 0 rgba(255,255,255,0.06)`,
                     animationDelay: `${300 + i * 110}ms`,
                   }}
                   className="pf-rise pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-1/2 border border-white/[0.12] bg-[#080b1e]/72 backdrop-blur-[3px]"
                 >
                   <span
-                    style={{ color, fontSize: "clamp(9px, 1.3cqw, 22px)", textShadow: `0 0 12px ${color}88` }}
+                    style={{ color, fontSize: "clamp(11px, 1.25cqw, 22px)", textShadow: `0 0 12px ${color}88` }}
                     className="flex items-center gap-[0.35em] font-semibold leading-none tabular-nums"
                   >
                     {nodes[i]?.toNextPct ?? 0}%
                     <ArrowRight className="size-[0.95em]" strokeWidth={2.2} />
                   </span>
                   <span
-                    style={{ fontSize: "clamp(7px, 0.82cqw, 14px)", marginTop: px(7) }}
-                    className="block whitespace-nowrap leading-none text-white/70 @max-[600px]:hidden"
+                    style={{ fontSize: "clamp(8px, 0.82cqw, 14px)", marginTop: px(6) }}
+                    className="block whitespace-nowrap leading-none text-white/70 @max-[520px]:hidden"
                   >
                     to next stage
                   </span>
@@ -332,16 +361,16 @@ export function PipelineFlowHero({
               <>
                 <StageTile color={s.color} core={s.core} Icon={Icon} />
                 <span
-                  style={{ fontSize: "clamp(8px, 1.12cqw, 19px)", marginTop: px(25), textShadow: "0 1px 6px rgba(0,0,0,0.9)" }}
+                  style={{ fontSize: "clamp(10px, 1.1cqw, 19px)", marginTop: px(20), textShadow: "0 1px 6px rgba(0,0,0,0.9)" }}
                   className="block whitespace-nowrap font-medium leading-none text-white"
                 >
                   {STAGE_SHORT[stage]}
                 </span>
                 {loading || !n ? (
-                  <Skeleton style={{ width: px(70), height: px(34), marginTop: px(5) }} className="rounded-lg bg-white/15" />
+                  <Skeleton style={{ width: px(62), height: px(30), marginTop: px(4) }} className="rounded-lg bg-white/15" />
                 ) : (
                   <span
-                    style={{ fontSize: "clamp(13px, 2.15cqw, 36px)", marginTop: px(5), textShadow: "0 2px 10px rgba(0,0,0,0.9)" }}
+                    style={{ fontSize: "clamp(14px, 1.95cqw, 34px)", marginTop: px(4), textShadow: "0 2px 10px rgba(0,0,0,0.9)" }}
                     className="block font-bold leading-none tabular-nums text-white"
                   >
                     <CountUp value={n.count} />
@@ -351,7 +380,7 @@ export function PipelineFlowHero({
             );
             const place = {
               left: `${xPct(s.top[0])}%`,
-              top: `${yPct(s.top[1] - 65)}%`,
+              top: `${yPct(s.top[1] - 58)}%`,
               width: px(150),
               ["--stage" as string]: s.color,
             };
@@ -377,6 +406,7 @@ export function PipelineFlowHero({
             );
           })}
         </div>
+
       </div>
     </section>
   );

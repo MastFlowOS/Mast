@@ -20,14 +20,14 @@
 #     Railway applies its startCommand instead of this file's CMD.
 # See RAILWAY_DEPLOYMENT.md for the full setup checklist.
 
-FROM node:22-slim AS build
+FROM public.ecr.aws/docker/library/node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
 RUN npm run build:server
 
-FROM node:22-slim
+FROM public.ecr.aws/docker/library/node:22-slim
 WORKDIR /app
 ENV NODE_ENV=production
 # Must match the COPY destination below (a sibling of WORKDIR, i.e. one level

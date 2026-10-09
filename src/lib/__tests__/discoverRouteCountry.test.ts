@@ -199,6 +199,59 @@ describe("Starter / Pro (Instant pool) — country-scoped pool delivery", () => 
     assert.deepEqual(call.args.p_country_codes, ["CA"]);
   });
 
+  test("Starter: channel filters run before the SQL result limit", async () => {
+    plan = "starter";
+
+    // More recent businesses lack the requested phone channel. An older
+    // complete business is still eligible and must not be hidden by the
+    // pool query's candidate LIMIT.
+    for (let i = 0; i < 12; i++) {
+      db.businesses.push({
+        id: db.nextId("biz"),
+        name: `recent-email-only-${i}`,
+        niche: "Coffee Shops",
+        region: "Canada",
+        country_code: "CA",
+        address: "1 Main St",
+        website: "https://example.test",
+        email: `recent-${i}@example.test`,
+        phone: null,
+        instagram: null,
+        is_disqualified: false,
+        first_discovered_at: `2026-09-${String(28 - i).padStart(2, "0")}T00:00:00Z`,
+        fingerprints: [],
+      });
+    }
+    db.businesses.push({
+      id: db.nextId("biz"),
+      name: "older-complete",
+      niche: "Coffee Shops",
+      region: "Canada",
+      country_code: "CA",
+      address: "1 Main St",
+      website: "https://example.test",
+      email: "complete@example.test",
+      phone: "+15551234567",
+      instagram: null,
+      is_disqualified: false,
+      first_discovered_at: "2024-01-01T00:00:00Z",
+      fingerprints: [],
+    });
+
+    const res = await post({
+      region: "Canada",
+      quantity: 1,
+      channels: ["email", "phone"],
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(namesFrom(body.results), ["older-complete"]);
+    assert.equal(body.shortfall, 0);
+
+    const call = db.rpcCalls.find((c) => c.fn === "pool_lookup")!;
+    assert.deepEqual(call.args.p_channels, ["email", "phone"]);
+  });
+
   test("Pro: same country scoping, mode = instant_pool_ranked (rank flag set by PLAN)", async () => {
     plan = "pro";
     seedPool();

@@ -34,8 +34,8 @@ export function BrandMark({ className, size = 32, glow = true }: BrandMarkProps)
       )}
       <img
         src={mastIcon}
-        alt=""
-        className="relative h-full w-full object-cover scale-[1.05]"
+        alt="MAST"
+        className="relative h-full w-full object-contain p-0.5"
         draggable={false}
       />
     </span>

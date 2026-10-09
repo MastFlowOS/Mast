@@ -9,7 +9,6 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { useEffect, useState } from "react";
 import { supabase, supabaseConfigError } from "@/lib/supabase";
-import { BrandMark } from "@/components/mast/BrandMark";
 
 // ─── Config-error screen (inline styles — renders even without Tailwind) ──────
 function SupabaseConfigError({ message }: { message: string }) {
@@ -309,26 +308,71 @@ function RootComponent() {
   );
 }
 
+import {
+  waitForCriticalLandingAssets,
+  preloadCriticalFonts,
+  dismissPreloader,
+} from "@/lib/assetPreload";
+
+// ─── Module-level tracker so SPA navigation never shows preloader again ────────
+let hasAppInitiallyLoaded = false;
+
 // ─── Auth gate (only rendered when Supabase is correctly configured) ──────────
 function AuthGate({ queryClient }: { queryClient: QueryClient }) {
-  const [initializing, setInitializing] = useState(true);
+  const [, setSessionChecked] = useState(hasAppInitiallyLoaded);
 
   useEffect(() => {
-    // supabase is guaranteed non-null here (supabaseConfigError is null)
+    // If the application has already undergone initial cold-boot loading,
+    // do not block or show preloader on internal SPA route transitions.
+    if (hasAppInitiallyLoaded) {
+      dismissPreloader();
+      setSessionChecked(true);
+      return;
+    }
+
     const client = supabase!;
     let cancelled = false;
 
-    // Check initial session with a safety timeout so we never hang
-    withTimeout(
+    // Check initial auth session with timeout
+    const sessionPromise = withTimeout(
       client.auth.getSession(),
-      import.meta.env.DEV ? 600 : 5000,
+      import.meta.env.DEV ? 800 : 5000,
       { data: { session: null }, error: null } as Awaited<
         ReturnType<typeof client.auth.getSession>
       >
-    )
-      .catch(() => ({ data: { session: null }, error: null }))
-      .finally(() => {
-        if (!cancelled) setInitializing(false);
+    ).catch(() => ({ data: { session: null }, error: null }));
+
+    // Check actual critical landing-page assets (fonts, hero images, globe, flow)
+    const isLandingRoute = typeof window !== "undefined" && window.location.pathname === "/";
+    const assetsPromise = isLandingRoute
+      ? waitForCriticalLandingAssets(import.meta.env.DEV ? 3500 : 5000)
+      : preloadCriticalFonts(1500);
+
+    const allReadyPromise = Promise.all([sessionPromise, assetsPromise]);
+    const safetyTimeout = new Promise((resolve) =>
+      setTimeout(resolve, import.meta.env.DEV ? 4000 : 6000)
+    );
+
+    Promise.race([allReadyPromise, safetyTimeout])
+      .finally(async () => {
+        if (cancelled) return;
+        hasAppInitiallyLoaded = true;
+
+        // Allow frames for the underlying layout to settle behind preloader
+        if (typeof window !== "undefined" && typeof requestAnimationFrame === "function") {
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => resolve());
+            });
+          });
+        }
+
+        // Smoothly fade away preloader
+        await dismissPreloader();
+
+        if (!cancelled) {
+          setSessionChecked(true);
+        }
       });
 
     // Listen to subsequent auth state changes
@@ -337,18 +381,15 @@ function AuthGate({ queryClient }: { queryClient: QueryClient }) {
       const { data } = client.auth.onAuthStateChange((event) => {
         // Only invalidate on events that represent an actual identity
         // change. TOKEN_REFRESHED / INITIAL_SESSION fire routinely
-        // (including repeatedly under clock-skew/PGRST303 conditions)
         // and were causing invalidateQueries(["mast"]) to re-trigger
-        // useMe -> getMe() on every such event. Do not widen this list.
+        // useMe -> getMe() on every such event.
         if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
           queryClient.invalidateQueries({ queryKey: ["mast"] });
         }
-        if (!cancelled) setInitializing(false);
       });
       subscription = data.subscription;
     } catch (err) {
       console.warn("[Supabase] onAuthStateChange failed:", err);
-      if (!cancelled) setInitializing(false);
     }
 
     return () => {
@@ -356,22 +397,6 @@ function AuthGate({ queryClient }: { queryClient: QueryClient }) {
       subscription?.unsubscribe();
     };
   }, [queryClient]);
-
-  if (initializing) {
-    return (
-      <div className="min-h-screen bg-[oklch(0.12_0.02_260)] text-foreground grid place-items-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="relative size-14 grid place-items-center">
-            <div className="absolute inset-0 bg-brand/20 rounded-full blur-xl animate-pulse" />
-            <BrandMark size={48} className="relative z-10 animate-pulse text-brand" />
-          </div>
-          <div className="text-sm font-semibold tracking-wide text-muted-foreground/80 animate-pulse">
-            Checking Session...
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <>

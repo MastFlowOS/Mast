@@ -253,21 +253,14 @@ function DashboardLayout() {
         }}
       >
         {/* Logo */}
-        <div className="px-5 h-16 flex items-center border-b border-border shrink-0">
-          <Link to="/" className="flex items-center gap-3 min-w-0">
-            {/* Compact brand mark — always present so the rail keeps a
-                clickable, recognizable anchor when collapsed. */}
-            <div className="size-8 shrink-0 rounded-lg bg-brand/15 border border-brand/30 grid place-items-center text-xs font-bold text-brand">
-              M
-            </div>
-            {/* items-start: without it the flex-col stretches the wordmark to the
-                tagline's width and distorts its aspect ratio. */}
-            <div className={cn("flex flex-col items-start leading-none", labelClass)} style={labelStyle}>
-              <MastWordmark height={14} />
-              <span className="mt-1.5 text-[9px] font-semibold tracking-[0.22em] text-muted-foreground uppercase">
-                Client Acquisition OS
-              </span>
-            </div>
+        <div
+          className={cn(
+            "h-16 flex items-center border-b border-border shrink-0 overflow-hidden transition-all duration-300",
+            sidebarExpanded ? "px-5" : "justify-center px-2",
+          )}
+        >
+          <Link to="/" className="flex items-center min-w-0 shrink-0">
+            <MastWordmark height={sidebarExpanded ? 18 : 11} />
           </Link>
         </div>
 
@@ -419,7 +412,7 @@ function DashboardLayout() {
                   <img
                     src={user.avatarUrl}
                     alt={user.fullName || "User avatar"}
-                    className="w-full h-full object-cover object-center shrink-0 block"
+                    className="absolute inset-0 w-full h-full object-cover object-center"
                     style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }}
                   />
                 ) : (

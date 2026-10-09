@@ -1,3 +1,332 @@
+import type { Job } from "pg-boss";
+import { getBoss, QUEUES } from "../lib/queue.js";
+import { supabaseAdmin } from "../lib/supabaseAdmin.js";
+import { handleDiscoverJob, type DiscoverJobPayload } from "../jobs/discoverJob.js";
+import { handlePoolExpandJob, type PoolExpandJobPayload } from "../jobs/poolExpandJob.js";
+import { handleVerificationJob, type VerificationJobPayload } from "../jobs/verificationJob.js";
+import { handleDiscoveryPlanJob, handleDiscoveryTask, type DiscoveryPlanPayload, type DiscoveryTaskPayload } from "../jobs/discoveryPlanJob.js";
+import {
+  handleBusinessProcessingJob,
+  requeueAdmissionBlockedBusinessTasks,
+  type BusinessProcessingPayload,
+} from "../jobs/businessProcessingJob.js";
+import { sweepStaleScrapeJobs } from "../jobs/staleScrapeJobSweep.js";
+import { env } from "../config/env.js";
+import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance, initBrowserSlotPool } from "../lib/workerCapacity.js";
+import { initResourceCapacity, initResourceWorkerSlotPool, logStartupResourceTelemetry, initEnrichmentCapacity, splitEnrichmentCapacity } from "../lib/resourceCapacity.js";
+import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
+import { getEnrichmentTelemetrySnapshot, getEnrichmentQueueDepth, formatEnrichmentTelemetryLog } from "../lib/enrichmentTelemetry.js";
+
+// Ensure the provider registry is initialised at startup so any
+// getProvider() call in handleDiscoveryTask has the implementations loaded.
+import "../discovery/providerRegistry.js";
+
+// AUDIT FIX (Verification Report, Finding 4/5, mechanism R-2): these
+// handlers previously only console.error'd and never called process.exit().
+// railway.worker.json's `restartPolicyType: "ON_FAILURE"` can only fire on
+// process EXIT — a wedged-but-still-running process is invisible to it.
+// That meant a task already claimed (`status:"running"`) would just sit
+// until STALE_TASK_TIMEOUT_MS (8 min default) elapsed, with nothing
+// actually restarting the process in the meantime. Logging and then
+// exiting lets Railway restart the worker promptly instead of leaving a
+// zombie process holding claimed work. A short setTimeout gives the log
+// line a chance to flush before the process dies.
+process.on("uncaughtException", (err) => {
+  console.error("[worker] uncaughtException — exiting so the process supervisor can restart us", { message: err?.message, stack: err?.stack, err });
+  setTimeout(() => process.exit(1), 250);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[worker] unhandledRejection — exiting so the process supervisor can restart us", { reason });
+  setTimeout(() => process.exit(1), 250);
+});
+
+/**
+ * pg-boss v10 removed `teamSize`/`teamConcurrency`/`teamRefill` from
+ * `work()` (see https://github.com/timgit/pg-boss/releases/tag/10.0.0) —
+ * concurrency is no longer a polling-level option. `batchSize` now only
+ * controls how many jobs are fetched per poll; the fetched batch still has
+ * to be processed by the handler itself to run concurrently. This helper
+ * fetches up to `concurrency` jobs at a time and runs all of them in
+ * parallel via `Promise.all`, which is the closest v10-native equivalent to
+ * the old `teamSize` behaviour for these queues.
+ */
+async function processBatchConcurrently<T>(jobs: Job<T>[], handler: (job: Job<T>) => Promise<void>): Promise<void> {
+  await Promise.all(jobs.map((job) => handler(job)));
+}
+
+async function main() {
+  const boss = await getBoss();
+
+  // ── Phase 5 Refinement 4: Capacity measurement ───────────────────────────
+  // Measure available browser capacity from OS free memory at startup so the
+  // worker never fetches more concurrent jobs than it has RAM for.  The
+  // effective concurrency is min(configured, measured) and is used for the
+  // batchSize on browser-backed queues.
+  const browserCapacity = measureBrowserCapacity(env.DISCOVERY_TASK_CONCURRENCY);
+  await registerWorkerInstance(browserCapacity, "browser");
+
+  // ── Worker Pools B: nested-concurrency browser slot pool ────────────────
+  // Sized to `browserSlots` (the raw memory-derived ceiling), NOT
+  // `effectiveConcurrency` (which is additionally capped by
+  // DISCOVERY_TASK_CONCURRENCY — a task-count fairness knob, not a memory
+  // fact). Every actual Google browser launch — whether from the legacy
+  // single-search path or from a Google area-pool worker — acquires one
+  // slot from this pool before spawning, so the real ceiling on
+  // concurrently running Chromium processes in this worker is always the
+  // measured memory budget, regardless of how many discovery_tasks or
+  // in-task area workers are trying to run at once.
+  const browserSlotPool = initBrowserSlotPool(browserCapacity.browserSlots);
+
+  // ── Phase 6: resource-aware (PID/thread) safe area-worker ceiling ───────
+  // Memory alone (browserSlots above) does not prove safety — see
+  // resourceCapacity.ts's own doc comment for the full audit trail. This
+  // measures the real cgroup PID budget once at startup and is what
+  // discoveryPlanJob.ts / poolExpandJob.ts now read instead of a hardcoded
+  // safeResourceWorkers constant.
+  const resourceCapacity = initResourceCapacity(env.GOOGLE_MAPS_AREA_WORKERS);
+  // PHASE 42A — ROOT-CAUSE FIX: the measured PID/thread ceiling above
+  // (`resourceCapacity.safeAreaWorkers`) was previously only ever consulted
+  // as a static number, independently, by every concurrently-running
+  // `runAreaWorkerPool()` call in this process (multiple discoveryTask jobs
+  // via processBatchConcurrently(), and/or one or more poolExpand jobs
+  // running alongside them) — so N concurrent invocations could each
+  // independently start up to `safeAreaWorkers` area workers, multiplying
+  // real concurrency (and real Python subprocesses/OS threads) well past
+  // the measured-safe cgroup PID budget. This mirrors browserSlotPool
+  // (memory) as a REAL, shared, atomically-decrementing semaphore for the
+  // PID/thread budget too — see resourceCapacity.ts's own doc comment on
+  // initResourceWorkerSlotPool() for the full root-cause writeup.
+  const resourceWorkerSlotPool = initResourceWorkerSlotPool(resourceCapacity.safeAreaWorkers);
+  console.log(
+    `[worker] google-area-pool capacity browserSlots=${browserSlotPool.capacity} ` +
+      `configuredGoogleAreaWorkers=${env.GOOGLE_MAPS_AREA_WORKERS} ` +
+      `safeResourceWorkers=${resourceCapacity.safeAreaWorkers} (basis=${resourceCapacity.pidCeilingBasis}) ` +
+      `resourceWorkerSlotPoolCapacity=${resourceWorkerSlotPool.capacity}`,
+  );
+  // PHASE 6B — one consolidated startup telemetry line: PID limit/current,
+  // memory limit/current, this Node process's own PID/thread count, the
+  // configured area-worker ceiling, browser slots, and the final computed
+  // safe resource-worker count. Per-area-worker before/after/after-cleanup
+  // deltas are logged separately, as they happen, by
+  // areaWorkerTelemetry.ts (wired into pythonBridge.ts's runEngineQuery()).
+  logStartupResourceTelemetry(resourceCapacity, browserSlotPool.capacity, env.GOOGLE_MAPS_AREA_WORKERS);
+
+  // ── Phase 18: resource-aware ENRICHMENT concurrency ─────────────────────
+  // Same measured-PID model as the area-worker ceiling above, applied to
+  // the businessEnrich (Website+Contact) and businessScore (Instagram)
+  // queues — see resourceCapacity.ts's "PHASE 18" section for the full
+  // rationale on why these two independently-configured queues are folded
+  // into ONE combined ceiling and then split, rather than treated as
+  // fully independent resource pools.
+  const enrichmentConfiguredTotal = env.ENRICHMENT_TASK_CONCURRENCY + env.INTELLIGENCE_TASK_CONCURRENCY;
+  const enrichmentCapacity = initEnrichmentCapacity(enrichmentConfiguredTotal);
+  const { enrichConcurrency: businessEnrichConcurrency, intelligenceConcurrency: businessScoreConcurrency } =
+    splitEnrichmentCapacity(enrichmentCapacity.safeEnrichmentWorkers, env.ENRICHMENT_TASK_CONCURRENCY, env.INTELLIGENCE_TASK_CONCURRENCY);
+  console.log(
+    `[worker] enrichment capacity enrichment_configured_concurrency=${enrichmentConfiguredTotal} ` +
+      `enrichment_safe_resource_concurrency=${enrichmentCapacity.safeEnrichmentWorkers} ` +
+      `enrichment_final_concurrency=${businessEnrichConcurrency + businessScoreConcurrency} ` +
+      `(businessEnrich=${businessEnrichConcurrency}, businessScore=${businessScoreConcurrency}, basis=${enrichmentCapacity.pidCeilingBasis})`,
+  );
+
+  // Heartbeat the worker_instances row every 30 seconds so the ops dashboard
+  // has a live view of actual capacity across the fleet.
+  const workerHeartbeatInterval = setInterval(
+    () => heartbeatWorkerInstance(browserCapacity.workerId),
+    30_000,
+  );
+
+  // PHASE 29 — Truthful enrichment telemetry and pg-boss queue depths.
+  // Observational-only enrichment stage telemetry, logged on the same 30s
+  // cadence as the existing heartbeat. Queue depth queries pg-boss's native
+  // getQueueSize(); 0 means confirmed empty, "unavailable" means measurement
+  // failed (never false 0). Active counters accurately track live execution.
+  const enrichmentTelemetryInterval = setInterval(() => {
+    (async () => {
+      let enrichmentQueueDepth: number | "unavailable" = "unavailable";
+      let intelligenceQueueDepth: number | "unavailable" = "unavailable";
+      try {
+        enrichmentQueueDepth = await getEnrichmentQueueDepth(boss, QUEUES.businessEnrich);
+        intelligenceQueueDepth = await getEnrichmentQueueDepth(boss, QUEUES.businessScore);
+      } catch (err) {
+        console.warn("[worker] enrichment telemetry: getQueueSize failed (non-fatal):", err);
+      }
+      const snapshot = getEnrichmentTelemetrySnapshot();
+      console.log(
+        formatEnrichmentTelemetryLog(snapshot, {
+          enrichment_queue_depth: enrichmentQueueDepth,
+          intelligence_queue_depth: intelligenceQueueDepth,
+        }),
+      );
+    })().catch((err) => console.warn("[worker] enrichment telemetry loop failed (non-fatal):", err));
+  }, 30_000);
+
+  // Set after queue subscriptions are registered; cleared on graceful shutdown.
+  let businessTaskRecoveryInterval: NodeJS.Timeout | undefined;
+
+  // ── Graceful shutdown ─────────────────────────────────────────────────
+  // Railway sends SIGTERM (SIGINT for local Ctrl+C) before killing the
+  // container. Without a handler, the process dies immediately and can cut
+  // off an in-flight pg-boss job mid-discovery/enrichment/intelligence,
+  // leaving it stuck "running" until stale-detection eventually reclaims it.
+  //
+  // boss.stop({ graceful: true }) is pg-boss's own documented shutdown
+  // sequence: it stops polling for new jobs immediately, then waits (up to
+  // `timeout`) for whatever this process already has in flight ("wip") to
+  // finish before closing its DB connections — exactly "stop accepting new
+  // work, let in-flight jobs finish, bounded timeout" with no changes to
+  // worker lifecycle/queue/retry semantics required here.
+  //
+  // A second, slightly longer, hard `process.exit` timer is kept as a
+  // backstop in case shutdown hangs for a reason outside pg-boss's own
+  // timeout (e.g. a stuck Supabase call in a handler's finally block) —
+  // Railway will SIGKILL shortly after SIGTERM regardless, so exiting
+  // ourselves first guarantees a clean(er) log line instead of a bare kill.
+  const GRACEFUL_STOP_TIMEOUT_MS = 25_000;
+  const FORCE_EXIT_TIMEOUT_MS = 28_000;
+  let shuttingDown = false;
+
+  async function shutdown(signal: NodeJS.Signals) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[worker] received ${signal}, starting graceful shutdown (timeout=${GRACEFUL_STOP_TIMEOUT_MS}ms)`);
+
+    clearInterval(workerHeartbeatInterval);
+    clearInterval(enrichmentTelemetryInterval);
+    if (businessTaskRecoveryInterval) clearInterval(businessTaskRecoveryInterval);
+
+    const forceExitTimer = setTimeout(() => {
+      console.error(`[worker] graceful shutdown exceeded ${FORCE_EXIT_TIMEOUT_MS}ms — forcing exit`);
+      process.exit(1);
+    }, FORCE_EXIT_TIMEOUT_MS);
+    forceExitTimer.unref();
+
+    try {
+      await boss.stop({ graceful: true, timeout: GRACEFUL_STOP_TIMEOUT_MS });
+      console.log("[worker] pg-boss stopped cleanly — exiting");
+      clearTimeout(forceExitTimer);
+      process.exit(0);
+    } catch (err) {
+      console.error("[worker] error during graceful shutdown", err);
+      clearTimeout(forceExitTimer);
+      process.exit(1);
+    }
+  }
+
+  process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
+  process.on("SIGINT",  () => { void shutdown("SIGINT"); });
+
+  await boss.work<DiscoveryPlanPayload>(QUEUES.discoveryPlan, async ([job]) => {
+    await runJob(job.id, null, () => handleDiscoveryPlanJob(job.data));
+  });
+
+  // Use effectiveConcurrency (memory-bounded) instead of the raw configured
+  // value so the worker can't be scheduled into OOM by raising the env var
+  // on a container that can't support the higher concurrency.
+  await boss.work<DiscoveryTaskPayload>(QUEUES.discoveryTask, { batchSize: browserCapacity.effectiveConcurrency }, async (jobs) => {
+    await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleDiscoveryTask(job.data)));
+  });
+
+  // PHASE 18, STEP 6 — a safe capacity of 0 means do not launch enrichment
+  // workers for that queue at all (never force a minimum of 1 against the
+  // resource ceiling); pg-boss's own `work()` batchSize does not accept 0,
+  // so the correct expression of "zero safe capacity" is skipping
+  // registration entirely rather than passing a floor()'d-to-1 value.
+  if (businessEnrichConcurrency > 0) {
+    await boss.work<BusinessProcessingPayload>(QUEUES.businessEnrich, { batchSize: businessEnrichConcurrency }, async (jobs) => {
+      await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
+    });
+  } else {
+    console.warn("[worker] enrichment_final_concurrency=0 for businessEnrich (Website+Contact) — not registering a worker for this queue");
+  }
+  if (businessScoreConcurrency > 0) {
+    await boss.work<BusinessProcessingPayload>(QUEUES.businessScore, { batchSize: businessScoreConcurrency }, async (jobs) => {
+      await processBatchConcurrently(jobs, (job) => runJob(job.id, null, () => handleBusinessProcessingJob(job.data)));
+    });
+  } else {
+    console.warn("[worker] enrichment_final_concurrency=0 for businessScore (Instagram) — not registering a worker for this queue");
+  }
+
+  // discover.live is the only queued discovery path as of Phase 3 — Instant
+  // Discovery (Starter/Pro/Premium) is a synchronous pool lookup in the
+  // gateway request handler now, not a queue job. See src/lib/poolLookup.ts
+  // and src/server/routes/discover.ts.
+  await boss.work<DiscoverJobPayload>(QUEUES.discoverLive, async ([job]) => {
+    await runJob(job.id, job.data.scrapeJobId, () => handleDiscoverJob(job.data));
+  });
+
+  await boss.work<PoolExpandJobPayload>(QUEUES.poolExpand, async ([job]) => {
+    await runJob(job.id, null, () => handlePoolExpandJob(job.data));
+  });
+
+  await boss.work<VerificationJobPayload>(QUEUES.poolVerify, async ([job]) => {
+    await runJob(job.id, null, () => handleVerificationJob(job.data));
+  });
+
+  // ── Scheduler initialization (guarded) ──────────────────────────────────
+  // Wrap scheduler initialization in its own guarded block so that if it
+  // fails, the worker still starts and processes discovery/enrichment jobs.
+  try {
+    // Recurring verification, per the doc's "approximately every 14 days"
+    // pool-freshness requirement. Schedule expression is UTC cron; pg-boss
+    // dedupes by key so re-running `npm run start:worker` doesn't create
+    // duplicate schedules.
+    await boss.schedule(QUEUES.poolVerify, "0 3 * * *", { batchSize: 200 });
+  } catch (err) {
+    console.error("[worker] Optional scheduler failed to schedule poolVerify (non-fatal):", err);
+  }
+
+  try {
+    // ── Phase 5 Refinement 2: Priority aging ──────────────────────────────────
+    // Raises the priority of discovery tasks that have been waiting longer than
+    // 10 minutes toward their tier’s ceiling band, preventing starvation of lower
+    // tiers when a higher tier has sustained throughput.  Aging is capped at the
+    // tier ceiling so a free-tier task can never reach a pro/premium priority.
+    //
+    // Each tier’s ceiling is stored in PLANS.priorityBand.ceiling (plans.ts).
+    // The UPDATE is intentionally broad: it applies to any queued task older
+    // than the threshold regardless of which worker picks it up, so multiple
+    // worker replicas don’t double-apply the boost (the LEAST clamp is idempotent).
+    //
+    // Schedule: every 5 minutes, matching the refinement doc’s recommendation.
+    await boss.schedule("priority-aging", "*/5 * * * *", {});
+  } catch (err) {
+    console.error("[worker] Optional scheduler failed to schedule priority-aging (non-fatal):", err);
+  }
+
+  // Work on priority aging queue. Errors are caught inside the handler so they
+  // never crash the worker process.
+  await boss.work("priority-aging", async () => {
+    try {
+      await supabaseAdmin.rpc("age_discovery_task_priorities" as any, {
+        p_aging_threshold_minutes: 10,
+        p_boost_per_interval: 1,
+      } as any);
+    } catch (err) {
+      console.error("[worker] Background priority-aging database call failed (non-fatal):", err);
+    }
+  });
+
+  // ── Phase 7: Observability snapshot (every 1 minute) ─────────────────────
+  // Captures a time-series snapshot of active workers, queue depths, and
+  // browser metrics into lead_engine_snapshots for the ops dashboard.
+  try {
+    await boss.schedule(QUEUES.metricsSnapshot, "*/1 * * * *", {});
+  } catch (err) {
+    console.error("[worker] Optional scheduler failed to schedule metrics-snapshot (non-fatal):", err);
+  }
+
+  await boss.work(QUEUES.metricsSnapshot, async () => {
+    // captureSystemSnapshot is itself non-throwing; any error is caught inside.
+    await captureSystemSnapshot(workerMetrics);
+  });
+
+  // ── AUDIT FIX (Finding 6): stale 'streaming' scrape_jobs sweep ──────────
+  // poolExpandJob has no serializable resume point mid-run, so a crashed
+  // invocation's row can only be reclaimed, not resumed — see
+  // jobs/staleScrapeJobSweep.ts for the full rationale. Every 5 minutes,
+  // matching priority-aging's cadence above.
+  try {
     await boss.schedule(QUEUES.staleScrapeJobSweep, "*/5 * * * *", {});
   } catch (err) {
     console.error("[worker] Optional scheduler failed to schedule stale-scrape-job-sweep (non-fatal):", err);
@@ -38,7 +367,7 @@
   );
   businessTaskRecoveryInterval.unref();
 
-  console.log(`[worker] subscribed to all queues — effectiveConcurrency=${browserCapacity.effectiveConcurrency} configured=${browserCapacity.configuredConcurrency} freeMb=${browserCapacity.freeMemoryMb}`);
+    console.log(`[worker] subscribed to all queues — effectiveConcurrency=${browserCapacity.effectiveConcurrency} configured=${browserCapacity.configuredConcurrency} freeMb=${browserCapacity.freeMemoryMb}`);
 }
 
 async function runJob(bossJobId: string, scrapeJobId: string | null, fn: () => Promise<void>) {
@@ -49,3 +378,38 @@ async function runJob(bossJobId: string, scrapeJobId: string | null, fn: () => P
     await supabaseAdmin.from("scrape_jobs")
       .update({ status: "running", started_at: new Date().toISOString() })
       .eq("id", scrapeJobId)
+      .in("status", ["queued", "running"]);
+  }
+
+  try {
+    await fn();
+    if (scrapeJobId) {
+      // The handler (e.g. handleDiscoverJob) writes its own terminal state
+      // (completed | completed_partial | cancelled) together with job_summary.
+      // runJob only needs to write 'completed' as a safe fallback for jobs
+      // where the handler exited cleanly but didn't write a terminal state
+      // (e.g. an older handler or discovery_plan flows).
+      // We must NOT overwrite completed_partial / cancelled / completed.
+      await supabaseAdmin.from("scrape_jobs")
+        .update({ status: "completed", completed_at: new Date().toISOString() })
+        .eq("id", scrapeJobId)
+        .in("status", ["running", "streaming"]); // only apply when handler left it non-terminal
+    }
+  } catch (err) {
+    console.error(`[worker] job ${bossJobId} failed`, err);
+    if (scrapeJobId) {
+      await supabaseAdmin
+        .from("scrape_jobs")
+        .update({ status: "failed", error: err instanceof Error ? err.message : String(err), completed_at: new Date().toISOString() })
+        .eq("id", scrapeJobId)
+        .not("status", "eq", "cancelled"); // never overwrite a user cancellation with 'failed'
+    }
+    throw err; // let pg-boss apply its retry policy
+  }
+}
+
+
+main().catch((err) => {
+  console.error("[worker] fatal startup error", err);
+  process.exit(1);
+});

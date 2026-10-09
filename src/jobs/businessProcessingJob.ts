@@ -124,7 +124,6 @@ export async function enqueueBusinessProcessing(businessId: string, kind: Proces
   await boss.send(
     kind === "enrich" ? QUEUES.businessEnrich : QUEUES.businessScore,
     { taskId: task.id },
-    { singletonKey: `business-processing:${kind}:${task.id}` },
   );
 }
 
@@ -134,9 +133,12 @@ export async function enqueueBusinessProcessing(businessId: string, kind: Proces
  * its own retries independently from business_processing_tasks, so without
  * this sweep a failed/expired queue job can leave a queued DB row forever.
  *
- * The narrow error prefix avoids repeatedly retrying unrelated permanent
- * errors. singletonKey keeps one queued/active pg-boss job per task even when
- * the sweep runs again before a worker has claimed the DB row.
+ * The narrow error prefix avoids retrying unrelated permanent errors.
+ * Before publishing, the sweep atomically replaces the error string with a
+ * dispatch marker. Since these queues use pg-boss's `standard` policy (which
+ * does not dedupe queued jobs by singletonKey), this compare-and-set marker
+ * prevents repeat sweeps from enqueueing the same durable task again. If
+ * publishing fails, the original error is restored for the next sweep.
  */
 export async function requeueAdmissionBlockedBusinessTasks(
   maxTasks = 500,
@@ -161,13 +163,45 @@ export async function requeueAdmissionBlockedBusinessTasks(
   const boss = await getBoss();
   let enqueued = 0;
   for (const task of candidates) {
+    const previousError = task.error;
+    // The SQL prefix filter should guarantee this, but fail closed if the row
+    // changed after the query or if an unexpected value slipped through.
+    if (!previousError?.startsWith(ADMISSION_BLOCKED_TASK_ERROR_PREFIX)) continue;
+
+    const dispatchMarker =
+      `recovery-dispatched-at=${new Date().toISOString()}; previous-error=${previousError}`;
+    const { data: claimed, error: markerError } = await supabaseAdmin
+      .from("business_processing_tasks")
+      .update({ error: dispatchMarker })
+      .eq("id", task.id)
+      .eq("status", "queued")
+      .eq("error", previousError)
+      .select("id")
+      .maybeSingle();
+    if (markerError) throw markerError;
+    if (!claimed) continue; // another sweep/worker changed this row first
+
     const queueName = task.kind === "enrich" ? QUEUES.businessEnrich : QUEUES.businessScore;
-    const jobId = await boss.send(
-      queueName,
-      { taskId: task.id },
-      { singletonKey: `business-processing:${task.kind}:${task.id}` },
-    );
-    if (jobId) enqueued++;
+    try {
+      const jobId = await boss.send(queueName, { taskId: task.id });
+      if (jobId) enqueued++;
+    } catch (sendError) {
+      // Leave failed-to-publish rows eligible for the next sweep. Do not
+      // overwrite a task that a worker has already claimed in the meantime.
+      const { error: restoreError } = await supabaseAdmin
+        .from("business_processing_tasks")
+        .update({ error: previousError })
+        .eq("id", task.id)
+        .eq("status", "queued")
+        .eq("error", dispatchMarker);
+      if (restoreError) {
+        console.error("[businessProcessing] failed to restore recovery marker", {
+          taskId: task.id,
+          message: restoreError.message,
+        });
+      }
+      throw sendError;
+    }
   }
 
   return { candidates: candidates.length, enqueued };

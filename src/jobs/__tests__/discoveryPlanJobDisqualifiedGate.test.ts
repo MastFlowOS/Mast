@@ -32,7 +32,9 @@ test("discoveryPlanJob.ts's validateDiscoveryCandidate() still rejects lead.is_d
 test("validateDiscoveryCandidate() still runs before upsertBusinessFromEngineLead() and deliverLead() in the main loop", () => {
   const validationCallIndex = discoveryPlanJobSrc.indexOf("const validation = validateDiscoveryCandidate(lead);");
   const upsertCallIndex = discoveryPlanJobSrc.indexOf("const businessId = await upsertBusinessFromEngineLead(");
-  const deliverCallIndex = discoveryPlanJobSrc.indexOf("const delivery = await deliverLead(lead, {");
+  // The delivered lead is the engine lead merged with the enriched channels
+  // (`deliverable`), so accept either binding name — the ORDER is what matters.
+  const deliverCallIndex = discoveryPlanJobSrc.search(/const delivery = await deliverLead\((?:lead|deliverable), \{/);
 
   assert.notEqual(validationCallIndex, -1);
   assert.notEqual(upsertCallIndex, -1);

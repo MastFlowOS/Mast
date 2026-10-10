@@ -7,6 +7,7 @@ import { addNotification } from "./notifications";
 import { buildPermissionsManager, getDevPlanOverride, type FeatureId } from "./permissions";
 import { UsageService } from "./usage";
 import { parseGeoScope, validateDiscoveryRegion } from "./geo/scope";
+import { decideTerminalEmission, type DiscoverRunStatus, type PoolRankingInfo, type ShortfallReason } from "./discoverProgress";
 import { GENUINE_SEND_TYPES } from "./outreach/continuity/read";
 import { DAILY_GOAL_COUNT, type DailyGoalDraft, type DailyGoalInstance, type GoalEvidence } from "./dailyGoals";
 
@@ -389,11 +390,32 @@ export type LeadGenerationRequest = {
    * region to ones where discovered businesses can realistically pay in
    * that currency. */
   currencies?: string[];
+  /**
+   * Set ONLY by the explicit "Find remaining leads with Live Discovery"
+   * action: the id of the partial Instant run this separate live run
+   * continues. Requires `method: "live"`.
+   */
+  followsJobId?: string;
 };
 
 export type LeadGenerationResponse = {
   leads: Lead[];
+  /** What the run was asked for — server-clamped to remaining credits, NOT the slider. */
   requested: number;
+  /** What the user typed/selected before any server-side clamp. */
+  requestedByUser?: number;
+  /** Leads actually saved by this run. Always distinct from `requested`. */
+  delivered: number;
+  /** requested - delivered (never negative). */
+  shortfall: number;
+  /** Server-reported run status for this call. */
+  status: DiscoverRunStatus;
+  shortfallReason?: ShortfallReason;
+  /** Instant runs only: how faithfully results follow Opportunity Score. */
+  ranking?: PoolRankingInfo;
+  /** Instant runs only: a Live Discovery follow-up is OFFERED, never started. */
+  liveFollowUp?: { available: boolean; remaining: number };
+  followsJobId?: string;
   generated: number;
   cost: number;
   source: string;
@@ -405,43 +427,37 @@ export type LeadGenerationResponse = {
   /** The scrape_jobs id — pass to subscribeToDiscoverJob() to watch it resolve. */
   jobId: string;
   /**
-   * The discovery_plans id — present whenever real live scraping is
-   * actually happening for this request: Free's Live Discovery (the
-   * backend's `plan.discoveryMode === "live"` path), AND a paid-tier
-   * Instant Discovery request whose pool lookup fell short and is now
-   * backfilling live (`instant_pool`/`instant_pool_ranked` with a
-   * shortfall — see src/server/routes/discover.ts). Pass to
-   * useLiveDiscoveryState() to render the real 3-Scout live UI. Undefined
-   * only when no live scraping occurs at all — a pure pool hit, or a
-   * background-only pool expansion with no user waiting on it.
+   * The discovery_plans id — present ONLY for a Live Discovery run
+   * (method "live", including an explicit follow-up). Instant Pool and
+   * Ranked Instant are pool-only and never carry one. Pass to
+   * useLiveDiscoveryState() to render the live scouting UI.
    */
   planId?: string;
   /** The ACTUAL mode the backend used, derived server-side from the user's real plan — not necessarily what was requested. */
   mode: GenerationMode;
   /**
-   * True when more opportunities may still arrive for this job after this
-   * call returns: always true for Free's Live Discovery (nothing has
-   * landed yet), and true for Starter/Pro/Premium when the pool fell short
-   * and a follow-up scrape is running under the same job id.
+   * True only for a Live Discovery run: nothing has landed yet and results
+   * will stream in under this job id. Instant runs are always complete when
+   * the call returns (pending === false).
    */
   pending: boolean;
 };
 
 type DiscoverBackendResponse = {
   jobId: string;
-  /**
-   * Present when POST /v1/discover took the live-discovery branch, OR the
-   * instant-pool branch queued a real live pool-expand backfill for this
-   * request (shortfall > 0, plan limit not already reached — see
-   * discover.ts). Absent for a pure pool hit (no live scraping) and for a
-   * shortfall that hit the plan limit before any backfill was queued.
-   */
+  /** Present only when POST /v1/discover took the live-discovery branch. */
   planId?: string;
   mode: GenerationMode;
-  status: "queued" | "streaming" | "completed" | "failed";
+  /** "streaming" is only emitted by older servers that still backfilled live. */
+  status: "queued" | "streaming" | "completed" | "completed_partial" | "failed";
   requested: number;
+  requestedByUser?: number;
   delivered?: number;
   shortfall?: number;
+  shortfallReason?: ShortfallReason;
+  ranking?: PoolRankingInfo;
+  liveFollowUp?: { available: boolean; remaining: number };
+  followsJobId?: string;
   backgroundExpansionQueued?: boolean;
   results?: Array<{ businessId: string; opportunityScore: number | null }>;
 };
@@ -531,6 +547,9 @@ async function currentCreditsSnapshot(userId: string) {
  */
 export type DiscoverJobStatus = "queued" | "running" | "streaming" | "completed" | "completed_partial" | "cancelled" | "failed";
 
+/** How often a non-terminal job is re-read as a fallback for lost realtime events. */
+export const DISCOVER_RECONCILE_POLL_MS = 5_000;
+
 export function subscribeToDiscoverJob(
   jobId: string,
   handlers: {
@@ -551,26 +570,37 @@ export function subscribeToDiscoverJob(
   let reconciled = false;
   let isReconciling = false;
 
+  let lastNonTerminalKey = "";
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  const stopPolling = () => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  };
+
   const checkTerminalEmission = async () => {
     if (hasEmittedTerminal || !terminalStatus) return;
 
-    if (terminalStatus === "completed") {
-      const target = requestedQuantity ? Math.min(requestedQuantity, terminalResultsCount || requestedQuantity) : terminalResultsCount;
-      if (seenLeadIds.size >= target) {
-        hasEmittedTerminal = true;
-        handlers.onStatusChange("completed", seenLeadIds.size);
-      } else if (!isReconciling) {
-        // Backend marked completed, but frontend lead count < target.
-        // Perform a DB reconciliation fetch to grab any lead committed in DB whose WS event was lost/delayed.
-        await reconcile();
-      }
-    } else if (terminalStatus === "completed_partial" || terminalStatus === "cancelled" || terminalStatus === "failed") {
-      if (!reconciled && !isReconciling) {
-        await reconcile();
-      } else if (!isReconciling) {
-        hasEmittedTerminal = true;
-        handlers.onStatusChange(terminalStatus, Math.max(seenLeadIds.size, terminalResultsCount));
-      }
+    // See decideTerminalEmission: a lost/delayed realtime event is recovered by
+    // ONE reconciliation fetch; after that the terminal state is reported with
+    // the leads actually seen instead of refetching forever (the old `completed`
+    // branch had no such guard and could never finish).
+    const decision = decideTerminalEmission({
+      terminalStatus,
+      terminalResultsCount,
+      requestedQuantity: requestedQuantity ?? undefined,
+      seenCount: seenLeadIds.size,
+      reconciled,
+      isReconciling,
+    });
+    if (decision === "reconcile") {
+      await reconcile();
+    } else if (decision === "emit") {
+      hasEmittedTerminal = true;
+      stopPolling();
+      handlers.onStatusChange(
+        terminalStatus,
+        terminalStatus === "completed" ? seenLeadIds.size : Math.max(seenLeadIds.size, terminalResultsCount),
+      );
     }
   };
 
@@ -610,7 +640,11 @@ export function subscribeToDiscoverJob(
           terminalStatus = st;
           terminalResultsCount = count;
         } else {
-          handlers.onStatusChange(st, count);
+          const key = `${st}:${count}`;
+          if (key !== lastNonTerminalKey) {
+            lastNonTerminalKey = key;
+            handlers.onStatusChange(st, count);
+          }
         }
       }
     } catch (err) {
@@ -653,10 +687,20 @@ export function subscribeToDiscoverJob(
     .subscribe((status) => {
       if (status === "SUBSCRIBED") {
         void reconcile();
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        console.warn(`[subscribeToDiscoverJob] realtime ${status} for job ${jobId}; relying on polling reconciliation`);
       }
     });
 
+  // Safety net: realtime delivery is best-effort. While the job is not yet
+  // terminal, re-read the job row + leads on a slow interval so progress and
+  // completion can never depend solely on a WebSocket event arriving.
+  pollTimer = setInterval(() => {
+    if (!hasEmittedTerminal) void reconcile();
+  }, DISCOVER_RECONCILE_POLL_MS);
+
   return () => {
+    stopPolling();
     supabase?.removeChannel(channel);
   };
 }
@@ -1473,6 +1517,7 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
       channels: body.channels,
       currencies: body.currencies ?? [],
       method: body.method,
+      followsJobId: body.followsJobId,
     }),
   });
 
@@ -1485,6 +1530,11 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
     return {
       leads: [],
       requested: backendResponse.requested,
+      requestedByUser: backendResponse.requestedByUser,
+      delivered: 0,
+      shortfall: backendResponse.requested,
+      status: "queued",
+      followsJobId: backendResponse.followsJobId,
       generated: 0,
       cost: 0,
       source: "live_scrape",
@@ -1507,23 +1557,28 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
   if (rowsErr) throw new ApiError(500, rowsErr.message, rowsErr);
 
   const leads = (rows ?? []).map(dbRowToLead);
+  const delivered = backendResponse.delivered ?? leads.length;
 
   return {
     leads,
     requested: backendResponse.requested,
+    requestedByUser: backendResponse.requestedByUser,
+    delivered,
+    shortfall: backendResponse.shortfall ?? Math.max(0, backendResponse.requested - delivered),
+    status: backendResponse.status,
+    shortfallReason: backendResponse.shortfallReason ?? null,
+    ranking: backendResponse.ranking,
+    liveFollowUp: backendResponse.liveFollowUp,
     generated: leads.length,
     cost: leads.length,
     source: backendResponse.mode,
     credits,
     jobId: backendResponse.jobId,
-    // Present exactly when the backend actually queued a live pool-expand
-    // backfill for this request (see the DiscoverBackendResponse.planId
-    // doc comment) — undefined for a pure pool hit, so the caller never
-    // renders a Scout screen with nothing real behind it.
+    // Instant runs are pool-only: no plan, no scouts. (An older server that
+    // still queued a live backfill would send planId + "streaming"; honoring
+    // that keeps a mixed-version deploy from hiding live results.)
     planId: backendResponse.planId,
     mode,
-    // status "streaming" means the pool fell short and a follow-up scrape
-    // is running under this same job id — more leads may still arrive.
     pending: backendResponse.status === "streaming",
   };
 }

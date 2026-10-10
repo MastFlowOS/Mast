@@ -46,3 +46,27 @@ export function channelsSatisfied(candidate: ChannelCandidate, requestedChannels
   if (requestedChannels.length === 0) return true;
   return requestedChannels.every((ch) => hasChannel(candidate, ch));
 }
+
+/**
+ * Live Discovery gates on the ENRICHED business row (email/Instagram are only
+ * resolved by enrichment) but the saved `leads` row used to be written from the
+ * original engine lead, so a lead could pass the channel gate and still be
+ * saved without the very email/Instagram that made it eligible. This returns
+ * the lead with each contact channel taken from the enriched row when that row
+ * has a value (it is what the gate evaluated), otherwise the lead's own value.
+ * It never invents a value and never touches non-channel fields.
+ */
+export function mergeEnrichedChannels<T extends ChannelCandidate>(
+  lead: T,
+  enriched: ChannelCandidate | null | undefined,
+): T {
+  if (!enriched) return lead;
+  const merged: T = { ...lead };
+  for (const field of CHANNEL_FIELDS) {
+    const value = enriched[field];
+    if (typeof value === "string" && value.trim().length > 0) {
+      (merged as ChannelCandidate)[field] = value;
+    }
+  }
+  return merged;
+}

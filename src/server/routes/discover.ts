@@ -4,19 +4,27 @@ import { requireAuth } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan, isDiscoveryModeAllowed } from "../../config/plans.js";
-import { getBoss, QUEUES } from "../../lib/queue.js";
 import { validateDiscoveryRegion } from "../../lib/geo/scope.js";
-import { lookupAndDeliverFromPool } from "../../lib/poolLookup.js";
+import { lookupAndDeliverFromPool, type PoolLookupResult } from "../../lib/poolLookup.js";
 import { professionSlugForLabel } from "../../lib/professions.js";
 import { enqueueDiscoveryPlan } from "../../discovery/planner.js";
 import { terminateRequest } from "../../discovery/requestLifecycle.js";
-// PAID-TIER LIVE SCRAPING BRIDGE — reuse poolExpandJob.ts's own idempotent
-// plan-creation primitive so the pool-expand follow-up run and this HTTP
-// response resolve to the SAME discovery_plans row/id (never a second
-// plan) — see getOrCreatePoolExpandPlanId's doc comment in poolExpandJob.ts.
-import { getOrCreatePoolExpandPlanId, type PoolExpandJobPayload } from "../../jobs/poolExpandJob.js";
 
 export const discoverRouter = Router();
+
+/**
+ * Collaborators the route calls through. Production uses the real functions;
+ * tests replace them with spies to PROVE which execution path a mode takes
+ * (Instant never enqueues Live Discovery). Not a plug-in point for behavior.
+ *
+ * EXECUTION CONTRACT (do not blur):
+ *  - live                 -> enqueueDiscoveryPlan (async job, 202 + planId)
+ *  - instant_pool(_ranked)-> lookupAndDeliverFromPool ONLY, synchronous 200.
+ *    Instant never queues poolExpand, never creates a plan, never scrapes.
+ *    A shortfall is reported (completed_partial); the user may then start a
+ *    SEPARATE live run via `followsJobId`.
+ */
+export const discoverDeps = { enqueueDiscoveryPlan, lookupAndDeliverFromPool };
 
 // Discovery queues real background scraping work (and, on the "live" plan
 // path, dispatches directly into pg-boss) — 5/min is well above what a
@@ -56,6 +64,15 @@ const DiscoverRequestSchema = z.object({
    * plan doesn't allow.
    */
   method: z.enum(["live", "instant_pool", "instant_pool_ranked"]).optional(),
+  /**
+   * Set ONLY by the explicit "Find remaining leads with Live Discovery"
+   * action: the id of a completed_partial Instant run this live run
+   * continues. Must be the caller's own job; requires method "live"; quantity
+   * may not exceed that job's recorded shortfall; the same job can only be
+   * continued once. It never merges the two runs — the live run is a separate
+   * job with its own counters and its own credit charges.
+   */
+  followsJobId: z.string().uuid().optional(),
 });
 
 /**
@@ -164,6 +181,65 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
     }
     const region = geo.region;
 
+    if (body.followsJobId) {
+      if (mode !== "live") {
+        return res.status(400).json({
+          code: "follow_up_requires_live",
+          message: "Only a Live Discovery run can continue a partial Instant result.",
+        });
+      }
+      const { data: prior, error: priorError } = await (supabaseAdmin as any)
+        .from("scrape_jobs")
+        .select("id, user_id, mode, status, query, job_summary")
+        .eq("id", body.followsJobId)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (priorError) throw priorError;
+      if (!prior) {
+        return res.status(404).json({ code: "follows_job_not_found", message: "The run you are continuing was not found." });
+      }
+      const priorShortfall = Number(prior.job_summary?.shortfall ?? 0);
+      if (!["instant_pool", "instant_pool_ranked"].includes(prior.mode) || prior.status !== "completed_partial" || priorShortfall <= 0) {
+        return res.status(409).json({
+          code: "follows_job_not_partial",
+          message: "Only a partial Instant run with a remaining shortfall can be continued with Live Discovery.",
+        });
+      }
+      if (body.quantity > priorShortfall) {
+        return res.status(400).json({
+          code: "follow_up_quantity_exceeds_shortfall",
+          message: `Live Discovery can only be started for the remaining ${priorShortfall} opportunities.`,
+        });
+      }
+      const priorQuery = (prior.query ?? {}) as { niche?: string; region?: string; channels?: string[] };
+      const sameSet = (a: string[] = [], b: string[] = []) => a.length === b.length && [...a].sort().join(",") === [...b].sort().join(",");
+      if (
+        String(priorQuery.niche ?? "").trim().toLowerCase() !== body.niche.trim().toLowerCase() ||
+        priorQuery.region !== region ||
+        !sameSet(priorQuery.channels, body.channels)
+      ) {
+        return res.status(400).json({
+          code: "follow_up_mismatch",
+          message: "A follow-up Live Discovery run must use the same niche, region and channels as the run it continues.",
+        });
+      }
+      const { data: existingFollowUps, error: dupError } = await (supabaseAdmin as any)
+        .from("scrape_jobs")
+        .select("id, status")
+        .eq("user_id", userId)
+        .eq("query->>follows_job_id", body.followsJobId)
+        .in("status", ["queued", "running", "streaming", "completed", "completed_partial"])
+        .limit(1);
+      if (dupError) throw dupError;
+      if (Array.isArray(existingFollowUps) && existingFollowUps.length > 0) {
+        return res.status(409).json({
+          code: "follow_up_already_started",
+          message: "Live Discovery was already started for this run.",
+          jobId: existingFollowUps[0].id,
+        });
+      }
+    }
+
     const focusAreaLabel = (profile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined;
     const professionSlug = professionSlugForLabel(focusAreaLabel);
 
@@ -175,47 +251,72 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         user_id: userId,
         mode,
         status: "queued",
-        query: { region: region, niche: body.niche, channels: body.channels, currencies: body.currencies, profession_slug: professionSlug, quantity },
+        query: {
+          region: region,
+          niche: body.niche,
+          channels: body.channels,
+          currencies: body.currencies,
+          profession_slug: professionSlug,
+          quantity,
+          ...(body.followsJobId ? { follows_job_id: body.followsJobId } : {}),
+        },
       })
       .select()
       .single();
     if (jobError) throw jobError;
 
     if (mode === "live") {
-      const planId = await enqueueDiscoveryPlan({
-        scrapeJobId: job.id,
-        userId,
-        // AUDIT FIX (Phase 3B concurrency audit): this was never passed
-        // before, so every downstream getPlan(request.planTierId ?? null) /
-        // getPlanConcurrency() call silently fell back to the "free" tier
-        // — both the priority band (materializeDiscoveryPlan) AND, after
-        // this phase's dispatch fix, the per-user worker-concurrency cap
-        // (dispatchQueuedDiscoveryTasks / handleDiscoveryTask) were
-        // computing every user's plan as if they were on "free" (band
-        // 0-9, cap 2) regardless of their actual billing tier. See
-        // planner.ts's plan_tier_id row field for the other half of this
-        // fix.
-        //
-        // NOTE: this field is named `planTierId` (never `planId`) on
-        // purpose — `planId` is reserved everywhere downstream (pg-boss
-        // discovery.plan payload, DiscoveryPlanPayload, DiscoveryTaskPayload,
-        // discovery_tasks.plan_id) for the discovery_plans.id UUID. This
-        // was the exact production incident: this field used to be named
-        // `planId: plan.id` ("free"), and enqueueDiscoveryPlan's pg-boss
-        // payload spread it in a way that clobbered the real UUID with the
-        // string "free", so handleDiscoveryPlanJob looked up
-        // discovery_plans.id = 'free', found no row, and returned early —
-        // every Free discovery run queued forever with zero discovery_tasks.
-        planTierId: plan.id,
-        region: region,
-        niche: body.niche,
-        channels: body.channels,
-        currencies: body.currencies,
-        professionSlug,
-        quantity,
-        dailyLimit: plan.dailyLeadLimit,
-        monthlyLimit: plan.monthlyLeadLimit,
-      });
+      let planId: string;
+      try {
+        planId = await discoverDeps.enqueueDiscoveryPlan({
+          scrapeJobId: job.id,
+          userId,
+          // AUDIT FIX (Phase 3B concurrency audit): this was never passed
+          // before, so every downstream getPlan(request.planTierId ?? null) /
+          // getPlanConcurrency() call silently fell back to the "free" tier
+          // — both the priority band (materializeDiscoveryPlan) AND, after
+          // this phase's dispatch fix, the per-user worker-concurrency cap
+          // (dispatchQueuedDiscoveryTasks / handleDiscoveryTask) were
+          // computing every user's plan as if they were on "free" (band
+          // 0-9, cap 2) regardless of their actual billing tier. See
+          // planner.ts's plan_tier_id row field for the other half of this
+          // fix.
+          //
+          // NOTE: this field is named `planTierId` (never `planId`) on
+          // purpose — `planId` is reserved everywhere downstream (pg-boss
+          // discovery.plan payload, DiscoveryPlanPayload, DiscoveryTaskPayload,
+          // discovery_tasks.plan_id) for the discovery_plans.id UUID. This
+          // was the exact production incident: this field used to be named
+          // `planId: plan.id` ("free"), and enqueueDiscoveryPlan's pg-boss
+          // payload spread it in a way that clobbered the real UUID with the
+          // string "free", so handleDiscoveryPlanJob looked up
+          // discovery_plans.id = 'free', found no row, and returned early —
+          // every Free discovery run queued forever with zero discovery_tasks.
+          planTierId: plan.id,
+          region: region,
+          niche: body.niche,
+          channels: body.channels,
+          currencies: body.currencies,
+          professionSlug,
+          quantity,
+          dailyLimit: plan.dailyLeadLimit,
+          monthlyLimit: plan.monthlyLeadLimit,
+        });
+      } catch (enqueueErr) {
+        // The job row exists but no plan could be queued: terminate it
+        // visibly instead of leaving it "queued" forever.
+        await (supabaseAdmin as any)
+          .from("scrape_jobs")
+          .update({
+            status: "failed",
+            results_count: 0,
+            error: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr),
+            completed_at: new Date().toISOString(),
+          })
+          .eq("id", job.id);
+        throw enqueueErr;
+      }
+
 
       return res.status(202).json({
         jobId: job.id,
@@ -223,98 +324,111 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         mode,
         status: "queued",
         requested: quantity,
+        requestedByUser: body.quantity,
+        ...(body.followsJobId ? { followsJobId: body.followsJobId } : {}),
       });
     }
 
-    // Instant Discovery: pool-first, synchronous.
-    const { delivered, shortfall, limitReached } = await lookupAndDeliverFromPool({
-      userId,
-      region: region,
-      niche: body.niche,
-      professionSlug,
-      rank: mode === "instant_pool_ranked",
-      quantity,
-      scrapeJobId: job.id,
-      dailyLimit: plan.dailyLeadLimit,
-      monthlyLimit: plan.monthlyLeadLimit,
-      channels: body.channels,
-    });
-
-    // ── Instant pool: mark completed_partial when we couldn't satisfy all
-    // ── of the request (limit or pool exhaustion).
-    const finalInstantStatus =
-      shortfall > 0 && !limitReached ? "streaming" : delivered.length >= quantity ? "completed" : "completed_partial";
-
-    let backgroundExpansionQueued = false;
-    // PAID-TIER LIVE SCRAPING BRIDGE — undefined unless a real live
-    // pool-expand backfill is actually queued for THIS user's request
-    // below. Included in the JSON response so the frontend can render the
-    // exact same LiveDiscoveryScreen (Task 1-3's live event stream) for a
-    // paid-tier backfill it already renders for Free's Live Discovery.
-    let poolExpandPlanId: string | undefined;
-
-    if (shortfall > 0 && !limitReached) {
-      // Leave the job "streaming" — poolExpandJob (with a followUp attached)
-      // flips it to completed / completed_partial once it finishes.
-      await supabaseAdmin.from("scrape_jobs").update({ status: "streaming", results_count: delivered.length }).eq("id", job.id);
-
-      const poolExpandPayload: PoolExpandJobPayload = {
+    // Instant Pool / Ranked Instant: POOL ONLY, synchronous. This branch must
+    // never enqueue a plan, queue poolExpand, or otherwise start scraping — a
+    // shortfall is reported to the user as a shortfall.
+    let pool: PoolLookupResult;
+    try {
+      pool = await discoverDeps.lookupAndDeliverFromPool({
+        userId,
         region: region,
         niche: body.niche,
-        shortfall,
-        currencies: body.currencies,
-        followUp: {
-          userId,
-          professionSlug,
-          rank: mode === "instant_pool_ranked",
-          scrapeJobId: job.id,
-          dailyLimit: plan.dailyLeadLimit,
-          monthlyLimit: plan.monthlyLeadLimit,
-          channels: body.channels,
+        professionSlug,
+        rank: mode === "instant_pool_ranked",
+        quantity,
+        scrapeJobId: job.id,
+        dailyLimit: plan.dailyLeadLimit,
+        monthlyLimit: plan.monthlyLeadLimit,
+        channels: body.channels,
+      });
+    } catch (poolErr) {
+      // Lookup failed before anything was delivered: never leave the job
+      // sitting in "queued" forever.
+      await (supabaseAdmin as any)
+        .from("scrape_jobs")
+        .update({
+          status: "failed",
+          results_count: 0,
+          error: poolErr instanceof Error ? poolErr.message : String(poolErr),
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", job.id);
+      throw poolErr;
+    }
+
+    const { delivered, shortfall, limitReached, interrupted } = pool;
+    const shortfallReason = limitReached
+      ? "plan_limit_reached"
+      : interrupted
+        ? "pool_delivery_interrupted"
+        : shortfall > 0
+          ? "pool_exhausted"
+          : null;
+    const finalStatus =
+      delivered.length >= quantity ? "completed" : delivered.length === 0 && interrupted ? "failed" : "completed_partial";
+
+    // The job row always reflects exactly what was delivered (and therefore
+    // charged: one credit per saved lead — see insertLeadForUser).
+    await (supabaseAdmin as any)
+      .from("scrape_jobs")
+      .update({
+        status: finalStatus,
+        results_count: delivered.length,
+        completed_at: new Date().toISOString(),
+        error: interrupted ? interrupted.message : null,
+        job_summary: {
+          requested: quantity,
+          delivered: delivered.length,
+          shortfall,
+          // Same vocabulary as the live path's job_summary (migration 017).
+          completion_reason: limitReached
+            ? "limit_reached"
+            : interrupted
+              ? "failed"
+              : shortfall > 0
+                ? "exhausted"
+                : "quantity_reached",
+          shortfall_reason: shortfallReason,
+          candidates: pool.candidates,
+          skipped: pool.skipped,
+          ranking: pool.ranking,
         },
-      };
+      })
+      .eq("id", job.id);
 
-      // Create/get the SAME idempotent pool-expand discovery plan
-      // poolExpandJob.ts's own getOrCreatePoolExpandPlanId() will later
-      // resolve to (get_or_create_pool_expand_plan is idempotent per
-      // scrape_job_id — see migrations/024) BEFORE queuing the follow-up,
-      // so the response below can hand the frontend a real planId to
-      // subscribe to immediately, instead of only after the worker picks
-      // the job up.
-      poolExpandPlanId = await getOrCreatePoolExpandPlanId(poolExpandPayload.followUp!, poolExpandPayload);
-
-      const boss = await getBoss();
-      await boss.send(QUEUES.poolExpand, poolExpandPayload);
-      backgroundExpansionQueued = true;
-    } else if (shortfall > 0 && limitReached) {
-      await supabaseAdmin
-        .from("scrape_jobs")
-        .update({ status: "completed", results_count: delivered.length, completed_at: new Date().toISOString() })
-        .eq("id", job.id);
-
-      const boss = await getBoss();
-      await boss.send(QUEUES.poolExpand, { region: region, niche: body.niche, shortfall, currencies: body.currencies });
-    } else {
-      const poolFinalStatus = delivered.length >= quantity ? "completed" : "completed_partial";
-      await supabaseAdmin
-        .from("scrape_jobs")
-        .update({ status: poolFinalStatus, results_count: delivered.length, completed_at: new Date().toISOString() })
-        .eq("id", job.id);
+    if (finalStatus === "failed") {
+      return res.status(500).json({
+        code: "pool_delivery_failed",
+        message: "The pool search failed before delivering any opportunities. No credits were used.",
+        jobId: job.id,
+      });
     }
 
     res.status(200).json({
       jobId: job.id,
-      // Undefined unless a real live pool-expand backfill was actually
-      // queued above (shortfall > 0 && !limitReached) — never a fake id
-      // for a pure pool hit, which has no live scraping to show.
-      planId: poolExpandPlanId,
+      // No planId: an Instant run has no live discovery plan to show.
       mode,
-      status: finalInstantStatus,
+      status: finalStatus,
       requested: quantity,
+      requestedByUser: body.quantity,
       delivered: delivered.length,
       shortfall,
       limitReached,
-      backgroundExpansionQueued,
+      shortfallReason,
+      ranking: pool.ranking,
+      candidates: pool.candidates,
+      skipped: pool.skipped,
+      interrupted: Boolean(interrupted),
+      // Offered, never started: the user must explicitly choose it, and it
+      // runs as its own job under the normal plan/credit rules.
+      liveFollowUp: { available: shortfall > 0 && !limitReached, remaining: shortfall },
+      // Kept for response-shape backward compatibility; always false now.
+      backgroundExpansionQueued: false,
       results: delivered,
     });
   } catch (err) {

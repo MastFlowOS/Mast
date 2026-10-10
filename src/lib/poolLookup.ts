@@ -68,67 +68,114 @@ export function poolScopesFor(regionField: string): PoolScope[] {
   return scopes.length > 0 ? scopes : [{ region: regionField, countryCodes: null, countryStrict: false }];
 }
 
+/**
+ * How faithfully the delivered set honors Opportunity Score ordering.
+ *
+ * FALLBACK POLICY ("unscored_last"): a candidate with no Opportunity Score for
+ * this user's profession is still ELIGIBLE (ranking never changes eligibility)
+ * but is ordered after every scored candidate, keeping pool_lookup's own
+ * recency order among the unscored. The result is only called fully ranked
+ * when every delivered lead has a score.
+ */
+export type PoolRanking = {
+  requested: boolean;
+  /**
+   *  not_requested — plain Instant Pool, no ordering promised
+   *  full          — every delivered lead has a score; order is by score desc
+   *  partial       — some delivered leads have no score (placed last)
+   *  unavailable   — ranking could not be computed (no profession focus set)
+   */
+  status: "not_requested" | "full" | "partial" | "unavailable";
+  scored: number;
+  unscored: number;
+  policy: "unscored_last";
+  reason: "no_profession_focus" | null;
+};
+
 export type PoolLookupResult = {
   delivered: Array<{ businessId: string; opportunityScore: number | null }>;
   shortfall: number;
   /** true if the stop was actually the plan limit, not just an empty pool */
   limitReached: boolean;
+  /** distinct eligible candidates retrieved (bounded by the query limit) */
+  candidates: number;
+  skipped: { missingBusiness: number; channelMismatch: number; alreadyOwned: number };
+  ranking: PoolRanking;
+  /**
+   * Set when delivery stopped on an unexpected error AFTER some leads may
+   * already have been saved and charged. `delivered` still lists exactly what
+   * was saved, so the caller can report and reconcile it truthfully.
+   */
+  interrupted: { message: string } | null;
 };
 
+type PoolCandidate = { business_id: string; opportunity_score: number | null; discoveryNiche: string };
+
 /**
- * Instant Discovery's actual "check the pool first" step. One SQL round
- * trip per niche (see migrations/003_pool_lookup.sql) finds matching
- * businesses this user doesn't already have, then each match is delivered
- * into `leads` via the same insertLeadForUser() the scrape path uses — so
- * credit charging and CRM-row shape are identical regardless of whether a
- * result came from the pool or a fresh scrape.
+ * Global Opportunity Score ordering across ALL niche/scope result sets.
+ * pool_lookup() ranks within one call only, so concatenating per-niche results
+ * used to leave the final order dependent on niche order. Stable sort:
+ * score desc, unscored last, ties keep retrieval order (niche order, then
+ * pool_lookup's recency order).
+ */
+export function rankPoolCandidates<T extends { opportunity_score: number | null }>(rows: T[]): T[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const sa = a.row.opportunity_score;
+      const sb = b.row.opportunity_score;
+      if (sa === null && sb === null) return a.index - b.index;
+      if (sa === null) return 1;
+      if (sb === null) return -1;
+      if (sa !== sb) return sb - sa;
+      return a.index - b.index;
+    })
+    .map((x) => x.row);
+}
+
+export function summarizePoolRanking(
+  rank: boolean,
+  professionSlug: string | null,
+  delivered: Array<{ opportunityScore: number | null }>,
+): PoolRanking {
+  const scored = delivered.filter((d) => d.opportunityScore !== null).length;
+  const unscored = delivered.length - scored;
+  const base = { requested: rank, scored, unscored, policy: "unscored_last" as const };
+  if (!rank) return { ...base, status: "not_requested", reason: null };
+  if (!professionSlug) return { ...base, status: "unavailable", reason: "no_profession_focus" };
+  return { ...base, status: unscored === 0 ? "full" : "partial", reason: null };
+}
+
+/**
+ * Instant Discovery's "pool only" step. One SQL round trip per niche/scope
+ * (see migrations/003 + 034 + 037) finds matching businesses this user doesn't
+ * already have, then each match is delivered into `leads` via the same
+ * insertLeadForUser() the live path uses — so credit charging and CRM-row
+ * shape are identical regardless of where a result came from.
  *
- * PHASE 5: if insertLeadForUser reports the plan limit was hit partway
- * through delivering matches, the remaining matches are simply not
- * delivered — same treatment as a pool shortfall, so the response shape
- * doesn't need a third state. The route decides what "shortfall" should
- * trigger (background expand) regardless of which reason produced it.
+ * This function NEVER starts live scraping and never queues background work;
+ * a shortfall is returned to the caller as a shortfall.
  *
- * PRODUCT-QUALITY PASS (this file):
- *
- *  - Multiple niches: `pool_lookup()`'s `p_niche` filter is a plain
- *    `ilike '%p_niche%'` against `businesses.niche`, which holds a SINGLE
- *    niche per row (e.g. "Bakery"). Passing it the frontend's comma-joined
- *    "Bakery, Coffee" as one string matched almost nothing, because no
- *    business's niche column literally contains that whole substring. Per
- *    scope, the SQL function itself isn't touched (migrations are
- *    off-limits) — instead this now calls `pool_lookup` ONCE PER niche
- *    (splitNicheQuery) and unions the matches (OR semantics), exactly the
- *    same fix pattern as the live-discovery jobs.
- *
- *  - Niche attribution: the SQL function returns only business ids, so
- *    which selected niche produced each match is tracked here. Each business
- *    is attributed to the FIRST niche (in request order) that matched it and
- *    that niche is written to the lead row (see deliverLead.ts's
- *    resolveLeadNiche) — never `businesses.niche`, and never "the first
- *    selected niche" for every result.
- *
- *  - Channel filters: every requested channel is passed into the
- *    channel-aware `pool_lookup()` overload (migration 037) and applied
- *    inside SQL before ordering/limiting. `channelsSatisfied()` remains as
- *    a final application-side safeguard before delivery.
+ *  - Multiple niches: `pool_lookup()` is called once per niche/scope and the
+ *    matches are unioned (OR semantics). Each business is attributed to the
+ *    FIRST niche (request order) that matched it.
+ *  - Channel filters: AND semantics, applied inside SQL before ORDER/LIMIT
+ *    (migration 037); `channelsSatisfied()` is a final safeguard.
+ *  - Ranking (rank=true): the union is re-ordered GLOBALLY by Opportunity
+ *    Score (rankPoolCandidates). Ranking only affects order, never eligibility.
+ *  - Plan limit hit mid-delivery: remaining matches are not delivered and
+ *    `limitReached` is set.
+ *  - Unexpected error mid-delivery: leads already saved (and charged) are
+ *    returned in `delivered` with `interrupted` set, instead of being lost.
  */
 export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promise<PoolLookupResult> {
   const niches = splitNicheQuery(params.niche);
   const scopes = poolScopesFor(params.region);
-  // SQL filters requested channels before its limit now. Only over-fetch
-  // when multiple niche/scope queries are unioned, to leave room for the
-  // same business appearing in more than one result set before de-duping.
+  // Over-fetch only when several niche/scope result sets are unioned, to leave
+  // room for the same business appearing in more than one before de-duping.
   const perNicheLimit = niches.length > 1 || scopes.length > 1 ? params.quantity * 5 : params.quantity;
 
-  // First-match-wins attribution: `niches` is in request order, and a
-  // business already recorded by an earlier niche is never re-attributed to
-  // a later one. Map insertion order also fixes the delivery order, so the
-  // same request always produces the same business -> niche assignment.
-  const matchesByBusinessId = new Map<
-    string,
-    { business_id: string; opportunity_score: number | null; discoveryNiche: string }
-  >();
+  const matchesByBusinessId = new Map<string, PoolCandidate>();
 
   for (const singleNiche of niches) {
     for (const scope of scopes) {
@@ -155,64 +202,80 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
     }
   }
 
-  const rows = Array.from(matchesByBusinessId.values());
-  if (rows.length === 0) {
-    return { delivered: [], shortfall: params.quantity, limitReached: false };
-  }
-
-  const { data: businesses, error: bizError } = await supabaseAdmin
-    .from("businesses")
-    .select("id, name, niche, address, website, email, phone, instagram")
-    .in(
-      "id",
-      rows.map((r) => r.business_id),
-    );
-  if (bizError) throw bizError;
-
-  const businessById = new Map<string, PoolBusiness>((businesses ?? []).map((b) => [b.id, b as PoolBusiness]));
-
+  const retrieved = Array.from(matchesByBusinessId.values());
+  const rows = params.rank ? rankPoolCandidates(retrieved) : retrieved;
+  const skipped = { missingBusiness: 0, channelMismatch: 0, alreadyOwned: 0 };
   const delivered: PoolLookupResult["delivered"] = [];
   let limitReached = false;
+  let interrupted: PoolLookupResult["interrupted"] = null;
 
-  for (const row of rows) {
-    if (delivered.length >= params.quantity) break;
+  if (rows.length > 0) {
+    const { data: businesses, error: bizError } = await supabaseAdmin
+      .from("businesses")
+      .select("id, name, niche, address, website, email, phone, instagram")
+      .in(
+        "id",
+        rows.map((r) => r.business_id),
+      );
+    if (bizError) throw bizError;
 
-    const business = businessById.get(row.business_id);
-    if (!business) continue; // shouldn't happen, but don't let one bad row fail the whole batch
+    const businessById = new Map<string, PoolBusiness>((businesses ?? []).map((b) => [b.id, b as PoolBusiness]));
 
-    if (!channelsSatisfied(business, params.channels)) {
-      continue; // doesn't satisfy every requested channel — skip without counting
-    }
+    try {
+      for (const row of rows) {
+        if (delivered.length >= params.quantity) break;
 
-    const result = await insertLeadForUser(
-      business,
-      {
-        userId: params.userId,
-        professionSlug: params.professionSlug,
-        discoveryMode: params.rank ? "instant_pool_ranked" : "instant_pool",
-        scrapeJobId: params.scrapeJobId,
-        opportunityScore: row.opportunity_score,
-        dailyLimit: params.dailyLimit,
-        monthlyLimit: params.monthlyLimit,
-      },
-      // The requested niche that matched this business — NOT business.niche,
-      // which may be null or a different tag than the one that matched.
-      { discoveryNiche: row.discoveryNiche },
-    );
+        const business = businessById.get(row.business_id);
+        if (!business) {
+          skipped.missingBusiness += 1;
+          continue;
+        }
 
-    if (result.limitReached) {
-      limitReached = true;
-      break; // no point checking further matches — the same limit still applies
-    }
+        if (!channelsSatisfied(business, params.channels)) {
+          skipped.channelMismatch += 1;
+          continue;
+        }
 
-    // wasNewForUser should always be true here — pool_lookup already
-    // excludes businesses this user has. A false would mean a race with
-    // another concurrent request for the same user; harmless, just don't
-    // count it twice.
-    if (result.wasNewForUser) {
-      delivered.push({ businessId: row.business_id, opportunityScore: row.opportunity_score });
+        const result = await insertLeadForUser(
+          business,
+          {
+            userId: params.userId,
+            professionSlug: params.professionSlug,
+            discoveryMode: params.rank ? "instant_pool_ranked" : "instant_pool",
+            scrapeJobId: params.scrapeJobId,
+            opportunityScore: row.opportunity_score,
+            dailyLimit: params.dailyLimit,
+            monthlyLimit: params.monthlyLimit,
+          },
+          // The requested niche that matched this business — NOT business.niche.
+          { discoveryNiche: row.discoveryNiche },
+        );
+
+        if (result.limitReached) {
+          limitReached = true;
+          break; // the same plan limit applies to every remaining match
+        }
+
+        if (result.wasNewForUser) {
+          delivered.push({ businessId: row.business_id, opportunityScore: row.opportunity_score });
+        } else {
+          // Race with a concurrent request for the same user; the credit
+          // reservation was already refunded by insertLeadForUser.
+          skipped.alreadyOwned += 1;
+        }
+      }
+    } catch (err) {
+      interrupted = { message: err instanceof Error ? err.message : String(err) };
     }
   }
 
-  return { delivered, shortfall: Math.max(0, params.quantity - delivered.length), limitReached };
+  return {
+    delivered,
+    shortfall: Math.max(0, params.quantity - delivered.length),
+    limitReached,
+    candidates: rows.length,
+    skipped,
+    ranking: summarizePoolRanking(params.rank, params.professionSlug, delivered),
+    interrupted,
+  };
 }

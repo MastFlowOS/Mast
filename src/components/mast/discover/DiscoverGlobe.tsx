@@ -61,6 +61,9 @@ const ellipsePath = (rx: number, ry: number) =>
 function useReducedMotion() {
   const [reduced, setReduced] = useState(false);
   useEffect(() => {
+    // Same guard the sibling components use: matchMedia is absent in jsdom
+    // and some embedded webviews; treat that as "no reduced-motion preference".
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const q = window.matchMedia("(prefers-reduced-motion: reduce)");
     setReduced(q.matches);
     const on = () => setReduced(q.matches);

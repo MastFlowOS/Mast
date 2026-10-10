@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { getBoss, QUEUES } from "../lib/queue.js";
-import { channelsSatisfied } from "../lib/channelFilter.js";
+import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
 import { deliverLead, upsertBusinessFromEngineLead } from "../scraperBridge/deliverLead.js";
 import { materializeDiscoveryPlan, dispatchQueuedDiscoveryTasks, DISCOVERY_TASK_RETRY_OPTIONS, type DiscoveryPlanRequest } from "../discovery/planner.js";
@@ -383,6 +383,11 @@ async function runOneAreaAttempt(
       continue;
     }
 
+    // The row that is SAVED must carry the same contact channels the gate
+    // evaluated. Email/Instagram only exist on the enriched business row, so
+    // after a passing gate the lead is merged with it (see mergeEnrichedChannels).
+    let deliverable = lead;
+
     if (needsEnrichmentToDecide) {
       // Guard ensureEnriched so a single slow/failing website crawl does
       // NOT crash the entire city/niche task — the business is not lost
@@ -425,6 +430,7 @@ async function runOneAreaAttempt(
         publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
         continue;
       }
+      deliverable = mergeEnrichedChannels(lead, enriched);
     }
 
     // Cancellation/target may have landed during an expensive enrichment.
@@ -433,7 +439,7 @@ async function runOneAreaAttempt(
 
     traceLog(`DELIVER_LEAD_START`);
     const tDeliver = profiler.timer("deliver_lead");
-    const delivery = await deliverLead(lead, {
+    const delivery = await deliverLead(deliverable, {
       userId: payload.request.userId,
       professionSlug: payload.request.professionSlug,
       discoveryMode: "live",

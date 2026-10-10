@@ -301,6 +301,44 @@ function toLeadRow(
   };
 }
 
+export type CreditRefundReason = "insert_failed" | "insert_threw" | "duplicate_race";
+
+/**
+ * Releases the credit reserved for a lead that was NOT actually delivered.
+ * Every refund carries a reason and is logged, and the RPC's `{ error }`
+ * result is checked (it used to be ignored, so a failed refund silently kept
+ * the user's credit). One retry, then a loud error line naming the user and
+ * reason so the leak is auditable instead of invisible.
+ */
+export async function refundLeadUsage(
+  ctx: Pick<DeliveryContext, "userId" | "dailyLimit" | "monthlyLimit">,
+  reason: CreditRefundReason,
+): Promise<boolean> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const { error } = await supabaseAdmin.rpc("try_increment_lead_usage", {
+        p_user_id: ctx.userId as string,
+        p_daily_limit: ctx.dailyLimit as number,
+        p_monthly_limit: ctx.monthlyLimit as number,
+        p_count: -1,
+      });
+      if (!error) {
+        console.info(`[credits] refund user=${ctx.userId} count=1 reason=${reason}`);
+        return true;
+      }
+      lastError = error;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  console.error(
+    `[credits] REFUND FAILED user=${ctx.userId} count=1 reason=${reason} — credit may be over-counted:`,
+    lastError,
+  );
+  return false;
+}
+
 /**
  * Inserts the CRM row (`leads`) linking a user to a business already in the
  * Global Lead Pool, charging a credit only if this is genuinely new for
@@ -370,21 +408,28 @@ export async function insertLeadForUser(
     return { businessId: business.id, wasNewForUser: false, limitReached: true };
   }
 
-  const { data: insertedLead, error } = await supabaseAdmin
-    .from("leads")
-    .insert(toLeadRow(business, ctx, extra))
-    .select("id")
-    .maybeSingle(); // null (not an error) if the unique (user_id, business_id) index rejected a dup
+  let insertedLead: { id: any } | null = null;
+  let error: { message: string } | null = null;
+  try {
+    const res = await supabaseAdmin
+      .from("leads")
+      .insert(toLeadRow(business, ctx, extra))
+      .select("id")
+      .maybeSingle(); // null (not an error) if the unique (user_id, business_id) index rejected a dup
+    insertedLead = (res.data as { id: any } | null) ?? null;
+    error = res.error as { message: string } | null;
+  } catch (thrown) {
+    // The insert itself threw (network/driver). The reservation was already
+    // made, so it must be released before the error propagates.
+    await refundLeadUsage(ctx, "insert_threw");
+    if (planSlotReserved) await (supabaseAdmin as any).rpc("release_discovery_delivery", { p_plan_id: ctx.discoveryPlanId });
+    throw thrown;
+  }
 
   if (error && !error.message.includes("duplicate key")) {
     // Insert failed for a real reason — refund the reservation, we didn't
     // actually deliver anything.
-    await supabaseAdmin.rpc("try_increment_lead_usage", {
-      p_user_id: ctx.userId,
-      p_daily_limit: ctx.dailyLimit,
-      p_monthly_limit: ctx.monthlyLimit,
-      p_count: -1,
-    });
+    await refundLeadUsage(ctx, "insert_failed");
     if (planSlotReserved) await (supabaseAdmin as any).rpc("release_discovery_delivery", { p_plan_id: ctx.discoveryPlanId });
     throw error;
   }
@@ -395,12 +440,7 @@ export async function insertLeadForUser(
     // Lost the race between the existence check above and this insert —
     // someone else delivered this exact business to this user in between.
     // Refund the reservation we just made; it was never actually used.
-    await supabaseAdmin.rpc("try_increment_lead_usage", {
-      p_user_id: ctx.userId,
-      p_daily_limit: ctx.dailyLimit,
-      p_monthly_limit: ctx.monthlyLimit,
-      p_count: -1,
-    });
+    await refundLeadUsage(ctx, "duplicate_race");
     if (planSlotReserved) await (supabaseAdmin as any).rpc("release_discovery_delivery", { p_plan_id: ctx.discoveryPlanId });
     return { businessId: business.id, wasNewForUser: false };
   }

@@ -34,6 +34,9 @@ import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead } from "
 
 import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings, queryKeys } from "@/hooks/use-mast-api";
 import { useLiveDiscoveryState } from "@/hooks/use-live-discovery";
+import { buildDiscoverRequest, summarizeDiscoverRequest, type DiscoverRequestPayload } from "@/lib/discoverRequest";
+import { describeDiscoverOutcome, type DiscoverOutcome, type DiscoverRunStatus, type PoolRankingInfo } from "@/lib/discoverProgress";
+import { channelPresence, type LeadChannelSource } from "@/lib/leadChannels";
 import { LiveDiscoveryScreen } from "@/components/mast/LiveDiscoveryScreen";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildDiscoverInsights, type DiscoverInsight } from "@/lib/discover-insights";
@@ -308,19 +311,18 @@ function GetLeads() {
   // Tracks the active scrapeJobId so the Cancel button can reference it
   // even after the discovery subscription has been removed.
   const activeJobIdRef = useRef<string | null>(null);
-  // The discovery_plans.id for the CURRENT live-mode (Free tier) run, if
-  // any — only present when the backend actually created a plan (queued
-  // live discovery). Drives the real live Discovery screen below; null for
-  // Instant Discovery (Starter/Pro/Premium pool lookups), which has no
-  // Scout-level live events to show.
+  // The discovery_plans.id for the CURRENT Live Discovery run, if any. Only
+  // a live run has one: Instant Pool / Ranked Instant are pool-only, return
+  // synchronously, and never show the scouting screen.
   const [planId, setPlanId] = useState<string | null>(null);
-  // Seeds the live-state's running delivered count for the paid-tier
-  // pool-shortfall backfill case, where some results may already have been
-  // delivered synchronously (from the pool) before this plan existed — see
-  // useLiveDiscoveryState's doc comment. Always 0 for Free's Live
-  // Discovery, which never has synchronous pool results.
-  const [initialDeliveredForPlan, setInitialDeliveredForPlan] = useState(0);
-  const liveDiscoveryState = useLiveDiscoveryState(planId, quantity, initialDeliveredForPlan);
+  // What the live run was actually asked for (the server's clamped
+  // `requested`, not the slider). Live and pool runs are separate jobs with
+  // separate counters, so the live state always starts from 0.
+  const [liveTarget, setLiveTarget] = useState(quantity);
+  const liveDiscoveryState = useLiveDiscoveryState(planId, liveTarget, 0);
+  // The last finished run: its truthful outcome (requested / delivered /
+  // shortfall), the exact request sent, and whether a Live follow-up is offered.
+  const [lastRun, setLastRun] = useState<LastDiscoverRun | null>(null);
 
 
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
@@ -451,9 +453,32 @@ function GetLeads() {
     !exceedsMonthlyLimit &&
     !isGenerating;
 
+  // The request is built by ONE function shared with the AI Overview's
+  // "Your search" summary, so what the page shows is what gets sent.
   const handleGenerate = async () => {
     if (!canGenerate) return;
+    await runDiscovery(
+      buildDiscoverRequest({ quantity, regions, niches, channels, method: selectedMethod.id }),
+    );
+  };
 
+  // EXPLICIT user action after a partial Instant result. It starts a
+  // separate, clearly identified Live Discovery job for only the remaining
+  // shortfall (server-validated via followsJobId, billed per delivered lead
+  // under the normal plan rules). Never triggered automatically.
+  const handleFindRemainingLive = async () => {
+    const run = lastRun;
+    if (isGenerating || !run?.liveFollowUp?.available || run.liveFollowUp.remaining <= 0) return;
+    await runDiscovery({
+      ...run.request,
+      quantity: run.liveFollowUp.remaining,
+      method: "live",
+      mode: generationModeFor("live"),
+      followsJobId: run.jobId,
+    });
+  };
+
+  const runDiscovery = async (request: DiscoverRequestPayload) => {
     // Clean up any previous subscription before starting a new search.
     unsubscribeJobRef.current?.();
     unsubscribeJobRef.current = null;
@@ -461,7 +486,8 @@ function GetLeads() {
     activeJobIdRef.current = null;
     setIsCancelling(false);
     setPlanId(null);
-    setInitialDeliveredForPlan(0);
+    setLiveTarget(request.quantity);
+    setLastRun(null);
 
     setIsGenerating(true);
     setShowCompletion(false);
@@ -474,27 +500,44 @@ function GetLeads() {
     // fabricated delay, just enough to avoid visual flicker.
     const MIN_VISIBLE_MS = 700;
 
-    const finish = (finalCount: number) => {
+    // The ONE place a run ends. Wording and toast severity come from the
+    // outcome, so "success" is only ever shown when delivered >= requested.
+    const conclude = (
+      outcome: DiscoverOutcome,
+      meta: Pick<LastDiscoverRun, "jobId" | "source" | "ranking" | "liveFollowUp">,
+    ) => {
       unsubscribeJobRef.current?.();
       unsubscribeJobRef.current = null;
+      activeJobIdRef.current = null;
+      setIsCancelling(false);
 
       const elapsed = Date.now() - startTime;
       const wait = Math.max(0, MIN_VISIBLE_MS - elapsed);
 
       setTimeout(() => {
         setIsGenerating(false);
-        setShowCompletion(true);
-        toast.success(`${finalCount} opportunities added to pipeline`);
-        addNotification({
-          icon: "CheckCircle2",
-          iconColor: "text-emerald-400",
-          iconBg: "bg-emerald-400/10 border-emerald-400/20",
-          title: "Leads Generated",
-          body: `Successfully generated ${finalCount} new opportunities for your pipeline.`,
-          category: "notifyNewLead",
-        });
+        // A run that delivered nothing and did not simply come up empty
+        // (failed / cancelled) has no results screen — just the toast.
+        const showResults = outcome.delivered > 0 || outcome.kind === "empty" || outcome.kind === "partial";
+        if (showResults) {
+          setLastRun({ outcome, request, ...meta });
+          setShowCompletion(true);
+        }
+        if (outcome.toast === "success") toast.success(outcome.headline);
+        else if (outcome.toast === "error") toast.error(outcome.headline, outcome.detail ? { description: outcome.detail } : undefined);
+        else toast.info(outcome.headline, outcome.detail ? { description: outcome.detail } : undefined);
+        if (outcome.delivered > 0) {
+          addNotification({
+            icon: "CheckCircle2",
+            iconColor: "text-emerald-400",
+            iconBg: "bg-emerald-400/10 border-emerald-400/20",
+            title: outcome.kind === "complete" ? "Leads Generated" : "Leads Partially Generated",
+            body: `Delivered ${outcome.delivered} of ${outcome.requested} requested opportunities to your pipeline.`,
+            category: "notifyNewLead",
+          });
+        }
         // Final sync — credits/counters/CRM/analytics all reflect what was
-        // actually delivered, not just the initial (possibly partial) batch.
+        // actually delivered.
         queryClient.invalidateQueries({ queryKey: queryKeys.account });
         queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
         queryClient.invalidateQueries({ queryKey: queryKeys.analytics });
@@ -521,22 +564,21 @@ function GetLeads() {
       // "General" fallback: an unselected niche must never reach the
       // backend/engine.
       const result = await generate.mutateAsync({
-        quantity,
-        region: regions.join(", "),
-        niche: niches.join(", "),
+        quantity: request.quantity,
+        region: request.region,
+        niche: request.niche,
         // Legacy/informational field, kept for type back-compat only.
-        mode: generationModeFor(selectedMethod.id),
+        mode: request.mode,
         // The actual chosen Discovery Method — this IS honored by the
         // server (re-validated there against the resolved plan).
-        method: selectedMethod.id,
+        method: request.method,
         // Pass-through-unchanged contract — see channelsForRequest's
-        // docstring. Whatever the user selected (any AND-combination,
-        // including a single channel) reaches the engine exactly as
-        // selected; no default, dedup, or OR-conversion happens here.
-        channels: channelsForRequest(channels),
+        // docstring (AND semantics: every selected channel is required).
+        channels: request.channels,
         // Business Currency was removed from Discover. The request contract
         // still carries the field, so send the explicit empty default.
         currencies: [],
+        ...(request.followsJobId ? { followsJobId: request.followsJobId } : {}),
       });
 
       // Whatever arrived synchronously (Instant Discovery's pool hit) shows
@@ -544,28 +586,28 @@ function GetLeads() {
       result.leads.forEach(appendLead);
 
       if (!result.pending) {
-        // Nothing more coming — Instant Discovery fully satisfied the
-        // request from the pool alone.
-        finish(result.leads.length);
+        // Instant Pool / Ranked Instant: the run is already over. Report
+        // exactly what the pool delivered — full or partial — and OFFER (never
+        // start) a Live Discovery follow-up for any shortfall.
+        conclude(
+          describeDiscoverOutcome({
+            requested: result.requested ?? request.quantity,
+            delivered: result.delivered ?? result.leads.length,
+            status: result.status ?? "completed",
+            shortfallReason: result.shortfallReason,
+            source: "pool",
+          }),
+          { jobId: result.jobId, source: "pool", ranking: result.ranking, liveFollowUp: result.liveFollowUp },
+        );
         return;
       }
 
-      // Free's Live Discovery (nothing delivered yet), or an Instant
-      // Discovery shortfall still being backfilled — either way, watch the
-      // SAME job id until it resolves. The UI never needs to know which.
+      // Live Discovery (nothing delivered yet): watch the job until it
+      // resolves. Its progress counts only leads this run delivered.
       activeJobIdRef.current = result.jobId;
-      // Both Free's Live Discovery AND a paid-tier Instant Discovery
-      // request whose pool fell short (and is now backfilling live) have a
-      // real discovery_plans row — result.planId is only undefined when no
-      // live scraping is happening at all (a pure pool hit, or a
-      // background-only expansion with no user waiting). `result.generated`
-      // is whatever the pool already delivered synchronously by the time
-      // this response landed (0 for Live Discovery, which never has
-      // synchronous pool results) — seeding the live state's delivered
-      // count with it is what keeps the backfill's progress from
-      // momentarily resetting to 0 once the Scout screen takes over.
+      const liveRequested = result.requested ?? request.quantity;
+      setLiveTarget(liveRequested);
       if (result.planId) {
-        setInitialDeliveredForPlan(result.generated);
         setPlanId(result.planId);
       }
       unsubscribeJobRef.current = subscribeToDiscoverJob(
@@ -573,50 +615,21 @@ function GetLeads() {
         {
           onLead: appendLead,
           onStatusChange: (status) => {
-            if (status === "completed") {
-              finish(seenLeadIdsRef.current.size);
-            } else if (status === "completed_partial") {
-              // Engine reached genuine exhaustion before hitting the full count.
-                      unsubscribeJobRef.current?.();
-              unsubscribeJobRef.current = null;
-              activeJobIdRef.current = null;
-              setIsGenerating(false);
-              setIsCancelling(false);
-              const found = seenLeadIdsRef.current.size;
-              setShowCompletion(true);
-              toast.info(
-                found > 0
-                  ? `Found ${found} opportunities — market is thin for this query.`
-                  : "Market exhausted. No new opportunities available for this combination.",
-              );
-              queryClient.invalidateQueries({ queryKey: queryKeys.account });
-              queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
-            } else if (status === "cancelled") {
-                      unsubscribeJobRef.current?.();
-              unsubscribeJobRef.current = null;
-              activeJobIdRef.current = null;
-              setIsGenerating(false);
-              setIsCancelling(false);
-              const found = seenLeadIdsRef.current.size;
-              if (found > 0) {
-                setShowCompletion(true);
-                toast.info(`Search cancelled — ${found} opportunit${found === 1 ? "y" : "ies"} saved.`);
-                queryClient.invalidateQueries({ queryKey: queryKeys.account });
-                queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
-              } else {
-                toast.info("Search cancelled.");
-              }
-            } else if (status === "failed") {
-                      unsubscribeJobRef.current?.();
-              unsubscribeJobRef.current = null;
-              activeJobIdRef.current = null;
-              setIsGenerating(false);
-              setIsCancelling(false);
-              toast.error("Discovery engine failed. Please try again.");
-            }
+            if (status !== "completed" && status !== "completed_partial" && status !== "cancelled" && status !== "failed") return;
+            // Delivered = leads this run actually saved and the UI has seen.
+            conclude(
+              describeDiscoverOutcome({
+                requested: liveRequested,
+                delivered: seenLeadIdsRef.current.size,
+                status: status as DiscoverRunStatus,
+                shortfallReason: status === "completed_partial" ? "live_exhausted" : null,
+                source: "live",
+              }),
+              { jobId: result.jobId, source: "live" },
+            );
           },
         },
-        { requestedQuantity: quantity },
+        { requestedQuantity: liveRequested },
       );
 
     } catch (err) {
@@ -678,7 +691,18 @@ function GetLeads() {
   // events are streaming in — render the real live UI, driven entirely by
   // Task 2's DiscoveryLiveState (see useLiveDiscoveryState / LiveDiscoveryScreen).
   if (isGenerating && planId) {
-    return <LiveDiscoveryScreen state={liveDiscoveryState} onCancel={handleCancelSearch} isCancelling={isCancelling} />;
+    // Counters must never lag behind leads that are actually saved: if the
+    // event stream is delayed, the number of leads the UI has received wins.
+    const savedCount = newOpportunities.length;
+    const liveScreenState =
+      liveDiscoveryState && savedCount > liveDiscoveryState.delivered
+        ? {
+            ...liveDiscoveryState,
+            delivered: savedCount,
+            progressPercent: liveTarget > 0 ? Math.min(100, Math.round((savedCount / liveTarget) * 100)) : 0,
+          }
+        : liveDiscoveryState;
+    return <LiveDiscoveryScreen state={liveScreenState} onCancel={handleCancelSearch} isCancelling={isCancelling} />;
   }
 
   // Instant Discovery (Starter/Pro/Premium) pool-shortfall backfill: no
@@ -733,35 +757,82 @@ function GetLeads() {
             }}
           />
 
-          {/* Success Check Icon */}
+          {/* Outcome icon — a check ONLY when the request was fully delivered */}
           <div className="flex justify-center">
-            <div className="size-16 rounded-full bg-brand/10 border border-brand/20 flex items-center justify-center shadow-brand/10 shadow-lg animate-bounce">
-              <span className="text-2xl text-brand font-bold">✓</span>
+            <div
+              className={cn(
+                "size-16 rounded-full border flex items-center justify-center shadow-lg",
+                lastRun?.outcome.kind === "complete"
+                  ? "bg-brand/10 border-brand/20 shadow-brand/10 animate-bounce"
+                  : "bg-amber-400/10 border-amber-400/25 shadow-amber-400/10",
+              )}
+            >
+              <span className={cn("text-2xl font-bold", lastRun?.outcome.kind === "complete" ? "text-brand" : "text-amber-400")}>
+                {lastRun?.outcome.kind === "complete" ? "✓" : "!"}
+              </span>
             </div>
           </div>
 
-          {/* Wording */}
-          <div className="space-y-2 max-w-md mx-auto">
+          {/* Wording — driven by the run's real requested/delivered/shortfall */}
+          <div className="space-y-2 max-w-md mx-auto" data-testid="discover-outcome" data-kind={lastRun?.outcome.kind ?? "unknown"}>
             <h1 className="text-2xl font-bold text-foreground tracking-tight">
-              {newOpportunities.length} new opportunities prepared
+              {lastRun?.outcome.headline ?? `${newOpportunities.length} opportunities prepared`}
             </h1>
             <p className="text-sm text-muted-foreground leading-relaxed">
-              Outreach channels have been verified and intelligence workspaces initialized. Everything is ready to launch outreach campaigns.
+              {lastRun?.outcome.kind === "complete" || !lastRun
+                ? "Outreach channels have been verified and intelligence workspaces initialized. Everything is ready to launch outreach campaigns."
+                : (lastRun.outcome.detail ?? "")}
             </p>
+            {lastRun && (
+              <p className="text-xs font-medium text-muted-foreground" data-testid="discover-counts">
+                Requested {lastRun.outcome.requested} · Delivered {lastRun.outcome.delivered} · Shortfall {lastRun.outcome.shortfall}
+              </p>
+            )}
+            {lastRun?.ranking?.requested && lastRun.ranking.status === "partial" && (
+              <p className="text-xs text-amber-300/90" data-testid="discover-ranking-note">
+                Not fully ranked: {lastRun.ranking.unscored} of {lastRun.ranking.scored + lastRun.ranking.unscored} had no Opportunity Score yet and are listed after the scored ones.
+              </p>
+            )}
+            {lastRun?.ranking?.requested && lastRun.ranking.status === "unavailable" && (
+              <p className="text-xs text-amber-300/90" data-testid="discover-ranking-note">
+                Ranking unavailable: set your focus area in Settings to rank by Opportunity Score. Results are in recency order.
+              </p>
+            )}
           </div>
+
+          {/* Explicit Live Discovery follow-up — never started automatically */}
+          {lastRun?.source === "pool" && lastRun.liveFollowUp?.available && lastRun.liveFollowUp.remaining > 0 && (
+            <div className="space-y-2 max-w-md mx-auto rounded-xl border border-border bg-background/40 p-4">
+              <button
+                type="button"
+                onClick={handleFindRemainingLive}
+                disabled={isGenerating}
+                data-testid="find-remaining-live"
+                className="w-full px-5 py-3 bg-brand/10 hover:bg-brand/20 text-brand font-semibold rounded-lg border border-brand/30 transition-colors cursor-pointer text-sm disabled:opacity-50"
+              >
+                Find remaining leads with Live Discovery
+              </button>
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                Starts a separate Live Discovery run for the remaining {lastRun.liveFollowUp.remaining}. It is billed only for opportunities it actually delivers, under your plan's normal limits.
+              </p>
+            </div>
+          )}
 
           {/* CTAs */}
           <div className="flex flex-sm-row items-center justify-center gap-3 pt-2">
+            {(lastRun?.outcome.delivered ?? newOpportunities.length) > 0 && (
             <button
               onClick={handleBeginOutreach}
               className="w-full sm:w-auto px-8 py-3.5 bg-brand hover:bg-brand-dark text-brand-foreground font-bold rounded-xl shadow-brand hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
             >
               <Zap className="size-4" /> Begin Outreach
             </button>
+            )}
             <button
               onClick={() => {
                 setShowCompletion(false);
                 setNewOpportunities([]);
+                setLastRun(null);
               }}
               className="w-full sm:w-auto px-8 py-3.5 bg-background hover:bg-muted text-foreground font-semibold rounded-xl border border-border transition-colors cursor-pointer text-sm"
             >
@@ -776,6 +847,9 @@ function GetLeads() {
             <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
               Prepared Opportunities Preview
             </h3>
+            <p className="text-[11px] text-muted-foreground">
+              Icons show the contact channels saved for each opportunity. A struck-through icon is a requested channel this record is missing.
+            </p>
             <div className="grid sm:grid-cols-3 gap-4">
               {newOpportunities.slice(0, 3).map((opp, idx) => (
                 <div
@@ -796,28 +870,7 @@ function GetLeads() {
                     </h4>
                     <p className="text-xs text-muted-foreground truncate">{opp.location}</p>
                   </div>
-                  <div className="flex gap-1.5 pt-1">
-                    {opp.email && (
-                      <span className="size-6 rounded bg-brand/5 border border-brand/10 flex items-center justify-center text-[10px] text-brand font-bold">
-                        ✉
-                      </span>
-                    )}
-                    {opp.phone && (
-                      <span className="size-6 rounded bg-brand/5 border border-brand/10 flex items-center justify-center text-[10px] text-brand font-bold">
-                        ☎
-                      </span>
-                    )}
-                    {opp.instagramHandle && (
-                      <span className="size-6 rounded bg-brand/5 border border-brand/10 flex items-center justify-center text-[10px] text-brand font-bold">
-                        ig
-                      </span>
-                    )}
-                    {opp.website && (
-                      <span className="size-6 rounded bg-brand/5 border border-brand/10 flex items-center justify-center text-[10px] text-brand font-bold">
-                        🌐
-                      </span>
-                    )}
-                  </div>
+                  <ContactChannelIcons lead={opp} requested={lastRun?.request.channels ?? []} />
                   <span className="absolute bottom-4 right-4 text-[10px] font-bold text-brand uppercase opacity-0 group-hover:opacity-100 transition-opacity">
                     Open Workspace →
                   </span>
@@ -1243,6 +1296,12 @@ function GetLeads() {
       {/* ── AI Overview band ─────────────────────────────────────── */}
       <div className="mt-6">
         <DiscoverAiOverview
+          currentSetup={{
+            ...summarizeDiscoverRequest(
+              buildDiscoverRequest({ quantity, regions, niches, channels, method: selectedMethod.id }),
+            ),
+            methodLabel: selectedMethod.shortLabel,
+          }}
           insights={discoverInsights}
           loading={!account || !analytics}
           suggestions={nextSuggestions}
@@ -1584,11 +1643,53 @@ function SuggestionTile({
   );
 }
 
-/** AI Overview — a compact briefing: one main recommendation plus the selected
- * setup as context. Recommendation content comes from buildDiscoverInsights()
+type LastDiscoverRun = {
+  outcome: DiscoverOutcome;
+  jobId: string;
+  /** "pool" = Instant Pool / Ranked Instant; "live" = Live Discovery. */
+  source: "pool" | "live";
+  /** The exact request that was sent. */
+  request: DiscoverRequestPayload;
+  ranking?: PoolRankingInfo;
+  liveFollowUp?: { available: boolean; remaining: number };
+};
+
+const CHANNEL_GLYPH = { email: "✉", phone: "☎", instagram: "ig", website: "🌐" } as const;
+
+/** Contact icons for a saved opportunity: an icon means THIS RECORD has that
+ * channel. Requested-but-missing channels are shown struck through so a record
+ * that violates the AND channel contract is visible instead of looking like
+ * it simply has fewer channels. Unrequested, absent channels are hidden. */
+function ContactChannelIcons({ lead, requested }: { lead: LeadChannelSource; requested: readonly string[] }) {
+  const shown = channelPresence(lead, requested).filter((c) => c.present || c.requested);
+  return (
+    <div className="flex gap-1.5 pt-1" data-testid="contact-channel-icons">
+      {shown.map((c) => (
+        <span
+          key={c.id}
+          data-channel={c.id}
+          data-present={c.present ? "true" : "false"}
+          title={c.present ? `${c.label} available` : `${c.label} was requested but is missing`}
+          className={cn(
+            "size-6 rounded border flex items-center justify-center text-[10px] font-bold",
+            c.present
+              ? "bg-brand/5 border-brand/10 text-brand"
+              : "border-dashed border-destructive/40 text-destructive/70 line-through",
+          )}
+        >
+          {CHANNEL_GLYPH[c.id]}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** AI Overview — a compact briefing: your CURRENT search (from the active form
+ * state), one main recommendation, and recommendations for the next search. Recommendation content comes from buildDiscoverInsights()
  * (or a future `briefing`); the extra insights stay one click away behind
  * "View detailed analysis". */
 function DiscoverAiOverview({
+  currentSetup,
   insights,
   loading,
   suggestions,
@@ -1596,9 +1697,11 @@ function DiscoverAiOverview({
   onApply,
   briefing,
 }: {
+  /** The ACTIVE form state, built by the same function that builds the request. */
+  currentSetup: { niche: string; region: string; amount: string; channels: string; methodLabel: string };
   insights: DiscoverInsight[];
   loading: boolean;
-  /** What to search next — see buildNextSearchSuggestions(). */
+  /** RECOMMENDATIONS for what to search next — not the configured search. See buildNextSearchSuggestions(). */
   suggestions: NextSearchSuggestions;
   applied: AiApplied;
   onApply: AiApply;
@@ -1632,7 +1735,7 @@ function DiscoverAiOverview({
           <div className="min-w-0">
             <h2 className="text-[15px] font-semibold leading-tight text-foreground">AI Overview</h2>
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              MAST’s analysis of your current discovery setup.
+              Your current search, plus recommendations for what to try next.
             </p>
           </div>
         </div>
@@ -1647,6 +1750,18 @@ function DiscoverAiOverview({
             <ArrowRight className={cn("size-3.5 transition-transform", expanded && "rotate-90")} />
           </button>
         )}
+      </div>
+
+      <div
+        data-testid="ai-current-setup"
+        className="mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2 text-xs"
+      >
+        <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted-foreground">Your search</span>
+        <span><span className="text-muted-foreground">Niche </span><span data-field="niche" className="font-medium text-foreground">{currentSetup.niche}</span></span>
+        <span><span className="text-muted-foreground">Region </span><span data-field="region" className="font-medium text-foreground">{currentSetup.region}</span></span>
+        <span><span className="text-muted-foreground">Amount </span><span data-field="amount" className="font-medium text-foreground">{currentSetup.amount}</span></span>
+        <span><span className="text-muted-foreground">Channels </span><span data-field="channels" className="font-medium text-foreground">{currentSetup.channels}</span></span>
+        <span><span className="text-muted-foreground">Method </span><span data-field="method" className="font-medium text-foreground">{currentSetup.methodLabel}</span></span>
       </div>
 
       {loading || !main ? (
@@ -1684,12 +1799,12 @@ function DiscoverAiOverview({
               </div>
             </div>
 
-            {/* what to search next */}
+            {/* RECOMMENDATIONS for the next search — distinct from "Your search" above */}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <SuggestionTile
                 icon={Building2}
                 tint={{ bg: "rgba(112,84,255,0.2)", fg: "#a99bff" }}
-                label="Niche"
+                label="Suggested niche"
                 value={suggestions.niche?.value ?? null}
                 reason={suggestions.niche?.reason ?? "Appears after your first run."}
                 applied={applied.niche}
@@ -1698,7 +1813,7 @@ function DiscoverAiOverview({
               <SuggestionTile
                 icon={MapPin}
                 tint={{ bg: "rgba(40,110,230,0.2)", fg: "#4c90ff" }}
-                label="Region"
+                label="Suggested region"
                 value={suggestions.region?.value ?? null}
                 reason={suggestions.region?.reason ?? "Appears after your first run."}
                 applied={applied.region}
@@ -1707,7 +1822,7 @@ function DiscoverAiOverview({
               <SuggestionTile
                 icon={BarChart3}
                 tint={{ bg: "rgba(20,184,150,0.18)", fg: "#2dd4a8" }}
-                label="Amount"
+                label="Suggested amount"
                 value={suggestions.amount ? `${suggestions.amount.value.toLocaleString()} businesses` : null}
                 reason={suggestions.amount?.reason ?? "No capacity left today."}
                 applied={applied.amount}
@@ -1717,7 +1832,7 @@ function DiscoverAiOverview({
               <SuggestionTile
                 icon={Link2}
                 tint={{ bg: "rgba(236,72,153,0.18)", fg: "#ff5fb4" }}
-                label="Channel"
+                label="Suggested channel"
                 value={channelLabel}
                 reason={suggestions.channel?.reason ?? "No channels on your plan."}
                 applied={applied.channel}

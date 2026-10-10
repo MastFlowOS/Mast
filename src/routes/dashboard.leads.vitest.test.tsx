@@ -344,7 +344,7 @@ describe("Discover redesign — preserved behavior", () => {
     await renderDiscover("pro");
     expect(screen.getByText("Run a discovery now")).toBeTruthy();
     expect(screen.queryByText("Second insight")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /1 more insight/ }));
+    fireEvent.click(screen.getByRole("button", { name: /View detailed analysis/ }));
     expect(screen.getByText("Second insight")).toBeTruthy();
   });
 });

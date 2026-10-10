@@ -46,55 +46,30 @@ const poolExpandSrc = readFileSync(path.join(__dirname, "../poolExpandJob.ts"), 
 
 test.beforeEach(() => __testing.reset());
 
-// ── 1 & 9. instant_pool with no shortfall: no plan, no planId, no live events ──
+// ── 1/2/9. The route no longer bridges Instant shortfalls into live scraping ──
+//
+// PRODUCT DECISION (supersedes the earlier "pool-first, live backfill on
+// shortfall" design these tests used to pin): Instant Pool and Ranked Instant
+// are pool-only. A shortfall is reported as completed_partial; live scraping
+// only ever starts from an explicit, separate Live Discovery request.
+// poolExpandJob.ts is intentionally retained so messages already queued by an
+// older deployment still drain; nothing in the route dispatches it any more.
+// (Behavioral proof lives in discoverInstantPoolOnly.test.ts; this is the
+// cheap structural guard.)
 
-test("1/9. discover.ts never creates a pool-expand plan or returns a planId for a pure pool hit (no shortfall)", () => {
-  // getOrCreatePoolExpandPlanId must only be called inside the
-  // shortfall>0 && !limitReached branch — never unconditionally, and never
-  // for the plain pool-hit response path.
-  const callSiteIdx = discoverSrc.indexOf("getOrCreatePoolExpandPlanId(");
-  assert.ok(callSiteIdx !== -1, "expected discover.ts to call getOrCreatePoolExpandPlanId()");
-
-  const branchStart = discoverSrc.indexOf("if (shortfall > 0 && !limitReached) {");
-  const branchEnd = discoverSrc.indexOf("} else if (shortfall > 0 && limitReached) {");
-  assert.ok(branchStart !== -1 && branchEnd !== -1, "expected the shortfall>0 && !limitReached branch to exist");
-  assert.ok(
-    callSiteIdx > branchStart && callSiteIdx < branchEnd,
-    "getOrCreatePoolExpandPlanId() must only be called inside the shortfall>0 && !limitReached branch",
-  );
-
-  // The final response always includes `planId` as a key (so it is never
-  // silently omitted), but its VALUE (poolExpandPlanId) is only ever
-  // assigned inside that same branch — a pure pool hit leaves it undefined,
-  // and JSON.stringify drops an undefined property, so no fake id is ever
-  // sent.
-  assert.match(discoverSrc, /let poolExpandPlanId: string \| undefined;/);
-  assert.match(discoverSrc, /planId: poolExpandPlanId,/);
-  const assignmentIdx = discoverSrc.indexOf("poolExpandPlanId = await getOrCreatePoolExpandPlanId(");
-  assert.ok(assignmentIdx > branchStart && assignmentIdx < branchEnd, "poolExpandPlanId must only ever be assigned inside the shortfall backfill branch");
+test("1/9. discover.ts never creates a pool-expand plan, never imports poolExpand, never returns a planId for Instant", () => {
+  assert.doesNotMatch(discoverSrc, /getOrCreatePoolExpandPlanId/);
+  assert.doesNotMatch(discoverSrc, /QUEUES\.poolExpand/);
+  assert.doesNotMatch(discoverSrc, /poolExpandJob/);
+  assert.doesNotMatch(discoverSrc, /getBoss/);
+  assert.doesNotMatch(discoverSrc, /let poolExpandPlanId/);
+  assert.match(discoverSrc, /backgroundExpansionQueued: false,/, "response shape key is kept for compatibility but is always false");
 });
 
-test("9. the shortfall>0 && limitReached branch (background-only expansion, no user waiting) never creates a plan either", () => {
-  const branchStart = discoverSrc.indexOf("} else if (shortfall > 0 && limitReached) {");
-  const branchEnd = discoverSrc.indexOf("} else {", branchStart);
-  assert.ok(branchStart !== -1 && branchEnd !== -1);
-  const branch = discoverSrc.slice(branchStart, branchEnd);
-  assert.doesNotMatch(branch, /getOrCreatePoolExpandPlanId/, "a limit-reached shortfall must never create a plan — there is no user waiting to show it to");
-  assert.doesNotMatch(branch, /followUp:/, "this background-only boss.send must stay followUp-less, exactly as before");
-});
-
-// ── 2. instant_pool with shortfall: plan created synchronously, same id returned, follow-up still queued ──
-
-test("2. pool-expand plan is created BEFORE boss.send, and the SAME payload object is queued", () => {
-  const branchStart = discoverSrc.indexOf("if (shortfall > 0 && !limitReached) {");
-  const branchEnd = discoverSrc.indexOf("} else if (shortfall > 0 && limitReached) {");
-  const branch = discoverSrc.slice(branchStart, branchEnd);
-
-  const planCallIdx = branch.indexOf("poolExpandPlanId = await getOrCreatePoolExpandPlanId(");
-  const bossSendIdx = branch.indexOf("await boss.send(QUEUES.poolExpand, poolExpandPayload)");
-  assert.ok(planCallIdx !== -1 && bossSendIdx !== -1);
-  assert.ok(planCallIdx < bossSendIdx, "the plan must be created/fetched BEFORE the follow-up job is queued, not after");
-  assert.match(branch, /backgroundExpansionQueued = true;/, "the follow-up must still be queued exactly as before");
+test("2. discover.ts has no pool-expand queueing in either the shortfall or the limit-reached branch", () => {
+  assert.doesNotMatch(discoverSrc, /boss\.send/);
+  assert.doesNotMatch(discoverSrc, /followUp:/);
+  assert.doesNotMatch(discoverSrc, /shortfall > 0 && !limitReached\) \{\s*\r?\n\s*\/\/ Leave the job "streaming"/);
 });
 
 // ── 3. idempotent plan creation: route and poolExpandJob resolve to the same plan (real Postgres) ──

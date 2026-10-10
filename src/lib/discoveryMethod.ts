@@ -10,9 +10,11 @@
  * and the highest one it may select:
  *
  *   free            → live                 real scrape, results streamed
- *   starter         → instant_pool         pool first; any shortfall is
- *                                          scraped live in the background
- *   pro / premium   → instant_pool_ranked  same, ordered by Opportunity Score
+ *   starter         → instant_pool         pool ONLY, returned synchronously;
+ *                                          a shortfall is reported, never
+ *                                          scraped automatically
+ *   pro / premium   → instant_pool_ranked  same pool-only contract, ordered
+ *                                          globally by Opportunity Score
  *
  * discoveryMethodForPlan() below returns that default/ceiling method —
  * used to preselect the Discover UI and to describe "your plan" in the
@@ -54,7 +56,7 @@ export const DISCOVERY_METHODS: readonly DiscoveryMethod[] = [
     label: "Instant Pool Access",
     shortLabel: "Instant pool",
     desc: "Pre-verified businesses from MAST's curated pool",
-    note: "Any shortfall is scraped live in the background",
+    note: "Pool only — a shortfall is reported, never scraped automatically",
     timeLabel: "Instant",
     minPlan: "starter",
     minPlanLabel: "Starter",
@@ -65,7 +67,7 @@ export const DISCOVERY_METHODS: readonly DiscoveryMethod[] = [
     label: "Ranked Instant Results",
     shortLabel: "Ranked instant",
     desc: "Instant pool results ordered by Opportunity Score",
-    note: "Best-scoring opportunities first; any shortfall is scraped live",
+    note: "Pool only, best-scoring first — a shortfall is reported, never scraped automatically",
     timeLabel: "Instant",
     minPlan: "pro",
     minPlanLabel: "Pro",

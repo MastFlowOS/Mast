@@ -28,10 +28,11 @@ export type PlanId = "free" | "starter" | "pro" | "premium";
  * hasn't chosen one, and the highest one they're allowed to choose:
  *  - free    -> Live Scraping only (real scrape, streamed results, never
  *               touches the Global Lead Pool)
- *  - starter -> Live Scraping or Instant Pool Access (pool-first,
- *               background-expand on miss)
- *  - pro     -> the above, plus Ranked Instant Results (pool results
- *               ordered by Opportunity Score)
+ *  - starter -> Live Scraping or Instant Pool Access (pool ONLY: a
+ *               shortfall is reported as completed_partial and never
+ *               triggers live scraping on its own)
+ *  - pro     -> the above, plus Ranked Instant Results (pool-only, results
+ *               globally ordered by Opportunity Score)
  *  - premium -> same ceiling as pro, plus AI Opportunity Intelligence
  *               downstream
  * See isDiscoveryModeAllowed() for the actual per-request gate.

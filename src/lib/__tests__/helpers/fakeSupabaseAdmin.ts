@@ -30,6 +30,12 @@ export class FakeDb {
   ops: RecordedOp[] = [];
   rpcCalls: Array<{ fn: string; args: Row }> = [];
   usageAllowed = true;
+  /** credits currently consumed — charge (+n) and refund (-n) both move it */
+  usageUsed = 0;
+  /** optional cap: a charge that would exceed it is rejected (allowed:false) */
+  usageCap: number | null = null;
+  /** make refund (p_count < 0) calls return an error, to prove leaks surface */
+  refundFails = false;
   private seq = 0;
 
   nextId(prefix: string): string {
@@ -66,6 +72,10 @@ export class FakeDb {
       const field = ["email", "phone", "instagram", "website"].includes(channel) ? channel : null;
       return field !== null && typeof b[field] === "string" && b[field].trim().length > 0;
     });
+    // Mirrors the SQL left join on (business_id, profession_slug): with no
+    // profession slug no score can ever match, so ranking has nothing to use.
+    const scoreFor = (id: string): number | null =>
+      args.p_profession_slug == null ? null : (this.opportunityScores.get(id) ?? null);
     const matches = this.businesses.filter(
       (b) =>
         b.is_disqualified !== true &&
@@ -75,26 +85,43 @@ export class FakeDb {
         !this.leads.some((l) => l.user_id === args.p_user_id && l.business_id === b.id),
     );
     matches.sort((a, b) => {
-      const sa = args.p_rank ? (this.opportunityScores.get(a.id) ?? -1) : 0;
-      const sb = args.p_rank ? (this.opportunityScores.get(b.id) ?? -1) : 0;
+      const sa = args.p_rank ? (scoreFor(a.id) ?? -1) : 0;
+      const sb = args.p_rank ? (scoreFor(b.id) ?? -1) : 0;
       if (sa !== sb) return sb - sa;
       return String(b.first_discovered_at ?? "").localeCompare(String(a.first_discovered_at ?? ""));
     });
     return matches.slice(0, args.p_limit).map((b) => ({
       business_id: b.id,
-      opportunity_score: this.opportunityScores.get(b.id) ?? null,
+      opportunity_score: scoreFor(b.id),
     }));
   }
 
   rpc(fn: string, args: Row) {
     this.rpcCalls.push({ fn, args });
     let data: unknown;
+    let error: { message: string } | null = null;
     if (fn === "pool_lookup") data = this.poolLookup(args);
-    else if (fn === "try_increment_lead_usage") data = { allowed: this.usageAllowed };
-    else throw new Error(`FakeDb: unsupported rpc "${fn}"`);
-    const result = { data, error: null };
+    else if (fn === "try_increment_lead_usage") {
+      const n: number = args.p_count ?? 1;
+      if (n < 0) {
+        if (this.refundFails) {
+          data = null;
+          error = { message: "refund failed (simulated)" };
+        } else {
+          this.usageUsed += n; // refund
+          data = { allowed: true };
+        }
+      } else if (n > 0) {
+        const fits = this.usageAllowed && (this.usageCap === null || this.usageUsed + n <= this.usageCap);
+        if (fits) this.usageUsed += n;
+        data = { allowed: fits };
+      } else {
+        data = { allowed: this.usageAllowed };
+      }
+    } else throw new Error(`FakeDb: unsupported rpc "${fn}"`);
+    const result = { data, error };
     return Object.assign(Promise.resolve(result), {
-      single: () => Promise.resolve({ data: Array.isArray(data) ? data[0] : data, error: null }),
+      single: () => Promise.resolve({ data: Array.isArray(data) ? data[0] : data, error }),
     });
   }
 }

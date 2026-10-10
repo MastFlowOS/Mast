@@ -48,6 +48,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ error: "Unauthorized user token." });
   }
 
+  // Use the verified caller's JWT for RLS-protected profile reads. The module-level
+  // client has only the anon key, so its profile query runs as anon and cannot
+  // satisfy the "Users can view own profile" policy even after getUser(token).
+  const userSupabase = createClient(supabaseUrl!, supabaseAnonKey!, {
+    global: { headers: { Authorization: authHeader } },
+  });
+
   // 2. Parse payload
   let to: string;
   let subject: string;
@@ -70,7 +77,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // 3. Fetch user SMTP settings from Supabase
   try {
-    const { data: profile, error: dbError } = await supabase
+    const { data: profile, error: dbError } = await userSupabase
       .from("profiles")
       .select("settings")
       .eq("id", user.id)

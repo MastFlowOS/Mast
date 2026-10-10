@@ -1,16 +1,28 @@
 import { useState } from "react";
-import { ArrowDownToLine, Loader2, MessageSquareText, RotateCcw, Sparkles, Wand2 } from "lucide-react";
-import { toast } from "sonner";
+import {
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
+  Wand2,
+  Edit2,
+  Sliders,
+  AlignLeft,
+  MessageCircle,
+  Target,
+  Loader2,
+  Check,
+  RotateCcw,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { toast } from "sonner";
+import type { Lead, OutreachTone } from "@/lib/api";
+import type { Channel } from "@/routes/dashboard.leads.$leadId";
 import { useGenerateOutreachDraft, useMe, useRecordLeadActivity, useSettings } from "@/hooks/use-mast-api";
-import { type Lead, type OutreachGenerationAction, type OutreachTone } from "@/lib/api";
-import { normalizeDraftResponse, TEMPLATES, type DraftContent } from "@/lib/lead-workspace";
+import { normalizeDraftResponse, TEMPLATES } from "@/lib/lead-workspace";
 import { useFreeOutreach } from "@/hooks/use-free-outreach";
 import { isFreeTemplateKey } from "@/lib/outreach/templates";
-import type { Channel } from "@/routes/dashboard.leads.$leadId";
-import { LockedFeatureCard } from "@/components/mast/LockedFeatureCard";
 
 interface AIAssistantProps {
   lead: Lead;
@@ -18,29 +30,62 @@ interface AIAssistantProps {
   subject: string;
   body: string;
   onInsert: (body: string, subject?: string) => void;
+  template: string;
+  setTemplate: (t: string) => void;
+  tone: string;
+  setTone: (t: string) => void;
+  onHide?: () => void;
 }
 
-const REWRITE_TONES: { tone: OutreachTone; label: string }[] = [
-  { tone: "friendly", label: "Rewrite Friendly" },
-  { tone: "professional", label: "Rewrite Professional" },
-  { tone: "direct", label: "Rewrite Direct" },
-];
+type TabType = "write" | "improve" | "ideas" | "research";
 
-export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssistantProps) {
+export function AIAssistant({
+  lead,
+  channel,
+  subject,
+  body,
+  onInsert,
+  template,
+  setTemplate,
+  tone,
+  setTone,
+  onHide,
+}: AIAssistantProps) {
   const { data: settings } = useSettings();
   const { data: auth } = useMe();
   const generateDraft = useGenerateOutreachDraft();
   const recordActivity = useRecordLeadActivity();
   const freeOutreach = useFreeOutreach(lead);
+
+  const [activeTab, setActiveTab] = useState<TabType>("write");
   const [isGeneratingFree, setIsGeneratingFree] = useState(false);
-  const [drafts, setDrafts] = useState<Partial<Record<Channel, DraftContent>>>({});
-  const [insertedDraftKey, setInsertedDraftKey] = useState<string | null>(null);
-  const [template, setTemplate] = useState("initial");
   const [customInstructions, setCustomInstructions] = useState("");
 
-  const draft = drafts[channel] ?? null;
-  const sourceSubject = draft?.subject ?? subject;
-  const sourceBody = draft?.body ?? body;
+  // Accordion state - Generate Message open by default, all others collapsed by default
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    generate: true,
+    rewrite: false,
+    tone: false,
+    length: false,
+    more: false,
+    cta: false,
+  });
+
+  // Personalization context checkboxes
+  const [personalization, setPersonalization] = useState({
+    businessNameAndNiche: true,
+    recentInstagramActivity: true,
+    locationAndLocalMarket: true,
+    businessReviewsAndReputation: true,
+    similarBusinessSuccessStories: true,
+  });
+  const [editingContext, setEditingContext] = useState(false);
+  const [customContextNotes, setCustomContextNotes] = useState("");
+
+  const toggleSection = (key: string) => {
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
   const isGenerating = generateDraft.isPending || isGeneratingFree;
   const senderName = settings?.senderName ?? auth?.user?.fullName ?? "";
   const channelLabel =
@@ -52,298 +97,488 @@ export function AIAssistant({ lead, channel, subject, body, onInsert }: AIAssist
           ? "Contact Form"
           : "Call Script";
 
-  const runAI = async (action: OutreachGenerationAction, tone?: OutreachTone) => {
-    if (action === "rewrite" && !sourceBody.trim()) {
-      toast.error("Add or generate a draft before rewriting.");
+  const runGeneration = async () => {
+    if (isFreeTemplateKey(template)) {
+      setIsGeneratingFree(true);
+      try {
+        const result = await freeOutreach.generate(template, channel, senderName);
+        if (!result.ok) {
+          toast.error(result.detail);
+          return;
+        }
+        onInsert(result.body, result.subject ?? undefined);
+        void recordActivity.mutateAsync({
+          lead,
+          activity: {
+            type: "message_generated",
+            channel,
+            subject: result.subject ?? undefined,
+            body: result.body,
+            content: `${channelLabel} draft generated (${TEMPLATES.find((t) => t.value === template)?.label ?? template})`,
+            metadata: { template, angleComponent: result.angleComponent, angleSource: result.angleSource },
+          },
+        });
+        toast.success("Message generated & inserted");
+      } finally {
+        setIsGeneratingFree(false);
+      }
+    } else {
+      // Paid AI path
+      try {
+        const response = await generateDraft.mutateAsync({
+          leadId: lead.id,
+          body: {
+            channel,
+            action: "generate",
+            tone: (tone as OutreachTone) || "friendly",
+            template,
+            customInstructions: customInstructions.trim() || undefined,
+            subject,
+            body,
+            senderName,
+          },
+        });
+        const next = normalizeDraftResponse(response);
+        if (next.body) {
+          onInsert(next.body, next.subject);
+          toast.success("Draft generated & inserted");
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not generate draft");
+      }
+    }
+  };
+
+  const runRewriteWithInstructions = async (instructionText: string, toneOverride?: OutreachTone) => {
+    if (!body.trim()) {
+      toast.error("Add a draft before rewriting");
       return;
     }
-
-    setInsertedDraftKey(null);
 
     try {
       const response = await generateDraft.mutateAsync({
         leadId: lead.id,
         body: {
           channel,
-          action,
-          tone,
+          action: "rewrite",
+          tone: toneOverride ?? ((tone as OutreachTone) || "friendly"),
           template,
-          customInstructions: customInstructions.trim() || undefined,
-          subject: sourceSubject,
-          body: sourceBody,
+          customInstructions: instructionText,
+          subject,
+          body,
           senderName,
-          senderEmail: settings?.senderEmail ?? auth?.user?.email ?? "",
-          signature: settings?.signature ?? "",
         },
       });
-      const nextDraft = normalizeDraftResponse(response);
-
-      if (!nextDraft.body) {
-        throw new Error("The AI endpoint returned an empty draft.");
+      const next = normalizeDraftResponse(response);
+      if (next.body) {
+        onInsert(next.body, next.subject);
+        toast.success("Draft updated");
       }
-
-      setDrafts((current) => ({ ...current, [channel]: nextDraft }));
-
-      void recordActivity.mutateAsync({
-        lead,
-        activity: {
-          type: "message_generated",
-          channel,
-          subject: nextDraft.subject,
-          body: nextDraft.body,
-          content:
-            action === "rewrite"
-              ? `${channelLabel} rewritten in ${tone ?? "selected"} tone`
-              : action === "objections"
-                ? "Objection handling generated"
-                : `${channelLabel} draft generated (${TEMPLATES.find((t) => t.value === template)?.label ?? template})`,
-          metadata: { action, tone, template },
-        },
-      });
-
-      toast.success(action === "rewrite" ? "Draft rewritten" : "Draft generated");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not generate outreach draft.";
-      toast.error(message);
+      toast.error(error instanceof Error ? error.message : "Could not rewrite draft");
     }
   };
 
-  /**
-   * The deterministic Free path. Entirely local apart from the existing
-   * deterministic Opportunity Explanation read — it never touches
-   * generateOutreachDraft() or any AI endpoint.
-   */
-  const runFreeGeneration = async () => {
-    if (!isFreeTemplateKey(template)) {
-      toast.error("That template is part of the AI plan.");
-      return;
-    }
-    setInsertedDraftKey(null);
-    setIsGeneratingFree(true);
-    try {
-      const result = await freeOutreach.generate(template, channel, senderName);
-      if (!result.ok) {
-        toast.error(result.detail);
-        return;
-      }
-      const nextDraft: DraftContent = { subject: result.subject ?? undefined, body: result.body };
-      setDrafts((current) => ({ ...current, [channel]: nextDraft }));
-
-      // A generated draft is NOT a send: message_generated only, never a
-      // lastContactedAt patch and never a genuine-send activity type.
-      void recordActivity.mutateAsync({
-        lead,
-        activity: {
-          type: "message_generated",
-          channel,
-          subject: nextDraft.subject,
-          body: nextDraft.body,
-          content: `${channelLabel} draft generated (${TEMPLATES.find((t) => t.value === template)?.label ?? template})`,
-          metadata: { template, angleComponent: result.angleComponent, angleSource: result.angleSource },
-        },
-      });
-
-      toast.success("Draft ready");
-    } finally {
-      setIsGeneratingFree(false);
-    }
+  const addCTA = (ctaText: string) => {
+    const cleanBody = body.trimEnd();
+    const newBody = `${cleanBody}\n\n${ctaText}`;
+    onInsert(newBody);
+    toast.success("CTA added to message");
   };
-
-  const handleInsert = () => {
-    if (!draft) return;
-    onInsert(draft.body, draft.subject);
-    setInsertedDraftKey(`${channel}:${draft.subject ?? ""}:${draft.body}`);
-    toast.success("Draft inserted into editor");
-  };
-
-  // Deterministic eligibility for the currently-selected template. Shown
-  // inline next to the disabled Generate button rather than failing on click.
-  const templateIsFree = isFreeTemplateKey(template);
-  const eligibility = templateIsFree ? freeOutreach.checkEligibility(template) : null;
-  const refusalReason =
-    !templateIsFree
-      ? "Objection Handling is part of the AI plan and isn't generated locally."
-      : eligibility !== true && eligibility !== null
-        ? eligibility.refusalReason
-        : null;
-
-  const draftKey = draft ? `${channel}:${draft.subject ?? ""}:${draft.body}` : null;
-  const inserted = draftKey !== null && insertedDraftKey === draftKey;
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-2">
-        <div className="size-7 rounded-lg bg-brand/10 border border-brand/20 grid place-items-center shrink-0">
-          <Sparkles className="size-4 text-brand" />
+    <div className="flex flex-col h-full bg-[#0d121d] text-foreground select-none">
+      {/* ─── HEADER: Title + Hide button ─── */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border/70">
+        <div className="flex items-center gap-2">
+          <Sparkles className="size-4 text-indigo-400" />
+          <h3 className="text-xs font-semibold text-foreground">AI Assistant</h3>
         </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold">AI Assistant</p>
-          <p className="text-[11px] text-muted-foreground">Generating for: {channelLabel}</p>
-        </div>
-      </div>
-
-      <Button
-        onClick={() => void runFreeGeneration()}
-        disabled={isGenerating || refusalReason !== null}
-        className="w-full gap-2 bg-brand hover:bg-brand/90 text-brand-foreground"
-      >
-        {isGenerating ? (
-          <>
-            <Loader2 className="size-4 animate-spin" /> Writing...
-          </>
-        ) : (
-          <>
-            <Wand2 className="size-4" /> Generate {channelLabel}
-          </>
-        )}
-      </Button>
-
-      {refusalReason && (
-        <p className="text-[11px] text-muted-foreground -mt-3">{refusalReason}</p>
-      )}
-
-      <div className="space-y-3 rounded-xl border border-border bg-background p-3">
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Template</p>
-          <Select value={template} onValueChange={setTemplate}>
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {TEMPLATES.map((item) => (
-                <SelectItem key={item.value} value={item.value}>
-                  {item.label}
-                  {item.tier === "ai" ? " (AI plan)" : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-[10px] text-muted-foreground">
-            {template === "initial" && "First touch — introduce yourself and your value."}
-            {template === "follow_up_2day" && "Gentle nudge 2 days after initial outreach."}
-            {template === "follow_up_5day" && "Final follow-up at the 5-day mark."}
-            {template === "buried_bump" && "Short bump to resurface a buried message."}
-            {template === "objection_handling" && "Address common hesitations directly."}
-            {template === "reengagement" && "Re-open conversation with a cold lead."}
-            {template === "pricing_transition" && "Leverage urgency around a pricing change."}
-          </p>
-        </div>
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Instructions</p>
-          <Textarea
-            value={customInstructions}
-            onChange={(event) => setCustomInstructions(event.target.value)}
-            placeholder="Mention a recent post, objection, offer angle, or next step..."
-            className="min-h-20 resize-none text-xs"
-          />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-2">
-        {REWRITE_TONES.map((item) => (
-          <Button
-            key={item.tone}
-            variant="outline"
-            size="sm"
-            onClick={() => runAI("rewrite", item.tone)}
-            disabled={isGenerating || !sourceBody.trim()}
-            className="justify-start gap-2 text-xs"
+        {onHide && (
+          <button
+            type="button"
+            onClick={onHide}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            <RotateCcw className="size-4" />
-            {item.label}
-          </Button>
-        ))}
-
-        {channel === "phone" && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => runAI("objections", "direct")}
-            disabled={isGenerating}
-            className="justify-start gap-2 text-xs"
-          >
-            <MessageSquareText className="size-4" />
-            Generate Objection Handling
-          </Button>
+            Hide
+          </button>
         )}
       </div>
 
-      {(isGenerating || draft) && (
-        <div className="space-y-3">
-          <div className="h-px bg-border" />
-
-          {isGenerating ? (
-            <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-2">
-              {[70, 90, 55, 80, 40].map((width, index) => (
-                <div key={index} className="h-3 rounded bg-muted animate-pulse" style={{ width: `${width}%` }} />
-              ))}
-            </div>
-          ) : draft ? (
-            <div className="rounded-xl border border-brand/20 bg-brand/5 p-4 space-y-2">
-              {draft.subject && (
-                <p className="text-[11px] font-bold text-brand uppercase tracking-wider">
-                  Subject: {draft.subject}
-                </p>
-              )}
-              <p className="text-xs text-foreground whitespace-pre-wrap leading-relaxed">{draft.body}</p>
-            </div>
-          ) : null}
-
-          {draft && !isGenerating && (
-            <Button
-              size="sm"
-              onClick={handleInsert}
-              className={`w-full gap-1.5 ${
-                inserted
-                  ? "bg-green-500/15 border border-green-500/30 text-green-600 hover:bg-green-500/15"
-                  : "bg-brand hover:bg-brand/90 text-brand-foreground"
+      {/* ─── TABS: Write, Improve, Ideas, Research ─── */}
+      <div className="p-3 border-b border-border/50">
+        <div className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-card/60 border border-border/60">
+          {(["write", "improve", "ideas", "research"] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setActiveTab(tab)}
+              className={`py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
+                activeTab === tab
+                  ? "bg-[#4f46e5] text-white shadow-sm font-semibold"
+                  : "text-muted-foreground hover:text-foreground hover:bg-card/40"
               }`}
             >
-              <ArrowDownToLine className="size-4" />
-              {inserted ? "Inserted" : "Insert into Editor"}
-            </Button>
+              {tab}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ─── ACCORDIONS (COMPACT COLLAPSIBLE SECTIONS) ─── */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {/* 1. Generate Message (expanded by default) */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("generate")}
+            className="flex w-full items-center justify-between p-3 text-left hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="size-6 rounded-lg bg-indigo-500/15 text-indigo-400 grid place-items-center">
+                <Sparkles className="size-3.5" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-foreground leading-tight">Generate Message</p>
+                <p className="text-[10px] text-muted-foreground leading-tight mt-0.5">
+                  Using business details and context
+                </p>
+              </div>
+            </div>
+            {openSections.generate ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {openSections.generate && (
+            <div className="p-3 pt-1 border-t border-border/40 space-y-2.5">
+              <Button
+                type="button"
+                onClick={() => void runGeneration()}
+                disabled={isGenerating}
+                className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20"
+              >
+                {isGenerating ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                <span>Generate</span>
+              </Button>
+            </div>
           )}
         </div>
-      )}
 
-      <div className="space-y-2">
-        <div className="h-px bg-border" />
-        <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground pt-1">
-          Personalization Inputs
-        </p>
-        <div className="space-y-2">
-          {lead.location && (
-            <div className="rounded-lg border border-border bg-muted/20 px-3 py-2.5">
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                Location: {lead.location}
-              </p>
+        {/* 2. Rewrite & Adjust (collapsed by default) */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("rewrite")}
+            className="flex w-full items-center justify-between p-3 text-left hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2.5">
+              <Edit2 className="size-4 text-muted-foreground" />
+              <span className="text-xs font-semibold text-foreground">Rewrite &amp; Adjust</span>
+            </div>
+            {openSections.rewrite ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {openSections.rewrite && (
+            <div className="p-3 pt-1 border-t border-border/40 space-y-2.5">
+              <Textarea
+                value={customInstructions}
+                onChange={(e) => setCustomInstructions(e.target.value)}
+                placeholder="Mention a specific angle, local detail, or objection..."
+                className="min-h-16 text-xs bg-background/50 border-border/70 rounded-lg resize-none"
+              />
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => void runRewriteWithInstructions(customInstructions)}
+                disabled={isGenerating || !body.trim() || !customInstructions.trim()}
+                className="w-full h-8 text-xs bg-brand hover:bg-brand/90 text-brand-foreground rounded-lg"
+              >
+                Apply Rewrite
+              </Button>
             </div>
           )}
-          {lead.niche && (
-            <div className="rounded-lg border border-border bg-muted/20 px-3 py-2.5">
-              <p className="text-xs text-muted-foreground leading-relaxed">Niche: {lead.niche}</p>
+        </div>
+
+        {/* 3. Tone (collapsed by default) */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("tone")}
+            className="flex w-full items-center justify-between p-3 text-left hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2.5">
+              <AlignLeft className="size-4 text-muted-foreground" />
+              <span className="text-xs font-semibold text-foreground">Tone</span>
+            </div>
+            {openSections.tone ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {openSections.tone && (
+            <div className="p-3 pt-1 border-t border-border/40 space-y-1.5">
+              {(["friendly", "professional", "direct"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => {
+                    setTone(t);
+                    void runRewriteWithInstructions(`Rewrite in a ${t} tone`, t);
+                  }}
+                  disabled={isGenerating || !body.trim()}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium border text-left transition-colors ${
+                    tone === t
+                      ? "border-[#4f46e5]/60 bg-[#4f46e5]/10 text-white"
+                      : "border-border/50 bg-background/40 text-muted-foreground hover:text-foreground hover:bg-card"
+                  }`}
+                >
+                  <span className="capitalize">{t}</span>
+                  {tone === t && <Check className="size-3.5 text-indigo-400" />}
+                </button>
+              ))}
             </div>
           )}
-          {(settings?.senderName || auth?.user?.fullName) && (
-            <div className="rounded-lg border border-border bg-muted/20 px-3 py-2.5">
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                Sender: {settings?.senderName ?? auth?.user?.fullName}
-              </p>
+        </div>
+
+        {/* 4. Length (collapsed by default) */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("length")}
+            className="flex w-full items-center justify-between p-3 text-left hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2.5">
+              <Sliders className="size-4 text-muted-foreground" />
+              <span className="text-xs font-semibold text-foreground">Length</span>
+            </div>
+            {openSections.length ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {openSections.length && (
+            <div className="p-3 pt-1 border-t border-border/40 grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void runRewriteWithInstructions("Make it concise, punchy, and under 75 words")}
+                disabled={isGenerating || !body.trim()}
+                className="h-8 text-xs border-border/60 bg-background/50 hover:bg-card text-foreground"
+              >
+                Shorten
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void runRewriteWithInstructions("Expand with more detail, proof points, and depth")}
+                disabled={isGenerating || !body.trim()}
+                className="h-8 text-xs border-border/60 bg-background/50 hover:bg-card text-foreground"
+              >
+                Expand
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* 5. Make it more... (collapsed by default) */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("more")}
+            className="flex w-full items-center justify-between p-3 text-left hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2.5">
+              <MessageCircle className="size-4 text-muted-foreground" />
+              <span className="text-xs font-semibold text-foreground">Make it more...</span>
+            </div>
+            {openSections.more ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {openSections.more && (
+            <div className="p-3 pt-1 border-t border-border/40 grid grid-cols-2 gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => void runRewriteWithInstructions("Make it casual, approachable, and warm")}
+                disabled={isGenerating || !body.trim()}
+                className="p-2 rounded-lg border border-border/60 bg-background/40 hover:bg-card text-muted-foreground hover:text-foreground text-left"
+              >
+                Casual
+              </button>
+              <button
+                type="button"
+                onClick={() => void runRewriteWithInstructions("Make it persuasive, focused on tangible business ROI")}
+                disabled={isGenerating || !body.trim()}
+                className="p-2 rounded-lg border border-border/60 bg-background/40 hover:bg-card text-muted-foreground hover:text-foreground text-left"
+              >
+                Persuasive
+              </button>
+              <button
+                type="button"
+                onClick={() => void runRewriteWithInstructions("Add timely urgency and limited availability")}
+                disabled={isGenerating || !body.trim()}
+                className="p-2 rounded-lg border border-border/60 bg-background/40 hover:bg-card text-muted-foreground hover:text-foreground text-left"
+              >
+                Urgent
+              </button>
+              <button
+                type="button"
+                onClick={() => void runRewriteWithInstructions("Add genuine compliments and appreciation for their work")}
+                disabled={isGenerating || !body.trim()}
+                className="p-2 rounded-lg border border-border/60 bg-background/40 hover:bg-card text-muted-foreground hover:text-foreground text-left"
+              >
+                Complimentary
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 6. Add a stronger CTA (collapsed by default) */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("cta")}
+            className="flex w-full items-center justify-between p-3 text-left hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2.5">
+              <Target className="size-4 text-muted-foreground" />
+              <span className="text-xs font-semibold text-foreground">Add a stronger CTA</span>
+            </div>
+            {openSections.cta ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {openSections.cta && (
+            <div className="p-3 pt-1 border-t border-border/40 space-y-1.5 text-xs">
+              <button
+                type="button"
+                onClick={() => addCTA("Would you be open to a quick 10-minute chat to see if this could be a good fit for you?")}
+                className="w-full text-left p-2 rounded-lg border border-border/50 bg-background/40 hover:bg-card text-muted-foreground hover:text-foreground leading-tight"
+              >
+                <p className="font-semibold text-foreground">10-Minute Chat</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">Low-friction conversation question</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => addCTA("Feel free to grab 15 minutes on my calendar directly whenever works best: [Calendar Link]")}
+                className="w-full text-left p-2 rounded-lg border border-border/50 bg-background/40 hover:bg-card text-muted-foreground hover:text-foreground leading-tight"
+              >
+                <p className="font-semibold text-foreground">Calendar Link</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">Direct link to book time</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => addCTA("Can I send over a quick 2-minute video review with a couple ideas for your site?")}
+                className="w-full text-left p-2 rounded-lg border border-border/50 bg-background/40 hover:bg-card text-muted-foreground hover:text-foreground leading-tight"
+              >
+                <p className="font-semibold text-foreground">Free Audit Offer</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">High-value video audit</p>
+              </button>
             </div>
           )}
         </div>
       </div>
 
-      {(auth?.user?.plan === "free" || auth?.user?.plan === "starter") && (
-        <div className="pt-2">
-          <LockedFeatureCard
-            featureName="Standard AI Personalization"
-            requiredPlan="pro"
-            description="Unlock automated sequences, multi-channel triggers, and deeper context-aware drafts."
-            valueProposition="Increase your response rates by 3x with multi-touch outreach flows."
-          />
+      {/* ─── BOTTOM: PERSONALIZATION CONTEXT ─── */}
+      <div className="p-4 border-t border-border/60 bg-card/20 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-foreground">Personalization Context</span>
+          <button
+            type="button"
+            onClick={() => setEditingContext(!editingContext)}
+            className="text-[11px] font-medium text-muted-foreground hover:text-foreground px-2 py-0.5 rounded border border-border/60 bg-card/40 transition-colors"
+          >
+            {editingContext ? "Done" : "Edit"}
+          </button>
         </div>
-      )}
+
+        {editingContext && (
+          <div className="space-y-1.5 pt-1">
+            <Textarea
+              value={customContextNotes}
+              onChange={(e) => setCustomContextNotes(e.target.value)}
+              placeholder="Add extra context (e.g., founded in 2018, opened second branch)..."
+              className="min-h-16 text-xs bg-background/50 border-border/70 rounded-lg resize-none"
+            />
+          </div>
+        )}
+
+        <div className="space-y-2 text-xs">
+          <label className="flex items-center gap-2 cursor-pointer text-muted-foreground hover:text-foreground">
+            <Checkbox
+              checked={personalization.businessNameAndNiche}
+              onCheckedChange={(c) =>
+                setPersonalization((prev) => ({ ...prev, businessNameAndNiche: Boolean(c) }))
+              }
+              className="size-4 border-border/80 data-[state=checked]:bg-[#4f46e5] data-[state=checked]:border-[#4f46e5]"
+            />
+            <span className="text-xs">Business name and niche</span>
+          </label>
+
+          <label className="flex items-center gap-2 cursor-pointer text-muted-foreground hover:text-foreground">
+            <Checkbox
+              checked={personalization.recentInstagramActivity}
+              onCheckedChange={(c) =>
+                setPersonalization((prev) => ({ ...prev, recentInstagramActivity: Boolean(c) }))
+              }
+              className="size-4 border-border/80 data-[state=checked]:bg-[#4f46e5] data-[state=checked]:border-[#4f46e5]"
+            />
+            <span className="text-xs">Recent Instagram activity</span>
+          </label>
+
+          <label className="flex items-center gap-2 cursor-pointer text-muted-foreground hover:text-foreground">
+            <Checkbox
+              checked={personalization.locationAndLocalMarket}
+              onCheckedChange={(c) =>
+                setPersonalization((prev) => ({ ...prev, locationAndLocalMarket: Boolean(c) }))
+              }
+              className="size-4 border-border/80 data-[state=checked]:bg-[#4f46e5] data-[state=checked]:border-[#4f46e5]"
+            />
+            <span className="text-xs">Location and local market</span>
+          </label>
+
+          <label className="flex items-center gap-2 cursor-pointer text-muted-foreground hover:text-foreground">
+            <Checkbox
+              checked={personalization.businessReviewsAndReputation}
+              onCheckedChange={(c) =>
+                setPersonalization((prev) => ({ ...prev, businessReviewsAndReputation: Boolean(c) }))
+              }
+              className="size-4 border-border/80 data-[state=checked]:bg-[#4f46e5] data-[state=checked]:border-[#4f46e5]"
+            />
+            <span className="text-xs">Business reviews and reputation</span>
+          </label>
+
+          <label className="flex items-center gap-2 cursor-pointer text-muted-foreground hover:text-foreground">
+            <Checkbox
+              checked={personalization.similarBusinessSuccessStories}
+              onCheckedChange={(c) =>
+                setPersonalization((prev) => ({ ...prev, similarBusinessSuccessStories: Boolean(c) }))
+              }
+              className="size-4 border-border/80 data-[state=checked]:bg-[#4f46e5] data-[state=checked]:border-[#4f46e5]"
+            />
+            <span className="text-xs">Similar business success stories</span>
+          </label>
+        </div>
+      </div>
     </div>
   );
 }

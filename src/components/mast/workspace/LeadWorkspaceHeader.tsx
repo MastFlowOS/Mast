@@ -1,12 +1,26 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, MoreVertical, Check, Loader2, Archive, Trash2, Copy, AlertTriangle, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  MoreVertical,
+  Star,
+  Bookmark,
+  Send,
+  Loader2,
+  Archive,
+  Trash2,
+  Copy,
+  AlertTriangle,
+  X,
+  Check,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useCreateLead, useRecordLeadActivity, useUpdateLead } from "@/hooks/use-mast-api";
+import { useCreateLead, useRecordLeadActivity, useUpdateLead, useLeads } from "@/hooks/use-mast-api";
 import { ApiError, type Lead, type LeadStatus } from "@/lib/api";
-import { LEAD_STATUSES, isRelationshipLead, leadStatusColor, leadStatusLabel, normalizeLeadStatus } from "@/lib/lead-workspace";
+import { isRelationshipLead, normalizeLeadStatus } from "@/lib/lead-workspace";
 
 type ConfirmAction = "archive" | "delete" | null;
 
@@ -15,8 +29,11 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
   const recordActivity = useRecordLeadActivity();
   const createLead = useCreateLead();
   const updateLeadMutation = useUpdateLead();
+  const { data: allLeads } = useLeads();
+
   const [saved, setSaved] = useState(isRelationshipLead(lead));
   const [status, setStatus] = useState<LeadStatus>(normalizeLeadStatus(lead.status));
+  const [isStarred, setIsStarred] = useState(lead.priority === "high");
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPending, setMenuPending] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
@@ -25,7 +42,8 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
   useEffect(() => {
     setSaved(isRelationshipLead(lead));
     setStatus(normalizeLeadStatus(lead.status));
-  }, [lead.status, lead.userId, lead.source, lead.lastContactedAt]);
+    setIsStarred(lead.priority === "high");
+  }, [lead.status, lead.userId, lead.source, lead.lastContactedAt, lead.priority]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -36,6 +54,60 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
     if (menuOpen) document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [menuOpen]);
+
+  // Lead switcher pagination
+  const leadList = Array.isArray(allLeads) ? allLeads : [];
+  const currentIndex = leadList.findIndex((item) => item.id === lead.id);
+  const displayIndex = currentIndex >= 0 ? currentIndex + 1 : 1;
+  const totalCount = leadList.length > 0 ? leadList.length : 1;
+
+  const handlePrevLead = () => {
+    if (currentIndex > 0) {
+      const prevId = leadList[currentIndex - 1].id;
+      navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(prevId) } });
+    }
+  };
+
+  const handleNextLead = () => {
+    if (currentIndex >= 0 && currentIndex < leadList.length - 1) {
+      const nextId = leadList[currentIndex + 1].id;
+      navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(nextId) } });
+    }
+  };
+
+  const toggleStar = async () => {
+    const nextStarred = !isStarred;
+    const nextPriority = nextStarred ? "high" : "normal";
+    setIsStarred(nextStarred);
+    try {
+      await updateLeadMutation.mutateAsync({ id: lead.id, body: { priority: nextPriority } });
+      toast.success(nextStarred ? "Opportunity starred" : "Opportunity unstarred");
+    } catch {
+      setIsStarred(!nextStarred);
+      toast.error("Could not update star status");
+    }
+  };
+
+  const handleStatusChange = async (nextStatus: LeadStatus) => {
+    if (nextStatus === status) return;
+    const previousStatus = status;
+    setStatus(nextStatus);
+    try {
+      await recordActivity.mutateAsync({
+        lead,
+        activity: {
+          type: "status_changed",
+          content: `Status changed to ${nextStatus}`,
+          metadata: { from: previousStatus, to: nextStatus },
+        },
+        patch: { status: nextStatus },
+      });
+      toast.success("Lead status updated");
+    } catch (error) {
+      setStatus(previousStatus);
+      toast.error(error instanceof ApiError ? error.message : "Failed to update status");
+    }
+  };
 
   const handleSaveToCRM = async () => {
     try {
@@ -49,31 +121,29 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
         patch: { status },
       });
       setSaved(true);
-      toast.success(`${lead.businessName} added to pipeline`);
+      toast.success(`${lead.businessName} saved to pipeline`);
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Failed to update lead");
     }
   };
 
-  const handleStatusChange = async (nextStatus: LeadStatus) => {
-    if (nextStatus === status) return;
-    const previousStatus = status;
-    setStatus(nextStatus);
-
+  const handleMarkAsSent = async () => {
+    const sentAt = new Date().toISOString();
     try {
       await recordActivity.mutateAsync({
         lead,
         activity: {
-          type: "status_changed",
-          content: `Status changed from ${leadStatusLabel(previousStatus)} to ${leadStatusLabel(nextStatus)}`,
-          metadata: { from: previousStatus, to: nextStatus },
+          type: "email_sent",
+          channel: "email",
+          timestamp: sentAt,
+          content: "Marked as sent from workspace header",
         },
-        patch: { status: nextStatus },
+        patch: { status: "email_sent", lastContactedAt: sentAt },
       });
-      toast.success("Lead status updated");
+      setStatus("email_sent");
+      toast.success("Opportunity marked as sent");
     } catch (error) {
-      setStatus(previousStatus);
-      toast.error(error instanceof ApiError ? error.message : "Failed to update status");
+      toast.error(error instanceof ApiError ? error.message : "Failed to mark as sent");
     }
   };
 
@@ -136,74 +206,96 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
     }
   };
 
-  const statusColor = leadStatusColor(status);
-  const initials =
-    lead.businessName
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((p) => p[0]?.toUpperCase())
-      .join("") || "L";
-
   return (
-    <header className="flex min-h-16 flex-col items-stretch justify-between gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur-xl sticky top-0 z-20 sm:flex-row sm:items-center lg:px-6">
-      <div className="flex min-w-0 items-center gap-3">
+    <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-[#0b0f17] px-4 backdrop-blur-xl sticky top-0 z-20 select-none lg:px-6">
+      {/* Left: Back button + Pagination */}
+      <div className="flex items-center gap-3">
         <button
+          type="button"
           onClick={() => navigate({ to: "/dashboard/pipeline" })}
-          className="p-2 hover:bg-card rounded-lg transition-colors text-muted-foreground hover:text-foreground"
+          className="inline-flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-card hover:text-white"
         >
-          <ArrowLeft className="size-5" />
+          <ArrowLeft className="size-3.5 text-muted-foreground" />
+          <span>Back to leads</span>
         </button>
 
-        <div className="size-9 rounded-xl bg-brand/10 border border-brand/20 grid place-items-center text-sm font-bold text-brand shrink-0">
-          {initials}
-        </div>
-
-        <div className="min-w-0">
-          <h1 className="truncate font-semibold text-base leading-tight">{lead.businessName}</h1>
-          <div className="flex flex-wrap items-center gap-2 mt-0.5">
-            <span className={`px-2 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wider ${statusColor}`}>
-              {leadStatusLabel(status)}
-            </span>
-            {lead.niche && (
-              <span className="truncate text-xs text-muted-foreground">{lead.niche}</span>
-            )}
-          </div>
+        <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-card/30 px-2 py-1 text-xs text-muted-foreground">
+          <button
+            type="button"
+            onClick={handlePrevLead}
+            disabled={currentIndex <= 0}
+            className="p-0.5 rounded hover:text-foreground disabled:opacity-30 disabled:hover:text-muted-foreground transition-colors"
+            title="Previous lead"
+          >
+            <ChevronLeft className="size-3.5" />
+          </button>
+          <span className="font-mono text-xs text-foreground px-1.5">
+            {displayIndex} / {totalCount}
+          </span>
+          <button
+            type="button"
+            onClick={handleNextLead}
+            disabled={currentIndex < 0 || currentIndex >= leadList.length - 1}
+            className="p-0.5 rounded hover:text-foreground disabled:opacity-30 disabled:hover:text-muted-foreground transition-colors"
+            title="Next lead"
+          >
+            <ChevronRight className="size-3.5" />
+          </button>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <Select value={status} onValueChange={(value) => void handleStatusChange(value as LeadStatus)}>
-          <SelectTrigger className="h-9 w-full bg-card text-xs sm:w-[164px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {LEAD_STATUSES.map((item) => (
-              <SelectItem key={item.value} value={item.value}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      {/* Right: Star + Save + Mark as sent + More */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={toggleStar}
+          className={`size-8 rounded-lg border border-border/60 bg-card/40 grid place-items-center transition-colors ${
+            isStarred ? "text-amber-400 border-amber-500/40 bg-amber-500/10" : "text-muted-foreground hover:text-foreground"
+          }`}
+          title={isStarred ? "Starred lead" : "Star lead"}
+        >
+          <Star className={`size-4 ${isStarred ? "fill-amber-400" : ""}`} />
+        </button>
 
-        {/* Three-dot menu */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleSaveToCRM}
+          disabled={recordActivity.isPending || saved}
+          className="h-8 gap-1.5 border-border/60 bg-card/40 text-xs font-medium hover:bg-card text-foreground"
+        >
+          {saved ? <Check className="size-3.5 text-emerald-400" /> : <Bookmark className="size-3.5 text-muted-foreground" />}
+          <span>{saved ? "Saved" : "Save"}</span>
+        </Button>
+
+        <Button
+          size="sm"
+          onClick={handleMarkAsSent}
+          disabled={recordActivity.isPending || status === "email_sent"}
+          className="h-8 gap-1.5 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-medium px-3.5 rounded-lg shadow-sm shadow-indigo-500/25 transition-all"
+        >
+          <Send className="size-3.5" />
+          <span>{status === "email_sent" ? "Sent" : "Mark as sent"}</span>
+        </Button>
+
+        {/* Three-dot dropdown menu */}
         <div ref={menuRef} className="relative">
-          <Button
-            variant="outline"
-            size="icon"
-            className="hover:bg-card"
+          <button
+            type="button"
             onClick={() => setMenuOpen((o) => !o)}
             disabled={menuPending !== null}
+            className="size-8 rounded-lg border border-border/60 bg-card/40 grid place-items-center text-muted-foreground hover:text-foreground transition-colors"
+            title="More actions"
           >
             {menuPending ? (
-              <Loader2 className="size-4 animate-spin" />
+              <Loader2 className="size-3.5 animate-spin" />
             ) : (
-              <MoreVertical className="size-4" />
+              <MoreVertical className="size-3.5" />
             )}
-          </Button>
+          </button>
 
           {menuOpen && (
-            <div className="absolute right-0 top-full z-30 mt-1 w-52 rounded-xl border border-border bg-card shadow-xl animate-scale-in-fast">
+            <div className="absolute right-0 top-full z-30 mt-1 w-52 rounded-xl border border-border bg-[#101726] shadow-2xl animate-scale-in-fast">
               <div className="p-1">
                 <MenuAction
                   icon={Archive}
@@ -217,7 +309,7 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
                   onClick={handleDuplicate}
                   description="Create a copy of this opportunity"
                 />
-                <div className="my-1 h-px bg-border" />
+                <div className="my-1 h-px bg-border/60" />
                 <MenuAction
                   icon={Trash2}
                   label="Remove"
@@ -231,8 +323,8 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
 
           {/* Inline Confirmation Dialog */}
           {confirmAction && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in">
-              <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-2xl space-y-5 animate-scale-in">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
+              <div className="w-full max-w-sm rounded-2xl border border-border bg-[#101726] p-6 shadow-2xl space-y-5 animate-scale-in">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
                     <div className="size-10 rounded-xl bg-destructive/10 border border-destructive/20 grid place-items-center">
@@ -274,20 +366,6 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
             </div>
           )}
         </div>
-
-        <Button
-          onClick={handleSaveToCRM}
-          disabled={recordActivity.isPending || saved}
-          className={saved ? "bg-success/15 border border-success/30 text-success hover:bg-success/15" : "bg-brand hover:bg-brand/90 text-brand-foreground shadow-brand"}
-        >
-          {recordActivity.isPending ? (
-            <><Loader2 className="size-4 mr-1.5 animate-spin" /> Saving…</>
-          ) : saved ? (
-            <><Check className="size-4 mr-1.5" /> Saved</>
-          ) : (
-            "Save to Relationships"
-          )}
-        </Button>
       </div>
     </header>
   );
@@ -310,7 +388,7 @@ function MenuAction({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-muted/60 ${
+      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-muted/60 ${
         danger ? "text-destructive" : "text-foreground"
       }`}
     >

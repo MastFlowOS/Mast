@@ -1,34 +1,43 @@
-import { Mail, Phone, Globe, Instagram, MapPin, Tag, ExternalLink, Copy, Check, Sparkles, Zap, Lightbulb, MessageCircle, ShieldCheck, AlertTriangle } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import {
+  Mail,
+  Phone,
+  Globe,
+  Instagram,
+  Copy,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  ChevronRight,
+  Star,
+  MoreVertical,
+  Lightbulb,
+  Target,
+  Clock,
+  FileText,
+  Sparkles,
+  ShieldCheck,
+  Zap,
+  AlertTriangle,
+  Link as LinkIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import type { Lead, FieldTrustEntry } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
-import { ChannelAvailabilityCard } from "./components/ChannelAvailabilityCard";
 import { leadNicheLabel, stripActivityMarkers } from "@/lib/lead-workspace";
-import { staggerDelay } from "@/lib/motion";
-import { useOpportunityExplanation, useOpportunityInsight, useLeadTrust } from "@/hooks/use-mast-api";
-import { FeatureGate } from "@/components/mast/FeatureGate";
+import { useOpportunityExplanation, useOpportunityInsight, useLeadTrust, useUpdateLead } from "@/hooks/use-mast-api";
 import { normalizeInstagram } from "@/lib/instagram";
 import { resolveTrustPanelState, getFieldTrustEntry, formatVerificationLine, resolveDisqualificationDisplay } from "@/lib/trustPanel";
+import { nicheImage } from "@/components/mast/discover/nicheImages";
+import { ActivityTimeline } from "./components/ActivityTimeline";
+import { NoteForm } from "./components/NoteForm";
 
-// Fields the Trust panel exposes per-lead — matches the field keys the
-// engine attaches provenance to (see fieldTrust.ts). Fields with no
-// provenance entry are shown as "no trust data", never fabricated.
 const TRUST_FIELDS: Array<{ key: string; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { key: "email", label: "Email", icon: Mail },
   { key: "phone", label: "Phone", icon: Phone },
   { key: "website", label: "Website", icon: Globe },
   { key: "instagram", label: "Instagram", icon: Instagram },
 ];
-
-function formatSourceLabel(source: string | null | undefined): string {
-  if (!source) return "Mast Opportunity Engine";
-  if (source === "internal_generator") return "Mast Opportunity Engine";
-  if (source === "manual") return "Manual Entry";
-  if (source === "import") return "CSV Import";
-  if (source === "live_search") return "Live Search";
-  return source.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 export function LeftSidebar({
   lead,
@@ -39,7 +48,19 @@ export function LeftSidebar({
   channel: Channel;
   setChannel: (channel: Channel) => void;
 }) {
+  const updateLeadMutation = useUpdateLead();
   const [copied, setCopied] = useState<string | null>(null);
+  const [contactMethodsOpen, setContactMethodsOpen] = useState(true);
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    insights: false,
+    why: false,
+    activity: false,
+    notes: false,
+  });
+
+  const toggleSection = (key: string) => {
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   const handleCopy = (text: string, label: string) => {
     void navigator.clipboard.writeText(text);
@@ -48,424 +69,470 @@ export function LeftSidebar({
     setTimeout(() => setCopied(null), 2000);
   };
 
-  // Real Opportunity Score (Part 3 Phase 6) when this lead came through the
-  // Opportunity Engine. Older/manual leads have no business_id/opportunity_score
-  // yet — fall back to the priority-based estimate that was already here so
-  // nothing regresses for pre-existing data.
   const hasRealScore = lead.opportunityScore != null;
-  const score = hasRealScore ? Math.round(lead.opportunityScore!) : lead.priority === "high" ? 94 : lead.priority === "normal" ? 78 : 62;
+  const score = hasRealScore
+    ? Math.round(lead.opportunityScore!)
+    : lead.priority === "high"
+      ? 94
+      : lead.priority === "normal"
+        ? 78
+        : 62;
+
+  const opportunityLevel = score >= 80 ? "High Opportunity" : score >= 60 ? "Medium Opportunity" : "Opportunity";
   const nicheLabel = leadNicheLabel(lead.niche);
+  const ig = normalizeInstagram(lead.instagramHandle);
+  const businessImageUrl = nicheImage(lead.niche || "");
 
-  const hasContactData = lead.email || lead.phone || lead.website || lead.instagramHandle || lead.location;
+  // Real Opportunity Explanation read
+  const { data: explanation } = useOpportunityExplanation(lead.id, Boolean(lead.businessId));
 
-  // Deterministic Opportunity Explanation (Part 3 Phase 8) — reads the real
-  // score breakdown, never fabricated. Only leads with a linked business
-  // (i.e. delivered via Discover) have one to explain.
-  const { data: explanation, isLoading: explanationLoading } = useOpportunityExplanation(lead.id, Boolean(lead.businessId));
-
-  // Trust / Business Health (Priority 2/3/7) — field-level provenance/confidence
-  // plus the independent Business Health Score. Deterministic, no gating.
+  // Trust / Business Health read
   const { data: trust, isLoading: trustLoading, isError: trustError } = useLeadTrust(lead.id, Boolean(lead.businessId));
-
-  // Disqualification transparency — straight readout of the existing
-  // businesses.is_disqualified / disqualify_reason values already computed
-  // by qualification/scoring. Null (nothing rendered) for the normal,
-  // non-disqualified case; only surfaces once the Trust data has loaded.
   const disqualification = resolveDisqualificationDisplay(trust);
 
-  // AI Opportunity Insight (Premium) — headline/talking points/opening line
-  // grounded in the same explanation, gated below with <FeatureGate>.
-  const { data: insight, isLoading: insightLoading } = useOpportunityInsight(lead.businessId);
+  // AI Opportunity Insight read
+  const { data: insight } = useOpportunityInsight(lead.businessId);
 
-  // Extract AI Overview and Suggested Action
+  // Extract AI Overview and Suggested Action if present in notes
   let aiOverview = "";
   let suggestedAction = "";
   if (lead.notes) {
     const rawNotes = stripActivityMarkers(lead.notes);
     const overviewMatch = rawNotes.match(/AI Overview:\s*([\s\S]*?)(?=\n\nSuggested First Action:|$)/i);
     const actionMatch = rawNotes.match(/Suggested First Action:\s*([\s\S]*?)$/i);
-    
     if (overviewMatch) aiOverview = overviewMatch[1].trim();
     if (actionMatch) suggestedAction = actionMatch[1].trim();
   }
 
-  // Animate score bar from 0 to score on mount
-  const [animatedScore, setAnimatedScore] = useState(0);
-  useEffect(() => {
-    const t = setTimeout(() => setAnimatedScore(score), 120);
-    return () => clearTimeout(t);
-  }, [score]);
+  // Derive bio / description
+  const cleanDomain = lead.website ? lead.website.replace(/^https?:\/\//, "").replace(/\/.*$/, "") : "";
+  const displayDescription =
+    lead.igBio ||
+    lead.brandingNotes ||
+    (explanation?.summary ? explanation.summary : null) ||
+    (lead.websiteNotes || null) ||
+    `Local ${nicheLabel || "business"} in ${lead.location || "your market"} with verified outreach opportunities.`;
+
+  const contactFormUrl = cleanDomain ? `${cleanDomain}/contact` : lead.website || "Website contact";
 
   return (
-    <aside className="w-[232px] shrink-0 border-r border-border flex flex-col overflow-y-auto bg-card/40 animate-slide-right">
-      <div className="p-5 space-y-7">
-
-        {/* Score */}
-        <div className={`space-y-2 animate-fade-up ${staggerDelay(0)}`}>
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Opportunity Score</span>
-            <span className="text-sm font-bold text-brand font-mono">{score}%</span>
-          </div>
-          <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-brand/70 to-brand rounded-full"
-              style={{ width: `${animatedScore}%`, transition: "width 1.1s cubic-bezier(0.16, 1, 0.3, 1)" }}
+    <aside className="w-full shrink-0 border-b border-border bg-[#0d121d]/80 lg:w-[320px] lg:border-b-0 lg:border-r overflow-y-auto flex flex-col p-4 space-y-4">
+      {/* ─── 1. LEAD PROFILE CARD ─── */}
+      <div className="rounded-2xl border border-border/80 bg-card/40 p-4 space-y-3.5">
+        <div className="flex items-start gap-3">
+          {/* Business Image thumbnail */}
+          <div className="size-16 rounded-xl overflow-hidden bg-muted/40 border border-border/60 shrink-0">
+            <img
+              src={businessImageUrl}
+              alt={lead.businessName}
+              className="size-full object-cover"
+              onError={(e) => {
+                // Fallback to initial avatar
+                e.currentTarget.style.display = "none";
+              }}
             />
+            <div className="size-full grid place-items-center text-sm font-bold text-brand bg-brand/10">
+              {lead.businessName.slice(0, 2).toUpperCase()}
+            </div>
+          </div>
+
+          {/* Business Name, Category, Location, Star, More */}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-1">
+              <h2 className="font-semibold text-sm text-foreground truncate" title={lead.businessName}>
+                {lead.businessName}
+              </h2>
+              <div className="flex items-center shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const next = lead.priority === "high" ? "normal" : "high";
+                    await updateLeadMutation.mutateAsync({ id: lead.id, body: { priority: next } });
+                    toast.success(next === "high" ? "Marked as favorite" : "Removed from favorites");
+                  }}
+                  className="p-1 text-muted-foreground hover:text-amber-400 transition-colors"
+                  title="Favorite"
+                >
+                  <Star className={`size-3.5 ${lead.priority === "high" ? "text-amber-400 fill-amber-400" : ""}`} />
+                </button>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+              {nicheLabel || "Business"} • {lead.location || "Local"} 🇺🇸
+            </p>
           </div>
         </div>
 
-        {/* Disqualification transparency — compact warning when this lead's
-            business is disqualified, with the exact stored reason. Nothing
-            renders for the normal (non-disqualified) case. */}
-        {lead.businessId && disqualification && (
-          <div className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/5 p-3 animate-fade-up">
-            <AlertTriangle className="size-4 text-destructive shrink-0 mt-0.5" />
-            <div className="space-y-0.5 min-w-0">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-destructive">{disqualification.label}</p>
-              <p className="text-[11px] text-foreground leading-relaxed">{disqualification.reason}</p>
+        {/* Bio / Description */}
+        <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3 font-normal">
+          {displayDescription}
+        </p>
+
+        {/* Opportunity Score Badges */}
+        <div className="flex items-center gap-2 pt-0.5">
+          <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/10 border border-emerald-500/25 text-emerald-400">
+            {opportunityLevel}
+          </span>
+          <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-card/80 border border-border/80 text-foreground">
+            Score <span className="ml-1 text-foreground font-mono font-bold">{score}</span>
+          </span>
+        </div>
+      </div>
+
+      {/* ─── 2. CONTACT METHODS SECTION ─── */}
+      <div className="rounded-2xl border border-border/80 bg-card/40 p-4 space-y-3">
+        <button
+          type="button"
+          onClick={() => setContactMethodsOpen(!contactMethodsOpen)}
+          className="flex w-full items-center justify-between text-left text-xs font-semibold text-foreground hover:text-white transition-colors"
+        >
+          <span>Contact Methods</span>
+          {contactMethodsOpen ? (
+            <ChevronUp className="size-4 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="size-4 text-muted-foreground" />
+          )}
+        </button>
+
+        {contactMethodsOpen && (
+          <div className="space-y-2 pt-1">
+            {/* Email */}
+            <div
+              onClick={() => setChannel("email")}
+              className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
+                channel === "email"
+                  ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
+                  : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="size-8 rounded-lg bg-blue-500/15 border border-blue-500/25 text-blue-400 grid place-items-center shrink-0">
+                  <Mail className="size-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-foreground leading-tight">Email</p>
+                  <p className="text-[11px] text-muted-foreground truncate leading-tight mt-0.5 max-w-[140px]">
+                    {lead.email || "No email available"}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                    lead.email
+                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                      : "bg-muted/40 text-muted-foreground border border-border/40"
+                  }`}
+                >
+                  {lead.email ? "Verified" : "Missing"}
+                </span>
+                <ChevronRight className="size-3.5 text-muted-foreground" />
+              </div>
+            </div>
+
+            {/* Instagram */}
+            <div
+              onClick={() => setChannel("instagram")}
+              className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
+                channel === "instagram"
+                  ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
+                  : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="size-8 rounded-lg bg-pink-500/15 border border-pink-500/25 text-pink-400 grid place-items-center shrink-0">
+                  <Instagram className="size-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-foreground leading-tight">Instagram</p>
+                  <p className="text-[11px] text-muted-foreground truncate leading-tight mt-0.5 max-w-[140px]">
+                    {ig?.handle ? `@${ig.handle}` : lead.instagramHandle ? `@${lead.instagramHandle}` : "Not connected"}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                    lead.instagramHandle
+                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                      : "bg-muted/40 text-muted-foreground border border-border/40"
+                  }`}
+                >
+                  {lead.instagramHandle ? "Available" : "Missing"}
+                </span>
+                <ChevronRight className="size-3.5 text-muted-foreground" />
+              </div>
+            </div>
+
+            {/* Phone */}
+            <div
+              onClick={() => setChannel("phone")}
+              className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
+                channel === "phone"
+                  ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
+                  : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="size-8 rounded-lg bg-emerald-500/15 border border-emerald-500/25 text-emerald-400 grid place-items-center shrink-0">
+                  <Phone className="size-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-foreground leading-tight">Phone</p>
+                  <p className="text-[11px] text-muted-foreground truncate leading-tight mt-0.5 max-w-[140px]">
+                    {lead.phone || "Not connected"}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                    lead.phone
+                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                      : "bg-muted/40 text-muted-foreground border border-border/40"
+                  }`}
+                >
+                  {lead.phone ? "Verified" : "Missing"}
+                </span>
+                <ChevronRight className="size-3.5 text-muted-foreground" />
+              </div>
+            </div>
+
+            {/* Contact Form */}
+            <div
+              onClick={() => setChannel("contact_form")}
+              className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
+                channel === "contact_form"
+                  ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
+                  : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="size-8 rounded-lg bg-sky-500/15 border border-sky-500/25 text-sky-400 grid place-items-center shrink-0">
+                  <LinkIcon className="size-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-foreground leading-tight">Contact Form</p>
+                  <p className="text-[11px] text-muted-foreground truncate leading-tight mt-0.5 max-w-[140px]">
+                    {contactFormUrl}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                    lead.website
+                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                      : "bg-muted/40 text-muted-foreground border border-border/40"
+                  }`}
+                >
+                  {lead.website ? "Available" : "Missing"}
+                </span>
+                <ChevronRight className="size-3.5 text-muted-foreground" />
+              </div>
             </div>
           </div>
         )}
+      </div>
 
-        {/* Opportunity Explanation — why MAST surfaced this business, from the
-            real Opportunity Score breakdown (Part 3 Phase 8). Deterministic,
-            available on every plan. */}
-        {lead.businessId && (
-          <section className={`space-y-3 animate-fade-up ${staggerDelay(1)}`}>
-            <SectionHeading>Why This Opportunity</SectionHeading>
-            {explanationLoading ? (
-              <div className="h-16 rounded-xl bg-muted/30 animate-pulse" />
-            ) : explanation ? (
-              <div className="rounded-xl border border-brand/20 bg-brand/5 p-3 space-y-2.5">
-                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand">
-                  <Lightbulb className="size-4 text-brand" />
-                  <span>{explanation.professionMatch === "strong" ? "Strong match for your profession" : explanation.professionMatch === "moderate" ? "Moderate profession match" : "Profession match"}</span>
-                </div>
-                <p className="text-[11px] text-foreground leading-relaxed font-sans">{explanation.summary}</p>
-                <ul className="space-y-1.5">
-                  {explanation.reasons.map((reason) => (
-                    <li key={reason.component} className="text-[11px] leading-relaxed">
-                      <span className="font-semibold text-foreground">{reason.label}:</span>{" "}
-                      <span className="text-muted-foreground">{reason.detail}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </section>
-        )}
-
-        {/* Trust / Business Health — field-level provenance/confidence plus
-            the independent Business Health Score (Priority 2/3/7). Never
-            blended into the Opportunity Score above. Only leads with a
-            linked business have trust data to show. */}
-        {lead.businessId && (() => {
-          const panelState = resolveTrustPanelState({ isLoading: trustLoading, isError: trustError, data: trust });
-          const verificationLine = trust ? formatVerificationLine(trust.lastVerifiedAt, trust.lastVerificationKind) : null;
-          return (
-            <section className={`space-y-3 animate-fade-up ${staggerDelay(1)}`}>
-              <SectionHeading>Trust &amp; Health</SectionHeading>
-              {panelState === "loading" && <div className="h-24 rounded-xl bg-muted/30 animate-pulse" />}
-              {panelState === "error" && <p className="text-[11px] text-muted-foreground">Trust data unavailable.</p>}
-              {panelState === "empty" && <p className="text-[11px] text-muted-foreground">Trust data unavailable.</p>}
-              {panelState === "data" && trust && (
-                <div className="space-y-2.5">
-                  {/* Business Health */}
-                  {trust.businessHealth ? (
-                    <div className="space-y-1.5 rounded-xl border border-border bg-background p-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                          <ShieldCheck className="size-4 text-brand" />
-                          <span>Business Health</span>
-                        </div>
-                        <span className="text-xs font-bold font-mono text-foreground">{Math.round(trust.businessHealth.score)}%</span>
-                      </div>
-                      <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-brand/70 to-brand rounded-full"
-                          style={{ width: `${Math.round(trust.businessHealth.score)}%` }}
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-[11px] text-muted-foreground">Health score unavailable.</p>
-                  )}
-
-                  {/* Field Trust */}
-                  <div className="space-y-1.5">
-                    {TRUST_FIELDS.map(({ key, label, icon: Icon }) => {
-                      const entry: FieldTrustEntry | undefined = getFieldTrustEntry(trust.fieldTrust, key);
-                      return (
-                        <div key={key} className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-background border border-border">
-                          <Icon className="size-4 text-muted-foreground shrink-0" />
-                          <span className="text-xs text-foreground flex-1 truncate">{label}</span>
-                          {entry ? (
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <span className="text-[10px] font-semibold text-brand">{entry.confidence}%</span>
-                              <span className="text-[10px] text-muted-foreground truncate max-w-[88px]">{entry.source}</span>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] text-muted-foreground shrink-0">No trust data</span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Verification */}
-                  {verificationLine ? (
-                    <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-background border border-border text-[11px]">
-                      <span className="text-muted-foreground">Last verified</span>
-                      <span className="font-medium text-foreground">{verificationLine}</span>
-                    </div>
-                  ) : (
-                    <p className="text-[11px] text-muted-foreground">No verification recorded yet.</p>
-                  )}
-                </div>
-              )}
-            </section>
-          );
-        })()}
-
-        {/* AI Opportunity Insight — Premium. Headline + talking points +
-            suggested opening line, grounded in the explanation above, cached
-            server-side per business+profession. */}
-        {lead.businessId && (
-          <FeatureGate feature="opportunityInsights" fallback="hide">
-            <section className="space-y-3 animate-fade-up">
-              <SectionHeading>AI Opportunity Insight</SectionHeading>
-              {insightLoading ? (
-                <div className="h-24 rounded-xl bg-muted/30 animate-pulse" />
-              ) : insight ? (
-                <div className="rounded-xl border border-brand/20 bg-brand/5 p-3 space-y-2.5">
-                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand">
-                    <Sparkles className="size-4 text-brand" />
-                    <span>{insight.headline}</span>
-                  </div>
-                  {insight.talking_points.length > 0 && (
-                    <ul className="space-y-1 list-disc list-inside">
-                      {insight.talking_points.map((point, i) => (
-                        <li key={i} className="text-[11px] text-foreground leading-relaxed">{point}</li>
-                      ))}
-                    </ul>
-                  )}
-                  <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1">
-                    <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-500">
-                      <MessageCircle className="size-4 text-amber-500" />
-                      <span>Suggested Opening</span>
-                    </div>
-                    <p className="text-[11px] text-foreground leading-relaxed font-medium">{insight.opening_line}</p>
-                  </div>
-                </div>
-              ) : null}
-            </section>
-          </FeatureGate>
-        )}
-
-        {/* Contextual Intelligence */}
-        {(aiOverview || suggestedAction) && (
-          <section className={`space-y-3 animate-fade-up ${staggerDelay(1)}`}>
-            <SectionHeading>Contextual Intelligence</SectionHeading>
-            <div className="space-y-2.5">
+      {/* ─── 3. SECONDARY ACCORDIONS ─── */}
+      <div className="space-y-2">
+        {/* Accordion 1: Business Insights */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("insights")}
+            className="flex w-full items-center justify-between p-3.5 text-left text-xs font-semibold text-foreground hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Lightbulb className="size-4 text-amber-400" />
+              <span>Business Insights</span>
+            </div>
+            {openSections.insights ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+          {openSections.insights && (
+            <div className="p-3.5 pt-0 border-t border-border/40 space-y-3 text-xs">
+              {/* Contextual Intelligence */}
               {aiOverview && (
-                <div className="rounded-xl border border-brand/20 bg-brand/5 p-3 space-y-1 relative overflow-hidden">
+                <div className="rounded-lg border border-brand/20 bg-brand/5 p-2.5 space-y-1">
                   <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand">
-                    <Sparkles className="size-4 text-brand" />
+                    <Sparkles className="size-3.5" />
                     <span>AI Overview</span>
                   </div>
-                  <p className="text-[11px] text-foreground leading-relaxed font-sans">
-                    {aiOverview}
-                  </p>
+                  <p className="text-[11px] text-foreground leading-relaxed">{aiOverview}</p>
                 </div>
               )}
+
               {suggestedAction && (
-                <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3 space-y-1 relative overflow-hidden">
+                <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1">
                   <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-500">
-                    <Zap className="size-4 text-amber-500" />
-                    <span>Suggested Action</span>
+                    <Zap className="size-3.5" />
+                    <span>Suggested First Action</span>
                   </div>
-                  <p className="text-[11px] text-foreground leading-relaxed font-sans font-medium">
-                    {suggestedAction}
-                  </p>
+                  <p className="text-[11px] text-foreground leading-relaxed font-medium">{suggestedAction}</p>
                 </div>
               )}
-            </div>
-          </section>
-        )}
 
-        {/* Contact */}
-        <section className={`space-y-3 animate-fade-up ${staggerDelay(2)}`}>
-          <SectionHeading>Contact</SectionHeading>
-          {hasContactData ? (
-            <div className="space-y-1.5">
-              {lead.email && (
-                <ContactRow
-                  icon={Mail}
-                  label="Email"
-                  value={lead.email}
-                  onCopy={() => handleCopy(lead.email!, "Email")}
-                  copied={copied === "Email"}
-                />
-              )}
-              {lead.phone && (
-                <ContactRow
-                  icon={Phone}
-                  label="Phone"
-                  value={lead.phone}
-                  href={`tel:${lead.phone}`}
-                  onCopy={() => handleCopy(lead.phone!, "Phone")}
-                  copied={copied === "Phone"}
-                />
-              )}
-              {lead.website && (
-                <ContactRow
-                  icon={Globe}
-                  label="Website"
-                  value={lead.website}
-                  href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`}
-                  onCopy={() => handleCopy(lead.website!, "Website")}
-                  copied={copied === "Website"}
-                />
-              )}
-              {(() => {
-                const ig = normalizeInstagram(lead.instagramHandle);
-                if (!ig) return null;
-                return (
-                  <ContactRow
-                    icon={Instagram}
-                    label="Instagram"
-                    value={`@${ig.handle}`}
-                    href={ig.profileUrl}
-                    onCopy={() => handleCopy(`@${ig.handle}`, "Instagram")}
-                    copied={copied === "Instagram"}
-                  />
-                );
-              })()}
-              {lead.location && (
-                <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-background border border-border">
-                  <MapPin className="size-4 text-muted-foreground shrink-0" />
-                  <span className="text-xs text-foreground truncate">{lead.location}</span>
+              {/* Health Score */}
+              {trust?.businessHealth && (
+                <div className="rounded-lg border border-border bg-background/50 p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                      <ShieldCheck className="size-3.5 text-brand" /> Business Health
+                    </span>
+                    <span className="font-mono font-bold text-foreground">{Math.round(trust.businessHealth.score)}%</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-brand rounded-full"
+                      style={{ width: `${Math.round(trust.businessHealth.score)}%` }}
+                    />
+                  </div>
                 </div>
               )}
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground">No contact data available.</p>
-          )}
-        </section>
 
-        <ChannelAvailabilityCard lead={lead} channel={channel} setChannel={setChannel} />
+              {/* AI Opportunity Insight */}
+              {insight && (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Talking Points</p>
+                  <ul className="space-y-1 text-[11px] text-muted-foreground list-disc list-inside">
+                    {insight.talking_points.slice(0, 3).map((pt, i) => (
+                      <li key={i} className="text-foreground leading-tight">{pt}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
-        {/* Status */}
-        <section className={`space-y-3 animate-fade-up ${staggerDelay(3)}`}>
-          <SectionHeading>Status</SectionHeading>
-          <div className="space-y-1.5">
-            <InfoRow label="Status" value={lead.status} />
-            {lead.priority && <InfoRow label="Priority" value={lead.priority} />}
-            {nicheLabel && (
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-background border border-border">
-                <Tag className="size-4 text-brand shrink-0" />
-                <span className="text-xs text-foreground truncate">{nicheLabel}</span>
+              {/* Details */}
+              <div className="space-y-1 pt-1 text-[11px] text-muted-foreground">
+                {lead.igFollowers && (
+                  <div className="flex justify-between">
+                    <span>IG Followers</span>
+                    <span className="font-medium text-foreground">{lead.igFollowers}</span>
+                  </div>
+                )}
+                {lead.website && (
+                  <div className="flex justify-between">
+                    <span>Website</span>
+                    <span className="font-medium text-foreground truncate max-w-[130px]">{lead.website}</span>
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <span>Created</span>
+                  <span className="font-medium text-foreground">{new Date(lead.createdAt).toLocaleDateString()}</span>
+                </div>
               </div>
-            )}
-            {lead.tags && <InfoRow label="Tags" value={lead.tags} />}
-          </div>
-        </section>
-
-        {(lead.igFollowers || lead.igBio || lead.igLastPost || lead.igPostDescription || lead.brandingNotes || lead.websiteNotes) && (
-          <section className="space-y-3">
-            <SectionHeading>Research</SectionHeading>
-            <div className="space-y-2 text-xs">
-              {lead.igFollowers && <MetaRow label="IG followers" value={lead.igFollowers} />}
-              {lead.igBio && <ResearchBlock label="IG bio" value={lead.igBio} />}
-              {lead.igLastPost && <ResearchBlock label="Last post" value={lead.igLastPost} />}
-              {lead.igPostDescription && <ResearchBlock label="Post notes" value={lead.igPostDescription} />}
-              {lead.brandingNotes && <ResearchBlock label="Branding" value={lead.brandingNotes} />}
-              {lead.websiteNotes && <ResearchBlock label="Website" value={lead.websiteNotes} />}
             </div>
-          </section>
-        )}
+          )}
+        </div>
 
-        {/* Meta */}
-        <section className="space-y-3">
-          <SectionHeading>Details</SectionHeading>
-          <div className="space-y-1.5 text-xs">
-            <MetaRow label="Source" value={formatSourceLabel(lead.source)} />
-            <MetaRow label="Created" value={new Date(lead.createdAt).toLocaleDateString()} />
-            {lead.lastContactedAt && (
-              <MetaRow label="Last contact" value={new Date(lead.lastContactedAt).toLocaleDateString()} />
+        {/* Accordion 2: Why This Opportunity */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("why")}
+            className="flex w-full items-center justify-between p-3.5 text-left text-xs font-semibold text-foreground hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Target className="size-4 text-rose-400" />
+              <span>Why This Opportunity</span>
+            </div>
+            {openSections.why ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
             )}
-            {lead.followUpAt && (
-              <MetaRow label="Follow-up" value={new Date(lead.followUpAt).toLocaleDateString()} />
-            )}
-          </div>
-        </section>
+          </button>
+          {openSections.why && (
+            <div className="p-3.5 pt-0 border-t border-border/40 space-y-2.5 text-xs">
+              {explanation ? (
+                <div className="space-y-2">
+                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold bg-brand/10 text-brand border border-brand/20">
+                    <Sparkles className="size-3" />
+                    <span>{explanation.professionMatch === "strong" ? "Strong match for your profession" : "Profession match"}</span>
+                  </div>
+                  <p className="text-[11px] text-foreground leading-relaxed">{explanation.summary}</p>
+                  <ul className="space-y-1">
+                    {explanation.reasons.map((r) => (
+                      <li key={r.component} className="text-[11px]">
+                        <span className="font-semibold text-foreground">{r.label}:</span>{" "}
+                        <span className="text-muted-foreground">{r.detail}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  Opportunity scored based on local market factors, contact availability, and conversion likelihood.
+                </p>
+              )}
 
+              {disqualification && (
+                <div className="flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 p-2.5">
+                  <AlertTriangle className="size-3.5 text-destructive shrink-0 mt-0.5" />
+                  <div className="text-[11px] text-destructive">
+                    <p className="font-bold">{disqualification.label}</p>
+                    <p className="text-foreground">{disqualification.reason}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Accordion 3: Recent Activity */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("activity")}
+            className="flex w-full items-center justify-between p-3.5 text-left text-xs font-semibold text-foreground hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Clock className="size-4 text-indigo-400" />
+              <span>Recent Activity</span>
+            </div>
+            {openSections.activity ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+          {openSections.activity && (
+            <div className="p-3.5 pt-0 border-t border-border/40 space-y-2 text-xs">
+              <ActivityTimeline lead={lead} />
+            </div>
+          )}
+        </div>
+
+        {/* Accordion 4: Notes */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("notes")}
+            className="flex w-full items-center justify-between p-3.5 text-left text-xs font-semibold text-foreground hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <FileText className="size-4 text-sky-400" />
+              <span>Notes</span>
+            </div>
+            {openSections.notes ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+          {openSections.notes && (
+            <div className="p-3.5 pt-0 border-t border-border/40 space-y-2 text-xs">
+              <NoteForm lead={lead} />
+            </div>
+          )}
+        </div>
       </div>
     </aside>
-  );
-}
-
-function SectionHeading({ children }: { children: React.ReactNode }) {
-  return (
-    <h3 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
-      {children}
-    </h3>
-  );
-}
-
-function ContactRow({
-  icon: Icon, label, value, href, onCopy, copied,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value?: string | null;
-  href?: string;
-  onCopy: () => void;
-  copied: boolean;
-}) {
-  if (!value) return null;
-  return (
-    <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-background border border-border group hover:border-muted-foreground/30 transition-colors">
-      <Icon className="size-4 text-muted-foreground shrink-0" />
-      <span className="text-xs text-foreground truncate flex-1">{value}</span>
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-        <button onClick={onCopy} className="size-5 rounded hover:bg-muted grid place-items-center" title={`Copy ${label}`}>
-          {copied ? <Check className="size-4 text-green-500" /> : <Copy className="size-4 text-muted-foreground" />}
-        </button>
-        {href && (
-          <a href={href} target="_blank" rel="noopener noreferrer"
-            className="size-5 rounded hover:bg-muted grid place-items-center">
-            <ExternalLink className="size-4 text-muted-foreground hover:text-brand" />
-          </a>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-background border border-border">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="text-xs font-semibold capitalize">{value}</span>
-    </div>
-  );
-}
-
-function MetaRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
-    </div>
-  );
-}
-
-function ResearchBlock({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}</p>
-      <p className="mt-1 text-xs leading-relaxed text-foreground">{value}</p>
-    </div>
   );
 }

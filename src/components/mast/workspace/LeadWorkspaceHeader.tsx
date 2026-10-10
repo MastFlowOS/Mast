@@ -175,7 +175,7 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
     try {
       await updateLeadMutation.mutateAsync({ id: lead.id, body: { status: "dead" } });
       toast.success("Opportunity removed");
-      navigate({ to: "/dashboard/pipeline" });
+      navigate({ to: "/dashboard/relationships" });
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Action failed — please try again");
     } finally {
@@ -212,7 +212,7 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={() => navigate({ to: "/dashboard/pipeline" })}
+          onClick={() => navigate({ to: "/dashboard/relationships" })}
           className="inline-flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-card hover:text-white"
         >
           <ArrowLeft className="size-3.5 text-muted-foreground" />

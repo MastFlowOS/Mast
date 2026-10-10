@@ -241,10 +241,10 @@ function LeadWorkspace() {
           </div>
           <button
             type="button"
-            onClick={() => navigate({ to: "/dashboard/pipeline" })}
+            onClick={() => navigate({ to: "/dashboard/relationships" })}
             className="inline-flex items-center gap-2 text-sm text-brand font-medium hover:underline"
           >
-            <ArrowLeft className="size-4" /> Back to Pipeline
+            <ArrowLeft className="size-4" /> Back to Relationships
           </button>
         </div>
       </div>

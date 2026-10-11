@@ -23,7 +23,9 @@ export function createSmtpTransport(config: SmtpConfig): Transporter {
       pass: config.pass,
     },
     tls: {
-      rejectUnauthorized: false, // Maximum compatibility
+      // Validate SMTP server certificates by default. Only allow insecure TLS
+      // for a deliberately configured private/self-signed relay.
+      rejectUnauthorized: process.env.SMTP_ALLOW_INSECURE_TLS !== "true",
     },
     requireTLS,
     ...(config.connectionTimeout ? { connectionTimeout: config.connectionTimeout } : {}),

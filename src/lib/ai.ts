@@ -2,55 +2,99 @@ import Anthropic from "@anthropic-ai/sdk";
 import { env } from "../config/env.js";
 
 /**
- * Thin wrapper around the Anthropic API for Phase 8 (AI Opportunity
- * Intelligence). Every call in this module is JSON-structured and grounded
- * with real numbers pulled from Postgres by the caller — the model is
- * asked to explain/prioritize/summarize supplied facts, never to invent
- * business data. See lib/intelligenceContext.ts for what gets passed in.
+ * DeepSeek AI Provider wrapper using DeepSeek's Anthropic-compatible API endpoint
+ * (https://api.deepseek.com/anthropic).
  *
- * If ANTHROPIC_API_KEY isn't configured (e.g. local dev without it), AI
- * routes degrade to 503 rather than the gateway crashing on boot — the
- * rest of MAST (Discover, CRM, Pipeline, Mission) does not depend on this.
+ * Supported model IDs:
+ * - Fast:  `deepseek-flash`  (default for routine drafting, intelligence)
+ * - Pro:   `deepseek-v4-pro` (reserved for tasks configured for stronger tier)
+ *
+ * Grounded with real facts pulled from Postgres — the model is asked to
+ * explain/prioritize/summarize/draft supplied facts, never to invent
+ * business data.
+ *
+ * If DEEPSEEK_API_KEY isn't configured, AI routes degrade to 503 rather than
+ * the gateway crashing on boot — Discover, CRM, Pipeline, and Mission do
+ * not depend on this.
  */
+
+export type ModelTier = "fast" | "pro";
+
+export const AI_MODELS = {
+  fast: env.DEEPSEEK_FAST_MODEL,
+  pro: env.DEEPSEEK_PRO_MODEL,
+} as const;
+
+/** Resolves model identifier for given tier. */
+export function getAiModel(tier: ModelTier = "fast"): string {
+  return tier === "pro" ? env.DEEPSEEK_PRO_MODEL : env.DEEPSEEK_FAST_MODEL;
+}
+
+/** Default model alias for backwards compatibility. */
+export const AI_MODEL = env.DEEPSEEK_FAST_MODEL;
 
 let client: Anthropic | null = null;
 
 export function aiEnabled(): boolean {
-  return Boolean(env.ANTHROPIC_API_KEY);
+  return Boolean(env.DEEPSEEK_API_KEY);
 }
 
-function getClient(): Anthropic {
-  if (!env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY not configured");
+export function getClient(): Anthropic {
+  if (client) {
+    return client;
   }
-  if (!client) {
-    client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  if (!env.DEEPSEEK_API_KEY) {
+    throw new Error("DEEPSEEK_API_KEY not configured");
   }
+  client = new Anthropic({
+    apiKey: env.DEEPSEEK_API_KEY,
+    baseURL: env.DEEPSEEK_BASE_URL,
+  });
   return client;
 }
 
-export const AI_MODEL = env.ANTHROPIC_MODEL;
+/** Allow mocking/resetting client in tests. */
+export function setAiClient(mockClient: Anthropic | null): void {
+  client = mockClient;
+}
+
+export function resetAiClient(): void {
+  client = null;
+}
 
 /**
- * Sends a system + user prompt and parses the reply as JSON. The system
- * prompt is expected to instruct the model to respond with ONLY a JSON
- * object matching the given shape — callers own their own schema/validation
- * (kept untyped here to avoid a runtime JSON-schema dependency for what's
- * currently a handful of call sites).
+ * Sends a system + user prompt and parses the reply as JSON.
+ * Preserves honest errors when the API key is missing, the provider fails,
+ * request times out, or output is not valid JSON. Never falls back to canned responses.
  */
 export async function generateJSON<T>(params: {
   system: string;
   user: string;
   maxTokens?: number;
+  tier?: ModelTier;
+  model?: string;
+  timeoutMs?: number;
 }): Promise<T> {
-  const anthropic = getClient();
+  const deepseek = getClient();
+  const model = params.model ?? getAiModel(params.tier ?? "fast");
 
-  const response = await anthropic.messages.create({
-    model: AI_MODEL,
-    max_tokens: params.maxTokens ?? 1024,
-    system: params.system,
-    messages: [{ role: "user", content: params.user }],
-  });
+  let response: Anthropic.Message;
+  try {
+    response = await deepseek.messages.create(
+      {
+        model,
+        max_tokens: params.maxTokens ?? 1024,
+        system: params.system,
+        messages: [{ role: "user", content: params.user }],
+      },
+      params.timeoutMs ? { timeout: params.timeoutMs } : undefined,
+    );
+  } catch (err: unknown) {
+    if (err && typeof err === "object" && (err as { name?: string }).name === "APIConnectionTimeoutError") {
+      throw new Error(`AI request timed out: ${(err as Error).message}`);
+    }
+    throw err;
+  }
 
   const textBlock = response.content.find((block) => block.type === "text");
   if (!textBlock || textBlock.type !== "text") {

@@ -264,22 +264,8 @@ export function CenterWorkspace({
       return;
     }
 
-    const sentAt = new Date().toISOString();
     try {
       await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
-      await recordActivity.mutateAsync({
-        lead,
-        activity: {
-          type: "email_sent",
-          channel: "email",
-          subject,
-          body,
-          timestamp: sentAt,
-          content: "Email sent via connected account",
-          metadata: getDraftProvenance(lead.id, "email"),
-        },
-        patch: { status: "email_sent", lastContactedAt: sentAt },
-      });
       toast.success("Email sent successfully");
     } catch (error) {
       if (isMissingBackendEndpoint(error)) {

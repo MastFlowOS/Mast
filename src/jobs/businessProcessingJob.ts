@@ -8,7 +8,7 @@ import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunitySco
 import { toJson, isJsonObject } from "../lib/json.js";
 import type { Json } from "../types/database.types.js";
 import { env } from "../config/env.js";
-import { aiEnabled, generateJSON, AI_MODEL } from "../lib/ai.js";
+import { aiEnabled, generateJSON, AI_MODEL, getAiModel } from "../lib/ai.js";
 import { PROFESSION_SLUGS } from "../scoring/professionWeights.js";
 import { trackActiveEnrichment, trackActiveIntelligence } from "../lib/enrichmentTelemetry.js";
 import {
@@ -587,6 +587,7 @@ async function generateBackgroundOpportunityInsights(businessId: string): Promis
       summary: ps.summary,
     }),
     maxTokens: 512,
+    tier: "fast",
   });
 
   const row = {
@@ -596,7 +597,7 @@ async function generateBackgroundOpportunityInsights(businessId: string): Promis
     talking_points: Array.isArray(insight.talkingPoints) ? insight.talkingPoints : [],
     opening_line: typeof insight.openingLine === "string" ? insight.openingLine : "Hi — I came across your business and had a few ideas.",
     score_snapshot: ps.score,
-    model: AI_MODEL,
+    model: getAiModel("fast"),
     generated_at: new Date().toISOString(),
   };
 

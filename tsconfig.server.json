@@ -23,6 +23,8 @@
     "src/server/routes/account.ts",
     "src/server/routes/discover.ts",
     "src/server/routes/intelligence.ts",
+    "src/server/routes/outreach.ts",
+    "src/server/routes/observability.ts",
     "src/lib/queue.ts",
     "src/lib/supabaseAdmin.ts",
     "src/lib/json.ts",

@@ -461,6 +461,14 @@ const EnvSchema = z.object({
   // failing gateway startup — Discover/CRM/Pipeline/Mission never depend
   // on this being configured. Opportunity Explanations (/explain/:leadId)
   // are unaffected either way, since they're deterministic, not AI.
+  // DeepSeek AI configuration (Opportunity Intelligence + AI Outreach).
+  // API key is server-side only; never exposed to the client.
+  DEEPSEEK_API_KEY: z.string().optional(),
+  DEEPSEEK_BASE_URL: z.string().default("https://api.deepseek.com/anthropic"),
+  DEEPSEEK_FAST_MODEL: z.string().default("deepseek-flash"),
+  DEEPSEEK_PRO_MODEL: z.string().default("deepseek-v4-pro"),
+
+  // Legacy Anthropic configuration kept optional for backward compatibility
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().default("claude-sonnet-4-6"),
 })

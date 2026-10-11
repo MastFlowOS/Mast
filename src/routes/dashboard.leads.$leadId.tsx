@@ -170,7 +170,7 @@ function LeadWorkspace() {
         leadId: lead.id,
         body: {
           channel,
-          action: "rewrite",
+          action: type,
           tone: (tone as OutreachTone) || "friendly",
           template,
           customInstructions: instruction,

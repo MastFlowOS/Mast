@@ -13,7 +13,8 @@ export type AiFeature =
   | "pipelineCoaching"
   | "executiveBriefings"
   | "weeklyIntelligence"
-  | "opportunityInsights";
+  | "opportunityInsights"
+  | "outreachDraft";
 
 const AI_FEATURE_PLANS: Record<AiFeature, PlanId> = {
   recommendations: "starter",
@@ -21,6 +22,7 @@ const AI_FEATURE_PLANS: Record<AiFeature, PlanId> = {
   executiveBriefings: "premium",
   weeklyIntelligence: "premium",
   opportunityInsights: "premium",
+  outreachDraft: "starter",
 };
 
 const PLAN_RANK: Record<PlanId, number> = { free: 0, starter: 1, pro: 2, premium: 3 };

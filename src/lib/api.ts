@@ -40,10 +40,14 @@ export function isMissingBackendEndpoint(_error: unknown): boolean {
 // Separate service from Supabase — see mast-backend. Only `/v1/discover` is
 // called from here today; everything else (leads CRUD, settings, etc.)
 // still talks to Supabase directly, unchanged.
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
+function getApiBaseUrl(): string | undefined {
+  const apiEnv = (typeof import.meta !== "undefined" && import.meta.env) ? import.meta.env : (process.env as Record<string, string | undefined>);
+  return (apiEnv?.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
+}
 
 async function backendFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  if (!API_BASE_URL) {
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) {
     throw new ApiError(0, "VITE_API_BASE_URL is not configured", {});
   }
   if (!supabase) throw new ApiError(0, "Supabase not configured", {});
@@ -53,7 +57,7 @@ async function backendFetch<T>(path: string, options: RequestInit = {}): Promise
   } = await supabase.auth.getSession();
   if (!session) throw new ApiError(401, "Not authenticated", {});
 
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -319,13 +323,21 @@ export type LeadActivity = {
   metadata?: Record<string, unknown> | null;
 };
 
-export type OutreachGenerationAction = "generate" | "rewrite" | "objections";
-export type OutreachTone = "friendly" | "professional" | "direct";
+export type OutreachGenerationAction = "generate" | "rewrite" | "shorten" | "expand" | "objections";
+export type OutreachTone = "friendly" | "professional" | "direct" | "casual" | "urgent";
+
+export type PersonalizationSettings = {
+  businessNameAndNiche?: boolean;
+  recentInstagramActivity?: boolean;
+  locationAndLocalMarket?: boolean;
+  businessReviewsAndReputation?: boolean;
+  similarBusinessSuccessStories?: boolean;
+};
 
 export type OutreachDraftRequest = {
   channel: OutreachChannel;
   action?: OutreachGenerationAction;
-  tone?: OutreachTone;
+  tone?: OutreachTone | string;
   template?: string;
   customInstructions?: string;
   subject?: string;
@@ -333,11 +345,18 @@ export type OutreachDraftRequest = {
   senderName?: string;
   senderEmail?: string;
   signature?: string;
+  personalization?: PersonalizationSettings;
+  contextNotes?: string;
+  tier?: "fast" | "pro";
 };
 
 export type OutreachDraftResponse = {
   subject?: string | null;
   body?: string | null;
+  channel?: OutreachChannel;
+  action?: OutreachGenerationAction;
+  model?: string;
+  tier?: "fast" | "pro";
   message?: string | null;
   content?: string | null;
   draft?: {
@@ -2342,13 +2361,18 @@ export async function updateFollowup(id: number | string, body: {
   return dbRowToFollowup(data as Record<string, unknown>);
 }
 
-// ─── Outreach draft (AI endpoint — stub that returns a local fallback) ─────────
-// The AI generation feature requires the Mast Lead Engine.
+// ─── Outreach draft (AI endpoint powered by DeepSeek) ─────────────────────────
 // Free generation does NOT come through here — it is deterministic and local
-// (src/lib/outreach/pipeline.ts). This stub is the Paid/AI path only, still
-// used by AIAssistant rewrite/objection actions.
-export async function generateOutreachDraft(_leadId: number, _body: OutreachDraftRequest): Promise<OutreachDraftResponse> {
-  throw new ApiError(501, "AI outreach generation requires the Mast Lead Engine backend.", { code: "ENGINE_NOT_CONNECTED" });
+// (src/lib/outreach/pipeline.ts). This endpoint is the Paid/AI path used by
+// AIAssistant for generate, rewrite, shorten, expand, and objection replies.
+export async function generateOutreachDraft(leadId: number, body: OutreachDraftRequest): Promise<OutreachDraftResponse> {
+  return backendFetch<OutreachDraftResponse>("/v1/outreach/draft", {
+    method: "POST",
+    body: JSON.stringify({
+      leadId,
+      ...body,
+    }),
+  });
 }
 
 export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Promise<SendLeadEmailResponse> {

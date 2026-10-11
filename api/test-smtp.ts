@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import nodemailer from "nodemailer";
 import { createClient } from "@supabase/supabase-js";
+import { createSmtpTransport } from "./_smtp";
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
@@ -59,21 +59,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const secure = encryption === "SSL";
-    const requireTLS = encryption === "TLS";
-
-    const transporter = nodemailer.createTransport({
+    const transporter = createSmtpTransport({
       host,
-      port: Number(port),
-      secure,
-      auth: {
-        user: smtpUser,
-        pass,
-      },
-      tls: {
-        rejectUnauthorized: false, // Maximum compatibility
-      },
-      requireTLS,
+      port,
+      user: smtpUser,
+      pass,
+      encryption,
       connectionTimeout: 10000, // 10s timeout
     });
 

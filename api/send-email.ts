@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import nodemailer from "nodemailer";
 import { createClient } from "@supabase/supabase-js";
+import { createSmtpTransport } from "./_smtp";
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
@@ -48,6 +48,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ error: "Unauthorized user token." });
   }
 
+  // Use the verified caller's JWT for RLS-protected profile reads. The module-level
+  // client has only the anon key, so its profile query runs as anon and cannot
+  // satisfy the "Users can view own profile" policy even after getUser(token).
+  const userSupabase = createClient(supabaseUrl!, supabaseAnonKey!, {
+    global: { headers: { Authorization: authHeader } },
+  });
+
   // 2. Parse payload
   let to: string;
   let subject: string;
@@ -70,7 +77,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // 3. Fetch user SMTP settings from Supabase
   try {
-    const { data: profile, error: dbError } = await supabase
+    const { data: profile, error: dbError } = await userSupabase
       .from("profiles")
       .select("settings")
       .eq("id", user.id)
@@ -98,21 +105,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const secure = encryption === "SSL";
-    const requireTLS = encryption === "TLS";
-
-    const transporter = nodemailer.createTransport({
+    const transporter = createSmtpTransport({
       host,
-      port: Number(port),
-      secure,
-      auth: {
-        user: smtpUser,
-        pass,
-      },
-      tls: {
-        rejectUnauthorized: false,
-      },
-      requireTLS,
+      port,
+      user: smtpUser,
+      pass,
+      encryption,
     });
 
     const signature = settings.signature?.trim();

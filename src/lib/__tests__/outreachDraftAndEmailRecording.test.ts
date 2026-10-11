@@ -13,6 +13,9 @@ describe("Outreach draft preservation and exactly-once email activity recording"
   let recordedUpdates: any[] = [];
   let recordedActivities: any[] = [];
   let recordedMessages: any[] = [];
+  let failLeadUpdate = false;
+  let failActivityInsert = false;
+  let failMessageInsert = false;
 
   const mockLead: Lead = {
     id: 42,
@@ -20,7 +23,6 @@ describe("Outreach draft preservation and exactly-once email activity recording"
     businessName: "Acme Corp",
     email: "lead@acme.com",
     status: "new",
-    channel: "email",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -31,6 +33,9 @@ describe("Outreach draft preservation and exactly-once email activity recording"
     recordedUpdates = [];
     recordedActivities = [];
     recordedMessages = [];
+    failLeadUpdate = false;
+    failActivityInsert = false;
+    failMessageInsert = false;
 
     const mockSupabase: any = {
       auth: {
@@ -74,6 +79,9 @@ describe("Outreach draft preservation and exactly-once email activity recording"
               eq: (_col2: string, _userId: any) => ({
                 select: () => ({
                   single: async () => {
+                    if (failLeadUpdate) {
+                      return { data: null, error: { message: "Simulated lead update error" } };
+                    }
                     recordedUpdates.push({ leadId, patch });
                     return {
                       data: {
@@ -100,6 +108,9 @@ describe("Outreach draft preservation and exactly-once email activity recording"
           insert: (row: any) => ({
             select: () => ({
               single: async () => {
+                if (failActivityInsert) {
+                  return { data: null, error: { message: "Simulated activity insert error" } };
+                }
                 recordedActivities.push(row);
                 return { data: { id: "act-1", ...row }, error: null };
               },
@@ -112,6 +123,9 @@ describe("Outreach draft preservation and exactly-once email activity recording"
           insert: (row: any) => ({
             select: () => ({
               single: async () => {
+                if (failMessageInsert) {
+                  return { data: null, error: { message: "Simulated message insert error" } };
+                }
                 recordedMessages.push(row);
                 return { data: { id: "msg-1", ...row }, error: null };
               },
@@ -163,7 +177,7 @@ describe("Outreach draft preservation and exactly-once email activity recording"
     assert.equal(initialDraft.body, "My existing drafted body that must not be cleared.");
   });
 
-  test("sendLeadEmail creates exactly one email_sent activity and one message record on success", async () => {
+  test("SMTP delivery succeeds and CRM persistence succeeds (exactly-once updates)", async () => {
     globalThis.fetch = async (url: any) => {
       if (String(url).includes("/api/send-email")) {
         return new Response(JSON.stringify({ success: true }), {
@@ -182,6 +196,7 @@ describe("Outreach draft preservation and exactly-once email activity recording"
     const result = await sendLeadEmail(42, request);
 
     assert.equal(result.success, true);
+    assert.equal(result.warning, undefined);
 
     // Exactly one lead update to email_sent
     assert.equal(recordedUpdates.length, 1);
@@ -205,7 +220,88 @@ describe("Outreach draft preservation and exactly-once email activity recording"
     assert.equal(recordedMessages[0].content, request.body);
   });
 
-  test("failed delivery does not mark email as sent and does not create sent activities", async () => {
+  test("SMTP delivery succeeds but lead status update fails: marks success with warning, does not fail send or fabricate lead update", async () => {
+    globalThis.fetch = async (url: any) => {
+      if (String(url).includes("/api/send-email")) {
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    };
+
+    failLeadUpdate = true;
+
+    const request: SendEmailRequest = {
+      subject: "Status Update Failure Test",
+      body: "Testing resilience when lead update fails.",
+    };
+
+    const result = await sendLeadEmail(42, request);
+
+    // Email send is NOT reported as failed
+    assert.equal(result.success, true);
+    // Lead status is not fabricated
+    assert.equal(result.lead, undefined);
+    assert.equal(recordedUpdates.length, 0);
+    // Explicit warning is attached
+    assert.ok(result.warning?.includes("lead status"));
+
+    // Activity and message persistence still succeed
+    assert.equal(recordedActivities.length, 1);
+    assert.equal(recordedMessages.length, 1);
+    assert.ok(result.message);
+  });
+
+  test("SMTP delivery succeeds but activity or message persistence fails: marks success with warning, does not fail send or fabricate persistence", async () => {
+    globalThis.fetch = async (url: any) => {
+      if (String(url).includes("/api/send-email")) {
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    };
+
+    // Case A: Activity persistence fails
+    failActivityInsert = true;
+
+    const requestA: SendEmailRequest = {
+      subject: "Activity Failure Test",
+      body: "Testing resilience when activity persistence fails.",
+    };
+
+    const resultA = await sendLeadEmail(42, requestA);
+    assert.equal(resultA.success, true);
+    assert.equal(recordedActivities.length, 0); // Never fabricate a sent activity!
+    assert.ok(resultA.warning?.includes("activity"));
+    assert.ok(resultA.lead);
+    assert.ok(resultA.message);
+
+    // Reset and test Case B: Message persistence fails
+    failActivityInsert = false;
+    failMessageInsert = true;
+    recordedUpdates = [];
+    recordedActivities = [];
+    recordedMessages = [];
+
+    const requestB: SendEmailRequest = {
+      subject: "Message Failure Test",
+      body: "Testing resilience when message persistence fails.",
+    };
+
+    const resultB = await sendLeadEmail(42, requestB);
+    assert.equal(resultB.success, true);
+    assert.equal(recordedMessages.length, 0); // Never fabricate message persistence!
+    assert.equal(resultB.message, undefined);
+    assert.ok(resultB.warning?.includes("message"));
+    assert.ok(resultB.lead);
+    assert.equal(recordedActivities.length, 1);
+  });
+
+  test("SMTP delivery fails, so no successful-send state is recorded", async () => {
     globalThis.fetch = async (url: any) => {
       if (String(url).includes("/api/send-email")) {
         return new Response(
@@ -230,7 +326,7 @@ describe("Outreach draft preservation and exactly-once email activity recording"
       },
     );
 
-    // Crucial: failed delivery must NOT mark as sent
+    // Crucial: failed delivery must NOT record any successful-send state
     assert.equal(recordedUpdates.length, 0);
     assert.equal(recordedActivities.length, 0);
     assert.equal(recordedMessages.length, 0);

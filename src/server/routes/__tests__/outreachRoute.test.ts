@@ -2,7 +2,7 @@ import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import jwt from "jsonwebtoken";
-import { outreachRouter } from "../outreach.js";
+import { outreachRouter, resetOutreachRateLimiter } from "../outreach.js";
 import { env } from "../../../config/env.js";
 import { supabaseAdmin } from "../../../lib/supabaseAdmin.js";
 import { setAiClient, resetAiClient } from "../../../lib/ai.js";
@@ -53,6 +53,7 @@ describe("POST /v1/outreach/draft", () => {
   });
 
   beforeEach(() => {
+    resetOutreachRateLimiter();
     userPlan = "pro";
     lastCapturedDeepSeekCall = null;
     mockDeepSeekResponse = {
@@ -262,6 +263,7 @@ describe("POST /v1/outreach/draft", () => {
   });
 
   test("generates message with Fast tier default, passing lead facts and personalization", async () => {
+    userPlan = "starter";
     mockDeepSeekResponse = {
       content: [{ type: "text", text: JSON.stringify({ subject: "Apex Dental Question", body: "Hi team, loved your reviews." }) }],
     };
@@ -405,9 +407,49 @@ describe("POST /v1/outreach/draft", () => {
     assert.equal(lastCapturedDeepSeekCall?.user.action, "objections");
   });
 
-  test("uses Pro tier model identifier when requested", async () => {
+  test("Pro and Premium accounts receive Pro model according to server policy", async () => {
     mockDeepSeekResponse = {
       content: [{ type: "text", text: JSON.stringify({ subject: "Pro draft", body: "Pro tier message." }) }],
+    };
+
+    userPlan = "pro";
+    const res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({
+        leadId: 1,
+        channel: "email",
+        action: "generate",
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.tier, "pro");
+    assert.equal(data.model, "deepseek-v4-pro");
+    assert.equal(lastCapturedDeepSeekCall?.model, "deepseek-v4-pro");
+
+    // Premium plan also receives Pro model
+    userPlan = "premium";
+    const resPrem = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({
+        leadId: 1,
+        channel: "email",
+        action: "generate",
+      }),
+    });
+    assert.equal(resPrem.status, 200);
+    const dataPrem = await resPrem.json();
+    assert.equal(dataPrem.tier, "pro");
+    assert.equal(dataPrem.model, "deepseek-v4-pro");
+  });
+
+  test("Starter account requesting tier 'pro' is capped by server policy and receives Fast model", async () => {
+    userPlan = "starter";
+    mockDeepSeekResponse = {
+      content: [{ type: "text", text: JSON.stringify({ subject: "Starter subject", body: "Starter body." }) }],
     };
 
     const res = await fetch(`${baseUrl}/draft`, {
@@ -417,15 +459,198 @@ describe("POST /v1/outreach/draft", () => {
         leadId: 1,
         channel: "email",
         action: "generate",
-        tier: "pro",
+        tier: "pro", // Client requests Pro tier, but account is only Starter!
       }),
     });
 
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.equal(data.tier, "pro");
-    assert.equal(data.model, "deepseek-v4-pro");
-    assert.equal(lastCapturedDeepSeekCall?.model, "deepseek-v4-pro");
+    // Must remain Fast model!
+    assert.equal(data.tier, "fast");
+    assert.equal(data.model, "deepseek-flash");
+    assert.equal(lastCapturedDeepSeekCall?.model, "deepseek-flash");
+  });
+
+  test("Pro account explicitly requesting Fast tier receives Fast model", async () => {
+    userPlan = "pro";
+    mockDeepSeekResponse = {
+      content: [{ type: "text", text: JSON.stringify({ subject: "Fast choice", body: "Fast message." }) }],
+    };
+
+    const res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({
+        leadId: 1,
+        channel: "email",
+        action: "generate",
+        tier: "fast",
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.tier, "fast");
+    assert.equal(data.model, "deepseek-flash");
+    assert.equal(lastCapturedDeepSeekCall?.model, "deepseek-flash");
+  });
+
+  test("rejects oversized inputs with 400 excessive_input", async () => {
+    // 1. Oversized customInstructions (> 2000)
+    let res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", customInstructions: "x".repeat(2001) }),
+    });
+    assert.equal(res.status, 400);
+    let data = await res.json();
+    assert.equal(data.code, "excessive_input");
+
+    // 2. Oversized contextNotes (> 2000)
+    res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", contextNotes: "x".repeat(2001) }),
+    });
+    assert.equal(res.status, 400);
+    data = await res.json();
+    assert.equal(data.code, "excessive_input");
+
+    // 3. Oversized senderName (> 100)
+    res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", senderName: "x".repeat(101) }),
+    });
+    assert.equal(res.status, 400);
+    data = await res.json();
+    assert.equal(data.code, "excessive_input");
+
+    // 4. Oversized subject (> 250)
+    res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", subject: "x".repeat(251) }),
+    });
+    assert.equal(res.status, 400);
+    data = await res.json();
+    assert.equal(data.code, "excessive_input");
+
+    // 5. Oversized body (> 10000)
+    res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", body: "x".repeat(10001) }),
+    });
+    assert.equal(res.status, 400);
+    data = await res.json();
+    assert.equal(data.code, "excessive_input");
+
+    // 6. Oversized template (> 100)
+    res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", template: "x".repeat(101) }),
+    });
+    assert.equal(res.status, 400);
+    data = await res.json();
+    assert.equal(data.code, "excessive_input");
+  });
+
+  test("validates field types and rejects non-string values with 400 invalid_input", async () => {
+    let res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", senderName: 12345 }),
+    });
+    assert.equal(res.status, 400);
+    let data = await res.json();
+    assert.equal(data.code, "invalid_input");
+
+    res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", customInstructions: ["invalid", "array"] }),
+    });
+    assert.equal(res.status, 400);
+    data = await res.json();
+    assert.equal(data.code, "invalid_input");
+  });
+
+  test("validates tone and rejects unrecognized tone values with 400 invalid_tone", async () => {
+    const res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", tone: "aggressive_salesman" }),
+    });
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.equal(data.code, "invalid_tone");
+  });
+
+  test("validates personalization object and types with 400 invalid_personalization", async () => {
+    // Non-object
+    let res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", personalization: "invalid-string" }),
+    });
+    assert.equal(res.status, 400);
+    let data = await res.json();
+    assert.equal(data.code, "invalid_personalization");
+
+    // Unrecognized key
+    res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", personalization: { fakeFlag: true } }),
+    });
+    assert.equal(res.status, 400);
+    data = await res.json();
+    assert.equal(data.code, "invalid_personalization");
+
+    // Non-boolean value
+    res = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email", personalization: { businessNameAndNiche: "yes" } }),
+    });
+    assert.equal(res.status, 400);
+    data = await res.json();
+    assert.equal(data.code, "invalid_personalization");
+  });
+
+  test("enforces 10 requests per minute rate limit per authenticated user", async () => {
+    userPlan = "starter";
+    // 10 requests should succeed
+    for (let i = 0; i < 10; i++) {
+      const res = await fetch(`${baseUrl}/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+        body: JSON.stringify({ leadId: 1, channel: "email" }),
+      });
+      assert.equal(res.status, 200, `Request ${i + 1} should have succeeded with 200`);
+    }
+
+    // 11th request within window must be rate limited
+    const res11 = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email" }),
+    });
+    assert.equal(res11.status, 429);
+    const data11 = await res11.json();
+    assert.equal(data11.code, "rate_limited");
+    assert.ok(res11.headers.get("retry-after"));
+
+    // Resetting rate limiter clears state for subsequent tests
+    resetOutreachRateLimiter();
+    const resAfterReset = await fetch(`${baseUrl}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      body: JSON.stringify({ leadId: 1, channel: "email" }),
+    });
+    assert.equal(resAfterReset.status, 200);
   });
 
   test("returns 503 when AI provider is not enabled", async () => {

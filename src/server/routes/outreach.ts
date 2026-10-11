@@ -8,14 +8,36 @@ import { aiEnabled, generateJSON, getAiModel, type ModelTier } from "../../lib/a
 
 export const outreachRouter = Router();
 
-// Per-user rate limiter for AI outreach drafting (e.g. up to 20 calls/min)
-const outreachDraftLimiter = createRateLimiter({ windowMs: 60_000, max: 20 });
+// Per-user rate limiter for AI outreach drafting (10 calls/min per authenticated user)
+export const outreachDraftLimiter = createRateLimiter({ windowMs: 60_000, max: 10 });
+
+export function resetOutreachRateLimiter(): void {
+  outreachDraftLimiter.reset();
+}
+
+const MAX_CUSTOM_INSTRUCTIONS_LENGTH = 2000;
+const MAX_CONTEXT_NOTES_LENGTH = 2000;
+const MAX_SENDER_NAME_LENGTH = 100;
+const MAX_SUBJECT_LENGTH = 250;
+const MAX_BODY_LENGTH = 10000;
+const MAX_TEMPLATE_LENGTH = 100;
 
 const ALLOWED_CHANNELS = ["email", "instagram", "phone", "contact_form"] as const;
 type OutreachChannel = (typeof ALLOWED_CHANNELS)[number];
 
 const ALLOWED_ACTIONS = ["generate", "rewrite", "shorten", "expand", "objections"] as const;
 type OutreachAction = (typeof ALLOWED_ACTIONS)[number];
+
+const ALLOWED_TONES = ["friendly", "professional", "direct", "casual", "urgent"] as const;
+type OutreachTone = (typeof ALLOWED_TONES)[number];
+
+const RECOGNIZED_PERSONALIZATION_KEYS = [
+  "businessNameAndNiche",
+  "recentInstagramActivity",
+  "locationAndLocalMarket",
+  "businessReviewsAndReputation",
+  "similarBusinessSuccessStories",
+] as const;
 
 async function resolveUserPlan(userId: string): Promise<PlanId> {
   const { data: profile, error } = await supabaseAdmin
@@ -92,6 +114,126 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       });
     }
 
+    if (tone !== undefined && (!tone || !ALLOWED_TONES.includes(tone as OutreachTone))) {
+      return res.status(400).json({
+        code: "invalid_tone",
+        message: `Tone must be one of: ${ALLOWED_TONES.join(", ")}.`,
+      });
+    }
+
+    if (customInstructions !== undefined) {
+      if (typeof customInstructions !== "string") {
+        return res.status(400).json({
+          code: "invalid_input",
+          message: "customInstructions must be a string.",
+        });
+      }
+      if (customInstructions.length > MAX_CUSTOM_INSTRUCTIONS_LENGTH) {
+        return res.status(400).json({
+          code: "excessive_input",
+          message: `customInstructions exceeds maximum length of ${MAX_CUSTOM_INSTRUCTIONS_LENGTH} characters.`,
+        });
+      }
+    }
+
+    if (contextNotes !== undefined) {
+      if (typeof contextNotes !== "string") {
+        return res.status(400).json({
+          code: "invalid_input",
+          message: "contextNotes must be a string.",
+        });
+      }
+      if (contextNotes.length > MAX_CONTEXT_NOTES_LENGTH) {
+        return res.status(400).json({
+          code: "excessive_input",
+          message: `contextNotes exceeds maximum length of ${MAX_CONTEXT_NOTES_LENGTH} characters.`,
+        });
+      }
+    }
+
+    if (senderName !== undefined) {
+      if (typeof senderName !== "string") {
+        return res.status(400).json({
+          code: "invalid_input",
+          message: "senderName must be a string.",
+        });
+      }
+      if (senderName.length > MAX_SENDER_NAME_LENGTH) {
+        return res.status(400).json({
+          code: "excessive_input",
+          message: `senderName exceeds maximum length of ${MAX_SENDER_NAME_LENGTH} characters.`,
+        });
+      }
+    }
+
+    if (clientSubject !== undefined) {
+      if (typeof clientSubject !== "string") {
+        return res.status(400).json({
+          code: "invalid_input",
+          message: "subject must be a string.",
+        });
+      }
+      if (clientSubject.length > MAX_SUBJECT_LENGTH) {
+        return res.status(400).json({
+          code: "excessive_input",
+          message: `subject exceeds maximum length of ${MAX_SUBJECT_LENGTH} characters.`,
+        });
+      }
+    }
+
+    if (clientBody !== undefined) {
+      if (typeof clientBody !== "string") {
+        return res.status(400).json({
+          code: "invalid_input",
+          message: "body must be a string.",
+        });
+      }
+      if (clientBody.length > MAX_BODY_LENGTH) {
+        return res.status(400).json({
+          code: "excessive_input",
+          message: `body exceeds maximum length of ${MAX_BODY_LENGTH} characters.`,
+        });
+      }
+    }
+
+    if (template !== undefined) {
+      if (typeof template !== "string") {
+        return res.status(400).json({
+          code: "invalid_input",
+          message: "template must be a string.",
+        });
+      }
+      if (template.length > MAX_TEMPLATE_LENGTH) {
+        return res.status(400).json({
+          code: "excessive_input",
+          message: `template exceeds maximum length of ${MAX_TEMPLATE_LENGTH} characters.`,
+        });
+      }
+    }
+
+    if (personalization !== undefined) {
+      if (typeof personalization !== "object" || personalization === null || Array.isArray(personalization)) {
+        return res.status(400).json({
+          code: "invalid_personalization",
+          message: "personalization must be an object with boolean flags.",
+        });
+      }
+      for (const [key, val] of Object.entries(personalization)) {
+        if (!RECOGNIZED_PERSONALIZATION_KEYS.includes(key as any)) {
+          return res.status(400).json({
+            code: "invalid_personalization",
+            message: `Unrecognized personalization option: ${key}.`,
+          });
+        }
+        if (typeof val !== "boolean") {
+          return res.status(400).json({
+            code: "invalid_personalization",
+            message: `personalization field '${key}' must be a boolean.`,
+          });
+        }
+      }
+    }
+
     const existingBody = typeof clientBody === "string" ? clientBody.trim() : "";
     if (["rewrite", "shorten", "expand"].includes(action) && !existingBody) {
       return res.status(400).json({
@@ -142,9 +284,16 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       business = biz;
     }
 
-    // Select Fast for routine drafting tasks; reserve Pro for stronger tier (Pro/Premium plans or explicit pro tier)
+    // Server-enforced model tier policy:
+    // - Starter: always Fast model (deepseek-flash). Never elevated by client request.
+    // - Pro and Premium: Pro model (deepseek-v4-pro) by default, or Fast model if explicitly chosen.
     const tier: ModelTier =
-      (clientTier === "pro" || (plan === "premium" && clientTier !== "fast")) ? "pro" : "fast";
+      plan === "starter"
+        ? "fast"
+        : clientTier === "fast"
+          ? "fast"
+          : "pro";
+
 
     // Build context-aware prompt
     const systemPrompt = [
@@ -207,6 +356,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       user: JSON.stringify(payload),
       tier,
       maxTokens: 1024,
+      timeoutMs: 30000,
     });
 
     if (!aiResult || typeof aiResult.body !== "string" || !aiResult.body.trim()) {

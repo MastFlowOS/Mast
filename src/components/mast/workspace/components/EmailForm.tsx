@@ -72,9 +72,13 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
     if (!subject.trim() || !body.trim()) return;
 
     try {
-      await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
+      const res = await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
       setIsSent(true);
-      toast.success("Email sent");
+      if (res?.warning) {
+        toast.warning(res.warning);
+      } else {
+        toast.success("Email sent");
+      }
     } catch (error) {
       if (isMissingBackendEndpoint(error)) {
         // Fallback: open mail client and record activity

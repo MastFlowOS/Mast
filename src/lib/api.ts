@@ -375,6 +375,7 @@ export type SendLeadEmailResponse = {
   success: boolean;
   lead?: Lead;
   message?: Message;
+  warning?: string;
 };
 
 export type BulkImportResult = {
@@ -2166,9 +2167,7 @@ export async function createLeadActivity(
 
   const { data, error } = await supabase!.from("lead_activities").insert(row).select().single();
   if (error) {
-    // Gracefully fall back — table might not exist in all deployments
-    console.warn("[Mast:createLeadActivity] insert failed, returning local stub", error.message);
-    return { id: `local-${Date.now()}`, leadId: Number(id), ...body };
+    throw new ApiError(500, error.message, error);
   }
 
   return {
@@ -2226,9 +2225,7 @@ export async function createMessage(body: {
 
   const { data, error } = await supabase!.from("lead_messages").insert(row).select().single();
   if (error) {
-    console.warn("[Mast:createMessage] insert failed, returning local stub", error.message);
-    const now = new Date().toISOString();
-    return { id: `local-${Date.now()}`, ...body, template: body.template, status: body.status ?? "draft", sentAt: null, createdAt: now, updatedAt: now };
+    throw new ApiError(500, error.message, error);
   }
 
   const d = data as Record<string, unknown>;
@@ -2400,11 +2397,23 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
     throw new Error(resData.error || "Failed to send email");
   }
 
+  // Once the SMTP endpoint has confirmed delivery, CRM and activity persistence
+  // is best-effort. Delivery has occurred in reality — downstream persistence errors
+  // must never cause the client to claim delivery failed (which would prompt duplicate sends).
+  const warnings: string[] = [];
+
   // Update lead status and last contacted
-  const updatedLead = await updateLead(leadId, {
-    status: "email_sent",
-    lastContactedAt: new Date().toISOString(),
-  });
+  let updatedLead: Lead | undefined;
+  try {
+    updatedLead = await updateLead(leadId, {
+      status: "email_sent",
+      lastContactedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Mast:sendLeadEmail] Lead status update failed: ${msg}`);
+    warnings.push("Email delivered, but lead status could not be updated in the CRM.");
+  }
 
   // Record lead activity
   // Structured outreach continuity, attached to the genuine send. Rides on
@@ -2412,31 +2421,44 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
   // migration — and is null when the body wasn't produced by the
   // deterministic generator.
   const continuityMetadata = getDraftProvenance(leadId, "email");
-
-  await createLeadActivity(leadId, {
-    type: "email_sent",
-    timestamp: new Date().toISOString(),
-    content: `Sent email: "${body.subject}"`,
-    channel: "email",
-    subject: body.subject,
-    body: body.body,
-    metadata: continuityMetadata,
-  });
+  try {
+    await createLeadActivity(leadId, {
+      type: "email_sent",
+      timestamp: new Date().toISOString(),
+      content: `Sent email: "${body.subject}"`,
+      channel: "email",
+      subject: body.subject,
+      body: body.body,
+      metadata: continuityMetadata,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Mast:sendLeadEmail] Sent activity persistence failed: ${msg}`);
+    warnings.push("Email delivered, but sent activity could not be recorded.");
+  }
 
   // Create message record
-  const msg = await createMessage({
-    leadId,
-    channel: "email",
-    template: "outreach",
-    content: body.body,
-    subject: body.subject,
-    status: "sent",
-  });
+  let msg: Message | undefined;
+  try {
+    msg = await createMessage({
+      leadId,
+      channel: "email",
+      template: "outreach",
+      content: body.body,
+      subject: body.subject,
+      status: "sent",
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Mast:sendLeadEmail] Message persistence failed: ${msg}`);
+    warnings.push("Email delivered, but message record could not be saved.");
+  }
 
   return {
     success: true,
     lead: updatedLead,
-    message: msg
+    message: msg,
+    ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
   };
 }
 

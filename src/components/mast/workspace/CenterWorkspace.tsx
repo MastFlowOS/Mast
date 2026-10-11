@@ -265,8 +265,12 @@ export function CenterWorkspace({
     }
 
     try {
-      await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
-      toast.success("Email sent successfully");
+      const res = await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
+      if (res?.warning) {
+        toast.warning(res.warning);
+      } else {
+        toast.success("Email sent successfully");
+      }
     } catch (error) {
       if (isMissingBackendEndpoint(error)) {
         await handleOpenGmail();

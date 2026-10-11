@@ -253,7 +253,7 @@ function LeadWorkspace() {
 
   return (
     <div className="flex flex-col h-full bg-[#0b0f17] animate-page-enter overflow-hidden">
-      <LeadWorkspaceHeader lead={lead} />
+      <LeadWorkspaceHeader lead={lead} channel={channel} />
       <div className="flex flex-1 min-h-0 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
         <LeftSidebar lead={lead} channel={channel} setChannel={setChannel} />
         <CenterWorkspace

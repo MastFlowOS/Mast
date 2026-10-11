@@ -1,6 +1,11 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 import { createSmtpTransport } from "./_smtp";
+import {
+  validateEmailInput,
+  formatHtmlEmail,
+  formatPlainTextAlternative,
+} from "./_formatEmail";
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
@@ -55,22 +60,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     global: { headers: { Authorization: authHeader } },
   });
 
-  // 2. Parse payload
+  // 2. Parse and validate payload
   let to: string;
   let subject: string;
   let body: string;
 
   try {
     const payload = req.body ?? {};
-    to = payload.to;
-    subject = payload.subject;
-    body = payload.body;
-
-    if (!to || !subject || !body) {
-      return res.status(400).json({
-        error: "Recipient email (to), subject, and body are required.",
-      });
+    const validationError = validateEmailInput(payload);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
+
+    to = (payload.to as string).trim();
+    subject = (payload.subject as string).trim();
+    body = (payload.body as string).trim();
   } catch {
     return res.status(400).json({ error: "Invalid request body." });
   }
@@ -119,11 +123,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       finalBody = `${finalBody.trim()}\n\n${signature}`;
     }
 
+    const htmlBody = formatHtmlEmail(finalBody);
+    const plainText = formatPlainTextAlternative(finalBody);
+
     const mailOptions = {
       from: senderName ? `"${senderName}" <${senderEmail}>` : senderEmail,
       to,
       subject,
-      text: finalBody,
+      text: plainText,
+      html: htmlBody,
     };
 
     const info = await transporter.sendMail(mailOptions);

@@ -56,10 +56,10 @@ export function ContactForm({ lead, body, setBody }: ContactFormProps) {
           content: `Website opened for ${lead.businessName}`,
         },
       });
-      toast.success(body.trim() ? "Message copied and website opened" : "Website opened");
     } catch {
-      toast.error("Website opened, but history could not be saved");
+      // Non-critical: opening website must not fail merely because activity persistence failed
     }
+    toast.success(body.trim() ? "Message copied and website opened" : "Website opened");
   };
 
   const markSent = async () => {

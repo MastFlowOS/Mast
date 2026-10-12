@@ -1,21 +1,30 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { authenticate } from "./_apiAuth";
+import { classifyDbError } from "./_dbErrors";
 import { createSmtpTransport } from "./_smtp";
-import {
-  validateEmailInput,
-  formatHtmlEmail,
-  formatPlainTextAlternative,
-} from "./_formatEmail";
+import { createSupabaseSmtpStore } from "./_smtpStore";
+import { SmtpServiceError, loadSmtpCredentials } from "./_smtpService";
+import { readLegacySmtp } from "./_smtpLegacy";
+import { validateEmailInput, formatHtmlEmail, formatPlainTextAlternative } from "./_formatEmail";
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
+export interface SendEmailDeps {
+  authenticate: typeof authenticate;
+  loadCredentials: (db: SupabaseClient, userId: string) => ReturnType<typeof loadSmtpCredentials>;
+  createTransport: typeof createSmtpTransport;
+}
 
-const supabase =
-  supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey)
-    : null;
+const defaultDeps: SendEmailDeps = {
+  authenticate,
+  loadCredentials: (db, userId) => loadSmtpCredentials(createSupabaseSmtpStore(db), userId),
+  createTransport: createSmtpTransport,
+};
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export async function handleSendEmail(
+  req: VercelRequest,
+  res: VercelResponse,
+  deps: SendEmailDeps = defaultDeps,
+) {
   // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -29,36 +38,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: "Method Not Allowed" });
   }
 
-  if (!supabase) {
-    return res
-      .status(500)
-      .json({ error: "Supabase not configured on the server." });
+  // 1. Verify the caller. userSupabase runs AS the caller so RLS applies.
+  const auth = await deps.authenticate(req);
+  if (!auth.ok) {
+    return res.status(auth.status).json({ error: auth.error, code: auth.code });
   }
-
-  // 1. Verify User Token
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res
-      .status(401)
-      .json({ error: "Missing or invalid Authorization header." });
-  }
-
-  const token = authHeader.split(" ")[1];
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser(token);
-
-  if (authError || !user) {
-    return res.status(401).json({ error: "Unauthorized user token." });
-  }
-
-  // Use the verified caller's JWT for RLS-protected profile reads. The module-level
-  // client has only the anon key, so its profile query runs as anon and cannot
-  // satisfy the "Users can view own profile" policy even after getUser(token).
-  const userSupabase = createClient(supabaseUrl!, supabaseAnonKey!, {
-    global: { headers: { Authorization: authHeader } },
-  });
+  const { user, userSupabase } = auth;
 
   // 2. Parse and validate payload
   let to: string;
@@ -79,7 +64,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "Invalid request body." });
   }
 
-  // 3. Fetch user SMTP settings from Supabase
+  // 3. Load sender profile settings and SMTP credentials
   try {
     const { data: profile, error: dbError } = await userSupabase
       .from("profiles")
@@ -87,29 +72,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .eq("id", user.id)
       .single();
 
-    if (dbError || !profile) {
+    // Distinguish a genuinely missing profile from auth and permission failures.
+    const failure = classifyDbError(dbError, "profile");
+    if (failure) {
+      console.error("[SMTP Send] profile lookup failed:", failure.code);
+      return res.status(failure.status).json({ error: failure.message, code: failure.code });
+    }
+    if (!profile) {
       return res
         .status(404)
-        .json({ error: "User profile or settings not found." });
+        .json({ error: "No profile record exists for this account.", code: "profile_not_found" });
     }
 
     const settings = (profile.settings as Record<string, string>) || {};
-    const host = settings.smtpHost;
-    const port = settings.smtpPort;
-    const smtpUser = settings.smtpUser;
-    const pass = settings.smtpPassword;
-    const encryption = settings.smtpEncryption;
-    const senderName = settings.smtpSenderName || settings.senderName;
-    const senderEmail =
-      settings.smtpSenderEmail || settings.senderEmail || smtpUser;
 
-    if (!host || !port || !smtpUser || !pass) {
+    // Credentials come from encrypted server-side storage. Transitional
+    // fallback: legacy plaintext settings for users not yet migrated.
+    let creds = await deps.loadCredentials(userSupabase, user.id);
+    if (!creds) {
+      const legacy = readLegacySmtp(settings);
+      if (legacy) {
+        creds = {
+          host: legacy.host,
+          port: Number(legacy.port),
+          user: legacy.user,
+          pass: legacy.pass,
+          encryption: legacy.encryption,
+        };
+      }
+    }
+    if (!creds) {
       return res.status(400).json({
         error: "SMTP settings are incomplete or not configured.",
+        code: "smtp_not_configured",
       });
     }
 
-    const transporter = createSmtpTransport({
+    const { host, port, user: smtpUser, pass, encryption } = creds;
+    const senderName = settings.smtpSenderName || settings.senderName;
+    const senderEmail = settings.smtpSenderEmail || settings.senderEmail || smtpUser;
+
+    const transporter = deps.createTransport({
       host,
       port,
       user: smtpUser,
@@ -141,11 +144,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       messageId: info.messageId,
       message: "Email sent successfully.",
     });
-  } catch (error: any) {
-    console.error("[SMTP Send Error]", error);
+  } catch (error: unknown) {
+    if (error instanceof SmtpServiceError) {
+      console.error("[SMTP Send]", error.code);
+      return res
+        .status(error.status)
+        .json({ success: false, error: error.message, code: error.code });
+    }
+    // Log the error code only: SMTP errors can echo connection details.
+    const code = (error as { code?: string } | null)?.code ?? "send_failed";
+    console.error("[SMTP Send Error]", code);
     return res.status(500).json({
       success: false,
-      error: error.message || "Failed to send email via SMTP.",
+      error:
+        error instanceof Error && error.message ? error.message : "Failed to send email via SMTP.",
+      code: "send_failed",
     });
   }
+}
+
+export default function handler(req: VercelRequest, res: VercelResponse) {
+  return handleSendEmail(req, res);
 }

@@ -1918,7 +1918,18 @@ export async function getSettings(): Promise<SettingsMap> {
     console.warn("[Mast:getSettings] failed, returning empty settings", error.message);
     return {};
   }
-  return (data?.settings as SettingsMap) ?? {};
+  return omitSmtpPassword((data?.settings as SettingsMap) ?? {});
+}
+
+/**
+ * SMTP passwords live only in server-side encrypted storage (/api/smtp-settings).
+ * profiles.settings may still hold a legacy plaintext `smtpPassword` for users
+ * who have not been migrated; it must never reach UI state and must never be
+ * written by the client.
+ */
+function omitSmtpPassword(settings: SettingsMap): SettingsMap {
+  const { smtpPassword: _legacy, ...rest } = settings ?? {};
+  return rest;
 }
 
 export async function updateSettings(body: SettingsMap, fullName?: string): Promise<SettingsMap> {
@@ -1933,7 +1944,10 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
       readError,
     );
   }
-  const merged = { ...(existing?.settings as SettingsMap ?? {}), ...body };
+  // Never write an SMTP password into profiles.settings. An existing legacy
+  // value in the stored row is left untouched here (server-side migration
+  // handles it) so a settings save cannot destroy the only copy.
+  const merged = { ...(existing?.settings as SettingsMap ?? {}), ...omitSmtpPassword(body) };
   
   const updateData: Record<string, any> = { settings: merged };
   if (fullName !== undefined) {
@@ -1958,7 +1972,7 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
     await supabase!.auth.updateUser({ data: { full_name: fullName } });
   }
   
-  return merged;
+  return omitSmtpPassword(merged);
 }
 
 // ─── XP (Supabase) ────────────────────────────────────────────────────────────
@@ -2462,31 +2476,104 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
   };
 }
 
-export async function testSmtpConnection(credentials: {
+// ─── SMTP settings (server-side encrypted; see api/smtp-settings.ts) ─────────
+
+export type SmtpUiStatus = "not_configured" | "untested" | "connected" | "failed";
+
+/** Everything the browser ever receives about SMTP. Never includes the password. */
+export type SmtpSettings = {
+  configured: boolean;
   host: string;
   port: string;
-  user: string;
-  pass: string;
+  username: string;
   encryption: string;
-}): Promise<{ success: boolean; message?: string; error?: string }> {
+  hasPassword: boolean;
+  status: SmtpUiStatus;
+  lastTestedAt: string | null;
+  lastTestError: string | null;
+  updatedAt: string | null;
+  encryptionConfigured: boolean;
+};
+
+export class SmtpApiError extends Error {
+  constructor(public status: number, message: string, public code?: string) {
+    super(message);
+    this.name = "SmtpApiError";
+  }
+}
+
+async function smtpRequest(
+  path: "/api/smtp-settings" | "/api/test-smtp",
+  method: "GET" | "PUT" | "DELETE" | "POST",
+  body?: Record<string, unknown>,
+): Promise<{ status: number; data: any }> {
   const { data: { session } } = await supabase!.auth.getSession();
   const token = session?.access_token;
-  if (!token) throw new ApiError(401, "Not authenticated", {});
+  if (!token) throw new SmtpApiError(401, "Not authenticated", "auth_failed");
 
-  const response = await fetch("/api/test-smtp", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
-    },
-    body: JSON.stringify(credentials)
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error || "SMTP test failed.");
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch {
+    throw new SmtpApiError(0, "Could not reach the server. Check your connection and try again.", "network_error");
   }
-  return data;
+
+  let data: any = null;
+  try {
+    data = await response.json();
+  } catch {
+    // non-JSON body (e.g. platform error page) handled below
+  }
+  return { status: response.status, data: data ?? {} };
+}
+
+function smtpFailure(status: number, data: any, fallback: string): SmtpApiError {
+  return new SmtpApiError(status, data?.error || fallback, data?.code);
+}
+
+export async function getSmtpSettings(): Promise<SmtpSettings> {
+  const { status, data } = await smtpRequest("/api/smtp-settings", "GET");
+  if (status !== 200 || !data.settings) throw smtpFailure(status, data, "Could not load SMTP settings.");
+  return data.settings as SmtpSettings;
+}
+
+export async function saveSmtpSettings(input: {
+  host: string;
+  port: string;
+  username: string;
+  encryption: string;
+  /** Omit (or leave empty) to keep the stored password. */
+  password?: string;
+}): Promise<SmtpSettings> {
+  const { status, data } = await smtpRequest("/api/smtp-settings", "PUT", input);
+  if (status !== 200 || !data.settings) throw smtpFailure(status, data, "Could not save SMTP settings.");
+  return data.settings as SmtpSettings;
+}
+
+export async function deleteSmtpSettings(): Promise<SmtpSettings> {
+  const { status, data } = await smtpRequest("/api/smtp-settings", "DELETE");
+  if (status !== 200 || !data.settings) throw smtpFailure(status, data, "Could not remove SMTP settings.");
+  return data.settings as SmtpSettings;
+}
+
+/** Tests the SAVED configuration. A failed connection resolves with success:false. */
+export async function testSmtpConnection(): Promise<{
+  success: boolean;
+  error?: string;
+  settings: SmtpSettings;
+}> {
+  const { status, data } = await smtpRequest("/api/test-smtp", "POST");
+  if ((status === 200 || status === 422) && data.settings) {
+    return { success: Boolean(data.success), error: data.error, settings: data.settings as SmtpSettings };
+  }
+  throw smtpFailure(status, data, "SMTP test failed.");
 }
 
 export async function pauseWorkspace(): Promise<void> {

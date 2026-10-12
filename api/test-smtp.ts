@@ -1,84 +1,54 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClient } from "@supabase/supabase-js";
+import { authenticate } from "./_apiAuth";
 import { createSmtpTransport } from "./_smtp";
+import { createSupabaseSmtpStore } from "./_smtpStore";
+import { SmtpServiceError, testStoredSmtp } from "./_smtpService";
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
-
-const supabase =
-  supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey)
-    : null;
-
+/**
+ * POST /api/test-smtp
+ * Tests the user's SAVED SMTP configuration (credentials are decrypted
+ * server-side; none are accepted from or returned to the browser) and persists
+ * the result + timestamp against that configuration version.
+ */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Cache-Control", "no-store");
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method Not Allowed" });
-  }
+  const auth = await authenticate(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error, code: auth.code });
 
-  if (!supabase) {
-    return res
-      .status(500)
-      .json({ error: "Supabase not configured on the server." });
-  }
-
-  // 1. Verify User Token
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res
-      .status(401)
-      .json({ error: "Missing or invalid Authorization header." });
-  }
-
-  const token = authHeader.split(" ")[1];
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser(token);
-
-  if (authError || !user) {
-    return res.status(401).json({ error: "Unauthorized user token." });
-  }
-
-  // 2. Parse SMTP Config
+  const store = createSupabaseSmtpStore(auth.userSupabase);
   try {
-    const { host, port, user: smtpUser, pass, encryption } = req.body ?? {};
+    const outcome = await testStoredSmtp(store, auth.user.id, async (cfg) => {
+      await createSmtpTransport({ ...cfg, connectionTimeout: 10000 }).verify();
+    });
 
-    if (!host || !port || !smtpUser || !pass) {
-      return res.status(400).json({
-        error:
-          "All connection fields (host, port, username, password) are required.",
+    if (!outcome.success) {
+      console.error("[SMTP Test] connection failed");
+      return res.status(422).json({
+        success: false,
+        error: outcome.error,
+        recorded: outcome.recorded,
+        settings: outcome.settings,
       });
     }
-
-    const transporter = createSmtpTransport({
-      host,
-      port,
-      user: smtpUser,
-      pass,
-      encryption,
-      connectionTimeout: 10000, // 10s timeout
+    return res.status(200).json({
+      success: true,
+      message: "SMTP connection established successfully.",
+      recorded: outcome.recorded,
+      settings: outcome.settings,
     });
-
-    // 3. Perform connection test
-    await transporter.verify();
-
-    return res
-      .status(200)
-      .json({ success: true, message: "SMTP connection established successfully." });
-  } catch (error: any) {
-    console.error("[SMTP Test Error]", error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || "Failed to connect to SMTP server.",
-    });
+  } catch (err) {
+    const e =
+      err instanceof SmtpServiceError
+        ? err
+        : new SmtpServiceError(500, "smtp_internal_error", "Unexpected error.");
+    console.error("[SMTP Test]", e.code);
+    return res.status(e.status).json({ success: false, error: e.message, code: e.code });
   }
 }

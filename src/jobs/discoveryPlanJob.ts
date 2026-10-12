@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { getBoss, QUEUES } from "../lib/queue.js";
+import { evaluateEarlyChannelPrune, engineRequiredChannels } from "../discovery/earlyPrune.js";
 import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
 import { deliverLead, upsertBusinessFromEngineLead } from "../scraperBridge/deliverLead.js";
@@ -262,6 +263,7 @@ async function runOneAreaAttempt(
   let accepted = 0;
   let rejected = 0;
   let duplicates = 0;
+  const earlyPrunedByChannel: Record<string, number> = {};
   let exhausted = false;
   let lastHeartbeat = Date.now();
   let pythonPerfData: Record<string, unknown> | undefined;
@@ -296,6 +298,11 @@ async function runOneAreaAttempt(
         // overlapping areas — never one SQLite db per area.
         taskDbPath: `data/discovery-${payload.taskId}.db`,
         requestId: payload.planId,
+        // Forward ONLY channels Node itself would prune on from discovery
+        // data (website/phone) so the engine's detail-panel fast abort and
+        // early channel check can run. email/instagram are never forwarded:
+        // enrichment can still satisfy them. Omitted when empty.
+        requiredChannels: engineRequiredChannels(payload.request.channels),
       },
       requestAbort.signal,
       (done) => {
@@ -356,7 +363,27 @@ async function runOneAreaAttempt(
 
     if (requestAbort.signal.aborted) break outer;
 
-    // Persist and schedule slow work first.
+    // ── Early channel prune — BEFORE any DB write or enrichment scheduling ──
+    // Uses only data already on the Maps lead (website / phone). Same
+    // predicate and same reason string as the post-upsert gate this replaced
+    // (see src/discovery/earlyPrune.ts), so verdicts are unchanged; only the
+    // position moved. email/instagram are NOT decided here: enrichment (or an
+    // existing business row found during upsert) can still supply them.
+    const requestedChannels = payload.request.channels;
+    const needsEnrichmentToDecide = requestedChannels.some((c) => c === "email" || c === "instagram");
+    const earlyPrune = evaluateEarlyChannelPrune(lead, requestedChannels);
+    if (earlyPrune.prune) {
+      rejected += 1;
+      for (const ch of earlyPrune.missing) earlyPrunedByChannel[ch] = (earlyPrunedByChannel[ch] ?? 0) + 1;
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=${earlyPrune.reason},phone=${JSON.stringify(lead.phone)},website=${JSON.stringify(lead.website)}`);
+      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, earlyPrune.reason, areaLabel));
+      continue;
+    }
+
+    // Persist and schedule slow work (only for candidates that survived the
+    // early prune above).
     const tUpsert = profiler.timer("business_upsert");
     const businessId = await upsertBusinessFromEngineLead(lead, payload.request.region, undefined, payload.request.scrapeJobId);
     tUpsert.end();
@@ -367,21 +394,6 @@ async function runOneAreaAttempt(
     tEnqueue.end();
     // NOTE: "score" is deliberately NOT enqueued here — enrichBusiness()
     // enqueues it once enrichment finishes (see businessProcessingJob.ts).
-
-    // Maps-checkable channel gate (phone/website only — email/instagram
-    // are resolved post-enrichment).
-    const requestedChannels = payload.request.channels;
-    const mapsCheckableChannels = requestedChannels.filter((c) => c === "phone" || c === "website");
-    const needsEnrichmentToDecide = requestedChannels.some((c) => c === "email" || c === "instagram");
-
-    if (!channelsSatisfied(lead, mapsCheckableChannels)) {
-      rejected += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=maps_channel_gate:requested=${JSON.stringify(mapsCheckableChannels)},phone=${JSON.stringify(lead.phone)},website=${JSON.stringify(lead.website)}`);
-      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `maps_channel_gate:requested=${JSON.stringify(mapsCheckableChannels)}`, areaLabel));
-      continue;
-    }
 
     // The row that is SAVED must carry the same contact channels the gate
     // evaluated. Email/Instagram only exist on the enriched business row, so
@@ -524,6 +536,17 @@ async function runOneAreaAttempt(
   );
   const shouldRetryTask = !terminalReason && (cityReason === "WATCHDOG_TIMEOUT" || cityReason === "SCRAPER_FAILURE");
 
+  // Prune observability: counts by missing channel only — never names,
+  // phones, websites or other candidate data. Logged once per attempt, and
+  // only when something was pruned. Each pruned candidate is counted once
+  // (it `continue`s before upsert/enqueue/deliver, so no later stage can
+  // count it again).
+  if (Object.keys(earlyPrunedByChannel).length > 0) {
+    console.info(
+      `[discoveryPlanJob] early_prune task=${payload.taskId} discovered=${discovered} ` +
+        `accepted=${accepted} rejected=${rejected} by_channel=${JSON.stringify(earlyPrunedByChannel)}`,
+    );
+  }
   return { discovered, accepted, rejected, duplicates, exhausted, cityReason, terminalReason, shouldRetryTask, pythonPerfData, bridgeTimings, progressMarks, engineTerminationReason };
 }
 

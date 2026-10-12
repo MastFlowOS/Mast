@@ -22,9 +22,45 @@
  */
 
 import { runEngineQuery } from "../../../scraperBridge/pythonBridge.js";
-import type { EngineLead, EngineDoneInfo } from "../../../scraperBridge/pythonBridge.js";
+import type { EngineLead, EngineDoneInfo, EngineQueryParams } from "../../../scraperBridge/pythonBridge.js";
 import type { DiscoveryProvider, DiscoverySearchOptions } from "../../discoveryProvider.js";
 import type { SearchQuery, SearchTarget } from "../../searchGenerator.js";
+
+/**
+ * Map a planned search onto the Python engine's query params. Pure and
+ * exported so the HTTP-request -> plan -> provider -> engine option flow can
+ * be asserted without spawning a subprocess.
+ *
+ * `required_channels` is included ONLY when the caller supplied a non-empty
+ * list, so requests that don't opt in send a payload identical to the one
+ * sent before this option existed.
+ */
+export function buildGoogleMapsEngineParams(
+  query: SearchQuery,
+  target: SearchTarget,
+  options: DiscoverySearchOptions,
+): EngineQueryParams {
+  return {
+    query: query.queryString,
+    city: target.city,
+    country: target.countryCode,
+    region: target.region,
+    // Per-query niche first: target.niche may be a comma-joined
+    // multi-niche string, which must never reach the engine as one niche.
+    niche: query.niche ?? target.niche,
+    // The engine's geographic field is also used by its OSM-side
+    // scoping. Prefer the narrower street when one was atomically
+    // claimed; Maps itself receives the street in queryString.
+    area: target.street ?? target.area,
+    max_results: options.maxResults,
+    discovery_only: options.discoveryOnly,
+    require_viability: false,
+    db_path: options.taskDbPath,
+    ...(options.requiredChannels && options.requiredChannels.length > 0
+      ? { required_channels: options.requiredChannels }
+      : {}),
+  };
+}
 
 export class GoogleMapsProvider implements DiscoveryProvider {
   readonly id = "google_maps";
@@ -38,23 +74,7 @@ export class GoogleMapsProvider implements DiscoveryProvider {
     onDone?: (info: EngineDoneInfo) => void,
   ): AsyncGenerator<EngineLead> {
     yield* runEngineQuery(
-      {
-        query: query.queryString,
-        city: target.city,
-        country: target.countryCode,
-        region: target.region,
-        // Per-query niche first: target.niche may be a comma-joined
-        // multi-niche string, which must never reach the engine as one niche.
-        niche: query.niche ?? target.niche,
-        // The engine's geographic field is also used by its OSM-side
-        // scoping. Prefer the narrower street when one was atomically
-        // claimed; Maps itself receives the street in queryString.
-        area: target.street ?? target.area,
-        max_results: options.maxResults,
-        discovery_only: options.discoveryOnly,
-        require_viability: false,
-        db_path: options.taskDbPath,
-      },
+      buildGoogleMapsEngineParams(query, target, options),
       signal,
       onDone,
       { requestId: options.requestId, areaLabel: target.street ?? target.area },

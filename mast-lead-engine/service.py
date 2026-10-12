@@ -93,6 +93,7 @@ from utils.parsing import is_valid_email, is_weak_site
 # it had no remaining importers). See the migration notes above
 # run_query() for exactly what replaced what.
 from engine.acceptance import LeadAcceptanceGate
+from engine.prune_reason_taxonomy import is_channel_potentially_satisfiable
 from engine.coordinator import EngineCoordinator
 from engine.contracts import QualifiedOpportunity, StoredOpportunity
 from engine.execution_driver import (
@@ -593,6 +594,29 @@ class _StreamingStorageBackend:
             )
         self._on_persisted(opportunity, stored)
         return stored
+
+
+def _first_unsatisfiable_channel(candidate, required_channels) -> Optional[str]:
+    """
+    Discovery-time early channel check for the discovery_only path.
+
+    Delegates to the EXISTING `is_channel_potentially_satisfiable` rule
+    (engine/prune_reason_taxonomy.py) — the same rule family
+    ExecutionDriver._on_candidate applies — instead of re-implementing it.
+    Returns the first required channel that is PROVEN unsatisfiable from
+    discovery-time data (e.g. 'website' required but the candidate has none,
+    which also covers the minimal stub MapsScraper yields when its detail
+    panel fast-abort fires), or None when the candidate must proceed.
+
+    No required_channels (the default) -> None: behavior is unchanged for
+    every caller that does not opt in. Unknown channels never prune.
+    """
+    if not required_channels:
+        return None
+    for ch in required_channels:
+        if not is_channel_potentially_satisfiable(candidate, ch):
+            return ch
+    return None
 
 
 def _candidate_dict(candidate) -> dict:
@@ -1272,6 +1296,15 @@ async def run_query(
                     raw_dict = _candidate_dict(candidate)
                     if is_chain(candidate.name) or is_cannabis(raw_dict):
                         tracer.reject(pid, "chain_or_cannabis")
+                        continue
+                    # Early channel prune. MUST run before try_accept_lead():
+                    # the website fast-abort yields a minimal stub, and a
+                    # stub must never be accepted/delivered or counted toward
+                    # the target. Rejected here => never yielded to Node, so
+                    # Node cannot upsert/enqueue/charge it or count it again.
+                    _unsat = _first_unsatisfiable_channel(candidate, required_channels)
+                    if _unsat is not None:
+                        tracer.reject(pid, f"early_channel_pruned:{_unsat}")
                         continue
                     raw_dict["fingerprints"] = sorted(fingerprints_for(raw_dict))
                     raw_dict["is_disqualified"] = False

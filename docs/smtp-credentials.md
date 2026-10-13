@@ -61,3 +61,14 @@ What remains for an operator (not performed by code, because it touches producti
 - The ciphertext is readable by its owner through RLS (the browser never queries the table, but the grant exists because the API uses the caller's JWT). A service-role-only table would remove that; it needs a service-role key in the `/api` runtime.
 - No automated key rotation.
 - Failed-connection errors come from the SMTP server and are redacted of the password and truncated, but may still contain the username or server banner text.
+
+## Verifying a deployment is actually running this code
+
+If Settings still resets to "Not tested" or Send Email still says "User profile or settings not found", the deployed app is **not** running this change: that wording no longer exists anywhere in the code, and the status is no longer component state.
+
+1. Open the deployed site, DevTools → Network, reload **Settings**. A `GET /api/smtp-settings` request must appear. If it does not, the frontend bundle is old.
+2. Click **Send Email**. The JSON response of `/api/send-email` must contain a `code` field on every failure (`profile_not_found`, `db_permission_denied`, `smtp_not_configured`, ...). If you see the old sentence, the `api/` functions are old.
+3. If `/api/smtp-settings` returns 503: `storage_unavailable` means migration 039 is not applied; `smtp_key_not_configured` means `SMTP_CREDENTIALS_KEY` is not set on the server running `/api/*`.
+4. Only Vercel serves `api/` (see `vercel.json`). `netlify.toml` rewrites everything to `index.html` and has no functions, so a Netlify deploy cannot serve these endpoints.
+
+Local wiring check (no credentials needed): `npx tsx scripts/e2e-smtp-check.mts`

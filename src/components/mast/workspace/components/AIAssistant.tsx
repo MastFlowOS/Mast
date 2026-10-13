@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import type { Lead, OutreachTone } from "@/lib/api";
+import type { Lead, OutreachTone, OutreachGenerationAction } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
 import { useGenerateOutreachDraft, useMe, useRecordLeadActivity, useSettings } from "@/hooks/use-mast-api";
 import { normalizeDraftResponse, TEMPLATES } from "@/lib/lead-workspace";
@@ -129,13 +129,15 @@ export function AIAssistant({
           leadId: lead.id,
           body: {
             channel,
-            action: "generate",
+            action: template === "objection_handling" ? "objections" : "generate",
             tone: (tone as OutreachTone) || "friendly",
             template,
             customInstructions: customInstructions.trim() || undefined,
             subject,
             body,
             senderName,
+            personalization,
+            contextNotes: customContextNotes.trim() || undefined,
           },
         });
         const next = normalizeDraftResponse(response);
@@ -149,8 +151,12 @@ export function AIAssistant({
     }
   };
 
-  const runRewriteWithInstructions = async (instructionText: string, toneOverride?: OutreachTone) => {
-    if (!body.trim()) {
+  const runRewriteWithInstructions = async (
+    instructionText: string,
+    toneOverride?: OutreachTone,
+    action: OutreachGenerationAction = "rewrite"
+  ) => {
+    if (!body.trim() && action !== "objections") {
       toast.error("Add a draft before rewriting");
       return;
     }
@@ -160,22 +166,32 @@ export function AIAssistant({
         leadId: lead.id,
         body: {
           channel,
-          action: "rewrite",
+          action,
           tone: toneOverride ?? ((tone as OutreachTone) || "friendly"),
           template,
           customInstructions: instructionText,
           subject,
           body,
           senderName,
+          personalization,
+          contextNotes: customContextNotes.trim() || undefined,
         },
       });
       const next = normalizeDraftResponse(response);
       if (next.body) {
         onInsert(next.body, next.subject);
-        toast.success("Draft updated");
+        toast.success(
+          action === "shorten"
+            ? "Draft shortened"
+            : action === "expand"
+              ? "Draft expanded"
+              : action === "objections"
+                ? "Objection reply drafted"
+                : "Draft updated"
+        );
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not rewrite draft");
+      toast.error(error instanceof Error ? error.message : "Could not update draft");
     }
   };
 
@@ -293,15 +309,27 @@ export function AIAssistant({
                 placeholder="Mention a specific angle, local detail, or objection..."
                 className="min-h-16 text-xs bg-background/50 border-border/70 rounded-lg resize-none"
               />
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => void runRewriteWithInstructions(customInstructions)}
-                disabled={isGenerating || !body.trim() || !customInstructions.trim()}
-                className="w-full h-8 text-xs bg-brand hover:bg-brand/90 text-brand-foreground rounded-lg"
-              >
-                Apply Rewrite
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void runRewriteWithInstructions(customInstructions, undefined, "rewrite")}
+                  disabled={isGenerating || !body.trim() || !customInstructions.trim()}
+                  className="flex-1 h-8 text-xs bg-brand hover:bg-brand/90 text-brand-foreground rounded-lg"
+                >
+                  Apply Rewrite
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void runRewriteWithInstructions(customInstructions, undefined, "objections")}
+                  disabled={isGenerating || !customInstructions.trim()}
+                  className="h-8 text-xs border-border/70 hover:bg-card text-foreground rounded-lg"
+                >
+                  Objection Reply
+                </Button>
+              </div>
             </div>
           )}
         </div>
@@ -373,7 +401,7 @@ export function AIAssistant({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void runRewriteWithInstructions("Make it concise, punchy, and under 75 words")}
+                onClick={() => void runRewriteWithInstructions("Make it concise, punchy, and under 75 words", undefined, "shorten")}
                 disabled={isGenerating || !body.trim()}
                 className="h-8 text-xs border-border/60 bg-background/50 hover:bg-card text-foreground"
               >
@@ -383,7 +411,7 @@ export function AIAssistant({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void runRewriteWithInstructions("Expand with more detail, proof points, and depth")}
+                onClick={() => void runRewriteWithInstructions("Expand with more detail, proof points, and depth", undefined, "expand")}
                 disabled={isGenerating || !body.trim()}
                 className="h-8 text-xs border-border/60 bg-background/50 hover:bg-card text-foreground"
               >

@@ -248,9 +248,32 @@ export function CenterWorkspace({
         toast.error("No website recorded for this lead");
         return;
       }
-      if (body.trim()) await handleCopy();
+      let didCopy = false;
+      if (body.trim()) {
+        try {
+          await navigator.clipboard.writeText(body);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+          didCopy = true;
+        } catch {
+          // Non-critical
+        }
+      }
       window.open(websiteUrl, "_blank", "noopener,noreferrer");
-      toast.success("Opening website…");
+      try {
+        await recordActivity.mutateAsync({
+          lead,
+          activity: {
+            type: "contact_form_opened",
+            channel: "contact_form",
+            body,
+            content: `Website opened for ${lead.businessName}${didCopy ? " (message copied to clipboard)" : ""}`,
+          },
+        });
+      } catch {
+        // Non-critical: opening website must not fail merely because activity persistence failed
+      }
+      toast.success(didCopy ? "Draft copied · Opening website…" : "Opening website…");
     }
   };
 
@@ -264,23 +287,13 @@ export function CenterWorkspace({
       return;
     }
 
-    const sentAt = new Date().toISOString();
     try {
-      await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
-      await recordActivity.mutateAsync({
-        lead,
-        activity: {
-          type: "email_sent",
-          channel: "email",
-          subject,
-          body,
-          timestamp: sentAt,
-          content: "Email sent via connected account",
-          metadata: getDraftProvenance(lead.id, "email"),
-        },
-        patch: { status: "email_sent", lastContactedAt: sentAt },
-      });
-      toast.success("Email sent successfully");
+      const res = await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
+      if (res?.warning) {
+        toast.warning(res.warning);
+      } else {
+        toast.success("Email sent successfully");
+      }
     } catch (error) {
       if (isMissingBackendEndpoint(error)) {
         await handleOpenGmail();
@@ -552,7 +565,7 @@ export function CenterWorkspace({
                   ? "Open Instagram"
                   : channel === "phone"
                     ? "Call Phone"
-                    : "Open Website"}
+                    : "Copy & Open Website"}
             </span>
             <ExternalLink className="size-3.5 text-muted-foreground" />
           </Button>
@@ -572,7 +585,13 @@ export function CenterWorkspace({
               ) : (
                 <Send className="size-4" />
               )}
-              <span>{channel === "email" ? "Send Email" : "Mark as sent"}</span>
+              <span>
+                {channel === "email"
+                  ? "Send Email"
+                  : channel === "phone"
+                    ? "Mark as Called"
+                    : "Mark as Sent"}
+              </span>
             </Button>
             <button
               type="button"
@@ -633,7 +652,7 @@ export function CenterWorkspace({
                 className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-foreground hover:bg-muted/60 transition-colors"
               >
                 <CheckCircle className="size-3.5 text-emerald-400" />
-                <span>Mark as Sent (Manual)</span>
+                <span>{channel === "phone" ? "Mark as Called (Manual)" : "Mark as Sent (Manual)"}</span>
               </button>
             </div>
           )}

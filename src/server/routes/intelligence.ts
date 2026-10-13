@@ -4,7 +4,7 @@ import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan, type PlanId } from "../../config/plans.js";
 import { canUseAiFeature } from "../../lib/aiAccess.js";
-import { aiEnabled, generateJSON, AI_MODEL } from "../../lib/ai.js";
+import { aiEnabled, generateJSON, AI_MODEL, getAiModel } from "../../lib/ai.js";
 import { singleFlight } from "../../lib/singleFlight.js";
 import { buildPipelineSnapshot } from "../../lib/intelligenceContext.js";
 import { runEngineScore } from "../../scraperBridge/pythonBridge.js";
@@ -287,6 +287,7 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
           summary: explanation.summary,
         }),
         maxTokens: 512,
+        tier: "pro",
       });
 
       const nextRow = {
@@ -296,7 +297,7 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
         talking_points: asStringArray(insight.talkingPoints),
         opening_line: asString(insight.openingLine, "Hi — I came across your business and had a few ideas that could help."),
         score_snapshot: result.score,
-        model: AI_MODEL,
+        model: getAiModel("pro"),
         generated_at: new Date().toISOString(),
       };
 
@@ -369,6 +370,7 @@ intelligenceRouter.get("/briefing", requireAuth, aiGenerationLimiter, async (req
           '"tone": "brand" | "warning" | "success" (warning if things are stalling/overdue, success if strong momentum, brand otherwise)}.',
         user: JSON.stringify(snapshot),
         maxTokens: 512,
+        tier: "pro",
       });
 
       nextBriefing.summary = asString(nextBriefing.summary, "Here's where your pipeline stands today.");
@@ -382,7 +384,7 @@ intelligenceRouter.get("/briefing", requireAuth, aiGenerationLimiter, async (req
           kind: "executive_briefing",
           period_key: periodKey,
           content: nextBriefing,
-          model: AI_MODEL,
+          model: getAiModel("pro"),
           generated_at: nextGeneratedAt,
         },
         { onConflict: "user_id,kind,period_key" },
@@ -445,6 +447,7 @@ intelligenceRouter.get("/weekly", requireAuth, aiGenerationLimiter, async (req, 
           '"focusForNextWeek": string[] (1-3 concrete goals for next week)}.',
         user: JSON.stringify(snapshot),
         maxTokens: 640,
+        tier: "pro",
       });
 
       nextWeekly.reflection = asString(nextWeekly.reflection, "Here's a look back at your last 7 days.");
@@ -458,7 +461,7 @@ intelligenceRouter.get("/weekly", requireAuth, aiGenerationLimiter, async (req, 
           kind: "weekly_intelligence",
           period_key: periodKey,
           content: nextWeekly,
-          model: AI_MODEL,
+          model: getAiModel("pro"),
           generated_at: nextGeneratedAt,
         },
         { onConflict: "user_id,kind,period_key" },
@@ -529,6 +532,7 @@ intelligenceRouter.get("/coaching", requireAuth, aiGenerationLimiter, async (req
           "(1 concrete next step)}]} — one alert per stalled deal given, same order.",
         user: JSON.stringify({ stalledDeals: snapshot.stalledDeals }),
         maxTokens: 640,
+        tier: "pro",
       });
 
       const alerts = (Array.isArray(coaching.alerts) ? coaching.alerts : [])
@@ -542,7 +546,7 @@ intelligenceRouter.get("/coaching", requireAuth, aiGenerationLimiter, async (req
       const nextContent = { alerts, allClear: alerts.length === 0 };
       const nextGeneratedAt = new Date().toISOString();
       const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
-        { user_id: userId, kind: "pipeline_coaching", period_key: periodKey, content: nextContent, model: AI_MODEL, generated_at: nextGeneratedAt },
+        { user_id: userId, kind: "pipeline_coaching", period_key: periodKey, content: nextContent, model: getAiModel("pro"), generated_at: nextGeneratedAt },
         { onConflict: "user_id,kind,period_key" },
       );
       if (upsertError) throw upsertError;

@@ -20,17 +20,32 @@ import {
   Zap,
   AlertTriangle,
   Link as LinkIcon,
+  Calendar,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Lead, FieldTrustEntry } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
 import { leadNicheLabel, stripActivityMarkers } from "@/lib/lead-workspace";
-import { useOpportunityExplanation, useOpportunityInsight, useLeadTrust, useUpdateLead } from "@/hooks/use-mast-api";
+import {
+  useOpportunityExplanation,
+  useOpportunityInsight,
+  useLeadTrust,
+  useUpdateLead,
+  useLeadFollowups,
+} from "@/hooks/use-mast-api";
 import { normalizeInstagram } from "@/lib/instagram";
-import { resolveTrustPanelState, getFieldTrustEntry, formatVerificationLine, resolveDisqualificationDisplay } from "@/lib/trustPanel";
+import {
+  resolveTrustPanelState,
+  getFieldTrustEntry,
+  formatVerificationLine,
+  resolveDisqualificationDisplay,
+  resolveScoreDisplay,
+  resolveContactVerificationBadge,
+} from "@/lib/trustPanel";
 import { nicheImage } from "@/components/mast/discover/nicheImages";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { NoteForm } from "./components/NoteForm";
+import { FollowUpsTab } from "./FollowUpsTab";
 
 const TRUST_FIELDS: Array<{ key: string; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { key: "email", label: "Email", icon: Mail },
@@ -54,6 +69,7 @@ export function LeftSidebar({
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     insights: false,
     why: false,
+    followups: false,
     activity: false,
     notes: false,
   });
@@ -69,16 +85,13 @@ export function LeftSidebar({
     setTimeout(() => setCopied(null), 2000);
   };
 
-  const hasRealScore = lead.opportunityScore != null;
-  const score = hasRealScore
-    ? Math.round(lead.opportunityScore!)
-    : lead.priority === "high"
-      ? 94
-      : lead.priority === "normal"
-        ? 78
-        : 62;
+  // Honest opportunity score resolution — never fabricates numbers from priority
+  const scoreInfo = resolveScoreDisplay(lead.opportunityScore);
 
-  const opportunityLevel = score >= 80 ? "High Opportunity" : score >= 60 ? "Medium Opportunity" : "Opportunity";
+  const { data: followups = [] } = useLeadFollowups(lead.id);
+  const activeFollowupCount = Array.isArray(followups)
+    ? followups.filter((f) => f.status !== "completed" && f.status !== "cancelled").length
+    : 0;
   const nicheLabel = leadNicheLabel(lead.niche);
   const ig = normalizeInstagram(lead.instagramHandle);
   const businessImageUrl = nicheImage(lead.niche || "");
@@ -171,11 +184,24 @@ export function LeftSidebar({
 
         {/* Opportunity Score Badges */}
         <div className="flex items-center gap-2 pt-0.5">
-          <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/10 border border-emerald-500/25 text-emerald-400">
-            {opportunityLevel}
+          <span
+            className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold ${
+              scoreInfo.isScored
+                ? "bg-emerald-500/10 border border-emerald-500/25 text-emerald-400"
+                : "bg-muted/30 border border-border/60 text-muted-foreground"
+            }`}
+          >
+            {scoreInfo.level}
           </span>
           <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-card/80 border border-border/80 text-foreground">
-            Score <span className="ml-1 text-foreground font-mono font-bold">{score}</span>
+            Score{" "}
+            <span
+              className={`ml-1 font-mono font-bold ${
+                scoreInfo.isScored ? "text-foreground" : "text-muted-foreground"
+              }`}
+            >
+              {scoreInfo.label}
+            </span>
           </span>
         </div>
       </div>
@@ -218,15 +244,23 @@ export function LeftSidebar({
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <span
-                  className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                    lead.email
+                {(() => {
+                  const badge = resolveContactVerificationBadge(
+                    lead.email,
+                    getFieldTrustEntry(trust?.fieldTrust, "email"),
+                  );
+                  const badgeClass =
+                    badge.status === "verified"
                       ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                      : "bg-muted/40 text-muted-foreground border border-border/40"
-                  }`}
-                >
-                  {lead.email ? "Verified" : "Missing"}
-                </span>
+                      : badge.status === "available"
+                        ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                        : "bg-muted/40 text-muted-foreground border border-border/40";
+                  return (
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
+                      {badge.label}
+                    </span>
+                  );
+                })()}
                 <ChevronRight className="size-3.5 text-muted-foreground" />
               </div>
             </div>
@@ -252,15 +286,23 @@ export function LeftSidebar({
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <span
-                  className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                    lead.instagramHandle
+                {(() => {
+                  const badge = resolveContactVerificationBadge(
+                    lead.instagramHandle,
+                    getFieldTrustEntry(trust?.fieldTrust, "instagram"),
+                  );
+                  const badgeClass =
+                    badge.status === "verified"
                       ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                      : "bg-muted/40 text-muted-foreground border border-border/40"
-                  }`}
-                >
-                  {lead.instagramHandle ? "Available" : "Missing"}
-                </span>
+                      : badge.status === "available"
+                        ? "bg-purple-500/10 text-purple-400 border border-purple-500/20"
+                        : "bg-muted/40 text-muted-foreground border border-border/40";
+                  return (
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
+                      {badge.label}
+                    </span>
+                  );
+                })()}
                 <ChevronRight className="size-3.5 text-muted-foreground" />
               </div>
             </div>
@@ -286,15 +328,23 @@ export function LeftSidebar({
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <span
-                  className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                    lead.phone
+                {(() => {
+                  const badge = resolveContactVerificationBadge(
+                    lead.phone,
+                    getFieldTrustEntry(trust?.fieldTrust, "phone"),
+                  );
+                  const badgeClass =
+                    badge.status === "verified"
                       ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                      : "bg-muted/40 text-muted-foreground border border-border/40"
-                  }`}
-                >
-                  {lead.phone ? "Verified" : "Missing"}
-                </span>
+                      : badge.status === "available"
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "bg-muted/40 text-muted-foreground border border-border/40";
+                  return (
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
+                      {badge.label}
+                    </span>
+                  );
+                })()}
                 <ChevronRight className="size-3.5 text-muted-foreground" />
               </div>
             </div>
@@ -320,15 +370,23 @@ export function LeftSidebar({
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <span
-                  className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                    lead.website
+                {(() => {
+                  const badge = resolveContactVerificationBadge(
+                    lead.website,
+                    getFieldTrustEntry(trust?.fieldTrust, "website"),
+                  );
+                  const badgeClass =
+                    badge.status === "verified"
                       ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                      : "bg-muted/40 text-muted-foreground border border-border/40"
-                  }`}
-                >
-                  {lead.website ? "Available" : "Missing"}
-                </span>
+                      : badge.status === "available"
+                        ? "bg-sky-500/10 text-sky-400 border border-sky-500/20"
+                        : "bg-muted/40 text-muted-foreground border border-border/40";
+                  return (
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
+                      {badge.label}
+                    </span>
+                  );
+                })()}
                 <ChevronRight className="size-3.5 text-muted-foreground" />
               </div>
             </div>
@@ -481,6 +539,35 @@ export function LeftSidebar({
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </div>
+
+        {/* Accordion: Follow-ups */}
+        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("followups")}
+            className="flex w-full items-center justify-between p-3.5 text-left text-xs font-semibold text-foreground hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Calendar className="size-4 text-brand" />
+              <span>Follow-ups</span>
+              {activeFollowupCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+                  {activeFollowupCount}
+                </span>
+              )}
+            </div>
+            {openSections.followups ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
+          </button>
+          {openSections.followups && (
+            <div className="p-3.5 pt-0 border-t border-border/40 space-y-2 text-xs">
+              <FollowUpsTab lead={lead} />
             </div>
           )}
         </div>

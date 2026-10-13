@@ -45,6 +45,9 @@ import {
   enableWorkspace,
   deleteWorkspace,
   testSmtpConnection,
+  getSmtpSettings,
+  saveSmtpSettings,
+  deleteSmtpSettings,
   getOpsStats,
   getOpsHistory,
   type AuthUser,
@@ -75,6 +78,7 @@ export const queryKeys = {
   leads: (params?: Record<string, string | number | undefined>) => ["mast", "leads", params ?? {}] as const,
   analytics: ["mast", "analytics"] as const,
   settings: ["mast", "settings"] as const,
+  smtp: ["mast", "smtp"] as const,
   xp: ["mast", "xp"] as const,
   lead: (id: number | string | undefined) => ["mast", "lead", String(id)] as const,
   leadActivities: (id: number | string | undefined) => ["mast", "lead", String(id), "activities"] as const,
@@ -628,9 +632,40 @@ export function useDeleteWorkspace() {
   });
 }
 
+/** Persisted SMTP config + last test status. The server is the source of truth. */
+export function useSmtpSettings(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.smtp,
+    queryFn: getSmtpSettings,
+    enabled,
+    staleTime: 0,
+    refetchOnMount: "always",
+    retry: false,
+  });
+}
+
+export function useSaveSmtpSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: saveSmtpSettings,
+    onSuccess: (settings) => queryClient.setQueryData(queryKeys.smtp, settings),
+  });
+}
+
+export function useDeleteSmtpSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSmtpSettings,
+    onSuccess: (settings) => queryClient.setQueryData(queryKeys.smtp, settings),
+  });
+}
+
 export function useTestSmtpConnection() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: testSmtpConnection,
+    // Success or failure, the server persisted the result: mirror it.
+    onSuccess: (result) => queryClient.setQueryData(queryKeys.smtp, result.settings),
   });
 }
 

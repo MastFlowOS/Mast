@@ -19,12 +19,19 @@ import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useCreateLead, useRecordLeadActivity, useUpdateLead, useLeads } from "@/hooks/use-mast-api";
-import { ApiError, type Lead, type LeadStatus } from "@/lib/api";
+import { ApiError, type Lead, type LeadStatus, type LeadActivityType } from "@/lib/api";
 import { isRelationshipLead, normalizeLeadStatus } from "@/lib/lead-workspace";
+import type { Channel } from "@/routes/dashboard.leads.$leadId";
 
 type ConfirmAction = "archive" | "delete" | null;
 
-export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
+export function LeadWorkspaceHeader({
+  lead,
+  channel = "email",
+}: {
+  lead: Lead;
+  channel?: Channel;
+}) {
   const navigate = useNavigate();
   const recordActivity = useRecordLeadActivity();
   const createLead = useCreateLead();
@@ -129,19 +136,49 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
 
   const handleMarkAsSent = async () => {
     const sentAt = new Date().toISOString();
+    const isEmail = channel === "email";
+    const isInstagram = channel === "instagram";
+    const isPhone = channel === "phone";
+
+    const activityType: LeadActivityType = isEmail
+      ? "email_sent"
+      : isInstagram
+        ? "instagram_sent"
+        : isPhone
+          ? "call_completed"
+          : "contact_form_sent";
+
+    const nextStatus: LeadStatus = isEmail
+      ? "email_sent"
+      : isInstagram
+        ? "instagram_sent"
+        : isPhone
+          ? "called"
+          : "email_sent";
+
+    const content = isEmail
+      ? "Marked as sent from workspace header"
+      : isInstagram
+        ? "Instagram DM marked sent from workspace header"
+        : isPhone
+          ? "Call marked as completed from workspace header"
+          : "Contact form message marked sent from workspace header";
+
     try {
       await recordActivity.mutateAsync({
         lead,
         activity: {
-          type: "email_sent",
-          channel: "email",
+          type: activityType,
+          channel,
           timestamp: sentAt,
-          content: "Marked as sent from workspace header",
+          content,
         },
-        patch: { status: "email_sent", lastContactedAt: sentAt },
+        patch: { status: nextStatus, lastContactedAt: sentAt },
       });
-      setStatus("email_sent");
-      toast.success("Opportunity marked as sent");
+      setStatus(nextStatus);
+      toast.success(
+        isPhone ? "Call marked as completed" : "Opportunity marked as sent",
+      );
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Failed to mark as sent");
     }
@@ -268,15 +305,32 @@ export function LeadWorkspaceHeader({ lead }: { lead: Lead }) {
           <span>{saved ? "Saved" : "Save"}</span>
         </Button>
 
-        <Button
-          size="sm"
-          onClick={handleMarkAsSent}
-          disabled={recordActivity.isPending || status === "email_sent"}
-          className="h-8 gap-1.5 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-medium px-3.5 rounded-lg shadow-sm shadow-indigo-500/25 transition-all"
-        >
-          <Send className="size-3.5" />
-          <span>{status === "email_sent" ? "Sent" : "Mark as sent"}</span>
-        </Button>
+        {(() => {
+          const isSentOrCalled =
+            channel === "email"
+              ? status === "email_sent"
+              : channel === "instagram"
+                ? status === "instagram_sent"
+                : channel === "phone"
+                  ? status === "called"
+                  : status === "email_sent";
+
+          const buttonLabel = isSentOrCalled
+            ? channel === "phone" ? "Called" : "Sent"
+            : channel === "phone" ? "Mark as called" : "Mark as sent";
+
+          return (
+            <Button
+              size="sm"
+              onClick={handleMarkAsSent}
+              disabled={recordActivity.isPending || isSentOrCalled}
+              className="h-8 gap-1.5 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-medium px-3.5 rounded-lg shadow-sm shadow-indigo-500/25 transition-all"
+            >
+              <Send className="size-3.5" />
+              <span>{buttonLabel}</span>
+            </Button>
+          );
+        })()}
 
         {/* Three-dot dropdown menu */}
         <div ref={menuRef} className="relative">

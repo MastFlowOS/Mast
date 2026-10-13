@@ -71,11 +71,14 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
     }
     if (!subject.trim() || !body.trim()) return;
 
-    const sentAt = new Date().toISOString();
     try {
-      await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
-      await recordSent(sentAt, "Email sent via connected account");
-      toast.success("Email sent");
+      const res = await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
+      setIsSent(true);
+      if (res?.warning) {
+        toast.warning(res.warning);
+      } else {
+        toast.success("Email sent");
+      }
     } catch (error) {
       if (isMissingBackendEndpoint(error)) {
         // Fallback: open mail client and record activity

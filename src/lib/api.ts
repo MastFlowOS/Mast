@@ -40,10 +40,14 @@ export function isMissingBackendEndpoint(_error: unknown): boolean {
 // Separate service from Supabase — see mast-backend. Only `/v1/discover` is
 // called from here today; everything else (leads CRUD, settings, etc.)
 // still talks to Supabase directly, unchanged.
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
+function getApiBaseUrl(): string | undefined {
+  const apiEnv = (typeof import.meta !== "undefined" && import.meta.env) ? import.meta.env : (process.env as Record<string, string | undefined>);
+  return (apiEnv?.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
+}
 
 async function backendFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  if (!API_BASE_URL) {
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) {
     throw new ApiError(0, "VITE_API_BASE_URL is not configured", {});
   }
   if (!supabase) throw new ApiError(0, "Supabase not configured", {});
@@ -53,7 +57,7 @@ async function backendFetch<T>(path: string, options: RequestInit = {}): Promise
   } = await supabase.auth.getSession();
   if (!session) throw new ApiError(401, "Not authenticated", {});
 
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -153,6 +157,12 @@ export type LeadActivityType =
   | "ready_for_outreach"
   | "workspace_opened"
   | "email_sent"
+  | "instagram_sent"
+  | "call_completed"
+  | "contact_form_sent"
+  | "email_opened"
+  | "instagram_opened"
+  | "contact_form_opened"
   | "reply_received"
   | "meeting_booked"
   | "proposal_sent"
@@ -313,13 +323,21 @@ export type LeadActivity = {
   metadata?: Record<string, unknown> | null;
 };
 
-export type OutreachGenerationAction = "generate" | "rewrite" | "objections";
-export type OutreachTone = "friendly" | "professional" | "direct";
+export type OutreachGenerationAction = "generate" | "rewrite" | "shorten" | "expand" | "objections";
+export type OutreachTone = "friendly" | "professional" | "direct" | "casual" | "urgent";
+
+export type PersonalizationSettings = {
+  businessNameAndNiche?: boolean;
+  recentInstagramActivity?: boolean;
+  locationAndLocalMarket?: boolean;
+  businessReviewsAndReputation?: boolean;
+  similarBusinessSuccessStories?: boolean;
+};
 
 export type OutreachDraftRequest = {
   channel: OutreachChannel;
   action?: OutreachGenerationAction;
-  tone?: OutreachTone;
+  tone?: OutreachTone | string;
   template?: string;
   customInstructions?: string;
   subject?: string;
@@ -327,11 +345,18 @@ export type OutreachDraftRequest = {
   senderName?: string;
   senderEmail?: string;
   signature?: string;
+  personalization?: PersonalizationSettings;
+  contextNotes?: string;
+  tier?: "fast" | "pro";
 };
 
 export type OutreachDraftResponse = {
   subject?: string | null;
   body?: string | null;
+  channel?: OutreachChannel;
+  action?: OutreachGenerationAction;
+  model?: string;
+  tier?: "fast" | "pro";
   message?: string | null;
   content?: string | null;
   draft?: {
@@ -350,6 +375,7 @@ export type SendLeadEmailResponse = {
   success: boolean;
   lead?: Lead;
   message?: Message;
+  warning?: string;
 };
 
 export type BulkImportResult = {
@@ -1892,7 +1918,18 @@ export async function getSettings(): Promise<SettingsMap> {
     console.warn("[Mast:getSettings] failed, returning empty settings", error.message);
     return {};
   }
-  return (data?.settings as SettingsMap) ?? {};
+  return omitSmtpPassword((data?.settings as SettingsMap) ?? {});
+}
+
+/**
+ * SMTP passwords live only in server-side encrypted storage (/api/smtp-settings).
+ * profiles.settings may still hold a legacy plaintext `smtpPassword` for users
+ * who have not been migrated; it must never reach UI state and must never be
+ * written by the client.
+ */
+function omitSmtpPassword(settings: SettingsMap): SettingsMap {
+  const { smtpPassword: _legacy, ...rest } = settings ?? {};
+  return rest;
 }
 
 export async function updateSettings(body: SettingsMap, fullName?: string): Promise<SettingsMap> {
@@ -1907,7 +1944,10 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
       readError,
     );
   }
-  const merged = { ...(existing?.settings as SettingsMap ?? {}), ...body };
+  // Never write an SMTP password into profiles.settings. An existing legacy
+  // value in the stored row is left untouched here (server-side migration
+  // handles it) so a settings save cannot destroy the only copy.
+  const merged = { ...(existing?.settings as SettingsMap ?? {}), ...omitSmtpPassword(body) };
   
   const updateData: Record<string, any> = { settings: merged };
   if (fullName !== undefined) {
@@ -1932,7 +1972,7 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
     await supabase!.auth.updateUser({ data: { full_name: fullName } });
   }
   
-  return merged;
+  return omitSmtpPassword(merged);
 }
 
 // ─── XP (Supabase) ────────────────────────────────────────────────────────────
@@ -2141,9 +2181,7 @@ export async function createLeadActivity(
 
   const { data, error } = await supabase!.from("lead_activities").insert(row).select().single();
   if (error) {
-    // Gracefully fall back — table might not exist in all deployments
-    console.warn("[Mast:createLeadActivity] insert failed, returning local stub", error.message);
-    return { id: `local-${Date.now()}`, leadId: Number(id), ...body };
+    throw new ApiError(500, error.message, error);
   }
 
   return {
@@ -2201,9 +2239,7 @@ export async function createMessage(body: {
 
   const { data, error } = await supabase!.from("lead_messages").insert(row).select().single();
   if (error) {
-    console.warn("[Mast:createMessage] insert failed, returning local stub", error.message);
-    const now = new Date().toISOString();
-    return { id: `local-${Date.now()}`, ...body, template: body.template, status: body.status ?? "draft", sentAt: null, createdAt: now, updatedAt: now };
+    throw new ApiError(500, error.message, error);
   }
 
   const d = data as Record<string, unknown>;
@@ -2336,13 +2372,18 @@ export async function updateFollowup(id: number | string, body: {
   return dbRowToFollowup(data as Record<string, unknown>);
 }
 
-// ─── Outreach draft (AI endpoint — stub that returns a local fallback) ─────────
-// The AI generation feature requires the Mast Lead Engine.
+// ─── Outreach draft (AI endpoint powered by DeepSeek) ─────────────────────────
 // Free generation does NOT come through here — it is deterministic and local
-// (src/lib/outreach/pipeline.ts). This stub is the Paid/AI path only, still
-// used by AIAssistant rewrite/objection actions.
-export async function generateOutreachDraft(_leadId: number, _body: OutreachDraftRequest): Promise<OutreachDraftResponse> {
-  throw new ApiError(501, "AI outreach generation requires the Mast Lead Engine backend.", { code: "ENGINE_NOT_CONNECTED" });
+// (src/lib/outreach/pipeline.ts). This endpoint is the Paid/AI path used by
+// AIAssistant for generate, rewrite, shorten, expand, and objection replies.
+export async function generateOutreachDraft(leadId: number, body: OutreachDraftRequest): Promise<OutreachDraftResponse> {
+  return backendFetch<OutreachDraftResponse>("/v1/outreach/draft", {
+    method: "POST",
+    body: JSON.stringify({
+      leadId,
+      ...body,
+    }),
+  });
 }
 
 export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Promise<SendLeadEmailResponse> {
@@ -2370,11 +2411,23 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
     throw new Error(resData.error || "Failed to send email");
   }
 
+  // Once the SMTP endpoint has confirmed delivery, CRM and activity persistence
+  // is best-effort. Delivery has occurred in reality — downstream persistence errors
+  // must never cause the client to claim delivery failed (which would prompt duplicate sends).
+  const warnings: string[] = [];
+
   // Update lead status and last contacted
-  const updatedLead = await updateLead(leadId, {
-    status: "email_sent",
-    lastContactedAt: new Date().toISOString(),
-  });
+  let updatedLead: Lead | undefined;
+  try {
+    updatedLead = await updateLead(leadId, {
+      status: "email_sent",
+      lastContactedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Mast:sendLeadEmail] Lead status update failed: ${msg}`);
+    warnings.push("Email delivered, but lead status could not be updated in the CRM.");
+  }
 
   // Record lead activity
   // Structured outreach continuity, attached to the genuine send. Rides on
@@ -2382,59 +2435,145 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
   // migration — and is null when the body wasn't produced by the
   // deterministic generator.
   const continuityMetadata = getDraftProvenance(leadId, "email");
-
-  await createLeadActivity(leadId, {
-    type: "email_sent",
-    timestamp: new Date().toISOString(),
-    content: `Sent email: "${body.subject}"`,
-    channel: "email",
-    subject: body.subject,
-    body: body.body,
-    metadata: continuityMetadata,
-  });
+  try {
+    await createLeadActivity(leadId, {
+      type: "email_sent",
+      timestamp: new Date().toISOString(),
+      content: `Sent email: "${body.subject}"`,
+      channel: "email",
+      subject: body.subject,
+      body: body.body,
+      metadata: continuityMetadata,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Mast:sendLeadEmail] Sent activity persistence failed: ${msg}`);
+    warnings.push("Email delivered, but sent activity could not be recorded.");
+  }
 
   // Create message record
-  const msg = await createMessage({
-    leadId,
-    channel: "email",
-    template: "outreach",
-    content: body.body,
-    subject: body.subject,
-    status: "sent",
-  });
+  let msg: Message | undefined;
+  try {
+    msg = await createMessage({
+      leadId,
+      channel: "email",
+      template: "outreach",
+      content: body.body,
+      subject: body.subject,
+      status: "sent",
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Mast:sendLeadEmail] Message persistence failed: ${msg}`);
+    warnings.push("Email delivered, but message record could not be saved.");
+  }
 
   return {
     success: true,
     lead: updatedLead,
-    message: msg
+    message: msg,
+    ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
   };
 }
 
-export async function testSmtpConnection(credentials: {
+// ─── SMTP settings (server-side encrypted; see api/smtp-settings.ts) ─────────
+
+export type SmtpUiStatus = "not_configured" | "untested" | "connected" | "failed";
+
+/** Everything the browser ever receives about SMTP. Never includes the password. */
+export type SmtpSettings = {
+  configured: boolean;
   host: string;
   port: string;
-  user: string;
-  pass: string;
+  username: string;
   encryption: string;
-}): Promise<{ success: boolean; message?: string; error?: string }> {
+  hasPassword: boolean;
+  status: SmtpUiStatus;
+  lastTestedAt: string | null;
+  lastTestError: string | null;
+  updatedAt: string | null;
+  encryptionConfigured: boolean;
+};
+
+export class SmtpApiError extends Error {
+  constructor(public status: number, message: string, public code?: string) {
+    super(message);
+    this.name = "SmtpApiError";
+  }
+}
+
+async function smtpRequest(
+  path: "/api/smtp-settings" | "/api/test-smtp",
+  method: "GET" | "PUT" | "DELETE" | "POST",
+  body?: Record<string, unknown>,
+): Promise<{ status: number; data: any }> {
   const { data: { session } } = await supabase!.auth.getSession();
   const token = session?.access_token;
-  if (!token) throw new ApiError(401, "Not authenticated", {});
+  if (!token) throw new SmtpApiError(401, "Not authenticated", "auth_failed");
 
-  const response = await fetch("/api/test-smtp", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
-    },
-    body: JSON.stringify(credentials)
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error || "SMTP test failed.");
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch {
+    throw new SmtpApiError(0, "Could not reach the server. Check your connection and try again.", "network_error");
   }
-  return data;
+
+  let data: any = null;
+  try {
+    data = await response.json();
+  } catch {
+    // non-JSON body (e.g. platform error page) handled below
+  }
+  return { status: response.status, data: data ?? {} };
+}
+
+function smtpFailure(status: number, data: any, fallback: string): SmtpApiError {
+  return new SmtpApiError(status, data?.error || fallback, data?.code);
+}
+
+export async function getSmtpSettings(): Promise<SmtpSettings> {
+  const { status, data } = await smtpRequest("/api/smtp-settings", "GET");
+  if (status !== 200 || !data.settings) throw smtpFailure(status, data, "Could not load SMTP settings.");
+  return data.settings as SmtpSettings;
+}
+
+export async function saveSmtpSettings(input: {
+  host: string;
+  port: string;
+  username: string;
+  encryption: string;
+  /** Omit (or leave empty) to keep the stored password. */
+  password?: string;
+}): Promise<SmtpSettings> {
+  const { status, data } = await smtpRequest("/api/smtp-settings", "PUT", input);
+  if (status !== 200 || !data.settings) throw smtpFailure(status, data, "Could not save SMTP settings.");
+  return data.settings as SmtpSettings;
+}
+
+export async function deleteSmtpSettings(): Promise<SmtpSettings> {
+  const { status, data } = await smtpRequest("/api/smtp-settings", "DELETE");
+  if (status !== 200 || !data.settings) throw smtpFailure(status, data, "Could not remove SMTP settings.");
+  return data.settings as SmtpSettings;
+}
+
+/** Tests the SAVED configuration. A failed connection resolves with success:false. */
+export async function testSmtpConnection(): Promise<{
+  success: boolean;
+  error?: string;
+  settings: SmtpSettings;
+}> {
+  const { status, data } = await smtpRequest("/api/test-smtp", "POST");
+  if ((status === 200 || status === 422) && data.settings) {
+    return { success: Boolean(data.success), error: data.error, settings: data.settings as SmtpSettings };
+  }
+  throw smtpFailure(status, data, "SMTP test failed.");
 }
 
 export async function pauseWorkspace(): Promise<void> {

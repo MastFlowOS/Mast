@@ -57,3 +57,64 @@ export function resolveDisqualificationDisplay(
     reason: stored ? stored : "Reason unavailable",
   };
 }
+
+export type ScoreDisplay = {
+  isScored: boolean;
+  score: number | null;
+  level: string;
+  label: string;
+};
+
+/**
+ * Pure display resolver for opportunity score.
+ * Never invents a numerical score from priority when genuine opportunityScore is null or missing.
+ * Honest unscored state when absent.
+ */
+export function resolveScoreDisplay(opportunityScore: number | null | undefined): ScoreDisplay {
+  if (opportunityScore != null && Number.isFinite(opportunityScore)) {
+    const rounded = Math.round(opportunityScore);
+    const level = rounded >= 80 ? "High Opportunity" : rounded >= 60 ? "Medium Opportunity" : "Opportunity";
+    return {
+      isScored: true,
+      score: rounded,
+      level,
+      label: String(rounded),
+    };
+  }
+
+  return {
+    isScored: false,
+    score: null,
+    level: "Unscored",
+    label: "—",
+  };
+}
+
+export type ContactBadgeStatus = "verified" | "available" | "missing";
+
+export type ContactBadgeDisplay = {
+  label: "Verified" | "Available" | "Missing";
+  status: ContactBadgeStatus;
+};
+
+/**
+ * Resolves contact badge semantics honestly:
+ * - "Missing" if no contact value exists.
+ * - "Verified" ONLY if a genuine trust entry confirms it (verifiedAt present and confidence >= 0.7).
+ * - "Available" when contact value exists but has not been verified.
+ * Never labels as "Verified" merely because a value exists.
+ */
+export function resolveContactVerificationBadge(
+  value: string | null | undefined,
+  entry?: FieldTrustEntry | null
+): ContactBadgeDisplay {
+  if (!value || !value.trim()) {
+    return { label: "Missing", status: "missing" };
+  }
+
+  if (entry?.verifiedAt && (entry.confidence ?? 0) >= 0.7) {
+    return { label: "Verified", status: "verified" };
+  }
+
+  return { label: "Available", status: "available" };
+}

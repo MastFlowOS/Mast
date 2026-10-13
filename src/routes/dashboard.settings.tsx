@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { ApiError } from "@/lib/api";
+import { deriveSmtpDisplayStatus, hasUnsavedSmtpChanges } from "@/lib/smtpStatus";
 import {
   useMe,
   useAccount,
@@ -37,6 +38,9 @@ import {
   useEnableWorkspace,
   useDeleteWorkspace,
   useTestSmtpConnection,
+  useSmtpSettings,
+  useSaveSmtpSettings,
+  useDeleteSmtpSettings,
   queryKeys,
 } from "@/hooks/use-mast-api";
 import { cn } from "@/lib/utils";
@@ -89,6 +93,11 @@ function SettingsPage() {
   const enableWorkspaceMut = useEnableWorkspace();
   const deleteWorkspaceMut = useDeleteWorkspace();
   const testSmtp = useTestSmtpConnection();
+  const saveSmtp = useSaveSmtpSettings();
+  const deleteSmtp = useDeleteSmtpSettings();
+  // Persisted SMTP config + last test result. Server state is the source of truth.
+  const smtpQuery = useSmtpSettings();
+  const serverSmtp = smtpQuery.data;
 
   // Baseline for dirty tracking
   const [baseline, setBaseline] = useState<SettingsBaseline | null>(null);
@@ -129,8 +138,7 @@ function SettingsPage() {
   const [smtpEncryption, setSmtpEncryption] = useState("None");
   const [showSmtpPassword, setShowSmtpPassword] = useState(false);
 
-  // Test status
-  const [connectionStatus, setConnectionStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  // Transient UI-only error from the last save/test/disconnect action.
   const [smtpError, setSmtpError] = useState("");
 
   // Modals & destructive states
@@ -161,6 +169,9 @@ function SettingsPage() {
   useEffect(() => {
     if (hasInitializedRef.current) return;
     if (!settings) return;
+    // Wait for the persisted SMTP record (success or failure) so the form never
+    // initialises from stale/empty state and then "forgets" the saved config.
+    if (smtpQuery.isLoading) return;
 
     const initialFullName = auth?.user?.fullName ?? "";
     const initialEmail = auth?.user?.email ?? "";
@@ -172,7 +183,7 @@ function SettingsPage() {
     const initialWorkspaceName = settings.workspaceName ?? "MAST Workspace";
     const initialWebsite = settings.website ?? "";
     const initialSenderName = settings.senderName ?? settings.smtpSenderName ?? auth?.user?.fullName ?? "";
-    const initialSenderEmail = settings.senderEmail ?? settings.smtpSenderEmail ?? settings.smtpUser ?? auth?.user?.email ?? "";
+    const initialSenderEmail = settings.senderEmail ?? settings.smtpSenderEmail ?? serverSmtp?.username ?? auth?.user?.email ?? "";
     const initialReplyTo = settings.replyTo ?? "";
     const initialSignature = settings.signature ?? "";
 
@@ -183,11 +194,13 @@ function SettingsPage() {
     const initialNotifyCreditsReset = settings.notifyCreditsReset === "true";
     const initialNotifyPlanChanges = settings.notifyPlanChanges !== "false";
 
-    const initialSmtpHost = settings.smtpHost ?? "";
-    const initialSmtpPort = settings.smtpPort ?? "";
-    const initialSmtpUser = settings.smtpUser ?? "";
-    const initialSmtpPassword = settings.smtpPassword ?? "";
-    const initialSmtpEncryption = settings.smtpEncryption ?? "None";
+    // SMTP comes from the persisted server record. The password is never
+    // returned by the server, so the field always starts empty.
+    const initialSmtpHost = serverSmtp?.host ?? "";
+    const initialSmtpPort = serverSmtp?.port ?? "";
+    const initialSmtpUser = serverSmtp?.username ?? "";
+    const initialSmtpPassword = "";
+    const initialSmtpEncryption = serverSmtp?.encryption ?? "None";
 
     let initialRegions: string[];
     if (typeof settings.defaultRegions === "string") {
@@ -243,12 +256,28 @@ function SettingsPage() {
       notifyPlanChanges: initialNotifyPlanChanges,
     });
     hasInitializedRef.current = true;
-  }, [settings, auth?.user]);
+  }, [settings, auth?.user, smtpQuery.isLoading, serverSmtp]);
 
   // Check whether SMTP is configured
   const isSmtpConfigured = Boolean(
-    smtpHost.trim() && smtpPort.trim() && smtpUser.trim() && smtpPassword.trim()
+    smtpHost.trim() && smtpPort.trim() && smtpUser.trim() && (smtpPassword.trim() || serverSmtp?.hasPassword)
   );
+
+  const smtpLocal = {
+    host: smtpHost,
+    port: smtpPort,
+    username: smtpUser,
+    encryption: smtpEncryption,
+    passwordTyped: smtpPassword.length > 0,
+  };
+  const smtpDisplayStatus = deriveSmtpDisplayStatus({
+    server: serverSmtp,
+    isLoading: smtpQuery.isLoading,
+    loadFailed: smtpQuery.isError,
+    isTesting: testSmtp.isPending || saveSmtp.isPending,
+    local: smtpLocal,
+  });
+  const smtpHasUnsaved = hasUnsavedSmtpChanges(serverSmtp, smtpLocal);
 
   // Dirty detection: checks if any setting differs from baseline
   const isDirty = useMemo(() => {
@@ -320,28 +349,79 @@ function SettingsPage() {
     setDefaultRegions((prev) => prev.filter((x) => x !== r));
   };
 
+  /** Persist the connection fields (and password, if typed) via the secure API. */
+  const persistSmtp = async () => {
+    const saved = await saveSmtp.mutateAsync({
+      host: smtpHost.trim(),
+      port: smtpPort.trim(),
+      username: smtpUser.trim(),
+      encryption: smtpEncryption,
+      ...(smtpPassword ? { password: smtpPassword } : {}),
+    });
+    // The typed password has been handed to the server; drop it from UI state.
+    setSmtpPassword("");
+    setBaseline((prev) =>
+      prev
+        ? {
+            ...prev,
+            smtpHost: smtpHost.trim(),
+            smtpPort: smtpPort.trim(),
+            smtpUser: smtpUser.trim(),
+            smtpPassword: "",
+            smtpEncryption,
+          }
+        : prev,
+    );
+    return saved;
+  };
+
+  const smtpFieldsComplete = () =>
+    Boolean(smtpHost.trim() && smtpPort.trim() && smtpUser.trim() && (smtpPassword || serverSmtp?.hasPassword));
+
   const handleTestConnection = async () => {
-    if (!smtpHost || !smtpPort || !smtpUser || !smtpPassword) {
+    if (!smtpFieldsComplete()) {
       toast.error("Host, port, username, and password are required to test.");
       return;
     }
-    setConnectionStatus("testing");
     setSmtpError("");
     try {
-      await testSmtp.mutateAsync({
-        host: smtpHost,
-        port: smtpPort,
-        user: smtpUser,
-        pass: smtpPassword,
-        encryption: smtpEncryption,
-      });
-      setConnectionStatus("success");
-      toast.success("Connected successfully.");
+      // Save first (a no-op when nothing connection-relevant changed), then test
+      // the saved configuration server-side. The server persists the result.
+      await persistSmtp();
+      const result = await testSmtp.mutateAsync();
+      if (result.success) {
+        toast.success("Connected successfully.");
+      } else {
+        const errMsg = result.error || "Failed to establish connection.";
+        setSmtpError(errMsg);
+        toast.error(`SMTP Test Failed: ${errMsg}`);
+      }
     } catch (err: any) {
-      setConnectionStatus("error");
-      const errMsg = err.message || "Failed to establish connection.";
+      const errMsg = err?.message || "Could not save or test the SMTP configuration.";
       setSmtpError(errMsg);
-      toast.error(`SMTP Test Failed: ${errMsg}`);
+      toast.error(errMsg);
+    }
+  };
+
+  const handleDisconnectSmtp = async () => {
+    setSmtpError("");
+    try {
+      await deleteSmtp.mutateAsync();
+      setSmtpHost("");
+      setSmtpPort("");
+      setSmtpUser("");
+      setSmtpPassword("");
+      setSmtpEncryption("None");
+      setBaseline((prev) =>
+        prev
+          ? { ...prev, smtpHost: "", smtpPort: "", smtpUser: "", smtpPassword: "", smtpEncryption: "None" }
+          : prev,
+      );
+      toast.success("SMTP configuration removed.");
+    } catch (err: any) {
+      const errMsg = err?.message || "Could not remove the SMTP configuration.";
+      setSmtpError(errMsg);
+      toast.error(errMsg);
     }
   };
 
@@ -388,6 +468,17 @@ function SettingsPage() {
 
   const save = async () => {
     try {
+      // SMTP goes through the secure, server-side encrypted API, not profiles.settings.
+      if (smtpHasUnsaved) {
+        if (!smtpFieldsComplete()) {
+          const msg = "Complete the SMTP host, port, username, and password, or remove the configuration.";
+          setSmtpError(msg);
+          toast.error(msg);
+          return;
+        }
+        setSmtpError("");
+        await persistSmtp();
+      }
       const effectiveSenderEmail = isSmtpConfigured ? smtpUser : senderEmail;
       await saveSettings.mutateAsync({
         settings: {
@@ -405,11 +496,6 @@ function SettingsPage() {
           notifyPlanChanges: notifyPlanChanges ? "true" : "false",
           notifyBilling: notifyBilling ? "true" : "false",
           notifyAnnouncements: notifyAnnouncements ? "true" : "false",
-          smtpHost,
-          smtpPort,
-          smtpUser,
-          smtpPassword,
-          smtpEncryption,
           smtpSenderName: senderName,
           smtpSenderEmail: effectiveSenderEmail,
         },
@@ -436,10 +522,10 @@ function SettingsPage() {
         workspaceName,
         website,
         defaultRegions: [...defaultRegions],
-        smtpHost,
-        smtpPort,
-        smtpUser,
-        smtpPassword,
+        smtpHost: smtpHost.trim(),
+        smtpPort: smtpPort.trim(),
+        smtpUser: smtpUser.trim(),
+        smtpPassword: "",
         smtpEncryption,
         senderName,
         senderEmail: effectiveSenderEmail,
@@ -455,7 +541,11 @@ function SettingsPage() {
 
       toast.success("Settings saved successfully.");
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not save settings");
+      toast.error(
+        err instanceof ApiError || (err instanceof Error && err.name === "SmtpApiError")
+          ? err.message
+          : "Could not save settings",
+      );
     }
   };
 
@@ -716,7 +806,7 @@ function SettingsPage() {
                     type={showSmtpPassword ? "text" : "password"}
                     value={smtpPassword}
                     onChange={(e) => setSmtpPassword(e.target.value)}
-                    placeholder="••••••••••••"
+                    placeholder={serverSmtp?.hasPassword ? "•••••••• saved (leave blank to keep)" : "••••••••••••"}
                     className="w-full bg-background border border-border/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none px-3.5 py-2.5 pr-10 rounded-xl text-sm"
                   />
                   <button
@@ -747,40 +837,98 @@ function SettingsPage() {
               <div className="flex items-center gap-4 pt-2">
                 <button
                   type="button"
-                  disabled={connectionStatus === "testing"}
+                  disabled={smtpDisplayStatus === "testing" || smtpDisplayStatus === "loading"}
                   onClick={handleTestConnection}
                   className="px-4 py-2 rounded-xl bg-card border border-border/80 hover:bg-muted text-foreground text-xs font-semibold disabled:opacity-50 transition-colors shadow-sm cursor-pointer"
                 >
-                  {connectionStatus === "testing" ? "Testing..." : "Test Connection"}
+                  {smtpDisplayStatus === "testing" ? "Testing..." : "Test Connection"}
                 </button>
 
-                {connectionStatus === "idle" && (
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-amber-400">
-                    <span className="size-2 rounded-full bg-amber-400 shrink-0" />
-                    <span>Not tested</span>
+                {serverSmtp?.configured && (
+                  <button
+                    type="button"
+                    disabled={deleteSmtp.isPending || testSmtp.isPending}
+                    onClick={handleDisconnectSmtp}
+                    className="px-3 py-2 rounded-xl text-xs font-semibold text-destructive hover:bg-destructive/10 disabled:opacity-50 transition-colors cursor-pointer"
+                  >
+                    {deleteSmtp.isPending ? "Removing..." : "Disconnect"}
+                  </button>
+                )}
+
+                {smtpDisplayStatus === "loading" && (
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <span className="size-2 rounded-full bg-muted-foreground/60 animate-pulse shrink-0" />
+                    <span>Loading saved status...</span>
                   </div>
                 )}
-                {connectionStatus === "testing" && (
+                {smtpDisplayStatus === "testing" && (
                   <div className="flex items-center gap-1.5 text-xs font-medium text-blue-400">
                     <span className="size-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
                     <span>Testing...</span>
                   </div>
                 )}
-                {connectionStatus === "success" && (
+                {smtpDisplayStatus === "connected" && (
                   <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-400">
                     <span className="size-2 rounded-full bg-emerald-400 shrink-0" />
-                    <span>Connected</span>
+                    <span>
+                      Connected
+                      {serverSmtp?.lastTestedAt
+                        ? ` · last tested ${new Date(serverSmtp.lastTestedAt).toLocaleString()}`
+                        : ""}
+                    </span>
                   </div>
                 )}
-                {connectionStatus === "error" && (
+                {smtpDisplayStatus === "failed" && (
                   <div className="flex items-center gap-1.5 text-xs font-medium text-destructive">
                     <span className="size-2 rounded-full bg-destructive shrink-0" />
-                    <span>Failed</span>
+                    <span>
+                      Connection failed
+                      {serverSmtp?.lastTestedAt
+                        ? ` · ${new Date(serverSmtp.lastTestedAt).toLocaleString()}`
+                        : ""}
+                    </span>
+                  </div>
+                )}
+                {smtpDisplayStatus === "unsaved" && (
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-amber-400">
+                    <span className="size-2 rounded-full bg-amber-400 shrink-0" />
+                    <span>Unsaved changes — test required</span>
+                  </div>
+                )}
+                {(smtpDisplayStatus === "untested" || smtpDisplayStatus === "not_configured") && (
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-amber-400">
+                    <span className="size-2 rounded-full bg-amber-400 shrink-0" />
+                    <span>{smtpDisplayStatus === "untested" ? "Not tested" : "Not configured"}</span>
+                  </div>
+                )}
+                {smtpDisplayStatus === "load_error" && (
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-destructive">
+                    <span className="size-2 rounded-full bg-destructive shrink-0" />
+                    <span>Could not load saved SMTP status</span>
                   </div>
                 )}
               </div>
 
-              {connectionStatus === "error" && smtpError && (
+              {smtpDisplayStatus === "load_error" && (
+                <p className="text-[11px] text-destructive whitespace-pre-wrap leading-relaxed">
+                  {(smtpQuery.error as Error | null)?.message || "Could not load your SMTP settings."}{" "}
+                  <button type="button" className="underline cursor-pointer" onClick={() => smtpQuery.refetch()}>
+                    Retry
+                  </button>
+                </p>
+              )}
+              {serverSmtp && !serverSmtp.encryptionConfigured && (
+                <p className="text-[11px] text-destructive leading-relaxed">
+                  Secure SMTP storage is not configured on the server. An administrator must set the
+                  SMTP_CREDENTIALS_KEY environment variable before SMTP can be saved or tested.
+                </p>
+              )}
+              {smtpDisplayStatus === "failed" && serverSmtp?.lastTestError && (
+                <p className="text-[11px] text-destructive whitespace-pre-wrap leading-relaxed">
+                  Error: {serverSmtp.lastTestError}
+                </p>
+              )}
+              {smtpError && smtpDisplayStatus !== "failed" && (
                 <p className="text-[11px] text-destructive whitespace-pre-wrap leading-relaxed">
                   Error: {smtpError}
                 </p>

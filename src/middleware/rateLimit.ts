@@ -79,7 +79,7 @@ export function createRateLimiter({ windowMs, max }: RateLimiterOptions) {
     return kept;
   }
 
-  return function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
+  const middleware = function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
     const key = req.user?.id ?? req.ip ?? "unknown";
     const now = Date.now();
 
@@ -98,4 +98,10 @@ export function createRateLimiter({ windowMs, max }: RateLimiterOptions) {
     buckets.set(key, recent);
     next();
   };
+
+  middleware.reset = () => {
+    buckets.clear();
+  };
+
+  return middleware;
 }

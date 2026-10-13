@@ -10,10 +10,9 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
  * `src/components`, or `src/hooks` — it belongs to the gateway/worker only.
  */
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as
-  | string
-  | undefined;
+const envObj = (typeof import.meta !== "undefined" && import.meta.env) ? import.meta.env : (process.env as Record<string, string | undefined>);
+const supabaseUrl = envObj?.VITE_SUPABASE_URL as string | undefined;
+const supabaseAnonKey = envObj?.VITE_SUPABASE_ANON_KEY as string | undefined;
 
 /**
  * Non-null when required env vars are missing at build/runtime. `__root.tsx`
@@ -33,7 +32,7 @@ export const supabaseConfigError: string | null = (() => {
 // null when misconfigured, so every consumer must guard with `if (!supabase)`
 // before use — the pattern already followed throughout src/lib/api.ts and
 // the auth-related route components.
-export const supabase: SupabaseClient | null =
+export let supabase: SupabaseClient | null =
   supabaseUrl && supabaseAnonKey
     ? createClient(supabaseUrl, supabaseAnonKey, {
         auth: {
@@ -43,3 +42,7 @@ export const supabase: SupabaseClient | null =
         },
       })
     : null;
+
+export function setSupabaseClient(client: SupabaseClient | null) {
+  supabase = client;
+}

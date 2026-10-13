@@ -38,6 +38,15 @@ export type DiscoverySearchOptions = {
   taskDbPath?: string;
   /** Durable request identity used for global subprocess ownership. */
   requestId?: string;
+  /**
+   * Channels the engine may use to prune EARLY (forwarded as the engine's
+   * `required_channels`). Optional and backward-compatible: omitted/empty
+   * leaves engine behavior exactly as before. Callers must pass only
+   * channels decidable from discovery-time data (see
+   * src/discovery/earlyPrune.ts `engineRequiredChannels`) — never email or
+   * instagram, which enrichment may still satisfy.
+   */
+  requiredChannels?: string[];
 };
 
 export interface DiscoveryProvider {

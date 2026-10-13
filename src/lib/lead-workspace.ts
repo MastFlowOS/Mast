@@ -7,6 +7,15 @@ import type {
   OutreachDraftResponse,
 } from "./api";
 
+export type {
+  Lead,
+  LeadActivity,
+  LeadActivityType,
+  LeadStatus,
+  OutreachChannel,
+  OutreachDraftResponse,
+};
+
 export const LEAD_STATUSES: { value: LeadStatus; label: string }[] = [
   { value: "new", label: "New" },
   { value: "email_sent", label: "Email Sent" },

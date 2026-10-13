@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
-import { LEAD_STATUSES, normalizeLeadStatus } from "../lead-workspace.js";
+import { LEAD_STATUSES, normalizeLeadStatus, type LeadStatus } from "../lead-workspace.js";
 
 /**
  * Regression coverage: the four outreach "Mark Sent"/"Mark Called" actions
@@ -15,7 +15,7 @@ import { LEAD_STATUSES, normalizeLeadStatus } from "../lead-workspace.js";
 const repoRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
 const canonicalValues = new Set(LEAD_STATUSES.map((s) => s.value));
 
-const expectations: Array<{ file: string; expectedStatus: string }> = [
+const expectations: Array<{ file: string; expectedStatus: LeadStatus }> = [
   { file: "src/components/mast/workspace/components/EmailForm.tsx", expectedStatus: "email_sent" },
   { file: "src/components/mast/workspace/components/InstagramForm.tsx", expectedStatus: "instagram_sent" },
   { file: "src/components/mast/workspace/components/PhoneForm.tsx", expectedStatus: "called" },

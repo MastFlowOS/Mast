@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { classifyDbError } from "./_dbErrors";
-import { SmtpServiceError, type SmtpRow, type SmtpStore } from "./_smtpService";
+import { classifyDbError } from "./_dbErrors.js";
+import { SmtpServiceError, type SmtpRow, type SmtpStore } from "./_smtpService.js";
 
 function fail(err: {
   code?: string | null;

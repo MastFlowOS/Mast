@@ -10,7 +10,7 @@ import {
   encryptSmtpSecret,
   isSmtpKeyConfigured,
   loadSmtpKey,
-} from "./_smtpCrypto";
+} from "./_smtpCrypto.js";
 
 export type SmtpTestStatus = "success" | "failed";
 

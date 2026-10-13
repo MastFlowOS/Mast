@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { authenticate } from "./_apiAuth";
-import { createSmtpTransport } from "./_smtp";
-import { createSupabaseSmtpStore } from "./_smtpStore";
-import { SmtpServiceError, testStoredSmtp } from "./_smtpService";
+import { authenticate } from "./_apiAuth.js";
+import { createSmtpTransport } from "./_smtp.js";
+import { createSupabaseSmtpStore } from "./_smtpStore.js";
+import { SmtpServiceError, testStoredSmtp } from "./_smtpService.js";
 
 /**
  * POST /api/test-smtp

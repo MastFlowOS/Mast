@@ -1,13 +1,13 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { authenticate } from "./_apiAuth";
-import { createSupabaseSmtpStore } from "./_smtpStore";
+import { authenticate } from "./_apiAuth.js";
+import { createSupabaseSmtpStore } from "./_smtpStore.js";
 import {
   SmtpServiceError,
   deleteSmtpSettings,
   getSmtpSettings,
   saveSmtpSettings,
-} from "./_smtpService";
-import { adoptLegacySmtpIfNeeded, stripLegacyPassword } from "./_smtpLegacy";
+} from "./_smtpService.js";
+import { adoptLegacySmtpIfNeeded, stripLegacyPassword } from "./_smtpLegacy.js";
 
 /**
  * GET    /api/smtp-settings  → non-secret config + persisted test status

@@ -1,12 +1,12 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { authenticate } from "./_apiAuth";
-import { classifyDbError } from "./_dbErrors";
-import { createSmtpTransport } from "./_smtp";
-import { createSupabaseSmtpStore } from "./_smtpStore";
-import { SmtpServiceError, loadSmtpCredentials } from "./_smtpService";
-import { readLegacySmtp } from "./_smtpLegacy";
-import { validateEmailInput, formatHtmlEmail, formatPlainTextAlternative } from "./_formatEmail";
+import { authenticate } from "./_apiAuth.js";
+import { classifyDbError } from "./_dbErrors.js";
+import { createSmtpTransport } from "./_smtp.js";
+import { createSupabaseSmtpStore } from "./_smtpStore.js";
+import { SmtpServiceError, loadSmtpCredentials } from "./_smtpService.js";
+import { readLegacySmtp } from "./_smtpLegacy.js";
+import { validateEmailInput, formatHtmlEmail, formatPlainTextAlternative } from "./_formatEmail.js";
 
 export interface SendEmailDeps {
   authenticate: typeof authenticate;

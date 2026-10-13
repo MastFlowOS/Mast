@@ -4,9 +4,9 @@
  * written there. See docs/smtp-credentials.md for the cleanup procedure.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { classifyDbError } from "./_dbErrors";
-import { isSmtpKeyConfigured } from "./_smtpCrypto";
-import { saveSmtpSettings, type SmtpStore } from "./_smtpService";
+import { classifyDbError } from "./_dbErrors.js";
+import { isSmtpKeyConfigured } from "./_smtpCrypto.js";
+import { saveSmtpSettings, type SmtpStore } from "./_smtpService.js";
 
 export interface LegacySmtp {
   host: string;

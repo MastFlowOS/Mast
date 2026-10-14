@@ -1,15 +1,9 @@
-import { useState, useRef } from "react";
+import { useState, useEffect } from "react";
 import {
   Mail,
   Instagram,
   Phone,
   Link as LinkIcon,
-  Bold,
-  Italic,
-  Underline,
-  List,
-  ListOrdered,
-  Quote,
   Sparkles,
   Copy,
   ExternalLink,
@@ -18,13 +12,17 @@ import {
   Loader2,
   Check,
   CheckCircle,
-  Wand2,
-  Plus,
-  Minus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import type { Lead } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
@@ -33,6 +31,8 @@ import { ApiError, isMissingBackendEndpoint } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 import { normalizeInstagram } from "@/lib/instagram";
 import { TEMPLATES } from "@/lib/lead-workspace";
+import { htmlToPlainText, countWords } from "@/lib/richText";
+import { RichTextEditor } from "./components/RichTextEditor";
 
 interface CenterWorkspaceProps {
   lead: Lead;
@@ -82,75 +82,67 @@ export function CenterWorkspace({
   isGenerating,
   onRewrite,
 }: CenterWorkspaceProps) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [copied, setCopied] = useState(false);
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
   const sendEmail = useSendLeadEmail();
   const recordActivity = useRecordLeadActivity();
 
-  // Word count
-  const wordCount = body.trim() ? body.trim().split(/\s+/).filter(Boolean).length : 0;
+  // Close the bottom action menu when switching leads or channels to prevent orphaned menus
+  useEffect(() => {
+    setSendMenuOpen(false);
+  }, [lead.id, channel]);
 
-  // Insert or wrap text formatting
-  const applyFormat = (formatType: "bold" | "italic" | "underline" | "bullet" | "number" | "quote" | "link") => {
-    const el = textareaRef.current;
-    if (!el) return;
-
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const selectedText = body.substring(start, end);
-
-    let replacement = "";
-    let newCursorPos = end;
-
-    switch (formatType) {
-      case "bold":
-        replacement = selectedText ? `**${selectedText}**` : "**bold text**";
-        newCursorPos = selectedText ? end + 4 : start + 13;
-        break;
-      case "italic":
-        replacement = selectedText ? `*${selectedText}*` : "*italic text*";
-        newCursorPos = selectedText ? end + 2 : start + 13;
-        break;
-      case "underline":
-        replacement = selectedText ? `<u>${selectedText}</u>` : "<u>underlined text</u>";
-        newCursorPos = selectedText ? end + 7 : start + 21;
-        break;
-      case "bullet":
-        replacement = selectedText ? `\n• ${selectedText}` : "\n• ";
-        newCursorPos = start + replacement.length;
-        break;
-      case "number":
-        replacement = selectedText ? `\n1. ${selectedText}` : "\n1. ";
-        newCursorPos = start + replacement.length;
-        break;
-      case "quote":
-        replacement = selectedText ? `\n> ${selectedText}` : "\n> ";
-        newCursorPos = start + replacement.length;
-        break;
-      case "link":
-        replacement = selectedText ? `[${selectedText}](https://)` : "[link text](https://)";
-        newCursorPos = start + replacement.length;
-        break;
-    }
-
-    const newBody = body.substring(0, start) + replacement + body.substring(end);
-    setBody(newBody);
-
-    setTimeout(() => {
-      el.focus();
-      el.setSelectionRange(newCursorPos, newCursorPos);
-    }, 0);
-  };
+  // Word and character count calculated from clean text
+  const plainText = htmlToPlainText(body);
+  const wordCount = countWords(body);
 
   const handleCopy = async () => {
-    if (!body.trim()) return;
-    try {
-      await navigator.clipboard.writeText(body);
+    const textToCopy = plainText.trim();
+    if (!textToCopy) return;
+
+    let success = false;
+    if (navigator.clipboard?.write) {
+      try {
+        const textBlob = new Blob([textToCopy], { type: "text/plain" });
+        const htmlBlob = new Blob([body], { type: "text/html" });
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": textBlob,
+            "text/html": htmlBlob,
+          }),
+        ]);
+        success = true;
+      } catch {
+        // Fallback to writeText below
+      }
+    }
+
+    if (!success) {
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        success = true;
+      } catch {
+        try {
+          const tempEl = document.createElement("textarea");
+          tempEl.value = textToCopy;
+          tempEl.style.position = "fixed";
+          tempEl.style.opacity = "0";
+          document.body.appendChild(tempEl);
+          tempEl.focus();
+          tempEl.select();
+          success = document.execCommand("copy");
+          document.body.removeChild(tempEl);
+        } catch {
+          success = false;
+        }
+      }
+    }
+
+    if (success) {
       setCopied(true);
       toast.success("Message copied to clipboard");
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } else {
       toast.error("Could not copy message");
     }
   };
@@ -160,9 +152,10 @@ export function CenterWorkspace({
       toast.error("No email address recorded for this lead");
       return;
     }
+    const cleanBody = htmlToPlainText(body);
     const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(
       lead.email,
-    )}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    )}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(cleanBody)}`;
     window.open(gmailUrl, "_blank", "noopener,noreferrer");
 
     try {
@@ -187,7 +180,8 @@ export function CenterWorkspace({
       toast.error("No email address recorded for this lead");
       return;
     }
-    const mailto = `mailto:${lead.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    const cleanBody = htmlToPlainText(body);
+    const mailto = `mailto:${lead.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(cleanBody)}`;
     window.location.href = mailto;
 
     try {
@@ -207,37 +201,88 @@ export function CenterWorkspace({
     toast.success("Opening mail client…");
   };
 
+  const handleOpenInstagram = async () => {
+    const ig = normalizeInstagram(lead.instagramHandle);
+    if (!ig) {
+      toast.error("No Instagram handle recorded for this lead");
+      return;
+    }
+
+    // 1. Read current message including user's latest edits
+    const messageText = htmlToPlainText(body).trim();
+
+    // 2. Copy exact message text to clipboard immediately from user click
+    let copiedSuccessfully = false;
+    if (messageText) {
+      try {
+        await navigator.clipboard.writeText(messageText);
+        copiedSuccessfully = true;
+      } catch {
+        try {
+          const tempEl = document.createElement("textarea");
+          tempEl.value = messageText;
+          tempEl.style.position = "fixed";
+          tempEl.style.opacity = "0";
+          document.body.appendChild(tempEl);
+          tempEl.focus();
+          tempEl.select();
+          copiedSuccessfully = document.execCommand("copy");
+          document.body.removeChild(tempEl);
+        } catch {
+          copiedSuccessfully = false;
+        }
+      }
+    }
+
+    // 3. Open Instagram destination in a new window/tab
+    const newWindow = window.open(ig.dmUrl, "_blank", "noopener,noreferrer");
+
+    // 4. Clear feedback and graceful fallbacks
+    if (copiedSuccessfully) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      if (!newWindow || newWindow.closed || typeof newWindow.closed === "undefined") {
+        toast.info("Message copied! Your browser blocked opening Instagram automatically.", {
+          action: {
+            label: "Open Instagram",
+            onClick: () => window.open(ig.dmUrl, "_blank", "noopener,noreferrer"),
+          },
+        });
+      } else {
+        toast.success("Message copied to clipboard · Opening Instagram DM…");
+      }
+    } else if (messageText) {
+      toast.warning("Opening Instagram DM. Could not access clipboard; use 'Copy Message' to copy manually.", {
+        action: {
+          label: "Copy Message",
+          onClick: handleCopy,
+        },
+      });
+    } else {
+      toast.info("Opening Instagram DM…");
+    }
+
+    // 5. Record activity
+    try {
+      await recordActivity.mutateAsync({
+        lead,
+        activity: {
+          type: "instagram_opened",
+          channel: "instagram",
+          body: messageText,
+          content: `Instagram opened for @${ig.handle}${copiedSuccessfully ? " (message copied to clipboard)" : ""}`,
+        },
+      });
+    } catch {
+      // Non-critical
+    }
+  };
+
   const handleOpenChannel = async () => {
     if (channel === "email") {
       await handleOpenGmail();
     } else if (channel === "instagram") {
-      const ig = normalizeInstagram(lead.instagramHandle);
-      if (!ig) {
-        toast.error("No Instagram handle recorded for this lead");
-        return;
-      }
-      if (body.trim()) await handleCopy();
-      window.open(ig.dmUrl, "_blank", "noopener,noreferrer");
-      try {
-        await recordActivity.mutateAsync({
-          lead,
-          activity: {
-            type: "instagram_opened",
-            channel: "instagram",
-            body,
-            content: `Instagram opened for @${ig.handle}`,
-          },
-        });
-      } catch {
-        // Non-critical
-      }
-      toast.success("Instagram opened");
-    } else if (channel === "phone") {
-      if (!lead.phone) {
-        toast.error("No phone number recorded for this lead");
-        return;
-      }
-      window.location.href = `tel:${lead.phone}`;
+      await handleOpenInstagram();
     } else if (channel === "contact_form") {
       const websiteUrl = lead.website
         ? lead.website.startsWith("http")
@@ -249,9 +294,10 @@ export function CenterWorkspace({
         return;
       }
       let didCopy = false;
-      if (body.trim()) {
+      const cleanBody = htmlToPlainText(body).trim();
+      if (cleanBody) {
         try {
-          await navigator.clipboard.writeText(body);
+          await navigator.clipboard.writeText(cleanBody);
           setCopied(true);
           setTimeout(() => setCopied(false), 2000);
           didCopy = true;
@@ -282,7 +328,7 @@ export function CenterWorkspace({
       toast.error("No email address recorded for this lead");
       return;
     }
-    if (!subject.trim() || !body.trim()) {
+    if (!subject.trim() || !plainText.trim()) {
       toast.error("Please provide both subject and body");
       return;
     }
@@ -310,7 +356,14 @@ export function CenterWorkspace({
       await recordActivity.mutateAsync({
         lead,
         activity: {
-          type: channel === "email" ? "email_sent" : channel === "instagram" ? "instagram_sent" : channel === "phone" ? "call_completed" : "contact_form_sent",
+          type:
+            channel === "email"
+              ? "email_sent"
+              : channel === "instagram"
+                ? "instagram_sent"
+                : channel === "phone"
+                  ? "call_completed"
+                  : "contact_form_sent",
           channel,
           subject: channel === "email" ? subject : undefined,
           body,
@@ -319,7 +372,14 @@ export function CenterWorkspace({
           metadata: getDraftProvenance(lead.id, channel),
         },
         patch: {
-          status: channel === "email" ? "email_sent" : channel === "instagram" ? "instagram_sent" : channel === "phone" ? "called" : "email_sent",
+          status:
+            channel === "email"
+              ? "email_sent"
+              : channel === "instagram"
+                ? "instagram_sent"
+                : channel === "phone"
+                  ? "called"
+                  : "email_sent",
           lastContactedAt: sentAt,
         },
       });
@@ -410,122 +470,19 @@ export function CenterWorkspace({
             {channel === "instagram" ? "Direct Message" : channel === "phone" ? "Call Script" : "Contact Form Note"}
           </span>
           <span className="font-mono text-[11px]">
-            {channel === "instagram" ? `${body.length}/1000 characters` : `${wordCount} words`}
+            {channel === "instagram" ? `${plainText.length}/1000 characters` : `${wordCount} words`}
           </span>
         </div>
       )}
 
-      {/* ─── 4. RICH-TEXT MESSAGE EDITOR ─── */}
-      <div className="flex-1 min-h-[320px] rounded-2xl border border-border/80 bg-card/30 flex flex-col overflow-hidden shadow-sm focus-within:border-[#4f46e5]/60 focus-within:ring-1 focus-within:ring-[#4f46e5]/30 transition-all">
-        {/* Toolbar */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-card/50 px-3 py-2 select-none">
-          {/* Formatting buttons */}
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => applyFormat("bold")}
-              className="size-7 rounded-lg hover:bg-card text-muted-foreground hover:text-foreground grid place-items-center transition-colors text-xs font-bold"
-              title="Bold"
-            >
-              <Bold className="size-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => applyFormat("italic")}
-              className="size-7 rounded-lg hover:bg-card text-muted-foreground hover:text-foreground grid place-items-center transition-colors text-xs italic"
-              title="Italic"
-            >
-              <Italic className="size-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => applyFormat("underline")}
-              className="size-7 rounded-lg hover:bg-card text-muted-foreground hover:text-foreground grid place-items-center transition-colors text-xs underline"
-              title="Underline"
-            >
-              <Underline className="size-3.5" />
-            </button>
-            <div className="h-4 w-px bg-border/60 mx-1" />
-            <button
-              type="button"
-              onClick={() => applyFormat("bullet")}
-              className="size-7 rounded-lg hover:bg-card text-muted-foreground hover:text-foreground grid place-items-center transition-colors"
-              title="Bullet list"
-            >
-              <List className="size-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => applyFormat("number")}
-              className="size-7 rounded-lg hover:bg-card text-muted-foreground hover:text-foreground grid place-items-center transition-colors"
-              title="Numbered list"
-            >
-              <ListOrdered className="size-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => applyFormat("quote")}
-              className="size-7 rounded-lg hover:bg-card text-muted-foreground hover:text-foreground grid place-items-center transition-colors"
-              title="Quote"
-            >
-              <Quote className="size-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => applyFormat("link")}
-              className="size-7 rounded-lg hover:bg-card text-muted-foreground hover:text-foreground grid place-items-center transition-colors"
-              title="Link"
-            >
-              <LinkIcon className="size-3.5" />
-            </button>
-          </div>
-
-          {/* Inline Transformation Actions */}
-          <div className="flex items-center gap-1.5 text-xs">
-            <button
-              type="button"
-              onClick={() => void onRewrite("rewrite")}
-              disabled={isGenerating || !body.trim()}
-              className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-card hover:text-foreground disabled:opacity-40 transition-colors"
-            >
-              <Wand2 className="size-3" />
-              <span>Rewrite</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => void onRewrite("expand")}
-              disabled={isGenerating || !body.trim()}
-              className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-card hover:text-foreground disabled:opacity-40 transition-colors"
-            >
-              <Plus className="size-3" />
-              <span>Expand</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => void onRewrite("shorten")}
-              disabled={isGenerating || !body.trim()}
-              className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-card hover:text-foreground disabled:opacity-40 transition-colors"
-            >
-              <Minus className="size-3" />
-              <span>Shorten</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Textarea body */}
-        <textarea
-          ref={textareaRef}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          placeholder="Hi there, write your message or generate one with the AI Assistant..."
-          className="flex-1 w-full bg-transparent p-4 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground/40 resize-none outline-none font-sans"
-        />
-
-        {/* Editor bottom status bar */}
-        <div className="flex items-center justify-end px-4 py-2 border-t border-border/40 text-[11px] text-muted-foreground">
-          <span>{wordCount} words</span>
-        </div>
-      </div>
+      {/* ─── 4. RICH-TEXT MESSAGE EDITOR (APPLE NOTES EXPERIENCE) ─── */}
+      <RichTextEditor
+        value={body}
+        onChange={setBody}
+        onRewrite={onRewrite}
+        isGenerating={isGenerating}
+        placeholder="Hi there, write your message or generate one with the AI Assistant..."
+      />
 
       {/* ─── 5. BOTTOM ACTION BAR ─── */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
@@ -535,7 +492,7 @@ export function CenterWorkspace({
             type="button"
             onClick={() => void onGenerate()}
             disabled={isGenerating}
-            className="h-10 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-medium px-4 rounded-xl shadow-md shadow-indigo-500/25"
+            className="h-10 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-medium px-4 rounded-xl shadow-md shadow-indigo-500/25 cursor-pointer"
           >
             {isGenerating ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
             <span>Generate with AI</span>
@@ -545,40 +502,41 @@ export function CenterWorkspace({
             type="button"
             variant="outline"
             onClick={handleCopy}
-            disabled={!body.trim()}
-            className="h-10 gap-2 border-border/70 bg-card/40 text-xs font-medium hover:bg-card text-foreground rounded-xl"
+            disabled={!plainText.trim()}
+            className="h-10 gap-2 border-border/70 bg-card/40 text-xs font-medium hover:bg-card text-foreground rounded-xl cursor-pointer"
           >
             {copied ? <Check className="size-4 text-emerald-400" /> : <Copy className="size-4 text-muted-foreground" />}
             <span>{copied ? "Copied" : "Copy Message"}</span>
           </Button>
 
-          <Button
-            type="button"
-            variant="outline"
-            onClick={handleOpenChannel}
-            className="h-10 gap-2 border-border/70 bg-card/40 text-xs font-medium hover:bg-card text-foreground rounded-xl"
-          >
-            <span>
-              {channel === "email"
-                ? "Open in Gmail"
-                : channel === "instagram"
-                  ? "Open Instagram"
-                  : channel === "phone"
-                    ? "Call Phone"
+          {/* Call Phone button is removed from middle composer; remaining actions stay correctly aligned */}
+          {channel !== "phone" && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleOpenChannel}
+              className="h-10 gap-2 border-border/70 bg-card/40 text-xs font-medium hover:bg-card text-foreground rounded-xl cursor-pointer"
+            >
+              <span>
+                {channel === "email"
+                  ? "Open in Gmail"
+                  : channel === "instagram"
+                    ? "Open Instagram"
                     : "Copy & Open Website"}
-            </span>
-            <ExternalLink className="size-3.5 text-muted-foreground" />
-          </Button>
+              </span>
+              <ExternalLink className="size-3.5 text-muted-foreground" />
+            </Button>
+          )}
         </div>
 
-        {/* Right action: Send button / split dropdown */}
+        {/* Right action: Send button / split dropdown with dismissible popover */}
         <div className="relative">
           <div className="flex items-center rounded-xl overflow-hidden shadow-md shadow-indigo-500/20">
             <Button
               type="button"
               onClick={channel === "email" ? handleSendConnected : handleMarkSent}
-              disabled={sendEmail.isPending || recordActivity.isPending || !body.trim()}
-              className="h-10 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-medium px-4 rounded-r-none border-r border-indigo-400/30"
+              disabled={sendEmail.isPending || recordActivity.isPending || !plainText.trim()}
+              className="h-10 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-medium px-4 rounded-r-none border-r border-indigo-400/30 cursor-pointer"
             >
               {sendEmail.isPending || recordActivity.isPending ? (
                 <Loader2 className="size-4 animate-spin" />
@@ -593,69 +551,62 @@ export function CenterWorkspace({
                     : "Mark as Sent"}
               </span>
             </Button>
-            <button
-              type="button"
-              onClick={() => setSendMenuOpen(!sendMenuOpen)}
-              className="h-10 px-2.5 bg-[#4f46e5] hover:bg-[#4338ca] text-white grid place-items-center transition-colors"
-              title="More send options"
-            >
-              <ChevronDown className="size-4" />
-            </button>
-          </div>
 
-          {sendMenuOpen && (
-            <div className="absolute right-0 bottom-full mb-1 w-56 rounded-xl border border-border bg-[#101726] shadow-2xl p-1 z-30 animate-scale-in-fast">
-              {channel === "email" && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSendMenuOpen(false);
-                      void handleSendConnected();
-                    }}
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-foreground hover:bg-muted/60 transition-colors"
-                  >
-                    <Send className="size-3.5 text-indigo-400" />
-                    <span>Send via Connected Email</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSendMenuOpen(false);
-                      void handleOpenGmail();
-                    }}
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-foreground hover:bg-muted/60 transition-colors"
-                  >
-                    <ExternalLink className="size-3.5 text-blue-400" />
-                    <span>Open in Gmail Web</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSendMenuOpen(false);
-                      void handleOpenMailClient();
-                    }}
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-foreground hover:bg-muted/60 transition-colors"
-                  >
-                    <Mail className="size-3.5 text-sky-400" />
-                    <span>Open in Default Mail Client</span>
-                  </button>
-                  <div className="my-1 h-px bg-border/60" />
-                </>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setSendMenuOpen(false);
-                  void handleMarkSent();
-                }}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-foreground hover:bg-muted/60 transition-colors"
+            <DropdownMenu open={sendMenuOpen} onOpenChange={setSendMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="h-10 px-2.5 bg-[#4f46e5] hover:bg-[#4338ca] text-white grid place-items-center transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-indigo-300 cursor-pointer"
+                  title="More send options"
+                  aria-label="More send options"
+                >
+                  <ChevronDown className="size-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                side="top"
+                sideOffset={8}
+                className="w-56 rounded-xl border border-border bg-[#101726] shadow-2xl p-1 z-50 text-xs"
               >
-                <CheckCircle className="size-3.5 text-emerald-400" />
-                <span>{channel === "phone" ? "Mark as Called (Manual)" : "Mark as Sent (Manual)"}</span>
-              </button>
-            </div>
-          )}
+                {channel === "email" && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => void handleSendConnected()}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-foreground hover:bg-muted/60 transition-colors cursor-pointer"
+                    >
+                      <Send className="size-3.5 text-indigo-400" />
+                      <span>Send via Connected Email</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => void handleOpenGmail()}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-foreground hover:bg-muted/60 transition-colors cursor-pointer"
+                    >
+                      <ExternalLink className="size-3.5 text-blue-400" />
+                      <span>Open in Gmail Web</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => void handleOpenMailClient()}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-foreground hover:bg-muted/60 transition-colors cursor-pointer"
+                    >
+                      <Mail className="size-3.5 text-sky-400" />
+                      <span>Open in Default Mail Client</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator className="my-1 bg-border/60" />
+                  </>
+                )}
+
+                {/* Outreach sent path test assertion relies on manual send button not invoking connected send */}
+                <DropdownMenuItem
+                  onClick={() => void handleMarkSent()}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-foreground hover:bg-muted/60 transition-colors cursor-pointer"
+                >
+                  <CheckCircle className="size-3.5 text-emerald-400" />
+                  <span>{channel === "phone" ? "Mark as Called (Manual)" : "Mark as Sent (Manual)"}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </div>
     </main>

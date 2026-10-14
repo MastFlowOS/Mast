@@ -23,7 +23,7 @@ import {
   Compass,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { Lead, FieldTrustEntry } from "@/lib/api";
+import type { Lead } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
 import { leadNicheLabel, stripActivityMarkers } from "@/lib/lead-workspace";
 import {
@@ -50,6 +50,106 @@ import {
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { NoteForm } from "./components/NoteForm";
 import { FollowUpsTab } from "./FollowUpsTab";
+
+export type NormalizedReason = {
+  id: string;
+  label: string;
+  detail: string;
+  weight: number;
+  value: number;
+  impact: number;
+};
+
+function inferReasonLabel(detail: string, index: number): string {
+  const lower = detail.toLowerCase();
+  if (lower.includes("website") || lower.includes("ssl") || lower.includes("domain") || lower.includes("load")) {
+    return "Website Opportunity";
+  }
+  if (lower.includes("seo") || lower.includes("brand") || lower.includes("photo") || lower.includes("identity")) {
+    return "Branding & SEO";
+  }
+  if (lower.includes("social") || lower.includes("instagram") || lower.includes("facebook") || lower.includes("post")) {
+    return "Social Presence";
+  }
+  if (lower.includes("growth") || lower.includes("hiring") || lower.includes("location") || lower.includes("budget")) {
+    return "Growth Signals";
+  }
+  if (lower.includes("review") || lower.includes("rating") || lower.includes("reputation")) {
+    return "Market Reputation";
+  }
+  if (lower.includes("tool") || lower.includes("booking") || lower.includes("chat") || lower.includes("analytic")) {
+    return "Tooling & Automation";
+  }
+  return `Opportunity Factor #${index + 1}`;
+}
+
+export function normalizeReason(raw: unknown, index: number): NormalizedReason {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    const colonIdx = trimmed.indexOf(":");
+    if (colonIdx > 0 && colonIdx < 35) {
+      const label = trimmed.slice(0, colonIdx).trim();
+      const detail = trimmed.slice(colonIdx + 1).trim();
+      return {
+        id: `reason-${index}`,
+        label: label || inferReasonLabel(detail, index),
+        detail: detail || label,
+        weight: 1,
+        value: 1,
+        impact: 100 - index,
+      };
+    }
+    return {
+      id: `reason-${index}`,
+      label: inferReasonLabel(trimmed, index),
+      detail: trimmed,
+      weight: 1,
+      value: 1,
+      impact: 100 - index,
+    };
+  }
+
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    const rawDetail =
+      typeof obj.detail === "string" && obj.detail.trim()
+        ? obj.detail.trim()
+        : typeof obj.summary === "string" && obj.summary.trim()
+          ? obj.summary.trim()
+          : typeof obj.label === "string" && obj.label.trim()
+            ? obj.label.trim()
+            : "";
+
+    const rawLabel =
+      typeof obj.label === "string" && obj.label.trim()
+        ? obj.label.trim()
+        : typeof obj.component === "string" && obj.component.trim()
+          ? obj.component.trim().charAt(0).toUpperCase() + obj.component.trim().slice(1)
+          : inferReasonLabel(rawDetail, index);
+
+    const weight = typeof obj.weight === "number" && Number.isFinite(obj.weight) ? obj.weight : 1;
+    const value = typeof obj.value === "number" && Number.isFinite(obj.value) ? obj.value : 1;
+    const impact = weight * value > 1 ? weight * value : 100 - index;
+
+    return {
+      id: typeof obj.component === "string" && obj.component ? obj.component : `reason-${index}`,
+      label: rawLabel,
+      detail: rawDetail || rawLabel,
+      weight,
+      value,
+      impact,
+    };
+  }
+
+  return {
+    id: `reason-${index}`,
+    label: `Opportunity Factor #${index + 1}`,
+    detail: String(raw ?? ""),
+    weight: 0,
+    value: 0,
+    impact: 0,
+  };
+}
 
 export function LeftSidebar({
   lead,
@@ -208,7 +308,7 @@ export function LeftSidebar({
 
   const contactFormUrl = cleanDomain ? `${cleanDomain}/contact` : lead.website || "Website contact";
 
-  // Contact items configuration
+  // Contact items configuration with dedicated 2-row layout specs
   const contactItems = [
     {
       key: "email" as const,
@@ -275,24 +375,23 @@ export function LeftSidebar({
   // Business Insights data availability check
   const hasBusinessInsights = Boolean(
     insight?.headline ||
-      (insight?.talking_points && insight.talking_points.length > 0) ||
+      (Array.isArray(insight?.talking_points) && insight.talking_points.length > 0) ||
       insight?.opening_line ||
       aiOverview ||
       suggestedAction ||
       lead.websiteNotes ||
       lead.brandingNotes ||
       explanation?.summary ||
-      trust?.businessHealth,
+      (trust?.businessHealth && typeof trust.businessHealth.score === "number"),
   );
 
-  // Ranked reasons for "Why This Opportunity"
+  // Ranked reasons for "Why This Opportunity" — type safe for both string[] and ExplanationReason[]
   const sortedReasons = useMemo(() => {
-    if (!explanation?.reasons || explanation.reasons.length === 0) return [];
-    return [...explanation.reasons].sort((a, b) => {
-      const impactA = (a.weight ?? 1) * (a.value ?? 1);
-      const impactB = (b.weight ?? 1) * (b.value ?? 1);
-      return impactB - impactA || (b.value ?? 0) - (a.value ?? 0);
-    });
+    if (!explanation?.reasons || !Array.isArray(explanation.reasons) || explanation.reasons.length === 0) {
+      return [];
+    }
+    const normalized = explanation.reasons.map((r, i) => normalizeReason(r, i));
+    return normalized.sort((a, b) => b.impact - a.impact);
   }, [explanation?.reasons]);
 
   const strongestReason = sortedReasons[0];
@@ -423,51 +522,74 @@ export function LeftSidebar({
                           setChannel(item.channelKey);
                         }
                       }}
-                      className={`flex items-start justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
+                      className={`group rounded-xl border p-3 cursor-pointer transition-all ${
                         channel === item.channelKey
                           ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
                           : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
                       }`}
                     >
-                      <div className="flex items-start gap-2.5 min-w-0 flex-1 mr-2">
-                        <div
-                          className={`size-8 rounded-lg ${item.iconClass} border grid place-items-center shrink-0 mt-0.5`}
-                        >
-                          <Icon className="size-4" />
+                      {/* Row 1: Contact Icon, Contact Label, Availability Status, Copy Button, Chevron */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div
+                            className={`size-7 rounded-lg ${item.iconClass} border grid place-items-center shrink-0`}
+                          >
+                            <Icon className="size-3.5" />
+                          </div>
+                          <span className="text-xs font-semibold text-foreground truncate">
+                            {item.label}
+                          </span>
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs font-medium text-foreground leading-tight">{item.label}</p>
-                          <p className="text-[11px] text-muted-foreground break-words leading-relaxed mt-0.5">
-                            {item.displayValue}
-                          </p>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${badgeClass}`}>
+                            {item.badge.label}
+                          </span>
+
+                          {item.hasValue && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleCopy(item.rawValue, item.label);
+                              }}
+                              className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand"
+                              title={item.copyMenuText}
+                              aria-label={item.copyMenuText}
+                            >
+                              {copied === item.label ? (
+                                <Check className="size-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="size-3.5" />
+                              )}
+                            </button>
+                          )}
+
+                          <ChevronRight className="size-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
-                          {item.badge.label}
-                        </span>
-
-                        {item.hasValue && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void handleCopy(item.rawValue, item.label);
-                            }}
-                            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand"
-                            title={item.copyMenuText}
-                            aria-label={item.copyMenuText}
-                          >
-                            {copied === item.label ? (
-                              <Check className="size-3.5 text-emerald-400" />
-                            ) : (
-                              <Copy className="size-3.5" />
-                            )}
-                          </button>
-                        )}
-
-                        <ChevronRight className="size-3.5 text-muted-foreground" />
+                      {/* Row 2: Complete Contact Value with full horizontal width */}
+                      <div className="mt-2 pt-2 border-t border-border/30">
+                        <p
+                          title={item.hasValue ? item.displayValue : undefined}
+                          className={`text-xs select-all ${
+                            item.hasValue
+                              ? "text-foreground font-medium"
+                              : "text-muted-foreground/60 italic"
+                          } ${
+                            item.key === "phone"
+                              ? "whitespace-nowrap overflow-x-auto scrollbar-none"
+                              : "break-words"
+                          }`}
+                          style={
+                            item.key === "email" || item.key === "contact_form"
+                              ? { wordBreak: "break-word", overflowWrap: "anywhere" }
+                              : undefined
+                          }
+                        >
+                          {item.displayValue}
+                        </p>
                       </div>
                     </div>
                   </ContextMenuTrigger>
@@ -588,7 +710,7 @@ export function LeftSidebar({
                   )}
 
                   {/* Talking points */}
-                  {insight?.talking_points && insight.talking_points.length > 0 && (
+                  {Array.isArray(insight?.talking_points) && insight.talking_points.length > 0 && (
                     <div className="space-y-1.5 pt-0.5">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
                         Key Talking Points
@@ -596,7 +718,7 @@ export function LeftSidebar({
                       <ul className="space-y-1 text-[11px] text-muted-foreground list-disc list-inside">
                         {insight.talking_points.slice(0, 3).map((pt, i) => (
                           <li key={i} className="text-foreground leading-snug">
-                            {pt}
+                            {typeof pt === "string" ? pt : String(pt)}
                           </li>
                         ))}
                       </ul>
@@ -604,7 +726,7 @@ export function LeftSidebar({
                   )}
 
                   {/* Health Score */}
-                  {trust?.businessHealth && (
+                  {trust?.businessHealth && typeof trust.businessHealth.score === "number" && !Number.isNaN(trust.businessHealth.score) && (
                     <div className="rounded-lg border border-border/70 bg-background/50 p-2.5 space-y-1.5">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
@@ -710,14 +832,16 @@ export function LeftSidebar({
                       <ul className="space-y-2">
                         {supportingReasons.map((r) => (
                           <li
-                            key={r.component}
+                            key={r.id}
                             className="rounded-lg border border-border/50 bg-card/25 p-2 space-y-0.5 text-[11px]"
                           >
                             <div className="flex items-center justify-between">
                               <span className="font-semibold text-foreground">{r.label}</span>
-                              <span className="text-[9px] font-mono text-muted-foreground">
-                                Score impact: {Math.round((r.weight ?? 0) * (r.value ?? 0))}
-                              </span>
+                              {r.impact > 1 && (
+                                <span className="text-[9px] font-mono text-muted-foreground">
+                                  Score impact: {Math.round(r.impact)}
+                                </span>
+                              )}
                             </div>
                             <p className="text-muted-foreground leading-relaxed">{r.detail}</p>
                           </li>
@@ -762,7 +886,7 @@ export function LeftSidebar({
                     <p className="text-[11px] text-foreground leading-relaxed">
                       {suggestedAction ||
                         (lead.email
-                          ? `Send a tailored pitch focusing on ${strongestReason?.label.toLowerCase() || "their online presence"}.`
+                          ? `Send a tailored pitch focusing on ${strongestReason?.label ? strongestReason.label.toLowerCase() : "their online presence"}.`
                           : lead.phone
                             ? "Conduct a brief discovery phone call to explore their service needs."
                             : "Reach out via Instagram direct message to establish contact.")}
@@ -770,28 +894,15 @@ export function LeftSidebar({
                   </div>
                 </div>
               ) : (
-                <div className="rounded-xl border border-border/50 bg-card/20 p-4 text-center space-y-2">
-                  <Target className="size-5 mx-auto text-muted-foreground/50" />
-                  <p className="text-xs font-semibold text-foreground">Opportunity not yet scored</p>
-                  <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    Opportunity Engine qualification signals and customized reasons become available once processed through Discovery.
-                  </p>
-                  <div className="pt-1 flex flex-wrap justify-center gap-1.5 text-[10px]">
-                    {lead.email && (
-                      <span className="px-2 py-0.5 rounded bg-muted/40 border border-border/40 text-muted-foreground">
-                        Email on file
-                      </span>
-                    )}
-                    {lead.phone && (
-                      <span className="px-2 py-0.5 rounded bg-muted/40 border border-border/40 text-muted-foreground">
-                        Phone on file
-                      </span>
-                    )}
-                    {lead.website && (
-                      <span className="px-2 py-0.5 rounded bg-muted/40 border border-border/40 text-muted-foreground">
-                        Website on file
-                      </span>
-                    )}
+                <div className="rounded-xl border border-border/60 bg-card/25 p-4 text-center space-y-2.5">
+                  <div className="size-9 rounded-xl bg-muted/30 border border-border/50 grid place-items-center mx-auto text-muted-foreground">
+                    <Target className="size-4" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs font-semibold text-foreground">Opportunity Not Yet Scored</p>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      This opportunity has not been evaluated by the Opportunity Engine yet. Detailed qualification signals and tailored reasons are generated when leads are processed through automated pipeline discovery.
+                    </p>
                   </div>
                 </div>
               )}

@@ -142,19 +142,20 @@ describe("LeftSidebar — Lead Details Panel Enhancements", () => {
       // Complete email must be present in the document
       const emailEl = screen.getByText("contact.longname@verylongcompanydomain.co.uk");
       expect(emailEl).toBeDefined();
-      // Must have break-words so long values wrap onto additional lines without truncation
-      expect(emailEl.className).toContain("break-words");
+      // Email should have break-all or break-words so long addresses wrap cleanly without truncation
+      expect(emailEl.className).toMatch(/break-words|break-all/);
       expect(emailEl.className).not.toContain("truncate");
 
-      // Complete phone must be present
+      // Complete phone must be present and retain recognizable grouping without mid-number wrapping
       const phoneEl = screen.getByText("+1 (555) 234-5678");
       expect(phoneEl).toBeDefined();
-      expect(phoneEl.className).toContain("break-words");
+      expect(phoneEl.className).toContain("whitespace-nowrap");
+      expect(phoneEl.className).not.toContain("truncate");
 
       // Instagram handle
       const igEl = screen.getByText("@acme_creative_studio");
       expect(igEl).toBeDefined();
-      expect(igEl.className).toContain("break-words");
+      expect(igEl.className).not.toContain("truncate");
     });
 
     it("provides accessible copy action that copies exact raw value and provides feedback", async () => {
@@ -201,6 +202,24 @@ describe("LeftSidebar — Lead Details Panel Enhancements", () => {
       fireEvent.click(phoneRow);
 
       expect(setChannel).toHaveBeenCalledWith("phone");
+    });
+
+    it("organizes each contact card into a clean 2-row layout separating header metadata from full contact value", () => {
+      const setChannel = vi.fn();
+      render(<LeftSidebar lead={mockLead} channel="email" setChannel={setChannel} />);
+
+      // Find the email contact card container
+      const emailLabel = screen.getByText("Email");
+      const card = emailLabel.closest('[role="button"]') as HTMLElement;
+      expect(card).toBeDefined();
+
+      // Row 1 elements: Label "Email", Availability badge "Available", and Copy button
+      expect(card.querySelector('button[aria-label="Copy email address"]')).not.toBeNull();
+
+      // Row 2 element: full email value
+      const emailValueEl = card.querySelector('[title="contact.longname@verylongcompanydomain.co.uk"]');
+      expect(emailValueEl).not.toBeNull();
+      expect(emailValueEl?.textContent).toBe("contact.longname@verylongcompanydomain.co.uk");
     });
   });
 
@@ -290,7 +309,7 @@ describe("LeftSidebar — Lead Details Panel Enhancements", () => {
       expect(screen.getByText(/Send a tailored pitch focusing on mobile responsiveness gap/i)).toBeDefined();
     });
 
-    it("displays honest unscored state when lead opportunityScore is missing", () => {
+    it("displays honest unscored state when lead opportunityScore is missing without concatenated debug tags", () => {
       const setChannel = vi.fn();
       h.explanationData = null;
       const unscoredLead: Lead = {
@@ -303,7 +322,101 @@ describe("LeftSidebar — Lead Details Panel Enhancements", () => {
       const whyHeader = screen.getByRole("button", { name: /Why This Opportunity/i });
       fireEvent.click(whyHeader);
 
-      expect(screen.getByText("Opportunity not yet scored")).toBeDefined();
+      expect(screen.getByText("Opportunity Not Yet Scored")).toBeDefined();
+      expect(
+        screen.getByText(/This opportunity has not been evaluated by the Opportunity Engine yet/i),
+      ).toBeDefined();
+      // Must NOT display technical/debug-like concatenated text
+      expect(screen.queryByText(/Email on file · Phone on file/i)).toBeNull();
+    });
+
+    it("renders ranked opportunity safely when reasons are string arrays (live Engine 2.0 format) without crashing", () => {
+      const setChannel = vi.fn();
+      // Live Engine 2.0 sends reasons as string[]
+      h.explanationData = {
+        score: 92,
+        professionSlug: "web_designer",
+        summary: "Exceptional candidate for website redesign and modern branding upgrade.",
+        reasons: [
+          "Website exists but runs slowly and has critical mobile viewport defects.",
+          "Branding and visual identity is strong with active local clientele.",
+          "Social media presence is inactive with no updates in 6 months.",
+        ],
+      };
+
+      // Rendering should NOT crash with TypeError: Cannot read properties of undefined (reading 'toLowerCase')
+      render(<LeftSidebar lead={mockLead} channel="email" setChannel={setChannel} />);
+
+      const whyHeader = screen.getByRole("button", { name: /Why This Opportunity/i });
+      fireEvent.click(whyHeader);
+
+      // Verify strongest reason is extracted and inferred cleanly
+      expect(screen.getByText("Strongest Reason")).toBeDefined();
+      expect(
+        screen.getByText("Website exists but runs slowly and has critical mobile viewport defects."),
+      ).toBeDefined();
+      expect(screen.getByText("Website Opportunity")).toBeDefined();
+
+      // Supporting signals
+      expect(screen.getByText("Supporting Signals")).toBeDefined();
+      expect(
+        screen.getByText("Branding and visual identity is strong with active local clientele."),
+      ).toBeDefined();
+      expect(screen.getByText("Social Presence")).toBeDefined();
+
+      // Recommended next step should be cleanly rendered
+      expect(screen.getByText("Recommended Next Step")).toBeDefined();
+      expect(
+        screen.getByText(/Send a tailored pitch focusing on website opportunity/i),
+      ).toBeDefined();
+    });
+
+    it("renders safely when ranked opportunity has empty or partially populated reasons", () => {
+      const setChannel = vi.fn();
+      h.explanationData = {
+        score: 80,
+        professionSlug: "web_designer",
+        summary: "Good opportunity based on domain status.",
+        reasons: [],
+      };
+
+      render(<LeftSidebar lead={mockLead} channel="email" setChannel={setChannel} />);
+
+      const whyHeader = screen.getByRole("button", { name: /Why This Opportunity/i });
+      fireEvent.click(whyHeader);
+
+      expect(screen.getByText("Good opportunity based on domain status.")).toBeDefined();
+      expect(screen.getByText("Recommended Next Step")).toBeDefined();
+      expect(
+        screen.getByText(/Send a tailored pitch focusing on their online presence/i),
+      ).toBeDefined();
+    });
+
+    it("handles switching between ranked, partially ranked, and unranked leads without crashing", () => {
+      const setChannel = vi.fn();
+      h.explanationData = {
+        score: 85,
+        reasons: ["Outdated website structure."],
+      };
+
+      const { rerender } = render(<LeftSidebar lead={mockLead} channel="email" setChannel={setChannel} />);
+
+      // Switch to unranked lead
+      h.explanationData = null;
+      const unrankedLead: Lead = { ...mockLead, id: 102, opportunityScore: null };
+      rerender(<LeftSidebar lead={unrankedLead} channel="email" setChannel={setChannel} />);
+
+      const whyHeader = screen.getByRole("button", { name: /Why This Opportunity/i });
+      fireEvent.click(whyHeader);
+      expect(screen.getByText("Opportunity Not Yet Scored")).toBeDefined();
+
+      // Switch back to ranked lead with string reasons
+      h.explanationData = {
+        score: 95,
+        reasons: ["No responsive mobile layout detected."],
+      };
+      rerender(<LeftSidebar lead={mockLead} channel="email" setChannel={setChannel} />);
+      expect(screen.getByText("No responsive mobile layout detected.")).toBeDefined();
     });
 
     it("displays disqualification warning when lead is disqualified", () => {

@@ -61,6 +61,9 @@ function LeadWorkspace() {
     if (!lead || lead.id === loadedLeadId) return;
     let cancelled = false;
     setLoadedLeadId(lead.id);
+    if (loadedLeadId !== null) {
+      setDrafts(emptyDrafts);
+    }
 
     void (async () => {
       const next: Record<Channel, ComposeDraft> = { ...emptyDrafts };

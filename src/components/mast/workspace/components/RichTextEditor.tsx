@@ -69,8 +69,13 @@ export function RichTextEditor({
   className,
 }: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
-  const lastValueRef = useRef<string>("");
-  const isInternalChangeRef = useRef<boolean>(false);
+  const lastEmittedHtmlRef = useRef<string | null>(null);
+  const collapsedOverridesRef = useRef<{
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+    strike?: boolean;
+  }>({});
   const savedRangeRef = useRef<Range | null>(null);
 
   const [formatting, setFormatting] = useState<FormattingState>(defaultFormatting);
@@ -89,26 +94,28 @@ export function RichTextEditor({
   useEffect(() => {
     if (!editorRef.current) return;
 
-    if (isInternalChangeRef.current) {
-      isInternalChangeRef.current = false;
-      return;
-    }
-
-    const html = plainTextToHtml(value);
-    if (editorRef.current.innerHTML !== html) {
-      editorRef.current.innerHTML = html;
-      lastValueRef.current = value;
+    // Only update innerHTML if incoming value differs from what was emitted by internal edits
+    if (value !== lastEmittedHtmlRef.current) {
+      const targetHtml = plainTextToHtml(value);
+      if (editorRef.current.innerHTML !== targetHtml) {
+        editorRef.current.innerHTML = targetHtml;
+      }
+      lastEmittedHtmlRef.current = targetHtml;
     }
   }, [value]);
 
   // Query formatting state from current cursor or selection
   const updateFormattingState = useCallback(() => {
-    if (typeof document === "undefined") return;
+    if (typeof document === "undefined" || !editorRef.current) return;
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || !editorRef.current) return;
+    if (!selection || selection.rangeCount === 0) {
+      setFormatting(defaultFormatting);
+      return;
+    }
 
     const anchor = selection.anchorNode;
     if (!anchor || !editorRef.current.contains(anchor)) {
+      setFormatting(defaultFormatting);
       return;
     }
 
@@ -121,21 +128,68 @@ export function RichTextEditor({
     let isQuote = false;
     let isLink = false;
 
+    // 1. Query browser command state
     try {
-      isBold = document.queryCommandState("bold");
-      isItalic = document.queryCommandState("italic");
-      isUnderline = document.queryCommandState("underline");
-      isStrike = document.queryCommandState("strikeThrough");
-      isBullet = document.queryCommandState("insertUnorderedList");
-      isNumber = document.queryCommandState("insertOrderedList");
+      const qBold = document.queryCommandState("bold");
+      if (typeof qBold === "boolean") isBold = qBold;
+      const qItalic = document.queryCommandState("italic");
+      if (typeof qItalic === "boolean") isItalic = qItalic;
+      const qUnderline = document.queryCommandState("underline");
+      if (typeof qUnderline === "boolean") isUnderline = qUnderline;
+      const qStrike = document.queryCommandState("strikeThrough");
+      if (typeof qStrike === "boolean") isStrike = qStrike;
+      const qBullet = document.queryCommandState("insertUnorderedList");
+      if (typeof qBullet === "boolean") isBullet = qBullet;
+      const qNumber = document.queryCommandState("insertOrderedList");
+      if (typeof qNumber === "boolean") isNumber = qNumber;
     } catch {
-      // queryCommandState might not be supported in some environments
+      // In environments where queryCommandState is unsupported or throws
     }
 
-    let curr: Node | null = selection.getRangeAt(0).commonAncestorContainer;
-    while (curr && curr !== editorRef.current) {
-      if (curr.nodeName === "BLOCKQUOTE") isQuote = true;
-      if (curr.nodeName === "A") isLink = true;
+    // 2. Fallback to collapsed typing overrides if queryCommandState was not boolean or in tests
+    if (selection.isCollapsed) {
+      if (collapsedOverridesRef.current.bold !== undefined) {
+        isBold = collapsedOverridesRef.current.bold;
+      }
+      if (collapsedOverridesRef.current.italic !== undefined) {
+        isItalic = collapsedOverridesRef.current.italic;
+      }
+      if (collapsedOverridesRef.current.underline !== undefined) {
+        isUnderline = collapsedOverridesRef.current.underline;
+      }
+      if (collapsedOverridesRef.current.strike !== undefined) {
+        isStrike = collapsedOverridesRef.current.strike;
+      }
+    }
+
+    // 3. Inspect DOM hierarchy for tags, blockquotes, and links
+    const range = selection.getRangeAt(0);
+    let curr: Node | null = range.commonAncestorContainer;
+    if (curr && curr.nodeType === Node.TEXT_NODE) {
+      curr = curr.parentNode;
+    }
+
+    while (curr && curr !== editorRef.current && editorRef.current.contains(curr)) {
+      if (curr instanceof HTMLElement) {
+        const tag = curr.tagName.toUpperCase();
+        if (tag === "BLOCKQUOTE") isQuote = true;
+        if (tag === "A") isLink = true;
+        if (tag === "UL") isBullet = true;
+        if (tag === "OL") isNumber = true;
+
+        if (!isBold && (tag === "B" || tag === "STRONG")) isBold = true;
+        if (!isItalic && (tag === "I" || tag === "EM")) isItalic = true;
+        if (!isUnderline && tag === "U") isUnderline = true;
+        if (!isStrike && (tag === "S" || tag === "STRIKE" || tag === "DEL")) isStrike = true;
+
+        const style = curr.style;
+        if (style) {
+          if (!isBold && (style.fontWeight === "bold" || parseInt(style.fontWeight, 10) >= 600)) isBold = true;
+          if (!isItalic && style.fontStyle === "italic") isItalic = true;
+          if (!isUnderline && style.textDecoration?.includes("underline")) isUnderline = true;
+          if (!isStrike && style.textDecoration?.includes("line-through")) isStrike = true;
+        }
+      }
       curr = curr.parentNode;
     }
 
@@ -165,16 +219,46 @@ export function RichTextEditor({
   // Notify parent on content edits
   const handleInput = () => {
     if (!editorRef.current) return;
+    collapsedOverridesRef.current = {};
     const currentHtml = editorRef.current.innerHTML;
-    lastValueRef.current = currentHtml;
-    isInternalChangeRef.current = true;
+    lastEmittedHtmlRef.current = currentHtml;
     onChange(currentHtml);
     updateFormattingState();
   };
 
-  // Commands
-  const execCommand = (cmd: string, val: string | undefined = undefined) => {
-    editorRef.current?.focus();
+  // Commands for inline formatting (bold, italic, underline, strikethrough)
+  const execInlineCommand = (cmd: string, key: "bold" | "italic" | "underline" | "strike") => {
+    if (!editorRef.current) return;
+    editorRef.current.focus();
+
+    const selection = window.getSelection();
+    const isCollapsed = !selection || selection.rangeCount === 0 || selection.isCollapsed;
+
+    try {
+      document.execCommand(cmd, false, undefined);
+    } catch {
+      // Handled safely
+    }
+
+    if (isCollapsed) {
+      // Toggle pending collapsed formatting state
+      collapsedOverridesRef.current[key] = !formatting[key];
+      updateFormattingState();
+    } else {
+      collapsedOverridesRef.current = {};
+      handleInput();
+    }
+  };
+
+  const handleBold = () => execInlineCommand("bold", "bold");
+  const handleItalic = () => execInlineCommand("italic", "italic");
+  const handleUnderline = () => execInlineCommand("underline", "underline");
+  const handleStrike = () => execInlineCommand("strikeThrough", "strike");
+
+  // Commands for block & list formatting (always alters DOM structure)
+  const execBlockCommand = (cmd: string, val: string | undefined = undefined) => {
+    if (!editorRef.current) return;
+    editorRef.current.focus();
     try {
       document.execCommand(cmd, false, val);
     } catch {
@@ -183,15 +267,12 @@ export function RichTextEditor({
     handleInput();
   };
 
-  const handleBold = () => execCommand("bold");
-  const handleItalic = () => execCommand("italic");
-  const handleUnderline = () => execCommand("underline");
-  const handleStrike = () => execCommand("strikeThrough");
-  const handleBulletList = () => execCommand("insertUnorderedList");
-  const handleNumberedList = () => execCommand("insertOrderedList");
+  const handleBulletList = () => execBlockCommand("insertUnorderedList");
+  const handleNumberedList = () => execBlockCommand("insertOrderedList");
 
   const handleQuote = () => {
-    editorRef.current?.focus();
+    if (!editorRef.current) return;
+    editorRef.current.focus();
     const tag = formatting.quote ? "<p>" : "<blockquote>";
     try {
       document.execCommand("formatBlock", false, tag);
@@ -201,8 +282,8 @@ export function RichTextEditor({
     handleInput();
   };
 
-  const handleUndo = () => execCommand("undo");
-  const handleRedo = () => execCommand("redo");
+  const handleUndo = () => execBlockCommand("undo");
+  const handleRedo = () => execBlockCommand("redo");
 
   // Save selection before opening link popover
   const handleOpenLinkPopover = (open: boolean) => {
@@ -591,9 +672,19 @@ export function RichTextEditor({
           contentEditable
           suppressContentEditableWarning
           onInput={handleInput}
-          onKeyUp={updateFormattingState}
-          onMouseUp={updateFormattingState}
+          onKeyUp={() => {
+            collapsedOverridesRef.current = {};
+            updateFormattingState();
+          }}
+          onMouseUp={() => {
+            collapsedOverridesRef.current = {};
+            updateFormattingState();
+          }}
           onSelect={updateFormattingState}
+          onBlur={() => {
+            setFormatting(defaultFormatting);
+            collapsedOverridesRef.current = {};
+          }}
           onKeyDown={handleKeyDown}
           role="textbox"
           aria-multiline="true"

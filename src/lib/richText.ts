@@ -98,8 +98,8 @@ function formatInlineMarkdown(str: string): string {
 export function plainTextToHtml(text: string): string {
   if (!text) return "";
 
-  // If text already has HTML block elements or formatting tags, return it
-  if (/<(?:p|div|ul|ol|blockquote|strong|b|em|i|u|s|a)\b[^>]*>/i.test(text)) {
+  // If text already has HTML block elements (paragraphs, divs, lists, blockquotes), return it
+  if (/<(?:p|div|ul|ol|blockquote)\b[^>]*>/i.test(text)) {
     return text;
   }
 

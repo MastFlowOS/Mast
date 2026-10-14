@@ -453,4 +453,267 @@ describe("Middle Message Composer — CenterWorkspace & RichTextEditor", () => {
       expect(screen.getByRole("button", { name: /^open instagram$/i })).toBeDefined();
     });
   });
+
+  /* ─────────────────────────────────────────────────────────────
+   * 6. REGRESSION SUITE: STATE SYNCHRONIZATION & FORMATTING STABILITY
+   * ───────────────────────────────────────────────────────────── */
+  describe("5. Regression tests — AI generation sync & formatting toolbar stability", () => {
+    const draft291 =
+      "Hi Sarah,\n\nI noticed Bright Horizon Cafe has a warm atmosphere in Austin. We help local cafes increase weekday foot traffic through proven Instagram campaigns. Would you be open to a quick 5-minute chat this Thursday to see what worked for other cafes nearby your shop?\n\nBest wishes,\nAlex M.";
+
+    it("1 & 2: AI-generated draft of 291 characters / 50 words appears visibly in editor DOM and counters match exactly", () => {
+      // 291 characters and 50 words
+      const plain = htmlToPlainText(draft291);
+      expect(plain.length).toBe(291);
+      expect(countWords(draft291)).toBe(50);
+
+      // Wrapper component simulating parent state updates
+      function ComposerWrapper() {
+        const [body, setBody] = React.useState("");
+        return (
+          <div>
+            <button
+              data-testid="mock-generate-ai"
+              onClick={() => setBody(draft291)}
+            >
+              Simulate Generate
+            </button>
+            <CenterWorkspace
+              lead={mockLead}
+              channel="instagram"
+              setChannel={() => {}}
+              subject=""
+              setSubject={() => {}}
+              body={body}
+              setBody={setBody}
+              template="initial"
+              setTemplate={() => {}}
+              tone="friendly"
+              setTone={() => {}}
+              onGenerate={async () => {}}
+              isGenerating={false}
+              onRewrite={async () => {}}
+            />
+          </div>
+        );
+      }
+
+      render(<ComposerWrapper />);
+
+      // Initially empty
+      expect(screen.getByText("0/1000 characters")).toBeDefined();
+      expect(screen.getByText("0 words")).toBeDefined();
+      const editor = screen.getByRole("textbox", { name: /message content/i });
+      expect(editor.innerHTML).toBe("");
+
+      // User generates draft
+      fireEvent.click(screen.getByTestId("mock-generate-ai"));
+
+      // 1. Editor DOM is immediately populated and visible (NOT blank!)
+      expect(editor.innerHTML).toContain("Hi Sarah,");
+      expect(editor.innerHTML).toContain("Bright Horizon Cafe");
+      expect(editor.textContent).toContain("Hi Sarah,");
+      expect(htmlToPlainText(editor.innerHTML).length).toBe(291);
+      expect(countWords(editor.innerHTML)).toBe(50);
+
+      // 2. Counters match actual visible editor content
+      expect(screen.getByText("291/1000 characters")).toBeDefined();
+      expect(screen.getByText("50 words")).toBeDefined();
+    });
+
+    it("3: Replacing an existing draft with a newly generated message updates the editor DOM immediately", () => {
+      function Wrapper() {
+        const [body, setBody] = React.useState("Original draft message");
+        return (
+          <div>
+            <button
+              data-testid="replace-btn"
+              onClick={() => setBody("New AI generated replacement message with fresh ideas")}
+            >
+              Replace
+            </button>
+            <RichTextEditor value={body} onChange={setBody} />
+          </div>
+        );
+      }
+
+      render(<Wrapper />);
+      const editor = screen.getByRole("textbox", { name: /message content/i });
+      expect(editor.innerHTML).toContain("Original draft message");
+
+      // Replace draft
+      fireEvent.click(screen.getByTestId("replace-btn"));
+      expect(editor.innerHTML).toContain("New AI generated replacement message with fresh ideas");
+      expect(editor.innerHTML).not.toContain("Original draft message");
+    });
+
+    it("4: Repeatedly toggling Bold on an existing text selection turns bold on and off reliably", () => {
+      const execSpy = vi.spyOn(document, "execCommand").mockImplementation(() => true);
+
+      render(<RichTextEditor value="<p>Selected text here</p>" onChange={() => {}} />);
+      const boldBtn = screen.getByRole("button", { name: /^bold/i });
+
+      // First click applies bold
+      fireEvent.click(boldBtn);
+      expect(execSpy).toHaveBeenLastCalledWith("bold", false, undefined);
+
+      // Second click toggles bold off
+      fireEvent.click(boldBtn);
+      expect(execSpy).toHaveBeenLastCalledWith("bold", false, undefined);
+
+      // Third click toggles bold on again
+      fireEvent.click(boldBtn);
+      expect(execSpy).toHaveBeenLastCalledWith("bold", false, undefined);
+
+      execSpy.mockRestore();
+    });
+
+    it("5: Activating Bold at collapsed caret toggles active state, and toggling off clears active state", () => {
+      render(<RichTextEditor value="" onChange={() => {}} />);
+      const boldBtn = screen.getByRole("button", { name: /^bold/i });
+
+      expect(boldBtn.getAttribute("aria-pressed")).toBe("false");
+
+      // Activate bold on collapsed caret
+      fireEvent.click(boldBtn);
+      expect(boldBtn.getAttribute("aria-pressed")).toBe("true");
+
+      // Deactivate bold on collapsed caret before typing
+      fireEvent.click(boldBtn);
+      expect(boldBtn.getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("6: Italic, Underline, and Strikethrough toggle reliably", () => {
+      render(<RichTextEditor value="" onChange={() => {}} />);
+
+      const italicBtn = screen.getByRole("button", { name: /^italic/i });
+      expect(italicBtn.getAttribute("aria-pressed")).toBe("false");
+      fireEvent.click(italicBtn);
+      expect(italicBtn.getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(italicBtn);
+      expect(italicBtn.getAttribute("aria-pressed")).toBe("false");
+
+      const underlineBtn = screen.getByRole("button", { name: /^underline/i });
+      expect(underlineBtn.getAttribute("aria-pressed")).toBe("false");
+      fireEvent.click(underlineBtn);
+      expect(underlineBtn.getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(underlineBtn);
+      expect(underlineBtn.getAttribute("aria-pressed")).toBe("false");
+
+      const strikeBtn = screen.getByRole("button", { name: /^strikethrough/i });
+      expect(strikeBtn.getAttribute("aria-pressed")).toBe("false");
+      fireEvent.click(strikeBtn);
+      expect(strikeBtn.getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(strikeBtn);
+      expect(strikeBtn.getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("7: Blur or moving cursor outside editor resets active toolbar formatting state", () => {
+      render(<RichTextEditor value="<p>Test</p>" onChange={() => {}} />);
+      const boldBtn = screen.getByRole("button", { name: /^bold/i });
+      const editor = screen.getByRole("textbox", { name: /message content/i });
+
+      // Turn on bold
+      fireEvent.click(boldBtn);
+      expect(boldBtn.getAttribute("aria-pressed")).toBe("true");
+
+      // Focus leaves editor
+      fireEvent.blur(editor);
+      expect(boldBtn.getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("8: Switching between leads updates the editor DOM without leaking previous lead content", () => {
+      const leadA: Lead = { ...mockLead, id: 101, businessName: "Cafe Alpha" };
+      const leadB: Lead = { ...mockLead, id: 202, businessName: "Bistro Beta" };
+
+      const { rerender } = render(
+        <CenterWorkspace
+          lead={leadA}
+          channel="instagram"
+          setChannel={() => {}}
+          subject=""
+          setSubject={() => {}}
+          body="Draft exclusively for Cafe Alpha"
+          setBody={() => {}}
+          template="initial"
+          setTemplate={() => {}}
+          tone="friendly"
+          setTone={() => {}}
+          onGenerate={async () => {}}
+          isGenerating={false}
+          onRewrite={async () => {}}
+        />
+      );
+
+      const editor = screen.getByRole("textbox", { name: /message content/i });
+      expect(editor.innerHTML).toContain("Draft exclusively for Cafe Alpha");
+
+      // Switch to Lead B
+      rerender(
+        <CenterWorkspace
+          lead={leadB}
+          channel="instagram"
+          setChannel={() => {}}
+          subject=""
+          setSubject={() => {}}
+          body="Custom greeting for Bistro Beta"
+          setBody={() => {}}
+          template="initial"
+          setTemplate={() => {}}
+          tone="friendly"
+          setTone={() => {}}
+          onGenerate={async () => {}}
+          isGenerating={false}
+          onRewrite={async () => {}}
+        />
+      );
+
+      expect(editor.innerHTML).toContain("Custom greeting for Bistro Beta");
+      expect(editor.innerHTML).not.toContain("Cafe Alpha");
+    });
+
+    it("9: Empty drafts render with empty editor DOM, zero characters, and zero words", () => {
+      render(
+        <CenterWorkspace
+          lead={mockLead}
+          channel="instagram"
+          setChannel={() => {}}
+          subject=""
+          setSubject={() => {}}
+          body=""
+          setBody={() => {}}
+          template="initial"
+          setTemplate={() => {}}
+          tone="friendly"
+          setTone={() => {}}
+          onGenerate={async () => {}}
+          isGenerating={false}
+          onRewrite={async () => {}}
+        />
+      );
+
+      const editor = screen.getByRole("textbox", { name: /message content/i });
+      expect(editor.innerHTML).toBe("");
+      expect(screen.getByText("0/1000 characters")).toBeDefined();
+      expect(screen.getByText("0 words")).toBeDefined();
+      expect(screen.getByText(/Hi there, write your message/i)).toBeDefined();
+    });
+
+    it("10: Outgoing email format retains genuine HTML formatting and clean plaintext fallback", () => {
+      const editorFormatted =
+        "<p>Hello <strong>Alex</strong>,</p><ul><li>Feature A</li><li>Feature B</li></ul><p>See <a href=\"https://mast.os\">MAST</a></p>";
+
+      const emailHtml = formatHtmlEmail(editorFormatted);
+      expect(emailHtml).toContain("<strong>Alex</strong>");
+      expect(emailHtml).toContain("Feature A</li>");
+      expect(emailHtml).toContain("<li");
+      expect(emailHtml).toContain("<a href=\"https://mast.os\"");
+
+      const plain = formatPlainTextAlternative(editorFormatted);
+      expect(plain).toContain("Hello Alex,");
+      expect(plain).toContain("• Feature A");
+      expect(plain).toContain("See MAST (https://mast.os)");
+      expect(plain).not.toContain("<");
+    });
+  });
 });

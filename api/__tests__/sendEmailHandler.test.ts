@@ -182,3 +182,166 @@ test("rejects non-POST methods", async () => {
   const out = await run(deps(), req({ method: "GET" }));
   assert.equal(out.status, 405);
 });
+
+test("single source of truth for signature: sends body as composed without duplicate backend signature", async () => {
+  let capturedOptions: any;
+  const db = dbWithProfile({
+    data: {
+      settings: {
+        signature: "Best regards,\nIbrahim",
+        senderName: "Ibrahim",
+      },
+    },
+    error: null,
+  });
+
+  const out = await run(
+    deps({
+      db,
+      createTransport: (() => ({
+        sendMail: async (opts: any) => {
+          capturedOptions = opts;
+          return { messageId: "msg-1" };
+        },
+      })) as any,
+    }),
+    req({
+      body: {
+        to: "recipient@example.com",
+        subject: "Hello",
+        body: "<p>Hi Jane,</p><p>Great connecting with you.</p><p>Best regards,<br>Ibrahim</p>",
+      },
+    }),
+  );
+
+  assert.equal(out.status, 200);
+  assert.ok(capturedOptions);
+
+  // HTML: check that "Best regards" appears exactly once
+  const html = capturedOptions.html;
+  const htmlMatches = html.match(/Best regards/g) || [];
+  assert.equal(htmlMatches.length, 1, "Best regards must appear exactly once in HTML");
+  const ibrahimMatches = html.match(/Ibrahim/g) || [];
+  assert.equal(ibrahimMatches.length, 1, "Ibrahim must appear exactly once in HTML");
+
+  // Plain text: check that "Best regards" appears exactly once
+  const text = capturedOptions.text;
+  const textMatches = text.match(/Best regards/g) || [];
+  assert.equal(textMatches.length, 1, "Best regards must appear exactly once in text");
+});
+
+test("single source of truth: does not append signature if message intentionally has none", async () => {
+  let capturedOptions: any;
+  const db = dbWithProfile({
+    data: {
+      settings: {
+        signature: "Best regards,\nIbrahim",
+        senderName: "Ibrahim",
+      },
+    },
+    error: null,
+  });
+
+  const out = await run(
+    deps({
+      db,
+      createTransport: (() => ({
+        sendMail: async (opts: any) => {
+          capturedOptions = opts;
+          return { messageId: "msg-2" };
+        },
+      })) as any,
+    }),
+    req({
+      body: {
+        to: "recipient@example.com",
+        subject: "Quick question",
+        body: "<p>Hi Jane,</p><p>Just checking in on the report.</p>",
+      },
+    }),
+  );
+
+  assert.equal(out.status, 200);
+  assert.ok(capturedOptions);
+
+  // Neither HTML nor text should have the signature appended
+  assert.ok(!capturedOptions.html.includes("Best regards"));
+  assert.ok(!capturedOptions.html.includes("Ibrahim"));
+  assert.ok(!capturedOptions.text.includes("Best regards"));
+  assert.ok(!capturedOptions.text.includes("Ibrahim"));
+});
+
+test("single source of truth: custom sign-off or different sender name is preserved and not overwritten", async () => {
+  let capturedOptions: any;
+  const db = dbWithProfile({
+    data: {
+      settings: {
+        signature: "Best regards,\nIbrahim",
+        senderName: "Ibrahim",
+      },
+    },
+    error: null,
+  });
+
+  const out = await run(
+    deps({
+      db,
+      createTransport: (() => ({
+        sendMail: async (opts: any) => {
+          capturedOptions = opts;
+          return { messageId: "msg-3" };
+        },
+      })) as any,
+    }),
+    req({
+      body: {
+        to: "recipient@example.com",
+        subject: "Greetings",
+        body: "<p>Hi team,</p><p>Warmly,<br>Sarah</p>",
+      },
+    }),
+  );
+
+  assert.equal(out.status, 200);
+  assert.ok(capturedOptions.html.includes("Warmly"));
+  assert.ok(capturedOptions.html.includes("Sarah"));
+  assert.ok(!capturedOptions.html.includes("Best regards"));
+  assert.ok(!capturedOptions.html.includes("Ibrahim"));
+});
+
+test("preserves unrelated occurrences of sign-off words in message body", async () => {
+  let capturedOptions: any;
+  const db = dbWithProfile({
+    data: {
+      settings: {
+        signature: "Best regards,\nIbrahim",
+      },
+    },
+    error: null,
+  });
+
+  const out = await run(
+    deps({
+      db,
+      createTransport: (() => ({
+        sendMail: async (opts: any) => {
+          capturedOptions = opts;
+          return { messageId: "msg-4" };
+        },
+      })) as any,
+    }),
+    req({
+      body: {
+        to: "recipient@example.com",
+        subject: "Team update",
+        body: "<p>Please send our best regards to your team on the recent milestone.</p><p>Best regards,<br>Ibrahim</p>",
+      },
+    }),
+  );
+
+  assert.equal(out.status, 200);
+  assert.ok(capturedOptions.html.includes("best regards to your team"));
+  const matches = capturedOptions.html.match(/best regards/gi) || [];
+  assert.equal(matches.length, 2, "Body occurrence and closing sign-off must both be preserved");
+});
+

@@ -29,7 +29,24 @@ export function formatPlainTextAlternative(rawText: string): string {
   text = text.replace(/<\/p>/gi, "\n\n");
   text = text.replace(/<\/div>/gi, "\n");
 
-  // Convert list items to bullet points
+  // Convert ordered lists to numbered items
+  text = text.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, (_m, list) => {
+    let index = 1;
+    return "\n" + list.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_itemMatch: string, item: string) => {
+      const cleanItem = item.replace(/<[^>]+>/g, "").trim();
+      return `${index++}. ${cleanItem}\n`;
+    }) + "\n";
+  });
+
+  // Convert unordered lists to bullet points
+  text = text.replace(/<ul[^>]*>([\s\S]*?)<\/ul>/gi, (_m, list) => {
+    return "\n" + list.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_itemMatch: string, item: string) => {
+      const cleanItem = item.replace(/<[^>]+>/g, "").trim();
+      return `• ${cleanItem}\n`;
+    }) + "\n";
+  });
+
+  // Convert any remaining list items to bullet points
   text = text.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "• $1\n");
   text = text.replace(/<\/?(?:ul|ol)>/gi, "\n");
 
@@ -83,61 +100,122 @@ export function formatPlainTextAlternative(rawText: string): string {
 export function formatHtmlEmail(rawText: string): string {
   if (!rawText) return "";
 
-  // 1. First escape all raw HTML characters to prevent XSS / markup injection
-  let escaped = escapeHtml(rawText);
+  // 1. Unwrap browser-generated transparent background artifact spans
+  // (e.g. <span style="background-color: rgba(0, 0, 0, 0);">...</span>)
+  let cleanInput = rawText;
+  let prevClean = "";
+  while (prevClean !== cleanInput) {
+    prevClean = cleanInput;
+    cleanInput = cleanInput.replace(
+      /<span\b([^>]*)>([\s\S]*?)<\/span>/gi,
+      (_match, attrs, inner) => {
+        const styleMatch = attrs.match(/style=(?:"([^"]*)"|'([^']*)')/i);
+        if (!styleMatch) {
+          return inner; // No style on span: unwrap
+        }
+        let styleVal = (styleMatch[1] || styleMatch[2] || "").trim();
+        // Remove transparent background colors
+        styleVal = styleVal
+          .replace(/background-color\s*:\s*(?:rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)|transparent)\s*;?/gi, "")
+          .trim();
 
-  // 2. Safely support HTML & markdown bold
-  escaped = escaped.replace(/&lt;(?:strong|b)&gt;([\s\S]*?)&lt;\/(?:strong|b)&gt;/gi, "<strong>$1</strong>");
+        if (/expression\s*\(|javascript\s*:|url\s*\(/i.test(styleVal)) {
+          return inner;
+        }
+
+        if (!styleVal.replace(/;+/g, "").trim()) {
+          return inner; // If empty after removing transparent background, unwrap
+        }
+        return `<span style="${styleVal}">${inner}</span>`;
+      }
+    );
+  }
+
+  // 2. Escape raw HTML characters to prevent XSS / script injection
+  let escaped = escapeHtml(cleanInput);
+
+  // 3. Safely restore HTML & markdown bold (allowing attributes like class/style)
+  escaped = escaped.replace(/&lt;(?:strong|b)(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/(?:strong|b)&gt;/gi, "<strong>$1</strong>");
   escaped = escaped.replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
   escaped = escaped.replace(/__([^_\n]+?)__/g, "<strong>$1</strong>");
 
-  // 3. Safely support HTML & markdown italic
-  escaped = escaped.replace(/&lt;(?:em|i)&gt;([\s\S]*?)&lt;\/(?:em|i)&gt;/gi, "<em>$1</em>");
+  // 4. Safely restore HTML & markdown italic (allowing attributes)
+  escaped = escaped.replace(/&lt;(?:em|i)(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/(?:em|i)&gt;/gi, "<em>$1</em>");
   escaped = escaped.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, "<em>$1</em>");
   escaped = escaped.replace(/(?<![a-zA-Z0-9_])_([^_\n]+?)_(?![a-zA-Z0-9_])/g, "<em>$1</em>");
 
-  // 4. Safely support HTML underline (including with attributes like style)
+  // 5. Safely restore HTML underline (allowing attributes)
   escaped = escaped.replace(/&lt;u(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/u&gt;/gi, '<u style="text-decoration: underline;">$1</u>');
 
-  // 5. Safely support HTML & markdown strikethrough
+  // 6. Safely restore HTML & markdown strikethrough (allowing attributes)
   escaped = escaped.replace(/&lt;(?:s|strike|del)(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/(?:s|strike|del)&gt;/gi, '<s style="text-decoration: line-through;">$1</s>');
   escaped = escaped.replace(/~~([^~\n]+?)~~/g, '<s style="text-decoration: line-through;">$1</s>');
 
-  // 6. Safely support HTML & markdown links (strictly allow http, https, and mailto)
+  // 7. Safely restore styled spans (e.g. text color or font styles), unwrapping any plain/empty spans
   escaped = escaped.replace(
-    /&lt;a\s+[^&]*?href=(?:&quot;|"|&#39;|')((?:https?:\/\/|mailto:)[^\s"'>&]+)(?:&quot;|"|&#39;|')[\s\S]*?&gt;([\s\S]*?)&lt;\/a&gt;/gi,
-    '<a href="$1" style="color: #4f46e5; text-decoration: underline;" target="_blank" rel="noopener noreferrer">$2</a>'
+    /&lt;span\s+style=(?:&quot;|"|&#39;|')([^"'>]+)(?:&quot;|"|&#39;|')&gt;([\s\S]*?)&lt;\/span&gt;/gi,
+    (_m, style, content) => {
+      let cleanStyle = style
+        .replace(/background-color\s*:\s*(?:rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)|transparent)\s*;?/gi, "")
+        .trim();
+      if (!cleanStyle.replace(/;+/g, "").trim() || /expression\s*\(|javascript\s*:|url\s*\(/i.test(cleanStyle)) {
+        return content;
+      }
+      return `<span style="${cleanStyle}">${content}</span>`;
+    }
+  );
+  escaped = escaped.replace(/&lt;\/?span(?:\s[\s\S]*?)?&gt;/gi, "");
+
+  // 8. Safely restore HTML & markdown links (strictly allow http, https, and mailto)
+  escaped = escaped.replace(
+    /&lt;a\b([\s\S]*?)&gt;([\s\S]*?)&lt;\/a&gt;/gi,
+    (_match, attrs, label) => {
+      const hrefMatch = attrs.match(/href=(?:&quot;|"|&#39;|')((?:https?:\/\/|mailto:)[^\s"'>]+?)(?:&quot;|"|&#39;|')/i);
+      if (!hrefMatch) {
+        return label;
+      }
+      const safeHref = hrefMatch[1];
+      return `<a href="${safeHref}" style="color: #4f46e5; text-decoration: underline;" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    }
   );
   escaped = escaped.replace(
     /\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s\)"']+)\)/gi,
     '<a href="$2" style="color: #4f46e5; text-decoration: underline;" target="_blank" rel="noopener noreferrer">$1</a>'
   );
 
-  // 7. Safely restore HTML lists
-  escaped = escaped.replace(/&lt;li&gt;([\s\S]*?)&lt;\/li&gt;/gi, '<li style="margin-bottom: 0.25em;">$1</li>');
-  escaped = escaped.replace(/&lt;ul&gt;([\s\S]*?)&lt;\/ul&gt;/gi, '<ul style="margin: 0.5em 0 1em 1.5em; padding-left: 0.5em; list-style-type: disc;">$1</ul>');
-  escaped = escaped.replace(/&lt;ol&gt;([\s\S]*?)&lt;\/ol&gt;/gi, '<ol style="margin: 0.5em 0 1em 1.5em; padding-left: 0.5em; list-style-type: decimal;">$1</ol>');
+  // 9. Safely restore HTML lists (allowing attributes)
+  escaped = escaped.replace(/&lt;li(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/li&gt;/gi, '<li style="margin-bottom: 0.25em;">$1</li>');
+  escaped = escaped.replace(/&lt;ul(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/ul&gt;/gi, '<ul style="margin: 0.5em 0 1em 1.5em; padding-left: 0.5em; list-style-type: disc;">$1</ul>');
+  escaped = escaped.replace(/&lt;ol(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/ol&gt;/gi, '<ol style="margin: 0.5em 0 1em 1.5em; padding-left: 0.5em; list-style-type: decimal;">$1</ol>');
 
-  // 8. Safely restore HTML blockquotes
+  // 10. Safely restore HTML blockquotes (allowing attributes)
   escaped = escaped.replace(
-    /&lt;blockquote&gt;([\s\S]*?)&lt;\/blockquote&gt;/gi,
+    /&lt;blockquote(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/blockquote&gt;/gi,
     '<blockquote style="margin: 0.8em 0; padding: 0.4em 0 0.4em 1em; border-left: 3px solid #6366f1; color: #475569; font-style: italic;">$1</blockquote>'
   );
 
-  // 9. Safely restore HTML line breaks and paragraphs
+  // 11. Safely restore HTML line breaks
   escaped = escaped.replace(/&lt;br\s*\/?&gt;/gi, "<br />");
-  escaped = escaped.replace(/&lt;\/?div&gt;/gi, "");
 
-  if (/&lt;p&gt;/i.test(escaped)) {
-    escaped = escaped.replace(/&lt;p&gt;([\s\S]*?)&lt;\/p&gt;/gi, (_m, content) => {
+  // 12. Convert <div> to paragraphs <p>
+  escaped = escaped.replace(/&lt;div(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/div&gt;/gi, (_m, content) => {
+    const trimmed = content.trim();
+    if (!trimmed) return "";
+    return `<p style="margin: 0 0 1em 0; line-height: 1.6; color: #1e293b;">${trimmed}</p>`;
+  });
+  escaped = escaped.replace(/&lt;\/?div(?:\s[\s\S]*?)?&gt;/gi, "");
+
+  // 13. Safely restore HTML paragraphs (allowing attributes)
+  if (/&lt;p(?:\s[\s\S]*?)?&gt;/i.test(escaped)) {
+    escaped = escaped.replace(/&lt;p(?:\s[\s\S]*?)?&gt;([\s\S]*?)&lt;\/p&gt;/gi, (_m, content) => {
       const trimmed = content.trim();
       if (!trimmed) return "";
       return `<p style="margin: 0 0 1em 0; line-height: 1.6; color: #1e293b;">${trimmed}</p>`;
     });
-    escaped = escaped.replace(/&lt;\/?p&gt;/gi, "");
+    escaped = escaped.replace(/&lt;\/?p(?:\s[\s\S]*?)?&gt;/gi, "");
   }
 
-  // 10. Parse markdown-style bulleted and numbered lists (lines starting with •, -, * or 1., 2.)
+  // 14. Parse markdown-style bulleted and numbered lists (lines starting with •, -, * or 1., 2.)
   const bulletListRegex = /(?:^[•\-*]\s+.+(?:\n|$))+/gm;
   escaped = escaped.replace(bulletListRegex, (match) => {
     const items = match
@@ -158,7 +236,7 @@ export function formatHtmlEmail(rawText: string): string {
     return `\n<ol style="margin: 0.5em 0 1em 1.5em; padding-left: 0.5em; list-style-type: decimal;">\n${items}\n</ol>\n`;
   });
 
-  // 11. Split into blocks/paragraphs by blank lines for remaining markdown / plain text inputs
+  // 15. Split into blocks/paragraphs by blank lines for remaining markdown / plain text inputs
   const blocks = escaped.split(/\n\s*\n/);
 
   const formattedBlocks = blocks.map((block) => {
@@ -181,7 +259,9 @@ export function formatHtmlEmail(rawText: string): string {
     return `<p style="margin: 0 0 1em 0; line-height: 1.6; color: #1e293b;">${withBreaks}</p>`;
   });
 
-  const bodyContent = formattedBlocks.filter(Boolean).join("\n");
+  // 16. Normalize entities: prevent &amp;nbsp; from rendering as literal &nbsp; in email clients
+  let bodyContent = formattedBlocks.filter(Boolean).join("\n");
+  bodyContent = bodyContent.replace(/&amp;nbsp;/g, "&nbsp;");
 
   return `<!DOCTYPE html>
 <html>

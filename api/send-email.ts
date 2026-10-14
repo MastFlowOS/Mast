@@ -120,14 +120,10 @@ export async function handleSendEmail(
       encryption,
     });
 
-    const signature = settings.signature?.trim();
-    let finalBody = body;
-    if (signature && !finalBody.includes(signature)) {
-      finalBody = `${finalBody.trim()}\n\n${signature}`;
-    }
-
-    const htmlBody = formatHtmlEmail(finalBody);
-    const plainText = formatPlainTextAlternative(finalBody);
+    // The message composer in the Outreach Workspace is the single source of truth.
+    // What the user sees, edits, or removes in the composer is what gets sent.
+    const htmlBody = formatHtmlEmail(body);
+    const plainText = formatPlainTextAlternative(body);
 
     const mailOptions = {
       from: senderName ? `"${senderName}" <${senderEmail}>` : senderEmail,

@@ -1,0 +1,413 @@
+import { useState } from "react";
+import {
+  Sparkles,
+  Loader2,
+  Copy,
+  Check,
+  Send,
+  Building2,
+  Briefcase,
+  AlertCircle,
+  ArrowRight,
+  Info,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { toast } from "sonner";
+import type { Lead, OutreachTone } from "@/lib/api";
+import type { Channel } from "@/routes/dashboard.leads.$leadId";
+import { useGenerateOutreachDraft, useMe, useRecordLeadActivity, useSettings } from "@/hooks/use-mast-api";
+import { normalizeDraftResponse, TEMPLATES, leadNicheDisplay } from "@/lib/lead-workspace";
+import { useFreeOutreach } from "@/hooks/use-free-outreach";
+import { isFreeTemplateKey } from "@/lib/outreach/templates";
+import type { PersonalizationState, LengthPreference, ToneOption, GeneratedDraft } from "./types";
+
+interface WriteTabProps {
+  lead: Lead;
+  channel: Channel;
+  composerSubject: string;
+  composerBody: string;
+  onInsert: (body: string, subject?: string) => void;
+  template: string;
+  setTemplate: (t: string) => void;
+  tone: string;
+  setTone: (t: string) => void;
+  personalization: PersonalizationState;
+  customContextNotes: string;
+  generatedDraft: GeneratedDraft | null;
+  setGeneratedDraft: React.Dispatch<React.SetStateAction<GeneratedDraft | null>>;
+  customInstructions: string;
+  setCustomInstructions: React.Dispatch<React.SetStateAction<string>>;
+}
+
+const TONES: { id: ToneOption; label: string; desc: string }[] = [
+  { id: "friendly", label: "Friendly", desc: "Warm and conversational" },
+  { id: "professional", label: "Professional", desc: "Polished and business-like" },
+  { id: "direct", label: "Concise", desc: "Punchy, minimal fluff" },
+  { id: "persuasive", label: "Persuasive", desc: "Outcome and ROI focused" },
+  { id: "casual", label: "Casual", desc: "Relaxed peer-to-peer" },
+  { id: "urgent", label: "Urgent", desc: "Timely call to action" },
+];
+
+const LENGTH_OPTIONS: { id: LengthPreference; label: string; sub: string }[] = [
+  { id: "short", label: "Short", sub: "< 75 words" },
+  { id: "standard", label: "Standard", sub: "75–150 words" },
+  { id: "detailed", label: "Detailed", sub: "150+ words" },
+];
+
+export function WriteTab({
+  lead,
+  channel,
+  composerSubject,
+  composerBody,
+  onInsert,
+  template,
+  setTemplate,
+  tone,
+  setTone,
+  personalization,
+  customContextNotes,
+  generatedDraft,
+  setGeneratedDraft,
+  customInstructions,
+  setCustomInstructions,
+}: WriteTabProps) {
+  const { data: settings } = useSettings();
+  const { data: auth } = useMe();
+  const generateDraft = useGenerateOutreachDraft();
+  const recordActivity = useRecordLeadActivity();
+  const freeOutreach = useFreeOutreach(lead);
+
+  const [lengthPreference, setLengthPreference] = useState<LengthPreference>("standard");
+  const [isGeneratingFree, setIsGeneratingFree] = useState(false);
+  const [copiedDraft, setCopiedDraft] = useState(false);
+  const [lastError, setLastError] = useState<string | null>(null);
+
+  const isGenerating = generateDraft.isPending || isGeneratingFree;
+  const senderName = settings?.senderName ?? auth?.user?.fullName ?? "";
+
+  const channelLabel =
+    channel === "email"
+      ? "Cold Email"
+      : channel === "instagram"
+        ? "Instagram DM"
+        : channel === "contact_form"
+          ? "Contact Form"
+          : "Phone Script";
+
+  const handleGenerate = async () => {
+    setLastError(null);
+
+    // Build length instruction to append to customInstructions
+    const lengthInstruction =
+      lengthPreference === "short"
+        ? "Keep the message punchy and under 75 words."
+        : lengthPreference === "detailed"
+          ? "Provide a thorough, comprehensive message with concrete proof points and depth (150+ words)."
+          : "Keep the message balanced and easy to read (around 100 words).";
+
+    const combinedInstructions = [customInstructions.trim(), lengthInstruction]
+      .filter(Boolean)
+      .join(" ");
+
+    // Check if free deterministic template or paid AI template
+    if (isFreeTemplateKey(template)) {
+      setIsGeneratingFree(true);
+      try {
+        const result = await freeOutreach.generate(template, channel, senderName);
+        if (!result.ok) {
+          setLastError(result.detail);
+          toast.error(result.detail);
+          return;
+        }
+
+        const draft: GeneratedDraft = {
+          body: result.body,
+          subject: result.subject ?? undefined,
+        };
+        setGeneratedDraft(draft);
+
+        void recordActivity.mutateAsync({
+          lead,
+          activity: {
+            type: "message_generated",
+            channel,
+            subject: result.subject ?? undefined,
+            body: result.body,
+            content: `${channelLabel} draft generated (${TEMPLATES.find((t) => t.value === template)?.label ?? template})`,
+            metadata: { template, angleComponent: result.angleComponent, angleSource: result.angleSource },
+          },
+        });
+        toast.success("Message drafted! Review below before applying.");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Generation failed";
+        setLastError(msg);
+        toast.error(msg);
+      } finally {
+        setIsGeneratingFree(false);
+      }
+    } else {
+      // Paid AI path with DeepSeek backend
+      try {
+        const backendTone = (tone === "persuasive" ? "professional" : tone) as OutreachTone;
+        const response = await generateDraft.mutateAsync({
+          leadId: lead.id,
+          body: {
+            channel,
+            action: template === "objection_handling" ? "objections" : "generate",
+            tone: backendTone || "friendly",
+            template,
+            customInstructions: combinedInstructions || undefined,
+            subject: composerSubject || undefined,
+            body: composerBody || undefined,
+            senderName,
+            personalization,
+            contextNotes: customContextNotes.trim() || undefined,
+          },
+        });
+
+        const next = normalizeDraftResponse(response);
+        if (next.body) {
+          setGeneratedDraft({
+            body: next.body,
+            subject: next.subject,
+          });
+          toast.success("AI draft generated! Review below.");
+        } else {
+          setLastError("AI response returned an empty message body.");
+        }
+      } catch (error: any) {
+        let errorMsg = error instanceof Error ? error.message : "Could not generate draft";
+        if (error?.status === 503 || errorMsg.includes("not configured")) {
+          errorMsg = "AI outreach drafting is not configured on this deployment. Switch to a standard template (Initial, Follow-up) for deterministic generation.";
+        } else if (error?.status === 403 || errorMsg.includes("paid plan")) {
+          errorMsg = "AI outreach drafting requires a paid plan. Upgrade to unlock DeepSeek AI generation.";
+        }
+        setLastError(errorMsg);
+        toast.error(errorMsg);
+      }
+    }
+  };
+
+  const handleCopyDraft = async () => {
+    if (!generatedDraft) return;
+    const textToCopy =
+      generatedDraft.subject && channel !== "instagram" && channel !== "phone"
+        ? `Subject: ${generatedDraft.subject}\n\n${generatedDraft.body}`
+        : generatedDraft.body;
+    await navigator.clipboard.writeText(textToCopy);
+    setCopiedDraft(true);
+    toast.success("Draft copied to clipboard");
+    setTimeout(() => setCopiedDraft(false), 2000);
+  };
+
+  const handleApplyToComposer = () => {
+    if (!generatedDraft) return;
+    onInsert(generatedDraft.body, generatedDraft.subject);
+    toast.success("Inserted draft into composer");
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div>
+        <div className="flex items-center gap-2">
+          <div className="size-6 rounded-lg bg-indigo-500/15 text-indigo-400 grid place-items-center">
+            <Sparkles className="size-3.5" />
+          </div>
+          <div>
+            <h4 className="text-xs font-semibold text-foreground">Create Outreach Draft</h4>
+            <p className="text-[11px] text-muted-foreground">
+              Ground message in prospect data and your niche profile.
+            </p>
+          </div>
+        </div>
+
+        {/* Selected Lead Context Pill */}
+        <div className="mt-2.5 p-2 rounded-lg bg-card/60 border border-border/60 flex items-center justify-between text-[11px]">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Building2 className="size-3.5 text-indigo-400 shrink-0" />
+            <span className="font-medium text-foreground truncate">{lead.businessName}</span>
+            {lead.niche && (
+              <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded bg-border/40 shrink-0">
+                {leadNicheDisplay(lead.niche)}
+              </span>
+            )}
+          </div>
+          <span className="text-[10px] text-muted-foreground uppercase font-mono tracking-wider shrink-0 ml-2">
+            {channelLabel}
+          </span>
+        </div>
+      </div>
+
+      {/* Field: What the user wants to communicate */}
+      <div className="space-y-1.5">
+        <label
+          htmlFor="write-custom-instructions"
+          className="text-[11px] font-semibold text-foreground flex items-center justify-between"
+        >
+          <span>What do you want to communicate?</span>
+          <span className="text-[10px] text-muted-foreground font-normal">Optional</span>
+        </label>
+        <Textarea
+          id="write-custom-instructions"
+          value={customInstructions}
+          onChange={(e) => setCustomInstructions(e.target.value)}
+          placeholder="e.g. Mention their website speed issue, offer a quick 2-minute video audit, reference their high review count..."
+          className="min-h-16 text-xs bg-background/50 border-border/70 rounded-lg resize-none placeholder:text-muted-foreground/60 focus-visible:ring-brand/40"
+        />
+      </div>
+
+      {/* Message Type / Template Selector */}
+      <div className="space-y-1.5">
+        <label
+          htmlFor="write-template-selector"
+          className="text-[11px] font-semibold text-foreground"
+        >
+          Outreach Sequence / Type
+        </label>
+        <select
+          id="write-template-selector"
+          value={template}
+          onChange={(e) => setTemplate(e.target.value)}
+          className="w-full h-8 px-2.5 text-xs rounded-lg bg-card/60 border border-border/70 text-foreground focus:outline-none focus:ring-1 focus:ring-brand"
+        >
+          {TEMPLATES.map((t) => (
+            <option key={t.value} value={t.value} className="bg-[#0d121d] text-foreground">
+              {t.label} {t.tier === "ai" ? "(AI DeepSeek)" : "(Grounded Template)"}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Tone Controls */}
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-semibold text-foreground">Tone</label>
+        <div className="grid grid-cols-3 gap-1.5">
+          {TONES.map((t) => {
+            const isSelected = tone === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTone(t.id)}
+                title={t.desc}
+                className={`py-1.5 px-2 rounded-lg text-xs font-medium border text-center transition-all ${
+                  isSelected
+                    ? "border-brand bg-brand/15 text-white shadow-sm font-semibold"
+                    : "border-border/60 bg-card/40 text-muted-foreground hover:text-foreground hover:bg-card/70"
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Length Preference */}
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-semibold text-foreground">Length Preference</label>
+        <div className="grid grid-cols-3 gap-1.5">
+          {LENGTH_OPTIONS.map((l) => {
+            const isSelected = lengthPreference === l.id;
+            return (
+              <button
+                key={l.id}
+                type="button"
+                onClick={() => setLengthPreference(l.id)}
+                className={`py-1 px-2 rounded-lg text-xs border text-center transition-all flex flex-col items-center ${
+                  isSelected
+                    ? "border-brand bg-brand/15 text-white shadow-sm font-semibold"
+                    : "border-border/60 bg-card/40 text-muted-foreground hover:text-foreground hover:bg-card/70"
+                }`}
+              >
+                <span className="font-medium">{l.label}</span>
+                <span className="text-[9px] text-muted-foreground">{l.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Primary Action: Generate Draft */}
+      <Button
+        type="button"
+        onClick={() => void handleGenerate()}
+        disabled={isGenerating}
+        className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20"
+      >
+        {isGenerating ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+        <span>{isGenerating ? "Generating draft..." : "Generate Draft"}</span>
+      </Button>
+
+      {/* Error State */}
+      {lastError && (
+        <div className="p-2.5 rounded-lg border border-destructive/40 bg-destructive/10 text-destructive text-[11px] flex items-start gap-2">
+          <AlertCircle className="size-3.5 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <p className="font-medium leading-tight">Generation Error</p>
+            <p className="text-[10px] text-muted-foreground leading-tight">{lastError}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Generated Result Review Area */}
+      {generatedDraft && (
+        <div className="mt-4 pt-3 border-t border-border/70 space-y-2.5 animate-fade-in">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+              <Check className="size-3 text-emerald-400" />
+              Generated Draft
+            </span>
+            <span className="text-[10px] text-muted-foreground">Ready to review</span>
+          </div>
+
+          <div className="rounded-xl border border-indigo-500/30 bg-card/60 p-3 space-y-2">
+            {generatedDraft.subject && channel !== "instagram" && channel !== "phone" && (
+              <div className="pb-2 border-b border-border/40">
+                <span className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider block">
+                  Subject Line
+                </span>
+                <p className="text-xs font-medium text-foreground mt-0.5 select-text">
+                  {generatedDraft.subject}
+                </p>
+              </div>
+            )}
+
+            <div>
+              <span className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider block mb-1">
+                Message Body
+              </span>
+              <p className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed select-text font-normal max-h-56 overflow-y-auto pr-1">
+                {generatedDraft.body}
+              </p>
+            </div>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              onClick={handleApplyToComposer}
+              className="flex-1 h-8 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shadow-sm flex items-center justify-center gap-1.5"
+            >
+              <Send className="size-3" />
+              <span>Insert into Composer</span>
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void handleCopyDraft()}
+              className="h-8 px-3 text-xs border-border/70 bg-card/50 hover:bg-card text-foreground rounded-lg flex items-center gap-1.5"
+            >
+              {copiedDraft ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+              <span>{copiedDraft ? "Copied" : "Copy"}</span>
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

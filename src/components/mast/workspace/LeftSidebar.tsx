@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import {
   Mail,
   Phone,
@@ -10,7 +10,6 @@ import {
   ChevronUp,
   ChevronRight,
   Star,
-  MoreVertical,
   Lightbulb,
   Target,
   Clock,
@@ -21,6 +20,7 @@ import {
   AlertTriangle,
   Link as LinkIcon,
   Calendar,
+  Compass,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Lead, FieldTrustEntry } from "@/lib/api";
@@ -35,24 +35,21 @@ import {
 } from "@/hooks/use-mast-api";
 import { normalizeInstagram } from "@/lib/instagram";
 import {
-  resolveTrustPanelState,
   getFieldTrustEntry,
-  formatVerificationLine,
   resolveDisqualificationDisplay,
   resolveScoreDisplay,
   resolveContactVerificationBadge,
 } from "@/lib/trustPanel";
 import { nicheImage } from "@/components/mast/discover/nicheImages";
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+} from "@/components/ui/context-menu";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { NoteForm } from "./components/NoteForm";
 import { FollowUpsTab } from "./FollowUpsTab";
-
-const TRUST_FIELDS: Array<{ key: string; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-  { key: "email", label: "Email", icon: Mail },
-  { key: "phone", label: "Phone", icon: Phone },
-  { key: "website", label: "Website", icon: Globe },
-  { key: "instagram", label: "Instagram", icon: Instagram },
-];
 
 export function LeftSidebar({
   lead,
@@ -74,18 +71,101 @@ export function LeftSidebar({
     notes: false,
   });
 
+  // Scroll container and section references for auto-scroll on expand
+  const sidebarRef = useRef<HTMLElement>(null);
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
+  const [pendingScrollSection, setPendingScrollSection] = useState<string | null>(null);
+
+  // Reset expansion states / scroll queues when lead changes
+  useEffect(() => {
+    setPendingScrollSection(null);
+  }, [lead.id]);
+
+  // Auto-scroll newly expanded section into view if it extends below the visible container
+  useEffect(() => {
+    if (!pendingScrollSection) return;
+
+    const timer = requestAnimationFrame(() => {
+      const container = sidebarRef.current;
+      const target = sectionRefs.current[pendingScrollSection];
+      if (!container || !target) {
+        setPendingScrollSection(null);
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const padding = 16;
+
+      const isBelow = targetRect.bottom > containerRect.bottom;
+      const isAbove = targetRect.top < containerRect.top;
+
+      if (isBelow) {
+        if (targetRect.height > containerRect.height - padding * 2) {
+          // If section is taller than container, align top of section to top of container
+          const delta = targetRect.top - containerRect.top - padding;
+          scrollContainer(container, delta);
+        } else {
+          // Scroll down just enough to bring the bottom into view
+          const delta = targetRect.bottom - containerRect.bottom + padding;
+          scrollContainer(container, delta);
+        }
+      } else if (isAbove) {
+        const delta = targetRect.top - containerRect.top - padding;
+        scrollContainer(container, delta);
+      }
+
+      setPendingScrollSection(null);
+    });
+
+    return () => cancelAnimationFrame(timer);
+  }, [pendingScrollSection, openSections, contactMethodsOpen]);
+
+  function scrollContainer(container: HTMLElement, delta: number) {
+    if (Math.abs(delta) < 2) return;
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    container.scrollBy({
+      top: delta,
+      behavior: prefersReducedMotion ? "auto" : "smooth",
+    });
+  }
+
   const toggleSection = (key: string) => {
-    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+    setOpenSections((prev) => {
+      const next = !prev[key];
+      if (next) {
+        setPendingScrollSection(key);
+      }
+      return { ...prev, [key]: next };
+    });
   };
 
-  const handleCopy = (text: string, label: string) => {
-    void navigator.clipboard.writeText(text);
-    setCopied(label);
-    toast.success(`${label} copied`);
-    setTimeout(() => setCopied(null), 2000);
+  const toggleContactMethods = () => {
+    setContactMethodsOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        setPendingScrollSection("contactMethods");
+      }
+      return next;
+    });
   };
 
-  // Honest opportunity score resolution — never fabricates numbers from priority
+  const handleCopy = async (text: string | null | undefined, label: string) => {
+    if (!text || !text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text.trim());
+      setCopied(label);
+      toast.success(`${label} copied to clipboard`);
+      setTimeout(() => setCopied(null), 2000);
+    } catch {
+      toast.error(`Failed to copy ${label.toLowerCase()}`);
+    }
+  };
+
+  // Opportunity Score
   const scoreInfo = resolveScoreDisplay(lead.opportunityScore);
 
   const { data: followups = [] } = useLeadFollowups(lead.id);
@@ -100,7 +180,7 @@ export function LeftSidebar({
   const { data: explanation } = useOpportunityExplanation(lead.id, Boolean(lead.businessId));
 
   // Trust / Business Health read
-  const { data: trust, isLoading: trustLoading, isError: trustError } = useLeadTrust(lead.id, Boolean(lead.businessId));
+  const { data: trust } = useLeadTrust(lead.id, Boolean(lead.businessId));
   const disqualification = resolveDisqualificationDisplay(trust);
 
   // AI Opportunity Insight read
@@ -128,10 +208,103 @@ export function LeftSidebar({
 
   const contactFormUrl = cleanDomain ? `${cleanDomain}/contact` : lead.website || "Website contact";
 
+  // Contact items configuration
+  const contactItems = [
+    {
+      key: "email" as const,
+      label: "Email",
+      rawValue: lead.email?.trim() || null,
+      displayValue: lead.email || "No email available",
+      hasValue: Boolean(lead.email?.trim()),
+      copyMenuText: "Copy email address",
+      icon: Mail,
+      iconClass: "bg-blue-500/15 border-blue-500/25 text-blue-400",
+      channelKey: "email" as Channel,
+      badge: resolveContactVerificationBadge(
+        lead.email,
+        getFieldTrustEntry(trust?.fieldTrust, "email"),
+      ),
+    },
+    {
+      key: "instagram" as const,
+      label: "Instagram",
+      rawValue: ig?.handle ? `@${ig.handle}` : lead.instagramHandle ? `@${lead.instagramHandle}` : null,
+      displayValue: ig?.handle ? `@${ig.handle}` : lead.instagramHandle ? `@${lead.instagramHandle}` : "Not connected",
+      hasValue: Boolean(ig?.handle || lead.instagramHandle?.trim()),
+      copyMenuText: "Copy Instagram handle",
+      icon: Instagram,
+      iconClass: "bg-pink-500/15 border-pink-500/25 text-pink-400",
+      channelKey: "instagram" as Channel,
+      badge: resolveContactVerificationBadge(
+        lead.instagramHandle,
+        getFieldTrustEntry(trust?.fieldTrust, "instagram"),
+      ),
+    },
+    {
+      key: "phone" as const,
+      label: "Phone",
+      rawValue: lead.phone?.trim() || null,
+      displayValue: lead.phone || "Not connected",
+      hasValue: Boolean(lead.phone?.trim()),
+      copyMenuText: "Copy phone number",
+      icon: Phone,
+      iconClass: "bg-emerald-500/15 border-emerald-500/25 text-emerald-400",
+      channelKey: "phone" as Channel,
+      badge: resolveContactVerificationBadge(
+        lead.phone,
+        getFieldTrustEntry(trust?.fieldTrust, "phone"),
+      ),
+    },
+    {
+      key: "contact_form" as const,
+      label: "Contact Form",
+      rawValue: lead.website?.trim() || null,
+      displayValue: contactFormUrl,
+      hasValue: Boolean(lead.website?.trim()),
+      copyMenuText: "Copy website",
+      icon: LinkIcon,
+      iconClass: "bg-sky-500/15 border-sky-500/25 text-sky-400",
+      channelKey: "contact_form" as Channel,
+      badge: resolveContactVerificationBadge(
+        lead.website,
+        getFieldTrustEntry(trust?.fieldTrust, "website"),
+      ),
+    },
+  ];
+
+  // Business Insights data availability check
+  const hasBusinessInsights = Boolean(
+    insight?.headline ||
+      (insight?.talking_points && insight.talking_points.length > 0) ||
+      insight?.opening_line ||
+      aiOverview ||
+      suggestedAction ||
+      lead.websiteNotes ||
+      lead.brandingNotes ||
+      explanation?.summary ||
+      trust?.businessHealth,
+  );
+
+  // Ranked reasons for "Why This Opportunity"
+  const sortedReasons = useMemo(() => {
+    if (!explanation?.reasons || explanation.reasons.length === 0) return [];
+    return [...explanation.reasons].sort((a, b) => {
+      const impactA = (a.weight ?? 1) * (a.value ?? 1);
+      const impactB = (b.weight ?? 1) * (b.value ?? 1);
+      return impactB - impactA || (b.value ?? 0) - (a.value ?? 0);
+    });
+  }, [explanation?.reasons]);
+
+  const strongestReason = sortedReasons[0];
+  const supportingReasons = sortedReasons.slice(1);
+
   return (
-    <aside className="w-full shrink-0 border-b border-border bg-[#0d121d]/80 lg:w-[320px] lg:border-b-0 lg:border-r overflow-y-auto flex flex-col p-4 space-y-4">
+    <aside
+      ref={sidebarRef}
+      className="w-full shrink-0 border-b border-border bg-[#0d121d]/80 lg:w-[320px] lg:border-b-0 lg:border-r overflow-y-auto flex flex-col p-4 space-y-4"
+    >
       {/* ─── 1. LEAD PROFILE CARD ─── */}
-      <div className="rounded-2xl border border-border/80 bg-card/40 p-4 space-y-3.5">
+      <div className="rounded-2xl border border-border/80 bg-card/40 p-4 space-y-3.5 shadow-xs">
         <div className="flex items-start gap-3">
           {/* Business Image thumbnail */}
           <div className="size-16 rounded-xl overflow-hidden bg-muted/40 border border-border/60 shrink-0">
@@ -140,7 +313,6 @@ export function LeftSidebar({
               alt={lead.businessName}
               className="size-full object-cover"
               onError={(e) => {
-                // Fallback to initial avatar
                 e.currentTarget.style.display = "none";
               }}
             />
@@ -149,7 +321,7 @@ export function LeftSidebar({
             </div>
           </div>
 
-          {/* Business Name, Category, Location, Star, More */}
+          {/* Business Name, Category, Location, Star */}
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-1">
               <h2 className="font-semibold text-sm text-foreground truncate" title={lead.businessName}>
@@ -165,6 +337,7 @@ export function LeftSidebar({
                   }}
                   className="p-1 text-muted-foreground hover:text-amber-400 transition-colors"
                   title="Favorite"
+                  aria-label="Toggle favorite"
                 >
                   <Star className={`size-3.5 ${lead.priority === "high" ? "text-amber-400 fill-amber-400" : ""}`} />
                 </button>
@@ -207,10 +380,15 @@ export function LeftSidebar({
       </div>
 
       {/* ─── 2. CONTACT METHODS SECTION ─── */}
-      <div className="rounded-2xl border border-border/80 bg-card/40 p-4 space-y-3">
+      <div
+        ref={(el) => {
+          sectionRefs.current.contactMethods = el;
+        }}
+        className="rounded-2xl border border-border/80 bg-card/40 p-4 space-y-3 shadow-xs"
+      >
         <button
           type="button"
-          onClick={() => setContactMethodsOpen(!contactMethodsOpen)}
+          onClick={toggleContactMethods}
           className="flex w-full items-center justify-between text-left text-xs font-semibold text-foreground hover:text-white transition-colors"
         >
           <span>Contact Methods</span>
@@ -223,173 +401,94 @@ export function LeftSidebar({
 
         {contactMethodsOpen && (
           <div className="space-y-2 pt-1">
-            {/* Email */}
-            <div
-              onClick={() => setChannel("email")}
-              className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
-                channel === "email"
-                  ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
-                  : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
-              }`}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="size-8 rounded-lg bg-blue-500/15 border border-blue-500/25 text-blue-400 grid place-items-center shrink-0">
-                  <Mail className="size-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-foreground leading-tight">Email</p>
-                  <p className="text-[11px] text-muted-foreground truncate leading-tight mt-0.5 max-w-[140px]">
-                    {lead.email || "No email available"}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {(() => {
-                  const badge = resolveContactVerificationBadge(
-                    lead.email,
-                    getFieldTrustEntry(trust?.fieldTrust, "email"),
-                  );
-                  const badgeClass =
-                    badge.status === "verified"
-                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                      : badge.status === "available"
-                        ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
-                        : "bg-muted/40 text-muted-foreground border border-border/40";
-                  return (
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
-                      {badge.label}
-                    </span>
-                  );
-                })()}
-                <ChevronRight className="size-3.5 text-muted-foreground" />
-              </div>
-            </div>
+            {contactItems.map((item) => {
+              const Icon = item.icon;
+              const badgeClass =
+                item.badge.status === "verified"
+                  ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                  : item.badge.status === "available"
+                    ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                    : "bg-muted/40 text-muted-foreground border border-border/40";
 
-            {/* Instagram */}
-            <div
-              onClick={() => setChannel("instagram")}
-              className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
-                channel === "instagram"
-                  ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
-                  : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
-              }`}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="size-8 rounded-lg bg-pink-500/15 border border-pink-500/25 text-pink-400 grid place-items-center shrink-0">
-                  <Instagram className="size-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-foreground leading-tight">Instagram</p>
-                  <p className="text-[11px] text-muted-foreground truncate leading-tight mt-0.5 max-w-[140px]">
-                    {ig?.handle ? `@${ig.handle}` : lead.instagramHandle ? `@${lead.instagramHandle}` : "Not connected"}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {(() => {
-                  const badge = resolveContactVerificationBadge(
-                    lead.instagramHandle,
-                    getFieldTrustEntry(trust?.fieldTrust, "instagram"),
-                  );
-                  const badgeClass =
-                    badge.status === "verified"
-                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                      : badge.status === "available"
-                        ? "bg-purple-500/10 text-purple-400 border border-purple-500/20"
-                        : "bg-muted/40 text-muted-foreground border border-border/40";
-                  return (
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
-                      {badge.label}
-                    </span>
-                  );
-                })()}
-                <ChevronRight className="size-3.5 text-muted-foreground" />
-              </div>
-            </div>
+              return (
+                <ContextMenu key={item.key}>
+                  <ContextMenuTrigger asChild disabled={!item.hasValue}>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setChannel(item.channelKey)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setChannel(item.channelKey);
+                        }
+                      }}
+                      className={`flex items-start justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
+                        channel === item.channelKey
+                          ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
+                          : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5 min-w-0 flex-1 mr-2">
+                        <div
+                          className={`size-8 rounded-lg ${item.iconClass} border grid place-items-center shrink-0 mt-0.5`}
+                        >
+                          <Icon className="size-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-foreground leading-tight">{item.label}</p>
+                          <p className="text-[11px] text-muted-foreground break-words leading-relaxed mt-0.5">
+                            {item.displayValue}
+                          </p>
+                        </div>
+                      </div>
 
-            {/* Phone */}
-            <div
-              onClick={() => setChannel("phone")}
-              className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
-                channel === "phone"
-                  ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
-                  : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
-              }`}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="size-8 rounded-lg bg-emerald-500/15 border border-emerald-500/25 text-emerald-400 grid place-items-center shrink-0">
-                  <Phone className="size-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-foreground leading-tight">Phone</p>
-                  <p className="text-[11px] text-muted-foreground truncate leading-tight mt-0.5 max-w-[140px]">
-                    {lead.phone || "Not connected"}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {(() => {
-                  const badge = resolveContactVerificationBadge(
-                    lead.phone,
-                    getFieldTrustEntry(trust?.fieldTrust, "phone"),
-                  );
-                  const badgeClass =
-                    badge.status === "verified"
-                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                      : badge.status === "available"
-                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                        : "bg-muted/40 text-muted-foreground border border-border/40";
-                  return (
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
-                      {badge.label}
-                    </span>
-                  );
-                })()}
-                <ChevronRight className="size-3.5 text-muted-foreground" />
-              </div>
-            </div>
+                      <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
+                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
+                          {item.badge.label}
+                        </span>
 
-            {/* Contact Form */}
-            <div
-              onClick={() => setChannel("contact_form")}
-              className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
-                channel === "contact_form"
-                  ? "border-[#4f46e5]/50 bg-[#4f46e5]/10 shadow-sm"
-                  : "border-border/60 bg-[#0d121d]/40 hover:border-border hover:bg-card/60"
-              }`}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="size-8 rounded-lg bg-sky-500/15 border border-sky-500/25 text-sky-400 grid place-items-center shrink-0">
-                  <LinkIcon className="size-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-foreground leading-tight">Contact Form</p>
-                  <p className="text-[11px] text-muted-foreground truncate leading-tight mt-0.5 max-w-[140px]">
-                    {contactFormUrl}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {(() => {
-                  const badge = resolveContactVerificationBadge(
-                    lead.website,
-                    getFieldTrustEntry(trust?.fieldTrust, "website"),
-                  );
-                  const badgeClass =
-                    badge.status === "verified"
-                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                      : badge.status === "available"
-                        ? "bg-sky-500/10 text-sky-400 border border-sky-500/20"
-                        : "bg-muted/40 text-muted-foreground border border-border/40";
-                  return (
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${badgeClass}`}>
-                      {badge.label}
-                    </span>
-                  );
-                })()}
-                <ChevronRight className="size-3.5 text-muted-foreground" />
-              </div>
-            </div>
+                        {item.hasValue && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleCopy(item.rawValue, item.label);
+                            }}
+                            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand"
+                            title={item.copyMenuText}
+                            aria-label={item.copyMenuText}
+                          >
+                            {copied === item.label ? (
+                              <Check className="size-3.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="size-3.5" />
+                            )}
+                          </button>
+                        )}
+
+                        <ChevronRight className="size-3.5 text-muted-foreground" />
+                      </div>
+                    </div>
+                  </ContextMenuTrigger>
+
+                  {item.hasValue && (
+                    <ContextMenuContent className="w-52 bg-[#101726] border border-border text-foreground shadow-xl">
+                      <ContextMenuItem
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleCopy(item.rawValue, item.label);
+                        }}
+                        className="text-xs cursor-pointer focus:bg-brand/20 focus:text-foreground flex items-center gap-2"
+                      >
+                        <Copy className="size-3.5 text-muted-foreground" />
+                        <span>{item.copyMenuText}</span>
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  )}
+                </ContextMenu>
+              );
+            })}
           </div>
         )}
       </div>
@@ -397,7 +496,12 @@ export function LeftSidebar({
       {/* ─── 3. SECONDARY ACCORDIONS ─── */}
       <div className="space-y-2">
         {/* Accordion 1: Business Insights */}
-        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+        <div
+          ref={(el) => {
+            sectionRefs.current.insights = el;
+          }}
+          className="rounded-xl border border-border/80 bg-card/40 overflow-hidden"
+        >
           <button
             type="button"
             onClick={() => toggleSection("insights")}
@@ -413,84 +517,124 @@ export function LeftSidebar({
               <ChevronDown className="size-4 text-muted-foreground" />
             )}
           </button>
+
           {openSections.insights && (
             <div className="p-3.5 pt-0 border-t border-border/40 space-y-3 text-xs">
-              {/* Contextual Intelligence */}
-              {aiOverview && (
-                <div className="rounded-lg border border-brand/20 bg-brand/5 p-2.5 space-y-1">
-                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand">
-                    <Sparkles className="size-3.5" />
-                    <span>AI Overview</span>
-                  </div>
-                  <p className="text-[11px] text-foreground leading-relaxed">{aiOverview}</p>
+              {!hasBusinessInsights ? (
+                <div className="rounded-xl border border-border/50 bg-card/20 p-4 text-center space-y-1.5 my-1">
+                  <Lightbulb className="size-5 mx-auto text-muted-foreground/50" />
+                  <p className="text-xs font-semibold text-foreground">No business insights available yet</p>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Specific intelligence is populated when this lead undergoes automated discovery or web analysis.
+                  </p>
                 </div>
-              )}
+              ) : (
+                <>
+                  {/* Primary intelligence callout */}
+                  {(insight?.headline || aiOverview || explanation?.summary) && (
+                    <div className="rounded-xl border border-brand/25 bg-brand/5 p-3 space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand">
+                        <Sparkles className="size-3.5" />
+                        <span>Primary Intelligence</span>
+                      </div>
+                      <p className="text-[11px] text-foreground leading-relaxed font-medium">
+                        {insight?.headline || aiOverview || explanation?.summary}
+                      </p>
+                    </div>
+                  )}
 
-              {suggestedAction && (
-                <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1">
-                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-500">
-                    <Zap className="size-3.5" />
-                    <span>Suggested First Action</span>
-                  </div>
-                  <p className="text-[11px] text-foreground leading-relaxed font-medium">{suggestedAction}</p>
-                </div>
-              )}
+                  {/* Core Specialty */}
+                  {(nicheLabel || lead.brandingNotes) && (
+                    <div className="rounded-lg border border-border/60 bg-card/30 p-2.5 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                        <Compass className="size-3 text-blue-400" />
+                        <span>Core Specialty</span>
+                      </div>
+                      <p className="text-[11px] text-foreground leading-relaxed">
+                        {nicheLabel || "Local business"}
+                        {lead.location ? ` based in ${lead.location}` : ""}
+                        {lead.brandingNotes ? ` — ${lead.brandingNotes}` : ""}
+                      </p>
+                    </div>
+                  )}
 
-              {/* Health Score */}
-              {trust?.businessHealth && (
-                <div className="rounded-lg border border-border bg-background/50 p-2.5 space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                      <ShieldCheck className="size-3.5 text-brand" /> Business Health
-                    </span>
-                    <span className="font-mono font-bold text-foreground">{Math.round(trust.businessHealth.score)}%</span>
-                  </div>
-                  <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-brand rounded-full"
-                      style={{ width: `${Math.round(trust.businessHealth.score)}%` }}
-                    />
-                  </div>
-                </div>
-              )}
+                  {/* Online Presence & Website Observation */}
+                  {(lead.websiteNotes || lead.website || lead.igBio) && (
+                    <div className="rounded-lg border border-border/60 bg-card/30 p-2.5 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                        <Globe className="size-3 text-cyan-400" />
+                        <span>Digital Presence Observation</span>
+                      </div>
+                      <p className="text-[11px] text-foreground leading-relaxed">
+                        {lead.websiteNotes ||
+                          (lead.website
+                            ? `Active domain registered at ${cleanDomain || lead.website}.`
+                            : "No dedicated website detected on record — prime candidate for web presence development.")}
+                      </p>
+                    </div>
+                  )}
 
-              {/* AI Opportunity Insight */}
-              {insight && (
-                <div className="space-y-1.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Talking Points</p>
-                  <ul className="space-y-1 text-[11px] text-muted-foreground list-disc list-inside">
-                    {insight.talking_points.slice(0, 3).map((pt, i) => (
-                      <li key={i} className="text-foreground leading-tight">{pt}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+                  {/* Personalization Hook / First Action */}
+                  {(insight?.opening_line || suggestedAction) && (
+                    <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-500">
+                        <Zap className="size-3.5" />
+                        <span>Personalization Hook</span>
+                      </div>
+                      <p className="text-[11px] text-foreground leading-relaxed font-medium">
+                        {insight?.opening_line || suggestedAction}
+                      </p>
+                    </div>
+                  )}
 
-              {/* Details */}
-              <div className="space-y-1 pt-1 text-[11px] text-muted-foreground">
-                {lead.igFollowers && (
-                  <div className="flex justify-between">
-                    <span>IG Followers</span>
-                    <span className="font-medium text-foreground">{lead.igFollowers}</span>
-                  </div>
-                )}
-                {lead.website && (
-                  <div className="flex justify-between">
-                    <span>Website</span>
-                    <span className="font-medium text-foreground truncate max-w-[130px]">{lead.website}</span>
-                  </div>
-                )}
-                <div className="flex justify-between">
-                  <span>Created</span>
-                  <span className="font-medium text-foreground">{new Date(lead.createdAt).toLocaleDateString()}</span>
-                </div>
-              </div>
+                  {/* Talking points */}
+                  {insight?.talking_points && insight.talking_points.length > 0 && (
+                    <div className="space-y-1.5 pt-0.5">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                        Key Talking Points
+                      </p>
+                      <ul className="space-y-1 text-[11px] text-muted-foreground list-disc list-inside">
+                        {insight.talking_points.slice(0, 3).map((pt, i) => (
+                          <li key={i} className="text-foreground leading-snug">
+                            {pt}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Health Score */}
+                  {trust?.businessHealth && (
+                    <div className="rounded-lg border border-border/70 bg-background/50 p-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                          <ShieldCheck className="size-3.5 text-brand" /> Business Health
+                        </span>
+                        <span className="font-mono font-bold text-foreground">
+                          {Math.round(trust.businessHealth.score)}%
+                        </span>
+                      </div>
+                      <div className="h-1.5 w-full bg-border rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-brand rounded-full transition-all duration-300"
+                          style={{ width: `${Math.round(trust.businessHealth.score)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
 
         {/* Accordion 2: Why This Opportunity */}
-        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+        <div
+          ref={(el) => {
+            sectionRefs.current.why = el;
+          }}
+          className="rounded-xl border border-border/80 bg-card/40 overflow-hidden"
+        >
           <button
             type="button"
             onClick={() => toggleSection("why")}
@@ -506,36 +650,148 @@ export function LeftSidebar({
               <ChevronDown className="size-4 text-muted-foreground" />
             )}
           </button>
+
           {openSections.why && (
-            <div className="p-3.5 pt-0 border-t border-border/40 space-y-2.5 text-xs">
-              {explanation ? (
-                <div className="space-y-2">
-                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold bg-brand/10 text-brand border border-brand/20">
-                    <Sparkles className="size-3" />
-                    <span>{explanation.professionMatch === "strong" ? "Strong match for your profession" : "Profession match"}</span>
+            <div className="p-3.5 pt-0 border-t border-border/40 space-y-3 text-xs">
+              {/* Disqualification warning if disqualified */}
+              {disqualification && (
+                <div className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/10 p-3">
+                  <AlertTriangle className="size-4 text-destructive shrink-0 mt-0.5" />
+                  <div className="text-[11px] text-destructive space-y-0.5">
+                    <p className="font-bold">{disqualification.label}</p>
+                    <p className="text-foreground leading-relaxed">{disqualification.reason}</p>
                   </div>
-                  <p className="text-[11px] text-foreground leading-relaxed">{explanation.summary}</p>
-                  <ul className="space-y-1">
-                    {explanation.reasons.map((r) => (
-                      <li key={r.component} className="text-[11px]">
-                        <span className="font-semibold text-foreground">{r.label}:</span>{" "}
-                        <span className="text-muted-foreground">{r.detail}</span>
-                      </li>
-                    ))}
-                  </ul>
                 </div>
-              ) : (
-                <p className="text-[11px] text-muted-foreground">
-                  Opportunity scored based on local market factors, contact availability, and conversion likelihood.
-                </p>
               )}
 
-              {disqualification && (
-                <div className="flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 p-2.5">
-                  <AlertTriangle className="size-3.5 text-destructive shrink-0 mt-0.5" />
-                  <div className="text-[11px] text-destructive">
-                    <p className="font-bold">{disqualification.label}</p>
-                    <p className="text-foreground">{disqualification.reason}</p>
+              {explanation ? (
+                <div className="space-y-3">
+                  {/* Profession Match Badge & Summary */}
+                  <div className="space-y-1.5">
+                    <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold bg-brand/10 text-brand border border-brand/20">
+                      <Sparkles className="size-3" />
+                      <span>
+                        {explanation.professionMatch === "strong"
+                          ? "Strong match for your freelance services"
+                          : "Service match identified"}
+                      </span>
+                    </div>
+                    {explanation.summary && (
+                      <p className="text-[11px] text-foreground leading-relaxed font-normal">
+                        {explanation.summary}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Strongest Reason Highlighted First */}
+                  {strongestReason && (
+                    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 space-y-1.5">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1">
+                          <Target className="size-3" /> Strongest Reason
+                        </span>
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/25">
+                          Primary Driver
+                        </span>
+                      </div>
+                      <p className="text-xs font-semibold text-foreground">{strongestReason.label}</p>
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        {strongestReason.detail}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Supporting signals */}
+                  {supportingReasons.length > 0 && (
+                    <div className="space-y-2 pt-1">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                        Supporting Signals
+                      </p>
+                      <ul className="space-y-2">
+                        {supportingReasons.map((r) => (
+                          <li
+                            key={r.component}
+                            className="rounded-lg border border-border/50 bg-card/25 p-2 space-y-0.5 text-[11px]"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold text-foreground">{r.label}</span>
+                              <span className="text-[9px] font-mono text-muted-foreground">
+                                Score impact: {Math.round((r.weight ?? 0) * (r.value ?? 0))}
+                              </span>
+                            </div>
+                            <p className="text-muted-foreground leading-relaxed">{r.detail}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Verified evidence distinction */}
+                  <div className="rounded-lg border border-border/60 bg-card/30 p-2.5 space-y-1 text-[11px]">
+                    <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                      <ShieldCheck className="size-3 text-emerald-400" />
+                      <span>Verified Verification Signals</span>
+                    </div>
+                    <div className="space-y-1 pt-0.5 text-muted-foreground">
+                      <p>
+                        • Email:{" "}
+                        <span className="text-foreground">
+                          {lead.email ? "Direct email verified" : "No email available"}
+                        </span>
+                      </p>
+                      <p>
+                        • Phone:{" "}
+                        <span className="text-foreground">
+                          {lead.phone ? "Phone line on file" : "No phone available"}
+                        </span>
+                      </p>
+                      <p>
+                        • Web Domain:{" "}
+                        <span className="text-foreground">
+                          {lead.website ? "Custom domain discovered" : "No website detected"}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Recommended next step */}
+                  <div className="rounded-lg border border-brand/20 bg-brand/5 p-2.5 space-y-1">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-brand">
+                      Recommended Next Step
+                    </p>
+                    <p className="text-[11px] text-foreground leading-relaxed">
+                      {suggestedAction ||
+                        (lead.email
+                          ? `Send a tailored pitch focusing on ${strongestReason?.label.toLowerCase() || "their online presence"}.`
+                          : lead.phone
+                            ? "Conduct a brief discovery phone call to explore their service needs."
+                            : "Reach out via Instagram direct message to establish contact.")}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-border/50 bg-card/20 p-4 text-center space-y-2">
+                  <Target className="size-5 mx-auto text-muted-foreground/50" />
+                  <p className="text-xs font-semibold text-foreground">Opportunity not yet scored</p>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Opportunity Engine qualification signals and customized reasons become available once processed through Discovery.
+                  </p>
+                  <div className="pt-1 flex flex-wrap justify-center gap-1.5 text-[10px]">
+                    {lead.email && (
+                      <span className="px-2 py-0.5 rounded bg-muted/40 border border-border/40 text-muted-foreground">
+                        Email on file
+                      </span>
+                    )}
+                    {lead.phone && (
+                      <span className="px-2 py-0.5 rounded bg-muted/40 border border-border/40 text-muted-foreground">
+                        Phone on file
+                      </span>
+                    )}
+                    {lead.website && (
+                      <span className="px-2 py-0.5 rounded bg-muted/40 border border-border/40 text-muted-foreground">
+                        Website on file
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -543,8 +799,13 @@ export function LeftSidebar({
           )}
         </div>
 
-        {/* Accordion: Follow-ups */}
-        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+        {/* Accordion 3: Follow-ups */}
+        <div
+          ref={(el) => {
+            sectionRefs.current.followups = el;
+          }}
+          className="rounded-xl border border-border/80 bg-card/40 overflow-hidden"
+        >
           <button
             type="button"
             onClick={() => toggleSection("followups")}
@@ -572,8 +833,13 @@ export function LeftSidebar({
           )}
         </div>
 
-        {/* Accordion 3: Recent Activity */}
-        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+        {/* Accordion 4: Recent Activity */}
+        <div
+          ref={(el) => {
+            sectionRefs.current.activity = el;
+          }}
+          className="rounded-xl border border-border/80 bg-card/40 overflow-hidden"
+        >
           <button
             type="button"
             onClick={() => toggleSection("activity")}
@@ -596,8 +862,13 @@ export function LeftSidebar({
           )}
         </div>
 
-        {/* Accordion 4: Notes */}
-        <div className="rounded-xl border border-border/80 bg-card/40 overflow-hidden">
+        {/* Accordion 5: Notes (Left alone as requested in Issue 6) */}
+        <div
+          ref={(el) => {
+            sectionRefs.current.notes = el;
+          }}
+          className="rounded-xl border border-border/80 bg-card/40 overflow-hidden"
+        >
           <button
             type="button"
             onClick={() => toggleSection("notes")}

@@ -15,15 +15,28 @@ describe("POST /v1/outreach/draft", () => {
 
   const validUserId = "user-123";
   const otherUserId = "user-999";
-  const validToken = jwt.sign({ sub: validUserId, email: "pro@example.com" }, env.SUPABASE_JWT_SECRET, { algorithm: "HS256" });
-  const otherUserToken = jwt.sign({ sub: otherUserId, email: "other@example.com" }, env.SUPABASE_JWT_SECRET, { algorithm: "HS256" });
+  const validToken = jwt.sign(
+    { sub: validUserId, email: "pro@example.com" },
+    env.SUPABASE_JWT_SECRET,
+    { algorithm: "HS256" },
+  );
+  const otherUserToken = jwt.sign(
+    { sub: otherUserId, email: "other@example.com" },
+    env.SUPABASE_JWT_SECRET,
+    { algorithm: "HS256" },
+  );
 
   let userPlan = "pro";
   let dbLeads: any[] = [];
   let dbBusinesses: any[] = [];
   let lastCapturedDeepSeekCall: { model: string; system: string; user: any } | null = null;
   let mockDeepSeekResponse: any = {
-    content: [{ type: "text", text: JSON.stringify({ subject: "Custom Subject", body: "Custom Generated Body" }) }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ subject: "Custom Subject", body: "Custom Generated Body" }),
+      },
+    ],
   };
 
   before(async () => {
@@ -34,7 +47,9 @@ describe("POST /v1/outreach/draft", () => {
     app.use(express.json());
     app.use("/v1/outreach", outreachRouter);
     app.use((err: any, _req: any, res: any, _next: any) => {
-      res.status(err.status || 500).json({ code: "internal_error", message: err.message || "Internal error" });
+      res
+        .status(err.status || 500)
+        .json({ code: "internal_error", message: err.message || "Internal error" });
     });
 
     await new Promise<void>((resolve) => {
@@ -57,7 +72,12 @@ describe("POST /v1/outreach/draft", () => {
     userPlan = "pro";
     lastCapturedDeepSeekCall = null;
     mockDeepSeekResponse = {
-      content: [{ type: "text", text: JSON.stringify({ subject: "Custom Subject", body: "Custom Generated Body" }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ subject: "Custom Subject", body: "Custom Generated Body" }),
+        },
+      ],
     };
 
     dbLeads = [
@@ -265,7 +285,15 @@ describe("POST /v1/outreach/draft", () => {
   test("generates message with Fast tier default, passing lead facts and personalization", async () => {
     userPlan = "starter";
     mockDeepSeekResponse = {
-      content: [{ type: "text", text: JSON.stringify({ subject: "Apex Dental Question", body: "Hi team, loved your reviews." }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            subject: "Apex Dental Question",
+            body: "Hi team, loved your reviews.",
+          }),
+        },
+      ],
     };
 
     const res = await fetch(`${baseUrl}/draft`, {
@@ -302,13 +330,24 @@ describe("POST /v1/outreach/draft", () => {
     assert.equal(lastCapturedDeepSeekCall.user.leadData.niche, "dentist");
     assert.equal(lastCapturedDeepSeekCall.user.contextNotes, "Specializes in pediatric dentistry");
     assert.equal(lastCapturedDeepSeekCall.user.senderName, "Jordan");
-    assert.equal(lastCapturedDeepSeekCall.user.personalizationSettings.includeBusinessNameAndNiche, true);
-    assert.equal(lastCapturedDeepSeekCall.user.personalizationSettings.includeReviewsAndReputation, true);
+    assert.equal(
+      lastCapturedDeepSeekCall.user.personalizationSettings.includeBusinessNameAndNiche,
+      true,
+    );
+    assert.equal(
+      lastCapturedDeepSeekCall.user.personalizationSettings.includeReviewsAndReputation,
+      true,
+    );
   });
 
   test("supports rewrite action and passes customInstructions", async () => {
     mockDeepSeekResponse = {
-      content: [{ type: "text", text: JSON.stringify({ subject: "Quick question", body: "Rewritten more directly." }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ subject: "Quick question", body: "Rewritten more directly." }),
+        },
+      ],
     };
 
     const res = await fetch(`${baseUrl}/draft`, {
@@ -331,14 +370,22 @@ describe("POST /v1/outreach/draft", () => {
 
     assert.ok(lastCapturedDeepSeekCall);
     assert.equal(lastCapturedDeepSeekCall.user.action, "rewrite");
-    assert.equal(lastCapturedDeepSeekCall.user.customInstructions, "Make it more direct and ask for a 10-minute call");
+    assert.equal(
+      lastCapturedDeepSeekCall.user.customInstructions,
+      "Make it more direct and ask for a 10-minute call",
+    );
     assert.equal(lastCapturedDeepSeekCall.user.currentDraft.body, "Existing initial draft body");
     assert.equal(lastCapturedDeepSeekCall.user.tone, "direct");
   });
 
   test("supports shorten action", async () => {
     mockDeepSeekResponse = {
-      content: [{ type: "text", text: JSON.stringify({ subject: "Quick note", body: "Short punchy pitch." }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ subject: "Quick note", body: "Short punchy pitch." }),
+        },
+      ],
     };
 
     const res = await fetch(`${baseUrl}/draft`, {
@@ -361,7 +408,15 @@ describe("POST /v1/outreach/draft", () => {
 
   test("supports expand action", async () => {
     mockDeepSeekResponse = {
-      content: [{ type: "text", text: JSON.stringify({ subject: "Detailed note", body: "Expanded draft with case studies." }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            subject: "Detailed note",
+            body: "Expanded draft with case studies.",
+          }),
+        },
+      ],
     };
 
     const res = await fetch(`${baseUrl}/draft`, {
@@ -384,7 +439,15 @@ describe("POST /v1/outreach/draft", () => {
 
   test("supports objections action", async () => {
     mockDeepSeekResponse = {
-      content: [{ type: "text", text: JSON.stringify({ subject: null, body: "I completely understand budget is tight right now..." }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            subject: null,
+            body: "I completely understand budget is tight right now...",
+          }),
+        },
+      ],
     };
 
     const res = await fetch(`${baseUrl}/draft`, {
@@ -409,7 +472,9 @@ describe("POST /v1/outreach/draft", () => {
 
   test("Pro and Premium accounts receive Pro model according to server policy", async () => {
     mockDeepSeekResponse = {
-      content: [{ type: "text", text: JSON.stringify({ subject: "Pro draft", body: "Pro tier message." }) }],
+      content: [
+        { type: "text", text: JSON.stringify({ subject: "Pro draft", body: "Pro tier message." }) },
+      ],
     };
 
     userPlan = "pro";
@@ -449,7 +514,12 @@ describe("POST /v1/outreach/draft", () => {
   test("Starter account requesting tier 'pro' is capped by server policy and receives Fast model", async () => {
     userPlan = "starter";
     mockDeepSeekResponse = {
-      content: [{ type: "text", text: JSON.stringify({ subject: "Starter subject", body: "Starter body." }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ subject: "Starter subject", body: "Starter body." }),
+        },
+      ],
     };
 
     const res = await fetch(`${baseUrl}/draft`, {
@@ -474,7 +544,9 @@ describe("POST /v1/outreach/draft", () => {
   test("Pro account explicitly requesting Fast tier receives Fast model", async () => {
     userPlan = "pro";
     mockDeepSeekResponse = {
-      content: [{ type: "text", text: JSON.stringify({ subject: "Fast choice", body: "Fast message." }) }],
+      content: [
+        { type: "text", text: JSON.stringify({ subject: "Fast choice", body: "Fast message." }) },
+      ],
     };
 
     const res = await fetch(`${baseUrl}/draft`, {
@@ -570,7 +642,11 @@ describe("POST /v1/outreach/draft", () => {
     res = await fetch(`${baseUrl}/draft`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
-      body: JSON.stringify({ leadId: 1, channel: "email", customInstructions: ["invalid", "array"] }),
+      body: JSON.stringify({
+        leadId: 1,
+        channel: "email",
+        customInstructions: ["invalid", "array"],
+      }),
     });
     assert.equal(res.status, 400);
     data = await res.json();
@@ -613,7 +689,11 @@ describe("POST /v1/outreach/draft", () => {
     res = await fetch(`${baseUrl}/draft`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
-      body: JSON.stringify({ leadId: 1, channel: "email", personalization: { businessNameAndNiche: "yes" } }),
+      body: JSON.stringify({
+        leadId: 1,
+        channel: "email",
+        personalization: { businessNameAndNiche: "yes" },
+      }),
     });
     assert.equal(res.status, 400);
     data = await res.json();
@@ -685,5 +765,93 @@ describe("POST /v1/outreach/draft", () => {
     assert.equal(res.status, 500);
     const data = await res.json();
     assert.ok(data.message.includes("DeepSeek 500"));
+  });
+
+  test("generates outreach draft using OpenRouter Free when OPENROUTER_API_KEY is configured", async () => {
+    const origOr = env.OPENROUTER_API_KEY;
+    const origDs = env.DEEPSEEK_API_KEY;
+    try {
+      (env as any).OPENROUTER_API_KEY = "sk-or-v1-mock-key";
+      delete (env as any).DEEPSEEK_API_KEY;
+
+      let capturedCall: any = null;
+      setAiClient({
+        chat: {
+          completions: {
+            create: async (params: any) => {
+              capturedCall = params;
+              return {
+                choices: [
+                  {
+                    message: {
+                      role: "assistant",
+                      content: JSON.stringify({
+                        subject: "OpenRouter Free Subject",
+                        body: "OpenRouter Free Message Body for Apex Dental Studio",
+                      }),
+                    },
+                  },
+                ],
+              };
+            },
+          },
+        },
+      } as any);
+
+      userPlan = "starter";
+      const res = await fetch(`${baseUrl}/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+        body: JSON.stringify({
+          leadId: 1,
+          channel: "email",
+          action: "generate",
+        }),
+      });
+
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.subject, "OpenRouter Free Subject");
+      assert.equal(data.body, "OpenRouter Free Message Body for Apex Dental Studio");
+      assert.equal(data.model, "openrouter/free");
+      assert.equal(capturedCall?.model, "openrouter/free");
+      assert.equal(capturedCall?.messages?.[0]?.role, "system");
+      assert.equal(capturedCall?.messages?.[1]?.role, "user");
+    } finally {
+      (env as any).OPENROUTER_API_KEY = origOr;
+      (env as any).DEEPSEEK_API_KEY = origDs;
+      resetAiClient();
+    }
+  });
+
+  test("handles OpenRouter 429 rate limit error gracefully in outreach route", async () => {
+    const origOr = env.OPENROUTER_API_KEY;
+    try {
+      (env as any).OPENROUTER_API_KEY = "sk-or-v1-mock-key";
+      setAiClient({
+        chat: {
+          completions: {
+            create: async () => {
+              const err = new Error("Provider rate limit reached (openrouter free pool 20 RPM)");
+              (err as any).status = 429;
+              throw err;
+            },
+          },
+        },
+      } as any);
+
+      const res = await fetch(`${baseUrl}/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+        body: JSON.stringify({ leadId: 1, channel: "email" }),
+      });
+
+      assert.equal(res.status, 429);
+      const data = await res.json();
+      assert.match(data.message, /rate limit/i);
+    } finally {
+      (env as any).OPENROUTER_API_KEY = origOr;
+      resetAiClient();
+    }
   });
 });

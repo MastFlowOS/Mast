@@ -52,7 +52,7 @@ async function resolveUserPlan(userId: string): Promise<PlanId> {
 /**
  * POST /v1/outreach/draft
  *
- * Authenticated AI Outreach Drafting endpoint powered by DeepSeek Fast/Pro.
+ * Authenticated AI Outreach Drafting endpoint powered by OpenRouter Free (openrouter/free).
  * Supports generating, rewriting, shortening, expanding, and handling objections.
  *
  * Gated by user plan (paid plan required).
@@ -212,7 +212,11 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
     }
 
     if (personalization !== undefined) {
-      if (typeof personalization !== "object" || personalization === null || Array.isArray(personalization)) {
+      if (
+        typeof personalization !== "object" ||
+        personalization === null ||
+        Array.isArray(personalization)
+      ) {
         return res.status(400).json({
           code: "invalid_personalization",
           message: "personalization must be an object with boolean flags.",
@@ -246,7 +250,8 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
     // Never trust lead facts supplied by the client.
     const { data: lead, error: leadError } = await supabaseAdmin
       .from("leads")
-      .select(`
+      .select(
+        `
         id,
         user_id,
         business_id,
@@ -260,7 +265,8 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
         status,
         priority,
         opportunity_score
-      `)
+      `,
+      )
       .eq("id", leadId)
       .eq("user_id", userId)
       .maybeSingle();
@@ -278,22 +284,19 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
     if (lead.business_id) {
       const { data: biz } = await supabaseAdmin
         .from("businesses")
-        .select("name, category, niche, address, region, country_code, website, email, phone, instagram, reviews_count, reviews_rating, signals, website_is_weak, load_time_ms")
+        .select(
+          "name, category, niche, address, region, country_code, website, email, phone, instagram, reviews_count, reviews_rating, signals, website_is_weak, load_time_ms",
+        )
         .eq("id", lead.business_id)
         .maybeSingle();
       business = biz;
     }
 
     // Server-enforced model tier policy:
-    // - Starter: always Fast model (deepseek-flash). Never elevated by client request.
-    // - Pro and Premium: Pro model (deepseek-v4-pro) by default, or Fast model if explicitly chosen.
-    const tier: ModelTier =
-      plan === "starter"
-        ? "fast"
-        : clientTier === "fast"
-          ? "fast"
-          : "pro";
-
+    // - Starter: always Fast tier. Never elevated by client request.
+    // - Pro and Premium: Pro tier by default, or Fast tier if explicitly chosen.
+    // Both tiers route through OpenRouter free model router (openrouter/free).
+    const tier: ModelTier = plan === "starter" ? "fast" : clientTier === "fast" ? "fast" : "pro";
 
     // Build context-aware prompt
     const systemPrompt = [
@@ -313,7 +316,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       "   - shorten: condense into a punchy message under 75 words without losing the key offer and CTA.",
       "   - expand: expand with depth, specific proof points, and richer context.",
       "   - objections: write an empathetic, persuasive response addressing prospect hesitation or pushback.",
-      "5. Respond with ONLY a valid JSON object matching the exact shape: {\"subject\": string | null, \"body\": string}. No other text or markdown code fences.",
+      '5. Respond with ONLY a valid JSON object matching the exact shape: {"subject": string | null, "body": string}. No other text or markdown code fences.',
     ].join("\n");
 
     const payload = {

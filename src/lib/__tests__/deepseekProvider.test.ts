@@ -12,18 +12,26 @@ import {
 } from "../ai.js";
 import { env } from "../../config/env.js";
 
-test("DeepSeek provider configuration defaults", () => {
-  assert.equal(AI_MODELS.fast, "deepseek-flash");
-  assert.equal(AI_MODELS.pro, "deepseek-v4-pro");
-  assert.equal(getAiModel("fast"), "deepseek-flash");
-  assert.equal(getAiModel("pro"), "deepseek-v4-pro");
-  assert.equal(AI_MODEL, "deepseek-flash");
-  assert.equal(env.DEEPSEEK_BASE_URL, "https://api.deepseek.com/anthropic");
+test("DeepSeek provider backward-compatibility configuration", () => {
+  const origKey = env.DEEPSEEK_API_KEY;
+  const origOr = env.OPENROUTER_API_KEY;
+  try {
+    delete (env as any).OPENROUTER_API_KEY;
+    (env as any).DEEPSEEK_API_KEY = "test-deepseek-key";
+    assert.equal(getAiModel("fast"), "deepseek-flash");
+    assert.equal(getAiModel("pro"), "deepseek-v4-pro");
+    assert.equal(env.DEEPSEEK_BASE_URL, "https://api.deepseek.com/anthropic");
+  } finally {
+    (env as any).DEEPSEEK_API_KEY = origKey;
+    (env as any).OPENROUTER_API_KEY = origOr;
+  }
 });
 
 test("aiEnabled reflects DEEPSEEK_API_KEY presence", () => {
   const originalKey = env.DEEPSEEK_API_KEY;
+  const originalOr = env.OPENROUTER_API_KEY;
   try {
+    delete (env as any).OPENROUTER_API_KEY;
     (env as any).DEEPSEEK_API_KEY = "test-deepseek-key";
     assert.equal(aiEnabled(), true);
 
@@ -34,25 +42,33 @@ test("aiEnabled reflects DEEPSEEK_API_KEY presence", () => {
     assert.equal(aiEnabled(), false);
   } finally {
     (env as any).DEEPSEEK_API_KEY = originalKey;
+    (env as any).OPENROUTER_API_KEY = originalOr;
     resetAiClient();
   }
 });
 
-test("getClient throws when DEEPSEEK_API_KEY is missing", () => {
+test("getClient throws when API keys are missing", () => {
   const originalKey = env.DEEPSEEK_API_KEY;
+  const originalOr = env.OPENROUTER_API_KEY;
   try {
+    delete (env as any).OPENROUTER_API_KEY;
     delete (env as any).DEEPSEEK_API_KEY;
     resetAiClient();
     assert.throws(() => getClient(), {
-      message: /DEEPSEEK_API_KEY not configured/,
+      message: /(?:OPENROUTER|DEEPSEEK)_API_KEY not configured/,
     });
   } finally {
     (env as any).DEEPSEEK_API_KEY = originalKey;
+    (env as any).OPENROUTER_API_KEY = originalOr;
     resetAiClient();
   }
 });
 
-test("Fast and Pro model selection", async () => {
+test("Fast and Pro model selection with DeepSeek fallback", async () => {
+  const origKey = env.DEEPSEEK_API_KEY;
+  const origOr = env.OPENROUTER_API_KEY;
+  (env as any).DEEPSEEK_API_KEY = "test-deepseek-key";
+  delete (env as any).OPENROUTER_API_KEY;
   let capturedModel: string | undefined;
 
   const mockClient = {
@@ -95,6 +111,8 @@ test("Fast and Pro model selection", async () => {
     assert.equal(capturedModel, "custom-deepseek-model");
   } finally {
     resetAiClient();
+    (env as any).DEEPSEEK_API_KEY = origKey;
+    (env as any).OPENROUTER_API_KEY = origOr;
   }
 });
 
@@ -105,7 +123,7 @@ test("generateJSON parses clean JSON and removes markdown code fences", async ()
         content: [
           {
             type: "text",
-            text: "```json\n{\n  \"headline\": \"Great opportunity\",\n  \"score\": 95\n}\n```",
+            text: '```json\n{\n  "headline": "Great opportunity",\n  "score": 95\n}\n```',
           },
         ],
       }),

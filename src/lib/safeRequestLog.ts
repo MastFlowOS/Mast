@@ -10,10 +10,13 @@ const SENSITIVE_HEADER_NAMES = new Set([
   "x-supabase-api-key",
 ]);
 
-const SENSITIVE_FIELD = /(?:authorization|cookie|token|secret|password|api[-_]?key|access[-_]?key|signature)/i;
-const SENSITIVE_QUERY_PARAM = /(?:authorization|token|secret|password|api[-_]?key|access[-_]?key|signature|session|code)/i;
+const SENSITIVE_FIELD =
+  /(?:authorization|cookie|token|secret|password|api[-_]?key|access[-_]?key|signature)/i;
+const SENSITIVE_QUERY_PARAM =
+  /(?:authorization|token|secret|password|api[-_]?key|access[-_]?key|signature|session|code)/i;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi;
 const JWT_VALUE = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g;
+const API_KEY_VALUE = /\bsk-(?:or-v1-)?[A-Za-z0-9_-]{12,}\b/g;
 
 export function redactSensitiveHeaders(headers: Record<string, unknown>): Record<string, unknown> {
   const sanitized = { ...headers };
@@ -28,7 +31,10 @@ export function redactSensitiveHeaders(headers: Record<string, unknown>): Record
 /** Redact credential-like fields recursively, including nested HTTP client errors. */
 export function redactSensitiveData(value: unknown): unknown {
   if (typeof value === "string") {
-    return value.replace(BEARER_VALUE, "Bearer [Redacted]").replace(JWT_VALUE, "[Redacted JWT]");
+    return value
+      .replace(BEARER_VALUE, "Bearer [Redacted]")
+      .replace(JWT_VALUE, "[Redacted JWT]")
+      .replace(API_KEY_VALUE, "[Redacted API Key]");
   }
   if (Array.isArray(value)) return value.map(redactSensitiveData);
   if (value && typeof value === "object") {

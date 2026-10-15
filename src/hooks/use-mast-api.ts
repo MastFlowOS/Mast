@@ -11,6 +11,7 @@ import {
   createFollowup,
   createMessage,
   generateOutreachDraft,
+  getOutreachStatus,
   generateLeads,
   getAccount,
   getAnalyticsSummary,
@@ -443,6 +444,15 @@ export function useGenerateOutreachDraft() {
   return useMutation({
     mutationFn: ({ leadId, body }: { leadId: number; body: OutreachDraftRequest }) =>
       generateOutreachDraft(leadId, body),
+  });
+}
+
+export function useOutreachStatus() {
+  return useQuery({
+    queryKey: ["mast", "outreach", "status"],
+    queryFn: getOutreachStatus,
+    staleTime: 5 * 60_000,
+    retry: 1,
   });
 }
 

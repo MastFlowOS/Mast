@@ -854,4 +854,38 @@ describe("POST /v1/outreach/draft", () => {
       resetAiClient();
     }
   });
+
+  test("GET /v1/outreach/status returns safe AI configuration state without exposing secrets", async () => {
+    const origOr = env.OPENROUTER_API_KEY;
+    const origDs = env.DEEPSEEK_API_KEY;
+    try {
+      // 1. When AI is configured with OpenRouter
+      (env as any).OPENROUTER_API_KEY = "sk-or-v1-mock-key";
+      (env as any).DEEPSEEK_API_KEY = undefined;
+
+      const res1 = await fetch(`${baseUrl}/status`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(res1.status, 200);
+      const data1 = await res1.json();
+      assert.equal(data1.aiConfigured, true);
+      assert.equal(typeof data1.model, "string");
+      assert.equal(JSON.stringify(data1).includes("sk-or-v1-mock-key"), false);
+
+      // 2. When AI is unconfigured
+      (env as any).OPENROUTER_API_KEY = undefined;
+      (env as any).DEEPSEEK_API_KEY = undefined;
+
+      const res2 = await fetch(`${baseUrl}/status`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(res2.status, 200);
+      const data2 = await res2.json();
+      assert.equal(data2.aiConfigured, false);
+      assert.equal(data2.model, null);
+    } finally {
+      (env as any).OPENROUTER_API_KEY = origOr;
+      (env as any).DEEPSEEK_API_KEY = origDs;
+    }
+  });
 });

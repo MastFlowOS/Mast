@@ -4,7 +4,7 @@ import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan, type PlanId } from "../../config/plans.js";
 import { canUseAiFeature } from "../../lib/aiAccess.js";
-import { aiEnabled, generateJSON, getAiModel, type ModelTier } from "../../lib/ai.js";
+import { aiEnabled, AI_MODEL, generateJSON, getAiModel, type ModelTier } from "../../lib/ai.js";
 
 export const outreachRouter = Router();
 
@@ -48,6 +48,19 @@ async function resolveUserPlan(userId: string): Promise<PlanId> {
   if (error) throw error;
   return getPlan(profile?.subscription_plan).id;
 }
+
+/**
+ * GET /v1/outreach/status
+ *
+ * Lightweight, safe capability check exposing whether AI generation is configured
+ * and the active model identifier without exposing secrets or keys.
+ */
+outreachRouter.get("/status", requireAuth, (_req, res) => {
+  return res.json({
+    aiConfigured: aiEnabled(),
+    model: aiEnabled() ? AI_MODEL : null,
+  });
+});
 
 /**
  * POST /v1/outreach/draft

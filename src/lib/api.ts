@@ -2372,7 +2372,16 @@ export async function updateFollowup(id: number | string, body: {
   return dbRowToFollowup(data as Record<string, unknown>);
 }
 
-// ─── Outreach draft (AI endpoint powered by DeepSeek) ─────────────────────────
+// ─── Outreach draft (AI endpoint powered by OpenRouter Free) ─────────────────────────
+export type OutreachStatusResponse = {
+  aiConfigured: boolean;
+  model: string | null;
+};
+
+export async function getOutreachStatus(): Promise<OutreachStatusResponse> {
+  return backendFetch<OutreachStatusResponse>("/v1/outreach/status");
+}
+
 // Free generation does NOT come through here — it is deterministic and local
 // (src/lib/outreach/pipeline.ts). This endpoint is the Paid/AI path used by
 // AIAssistant for generate, rewrite, shorten, expand, and objection replies.

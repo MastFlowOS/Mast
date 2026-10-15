@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import {
   Sparkles,
   Loader2,
@@ -19,10 +19,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import type { Lead, OutreachTone } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
-import { useGenerateOutreachDraft, useMe, useRecordLeadActivity, useSettings } from "@/hooks/use-mast-api";
+import { useGenerateOutreachDraft, useMe, useOutreachStatus, useRecordLeadActivity, useSettings } from "@/hooks/use-mast-api";
 import { normalizeDraftResponse, TEMPLATES, leadNicheDisplay } from "@/lib/lead-workspace";
 import { useFreeOutreach } from "@/hooks/use-free-outreach";
 import { isFreeTemplateKey } from "@/lib/outreach/templates";
+import { resolveOutreachGenerationMode } from "@/lib/outreach/generationMode";
 import type { PersonalizationState, LengthPreference, ToneOption, GeneratedDraft } from "./types";
 
 interface WriteTabProps {
@@ -77,20 +78,34 @@ export function WriteTab({
 }: WriteTabProps) {
   const { data: settings } = useSettings();
   const { data: auth } = useMe();
+  const { data: outreachStatus } = useOutreachStatus();
   const generateDraft = useGenerateOutreachDraft();
   const recordActivity = useRecordLeadActivity();
   const freeOutreach = useFreeOutreach(lead);
 
   const [lengthPreference, setLengthPreference] = useState<LengthPreference>("standard");
   const [isGeneratingFree, setIsGeneratingFree] = useState(false);
+  const [isGeneratingManual, setIsGeneratingManual] = useState(false);
   const [copiedDraft, setCopiedDraft] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(() => {
     return Boolean(customInstructions.trim() || (template && template !== "initial"));
   });
 
-  const isGenerating = generateDraft.isPending || isGeneratingFree;
+  const activeLeadIdRef = useRef(lead.id);
+  activeLeadIdRef.current = lead.id;
+
+  const isGenerating = generateDraft.isPending || isGeneratingFree || isGeneratingManual;
   const senderName = settings?.senderName ?? auth?.user?.fullName ?? "";
+
+  // Authoritative generation mode:
+  // - Free plan -> fallback template
+  // - AI not configured -> fallback template
+  // - Paid plan AND AI configured -> actual AI generation
+  const generationMode = resolveOutreachGenerationMode({
+    plan: auth?.user?.plan,
+    aiConfigured: outreachStatus?.aiConfigured,
+  });
 
   const channelLabel =
     channel === "email"
@@ -102,7 +117,11 @@ export function WriteTab({
           : "Phone Script";
 
   const handleGenerate = async () => {
+    // Prevent duplicate submissions while in-flight
+    if (isGenerating) return;
     setLastError(null);
+
+    const currentLeadId = lead.id;
 
     // Build length instruction to append to customInstructions
     const lengthInstruction =
@@ -116,44 +135,8 @@ export function WriteTab({
       .filter(Boolean)
       .join(" ");
 
-    // Check if free deterministic template or paid AI template
-    if (isFreeTemplateKey(template)) {
-      setIsGeneratingFree(true);
-      try {
-        const result = await freeOutreach.generate(template, channel, senderName);
-        if (!result.ok) {
-          setLastError(result.detail);
-          toast.error(result.detail);
-          return;
-        }
-
-        const draft: GeneratedDraft = {
-          body: result.body,
-          subject: result.subject ?? undefined,
-        };
-        setGeneratedDraft(draft);
-
-        void recordActivity.mutateAsync({
-          lead,
-          activity: {
-            type: "message_generated",
-            channel,
-            subject: result.subject ?? undefined,
-            body: result.body,
-            content: `${channelLabel} draft generated (${TEMPLATES.find((t) => t.value === template)?.label ?? template})`,
-            metadata: { template, angleComponent: result.angleComponent, angleSource: result.angleSource },
-          },
-        });
-        toast.success("Message drafted! Review below before applying.");
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Generation failed";
-        setLastError(msg);
-        toast.error(msg);
-      } finally {
-        setIsGeneratingFree(false);
-      }
-    } else {
-      // Paid AI path with DeepSeek backend
+    if (generationMode === "ai") {
+      setIsGeneratingManual(true);
       try {
         const backendTone = (tone === "persuasive" ? "professional" : tone) as OutreachTone;
         const response = await generateDraft.mutateAsync({
@@ -172,25 +155,78 @@ export function WriteTab({
           },
         });
 
+        // Stale closure / lead change guard
+        if (activeLeadIdRef.current !== currentLeadId) return;
+
         const next = normalizeDraftResponse(response);
         if (next.body) {
           setGeneratedDraft({
             body: next.body,
             subject: next.subject,
           });
+          setLastError(null);
           toast.success("AI draft generated! Review below.");
         } else {
-          setLastError("AI response returned an empty message body.");
+          setLastError("AI response returned an empty message body. Please retry.");
         }
       } catch (error: any) {
+        if (activeLeadIdRef.current !== currentLeadId) return;
+
         let errorMsg = error instanceof Error ? error.message : "Could not generate draft";
-        if (error?.status === 503 || errorMsg.includes("not configured")) {
-          errorMsg = "AI outreach drafting is not configured on this deployment. Switch to a standard template (Initial, Follow-up) for deterministic generation.";
-        } else if (error?.status === 403 || errorMsg.includes("paid plan")) {
-          errorMsg = "AI outreach drafting requires a paid plan. Upgrade to unlock DeepSeek AI generation.";
+        if (error?.status === 429 || errorMsg.includes("rate limit") || errorMsg.includes("429")) {
+          errorMsg = "AI request rate-limited. Please wait a moment and click Retry.";
+        } else if (error?.status === 504 || errorMsg.includes("timeout")) {
+          errorMsg = "AI generation timed out. Please click Retry.";
+        } else if (error?.status === 503 || errorMsg.includes("not configured")) {
+          errorMsg = "AI service is currently unavailable. Please click Retry or try again shortly.";
         }
         setLastError(errorMsg);
         toast.error(errorMsg);
+      } finally {
+        setIsGeneratingManual(false);
+      }
+    } else {
+      // Fallback deterministic template generation (Free plan OR AI unconfigured)
+      setIsGeneratingFree(true);
+      try {
+        const templateKey = isFreeTemplateKey(template) ? template : "initial";
+        const result = await freeOutreach.generate(templateKey, channel, senderName);
+
+        // Stale closure / lead change guard
+        if (activeLeadIdRef.current !== currentLeadId) return;
+
+        if (!result.ok) {
+          setLastError(result.detail);
+          toast.error(result.detail);
+          return;
+        }
+
+        const draft: GeneratedDraft = {
+          body: result.body,
+          subject: result.subject ?? undefined,
+        };
+        setGeneratedDraft(draft);
+        setLastError(null);
+
+        void recordActivity.mutateAsync({
+          lead,
+          activity: {
+            type: "message_generated",
+            channel,
+            subject: result.subject ?? undefined,
+            body: result.body,
+            content: `${channelLabel} draft generated (${TEMPLATES.find((t) => t.value === templateKey)?.label ?? templateKey})`,
+            metadata: { template: templateKey, angleComponent: result.angleComponent, angleSource: result.angleSource },
+          },
+        });
+        toast.success("Message drafted! Review below before applying.");
+      } catch (err) {
+        if (activeLeadIdRef.current !== currentLeadId) return;
+        const msg = err instanceof Error ? err.message : "Generation failed";
+        setLastError(msg);
+        toast.error(msg);
+      } finally {
+        setIsGeneratingFree(false);
       }
     }
   };
@@ -378,20 +414,39 @@ export function WriteTab({
         type="button"
         onClick={() => void handleGenerate()}
         disabled={isGenerating}
-        className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20 transition-all active:scale-[0.99]"
+        className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20 transition-all active:scale-[0.99] cursor-pointer"
       >
         {isGenerating ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-        <span>{isGenerating ? "Generating draft..." : "Generate Draft"}</span>
+        <span>{isGenerating ? (generationMode === "ai" ? "Generating AI draft..." : "Generating draft...") : "Generate Draft"}</span>
       </Button>
 
-      {/* Error State */}
+      {/* Error State with Retry Action */}
       {lastError && (
-        <div className="p-2.5 rounded-lg border border-destructive/40 bg-destructive/10 text-destructive text-[11px] flex items-start gap-2">
-          <AlertCircle className="size-3.5 shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <p className="font-medium leading-tight">Generation Error</p>
-            <p className="text-[10px] text-muted-foreground leading-tight">{lastError}</p>
+        <div className="p-2.5 rounded-lg border border-destructive/40 bg-destructive/10 text-destructive text-[11px] flex items-start justify-between gap-2">
+          <div className="flex items-start gap-2 min-w-0">
+            <AlertCircle className="size-3.5 shrink-0 mt-0.5 text-destructive" />
+            <div className="space-y-1 min-w-0">
+              <p className="font-medium leading-tight">Generation Error</p>
+              <p className="text-[10px] text-muted-foreground leading-tight break-words">{lastError}</p>
+            </div>
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void handleGenerate()}
+            disabled={isGenerating}
+            className="h-6 px-2 text-[10px] font-medium border-destructive/40 bg-card/60 hover:bg-card text-foreground shrink-0 cursor-pointer"
+          >
+            Retry
+          </Button>
+        </div>
+      )}
+
+      {/* Useful empty state */}
+      {!generatedDraft && !isGenerating && !lastError && (
+        <div className="py-4 px-3 text-center text-xs text-muted-foreground border border-dashed border-border/50 rounded-xl bg-card/20">
+          <p className="text-[11px]">Select your preferred tone and options above, then click Generate Draft to create an outreach message.</p>
         </div>
       )}
 

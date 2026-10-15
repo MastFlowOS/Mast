@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import {
   Wand2,
   Edit2,
@@ -122,20 +122,29 @@ export function ImproveTab({
   const [selectedTone, setSelectedTone] = useState<ToneOption>((tone as ToneOption) || "friendly");
   const [copiedImproved, setCopiedImproved] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [isImproving, setIsImproving] = useState(false);
 
   const cleanBody = htmlToPlainText(composerBody).trim();
   const hasDraft = cleanBody.length > 0;
   const wordCount = countWords(composerBody);
   const charCount = cleanBody.length;
   const senderName = settings?.senderName ?? auth?.user?.fullName ?? "";
+  const isGenerating = generateDraft.isPending || isImproving;
+
+  const activeLeadIdRef = useRef(lead.id);
+  activeLeadIdRef.current = lead.id;
 
   const handleRunImprovement = async () => {
+    if (isGenerating) return;
+
     if (!hasDraft) {
       toast.error("Add a message in the composer first");
       return;
     }
 
     setLastError(null);
+    setIsImproving(true);
+    const currentLeadId = lead.id;
 
     let action: OutreachGenerationAction = "rewrite";
     let instructions = "";
@@ -187,25 +196,36 @@ export function ImproveTab({
         },
       });
 
+      if (activeLeadIdRef.current !== currentLeadId) return;
+
       const next = normalizeDraftResponse(response);
       if (next.body) {
         setImprovedDraft({
           body: next.body,
           subject: next.subject || composerSubject,
         });
+        setLastError(null);
         toast.success("Improvement ready! Review before applying.");
       } else {
-        setLastError("AI response returned an empty body.");
+        setLastError("AI response returned an empty body. Click Retry to try again.");
       }
     } catch (error: any) {
+      if (activeLeadIdRef.current !== currentLeadId) return;
+
       let errorMsg = error instanceof Error ? error.message : "Could not improve draft";
-      if (error?.status === 503 || errorMsg.includes("not configured")) {
-        errorMsg = "AI rewriting is not configured on this deployment. DeepSeek API key is required on the backend.";
+      if (error?.status === 429 || errorMsg.includes("rate limit") || errorMsg.includes("429")) {
+        errorMsg = "AI request rate-limited. Please wait a moment and click Retry.";
+      } else if (error?.status === 504 || errorMsg.includes("timeout")) {
+        errorMsg = "AI improvement timed out. Please click Retry.";
+      } else if (error?.status === 503 || errorMsg.includes("not configured")) {
+        errorMsg = "AI rewriting is currently unavailable on this deployment. Please click Retry or try again shortly.";
       } else if (error?.status === 403 || errorMsg.includes("paid plan")) {
         errorMsg = "AI draft rewriting requires a paid plan (Starter, Pro, or Premium).";
       }
       setLastError(errorMsg);
       toast.error(errorMsg);
+    } finally {
+      setIsImproving(false);
     }
   };
 
@@ -363,25 +383,37 @@ export function ImproveTab({
       <Button
         type="button"
         onClick={() => void handleRunImprovement()}
-        disabled={generateDraft.isPending}
-        className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20 transition-all active:scale-[0.99]"
+        disabled={isGenerating || !hasDraft}
+        className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20 transition-all active:scale-[0.99] cursor-pointer"
       >
-        {generateDraft.isPending ? (
+        {isGenerating ? (
           <Loader2 className="size-3.5 animate-spin" />
         ) : (
           <Wand2 className="size-3.5" />
         )}
-        <span>{generateDraft.isPending ? "Improving message..." : "Improve Draft"}</span>
+        <span>{isGenerating ? "Improving message..." : "Improve Draft"}</span>
       </Button>
 
-      {/* Error state */}
+      {/* Error state with Retry action */}
       {lastError && (
-        <div className="p-2.5 rounded-lg border border-destructive/40 bg-destructive/10 text-destructive text-[11px] flex items-start gap-2">
-          <AlertCircle className="size-3.5 shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <p className="font-medium leading-tight">Improvement Failed</p>
-            <p className="text-[10px] text-muted-foreground leading-tight">{lastError}</p>
+        <div className="p-2.5 rounded-lg border border-destructive/40 bg-destructive/10 text-destructive text-[11px] flex items-start justify-between gap-2">
+          <div className="flex items-start gap-2 min-w-0">
+            <AlertCircle className="size-3.5 shrink-0 mt-0.5 text-destructive" />
+            <div className="space-y-1 min-w-0">
+              <p className="font-medium leading-tight">Improvement Failed</p>
+              <p className="text-[10px] text-muted-foreground leading-tight break-words">{lastError}</p>
+            </div>
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void handleRunImprovement()}
+            disabled={isGenerating || !hasDraft}
+            className="h-6 px-2 text-[10px] font-medium border-destructive/40 bg-card/60 hover:bg-card text-foreground shrink-0 cursor-pointer"
+          >
+            Retry
+          </Button>
         </div>
       )}
 

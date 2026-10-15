@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useLead, useMe, useSettings, useGenerateOutreachDraft, useRecordLeadActivity } from "@/hooks/use-mast-api";
+import { useLead, useMe, useOutreachStatus, useSettings, useGenerateOutreachDraft, useRecordLeadActivity } from "@/hooks/use-mast-api";
 import { LeadWorkspaceHeader } from "@/components/mast/workspace/LeadWorkspaceHeader";
 import { LeftSidebar } from "@/components/mast/workspace/LeftSidebar";
 import { CenterWorkspace } from "@/components/mast/workspace/CenterWorkspace";
@@ -11,6 +11,7 @@ import { useFreeOutreach } from "@/hooks/use-free-outreach";
 import type { OutreachChannel, OutreachTone } from "@/lib/api";
 import { isFreeTemplateKey } from "@/lib/outreach/templates";
 import { normalizeDraftResponse, TEMPLATES } from "@/lib/lead-workspace";
+import { resolveOutreachGenerationMode } from "@/lib/outreach/generationMode";
 import { toast } from "sonner";
 
 export type Channel = "email" | "instagram" | "phone" | "contact_form";
@@ -41,6 +42,7 @@ function LeadWorkspace() {
 
   const { data: settings } = useSettings();
   const { data: auth } = useMe();
+  const { data: outreachStatus } = useOutreachStatus();
   const freeOutreach = useFreeOutreach(lead);
   const generateDraft = useGenerateOutreachDraft();
   const recordActivity = useRecordLeadActivity();
@@ -56,30 +58,24 @@ function LeadWorkspace() {
   const activeDraft = drafts[channel];
   const senderName = settings?.senderName ?? auth?.user?.fullName ?? "";
 
-  // Default drafts come from the deterministic pipeline
+  const activeLeadIdRef = useRef(lead?.id);
+  activeLeadIdRef.current = lead?.id;
+
+  // Authoritative generation mode policy:
+  // - Free plan -> fallback template
+  // - AI not configured -> fallback template
+  // - Paid plan AND AI configured -> actual AI generation
+  const generationMode = resolveOutreachGenerationMode({
+    plan: auth?.user?.plan,
+    aiConfigured: outreachStatus?.aiConfigured,
+  });
+
+  // When switching to a new lead, reset drafts cleanly without mount-time automatic generation
   useEffect(() => {
     if (!lead || lead.id === loadedLeadId) return;
-    let cancelled = false;
     setLoadedLeadId(lead.id);
-    if (loadedLeadId !== null) {
-      setDrafts(emptyDrafts);
-    }
-
-    void (async () => {
-      const next: Record<Channel, ComposeDraft> = { ...emptyDrafts };
-      for (const target of DEFAULT_DRAFT_CHANNELS) {
-        const result = await freeOutreach.generate("initial", target, senderName);
-        if (result.ok) {
-          next[target] = { subject: result.subject ?? "", body: result.body };
-        }
-      }
-      if (!cancelled) setDrafts(next);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [lead, loadedLeadId, freeOutreach, senderName]);
+    setDrafts(emptyDrafts);
+  }, [lead, loadedLeadId]);
 
   const setSubject = (subject: string) => {
     setDrafts((current) => ({
@@ -106,11 +102,40 @@ function LeadWorkspace() {
   };
 
   const handleGenerate = async () => {
-    if (!lead) return;
+    if (!lead || isGenerating) return;
     setIsGenerating(true);
+    const currentLeadId = lead.id;
+
     try {
-      if (isFreeTemplateKey(template)) {
-        const result = await freeOutreach.generate(template, channel, senderName);
+      if (generationMode === "ai") {
+        const response = await generateDraft.mutateAsync({
+          leadId: lead.id,
+          body: {
+            channel,
+            action: template === "objection_handling" ? "objections" : "generate",
+            tone: (tone as OutreachTone) || "friendly",
+            template,
+            subject: activeDraft.subject || undefined,
+            body: activeDraft.body || undefined,
+            senderName,
+          },
+        });
+
+        if (activeLeadIdRef.current !== currentLeadId) return;
+
+        const next = normalizeDraftResponse(response);
+        if (next.body) {
+          handleInsert(next.body, next.subject);
+          toast.success("AI draft generated");
+        } else {
+          toast.error("AI response returned an empty message body");
+        }
+      } else {
+        const templateKey = isFreeTemplateKey(template) ? template : "initial";
+        const result = await freeOutreach.generate(templateKey, channel, senderName);
+
+        if (activeLeadIdRef.current !== currentLeadId) return;
+
         if (!result.ok) {
           toast.error(result.detail);
           return;
@@ -123,44 +148,36 @@ function LeadWorkspace() {
             channel,
             subject: result.subject ?? undefined,
             body: result.body,
-            content: `${channel} draft generated (${TEMPLATES.find((t) => t.value === template)?.label ?? template})`,
-            metadata: { template, angleComponent: result.angleComponent, angleSource: result.angleSource },
+            content: `${channel} draft generated (${TEMPLATES.find((t) => t.value === templateKey)?.label ?? templateKey})`,
+            metadata: { template: templateKey, angleComponent: result.angleComponent, angleSource: result.angleSource },
           },
         });
         toast.success("Draft generated");
-      } else {
-        const response = await generateDraft.mutateAsync({
-          leadId: lead.id,
-          body: {
-            channel,
-            action: "generate",
-            tone: (tone as OutreachTone) || "friendly",
-            template,
-            subject: activeDraft.subject,
-            body: activeDraft.body,
-            senderName,
-          },
-        });
-        const next = normalizeDraftResponse(response);
-        if (next.body) {
-          handleInsert(next.body, next.subject);
-          toast.success("Draft generated");
-        }
       }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not generate draft");
+    } catch (error: any) {
+      if (activeLeadIdRef.current !== currentLeadId) return;
+      let msg = error instanceof Error ? error.message : "Could not generate draft";
+      if (error?.status === 429 || msg.includes("rate limit") || msg.includes("429")) {
+        msg = "AI request rate-limited. Please wait a moment and try again.";
+      } else if (error?.status === 504 || msg.includes("timeout")) {
+        msg = "AI generation timed out. Please try again.";
+      } else if (error?.status === 503 || msg.includes("not configured")) {
+        msg = "AI service is currently unavailable. Please try again shortly.";
+      }
+      toast.error(msg);
     } finally {
       setIsGenerating(false);
     }
   };
 
   const handleRewrite = async (type: "rewrite" | "expand" | "shorten" = "rewrite") => {
-    if (!lead) return;
+    if (!lead || isGenerating) return;
     if (!activeDraft.body.trim()) {
       toast.error("Add a message before rewriting");
       return;
     }
     setIsGenerating(true);
+    const currentLeadId = lead.id;
     const instruction =
       type === "expand"
         ? "Expand with more detail, proof points, and depth"
@@ -182,13 +199,23 @@ function LeadWorkspace() {
           senderName,
         },
       });
+
+      if (activeLeadIdRef.current !== currentLeadId) return;
+
       const next = normalizeDraftResponse(response);
       if (next.body) {
         handleInsert(next.body, next.subject);
         toast.success(type === "expand" ? "Draft expanded" : type === "shorten" ? "Draft shortened" : "Draft rewritten");
       }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not rewrite draft");
+    } catch (error: any) {
+      if (lead.id !== currentLeadId) return;
+      let msg = error instanceof Error ? error.message : "Could not rewrite draft";
+      if (error?.status === 429 || msg.includes("rate limit") || msg.includes("429")) {
+        msg = "AI request rate-limited. Please wait a moment and try again.";
+      } else if (error?.status === 504 || msg.includes("timeout")) {
+        msg = "AI generation timed out. Please try again.";
+      }
+      toast.error(msg);
     } finally {
       setIsGenerating(false);
     }

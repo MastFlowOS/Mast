@@ -152,7 +152,7 @@ export function ImproveTab({
     switch (selectedMode) {
       case "personalized":
         instructions =
-          "Make this message much more personalized. Highlight specific details about the prospect's business, niche, and local market to make it feel completely tailored and authentic.";
+          "Make this message substantively more personalized. Connect verified facts about the prospect's business, niche, and market directly to the freelancer's craft, avoiding generic flattery or invented weaknesses.";
         break;
       case "concise":
         action = "shorten";
@@ -160,18 +160,18 @@ export function ImproveTab({
         break;
       case "opening":
         instructions =
-          "Rewrite the opening line and hook of this message. Make it curiosity-inducing, engaging, and relevant to the prospect so they immediately want to read on.";
+          "Rewrite the opening hook to sound human and relevant. Avoid generic greetings, fake compliments, and em dashes. Start directly with an authentic observation.";
         break;
       case "cta":
         instructions =
-          "Strengthen the call to action at the end of the message. Propose a specific, low-friction next step (such as a 10-minute discovery call or sending a short audit).";
+          "Strengthen the call to action at the end of the message. Calibrate the ask to the channel and relationship stage using a low-friction interest-gauging question (e.g. asking if they are open to seeing an idea or if this is relevant right now) without demanding a calendar call or manufacturing a fake audit.";
         break;
       case "tone":
-        instructions = `Rewrite the entire message adopting a ${selectedTone} tone throughout while preserving the core offer and facts.`;
+        instructions = `Rewrite the entire message adopting a ${selectedTone} tone throughout while preserving the core offer and facts, with zero em dashes and natural phrasing.`;
         break;
       case "grammar":
         instructions =
-          "Proofread and polish this message for impeccable grammar, crisp readability, and natural flow without altering the core value proposition.";
+          "Proofread and polish this message for natural, human flow and 5th-grade readability. Remove em dashes, eliminate corporate buzzwords, and vary sentence rhythm without altering the core value proposition.";
         break;
     }
 

@@ -272,12 +272,13 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
       const insight = await generateJSON<{ headline: string; talkingPoints: string[]; openingLine: string }>({
         system:
           "You are MAST's Opportunity Intelligence assistant, helping a freelancer understand why a business " +
-          "was surfaced as a sales opportunity. You are given real, already-computed facts — do not invent " +
-          "anything not present in the input. Respond with ONLY a JSON object: " +
-          '{"headline": string (<=12 words, why this is a good opportunity), ' +
-          '"talkingPoints": string[] (2-4 short, concrete, non-generic points a freelancer could raise), ' +
-          '"openingLine": string (one natural first-contact message opener, no greeting/signature, <=2 sentences)}. ' +
-          "Keep tone professional and specific, never salesy or exaggerated.",
+          "was surfaced as a sales opportunity. You are given real, already-computed facts. Do not invent " +
+          "anything not present in the input. Never use em dashes ('—' or '–'). Avoid generic marketing buzzwords ('elevate', 'streamline', 'synergy'). " +
+          "Respond with ONLY a JSON object: " +
+          '{"headline": string (<=12 words, why this is a good opportunity, no em dashes), ' +
+          '"talkingPoints": string[] (2-4 short, concrete, non-generic points grounded in verified data, no em dashes), ' +
+          '"openingLine": string (one natural first-contact opener, no em dashes, no greeting/signature, <=2 sentences)}. ' +
+          "Keep tone professional, natural, and specific, never salesy or exaggerated.",
         user: JSON.stringify({
           businessName: business.name,
           niche: business.niche,
@@ -293,9 +294,9 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
       const nextRow = {
         business_id: businessId,
         profession_slug: professionSlug,
-        headline: asString(insight.headline, business.name ? `A fresh opportunity: ${business.name}` : "A fresh opportunity"),
-        talking_points: asStringArray(insight.talkingPoints),
-        opening_line: asString(insight.openingLine, "Hi — I came across your business and had a few ideas that could help."),
+        headline: asString(insight.headline, business.name ? `A fresh opportunity: ${business.name}` : "A fresh opportunity").replace(/[—–]/g, " - "),
+        talking_points: asStringArray(insight.talkingPoints).map((tp) => tp.replace(/[—–]/g, " - ")),
+        opening_line: asString(insight.openingLine, "Hi, I came across your business and had a few specific ideas that could help.").replace(/[—–]/g, " - "),
         score_snapshot: result.score,
         model: getAiModel("pro"),
         generated_at: new Date().toISOString(),

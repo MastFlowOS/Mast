@@ -578,12 +578,13 @@ async function generateBackgroundOpportunityInsights(businessId: string): Promis
   const insight = await generateJSON<{ headline: string; talkingPoints: string[]; openingLine: string }>({
     system:
       "You are MAST's Opportunity Intelligence assistant, helping a freelancer understand why a business " +
-      "was surfaced as a sales opportunity. You are given real, already-computed facts — do not invent " +
-      "anything not present in the input. Respond with ONLY a JSON object: " +
-      '{"headline": string (<=12 words, why this is a good opportunity), ' +
-      '"talkingPoints": string[] (2-4 short, concrete, non-generic points a freelancer could raise), ' +
-      '"openingLine": string (one natural first-contact message opener, no greeting/signature, <=2 sentences)}. ' +
-      "Keep tone professional and specific, never salesy or exaggerated.",
+      "was surfaced as a sales opportunity. You are given real, already-computed facts. Do not invent " +
+      "anything not present in the input. Never use em dashes ('—' or '–'). Avoid generic marketing buzzwords ('elevate', 'streamline', 'synergy'). " +
+      "Respond with ONLY a JSON object: " +
+      '{"headline": string (<=12 words, why this is a good opportunity, no em dashes), ' +
+      '"talkingPoints": string[] (2-4 short, concrete, non-generic points grounded in verified data, no em dashes), ' +
+      '"openingLine": string (one natural first-contact opener, no em dashes, no greeting/signature, <=2 sentences)}. ' +
+      "Keep tone professional, natural, and specific, never salesy or exaggerated.",
     user: JSON.stringify({
       businessName: business.name,
       niche: business.niche,
@@ -599,9 +600,9 @@ async function generateBackgroundOpportunityInsights(businessId: string): Promis
   const row = {
     business_id: businessId,
     profession_slug: professionSlug,
-    headline: typeof insight.headline === "string" ? insight.headline : `A fresh opportunity: ${business.name}`,
-    talking_points: Array.isArray(insight.talkingPoints) ? insight.talkingPoints : [],
-    opening_line: typeof insight.openingLine === "string" ? insight.openingLine : "Hi — I came across your business and had a few ideas.",
+    headline: typeof insight.headline === "string" ? insight.headline.replace(/[—–]/g, " - ") : `A fresh opportunity: ${business.name}`,
+    talking_points: Array.isArray(insight.talkingPoints) ? insight.talkingPoints.map((tp) => (typeof tp === "string" ? tp.replace(/[—–]/g, " - ") : tp)) : [],
+    opening_line: typeof insight.openingLine === "string" ? insight.openingLine.replace(/[—–]/g, " - ") : "Hi, I came across your business and had a few specific ideas that could help.",
     score_snapshot: ps.score,
     model: getAiModel("fast"),
     generated_at: new Date().toISOString(),

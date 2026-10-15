@@ -4,7 +4,20 @@ import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan, type PlanId } from "../../config/plans.js";
 import { canUseAiFeature } from "../../lib/aiAccess.js";
-import { aiEnabled, AI_MODEL, generateJSON, getAiModel, type ModelTier } from "../../lib/ai.js";
+import {
+  aiEnabled,
+  AI_MODEL,
+  generateJSON,
+  getAiModel,
+  type ModelTier,
+} from "../../lib/ai.js";
+import {
+  buildOutreachPrompt,
+  sanitizeOutreachOutput,
+  type OutreachChannel,
+  type OutreachAction,
+  type OutreachTone,
+} from "../../lib/outreachPrompt.js";
 
 export const outreachRouter = Router();
 
@@ -23,13 +36,8 @@ const MAX_BODY_LENGTH = 10000;
 const MAX_TEMPLATE_LENGTH = 100;
 
 const ALLOWED_CHANNELS = ["email", "instagram", "phone", "contact_form"] as const;
-type OutreachChannel = (typeof ALLOWED_CHANNELS)[number];
-
 const ALLOWED_ACTIONS = ["generate", "rewrite", "shorten", "expand", "objections"] as const;
-type OutreachAction = (typeof ALLOWED_ACTIONS)[number];
-
 const ALLOWED_TONES = ["friendly", "professional", "direct", "casual", "urgent"] as const;
-type OutreachTone = (typeof ALLOWED_TONES)[number];
 
 const RECOGNIZED_PERSONALIZATION_KEYS = [
   "businessNameAndNiche",
@@ -39,14 +47,21 @@ const RECOGNIZED_PERSONALIZATION_KEYS = [
   "similarBusinessSuccessStories",
 ] as const;
 
-async function resolveUserPlan(userId: string): Promise<PlanId> {
+async function resolveUserProfile(userId: string): Promise<{
+  plan: PlanId;
+  focusArea?: string;
+  fullName?: string;
+}> {
   const { data: profile, error } = await supabaseAdmin
     .from("profiles")
-    .select("subscription_plan")
+    .select("subscription_plan, settings, full_name")
     .eq("id", userId)
     .single();
   if (error) throw error;
-  return getPlan(profile?.subscription_plan).id;
+  const plan = getPlan(profile?.subscription_plan).id;
+  const focusArea = (profile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined;
+  const fullName = profile?.full_name as string | undefined;
+  return { plan, focusArea, fullName };
 }
 
 /**
@@ -82,7 +97,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       });
     }
 
-    const plan = await resolveUserPlan(userId);
+    const { plan, focusArea, fullName } = await resolveUserProfile(userId);
     if (!canUseAiFeature(plan, "outreachDraft")) {
       return res.status(403).json({
         code: "plan_restricted",
@@ -277,7 +292,8 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
         location,
         status,
         priority,
-        opportunity_score
+        opportunity_score,
+        profession_slug
       `,
       )
       .eq("id", leadId)
@@ -305,46 +321,56 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       business = biz;
     }
 
+    // Load recent lead activities defensively for sequence continuity (e.g. follow-up context)
+    let recentActivities: any[] = [];
+    try {
+      const { data: acts } = await supabaseAdmin
+        .from("lead_activities")
+        .select("type, channel, subject, content, metadata, timestamp")
+        .eq("lead_id", leadId)
+        .eq("user_id", userId)
+        .order("timestamp", { ascending: false })
+        .limit(5);
+      if (acts && Array.isArray(acts)) {
+        recentActivities = acts;
+      }
+    } catch {
+      // Graceful degradation when lead_activities is unmocked or unavailable
+    }
+
+    const previousSends = recentActivities.filter((a) =>
+      ["email_sent", "instagram_sent", "call_completed", "contact_form_sent"].includes(a.type),
+    );
+    const sequenceHistory = {
+      isFollowUp: previousSends.length > 0 || template === "follow_up",
+      touchCount: previousSends.length > 0 ? previousSends.length + 1 : 1,
+      previousSends: previousSends.map((s) => ({
+        channel: s.channel,
+        subject: s.subject,
+        timestamp: s.timestamp,
+      })),
+    };
+
     // Server-enforced model tier policy:
     // - Starter: always Fast tier. Never elevated by client request.
     // - Pro and Premium: Pro tier by default, or Fast tier if explicitly chosen.
     // Both tiers route through OpenRouter free model router (openrouter/free).
     const tier: ModelTier = plan === "starter" ? "fast" : clientTier === "fast" ? "fast" : "pro";
 
-    // Build context-aware prompt
-    const systemPrompt = [
-      "You are MAST's high-converting AI Outreach Strategist and Copywriter.",
-      "Your job is to produce natural, highly relevant, and compelling B2B/freelance outreach messages.",
-      "RULES:",
-      "1. Ground all claims in the provided business facts. Never hallucinate fake metrics, fake mutual connections, or fake previous conversations.",
-      "2. Respect the requested channel format:",
-      "   - email: concise, curiosity-inducing subject line (<= 8 words); email body with natural greeting, hook, clear value proposition, low-friction CTA, and professional sign-off.",
-      "   - instagram: concise DM (under 120 words), conversational, no subject line (subject must be null), direct and engaging hook.",
-      "   - phone: structured cold call script / opener with hook, 1-2 talking points, and low-friction discovery question (subject must be null).",
-      "   - contact_form: concise subject line, clean message body tailored for website form submissions.",
-      "3. Strict tone adherence: adhere to the requested tone (e.g. friendly, professional, direct, casual, urgent).",
-      "4. Action adherence:",
-      "   - generate: craft a fresh, high-converting outreach message from scratch based on lead facts.",
-      "   - rewrite: revise the provided message following custom instructions while preserving core value.",
-      "   - shorten: condense into a punchy message under 75 words without losing the key offer and CTA.",
-      "   - expand: expand with depth, specific proof points, and richer context.",
-      "   - objections: write an empathetic, persuasive response addressing prospect hesitation or pushback.",
-      '5. Respond with ONLY a valid JSON object matching the exact shape: {"subject": string | null, "body": string}. No other text or markdown code fences.',
-    ].join("\n");
-
-    const payload = {
-      action,
-      channel,
-      tone,
-      template: template || undefined,
-      customInstructions: customInstructions || undefined,
-      senderName: senderName || undefined,
-      contextNotes: contextNotes || undefined,
+    // Build research-grounded prompt (zero em dashes, 5th-grade readability, dynamic CTAs, native channel fit)
+    const { system: systemPrompt, user: userPayloadString } = buildOutreachPrompt({
+      channel: channel as OutreachChannel,
+      action: action as OutreachAction,
+      tone: tone as OutreachTone,
+      template,
+      customInstructions,
+      senderName: senderName || fullName,
+      contextNotes,
       currentDraft: {
         subject: clientSubject || undefined,
         body: existingBody || undefined,
       },
-      leadData: {
+      lead: {
         businessName: lead.business_name || (business?.name as string) || "the business",
         niche: lead.niche || (business?.niche as string) || undefined,
         website: lead.website || (business?.website as string) || undefined,
@@ -357,19 +383,20 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
         reviewsCount: (business?.reviews_count as number) || undefined,
         reviewsRating: (business?.reviews_rating as number) || undefined,
         websiteIsWeak: (business?.website_is_weak as boolean) || undefined,
+        loadTimeMs: (business?.load_time_ms as number) || undefined,
       },
-      personalizationSettings: {
-        includeBusinessNameAndNiche: personalization.businessNameAndNiche ?? true,
-        includeRecentInstagramActivity: personalization.recentInstagramActivity ?? true,
-        includeLocationAndMarket: personalization.locationAndLocalMarket ?? true,
-        includeReviewsAndReputation: personalization.businessReviewsAndReputation ?? true,
-        includeSimilarSuccessStories: personalization.similarBusinessSuccessStories ?? true,
+      freelancer: {
+        profession: focusArea || (lead.profession_slug ? lead.profession_slug.replace(/_/g, " ") : undefined),
+        professionSlug: lead.profession_slug || undefined,
+        senderName: senderName || fullName || undefined,
       },
-    };
+      personalization,
+      sequenceHistory,
+    });
 
     const aiResult = await generateJSON<{ subject?: string | null; body?: string }>({
       system: systemPrompt,
-      user: JSON.stringify(payload),
+      user: userPayloadString,
       tier,
       maxTokens: 1024,
       timeoutMs: 30000,
@@ -379,14 +406,11 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       throw new Error("AI response did not contain a valid generated message body");
     }
 
-    const subject =
-      channel === "instagram" || channel === "phone"
-        ? null
-        : typeof aiResult.subject === "string" && aiResult.subject.trim()
-          ? aiResult.subject.trim()
-          : clientSubject || null;
-
-    const body = aiResult.body.trim();
+    const { subject, body } = sanitizeOutreachOutput(
+      aiResult,
+      channel as OutreachChannel,
+      clientSubject,
+    );
 
     return res.json({
       subject,

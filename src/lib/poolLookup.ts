@@ -2,6 +2,7 @@ import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { insertLeadForUser, type PoolBusiness } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
+import { evaluateLeadQuality, POOL_QUALITY_ARGS } from "../lib/leadQualityPolicy.js";
 import { COUNTRIES, REGION_NAMES } from "./geo/countries.js";
 import { parseGeoScope } from "./geo/scope.js";
 
@@ -99,7 +100,7 @@ export type PoolLookupResult = {
   limitReached: boolean;
   /** distinct eligible candidates retrieved (bounded by the query limit) */
   candidates: number;
-  skipped: { missingBusiness: number; channelMismatch: number; alreadyOwned: number };
+  skipped: { missingBusiness: number; channelMismatch: number; qualityMismatch: number; alreadyOwned: number };
   ranking: PoolRanking;
   /**
    * Set when delivery stopped on an unexpected error AFTER some leads may
@@ -161,6 +162,10 @@ export function summarizePoolRanking(
  *    FIRST niche (request order) that matched it.
  *  - Channel filters: AND semantics, applied inside SQL before ORDER/LIMIT
  *    (migration 037); `channelsSatisfied()` is a final safeguard.
+ *  - Internal quality filter (rating / review count, src/lib/leadQualityPolicy.ts):
+ *    applied inside SQL before ORDER/LIMIT (migration 040) for both plain and
+ *    ranked instant; `evaluateLeadQuality()` is a final safeguard. Unknown
+ *    values never reject.
  *  - Ranking (rank=true): the union is re-ordered GLOBALLY by Opportunity
  *    Score (rankPoolCandidates). Ranking only affects order, never eligibility.
  *  - Plan limit hit mid-delivery: remaining matches are not delivered and
@@ -191,6 +196,9 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
         // Apply the AND channel requirements in SQL before its LIMIT, so
         // incomplete recent rows cannot hide older eligible businesses.
         p_channels: params.channels,
+        // Internal quality thresholds, also applied before ORDER BY/LIMIT
+        // (migration 040). Same policy object the live gate uses.
+        ...POOL_QUALITY_ARGS,
       });
       if (error) throw error;
 
@@ -204,7 +212,7 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
 
   const retrieved = Array.from(matchesByBusinessId.values());
   const rows = params.rank ? rankPoolCandidates(retrieved) : retrieved;
-  const skipped = { missingBusiness: 0, channelMismatch: 0, alreadyOwned: 0 };
+  const skipped = { missingBusiness: 0, channelMismatch: 0, qualityMismatch: 0, alreadyOwned: 0 };
   const delivered: PoolLookupResult["delivered"] = [];
   let limitReached = false;
   let interrupted: PoolLookupResult["interrupted"] = null;
@@ -212,7 +220,7 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
   if (rows.length > 0) {
     const { data: businesses, error: bizError } = await supabaseAdmin
       .from("businesses")
-      .select("id, name, niche, address, website, email, phone, instagram")
+      .select("id, name, niche, address, website, email, phone, instagram, reviews_rating, reviews_count")
       .in(
         "id",
         rows.map((r) => r.business_id),
@@ -233,6 +241,14 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
 
         if (!channelsSatisfied(business, params.channels)) {
           skipped.channelMismatch += 1;
+          continue;
+        }
+
+        // Safeguard only: the SQL already excluded these. Field names differ
+        // from the engine lead (reviews_rating/reviews_count -> rating/reviews).
+        const b = business as PoolBusiness & { reviews_rating?: unknown; reviews_count?: unknown };
+        if (evaluateLeadQuality({ rating: b.reviews_rating, reviews: b.reviews_count }).reject) {
+          skipped.qualityMismatch += 1;
           continue;
         }
 

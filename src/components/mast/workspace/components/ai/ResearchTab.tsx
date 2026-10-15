@@ -56,11 +56,11 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3.5">
       {/* Header */}
       <div>
         <div className="flex items-center gap-2">
-          <div className="size-6 rounded-lg bg-indigo-500/15 text-indigo-400 grid place-items-center">
+          <div className="size-6 rounded-lg bg-indigo-500/15 border border-indigo-500/25 text-indigo-400 grid place-items-center shrink-0">
             <Search className="size-3.5" />
           </div>
           <div>
@@ -84,20 +84,20 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
             value={researchQuestion}
             onChange={(e) => setResearchQuestion(e.target.value)}
             placeholder="e.g. Do they use WordPress? Who is the owner?"
-            className="h-8 text-xs bg-background/50 border-border/70 rounded-lg placeholder:text-muted-foreground/60 flex-1"
+            className="h-8 text-xs bg-background/50 border-border/60 rounded-lg placeholder:text-muted-foreground/50 focus-visible:ring-indigo-500/40 flex-1"
           />
           <Button
             type="submit"
             disabled={!researchQuestion.trim()}
             variant="outline"
-            className="h-8 px-2.5 text-xs border-border/70 bg-card/60 hover:bg-card text-foreground rounded-lg"
+            className="h-8 px-2.5 text-xs border-border/60 bg-card/50 hover:bg-card text-foreground rounded-lg shrink-0"
           >
             Investigate
           </Button>
         </div>
 
-        {/* Honest AI connection notice */}
-        <div className="p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-[10px] space-y-1 text-foreground/90">
+        {/* Honest AI connection notice (compact) */}
+        <div className="p-2 rounded-lg border border-amber-500/25 bg-amber-500/5 text-[10px] space-y-0.5 text-foreground/90">
           <div className="flex items-center gap-1.5 font-semibold text-amber-300">
             <Info className="size-3 text-amber-400 shrink-0" />
             <span>Telemetry &amp; Verified Data Only</span>
@@ -109,25 +109,25 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
       </form>
 
       {/* 1. Business Overview Card */}
-      <div className="p-3 rounded-xl border border-border/70 bg-card/50 space-y-2.5">
+      <div className="p-3 rounded-xl border border-border/60 bg-card/40 space-y-2.5">
         <div className="flex items-start justify-between">
-          <div>
+          <div className="min-w-0 pr-2">
             <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block">
               Business Summary
             </span>
-            <h5 className="text-sm font-semibold text-foreground mt-0.5">{lead.businessName}</h5>
-            <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
-              <span className="px-1.5 py-0.5 rounded bg-border/50 text-foreground/90 font-medium">
+            <h5 className="text-sm font-semibold text-foreground mt-0.5 truncate">{lead.businessName}</h5>
+            <div className="flex items-center gap-1.5 mt-1 text-[11px] text-muted-foreground flex-wrap">
+              <span className="px-1.5 py-0.2 rounded bg-border/50 text-foreground/90 font-medium text-[10px]">
                 {nicheLabel}
               </span>
-              {lead.location && <span>· {lead.location}</span>}
+              {lead.location && <span className="text-[11px]">· {lead.location}</span>}
             </div>
           </div>
 
           {score !== null && (
-            <div className="text-right">
-              <span className="text-[10px] text-muted-foreground uppercase font-mono">Opportunity</span>
-              <div className="flex items-center gap-1 justify-end mt-0.5">
+            <div className="text-right shrink-0">
+              <span className="text-[10px] text-muted-foreground uppercase font-mono block">Opportunity</span>
+              <div className="flex items-center gap-0.5 justify-end mt-0.5">
                 <span className="text-sm font-bold text-indigo-400">{score}</span>
                 <span className="text-[10px] text-muted-foreground font-mono">/100</span>
               </div>
@@ -183,7 +183,7 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
       </div>
 
       {/* 2. Useful Findings from Intelligence Data */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
           <TrendingUp className="size-3.5 text-indigo-400" />
           Opportunity Findings
@@ -195,30 +195,33 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
           </div>
         ) : explanation?.reasons && explanation.reasons.length > 0 ? (
           <div className="space-y-1.5">
-            {explanation.reasons.map((r, i) => (
-              <div
-                key={i}
-                className="p-2.5 rounded-lg border border-border/60 bg-card/40 flex items-start gap-2"
-              >
-                <div className="size-2 rounded-full bg-indigo-400 mt-1.5 shrink-0" />
-                <div className="space-y-0.5">
-                  <p className="text-xs font-medium text-foreground leading-snug">{r.reason}</p>
-                  <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-wider">
-                    Component: {r.component} · Weight {r.weight}
-                  </p>
+            {explanation.reasons.map((r, i) => {
+              const reasonText = (r as any).reason || (r as any).label || (r as any).detail || "";
+              return (
+                <div
+                  key={i}
+                  className="p-2.5 rounded-lg border border-border/50 bg-card/30 flex items-start gap-2"
+                >
+                  <div className="size-2 rounded-full bg-indigo-400 mt-1.5 shrink-0" />
+                  <div className="space-y-0.5 min-w-0">
+                    <p className="text-xs font-medium text-foreground leading-snug">{reasonText}</p>
+                    <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-wider">
+                      Component: {r.component} · Weight {r.weight}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
-          <div className="p-3 rounded-lg border border-border/60 bg-card/30 text-xs text-muted-foreground text-center">
+          <div className="p-3 rounded-lg border border-border/50 bg-card/25 text-xs text-muted-foreground text-center">
             {explanation?.summary || "No specific negative findings detected for this lead."}
           </div>
         )}
       </div>
 
       {/* 3. Evidence vs. Inference */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
           <ShieldCheck className="size-3.5 text-emerald-400" />
           Evidence vs. Inference
@@ -226,20 +229,20 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
 
         <div className="grid grid-cols-1 gap-2 text-xs">
           {/* Evidence */}
-          <div className="p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 space-y-1">
+          <div className="p-2.5 rounded-lg border border-emerald-500/25 bg-emerald-500/5 space-y-1">
             <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider block">
               Verified Evidence
             </span>
             <ul className="space-y-1 text-[11px] text-foreground/90">
               <li className="flex items-center gap-1.5">
                 <CheckCircle2 className="size-3 text-emerald-400 shrink-0" />
-                <span>
+                <span className="truncate">
                   {lead.email ? `Verified email: ${lead.email}` : "No verified email on record"}
                 </span>
               </li>
               <li className="flex items-center gap-1.5">
                 <CheckCircle2 className="size-3 text-emerald-400 shrink-0" />
-                <span>
+                <span className="truncate">
                   {lead.website ? `Active domain: ${lead.website}` : "No official web domain registered"}
                 </span>
               </li>
@@ -253,7 +256,7 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
           </div>
 
           {/* Inference */}
-          <div className="p-2.5 rounded-lg border border-indigo-500/30 bg-indigo-500/5 space-y-1">
+          <div className="p-2.5 rounded-lg border border-indigo-500/25 bg-indigo-500/5 space-y-1">
             <span className="text-[10px] font-semibold text-indigo-400 uppercase tracking-wider block">
               Inferred Opportunity
             </span>
@@ -267,7 +270,7 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
       </div>
 
       {/* 4. Pre-Outreach Investigation Questions */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
           <HelpCircle className="size-3.5 text-indigo-400" />
           Questions to Investigate Before Contacting
@@ -277,9 +280,9 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
           {preOutreachQuestions.map((q, idx) => (
             <div
               key={idx}
-              className="p-2 rounded-lg border border-border/50 bg-card/30 text-[11px] text-foreground/80 leading-relaxed flex items-start gap-2"
+              className="p-2 rounded-lg border border-border/40 bg-card/25 text-[11px] text-foreground/80 leading-relaxed flex items-start gap-2"
             >
-              <span className="text-[10px] font-mono text-muted-foreground mt-0.5">{idx + 1}.</span>
+              <span className="text-[10px] font-mono text-muted-foreground mt-0.5 shrink-0">{idx + 1}.</span>
               <span>{q}</span>
             </div>
           ))}

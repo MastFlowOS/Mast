@@ -105,7 +105,8 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
     // 4. Deterministic Opportunity Reasons (Scoring Engine)
     if (explanation?.reasons && Array.isArray(explanation.reasons)) {
       explanation.reasons.forEach((r, idx) => {
-        if (!r?.reason) return;
+        const reasonText = (r as any).reason || (r as any).label || (r as any).detail;
+        if (!reasonText) return;
         const comp = r.component || "opportunity";
         const cat: IdeaCategory =
           comp === "social" || comp === "growth" ? "starters" : "angles";
@@ -115,7 +116,7 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
           category: cat,
           tag: `Signal: ${comp.toUpperCase()}`,
           badgeColor: "bg-blue-500/15 text-blue-400 border-blue-500/30",
-          text: `Focus on their ${r.reason.toLowerCase()}: demonstrate how ${userProfession.toLowerCase()} improvements will attract more local customers.`,
+          text: `Focus on their ${String(reasonText).toLowerCase()}: demonstrate how ${userProfession.toLowerCase()} improvements will attract more local customers.`,
           source: "explanation_signal",
         });
       });
@@ -208,11 +209,11 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3.5">
       {/* Header */}
       <div>
         <div className="flex items-center gap-2">
-          <div className="size-6 rounded-lg bg-indigo-500/15 text-indigo-400 grid place-items-center">
+          <div className="size-6 rounded-lg bg-indigo-500/15 border border-indigo-500/25 text-indigo-400 grid place-items-center shrink-0">
             <Lightbulb className="size-3.5" />
           </div>
           <div>
@@ -235,14 +236,14 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
           placeholder="e.g. Website revamp, booking flow, follow-up bump..."
-          className="h-8 text-xs bg-background/50 border-border/70 rounded-lg placeholder:text-muted-foreground/60"
+          className="h-8 text-xs bg-background/50 border-border/60 rounded-lg placeholder:text-muted-foreground/50 focus-visible:ring-indigo-500/40"
         />
       </div>
 
-      {/* Honest AI connection notice for custom idea generation */}
-      <div className="p-2.5 rounded-lg border border-indigo-500/30 bg-indigo-500/10 text-[11px] space-y-1 text-foreground/90">
+      {/* Grounded Intelligence Notice (compact & subordinate) */}
+      <div className="p-2 rounded-lg border border-indigo-500/25 bg-indigo-500/5 text-[11px] space-y-0.5">
         <div className="flex items-center gap-1.5 font-semibold text-indigo-300">
-          <Info className="size-3.5 text-indigo-400 shrink-0" />
+          <Info className="size-3 text-indigo-400 shrink-0" />
           <span>Grounded Intelligence Live</span>
         </div>
         <p className="text-[10px] text-muted-foreground leading-relaxed">
@@ -263,17 +264,17 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
                 key={cat.id}
                 type="button"
                 onClick={() => setSelectedCategory(cat.id)}
-                className={`py-1.5 px-2.5 rounded-lg text-xs font-medium border text-left transition-all flex items-center justify-between ${
+                className={`py-1.5 px-2 rounded-lg text-xs font-medium border text-left transition-all flex items-center justify-between min-w-0 ${
                   isSelected
-                    ? "border-brand bg-brand/15 text-white shadow-sm font-semibold"
-                    : "border-border/60 bg-card/40 text-muted-foreground hover:text-foreground hover:bg-card/70"
+                    ? "border-indigo-500/80 bg-indigo-500/20 text-white shadow-xs font-semibold"
+                    : "border-border/50 bg-card/30 text-muted-foreground hover:text-foreground hover:bg-card/60"
                 }`}
               >
                 <div className="flex items-center gap-1.5 min-w-0">
                   <Icon className={`size-3 shrink-0 ${isSelected ? "text-indigo-300" : "text-muted-foreground"}`} />
-                  <span className="truncate">{cat.label}</span>
+                  <span className="truncate text-[11px]">{cat.label}</span>
                 </div>
-                <span className="text-[10px] text-muted-foreground font-mono ml-1 shrink-0">
+                <span className="text-[10px] text-muted-foreground font-mono ml-1 shrink-0 px-1 py-0.2 rounded bg-border/40">
                   {count}
                 </span>
               </button>
@@ -283,10 +284,10 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
       </div>
 
       {/* Ideas Result List */}
-      <div className="space-y-2 pt-1">
-        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+      <div className="space-y-2 pt-0.5">
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground">
           <span>{filteredIdeas.length} {filteredIdeas.length === 1 ? "idea" : "ideas"} available</span>
-          <span className="text-[10px]">Click to copy or insert</span>
+          <span>Click to copy or insert</span>
         </div>
 
         {insightLoading || explanationLoading ? (
@@ -294,8 +295,26 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
             Loading lead intelligence signals...
           </div>
         ) : filteredIdeas.length === 0 ? (
-          <div className="py-6 text-center text-xs text-muted-foreground bg-card/30 rounded-xl border border-border/50">
-            No specific {selectedCategory} found for this lead. Try selecting another category above.
+          <div className="py-5 px-3 text-center space-y-2 bg-card/25 rounded-xl border border-border/50">
+            <p className="text-xs text-muted-foreground">
+              No specific {selectedCategory} found for this lead. Try selecting another category above.
+            </p>
+            <div className="flex flex-wrap gap-1.5 justify-center pt-1">
+              <button
+                type="button"
+                onClick={() => setSelectedCategory("angles")}
+                className="text-[10px] font-medium px-2 py-0.5 rounded border border-border/60 bg-card/40 text-foreground hover:border-indigo-500"
+              >
+                Outreach Angles
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedCategory("openers")}
+                className="text-[10px] font-medium px-2 py-0.5 rounded border border-border/60 bg-card/40 text-foreground hover:border-indigo-500"
+              >
+                Opening Lines
+              </button>
+            </div>
           </div>
         ) : (
           <div className="space-y-2 max-h-80 overflow-y-auto pr-0.5">
@@ -304,7 +323,7 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
               return (
                 <div
                   key={idea.id}
-                  className="p-3 rounded-xl border border-border/70 bg-card/50 hover:border-border hover:bg-card/70 transition-all space-y-2"
+                  className="p-2.5 rounded-xl border border-border/60 bg-card/40 hover:border-border/80 hover:bg-card/60 transition-all space-y-2"
                 >
                   <div className="flex items-center justify-between">
                     <span
@@ -316,7 +335,7 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
                       <button
                         type="button"
                         onClick={() => void handleCopyIdea(idea)}
-                        className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-card transition-colors"
+                        className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-card/70 transition-colors"
                         title="Copy idea"
                       >
                         {isCopied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
@@ -324,7 +343,7 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
                       <button
                         type="button"
                         onClick={() => handleUseIdeaInComposer(idea)}
-                        className="p-1 rounded text-muted-foreground hover:text-brand hover:bg-brand/10 transition-colors"
+                        className="p-1 rounded text-muted-foreground hover:text-indigo-400 hover:bg-indigo-500/10 transition-colors"
                         title="Insert into composer"
                       >
                         <Send className="size-3" />
@@ -337,7 +356,7 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
                   </p>
 
                   <div className="flex items-center justify-between pt-1 border-t border-border/40 text-[10px]">
-                    <span className="text-muted-foreground">
+                    <span className="text-muted-foreground truncate max-w-[170px]">
                       {idea.source === "opportunity_insight"
                         ? "Source: AI Opportunity Insight"
                         : idea.source === "explanation_signal"
@@ -347,7 +366,7 @@ export function IdeasTab({ lead, onInsert, composerBody, topic, setTopic }: Idea
                     <button
                       type="button"
                       onClick={() => handleUseIdeaInComposer(idea)}
-                      className="text-indigo-400 hover:text-indigo-300 font-medium inline-flex items-center gap-1"
+                      className="text-indigo-400 hover:text-indigo-300 font-medium inline-flex items-center gap-1 shrink-0"
                     >
                       <span>Use in composer</span>
                       <ArrowRight className="size-2.5" />

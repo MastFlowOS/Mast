@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { getBoss, QUEUES } from "../lib/queue.js";
 import { evaluateEarlyChannelPrune, engineRequiredChannels } from "../discovery/earlyPrune.js";
+import { evaluateLeadQuality } from "../lib/leadQualityPolicy.js";
 import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
 import { deliverLead, upsertBusinessFromEngineLead } from "../scraperBridge/deliverLead.js";
@@ -362,6 +363,24 @@ async function runOneAreaAttempt(
     }
 
     if (requestAbort.signal.aborted) break outer;
+
+    // ── Internal quality gate (rating / review count) — BEFORE any DB write ──
+    // The lead only reaches this loop after the engine opened the business
+    // detail panel, so `lead.rating` / `lead.reviews` are the authoritative
+    // panel values (not the best-effort results-card text). Unknown values
+    // (rating null, reviews 0 — indistinguishable from an extraction miss)
+    // never reject; see src/lib/leadQualityPolicy.ts. This runs before the
+    // upsert, enrichment scheduling and deliverLead, and is independent of the
+    // pool SQL filter. Thresholds are server-side only.
+    const quality = evaluateLeadQuality({ rating: lead.rating, reviews: lead.reviews });
+    if (quality.reject) {
+      rejected += 1;
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=${quality.reason}`);
+      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, quality.reason, areaLabel));
+      continue;
+    }
 
     // ── Early channel prune — BEFORE any DB write or enrichment scheduling ──
     // Uses only data already on the Maps lead (website / phone). Same

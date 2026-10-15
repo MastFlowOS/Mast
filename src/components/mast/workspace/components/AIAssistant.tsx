@@ -68,14 +68,14 @@ export function AIAssistant({
   return (
     <div className="flex flex-col h-full bg-[#0d121d] text-foreground select-none overflow-hidden">
       {/* ─── HEADER: Title + Hide button ─── */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/70 shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="size-6 rounded-lg bg-indigo-500/15 text-indigo-400 grid place-items-center">
+      <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border/60 shrink-0 bg-[#0d121d]">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="size-6 rounded-lg bg-indigo-500/15 border border-indigo-500/25 text-indigo-400 grid place-items-center shrink-0">
             <Sparkles className="size-3.5" />
           </div>
-          <div>
-            <h3 className="text-xs font-semibold text-foreground leading-none">AI Assistant</h3>
-            <p className="text-[10px] text-muted-foreground mt-0.5 leading-none">
+          <div className="min-w-0">
+            <h3 className="text-xs font-semibold text-foreground leading-none tracking-tight">AI Assistant</h3>
+            <p className="text-[10px] text-muted-foreground mt-0.5 leading-none truncate">
               Outreach Workspace Copilot
             </p>
           </div>
@@ -84,7 +84,7 @@ export function AIAssistant({
           <button
             type="button"
             onClick={onHide}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-card/50"
+            className="text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-card/60 border border-transparent hover:border-border/50 shrink-0 ml-2"
           >
             Hide
           </button>
@@ -92,11 +92,11 @@ export function AIAssistant({
       </div>
 
       {/* ─── ACCESSIBLE TABS NAVIGATION: Write, Improve, Ideas, Research ─── */}
-      <div className="p-3 border-b border-border/50 shrink-0">
+      <div className="px-2.5 py-2 border-b border-border/50 shrink-0 bg-[#0d121d]/80">
         <div
           role="tablist"
           aria-label="AI Assistant workspaces"
-          className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-card/60 border border-border/60"
+          className="grid grid-cols-4 gap-0.5 p-0.5 rounded-lg bg-card/50 border border-border/60"
         >
           {tabs.map((tab) => {
             const isActive = activeTab === tab.id;
@@ -111,9 +111,9 @@ export function AIAssistant({
                 tabIndex={isActive ? 0 : -1}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`py-1.5 px-1 rounded-lg text-xs font-medium capitalize transition-all flex items-center justify-center gap-1 ${
+                className={`py-1.5 px-1 rounded-md text-[11px] font-medium capitalize transition-all flex items-center justify-center gap-1 min-w-0 ${
                   isActive
-                    ? "bg-[#4f46e5] text-white shadow-sm font-semibold"
+                    ? "bg-[#4f46e5] text-white shadow-xs font-semibold"
                     : "text-muted-foreground hover:text-foreground hover:bg-card/40"
                 }`}
               >
@@ -130,7 +130,7 @@ export function AIAssistant({
         role="tabpanel"
         id={`assistant-panel-${activeTab}`}
         aria-labelledby={`assistant-tab-${activeTab}`}
-        className="flex-1 overflow-y-auto p-3.5"
+        className="flex-1 overflow-y-auto p-3"
       >
         {activeTab === "write" && (
           <WriteTab

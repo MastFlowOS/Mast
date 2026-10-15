@@ -72,6 +72,16 @@ export class FakeDb {
       const field = ["email", "phone", "instagram", "website"].includes(channel) ? channel : null;
       return field !== null && typeof b[field] === "string" && b[field].trim().length > 0;
     });
+    // Mirrors migration 040: judge only positively observed values; NULL
+    // thresholds disable the check. Missing columns (undefined) = unknown.
+    const ratingOk = (b: Row) => {
+      const r = b.reviews_rating;
+      return args.p_min_rating == null || r == null || r <= 0 || r > 5 || r >= args.p_min_rating;
+    };
+    const reviewsOk = (b: Row) => {
+      const c = b.reviews_count ?? 0;
+      return args.p_min_reviews == null || c <= 0 || c >= args.p_min_reviews;
+    };
     // Mirrors the SQL left join on (business_id, profession_slug): with no
     // profession slug no score can ever match, so ranking has nothing to use.
     const scoreFor = (id: string): number | null =>
@@ -82,6 +92,8 @@ export class FakeDb {
         regionOk(b) &&
         (args.p_niche === "" || has(b.niche, args.p_niche)) &&
         channelOk(b) &&
+        ratingOk(b) &&
+        reviewsOk(b) &&
         !this.leads.some((l) => l.user_id === args.p_user_id && l.business_id === b.id),
     );
     matches.sort((a, b) => {

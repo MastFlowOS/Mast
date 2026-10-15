@@ -10,6 +10,9 @@ import {
   AlertCircle,
   ArrowRight,
   Info,
+  ChevronDown,
+  ChevronUp,
+  SlidersHorizontal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -82,6 +85,9 @@ export function WriteTab({
   const [isGeneratingFree, setIsGeneratingFree] = useState(false);
   const [copiedDraft, setCopiedDraft] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(() => {
+    return Boolean(customInstructions.trim() || (template && template !== "initial"));
+  });
 
   const isGenerating = generateDraft.isPending || isGeneratingFree;
   const senderName = settings?.senderName ?? auth?.user?.fullName ?? "";
@@ -240,50 +246,15 @@ export function WriteTab({
         </div>
       </div>
 
-      {/* Field: What the user wants to communicate */}
-      <div className="space-y-1.5">
-        <label
-          htmlFor="write-custom-instructions"
-          className="text-[11px] font-semibold text-foreground flex items-center justify-between"
-        >
-          <span>What do you want to communicate?</span>
-          <span className="text-[10px] text-muted-foreground font-normal">Optional</span>
-        </label>
-        <Textarea
-          id="write-custom-instructions"
-          value={customInstructions}
-          onChange={(e) => setCustomInstructions(e.target.value)}
-          placeholder="e.g. Mention their website speed issue, offer a quick 2-minute video audit, reference their high review count..."
-          className="min-h-16 text-xs bg-background/50 border-border/70 rounded-lg resize-none placeholder:text-muted-foreground/60 focus-visible:ring-brand/40"
-        />
-      </div>
-
-      {/* Message Type / Template Selector */}
-      <div className="space-y-1.5">
-        <label
-          htmlFor="write-template-selector"
-          className="text-[11px] font-semibold text-foreground"
-        >
-          Outreach Sequence / Type
-        </label>
-        <select
-          id="write-template-selector"
-          value={template}
-          onChange={(e) => setTemplate(e.target.value)}
-          className="w-full h-8 px-2.5 text-xs rounded-lg bg-card/60 border border-border/70 text-foreground focus:outline-none focus:ring-1 focus:ring-brand"
-        >
-          {TEMPLATES.map((t) => (
-            <option key={t.value} value={t.value} className="bg-[#0d121d] text-foreground">
-              {t.label} {t.tier === "ai" ? "(AI DeepSeek)" : "(Grounded Template)"}
-            </option>
-          ))}
-        </select>
-      </div>
-
       {/* Tone Controls */}
       <div className="space-y-1.5">
-        <label className="text-[11px] font-semibold text-foreground">Tone</label>
-        <div className="grid grid-cols-3 gap-1.5">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="font-semibold text-foreground">Tone</span>
+          <span className="text-[10px] text-muted-foreground truncate max-w-[170px]">
+            {TONES.find((t) => t.id === tone)?.desc ?? tone}
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-1">
           {TONES.map((t) => {
             const isSelected = tone === t.id;
             return (
@@ -292,10 +263,10 @@ export function WriteTab({
                 type="button"
                 onClick={() => setTone(t.id)}
                 title={t.desc}
-                className={`py-1.5 px-2 rounded-lg text-xs font-medium border text-center transition-all ${
+                className={`h-7 px-1.5 rounded-md text-[11px] font-medium border text-center transition-all truncate ${
                   isSelected
-                    ? "border-brand bg-brand/15 text-white shadow-sm font-semibold"
-                    : "border-border/60 bg-card/40 text-muted-foreground hover:text-foreground hover:bg-card/70"
+                    ? "border-indigo-500/80 bg-indigo-500/20 text-white font-semibold shadow-xs"
+                    : "border-border/50 bg-card/30 text-muted-foreground hover:text-foreground hover:bg-card/60"
                 }`}
               >
                 {t.label}
@@ -307,8 +278,13 @@ export function WriteTab({
 
       {/* Length Preference */}
       <div className="space-y-1.5">
-        <label className="text-[11px] font-semibold text-foreground">Length Preference</label>
-        <div className="grid grid-cols-3 gap-1.5">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="font-semibold text-foreground">Length Preference</span>
+          <span className="text-[10px] text-muted-foreground">
+            {LENGTH_OPTIONS.find((l) => l.id === lengthPreference)?.sub}
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-card/40 border border-border/50">
           {LENGTH_OPTIONS.map((l) => {
             const isSelected = lengthPreference === l.id;
             return (
@@ -316,18 +292,85 @@ export function WriteTab({
                 key={l.id}
                 type="button"
                 onClick={() => setLengthPreference(l.id)}
-                className={`py-1 px-2 rounded-lg text-xs border text-center transition-all flex flex-col items-center ${
+                className={`py-1.5 px-2 rounded-md text-[11px] font-medium text-center transition-all ${
                   isSelected
-                    ? "border-brand bg-brand/15 text-white shadow-sm font-semibold"
-                    : "border-border/60 bg-card/40 text-muted-foreground hover:text-foreground hover:bg-card/70"
+                    ? "bg-indigo-600 text-white shadow-xs font-semibold"
+                    : "text-muted-foreground hover:text-foreground hover:bg-card/40"
                 }`}
               >
-                <span className="font-medium">{l.label}</span>
-                <span className="text-[9px] text-muted-foreground">{l.sub}</span>
+                <span>{l.label}</span>
               </button>
             );
           })}
         </div>
+      </div>
+
+      {/* Progressive Disclosure: Collapsible Advanced Options */}
+      <div className="pt-0.5">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((prev) => !prev)}
+          aria-expanded={showAdvanced}
+          className="w-full flex items-center justify-between py-1.5 px-2.5 rounded-lg bg-card/30 hover:bg-card/60 border border-border/50 text-[11px] text-muted-foreground hover:text-foreground transition-all group"
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <SlidersHorizontal className="size-3 text-indigo-400 group-hover:text-indigo-300 shrink-0" />
+            <span className="font-medium text-foreground">Advanced Settings</span>
+            {(customInstructions.trim() || template !== "initial") && (
+              <span className="size-1.5 rounded-full bg-indigo-400 shrink-0" />
+            )}
+          </div>
+          <div className="flex items-center gap-1 text-[10px] shrink-0 text-muted-foreground/80">
+            <span className="truncate max-w-[120px]">
+              {TEMPLATES.find((t) => t.value === template)?.label ?? "Sequence"}
+            </span>
+            {showAdvanced ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          </div>
+        </button>
+
+        {showAdvanced && (
+          <div className="mt-2 space-y-2.5 p-2.5 rounded-xl bg-card/25 border border-border/50 animate-fade-in">
+            {/* Outreach Sequence / Type */}
+            <div className="space-y-1">
+              <label
+                htmlFor="write-template-selector"
+                className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block"
+              >
+                Outreach Sequence / Type
+              </label>
+              <select
+                id="write-template-selector"
+                value={template}
+                onChange={(e) => setTemplate(e.target.value)}
+                className="w-full h-8 px-2 text-xs rounded-lg bg-background/60 border border-border/60 text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {TEMPLATES.map((t) => (
+                  <option key={t.value} value={t.value} className="bg-[#0d121d] text-foreground">
+                    {t.label} {t.tier === "ai" ? "(AI DeepSeek)" : "(Grounded Template)"}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* What do you want to communicate? */}
+            <div className="space-y-1">
+              <label
+                htmlFor="write-custom-instructions"
+                className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between"
+              >
+                <span>What do you want to communicate?</span>
+                <span className="text-[9px] text-muted-foreground/70 font-normal lowercase">Optional</span>
+              </label>
+              <Textarea
+                id="write-custom-instructions"
+                value={customInstructions}
+                onChange={(e) => setCustomInstructions(e.target.value)}
+                placeholder="e.g. Mention their website speed issue, offer a quick 2-minute video audit, reference their high review count..."
+                className="min-h-16 text-xs bg-background/60 border-border/60 rounded-lg resize-none placeholder:text-muted-foreground/50 focus-visible:ring-indigo-500/40"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Primary Action: Generate Draft */}
@@ -335,7 +378,7 @@ export function WriteTab({
         type="button"
         onClick={() => void handleGenerate()}
         disabled={isGenerating}
-        className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20"
+        className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20 transition-all active:scale-[0.99]"
       >
         {isGenerating ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
         <span>{isGenerating ? "Generating draft..." : "Generate Draft"}</span>

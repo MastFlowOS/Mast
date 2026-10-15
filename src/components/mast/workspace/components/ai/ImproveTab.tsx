@@ -254,11 +254,11 @@ export function ImproveTab({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3.5">
       {/* Header */}
       <div>
         <div className="flex items-center gap-2">
-          <div className="size-6 rounded-lg bg-indigo-500/15 text-indigo-400 grid place-items-center">
+          <div className="size-6 rounded-lg bg-indigo-500/15 border border-indigo-500/25 text-indigo-400 grid place-items-center shrink-0">
             <Wand2 className="size-3.5" />
           </div>
           <div>
@@ -269,18 +269,18 @@ export function ImproveTab({
           </div>
         </div>
 
-        {/* Live Preview of Current Composer Draft */}
-        <div className="mt-2.5 p-2.5 rounded-lg bg-card/60 border border-border/60 space-y-1.5">
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono">
-            <span className="flex items-center gap-1 font-sans font-semibold text-foreground text-[11px]">
+        {/* Live Preview of Current Composer Draft - Main Focus */}
+        <div className="mt-2.5 p-2.5 rounded-xl bg-card/60 border border-indigo-500/25 space-y-1.5 shadow-xs">
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+            <span className="flex items-center gap-1.5 font-semibold text-foreground text-[11px]">
               <FileText className="size-3 text-indigo-400" />
               Current Message
             </span>
-            <span>
+            <span className="px-1.5 py-0.5 rounded bg-border/40 font-mono text-[10px]">
               {wordCount} {wordCount === 1 ? "word" : "words"} · {charCount} chars
             </span>
           </div>
-          <div className="text-xs text-foreground/80 max-h-24 overflow-y-auto whitespace-pre-wrap leading-relaxed select-text font-normal pr-1 border-t border-border/40 pt-1.5">
+          <div className="text-xs text-foreground/90 max-h-24 overflow-y-auto whitespace-pre-wrap leading-relaxed select-text font-normal pr-1 border-t border-border/40 pt-1.5">
             {cleanBody}
           </div>
         </div>
@@ -298,16 +298,14 @@ export function ImproveTab({
                 key={opt.id}
                 type="button"
                 onClick={() => setSelectedMode(opt.id)}
-                className={`p-2 rounded-lg text-left border transition-all flex flex-col gap-1 ${
+                className={`p-2 rounded-lg text-left border transition-all flex items-center gap-2 min-w-0 ${
                   isSelected
-                    ? "border-brand bg-brand/15 text-white shadow-sm"
-                    : "border-border/60 bg-card/40 text-muted-foreground hover:text-foreground hover:bg-card/70"
+                    ? "border-indigo-500/80 bg-indigo-500/20 text-white shadow-xs font-medium"
+                    : "border-border/50 bg-card/30 text-muted-foreground hover:text-foreground hover:bg-card/60"
                 }`}
               >
-                <div className="flex items-center gap-1.5">
-                  <Icon className={`size-3 ${isSelected ? "text-indigo-300" : "text-muted-foreground"}`} />
-                  <span className="text-xs font-medium leading-tight">{opt.label}</span>
-                </div>
+                <Icon className={`size-3.5 shrink-0 ${isSelected ? "text-indigo-300" : "text-muted-foreground"}`} />
+                <span className="text-[11px] font-medium leading-tight truncate">{opt.label}</span>
               </button>
             );
           })}
@@ -316,8 +314,11 @@ export function ImproveTab({
 
       {/* Tone sub-selector if Tone mode selected */}
       {selectedMode === "tone" && (
-        <div className="space-y-1.5 p-2 rounded-lg bg-card/50 border border-border/60">
-          <label className="text-[10px] uppercase font-semibold text-muted-foreground">Target Tone</label>
+        <div className="space-y-1.5 p-2 rounded-lg bg-card/40 border border-border/50 animate-fade-in">
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="uppercase font-semibold text-muted-foreground">Target Tone</span>
+            <span className="text-indigo-400 font-medium capitalize">{selectedTone}</span>
+          </div>
           <div className="grid grid-cols-3 gap-1">
             {TONES.map((t) => (
               <button
@@ -327,10 +328,10 @@ export function ImproveTab({
                   setSelectedTone(t.id);
                   setTone(t.id);
                 }}
-                className={`py-1 px-1.5 rounded text-[11px] border font-medium text-center ${
+                className={`py-1 px-1.5 rounded-md text-[11px] border font-medium text-center transition-all ${
                   selectedTone === t.id
-                    ? "border-brand bg-brand/20 text-white"
-                    : "border-border/50 text-muted-foreground hover:text-foreground bg-card/30"
+                    ? "border-indigo-500/80 bg-indigo-500/20 text-white font-semibold shadow-xs"
+                    : "border-border/50 text-muted-foreground hover:text-foreground bg-card/30 hover:bg-card/60"
                 }`}
               >
                 {t.label}
@@ -354,7 +355,7 @@ export function ImproveTab({
           value={customInstruction}
           onChange={(e) => setCustomInstruction(e.target.value)}
           placeholder="e.g. Focus on ROI, keep their recent Instagram photos in mind..."
-          className="min-h-14 text-xs bg-background/50 border-border/70 rounded-lg resize-none placeholder:text-muted-foreground/60 focus-visible:ring-brand/40"
+          className="min-h-14 text-xs bg-background/50 border-border/60 rounded-lg resize-none placeholder:text-muted-foreground/50 focus-visible:ring-indigo-500/40"
         />
       </div>
 
@@ -363,7 +364,7 @@ export function ImproveTab({
         type="button"
         onClick={() => void handleRunImprovement()}
         disabled={generateDraft.isPending}
-        className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20"
+        className="w-full h-9 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-500/20 transition-all active:scale-[0.99]"
       >
         {generateDraft.isPending ? (
           <Loader2 className="size-3.5 animate-spin" />

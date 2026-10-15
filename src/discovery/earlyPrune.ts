@@ -29,21 +29,18 @@
  * on the lead. A missing email/instagram on the lead is therefore never a
  * reason to reject at this stage.
  *
- * EXTENSION POINT — minimum rating / minimum review count (NOT implemented)
- * ----------------------------------------------------------------------
- * `lead.rating` / `lead.review_count` are populated only AFTER the engine has
+ * RATING / REVIEW COUNT (decided elsewhere)
+ * -----------------------------------------
+ * `lead.rating` / `lead.reviews` are populated only AFTER the engine has
  * opened the business detail panel (the expensive step). Pre-click, the only
  * source is the results-card text, which maps_scraper.py documents as
  * best-effort/informational ("NOTHING below may branch discovery behavior on
- * them") and which has no test against a real Maps DOM. Filtering on those
- * pre-click values would therefore rest on unverified selectors, so it is
- * deliberately left out. A post-panel, pre-upsert check on the lead's numeric
- * fields could be added here as a separate pure function (rating and review
- * count kept as independent, optional thresholds, absent value => do not
- * prune), but it needs new request fields and validation in the HTTP route
- * and plan payload first. It would save only the upsert/enrichment, not the
- * panel click. Confirm the data source's terms permit this use before
- * building on it.
+ * them"), so it is deliberately NOT used for rejection. The internal
+ * rating/review gate therefore runs in handleDiscoveryTask right after the
+ * panel-derived lead arrives and before the upsert, via `evaluateLeadQuality`
+ * (src/lib/leadQualityPolicy.ts; thresholds are server-side defaults, absent
+ * or unparsed values never reject). It saves the upsert/enrichment, not the
+ * panel click.
  *
  * TRADE-OFF (deliberate, per the "reject before database writes" goal):
  * a lead rejected here is no longer persisted to the shared `businesses`

@@ -171,7 +171,7 @@ function post(body: Row, userId = newUser()) {
   });
 }
 
-type BizOpts = { niche?: string; email?: boolean; phone?: boolean; instagram?: boolean; website?: boolean; day?: number; disqualified?: boolean; country?: string };
+type BizOpts = { niche?: string; email?: boolean; phone?: boolean; instagram?: boolean; website?: boolean; day?: number; disqualified?: boolean; country?: string; rating?: unknown; reviews?: unknown };
 function addBiz(name: string, o: BizOpts = {}) {
   const id = db.nextId("biz");
   db.businesses.push({
@@ -186,6 +186,9 @@ function addBiz(name: string, o: BizOpts = {}) {
     phone: o.phone === false ? null : "+15550001111",
     instagram: o.instagram === false ? null : `@${name}`,
     is_disqualified: o.disqualified ?? false,
+    // Omitted unless the test sets them: an absent column = unknown values.
+    ...("rating" in o ? { reviews_rating: o.rating } : {}),
+    ...("reviews" in o ? { reviews_count: o.reviews } : {}),
     first_discovered_at: `2026-01-${String(o.day ?? 1).padStart(2, "0")}T00:00:00Z`,
     fingerprints: [],
   });
@@ -363,6 +366,106 @@ describe("Ranked Instant never starts live work and ranks globally", () => {
     assert.equal(body.ranking.status, "unavailable");
     assert.equal(body.ranking.reason, "no_profession_focus");
     assertNoLiveWork();
+  });
+});
+
+describe("internal quality filter (rating / review count) — Instant and Ranked Instant", () => {
+  const names = (body: Row) => body.results.map((r: Row) => nameOf(r.businessId)).sort();
+
+  test("the server-side thresholds reach the pool query; the request never carries them", async () => {
+    planId = "pro";
+    addBiz("ok", { rating: 4.6, reviews: 80 });
+    await post({ method: "instant_pool" });
+    const call = db.rpcCalls.find((c: Row) => c.fn === "pool_lookup")!;
+    assert.equal(call.args.p_min_rating, 4.0);
+    assert.equal(call.args.p_min_reviews, 20);
+  });
+
+  test("below-minimum rating and below-minimum review count are excluded BEFORE the limit (newer bad rows cannot hide older good ones)", async () => {
+    planId = "pro";
+    addBiz("good-a", { rating: 4.5, reviews: 100, day: 1 });
+    addBiz("good-b", { rating: 4.0, reviews: 20, day: 2 }); // exactly at both minimums
+    addBiz("low-rating", { rating: 3.9, reviews: 500, day: 20 });
+    addBiz("low-reviews", { rating: 4.9, reviews: 19, day: 21 });
+    addBiz("both-low", { rating: 2.5, reviews: 3, day: 22 });
+    const res = await post({ method: "instant_pool", quantity: 2 });
+    const body = await res.json();
+    assert.equal(body.delivered, 2);
+    assert.equal(body.status, "completed");
+    assert.deepEqual(names(body), ["good-a", "good-b"]);
+    assert.equal(db.leads.length, 2);
+  });
+
+  test("missing / malformed values are UNKNOWN and never reject (null rating, 0 or absent reviews, junk values)", async () => {
+    planId = "pro";
+    addBiz("no-columns", { day: 1 });
+    addBiz("null-rating", { rating: null, reviews: 50, day: 2 });
+    addBiz("zero-reviews", { rating: 4.4, reviews: 0, day: 3 }); // scraper emits 0 for unparsed
+    addBiz("rating-over-5", { rating: 9, reviews: 50, day: 4 }); // impossible value = unknown
+    addBiz("reviews-null", { rating: 4.4, reviews: null, day: 5 });
+    const res = await post({ method: "instant_pool", quantity: 5 });
+    const body = await res.json();
+    assert.equal(body.delivered, 5);
+    assert.deepEqual(names(body), ["no-columns", "null-rating", "rating-over-5", "reviews-null", "zero-reviews"]);
+  });
+
+  test("Ranked Instant applies the same filter before ranking: a high-score low-quality business is never selected", async () => {
+    planId = "pro";
+    const star = addBiz("star-but-bad", { rating: 3.0, reviews: 400, day: 1 });
+    const a = addBiz("good-high", { rating: 4.8, reviews: 90, day: 2 });
+    const b = addBiz("good-low", { rating: 4.1, reviews: 25, day: 3 });
+    db.opportunityScores.set(star, 99).set(a, 80).set(b, 50);
+    const res = await post({ method: "instant_pool_ranked", quantity: 2 });
+    const body = await res.json();
+    assert.deepEqual(body.results.map((r: Row) => nameOf(r.businessId)), ["good-high", "good-low"]);
+    assert.equal(body.ranking.status, "full");
+    const call = db.rpcCalls.find((c: Row) => c.fn === "pool_lookup")!;
+    assert.equal(call.args.p_rank, true);
+    assert.equal(call.args.p_min_rating, 4.0);
+  });
+
+  test("channel AND semantics are unchanged alongside the quality filter", async () => {
+    planId = "pro";
+    addBiz("ok-all", { rating: 4.5, reviews: 60, day: 1 });
+    addBiz("ok-no-phone", { rating: 4.5, reviews: 60, phone: false, day: 2 });
+    addBiz("bad-quality-all-channels", { rating: 3.0, reviews: 60, day: 3 });
+    const res = await post({ method: "instant_pool", channels: ["email", "phone"] });
+    const body = await res.json();
+    assert.deepEqual(names(body), ["ok-all"]);
+    assert.equal(spies.lookup[0].channels.join(","), "email,phone");
+  });
+
+  test("safeguard: a low-quality row that somehow comes back from the query is skipped — not delivered, not charged", async () => {
+    planId = "pro";
+    const bad = addBiz("slipped-through", { rating: 3.1, reviews: 8 });
+    const good = addBiz("fine", { rating: 4.7, reviews: 70 });
+    const prevRpc = (supabaseAdmin as any).rpc;
+    (supabaseAdmin as any).rpc = (fn: string, args: Row) =>
+      fn === "pool_lookup"
+        ? Promise.resolve({ data: [{ business_id: bad, opportunity_score: null }, { business_id: good, opportunity_score: null }], error: null })
+        : prevRpc(fn, args);
+    try {
+      const res = await post({ method: "instant_pool", quantity: 2 });
+      const body = await res.json();
+      assert.deepEqual(names(body), ["fine"]);
+      assert.equal(body.skipped.qualityMismatch, 1);
+      assert.equal(body.delivered, 1);
+      assert.equal(db.leads.length, 1);
+      assert.equal(db.usageUsed, 1, "only the delivered lead is charged");
+    } finally {
+      (supabaseAdmin as any).rpc = prevRpc;
+    }
+  });
+
+  test("already-owned businesses are still never re-delivered or re-charged", async () => {
+    planId = "pro";
+    const user = newUser();
+    addBiz("only", { rating: 4.5, reviews: 50 });
+    await post({ method: "instant_pool" }, user);
+    const again = await (await post({ method: "instant_pool" }, user)).json();
+    assert.equal(again.delivered, 0);
+    assert.equal(db.leads.length, 1);
+    assert.equal(db.usageUsed, 1);
   });
 });
 

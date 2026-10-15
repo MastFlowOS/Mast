@@ -62,6 +62,7 @@ import {
 } from "@/lib/lead-workspace";
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { cn } from "@/lib/utils";
+import { setLeadNavigationContext } from "@/lib/leadNavigation";
 
 export const Route = createFileRoute("/dashboard/relationships")({
   head: () => ({ meta: [{ title: "Relationships — Mast" }] }),
@@ -792,6 +793,13 @@ function Relationships() {
       toast.success("Relationship added");
       setAddOpen(false);
       setNewLead(emptyLeadForm);
+      setLeadNavigationContext({
+        leadIds: [lead.id, ...visibleLeads.map((l) => l.id)],
+        total: visibleLeads.length + 1,
+        source: "relationships",
+        returnTo: "/dashboard/relationships",
+        label: "Relationships",
+      });
       navigate({
         to: "/dashboard/leads/$leadId",
         params: { leadId: String(lead.id) },
@@ -801,11 +809,19 @@ function Relationships() {
     }
   };
 
-  const openLead = (id: number) =>
+  const openLead = (id: number) => {
+    setLeadNavigationContext({
+      leadIds: visibleLeads.map((l) => l.id),
+      total: visibleLeads.length,
+      source: "relationships",
+      returnTo: "/dashboard/relationships",
+      label: "Relationships",
+    });
     navigate({
       to: "/dashboard/leads/$leadId",
       params: { leadId: String(id) },
     });
+  };
 
   const pageButtons = useMemo(() => {
     if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);

@@ -75,6 +75,7 @@ import {
   summarizeStageValue,
 } from "@/components/mast/pipeline/pipelineFlowModel";
 import { usePermissions } from "@/hooks/use-permissions";
+import { setLeadNavigationContext } from "@/lib/leadNavigation";
 
 /** Cards shown per column before "+ N more"; "Show less" returns to this. */
 const BOARD_PAGE = 5;
@@ -719,7 +720,16 @@ function Pipeline() {
       .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
   }, [filteredLeads]);
 
-  const openLead = (id: number) => navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(id) } });
+  const openLead = (id: number) => {
+    setLeadNavigationContext({
+      leadIds: filteredLeads.map((l) => l.id),
+      total: filteredLeads.length,
+      source: "pipeline",
+      returnTo: "/dashboard/pipeline",
+      label: "Pipeline",
+    });
+    navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(id) } });
+  };
 
   const coachActions = useMemo<CoachAction[]>(
     () =>

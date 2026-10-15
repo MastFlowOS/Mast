@@ -45,6 +45,7 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { type FeatureId } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
+import { setLeadNavigationContext } from "@/lib/leadNavigation";
 import { DiscoverGlobe } from "@/components/mast/discover/DiscoverGlobe";
 import { DiscoverAtmosphere } from "@/components/mast/discover/DiscoverAtmosphere";
 import { NicheCarousel } from "@/components/mast/discover/NicheCarousel";
@@ -657,6 +658,13 @@ function GetLeads() {
 
   const handleBeginOutreach = () => {
     if (firstOpportunityId) {
+      setLeadNavigationContext({
+        leadIds: newOpportunities.map((o) => o.id),
+        total: newOpportunities.length,
+        source: "discover",
+        returnTo: "/dashboard/leads",
+        label: "Discover",
+      });
       navigate({
         to: "/dashboard/leads/$leadId",
         params: { leadId: String(firstOpportunityId) },
@@ -855,6 +863,13 @@ function GetLeads() {
                 <div
                   key={opp.id}
                   onClick={() => {
+                    setLeadNavigationContext({
+                      leadIds: newOpportunities.map((o) => o.id),
+                      total: newOpportunities.length,
+                      source: "discover",
+                      returnTo: "/dashboard/leads",
+                      label: "Discover",
+                    });
                     navigate({
                       to: "/dashboard/leads/$leadId",
                       params: { leadId: String(opp.id) },

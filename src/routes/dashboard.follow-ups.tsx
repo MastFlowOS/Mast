@@ -27,6 +27,7 @@ import {
 import { toast } from "sonner";
 import missionHeroBg from "@/assets/todays-mission-card-background.webp";
 import { getLead, type FollowupWithLead, type Lead, type OutreachChannel } from "@/lib/api";
+import { setLeadNavigationContext } from "@/lib/leadNavigation";
 import {
   useFollowups,
   useMissionWeekStats,
@@ -116,6 +117,14 @@ function MissionsPage() {
   const busy = updateFollowup.isPending || recordActivity.isPending;
 
   const openLead = (leadId: number) => {
+    const poolLeadIds = mission.todayPool.map((item) => item.leadId);
+    setLeadNavigationContext({
+      leadIds: poolLeadIds.includes(leadId) ? poolLeadIds : [leadId, ...poolLeadIds],
+      total: poolLeadIds.length,
+      source: "follow-ups",
+      returnTo: "/dashboard/follow-ups",
+      label: "Follow-ups",
+    });
     navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(leadId) } });
   };
 

@@ -14,13 +14,22 @@ import {
   AlertTriangle,
   X,
   Check,
+  Download,
+  Layers,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useCreateLead, useRecordLeadActivity, useUpdateLead, useLeads } from "@/hooks/use-mast-api";
 import { ApiError, type Lead, type LeadStatus, type LeadActivityType } from "@/lib/api";
 import { isRelationshipLead, normalizeLeadStatus } from "@/lib/lead-workspace";
+import {
+  getLeadNavigationContext,
+  normalizeLeads,
+  type LeadNavigationContext,
+} from "@/lib/leadNavigation";
+import { exportLeadsAsCSV } from "@/lib/leadExport";
+import { ExportSelectedLeadsDialog } from "./components/ExportSelectedLeadsDialog";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
 
 type ConfirmAction = "archive" | "delete" | null;
@@ -28,15 +37,18 @@ type ConfirmAction = "archive" | "delete" | null;
 export function LeadWorkspaceHeader({
   lead,
   channel = "email",
+  navigationContext,
 }: {
   lead: Lead;
   channel?: Channel;
+  navigationContext?: LeadNavigationContext;
 }) {
   const navigate = useNavigate();
   const recordActivity = useRecordLeadActivity();
   const createLead = useCreateLead();
   const updateLeadMutation = useUpdateLead();
-  const { data: allLeads } = useLeads();
+  const { data: allLeadsData } = useLeads({ limit: 5000 });
+  const allLeadsList = useMemo(() => normalizeLeads(allLeadsData), [allLeadsData]);
 
   const [saved, setSaved] = useState(isRelationshipLead(lead));
   const [status, setStatus] = useState<LeadStatus>(normalizeLeadStatus(lead.status));
@@ -44,13 +56,15 @@ export function LeadWorkspaceHeader({
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPending, setMenuPending] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
+  // Synchronize state when lead changes
   useEffect(() => {
     setSaved(isRelationshipLead(lead));
     setStatus(normalizeLeadStatus(lead.status));
     setIsStarred(lead.priority === "high");
-  }, [lead.status, lead.userId, lead.source, lead.lastContactedAt, lead.priority]);
+  }, [lead.id, lead.status, lead.userId, lead.source, lead.lastContactedAt, lead.priority]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -62,23 +76,94 @@ export function LeadWorkspaceHeader({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [menuOpen]);
 
-  // Lead switcher pagination
-  const leadList = Array.isArray(allLeads) ? allLeads : [];
-  const currentIndex = leadList.findIndex((item) => item.id === lead.id);
-  const displayIndex = currentIndex >= 0 ? currentIndex + 1 : 1;
-  const totalCount = leadList.length > 0 ? leadList.length : 1;
+  // Lead navigation context and pagination
+  const navContext = navigationContext ?? getLeadNavigationContext();
+
+  const hasContext = Boolean(
+    navContext &&
+    Array.isArray(navContext.leadIds) &&
+    navContext.leadIds.length > 0 &&
+    navContext.leadIds.includes(lead.id),
+  );
+
+  const leadIds = useMemo(() => (hasContext ? navContext!.leadIds : []), [hasContext, navContext]);
+  const currentIndex = hasContext ? leadIds.indexOf(lead.id) : -1;
+  const displayIndex = hasContext ? currentIndex + 1 : 1;
+  const totalCount = hasContext ? navContext!.total || leadIds.length : 1;
+
+  const canGoPrev = hasContext && currentIndex > 0;
+  const canGoNext = hasContext && currentIndex >= 0 && currentIndex < leadIds.length - 1;
 
   const handlePrevLead = () => {
-    if (currentIndex > 0) {
-      const prevId = leadList[currentIndex - 1].id;
+    if (canGoPrev) {
+      const prevId = leadIds[currentIndex - 1];
       navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(prevId) } });
     }
   };
 
   const handleNextLead = () => {
-    if (currentIndex >= 0 && currentIndex < leadList.length - 1) {
-      const nextId = leadList[currentIndex + 1].id;
+    if (canGoNext) {
+      const nextId = leadIds[currentIndex + 1];
       navigate({ to: "/dashboard/leads/$leadId", params: { leadId: String(nextId) } });
+    }
+  };
+
+  // Keyboard arrow navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as Element | null;
+      if (target && "tagName" in target) {
+        const tagName = target.tagName;
+        if (
+          tagName === "INPUT" ||
+          tagName === "TEXTAREA" ||
+          tagName === "SELECT" ||
+          (target as HTMLElement).isContentEditable ||
+          (typeof target.getAttribute === "function" && target.getAttribute("role") === "textbox")
+        ) {
+          return;
+        }
+      }
+      if (confirmAction || exportDialogOpen || menuOpen) {
+        return;
+      }
+
+      if (e.key === "ArrowLeft" && canGoPrev) {
+        e.preventDefault();
+        handlePrevLead();
+      } else if (e.key === "ArrowRight" && canGoNext) {
+        e.preventDefault();
+        handleNextLead();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [canGoPrev, canGoNext, currentIndex, leadIds, confirmAction, exportDialogOpen, menuOpen]);
+
+  // Candidate leads for Export Selected dialog
+  const candidateLeads = useMemo(() => {
+    if (hasContext && leadIds.length > 0) {
+      const leadMap = new Map<number, Lead>();
+      for (const item of allLeadsList) leadMap.set(item.id, item);
+      leadMap.set(lead.id, lead);
+      return leadIds
+        .map((id) => leadMap.get(id))
+        .filter((item): item is Lead => Boolean(item));
+    }
+    if (allLeadsList.length > 0) {
+      return allLeadsList;
+    }
+    return [lead];
+  }, [hasContext, leadIds, allLeadsList, lead]);
+
+  const handleExportCurrentLead = () => {
+    setMenuOpen(false);
+    try {
+      exportLeadsAsCSV([lead]);
+      toast.success(`Exported ${lead.businessName} to CSV`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to export lead");
     }
   };
 
@@ -249,7 +334,7 @@ export function LeadWorkspaceHeader({
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={() => navigate({ to: "/dashboard/relationships" })}
+          onClick={() => navigate({ to: (navContext?.returnTo as any) || "/dashboard/relationships" })}
           className="inline-flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-card hover:text-white"
         >
           <ArrowLeft className="size-3.5 text-muted-foreground" />
@@ -260,21 +345,28 @@ export function LeadWorkspaceHeader({
           <button
             type="button"
             onClick={handlePrevLead}
-            disabled={currentIndex <= 0}
+            disabled={!canGoPrev}
+            aria-disabled={!canGoPrev}
+            aria-label="Previous lead"
             className="p-0.5 rounded hover:text-foreground disabled:opacity-30 disabled:hover:text-muted-foreground transition-colors"
-            title="Previous lead"
+            title={canGoPrev ? "Previous lead" : "No previous lead"}
           >
             <ChevronLeft className="size-3.5" />
           </button>
-          <span className="font-mono text-xs text-foreground px-1.5">
+          <span
+            className="font-mono text-xs text-foreground px-1.5"
+            aria-label={`Lead ${displayIndex} of ${totalCount}`}
+          >
             {displayIndex} / {totalCount}
           </span>
           <button
             type="button"
             onClick={handleNextLead}
-            disabled={currentIndex < 0 || currentIndex >= leadList.length - 1}
+            disabled={!canGoNext}
+            aria-disabled={!canGoNext}
+            aria-label="Next lead"
             className="p-0.5 rounded hover:text-foreground disabled:opacity-30 disabled:hover:text-muted-foreground transition-colors"
-            title="Next lead"
+            title={canGoNext ? "Next lead" : "No next lead"}
           >
             <ChevronRight className="size-3.5" />
           </button>
@@ -349,8 +441,24 @@ export function LeadWorkspaceHeader({
           </button>
 
           {menuOpen && (
-            <div className="absolute right-0 top-full z-30 mt-1 w-52 rounded-xl border border-border bg-[#101726] shadow-2xl animate-scale-in-fast">
+            <div className="absolute right-0 top-full z-30 mt-1 w-56 rounded-xl border border-border bg-[#101726] shadow-2xl animate-scale-in-fast">
               <div className="p-1">
+                <MenuAction
+                  icon={Download}
+                  label="Export this lead"
+                  onClick={handleExportCurrentLead}
+                  description="Download this lead as CSV"
+                />
+                <MenuAction
+                  icon={Layers}
+                  label="Export selected leads…"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setExportDialogOpen(true);
+                  }}
+                  description="Choose leads to export as CSV"
+                />
+                <div className="my-1 h-px bg-border/60" />
                 <MenuAction
                   icon={Archive}
                   label="Close Opportunity"
@@ -419,6 +527,15 @@ export function LeadWorkspaceHeader({
               </div>
             </div>
           )}
+
+          {/* Export Selected Leads Dialog */}
+          <ExportSelectedLeadsDialog
+            isOpen={exportDialogOpen}
+            onClose={() => setExportDialogOpen(false)}
+            currentLead={lead}
+            candidateLeads={candidateLeads}
+            collectionLabel={navContext?.label || "collection"}
+          />
         </div>
       </div>
     </header>

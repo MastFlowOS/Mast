@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/select";
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { cn } from "@/lib/utils";
+import { downloadFile, leadsToCSV } from "@/lib/leadExport";
 
 export const Route = createFileRoute("/dashboard/import")({
   head: () => ({ meta: [{ title: "Data Import / Export — Mast" }] }),
@@ -432,58 +433,7 @@ function parseCsv(text: string) {
   return { columns, rows: dataRows };
 }
 
-function leadsToCSV(leads: Lead[]): string {
-  const headers = [
-    "Mast ID",
-    "Business ID",
-    "Business Name",
-    "Instagram Handle",
-    "Email",
-    "Website",
-    "Phone",
-    "Niche",
-    "Location",
-    "Status",
-    "IG Followers",
-    "IG Bio",
-    "Tags",
-    "Priority",
-    "Notes",
-    "Created At",
-  ];
-  const rows = leads.map((lead) => [
-    lead.id != null ? String(lead.id) : "",
-    lead.businessId ?? "",
-    lead.businessName,
-    lead.instagramHandle ?? "",
-    lead.email ?? "",
-    lead.website ?? "",
-    lead.phone ?? "",
-    lead.niche ?? "",
-    lead.location ?? "",
-    lead.status ?? "",
-    lead.igFollowers ?? "",
-    lead.igBio ?? "",
-    lead.tags ?? "",
-    lead.priority ?? "",
-    lead.notes ?? "",
-    lead.createdAt ? new Date(lead.createdAt).toLocaleDateString() : "",
-  ]);
 
-  return [headers, ...rows]
-    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-    .join("\n");
-}
-
-function downloadFile(content: string, filename: string, mimeType: string) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", {

@@ -91,6 +91,25 @@ export function extractInstagramHandle(raw?: string | null): string | null {
 }
 
 /**
+ * Decides what (if anything) enrichment should write to `businesses.instagram`.
+ *
+ * Returns the canonical profile URL to persist, or null meaning "leave the
+ * column untouched". An extracted value that is missing or not a real profile
+ * (reserved path, numeric handle, junk) yields null, and so does an existing
+ * valid value — enrichment only fills a gap, it never erases or replaces a
+ * valid stored Instagram URL.
+ */
+export function resolveInstagramToPersist(
+  existing: string | null | undefined,
+  extracted: string | null | undefined,
+): string | null {
+  const next = normalizeInstagram(extracted);
+  if (!next) return null;
+  if (normalizeInstagram(existing)) return null;
+  return next.profileUrl;
+}
+
+/**
  * Normalizes any Instagram handle or URL into canonical { handle, profileUrl, dmUrl }.
  * Returns null if the input cannot produce a valid Instagram handle.
  */

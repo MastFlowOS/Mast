@@ -3,6 +3,7 @@ import { getBoss, QUEUES } from "../lib/queue.js";
 import { runEngineVerify, runEngineEnrich, runEngineScore } from "../scraperBridge/pythonBridge.js";
 import { trySharedPidAdmission } from "../lib/resourceCapacity.js";
 import { isValidEmail, isValidPhone, validateLead } from "../lib/leadValidation.js";
+import { resolveInstagramToPersist } from "../lib/instagram.js";
 import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
 import { toJson, isJsonObject } from "../lib/json.js";
@@ -397,6 +398,10 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
     const sitePhone = isValidPhone(site.phone) ? site.phone : undefined;
     const siteEmails = (site.emails ?? []).filter((email: any) => isValidEmail(email));
     const sitePhones = (site.phones ?? []).filter((phone: any) => isValidPhone(phone));
+    // Instagram link ContactWorker found on the business's own website. Only
+    // ever fills a missing/invalid stored value (see resolveInstagramToPersist);
+    // an extraction miss leaves the column untouched.
+    const siteInstagram = resolveInstagramToPersist(business.instagram, site.instagram);
 
     const existingEmails: string[] = Array.isArray(business.emails)
       ? business.emails.map(extractStoredEmail).filter((email): email is string => typeof email === "string")
@@ -434,6 +439,7 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
       email: siteEmail || undefined,
       phone: sitePhone || undefined,
       linkedin: site.linkedin || undefined,
+      instagram: siteInstagram || undefined,
       emails,
       phones,
       field_provenance: provenance,
@@ -451,7 +457,7 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
       email: siteEmail || business.email,
       phone: sitePhone || business.phone,
       website: business.website,
-      instagram: site.instagram || business.instagram,
+      instagram: siteInstagram || business.instagram,
     });
     if (!validation.valid) {
       console.log(`[enrichBusiness] businessId=${businessId} failed validation: ${validation.reason} — dropping`);

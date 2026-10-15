@@ -29,6 +29,8 @@ vi.mock("sonner", () => ({
   },
 }));
 
+const now = new Date().toISOString();
+
 const mockLead1: Lead = {
   id: 101,
   businessName: "Alpha Cafe",
@@ -37,6 +39,8 @@ const mockLead1: Lead = {
   niche: "cafe",
   location: "New York, NY",
   email: "alpha@cafe.com",
+  createdAt: now,
+  updatedAt: now,
 };
 
 const mockLead2: Lead = {
@@ -48,6 +52,8 @@ const mockLead2: Lead = {
   location: "Brooklyn, NY",
   email: "beta@bakery.com",
   lastContactedAt: "2026-10-14T10:00:00Z",
+  createdAt: now,
+  updatedAt: now,
 };
 
 const mockLead3: Lead = {
@@ -58,6 +64,8 @@ const mockLead3: Lead = {
   niche: "restaurant",
   location: "Queens, NY",
   email: "gamma@grill.com",
+  createdAt: now,
+  updatedAt: now,
 };
 
 const mockLeadsList: Lead[] = [mockLead1, mockLead2, mockLead3];
@@ -281,133 +289,14 @@ describe("LeadWorkspaceHeader — Navigation & In-Place Lead Export", () => {
       expect(h.createdBlobs[0].filename).toMatch(/^mast-lead-alpha-cafe-\d{4}-\d{2}-\d{2}\.csv$/);
     });
 
-    it("opens 'Export selected leads…' dialog from the dropdown menu", () => {
+    it("does not render 'Export selected leads…' option in the dropdown menu", () => {
       render(<LeadWorkspaceHeader lead={mockLead1} />);
 
       const moreBtn = screen.getByTitle("More actions");
       fireEvent.click(moreBtn);
 
-      const exportSelectedBtn = screen.getByText("Export selected leads…");
-      expect(exportSelectedBtn).toBeTruthy();
-
-      fireEvent.click(exportSelectedBtn);
-
-      expect(screen.getByText("Export Selected Leads")).toBeTruthy();
-      expect(screen.getByText("Current lead")).toBeTruthy();
-    });
-  });
-
-  describe("3. Export Selected Leads Dialog Behavior", () => {
-    beforeEach(() => {
-      setLeadNavigationContext({
-        leadIds: [101, 102, 103],
-        total: 3,
-        label: "Relationships",
-      });
-    });
-
-    it("preselects the current lead and shows correct count badge and current lead indicator", () => {
-      render(<LeadWorkspaceHeader lead={mockLead1} />);
-
-      fireEvent.click(screen.getByTitle("More actions"));
-      fireEvent.click(screen.getByText("Export selected leads…"));
-
-      expect(screen.getByText("Export Selected Leads")).toBeTruthy();
-      expect(screen.getByTestId("selected-count-label").textContent).toContain("1 of 3 selected");
-      expect(screen.getByText("Export 1 Lead")).toBeTruthy();
-      expect(screen.getByText("Current lead")).toBeTruthy();
-    });
-
-    it("allows toggling individual leads and updates the export count", () => {
-      render(<LeadWorkspaceHeader lead={mockLead1} />);
-
-      fireEvent.click(screen.getByTitle("More actions"));
-      fireEvent.click(screen.getByText("Export selected leads…"));
-
-      // Click on Beta Bakery to select it as well
-      const betaRow = screen.getByText("Beta Bakery");
-      fireEvent.click(betaRow);
-
-      expect(screen.getByTestId("selected-count-label").textContent).toContain("2 of 3 selected");
-      expect(screen.getByText("Export 2 Leads")).toBeTruthy();
-
-      // Click Alpha Cafe to unselect it
-      const alphaRow = screen.getByText("Alpha Cafe");
-      fireEvent.click(alphaRow);
-
-      expect(screen.getByTestId("selected-count-label").textContent).toContain("1 of 3 selected");
-      expect(screen.getByText("Export 1 Lead")).toBeTruthy();
-    });
-
-    it("supports 'Select all' and 'Clear' controls", () => {
-      render(<LeadWorkspaceHeader lead={mockLead1} />);
-
-      fireEvent.click(screen.getByTitle("More actions"));
-      fireEvent.click(screen.getByText("Export selected leads…"));
-
-      // Click "Select all (3)"
-      const selectAllCheckbox = screen.getByRole("checkbox", { name: /Select all/i });
-      fireEvent.click(selectAllCheckbox);
-
-      expect(screen.getByTestId("selected-count-label").textContent).toContain("3 of 3 selected");
-      expect(screen.getByText("Export 3 Leads")).toBeTruthy();
-
-      // Click "Clear"
-      const clearBtn = screen.getByText("Clear");
-      fireEvent.click(clearBtn);
-
-      expect(screen.getByTestId("selected-count-label").textContent).toContain("0 of 3 selected");
-      const exportZeroBtn = screen.getByRole("button", { name: /Export 0 Leads/i }) as HTMLButtonElement;
-      expect(exportZeroBtn.disabled).toBe(true);
-    });
-
-    it("filters candidate leads with search input", () => {
-      render(<LeadWorkspaceHeader lead={mockLead1} />);
-
-      fireEvent.click(screen.getByTitle("More actions"));
-      fireEvent.click(screen.getByText("Export selected leads…"));
-
-      const searchInput = screen.getByPlaceholderText(/Search leads by name/i);
-      fireEvent.change(searchInput, { target: { value: "Bakery" } });
-
-      expect(screen.getByText("Beta Bakery")).toBeTruthy();
-      expect(screen.queryByText("Alpha Cafe")).toBeNull();
-      expect(screen.queryByText("Gamma Grill")).toBeNull();
-    });
-
-    it("cancels without exporting when Cancel button is clicked", () => {
-      render(<LeadWorkspaceHeader lead={mockLead1} />);
-
-      fireEvent.click(screen.getByTitle("More actions"));
-      fireEvent.click(screen.getByText("Export selected leads…"));
-
-      const cancelBtn = screen.getByRole("button", { name: "Cancel" });
-      fireEvent.click(cancelBtn);
-
-      expect(screen.queryByText("Export Selected Leads")).toBeNull();
-      expect(h.createdBlobs.length).toBe(0);
-    });
-
-    it("exports only selected leads on confirmation and displays success toast", () => {
-      render(<LeadWorkspaceHeader lead={mockLead1} />);
-
-      fireEvent.click(screen.getByTitle("More actions"));
-      fireEvent.click(screen.getByText("Export selected leads…"));
-
-      // Select Beta Bakery in addition to Alpha Cafe
-      fireEvent.click(screen.getByText("Beta Bakery"));
-
-      const exportBtn = screen.getByRole("button", { name: "Export 2 Leads" });
-      fireEvent.click(exportBtn);
-
-      expect(h.toastSuccess).toHaveBeenCalledWith(
-        expect.stringContaining("Exported 2 leads to CSV"),
-      );
-      expect(h.createdBlobs.length).toBe(1);
-      expect(h.createdBlobs[0].filename).toMatch(/^mast-leads-export-2-\d{4}-\d{2}-\d{2}\.csv$/);
-
-      // Dialog is now closed
-      expect(screen.queryByText("Export Selected Leads")).toBeNull();
+      expect(screen.getByText("Export this lead")).toBeTruthy();
+      expect(screen.queryByText("Export selected leads…")).toBeNull();
     });
   });
 });

@@ -78,6 +78,7 @@ import uuid
 from typing import Any, Optional
 
 from engine.contracts import BusinessCandidate
+from utils.parsing import clean_ig_url, is_real_ig_handle
 from workers.contact_worker import ContactWorker
 from workers.instagram_worker import InstagramWorker
 from workers.merge_worker import MergeInput, MergeWorker
@@ -150,6 +151,22 @@ def enrich_business_with_engine_v2(payload: dict) -> dict[str, Any]:
 enrich_business = enrich_business_with_engine_v2
 
 
+def _website_instagram_url(contact_intel) -> Optional[str]:
+    """
+    Canonical Instagram profile URL ContactWorker found on the business's own
+    website/contact pages, or None.
+
+    ContactWorker already canonicalizes and rejects reserved paths via
+    utils.parsing; this re-applies the same helpers (never a new regex) so
+    only a real profile URL ever crosses the Python -> Node boundary.
+    """
+    raw = getattr(contact_intel, "instagram_url", None) if contact_intel else None
+    if not raw:
+        return None
+    url = clean_ig_url(raw)
+    return url if is_real_ig_handle(url) else None
+
+
 def _enriched_to_dict(enriched, score_obj=None) -> dict[str, Any]:
     w = enriched.website_intel
     c = enriched.contact_intel
@@ -178,6 +195,11 @@ def _enriched_to_dict(enriched, score_obj=None) -> dict[str, Any]:
         "messenger_link": (c.messenger_link if c else None),
         "telegram_link": (c.telegram_link if c else None),
         "linkedin": (c.linkedin_url if c else None),
+        # Instagram link found ON the business's own website (ContactWorker).
+        # Distinct from the instagram_* profile facts below, which describe a
+        # profile whose URL was already known. Node persists this to
+        # businesses.instagram (businessProcessingJob.ts::enrichBusiness).
+        "instagram": _website_instagram_url(c),
         "instagram_reachable": (i.profile_reachable if i else None),
         "instagram_username": (i.username if i else None),
         "instagram_followers": (i.followers if i else None),

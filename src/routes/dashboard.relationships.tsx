@@ -2,10 +2,13 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  Archive,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Copy,
+  Download,
   EllipsisVertical,
   Instagram,
   Link2,
@@ -29,6 +32,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -63,6 +67,7 @@ import {
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { cn } from "@/lib/utils";
 import { setLeadNavigationContext } from "@/lib/leadNavigation";
+import { exportLeadsAsCSV } from "@/lib/leadExport";
 
 export const Route = createFileRoute("/dashboard/relationships")({
   head: () => ({ meta: [{ title: "Relationships — Mast" }] }),
@@ -452,13 +457,17 @@ function ContactActions({ lead }: { lead: Lead }) {
   );
 }
 
-function RelationshipRow({
+export function RelationshipRow({
   lead,
   selected,
   starred,
   onOpen,
   onToggleSelect,
   onToggleStar,
+  onExport,
+  onArchive,
+  onDuplicate,
+  onDelete,
 }: {
   lead: Lead;
   selected: boolean;
@@ -466,6 +475,10 @@ function RelationshipRow({
   onOpen: () => void;
   onToggleSelect: () => void;
   onToggleStar: () => void;
+  onExport: (lead: Lead) => void;
+  onArchive: (lead: Lead) => void;
+  onDuplicate: (lead: Lead) => void;
+  onDelete: (lead: Lead) => void;
 }) {
   const dead = normalizeLeadStatus(lead.status) === "dead";
   const nicheLabel = leadNicheDisplay(lead.niche);
@@ -581,10 +594,48 @@ function RelationshipRow({
               <EllipsisVertical className="size-[18px]" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuItem onSelect={onOpen}>Open relationship</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onToggleStar}>
-              {starred ? "Remove from starred" : "Star relationship"}
+          <DropdownMenuContent align="end" className="w-56 rounded-xl border border-border bg-[#101726] p-1 shadow-2xl">
+            <DropdownMenuItem
+              onSelect={() => onExport(lead)}
+              className="flex items-center gap-3 rounded-lg px-3 py-2 cursor-pointer text-left transition-colors hover:bg-muted/60 focus:bg-muted/60"
+            >
+              <Download className="size-4 shrink-0 text-muted-foreground" />
+              <div>
+                <p className="text-xs font-semibold text-foreground">Export this lead</p>
+                <p className="text-[11px] text-muted-foreground">Download this lead as CSV</p>
+              </div>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="my-1 bg-border/60" />
+            <DropdownMenuItem
+              onSelect={() => onArchive(lead)}
+              className="flex items-center gap-3 rounded-lg px-3 py-2 cursor-pointer text-left transition-colors hover:bg-muted/60 focus:bg-muted/60"
+            >
+              <Archive className="size-4 shrink-0 text-muted-foreground" />
+              <div>
+                <p className="text-xs font-semibold text-foreground">Close Opportunity</p>
+                <p className="text-[11px] text-muted-foreground">Mark as no longer active</p>
+              </div>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => onDuplicate(lead)}
+              className="flex items-center gap-3 rounded-lg px-3 py-2 cursor-pointer text-left transition-colors hover:bg-muted/60 focus:bg-muted/60"
+            >
+              <Copy className="size-4 shrink-0 text-muted-foreground" />
+              <div>
+                <p className="text-xs font-semibold text-foreground">Duplicate</p>
+                <p className="text-[11px] text-muted-foreground">Create a copy of this opportunity</p>
+              </div>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="my-1 bg-border/60" />
+            <DropdownMenuItem
+              onSelect={() => onDelete(lead)}
+              className="flex items-center gap-3 rounded-lg px-3 py-2 cursor-pointer text-left transition-colors hover:bg-destructive/10 focus:bg-destructive/10 text-destructive focus:text-destructive"
+            >
+              <Trash2 className="size-4 shrink-0 text-destructive" />
+              <div>
+                <p className="text-xs font-semibold text-destructive">Remove</p>
+                <p className="text-[11px] text-muted-foreground">Permanently remove</p>
+              </div>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -821,6 +872,49 @@ function Relationships() {
       to: "/dashboard/leads/$leadId",
       params: { leadId: String(id) },
     });
+  };
+
+  const handleExportLead = (lead: Lead) => {
+    exportLeadsAsCSV([lead]);
+    toast.success(`Exported ${lead.businessName} to CSV`);
+  };
+
+  const handleArchiveLead = async (lead: Lead) => {
+    try {
+      await bulkUpdate.mutateAsync({ ids: [lead.id], updates: { status: "dead" } });
+      toast.success(`${lead.businessName} closed out`);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to close opportunity");
+    }
+  };
+
+  const handleDuplicateLead = async (lead: Lead) => {
+    try {
+      const dup = await createLead.mutateAsync({
+        businessName: `${lead.businessName} (copy)`,
+        instagramHandle: lead.instagramHandle ?? undefined,
+        email: lead.email ?? undefined,
+        website: lead.website ?? undefined,
+        phone: lead.phone ?? undefined,
+        niche: lead.niche ?? undefined,
+        location: lead.location ?? undefined,
+        source: lead.source ?? "manual",
+      });
+      toast.success("Lead duplicated");
+      openLead(dup.id);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to duplicate lead");
+    }
+  };
+
+  const handleDeleteLead = async (lead: Lead) => {
+    if (!window.confirm(`Permanently remove ${lead.businessName}? This cannot be undone.`)) return;
+    try {
+      await bulkDelete.mutateAsync({ ids: [lead.id] });
+      toast.success("Opportunity removed");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to remove opportunity");
+    }
   };
 
   const pageButtons = useMemo(() => {
@@ -1179,6 +1273,10 @@ function Relationships() {
                   onOpen={() => openLead(lead.id)}
                   onToggleSelect={() => toggleOne(lead.id)}
                   onToggleStar={() => toggleStar(lead.id)}
+                  onExport={handleExportLead}
+                  onArchive={handleArchiveLead}
+                  onDuplicate={handleDuplicateLead}
+                  onDelete={handleDeleteLead}
                 />
               ))}
         </ul>

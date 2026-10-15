@@ -15,21 +15,18 @@ import {
   X,
   Check,
   Download,
-  Layers,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useCreateLead, useRecordLeadActivity, useUpdateLead, useLeads } from "@/hooks/use-mast-api";
+import { useCreateLead, useRecordLeadActivity, useUpdateLead } from "@/hooks/use-mast-api";
 import { ApiError, type Lead, type LeadStatus, type LeadActivityType } from "@/lib/api";
 import { isRelationshipLead, normalizeLeadStatus } from "@/lib/lead-workspace";
 import {
   getLeadNavigationContext,
-  normalizeLeads,
   type LeadNavigationContext,
 } from "@/lib/leadNavigation";
 import { exportLeadsAsCSV } from "@/lib/leadExport";
-import { ExportSelectedLeadsDialog } from "./components/ExportSelectedLeadsDialog";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
 
 type ConfirmAction = "archive" | "delete" | null;
@@ -47,8 +44,6 @@ export function LeadWorkspaceHeader({
   const recordActivity = useRecordLeadActivity();
   const createLead = useCreateLead();
   const updateLeadMutation = useUpdateLead();
-  const { data: allLeadsData } = useLeads({ limit: 5000 });
-  const allLeadsList = useMemo(() => normalizeLeads(allLeadsData), [allLeadsData]);
 
   const [saved, setSaved] = useState(isRelationshipLead(lead));
   const [status, setStatus] = useState<LeadStatus>(normalizeLeadStatus(lead.status));
@@ -56,7 +51,6 @@ export function LeadWorkspaceHeader({
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPending, setMenuPending] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
-  const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Synchronize state when lead changes
@@ -124,7 +118,7 @@ export function LeadWorkspaceHeader({
           return;
         }
       }
-      if (confirmAction || exportDialogOpen || menuOpen) {
+      if (confirmAction || menuOpen) {
         return;
       }
 
@@ -139,23 +133,7 @@ export function LeadWorkspaceHeader({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canGoPrev, canGoNext, currentIndex, leadIds, confirmAction, exportDialogOpen, menuOpen]);
-
-  // Candidate leads for Export Selected dialog
-  const candidateLeads = useMemo(() => {
-    if (hasContext && leadIds.length > 0) {
-      const leadMap = new Map<number, Lead>();
-      for (const item of allLeadsList) leadMap.set(item.id, item);
-      leadMap.set(lead.id, lead);
-      return leadIds
-        .map((id) => leadMap.get(id))
-        .filter((item): item is Lead => Boolean(item));
-    }
-    if (allLeadsList.length > 0) {
-      return allLeadsList;
-    }
-    return [lead];
-  }, [hasContext, leadIds, allLeadsList, lead]);
+  }, [canGoPrev, canGoNext, currentIndex, leadIds, confirmAction, menuOpen]);
 
   const handleExportCurrentLead = () => {
     setMenuOpen(false);
@@ -449,15 +427,6 @@ export function LeadWorkspaceHeader({
                   onClick={handleExportCurrentLead}
                   description="Download this lead as CSV"
                 />
-                <MenuAction
-                  icon={Layers}
-                  label="Export selected leads…"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setExportDialogOpen(true);
-                  }}
-                  description="Choose leads to export as CSV"
-                />
                 <div className="my-1 h-px bg-border/60" />
                 <MenuAction
                   icon={Archive}
@@ -527,15 +496,6 @@ export function LeadWorkspaceHeader({
               </div>
             </div>
           )}
-
-          {/* Export Selected Leads Dialog */}
-          <ExportSelectedLeadsDialog
-            isOpen={exportDialogOpen}
-            onClose={() => setExportDialogOpen(false)}
-            currentLead={lead}
-            candidateLeads={candidateLeads}
-            collectionLabel={navContext?.label || "collection"}
-          />
         </div>
       </div>
     </header>

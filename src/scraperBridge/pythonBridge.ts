@@ -260,6 +260,8 @@ export type EngineEnrichResult = {
   messenger_link: string | null;
   telegram_link: string | null;
   linkedin: string | null;
+  /** Canonical Instagram URL ContactWorker found on the business's own website, or null. */
+  instagram: string | null;
   instagram_reachable: boolean | null;
   instagram_username: string | null;
   instagram_followers: number | null;

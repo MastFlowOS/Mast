@@ -1742,6 +1742,40 @@ export async function getPipelineCoaching(): Promise<PipelineCoaching> {
   return backendFetch<PipelineCoaching>("/v1/intelligence/coaching");
 }
 
+export type DiscoverOverview = {
+  label: string;
+  headline: string;
+  body: string;
+  confidence: "High Confidence" | "Recommended" | "Worth Testing" | "Watch Closely";
+  tone: "brand" | "warning" | "success" | "neutral";
+  patterns: string[];
+  promisingOpportunities: string[];
+  nextSteps: string[];
+  action?: { label: string; href: string };
+  generatedAt: string;
+  cached: boolean;
+};
+
+/** AI-generated Discover Overview (Pro/Premium) — cached on backend. */
+export async function getDiscoverOverview(): Promise<DiscoverOverview> {
+  return backendFetch<DiscoverOverview>("/v1/intelligence/discover-overview");
+}
+
+export type MissionCoachResult = {
+  briefing: string;
+  recommendedLeadId: number | null;
+  recommendedAction: string;
+  rationale: string;
+  reasons: string[];
+  generatedAt: string;
+  cached: boolean;
+};
+
+/** AI-generated Mission Coach (Pro/Premium) — cached on backend. */
+export async function getMissionCoach(): Promise<MissionCoachResult> {
+  return backendFetch<MissionCoachResult>("/v1/intelligence/mission-coach");
+}
+
 // ─── Analytics (computed from Supabase leads) ─────────────────────────────────
 
 export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {

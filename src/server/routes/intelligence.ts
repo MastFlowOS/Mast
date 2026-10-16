@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
@@ -22,6 +23,11 @@ const readLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
 // low, but the limiter still bounds how fast a client can force
 // cache-miss generations. 5/min matches the cost profile of discovery.
 const aiGenerationLimiter = createRateLimiter({ windowMs: 60_000, max: 5 });
+
+export function resetIntelligenceRateLimiters(): void {
+  readLimiter.reset();
+  aiGenerationLimiter.reset();
+}
 
 // ─── AI response contract enforcement ──────────────────────────────────────
 // generateJSON() only guarantees the model's reply parses as JSON — it does
@@ -216,7 +222,7 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
     const { plan, professionSlug } = await resolveUserPlanAndProfession(userId);
 
     if (!canUseAiFeature(plan, "opportunityInsights")) {
-      return res.status(403).json({ code: "plan_restricted", message: "AI Opportunity Insights requires the Premium plan." });
+      return res.status(403).json({ code: "plan_restricted", message: "AI Opportunity Insights requires a Pro or Premium plan." });
     }
     if (!professionSlug) {
       return res.status(400).json({ code: "no_profession", message: "Set a profession in onboarding/settings first." });
@@ -337,7 +343,7 @@ intelligenceRouter.get("/briefing", requireAuth, aiGenerationLimiter, async (req
     const { plan } = await resolveUserPlanAndProfession(userId);
 
     if (!canUseAiFeature(plan, "executiveBriefings")) {
-      return res.status(403).json({ code: "plan_restricted", message: "AI Executive Briefings require the Premium plan." });
+      return res.status(403).json({ code: "plan_restricted", message: "AI Executive Briefings require a Pro or Premium plan." });
     }
 
     const periodKey = new Date().toISOString().slice(0, 10);
@@ -404,7 +410,7 @@ intelligenceRouter.get("/briefing", requireAuth, aiGenerationLimiter, async (req
 /**
  * GET /v1/intelligence/weekly
  *
- * Weekly Intelligence (Premium): a reflective 7-day performance review.
+ * Weekly Intelligence (Pro+): a reflective 7-day performance review.
  * Cached once per user per ISO week.
  */
 intelligenceRouter.get("/weekly", requireAuth, aiGenerationLimiter, async (req, res, next) => {
@@ -413,7 +419,7 @@ intelligenceRouter.get("/weekly", requireAuth, aiGenerationLimiter, async (req, 
     const { plan } = await resolveUserPlanAndProfession(userId);
 
     if (!canUseAiFeature(plan, "weeklyIntelligence")) {
-      return res.status(403).json({ code: "plan_restricted", message: "Weekly Intelligence requires the Premium plan." });
+      return res.status(403).json({ code: "plan_restricted", message: "Weekly Intelligence requires a Pro or Premium plan." });
     }
 
     const periodKey = isoWeekKey(new Date());
@@ -490,7 +496,7 @@ intelligenceRouter.get("/coaching", requireAuth, aiGenerationLimiter, async (req
     const { plan } = await resolveUserPlanAndProfession(userId);
 
     if (!canUseAiFeature(plan, "pipelineCoaching")) {
-      return res.status(403).json({ code: "plan_restricted", message: "AI Pipeline Coaching requires the Pro plan." });
+      return res.status(403).json({ code: "plan_restricted", message: "AI Pipeline Coaching requires a Pro or Premium plan." });
     }
 
     const periodKey = new Date().toISOString().slice(0, 10);
@@ -556,6 +562,394 @@ intelligenceRouter.get("/coaching", requireAuth, aiGenerationLimiter, async (req
     });
 
     res.json({ ...content, generatedAt, cached: false });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /v1/intelligence/discover-overview
+ *
+ * Genuine Discover AI Overview (Pro/Premium).
+ * Analyzes the user's actual saved leads and discovery results,
+ * highlighting patterns, promising opportunities, and practical next steps.
+ * Cached per material state of the user's discovery results.
+ */
+intelligenceRouter.get("/discover-overview", requireAuth, aiGenerationLimiter, async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const { plan } = await resolveUserPlanAndProfession(userId);
+
+    if (!canUseAiFeature(plan, "discoverOverview")) {
+      return res.status(403).json({ code: "plan_restricted", message: "Discover AI Overview requires a Pro or Premium plan." });
+    }
+
+    if (!aiEnabled()) {
+      return res.status(503).json({ code: "ai_unavailable", message: "AI Opportunity Intelligence is not configured on this deployment." });
+    }
+
+    const { data: leadsData, error: leadsError } = await supabaseAdmin
+      .from("leads")
+      .select("id, business_name, niche, location, status, priority, opportunity_score, created_at, updated_at")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false });
+    if (leadsError) throw leadsError;
+
+    const leads = leadsData ?? [];
+
+    if (leads.length === 0) {
+      return res.json({
+        label: "Discovery Overview",
+        headline: "No leads discovered yet",
+        body: "Run your first discovery search to surface opportunities and receive AI insights.",
+        confidence: "Recommended",
+        tone: "brand",
+        patterns: [],
+        promisingOpportunities: [],
+        nextSteps: ["Run a search in Discover to find local business opportunities."],
+        action: { label: "Start Discovery", href: "#niche-select" },
+        generatedAt: new Date().toISOString(),
+        cached: false,
+      });
+    }
+
+    const totalLeads = leads.length;
+    let newCount = 0;
+    let contactedCount = 0;
+    let repliedCount = 0;
+    const nicheCounts: Record<string, number> = {};
+    const regionCounts: Record<string, number> = {};
+
+    for (const l of leads) {
+      const st = (l.status ?? "new").toLowerCase();
+      if (st === "new") newCount++;
+      else if (st === "replied" || st === "interested" || st === "meeting_booked" || st === "closed") repliedCount++;
+      else contactedCount++;
+
+      if (l.niche) nicheCounts[l.niche] = (nicheCounts[l.niche] ?? 0) + 1;
+      if (l.location) regionCounts[l.location] = (regionCounts[l.location] ?? 0) + 1;
+    }
+
+    const topNiches = Object.entries(nicheCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([n, c]) => `${n} (${c})`);
+    const topRegions = Object.entries(regionCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([r, c]) => `${r} (${c})`);
+
+    const topOpportunities = [...leads]
+      .filter((l) => l.opportunity_score != null)
+      .sort((a, b) => (b.opportunity_score ?? 0) - (a.opportunity_score ?? 0))
+      .slice(0, 5)
+      .map((l) => ({
+        businessName: l.business_name,
+        niche: l.niche ?? "General",
+        score: l.opportunity_score,
+        status: l.status,
+      }));
+
+    const boundedPayload = {
+      totalLeads,
+      breakdown: { new: newCount, contacted: contactedCount, repliedOrAdvanced: repliedCount },
+      topNiches,
+      topRegions,
+      topOpportunities,
+    };
+    const contextFingerprint = createHash("sha256")
+      .update(JSON.stringify(boundedPayload))
+      .digest("hex")
+      .slice(0, 16);
+    const today = new Date().toISOString().slice(0, 10);
+    const periodKey = `${today}:${contextFingerprint}`;
+
+    const { data: cached, error: cacheError } = await supabaseAdmin
+      .from("ai_intelligence")
+      .select("content, generated_at")
+      .eq("user_id", userId)
+      .eq("kind", "discover_overview")
+      .eq("period_key", periodKey)
+      .maybeSingle();
+    if (cacheError) console.error("[intelligence] ai_intelligence (discover_overview) read failed", cacheError);
+    if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+
+    const { overview, generatedAt } = await singleFlight(`discover_overview:${userId}:${periodKey}`, async () => {
+
+      const nextOverview = await generateJSON<{
+        label: string;
+        headline: string;
+        body: string;
+        confidence: "High Confidence" | "Recommended" | "Worth Testing" | "Watch Closely";
+        tone: "brand" | "warning" | "success" | "neutral";
+        patterns: string[];
+        promisingOpportunities: string[];
+        nextSteps: string[];
+        action?: { label: string; href: string };
+      }>({
+        system:
+          "You are MAST's Opportunity Intelligence assistant, generating an executive overview of a freelancer's " +
+          "discovered leads and opportunities. You are provided with real, already-aggregated lead statistics and top " +
+          "opportunity scores. Do NOT invent businesses, market trends, conversion rates, or facts not present in the input. " +
+          "Never use em dashes ('—' or '–'). Avoid generic buzzwords ('elevate', 'streamline', 'synergy'). " +
+          "Respond with ONLY a JSON object: " +
+          '{"label": string (<=3 words, e.g. "High Potential" or "Key Patterns"), ' +
+          '"headline": string (1 concise sentence summarizing what the current discovery results suggest), ' +
+          '"body": string (2-3 sentences explaining notable patterns, promising angles, and immediate next steps), ' +
+          '"confidence": "High Confidence" | "Recommended" | "Worth Testing" | "Watch Closely", ' +
+          '"tone": "brand" | "warning" | "success" | "neutral", ' +
+          '"patterns": string[] (1-3 observed patterns from the niches and scores), ' +
+          '"promisingOpportunities": string[] (1-3 specific business names or high-score segments highlighted), ' +
+          '"nextSteps": string[] (1-3 practical next actions grounded in the data), ' +
+          '"action": {"label": string, "href": string} (optional action link, default label "View Saved Leads", href "#leads-table")}',
+        user: JSON.stringify(boundedPayload),
+        maxTokens: 512,
+        tier: "pro",
+      });
+
+      nextOverview.label = asString(nextOverview.label, "AI Overview").replace(/[—–]/g, " - ");
+      nextOverview.headline = asString(nextOverview.headline, "Here is an executive overview of your discovered opportunities.").replace(/[—–]/g, " - ");
+      nextOverview.body = asString(nextOverview.body, "Review your top leads and begin outreach with verified high-opportunity prospects.").replace(/[—–]/g, " - ");
+      nextOverview.confidence = asEnum(nextOverview.confidence, ["High Confidence", "Recommended", "Worth Testing", "Watch Closely"] as const, "Recommended");
+      nextOverview.tone = asEnum(nextOverview.tone, ["brand", "warning", "success", "neutral"] as const, "brand");
+      nextOverview.patterns = asStringArray(nextOverview.patterns).map((s) => s.replace(/[—–]/g, " - "));
+      nextOverview.promisingOpportunities = asStringArray(nextOverview.promisingOpportunities).map((s) => s.replace(/[—–]/g, " - "));
+      nextOverview.nextSteps = asStringArray(nextOverview.nextSteps).map((s) => s.replace(/[—–]/g, " - "));
+      if (nextOverview.action && typeof nextOverview.action === "object") {
+        nextOverview.action = {
+          label: asString((nextOverview.action as any).label, "View Leads"),
+          href: asString((nextOverview.action as any).href, "#leads-table"),
+        };
+      }
+
+      const nextGeneratedAt = new Date().toISOString();
+      const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
+        {
+          user_id: userId,
+          kind: "discover_overview",
+          period_key: periodKey,
+          content: nextOverview,
+          model: getAiModel("pro"),
+          generated_at: nextGeneratedAt,
+        },
+        { onConflict: "user_id,kind,period_key" },
+      );
+      if (upsertError) throw upsertError;
+
+      return { overview: nextOverview, generatedAt: nextGeneratedAt };
+    });
+
+    res.json({ ...overview, generatedAt, cached: false });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /v1/intelligence/mission-coach
+ *
+ * Genuine Mission AI Coach (Pro/Premium).
+ * Analyzes the user's active mission queue, follow-up progress, and lead priorities
+ * to recommend a concrete, grounded next action with supporting rationale.
+ * Cached per material state of the user's mission follow-ups.
+ */
+intelligenceRouter.get("/mission-coach", requireAuth, aiGenerationLimiter, async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const { plan } = await resolveUserPlanAndProfession(userId);
+
+    if (!canUseAiFeature(plan, "missionCoach")) {
+      return res.status(403).json({ code: "plan_restricted", message: "Mission AI Coach requires a Pro or Premium plan." });
+    }
+
+    if (!aiEnabled()) {
+      return res.status(503).json({ code: "ai_unavailable", message: "AI Opportunity Intelligence is not configured on this deployment." });
+    }
+
+    const [{ data: rawFollowups, error: followupsError }, { data: rawLeads, error: leadsError }] = await Promise.all([
+      supabaseAdmin
+        .from("lead_followups")
+        .select("id, lead_id, channel, due_at, status, notes, step_number, sequence_name, completed_at, updated_at")
+        .eq("user_id", userId),
+      supabaseAdmin
+        .from("leads")
+        .select("id, business_name, niche, status, priority, opportunity_score, last_contacted_at, follow_up_at, updated_at")
+        .eq("user_id", userId),
+    ]);
+    if (followupsError) console.warn("[intelligence] lead_followups read error", followupsError.message);
+    if (leadsError) throw leadsError;
+
+    const leads = rawLeads ?? [];
+    const leadsById = new Map<number, (typeof leads)[0]>(leads.map((l) => [l.id, l]));
+
+    // If followups table is empty, fall back to checking if leads have follow_up_at
+    const followups = (rawFollowups && rawFollowups.length > 0)
+      ? rawFollowups
+      : leads.filter((l) => Boolean(l.follow_up_at)).map((l) => ({
+          id: l.id,
+          lead_id: l.id,
+          channel: "email",
+          due_at: l.follow_up_at!,
+          status: "pending",
+          notes: null,
+          step_number: null,
+          sequence_name: null,
+          completed_at: null,
+          updated_at: l.updated_at,
+        }));
+
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const todayStartMs = todayStart.getTime();
+    const todayEndMs = todayStartMs + 86_400_000;
+
+    const activeFollowups = followups.filter((f) => f.status !== "completed");
+    const completedToday = followups.filter((f) => {
+      if (f.status !== "completed") return false;
+      const compTime = new Date(f.completed_at ?? f.updated_at).getTime();
+      return compTime >= todayStartMs && compTime < todayEndMs;
+    });
+
+    let overdueCount = 0;
+    let dueTodayCount = 0;
+    let upcomingCount = 0;
+
+    for (const f of activeFollowups) {
+      const dueTime = new Date(f.due_at).getTime();
+      if (dueTime < todayStartMs) overdueCount++;
+      else if (dueTime < todayEndMs) dueTodayCount++;
+      else upcomingCount++;
+    }
+
+    if (activeFollowups.length === 0 && completedToday.length === 0 && leads.length === 0) {
+      return res.json({
+        briefing: "Nothing due today. Your pipeline is on schedule.",
+        recommendedLeadId: null,
+        recommendedAction: "Schedule follow-ups from your leads to build your next mission.",
+        rationale: "No pending or overdue follow-up actions found.",
+        reasons: ["Pipeline is up to date"],
+        cached: false,
+        generatedAt: new Date().toISOString(),
+      });
+    }
+
+    // Sort active follow-ups to find the top priority candidates
+    const scoredFollowups = activeFollowups.map((f) => {
+      const lead = leadsById.get(f.lead_id);
+      const dueTime = new Date(f.due_at).getTime();
+      const isOverdue = dueTime < todayStartMs;
+      const isToday = dueTime >= todayStartMs && dueTime < todayEndMs;
+      const daysOverdue = isOverdue ? Math.max(1, Math.round((todayStartMs - dueTime) / 86_400_000)) : 0;
+      const daysSinceContact = lead?.last_contacted_at
+        ? Math.max(0, Math.floor((Date.now() - new Date(lead.last_contacted_at).getTime()) / 86_400_000))
+        : null;
+
+      let urgencyScore = (lead?.opportunity_score ?? 50) * 0.4;
+      if (isOverdue) urgencyScore += 40 + daysOverdue * 5;
+      else if (isToday) urgencyScore += 25;
+      if (lead?.priority === "high") urgencyScore += 20;
+      if (lead?.status === "meeting_booked") urgencyScore += 30;
+      else if (lead?.status === "replied") urgencyScore += 25;
+
+      return {
+        followupId: f.id,
+        leadId: f.lead_id,
+        businessName: lead?.business_name ?? "Unknown Prospect",
+        niche: lead?.niche ?? "General",
+        channel: f.channel,
+        status: f.status,
+        dueAt: f.due_at,
+        dueState: isOverdue ? "overdue" : isToday ? "today" : "upcoming",
+        daysOverdue,
+        daysSinceContact,
+        opportunityScore: lead?.opportunity_score ?? null,
+        priority: lead?.priority ?? "normal",
+        notes: f.notes,
+        urgencyScore,
+      };
+    }).sort((a, b) => b.urgencyScore - a.urgencyScore);
+
+    const topPriorityCandidates = scoredFollowups.slice(0, 5).map(({ urgencyScore, ...item }) => item);
+
+    const boundedPayload = {
+      queueSummary: {
+        overdue: overdueCount,
+        dueToday: dueTodayCount,
+        upcoming: upcomingCount,
+        completedToday: completedToday.length,
+        completedIds: completedToday.map((f) => String(f.id)).sort(),
+        totalLeads: leads.length,
+      },
+      topPriorityCandidates,
+    };
+    const contextFingerprint = createHash("sha256")
+      .update(JSON.stringify(boundedPayload))
+      .digest("hex")
+      .slice(0, 16);
+    const today = new Date().toISOString().slice(0, 10);
+    const periodKey = `${today}:${contextFingerprint}`;
+
+    const { data: cached, error: cacheError } = await supabaseAdmin
+      .from("ai_intelligence")
+      .select("content, generated_at")
+      .eq("user_id", userId)
+      .eq("kind", "mission_coach")
+      .eq("period_key", periodKey)
+      .maybeSingle();
+    if (cacheError) console.error("[intelligence] ai_intelligence (mission_coach) read failed", cacheError);
+    if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+
+    const { coaching, generatedAt } = await singleFlight(`mission_coach:${userId}:${periodKey}`, async () => {
+
+      const nextCoaching = await generateJSON<{
+        briefing: string;
+        recommendedLeadId: number | null;
+        recommendedAction: string;
+        rationale: string;
+        reasons: string[];
+      }>({
+        system:
+          "You are MAST's Opportunity Intelligence assistant acting as the Mission Coach for a freelancer. " +
+          "You are given real mission progress, follow-up counts, and top lead facts. Do NOT invent contacts, messages, " +
+          "replies, dates, or tasks not present in the input. Never use em dashes ('—' or '–'). Avoid generic motivational cliches. " +
+          "Keep advice practical, concise, and grounded in the data. " +
+          "Respond with ONLY a JSON object: " +
+          '{"briefing": string (1-2 sentences summarizing today\'s executive mission priority based on overdue/due counts), ' +
+          '"recommendedLeadId": number | null (the id of the lead to act on first, from the provided items, or null if none), ' +
+          '"recommendedAction": string (1 concrete next step for the recommended lead, <=15 words), ' +
+          '"rationale": string (1-2 sentences explaining why this action makes sense right now), ' +
+          '"reasons": string[] (1-3 short bullet reasons grounded in stage, timing, or score)}.',
+        user: JSON.stringify(boundedPayload),
+        maxTokens: 512,
+        tier: "pro",
+      });
+
+      nextCoaching.briefing = asString(nextCoaching.briefing, "Here is your mission priority for today.").replace(/[—–]/g, " - ");
+      nextCoaching.recommendedAction = asString(nextCoaching.recommendedAction, "Review your pending follow-ups.").replace(/[—–]/g, " - ");
+      nextCoaching.rationale = asString(nextCoaching.rationale, "Focus on overdue and warm conversations first.").replace(/[—–]/g, " - ");
+      nextCoaching.reasons = asStringArray(nextCoaching.reasons).map((s) => s.replace(/[—–]/g, " - "));
+      if (typeof nextCoaching.recommendedLeadId !== "number") {
+        nextCoaching.recommendedLeadId = topPriorityCandidates[0]?.leadId ?? null;
+      }
+
+      const nextGeneratedAt = new Date().toISOString();
+      const { error: upsertError } = await supabaseAdmin.from("ai_intelligence").upsert(
+        {
+          user_id: userId,
+          kind: "mission_coach",
+          period_key: periodKey,
+          content: nextCoaching,
+          model: getAiModel("pro"),
+          generated_at: nextGeneratedAt,
+        },
+        { onConflict: "user_id,kind,period_key" },
+      );
+      if (upsertError) throw upsertError;
+
+      return { coaching: nextCoaching, generatedAt: nextGeneratedAt };
+    });
+
+    res.json({ ...coaching, generatedAt, cached: false });
   } catch (err) {
     next(err);
   }

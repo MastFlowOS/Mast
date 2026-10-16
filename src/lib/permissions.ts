@@ -41,7 +41,10 @@ export type FeatureId =
   | "pipelineCoaching"
   | "executiveBriefings"
   | "weeklyIntelligence"
-  | "opportunityInsights";
+  | "opportunityInsights"
+  | "discoverOverview"
+  | "missionCoach"
+  | "advancedResearch";
 
 // ─── Feature Metadata ─────────────────────────────────────────────────────────
 // User-facing copy is centralized here.
@@ -163,20 +166,38 @@ export const FEATURE_REGISTRY: Record<FeatureId, FeatureMetadata> = {
   executiveBriefings: {
     title: "AI Executive Briefings",
     description: "Receive high-level AI summaries of pipeline health and daily focus priorities.",
-    upgradeCTA: "Upgrade to Premium",
+    upgradeCTA: "Upgrade to Pro",
     icon: "FileText",
   },
   weeklyIntelligence: {
     title: "Weekly Intelligence",
     description: "Reflective 7-day performance reviews with forward-looking action goals.",
-    upgradeCTA: "Upgrade to Premium",
+    upgradeCTA: "Upgrade to Pro",
     icon: "TrendingUp",
   },
   opportunityInsights: {
     title: "AI Opportunity Insights",
     description: "Advanced insight cards surfacing conversion triggers and outreach patterns.",
-    upgradeCTA: "Upgrade to Premium",
+    upgradeCTA: "Upgrade to Pro",
     icon: "Eye",
+  },
+  discoverOverview: {
+    title: "Discover AI Overview",
+    description: "Model-generated executive overview and opportunity signals from your discovered leads.",
+    upgradeCTA: "Upgrade to Pro",
+    icon: "Sparkles",
+  },
+  missionCoach: {
+    title: "Mission AI Coach",
+    description: "Action-oriented AI coaching recommendations for your active outreach missions and follow-ups.",
+    upgradeCTA: "Upgrade to Pro",
+    icon: "Brain",
+  },
+  advancedResearch: {
+    title: "Advanced Business Research",
+    description: "Deep research and custom multi-signal intelligence for enterprise prospects.",
+    upgradeCTA: "Upgrade to Premium",
+    icon: "Search",
   },
 };
 
@@ -229,6 +250,11 @@ export const PLAN_CAPABILITIES: Record<PlanId, FeatureId[]> = {
     "websiteChannel",
     "instantPool",
     "pipelineCoaching",
+    "executiveBriefings",
+    "weeklyIntelligence",
+    "opportunityInsights",
+    "discoverOverview",
+    "missionCoach",
   ],
   premium: [
     "relationships",
@@ -246,10 +272,13 @@ export const PLAN_CAPABILITIES: Record<PlanId, FeatureId[]> = {
     "websiteChannel",
     "instantPool",
     "pipelineCoaching",
-    // Premium additions
     "executiveBriefings",
     "weeklyIntelligence",
     "opportunityInsights",
+    "discoverOverview",
+    "missionCoach",
+    // Premium additions
+    "advancedResearch",
   ],
 };
 

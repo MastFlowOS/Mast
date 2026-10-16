@@ -9,6 +9,7 @@ import {
   generateJSON,
   setAiClient,
   resetAiClient,
+  analyzeChoice,
 } from "../ai.js";
 import { env } from "../../config/env.js";
 
@@ -233,20 +234,24 @@ test("generateJSON throws error on malformed JSON output", async () => {
   }
 });
 
-test("generateJSON throws error when response contains no text content", async () => {
+test("generateJSON throws error with status 503 after bounded retry when response contains no text content", async () => {
+  let callCount = 0;
   const mockClient = {
     chat: {
       completions: {
-        create: async () => ({
-          choices: [
-            {
-              message: {
-                role: "assistant",
-                content: null,
+        create: async () => {
+          callCount++;
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: null,
+                },
               },
-            },
-          ],
-        }),
+            ],
+          };
+        },
       },
     },
   } as any;
@@ -255,12 +260,63 @@ test("generateJSON throws error when response contains no text content", async (
   try {
     await assert.rejects(
       async () => {
-        await generateJSON({ system: "system", user: "user" });
+        await generateJSON({ system: "system", user: "user", retryDelayMs: 1 });
       },
-      {
-        message: /AI response contained no text content/,
+      (err: any) => {
+        assert.equal(err.status, 503);
+        assert.match(err.message, /AI response contained no text content/);
+        return true;
       },
     );
+    assert.equal(callCount, 2, "bounded retry should have attempted once more before failing");
+  } finally {
+    resetAiClient();
+  }
+});
+
+test("generateJSON recovers when attempt 1 is empty and attempt 2 returns valid content", async () => {
+  let callCount = 0;
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: null,
+                  },
+                },
+              ],
+            };
+          }
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: '{"recovered": true}',
+                },
+              },
+            ],
+          };
+        },
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  try {
+    const res = await generateJSON<{ recovered: boolean }>({
+      system: "system",
+      user: "user",
+      retryDelayMs: 1,
+    });
+    assert.equal(res.recovered, true);
+    assert.equal(callCount, 2, "should recover on attempt 2");
   } finally {
     resetAiClient();
   }
@@ -392,3 +448,262 @@ test("generateJSON redacts any raw API key from error messages", async () => {
     resetAiClient();
   }
 });
+
+test("analyzeChoice correctly analyzes all choice variants", () => {
+  // 1. Plain string content
+  const stringRes = analyzeChoice({
+    message: { role: "assistant", content: '{"hello": "world"}' },
+    finish_reason: "stop",
+  });
+  assert.equal(stringRes.hasContent, true);
+  assert.equal(stringRes.contentType, "string");
+  assert.equal(stringRes.text, '{"hello": "world"}');
+  assert.equal(stringRes.finishReason, "stop");
+  assert.equal(stringRes.hasReasoning, false);
+  assert.equal(stringRes.hasRefusal, false);
+
+  // 2. Multi-part array format
+  const arrayRes = analyzeChoice({
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: '{"part":' },
+        { type: "text", text: ' 1}' },
+      ],
+    },
+    finish_reason: "stop",
+  });
+  assert.equal(arrayRes.hasContent, true);
+  assert.equal(arrayRes.contentType, "array");
+  assert.equal(arrayRes.text, '{"part": 1}');
+
+  // 3. Legacy choice.text
+  const legacyRes = analyzeChoice({
+    text: '{"legacy": true}',
+    finish_reason: "stop",
+  });
+  assert.equal(legacyRes.hasContent, true);
+  assert.equal(legacyRes.contentType, "legacy_text");
+  assert.equal(legacyRes.text, '{"legacy": true}');
+
+  // 4. Model refusal
+  const refusalRes = analyzeChoice({
+    message: { role: "assistant", content: null, refusal: "Content policy refusal" },
+    finish_reason: "stop",
+  });
+  assert.equal(refusalRes.hasContent, false);
+  assert.equal(refusalRes.hasRefusal, true);
+  assert.equal(refusalRes.refusalText, "Content policy refusal");
+
+  // 5. Reasoning model with reasoning and null content
+  const reasoningRes = analyzeChoice({
+    message: {
+      role: "assistant",
+      content: null,
+      reasoning: "Thinking about the strategy...",
+    },
+    finish_reason: "stop",
+  });
+  assert.equal(reasoningRes.hasContent, false);
+  assert.equal(reasoningRes.hasReasoning, true);
+
+  // 6. Token limit exhaustion
+  const lengthRes = analyzeChoice({
+    message: { role: "assistant", content: null },
+    finish_reason: "length",
+  });
+  assert.equal(lengthRes.hasContent, false);
+  assert.equal(lengthRes.finishReason, "length");
+
+  // 7. Empty choice
+  const emptyRes = analyzeChoice(undefined);
+  assert.equal(emptyRes.hasContent, false);
+  assert.equal(emptyRes.contentType, "empty");
+});
+
+test("generateJSON extracts and parses array text-part format", async () => {
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: '{"subject": "Array Subject",' },
+                  { type: "text", text: ' "body": "Array Body"}' },
+                ],
+              },
+            },
+          ],
+        }),
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  try {
+    const res = await generateJSON<{ subject: string; body: string }>({
+      system: "system",
+      user: "user",
+    });
+    assert.equal(res.subject, "Array Subject");
+    assert.equal(res.body, "Array Body");
+  } finally {
+    resetAiClient();
+  }
+});
+
+test("generateJSON rejects reasoning-only responses and never exposes reasoning as text", async () => {
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [
+            {
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: null,
+                reasoning: "I should pitch a fast website redesign because 4s load time is too slow",
+              },
+            },
+          ],
+        }),
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  try {
+    await assert.rejects(
+      async () => {
+        await generateJSON({ system: "system", user: "user", retryDelayMs: 1 });
+      },
+      (err: any) => {
+        assert.equal(err.status, 503);
+        assert.match(err.message, /reasoning without final text content/i);
+        // Ensure reasoning text was never returned as a valid object
+        assert.ok(!err.message.includes("fast website redesign"));
+        return true;
+      },
+    );
+  } finally {
+    resetAiClient();
+  }
+});
+
+test("generateJSON identifies token limit exhaustion when finish_reason is length and content is empty", async () => {
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [
+            {
+              finish_reason: "length",
+              message: {
+                role: "assistant",
+                content: null,
+                reasoning: "Long chain of thought that ran out of tokens...",
+              },
+            },
+          ],
+        }),
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  try {
+    await assert.rejects(
+      async () => {
+        await generateJSON({ system: "system", user: "user", retryDelayMs: 1 });
+      },
+      (err: any) => {
+        assert.equal(err.status, 503);
+        assert.match(err.message, /exceeded token limit \(finish_reason: length\)/i);
+        return true;
+      },
+    );
+  } finally {
+    resetAiClient();
+  }
+});
+
+test("generateJSON rejects model refusals with 400 error without retrying", async () => {
+  let callCount = 0;
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async () => {
+          callCount++;
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: null,
+                  refusal: "I cannot fulfill this request because of policy restrictions.",
+                },
+              },
+            ],
+          };
+        },
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  try {
+    await assert.rejects(
+      async () => {
+        await generateJSON({ system: "system", user: "user", retryDelayMs: 1 });
+      },
+      (err: any) => {
+        assert.equal(err.status, 400);
+        assert.match(err.message, /refused request: I cannot fulfill this request/i);
+        return true;
+      },
+    );
+    assert.equal(callCount, 1, "Refusal must not be retried");
+  } finally {
+    resetAiClient();
+  }
+});
+
+test("generateJSON rejects response containing only <think> tags without final output", async () => {
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: "<think>Let me ponder about the lead's website and marketing.</think>",
+              },
+            },
+          ],
+        }),
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  try {
+    await assert.rejects(
+      async () => {
+        await generateJSON({ system: "system", user: "user", retryDelayMs: 1 });
+      },
+      (err: any) => {
+        assert.equal(err.status, 503);
+        assert.match(err.message, /reasoning tags without final content/i);
+        return true;
+      },
+    );
+  } finally {
+    resetAiClient();
+  }
+});
+

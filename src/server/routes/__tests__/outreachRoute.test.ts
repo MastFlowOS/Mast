@@ -855,6 +855,45 @@ describe("POST /v1/outreach/draft", () => {
     }
   });
 
+  test("outreach draft returns 503 and never falls back to deterministic template when AI returns empty content", async () => {
+    const origOr = env.OPENROUTER_API_KEY;
+    try {
+      (env as any).OPENROUTER_API_KEY = "sk-or-v1-mock-key";
+      setAiClient({
+        chat: {
+          completions: {
+            create: async () => ({
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: null,
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      } as any);
+
+      userPlan = "pro";
+      const res = await fetch(`${baseUrl}/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+        body: JSON.stringify({ leadId: 1, channel: "email" }),
+      });
+
+      assert.equal(res.status, 503);
+      const data = await res.json();
+      assert.match(data.message, /AI response contained no text content/i);
+      // Verify no template fallback was returned
+      assert.equal(data.body, undefined);
+    } finally {
+      (env as any).OPENROUTER_API_KEY = origOr;
+      resetAiClient();
+    }
+  });
+
   test("GET /v1/outreach/status returns safe AI configuration state without exposing secrets", async () => {
     const origOr = env.OPENROUTER_API_KEY;
     const origDs = env.DEEPSEEK_API_KEY;

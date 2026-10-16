@@ -110,13 +110,21 @@ app.use((err: unknown, req: express.Request, res: express.Response, _next: expre
   const safeUrl = sanitizeRequestUrl(req.originalUrl);
   const logPayload = { err: safeSerialized, method: req.method, url: safeUrl, userId: req.user?.id };
 
+  const status =
+    typeof (err as any)?.status === "number" && (err as any).status >= 400 && (err as any).status <= 599
+      ? (err as any).status
+      : typeof (err as any)?.statusCode === "number" && (err as any).statusCode >= 400 && (err as any).statusCode <= 599
+        ? (err as any).statusCode
+        : 500;
+
   // Primary: structured pino log (JSON, picked up by Railway's log drain).
   req.log?.error(logPayload, "unhandled_request_error");
   // Fallback: guaranteed plain-text stdout line, with the same redaction.
-  console.error(`[gateway] ${req.method} ${safeUrl} -> 500:`, safeSerialized);
+  console.error(`[gateway] ${req.method} ${safeUrl} -> ${status}:`, safeSerialized);
 
   const message = typeof safeSerialized.message === "string" ? safeSerialized.message : "Internal server error";
-  res.status(500).json({ code: "internal_error", message });
+  const code = (err as any)?.code || (status >= 500 ? "internal_error" : "request_error");
+  res.status(status).json({ code, message });
 });
 
 const server = app.listen(env.PORT, () => {

@@ -33,7 +33,9 @@ import {
   useMissionWeekStats,
   useRecordLeadActivity,
   useUpdateFollowup,
+  useMissionCoach,
 } from "@/hooks/use-mast-api";
+import { usePermissions } from "@/hooks/use-permissions";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
@@ -115,6 +117,22 @@ function MissionsPage() {
 
   const mission = useMemo(() => buildMission(effectiveFollowups), [effectiveFollowups]);
   const busy = updateFollowup.isPending || recordActivity.isPending;
+
+  const { permissions } = usePermissions();
+  const canUseMissionCoach = permissions.can("missionCoach");
+  const { data: missionCoachData } = useMissionCoach(canUseMissionCoach);
+  const isAiCoachActive = Boolean(canUseMissionCoach && missionCoachData);
+
+  const activeCoachBriefing = canUseMissionCoach && missionCoachData?.briefing ? missionCoachData.briefing : mission.missionBriefing;
+  const activeCoachTip = canUseMissionCoach && missionCoachData?.recommendedAction ? missionCoachData.recommendedAction : mission.coachTip;
+  const activeCoachSentence = canUseMissionCoach && missionCoachData?.rationale ? missionCoachData.rationale : mission.coachSentence;
+  const activeCoachReasons = canUseMissionCoach && missionCoachData?.reasons && missionCoachData.reasons.length > 0 ? missionCoachData.reasons : mission.coachReasons;
+  const activeCoachItem = useMemo(() => {
+    if (canUseMissionCoach && missionCoachData?.recommendedLeadId) {
+      return mission.items.find((item) => item.leadId === missionCoachData.recommendedLeadId) ?? mission.coachItem;
+    }
+    return mission.coachItem;
+  }, [canUseMissionCoach, missionCoachData, mission.items, mission.coachItem]);
 
   const openLead = (leadId: number) => {
     const poolLeadIds = mission.todayPool.map((item) => item.leadId);
@@ -450,7 +468,7 @@ function MissionsPage() {
                       <div className="size-7 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400 shadow-[0_0_12px_rgba(168,85,247,0.25)]">
                         <Sparkles className="size-4" />
                       </div>
-                      <span className="text-sm font-bold text-white">AI Coach</span>
+                      <span className="text-sm font-bold text-white">{isAiCoachActive ? "AI Coach" : "Mission Guide"}</span>
                     </div>
                     <button
                       onClick={() => setShowCoachDialog(true)}
@@ -462,14 +480,14 @@ function MissionsPage() {
 
                   {/* Body Sentence */}
                   <p className="text-xs sm:text-[13px] text-slate-300 leading-relaxed mt-3 mb-2">
-                    {mission.missionBriefing}
+                    {activeCoachBriefing}
                   </p>
                 </div>
 
                 {/* Actionable Suggestion Box */}
                 <div
                   onClick={() => {
-                    if (mission.coachItem) openLead(mission.coachItem.leadId);
+                    if (activeCoachItem) openLead(activeCoachItem.leadId);
                     else setShowCoachDialog(true);
                   }}
                   className="rounded-xl bg-[#090D18]/70 border border-white/[0.06] p-2.5 sm:p-3 flex items-center justify-between gap-2.5 hover:border-white/15 transition-colors cursor-pointer group"
@@ -477,7 +495,7 @@ function MissionsPage() {
                   <div className="flex items-start gap-2.5 min-w-0">
                     <Lightbulb className="size-4 text-amber-400 shrink-0 mt-0.5" />
                     <span className="text-xs text-slate-300 leading-snug line-clamp-3">
-                      {mission.coachTip}
+                      {activeCoachTip}
                     </span>
                   </div>
                   <ChevronRight className="size-4 text-slate-500 group-hover:text-slate-300 transition-colors shrink-0 self-center" />
@@ -1026,7 +1044,7 @@ function MissionsPage() {
               <div className="size-7 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400">
                 <Sparkles className="size-4" />
               </div>
-              <DialogTitle className="text-white">AI Coach Insights</DialogTitle>
+              <DialogTitle className="text-white">{isAiCoachActive ? "AI Coach Insights" : "Mission Guide Insights"}</DialogTitle>
             </div>
           </DialogHeader>
           <div className="space-y-4 pt-3">
@@ -1035,24 +1053,24 @@ function MissionsPage() {
                 Executive Strategy
               </h4>
               <p className="text-xs sm:text-sm text-slate-200 leading-relaxed">
-                {mission.missionBriefing}
+                {activeCoachBriefing}
               </p>
             </div>
 
-            {mission.coachItem && (
+            {activeCoachItem && (
               <div className="rounded-xl bg-[#080B14] border border-white/[0.08] p-4 space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-white">{mission.coachItem.leadName}</span>
+                  <span className="text-xs font-bold text-white">{activeCoachItem.leadName}</span>
                   <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                    Impact Score {mission.coachItem.impactScore}
+                    Impact Score {activeCoachItem.impactScore}
                   </span>
                 </div>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  {mission.coachSentence}
+                  {activeCoachSentence}
                 </p>
-                {mission.coachReasons.length > 0 && (
+                {activeCoachReasons.length > 0 && (
                   <ul className="space-y-1.5 pt-1">
-                    {mission.coachReasons.map((reason, i) => (
+                    {activeCoachReasons.map((reason, i) => (
                       <li key={i} className="flex items-center gap-2 text-xs text-slate-400">
                         <span className="size-1.5 rounded-full bg-indigo-400 shrink-0" />
                         <span>{reason}</span>

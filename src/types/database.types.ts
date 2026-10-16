@@ -445,6 +445,55 @@ export type Database = {
         Relationships: [];
       };
 
+      lead_followups: {
+        Row: {
+          id: string | number;
+          lead_id: number;
+          user_id: string;
+          channel: string;
+          due_at: string;
+          status: string;
+          notes: string | null;
+          sequence_name: string | null;
+          step_number: number | null;
+          current_step: number | null;
+          completed_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string | number;
+          lead_id: number;
+          user_id: string;
+          channel: string;
+          due_at: string;
+          status?: string;
+          notes?: string | null;
+          sequence_name?: string | null;
+          step_number?: number | null;
+          current_step?: number | null;
+          completed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string | number;
+          lead_id?: number;
+          user_id?: string;
+          channel?: string;
+          due_at?: string;
+          status?: string;
+          notes?: string | null;
+          sequence_name?: string | null;
+          step_number?: number | null;
+          current_step?: number | null;
+          completed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+
       /**
        * Predates every migration (see file header). Only columns actually
        * read/written by the server build (tsconfig.server.json) are typed;

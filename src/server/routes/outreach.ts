@@ -398,7 +398,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       system: systemPrompt,
       user: userPayloadString,
       tier,
-      maxTokens: 1024,
+      maxTokens: 2048,
       timeoutMs: 30000,
     });
 

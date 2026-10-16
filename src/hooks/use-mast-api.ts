@@ -68,6 +68,10 @@ import {
   type ExecutiveBriefing,
   type WeeklyIntelligence,
   type PipelineCoaching,
+  type DiscoverOverview,
+  type MissionCoachResult,
+  getDiscoverOverview,
+  getMissionCoach,
   type OpsStats,
   type OpsHistoryEntry,
 } from "@/lib/api";
@@ -95,6 +99,8 @@ export const queryKeys = {
   executiveBriefing: ["mast", "intelligence", "briefing"] as const,
   weeklyIntelligence: ["mast", "intelligence", "weekly"] as const,
   pipelineCoaching: ["mast", "intelligence", "coaching"] as const,
+  discoverOverview: ["mast", "intelligence", "discover-overview"] as const,
+  missionCoach: ["mast", "intelligence", "mission-coach"] as const,
   // Phase 7 — Observability
   opsStats: (rangeHours: number) => ["mast", "ops", "stats", rangeHours] as const,
   opsHistory: (rangeHours: number) => ["mast", "ops", "history", rangeHours] as const,
@@ -743,6 +749,28 @@ export function usePipelineCoaching(enabled = true) {
   return useQuery<PipelineCoaching>({
     queryKey: queryKeys.pipelineCoaching,
     queryFn: getPipelineCoaching,
+    enabled,
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** Discover AI Overview (Pro+) — callers should gate with permissions.can("discoverOverview"). */
+export function useDiscoverOverview(enabled = true) {
+  return useQuery<DiscoverOverview>({
+    queryKey: queryKeys.discoverOverview,
+    queryFn: getDiscoverOverview,
+    enabled,
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** Mission AI Coach (Pro+) — callers should gate with permissions.can("missionCoach"). */
+export function useMissionCoach(enabled = true) {
+  return useQuery<MissionCoachResult>({
+    queryKey: queryKeys.missionCoach,
+    queryFn: getMissionCoach,
     enabled,
     retry: false,
     staleTime: 5 * 60_000,

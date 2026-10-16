@@ -32,7 +32,7 @@ import {
 } from "lucide-react";
 import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead } from "@/lib/api";
 
-import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings, queryKeys } from "@/hooks/use-mast-api";
+import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings, useDiscoverOverview, queryKeys } from "@/hooks/use-mast-api";
 import { useLiveDiscoveryState } from "@/hooks/use-live-discovery";
 import { buildDiscoverRequest, summarizeDiscoverRequest, type DiscoverRequestPayload } from "@/lib/discoverRequest";
 import { describeDiscoverOutcome, type DiscoverOutcome, type DiscoverRunStatus, type PoolRankingInfo } from "@/lib/discoverProgress";
@@ -255,6 +255,9 @@ function GetLeads() {
   const generate = useGenerateLeads();
   const { permissions } = usePermissions();
   const queryClient = useQueryClient();
+
+  const canUseAiOverview = permissions.can("discoverOverview");
+  const { data: aiOverviewData, isLoading: aiOverviewLoading } = useDiscoverOverview(canUseAiOverview);
 
   // Live-streaming plumbing for Phase 4: the unsubscribe fn for whatever
   // discover job is currently being watched, and a set of lead ids already
@@ -1318,7 +1321,7 @@ function GetLeads() {
             methodLabel: selectedMethod.shortLabel,
           }}
           insights={discoverInsights}
-          loading={!account || !analytics}
+          loading={!account || !analytics || (canUseAiOverview && aiOverviewLoading)}
           suggestions={nextSuggestions}
           applied={{
             niche: !!nextSuggestions.niche && niches.includes(nextSuggestions.niche.value),
@@ -1344,6 +1347,19 @@ function GetLeads() {
               if (v) toggleChannel(v);
             },
           }}
+          briefing={
+            canUseAiOverview && aiOverviewData
+              ? {
+                  label: aiOverviewData.label,
+                  headline: aiOverviewData.headline,
+                  body: aiOverviewData.body,
+                  confidence: aiOverviewData.confidence,
+                  tone: aiOverviewData.tone,
+                  action: aiOverviewData.action,
+                }
+              : undefined
+          }
+          isAiEntitled={Boolean(canUseAiOverview && aiOverviewData)}
         />
       </div>
     </div>
@@ -1711,6 +1727,7 @@ function DiscoverAiOverview({
   applied,
   onApply,
   briefing,
+  isAiEntitled = false,
 }: {
   /** The ACTIVE form state, built by the same function that builds the request. */
   currentSetup: { niche: string; region: string; amount: string; channels: string; methodLabel: string };
@@ -1722,6 +1739,8 @@ function DiscoverAiOverview({
   onApply: AiApply;
   /** Optional override, e.g. a real AI-generated recommendation. */
   briefing?: AiBriefing;
+  /** Whether the user's plan is entitled to real AI overview. */
+  isAiEntitled?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -1748,9 +1767,13 @@ function DiscoverAiOverview({
             <Sparkles className="size-[18px]" />
           </span>
           <div className="min-w-0">
-            <h2 className="text-[15px] font-semibold leading-tight text-foreground">AI Overview</h2>
+            <h2 className="text-[15px] font-semibold leading-tight text-foreground">
+              {isAiEntitled ? "AI Overview" : "Discovery Overview"}
+            </h2>
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              Your current search, plus recommendations for what to try next.
+              {isAiEntitled
+                ? "Your current search, plus AI recommendations for what to try next."
+                : "Your current search, plus recommendations for what to try next."}
             </p>
           </div>
         </div>

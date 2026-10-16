@@ -10,6 +10,7 @@ import { toJson, isJsonObject } from "../lib/json.js";
 import type { Json } from "../types/database.types.js";
 import { env } from "../config/env.js";
 import { aiEnabled, generateJSON, AI_MODEL, getAiModel } from "../lib/ai.js";
+import { singleFlight } from "../lib/singleFlight.js";
 import { PROFESSION_SLUGS } from "../scoring/professionWeights.js";
 import { trackActiveEnrichment, trackActiveIntelligence } from "../lib/enrichmentTelemetry.js";
 import {
@@ -530,8 +531,8 @@ async function scoreBusiness(businessId: string): Promise<void> {
     await computeAndStoreOpportunityScores(businessId);
     await computeAndStoreBusinessHealth(businessId);
 
-    // AI intelligence: pre-generate opportunity insights if AI is enabled
-    if (aiEnabled()) {
+    // AI intelligence: pre-generate opportunity insights only if both AI and background precomputation are explicitly enabled
+    if (aiEnabled() && env.AI_BACKGROUND_OPPORTUNITY_INSIGHTS) {
       try {
         await generateBackgroundOpportunityInsights(businessId);
       } catch (aiErr) {
@@ -541,7 +542,7 @@ async function scoreBusiness(businessId: string): Promise<void> {
   });
 }
 
-async function generateBackgroundOpportunityInsights(businessId: string): Promise<void> {
+export async function generateBackgroundOpportunityInsights(businessId: string): Promise<void> {
   const { data: topScore, error: scoreErr } = await supabaseAdmin
     .from("business_opportunity_scores")
     .select("profession_slug, opportunity_score")
@@ -558,59 +559,90 @@ async function generateBackgroundOpportunityInsights(businessId: string): Promis
   if (!(PROFESSION_SLUGS as readonly string[]).includes(slugRaw)) return;
   const professionSlug = slugRaw;
 
-  const { data: business, error: bizError } = await supabaseAdmin
-    .from("businesses")
-    .select("id, name, niche, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
-    .eq("id", businessId)
-    .single();
-  if (bizError) throw bizError;
-
-  // Engine 2.0 computes all scores and explanations — no TS reimplementation.
-  const engineResult = await runEngineScore({
-    ...business,
-    id: businessId,
-    ...(business.signals != null && typeof business.signals === "object" ? business.signals as Record<string, unknown> : {}),
-  });
-
-  const ps = engineResult.profession_scores?.[professionSlug];
-  if (!ps || ps.score < 50) return;
-
-  const insight = await generateJSON<{ headline: string; talkingPoints: string[]; openingLine: string }>({
-    system:
-      "You are MAST's Opportunity Intelligence assistant, helping a freelancer understand why a business " +
-      "was surfaced as a sales opportunity. You are given real, already-computed facts. Do not invent " +
-      "anything not present in the input. Never use em dashes ('—' or '–'). Avoid generic marketing buzzwords ('elevate', 'streamline', 'synergy'). " +
-      "Respond with ONLY a JSON object: " +
-      '{"headline": string (<=12 words, why this is a good opportunity, no em dashes), ' +
-      '"talkingPoints": string[] (2-4 short, concrete, non-generic points grounded in verified data, no em dashes), ' +
-      '"openingLine": string (one natural first-contact opener, no em dashes, no greeting/signature, <=2 sentences)}. ' +
-      "Keep tone professional, natural, and specific, never salesy or exaggerated.",
-    user: JSON.stringify({
-      businessName: business.name,
-      niche: business.niche,
-      profession: professionSlug,
-      opportunityScore: ps.score,
-      reasons: ps.reasons,
-      summary: ps.summary,
-    }),
-    maxTokens: 512,
-    tier: "fast",
-  });
-
-  const row = {
-    business_id: businessId,
-    profession_slug: professionSlug,
-    headline: typeof insight.headline === "string" ? insight.headline.replace(/[—–]/g, " - ") : `A fresh opportunity: ${business.name}`,
-    talking_points: Array.isArray(insight.talkingPoints) ? insight.talkingPoints.map((tp) => (typeof tp === "string" ? tp.replace(/[—–]/g, " - ") : tp)) : [],
-    opening_line: typeof insight.openingLine === "string" ? insight.openingLine.replace(/[—–]/g, " - ") : "Hi, I came across your business and had a few specific ideas that could help.",
-    score_snapshot: ps.score,
-    model: getAiModel("fast"),
-    generated_at: new Date().toISOString(),
-  };
-
-  await supabaseAdmin
+  // 1. Cache-existence check: avoid expensive LLM precomputation if a suitably fresh insight exists
+  const { data: cached, error: cacheErr } = await supabaseAdmin
     .from("business_opportunity_insights")
-    .upsert(row, { onConflict: "business_id,profession_slug" });
+    .select("score_snapshot")
+    .eq("business_id", businessId)
+    .eq("profession_slug", professionSlug)
+    .maybeSingle();
+
+  if (!cacheErr && cached && Math.abs((cached.score_snapshot as number) - topScore.opportunity_score) <= 10) {
+    return;
+  }
+
+  // 2. Coalesce concurrent background generations for the same (business, profession)
+  await singleFlight(`opportunities:${businessId}:${professionSlug}`, async () => {
+    // Re-check cache inside singleFlight in case concurrent execution just populated it
+    const { data: freshCached } = await supabaseAdmin
+      .from("business_opportunity_insights")
+      .select("score_snapshot")
+      .eq("business_id", businessId)
+      .eq("profession_slug", professionSlug)
+      .maybeSingle();
+
+    if (freshCached && Math.abs((freshCached.score_snapshot as number) - topScore.opportunity_score) <= 10) {
+      return;
+    }
+
+    const { data: business, error: bizError } = await supabaseAdmin
+      .from("businesses")
+      .select("id, name, niche, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
+      .eq("id", businessId)
+      .single();
+    if (bizError) throw bizError;
+
+    // Engine 2.0 computes all scores and explanations — no TS reimplementation.
+    const engineResult = await runEngineScore({
+      ...business,
+      id: businessId,
+      ...(business.signals != null && typeof business.signals === "object" ? business.signals as Record<string, unknown> : {}),
+    });
+
+    const ps = engineResult.profession_scores?.[professionSlug];
+    if (!ps || ps.score < 50) return;
+
+    if (freshCached && Math.abs((freshCached.score_snapshot as number) - ps.score) <= 10) {
+      return;
+    }
+
+    const insight = await generateJSON<{ headline: string; talkingPoints: string[]; openingLine: string }>({
+      system:
+        "You are MAST's Opportunity Intelligence assistant, helping a freelancer understand why a business " +
+        "was surfaced as a sales opportunity. You are given real, already-computed facts. Do not invent " +
+        "anything not present in the input. Never use em dashes ('—' or '–'). Avoid generic marketing buzzwords ('elevate', 'streamline', 'synergy'). " +
+        "Respond with ONLY a JSON object: " +
+        '{"headline": string (<=12 words, why this is a good opportunity, no em dashes), ' +
+        '"talkingPoints": string[] (2-4 short, concrete, non-generic points grounded in verified data, no em dashes), ' +
+        '"openingLine": string (one natural first-contact opener, no em dashes, no greeting/signature, <=2 sentences)}. ' +
+        "Keep tone professional, natural, and specific, never salesy or exaggerated.",
+      user: JSON.stringify({
+        businessName: business.name,
+        niche: business.niche,
+        profession: professionSlug,
+        opportunityScore: ps.score,
+        reasons: ps.reasons,
+        summary: ps.summary,
+      }),
+      maxTokens: 512,
+      tier: "fast",
+    });
+
+    const row = {
+      business_id: businessId,
+      profession_slug: professionSlug,
+      headline: typeof insight.headline === "string" ? insight.headline.replace(/[—–]/g, " - ") : `A fresh opportunity: ${business.name}`,
+      talking_points: Array.isArray(insight.talkingPoints) ? insight.talkingPoints.map((tp) => (typeof tp === "string" ? tp.replace(/[—–]/g, " - ") : tp)) : [],
+      opening_line: typeof insight.openingLine === "string" ? insight.openingLine.replace(/[—–]/g, " - ") : "Hi, I came across your business and had a few specific ideas that could help.",
+      score_snapshot: ps.score,
+      model: getAiModel("fast"),
+      generated_at: new Date().toISOString(),
+    };
+
+    await supabaseAdmin
+      .from("business_opportunity_insights")
+      .upsert(row, { onConflict: "business_id,profession_slug" });
+  });
 }
 
 /** `business.emails`/`business.phones` rows may be bare strings or `{

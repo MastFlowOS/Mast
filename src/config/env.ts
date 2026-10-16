@@ -2,7 +2,7 @@ import "dotenv/config";
 import { z } from "zod";
 import type { PlanId } from "../config/plans.js";
 
-const EnvSchema = z
+export const EnvSchema = z
   .object({
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
     PORT: z.coerce.number().default(8080),
@@ -496,6 +496,19 @@ const EnvSchema = z
     OPENROUTER_MODEL: z.string().default("openrouter/free"),
     OPENROUTER_FAST_MODEL: z.string().default("openrouter/free"),
     OPENROUTER_PRO_MODEL: z.string().default("openrouter/free"),
+
+    // Controls whether background worker jobs automatically precompute AI Opportunity Insights
+    // during batch scoring passes. Defaults to false (OFF) to protect API limits and prevent
+    AI_BACKGROUND_OPPORTUNITY_INSIGHTS: z
+      .preprocess((val) => {
+        if (typeof val === "string") {
+          const lower = val.toLowerCase().trim();
+          if (lower === "false" || lower === "0" || lower === "off" || lower === "no") return false;
+          if (lower === "true" || lower === "1" || lower === "on" || lower === "yes") return true;
+        }
+        return val;
+      }, z.coerce.boolean())
+      .default(false),
 
     // DeepSeek AI configuration (kept optional for backward compatibility)
     DEEPSEEK_API_KEY: z.string().optional(),

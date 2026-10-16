@@ -90,6 +90,10 @@ export function KanbanBriefing({
   onClose,
   onViewAttention,
   onViewPotential,
+  isAi = false,
+  isError = false,
+  isFallback = false,
+  onRetry,
 }: {
   headline: string;
   body: string;
@@ -101,6 +105,10 @@ export function KanbanBriefing({
   onClose: () => void;
   onViewAttention: () => void;
   onViewPotential: () => void;
+  isAi?: boolean;
+  isError?: boolean;
+  isFallback?: boolean;
+  onRetry?: () => void;
 }) {
   return (
     <section
@@ -131,15 +139,39 @@ export function KanbanBriefing({
               strokeWidth={1.3}
             />
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="text-[12.5px] font-medium text-foreground/90">
-                AI Executive Briefing
+                {isAi ? "AI Executive Briefing" : "Pipeline Briefing"}
               </span>
-              <span className="inline-flex items-center gap-1.5 rounded-md border border-success/30 bg-success/10 px-1.5 py-px text-[10.5px] font-semibold text-success">
-                <span className="size-1.5 rounded-full bg-success" /> Live
-              </span>
+              {isAi ? (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-success/30 bg-success/10 px-1.5 py-px text-[10.5px] font-semibold text-success">
+                  <span className="size-1.5 rounded-full bg-success" /> Live AI
+                </span>
+              ) : isError ? (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-px text-[10.5px] font-semibold text-amber-400">
+                  Rule-based Fallback
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-1.5 py-px text-[10.5px] font-semibold text-muted-foreground">
+                  Rule-based
+                </span>
+              )}
             </div>
+
+            {isError && onRetry && (
+              <div className="mt-1.5 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-300">
+                <span>AI Briefing unavailable. Showing rule-based summary.</span>
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="font-bold underline hover:text-white"
+                >
+                  Retry AI
+                </button>
+              </div>
+            )}
+
             <h2 className="mt-1.5 text-[19px] font-semibold leading-snug tracking-[-0.01em] text-foreground">
               {headline}
             </h2>
@@ -836,6 +868,10 @@ export function KanbanCoachPanel({
   suggestions,
   loading,
   onClose,
+  isAi = false,
+  isError = false,
+  isFallback = false,
+  onRetry,
 }: {
   insights: CoachInsight[];
   actions: CoachAction[];
@@ -844,6 +880,10 @@ export function KanbanCoachPanel({
   suggestions: CoachSuggestion[];
   loading: boolean;
   onClose: () => void;
+  isAi?: boolean;
+  isError?: boolean;
+  isFallback?: boolean;
+  onRetry?: () => void;
 }) {
   const [tab, setTab] = useState<CoachTab>("insights");
   const tabs: { id: CoachTab; label: string }[] = [
@@ -853,7 +893,7 @@ export function KanbanCoachPanel({
   ];
 
   return (
-    <aside className={cn(surface, "flex flex-col p-4")} aria-label="AI Sales Coach">
+    <aside className={cn(surface, "flex flex-col p-4")} aria-label={isAi ? "AI Sales Coach" : "Sales Coach"}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <span
@@ -862,17 +902,47 @@ export function KanbanCoachPanel({
           >
             <Sparkles className="size-8" strokeWidth={1.5} />
           </span>
-          <h2 className="text-[17px] font-semibold text-foreground">AI Sales Coach</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-[17px] font-semibold text-foreground">
+              {isAi ? "AI Sales Coach" : "Sales Coach"}
+            </h2>
+            {isAi ? (
+              <span className="inline-flex items-center gap-1 rounded-md border border-brand/30 bg-brand/10 px-1.5 py-px text-[10px] font-semibold text-brand">
+                AI Powered
+              </span>
+            ) : isError ? (
+              <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-px text-[10px] font-semibold text-amber-400">
+                Rule-based Fallback
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-1.5 py-px text-[10px] font-semibold text-muted-foreground">
+                Rule-based
+              </span>
+            )}
+          </div>
         </div>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close AI Sales Coach"
+          aria-label={isAi ? "Close AI Sales Coach" : "Close Sales Coach"}
           className="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground"
         >
           <X className="size-4" />
         </button>
       </div>
+
+      {isError && onRetry && (
+        <div className="mt-3 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300">
+          <span>AI Coach unavailable. Showing rule-based insights.</span>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="font-bold underline hover:text-white"
+          >
+            Retry AI
+          </button>
+        </div>
+      )}
 
       <div
         role="tablist"

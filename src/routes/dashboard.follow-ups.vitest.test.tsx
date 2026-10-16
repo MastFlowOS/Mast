@@ -27,7 +27,9 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 vi.mock("sonner", () => ({ toast: { error: h.toastError, success: h.toastSuccess, info: vi.fn() } }));
 vi.mock("@/components/mast/FeatureGate", () => ({ FeatureGate: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
-vi.mock("@/lib/api", () => ({ getLead: vi.fn() }));
+vi.mock("@/hooks/use-permissions", () => ({
+  usePermissions: () => ({ permissions: { can: () => false, plan: "free" }, isLoading: false }),
+}));
 vi.mock("@/hooks/use-mast-api", () => ({
   useFollowups: () => ({ data: h.followups, isLoading: false, isError: false, isFetching: false, refetch: vi.fn() }),
   useMissionWeekStats: () => ({
@@ -35,6 +37,7 @@ vi.mock("@/hooks/use-mast-api", () => ({
   }),
   useUpdateFollowup: () => ({ mutateAsync: h.updateMutate, isPending: false }),
   useRecordLeadActivity: () => ({ mutateAsync: h.activityMutate, isPending: false }),
+  useMissionCoach: () => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() }),
 }));
 
 import { Route } from "./dashboard.follow-ups";

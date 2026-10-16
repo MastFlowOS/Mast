@@ -1511,4 +1511,177 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
       assert.equal(res.status, 500);
     });
   });
+
+  describe("Architecture Policy: Real AI Primary, Deterministic Fallback, Honest Errors", () => {
+    test("GET /v1/intelligence/status exposes safe configuration state", async () => {
+      // With OPENROUTER_API_KEY set
+      const res1 = await fetch(`${baseUrl}/status`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(res1.status, 200);
+      const data1 = await res1.json();
+      assert.equal(data1.aiConfigured, true);
+      assert.equal(typeof data1.model, "string");
+
+      // With OPENROUTER_API_KEY unset
+      const savedKey = (env as any).OPENROUTER_API_KEY;
+      (env as any).OPENROUTER_API_KEY = "";
+      try {
+        const res2 = await fetch(`${baseUrl}/status`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(res2.status, 200);
+        const data2 = await res2.json();
+        assert.equal(data2.aiConfigured, false);
+        assert.equal(data2.model, null);
+      } finally {
+        (env as any).OPENROUTER_API_KEY = savedKey;
+      }
+    });
+
+    test("Case A: Pro user gets genuine model output for Discover AI Overview and Mission Coach", async () => {
+      userPlan = "pro";
+      dbLeads = [
+        {
+          id: 50,
+          user_id: validUserId,
+          business_name: "Apex Studio",
+          niche: "dentist",
+          status: "new",
+          opportunity_score: 92,
+          priority: "high",
+          updated_at: new Date().toISOString(),
+        },
+      ];
+      dbFollowups = [
+        {
+          id: "f-50",
+          user_id: validUserId,
+          lead_id: 50,
+          channel: "email",
+          due_at: new Date().toISOString(),
+          status: "pending",
+          notes: "Send custom proposal",
+          updated_at: new Date().toISOString(),
+        },
+      ];
+
+      // Discover Overview genuine model output
+      mockAiResult = {
+        label: "AI High Opportunity",
+        headline: "Dentists in your area show strong scoring signals.",
+        body: "Apex Studio has a 92 opportunity score with strong outreach potential.",
+        confidence: "High Confidence",
+        tone: "brand",
+        patterns: ["Dental leads converting well"],
+        promisingOpportunities: ["Apex Studio"],
+        nextSteps: ["Send initial email draft"],
+        action: { label: "Review Leads", href: "#leads-table" },
+      };
+
+      const resOverview = await fetch(`${baseUrl}/discover-overview`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(resOverview.status, 200);
+      const dataOverview = await resOverview.json();
+      assert.equal(dataOverview.label, "AI High Opportunity");
+      assert.equal(dataOverview.headline, "Dentists in your area show strong scoring signals.");
+      assert.equal(dataOverview.patterns[0], "Dental leads converting well");
+      assert.equal(dataOverview.promisingOpportunities[0], "Apex Studio");
+      assert.equal(capturedAiCalls.length, 1);
+
+      // Mission Coach genuine model output
+      mockAiResult = {
+        briefing: "Execute your high-impact follow-up today.",
+        recommendedLeadId: 50,
+        recommendedAction: "Send proposal to Apex Studio",
+        rationale: "Highest opportunity score in queue.",
+        reasons: ["Score 92", "High priority"],
+      };
+
+      const resCoach = await fetch(`${baseUrl}/mission-coach`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(resCoach.status, 200);
+      const dataCoach = await resCoach.json();
+      assert.equal(dataCoach.briefing, "Execute your high-impact follow-up today.");
+      assert.equal(dataCoach.recommendedLeadId, 50);
+      assert.equal(dataCoach.recommendedAction, "Send proposal to Apex Studio");
+      assert.equal(capturedAiCalls.length, 2);
+    });
+
+    test("Case B: Returns 503 ai_unavailable when AI provider is unconfigured", async () => {
+      userPlan = "pro";
+      const savedKey = (env as any).OPENROUTER_API_KEY;
+      (env as any).OPENROUTER_API_KEY = "";
+
+      try {
+        const resOverview = await fetch(`${baseUrl}/discover-overview`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(resOverview.status, 503);
+        const dataOverview = await resOverview.json();
+        assert.equal(dataOverview.code, "ai_unavailable");
+
+        const resCoach = await fetch(`${baseUrl}/mission-coach`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(resCoach.status, 503);
+        const dataCoach = await resCoach.json();
+        assert.equal(dataCoach.code, "ai_unavailable");
+      } finally {
+        (env as any).OPENROUTER_API_KEY = savedKey;
+      }
+    });
+
+    test("Case C: Returns 500 error when model generation fails and never masks with fake intelligence", async () => {
+      userPlan = "pro";
+      dbLeads = [
+        {
+          id: 55,
+          user_id: validUserId,
+          business_name: "Failed Model Co",
+          niche: "legal",
+          status: "new",
+          opportunity_score: 70,
+          updated_at: new Date().toISOString(),
+        },
+      ];
+      mockAiResult = new Error("OpenRouter API 500 error or rate limit");
+
+      const resOverview = await fetch(`${baseUrl}/discover-overview`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(resOverview.status, 500);
+
+      const resCoach = await fetch(`${baseUrl}/mission-coach`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(resCoach.status, 500);
+    });
+
+    test("Case D: Subscription gating strictly enforced for Free and Starter users before model calls", async () => {
+      for (const restrictedPlan of ["free", "starter"]) {
+        userPlan = restrictedPlan;
+        capturedAiCalls = [];
+
+        const resOverview = await fetch(`${baseUrl}/discover-overview`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(resOverview.status, 403);
+        const dataOverview = await resOverview.json();
+        assert.equal(dataOverview.code, "plan_restricted");
+
+        const resCoach = await fetch(`${baseUrl}/mission-coach`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(resCoach.status, 403);
+        const dataCoach = await resCoach.json();
+        assert.equal(dataCoach.code, "plan_restricted");
+
+        // Gating occurs before model call — zero AI model invocations
+        assert.equal(capturedAiCalls.length, 0);
+      }
+    });
+  });
 });

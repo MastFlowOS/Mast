@@ -588,7 +588,7 @@ export function subscribeToDiscoverJob(
 ): () => void {
   if (!supabase) return () => {};
 
-  const seenLeadIds = new Set<string>();
+  const seenLeadIds = new Set<string | number>();
   let terminalStatus: DiscoverJobStatus | null = null;
   let terminalResultsCount = 0;
   let requestedQuantity: number | null = options?.requestedQuantity ?? null;
@@ -1774,6 +1774,15 @@ export type MissionCoachResult = {
 /** AI-generated Mission Coach (Pro/Premium) — cached on backend. */
 export async function getMissionCoach(): Promise<MissionCoachResult> {
   return backendFetch<MissionCoachResult>("/v1/intelligence/mission-coach");
+}
+
+export type IntelligenceStatusResponse = {
+  aiConfigured: boolean;
+  model: string | null;
+};
+
+export async function getIntelligenceStatus(): Promise<IntelligenceStatusResponse> {
+  return backendFetch<IntelligenceStatusResponse>("/v1/intelligence/status");
 }
 
 // ─── Analytics (computed from Supabase leads) ─────────────────────────────────

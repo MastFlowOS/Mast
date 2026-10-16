@@ -110,8 +110,32 @@ function Pipeline() {
   // this just avoids the request too.
   const canBriefing = permissions.can("executiveBriefings");
   const canCoaching = permissions.can("pipelineCoaching");
-  const { data: realAiBriefing, isLoading: realAiBriefingLoading } = useExecutiveBriefing(canBriefing);
-  const { data: realCoaching, isLoading: realCoachingLoading } = usePipelineCoaching(canCoaching);
+  const {
+    data: realAiBriefing,
+    isLoading: realAiBriefingLoading,
+    error: briefingError,
+    refetch: refetchBriefing,
+  } = useExecutiveBriefing(canBriefing);
+  const {
+    data: realCoaching,
+    isLoading: realCoachingLoading,
+    error: coachingError,
+    refetch: refetchCoaching,
+  } = usePipelineCoaching(canCoaching);
+
+  const isBriefingUnconfigured = Boolean(
+    briefingError &&
+      (((briefingError as any)?.status === 503) || ((briefingError as any)?.code === "ai_unavailable"))
+  );
+  const isBriefingError = Boolean(canBriefing && briefingError && !isBriefingUnconfigured);
+  const isAiBriefingActive = Boolean(canBriefing && realAiBriefing);
+
+  const isCoachingUnconfigured = Boolean(
+    coachingError &&
+      (((coachingError as any)?.status === 503) || ((coachingError as any)?.code === "ai_unavailable"))
+  );
+  const isCoachingError = Boolean(canCoaching && coachingError && !isCoachingUnconfigured);
+  const isAiCoachingActive = Boolean(canCoaching && realCoaching);
 
   // Mode Selection: Flow (default) or Kanban
   const [viewMode, setViewMode] = useState<"flow" | "kanban">(() => {
@@ -930,6 +954,10 @@ function Pipeline() {
                 wonCount={flow.health.won}
                 onViewAttention={() => navigate({ to: "/dashboard/relationships" })}
                 onViewPotential={() => navigate({ to: "/dashboard/relationships" })}
+                isAi={isAiBriefingActive}
+                isError={isBriefingError}
+                isFallback={!isAiBriefingActive}
+                onRetry={() => void refetchBriefing()}
               />
             )}
           </FeatureGate>
@@ -939,7 +967,15 @@ function Pipeline() {
           <PipelineFlowHero nodes={flow.nodes} loading={statsLoading && !isFiltered} onSelect={setExpandedStage} />
 
           <FeatureGate feature="pipelineCoaching" fallback="card">
-            <PipelineCoach cards={coachCards} counts={flowCounts} loading={coachingLoading} />
+            <PipelineCoach
+              cards={coachCards}
+              counts={flowCounts}
+              loading={coachingLoading}
+              isAi={isAiCoachingActive}
+              isError={isCoachingError}
+              isFallback={!isAiCoachingActive}
+              onRetry={() => void refetchCoaching()}
+            />
           </FeatureGate>
         </div>
       ) : (
@@ -962,6 +998,10 @@ function Pipeline() {
                     onClose={() => setBriefingOpen(false)}
                     onViewAttention={() => navigate({ to: "/dashboard/relationships" })}
                     onViewPotential={() => navigate({ to: "/dashboard/relationships" })}
+                    isAi={isAiBriefingActive}
+                    isError={isBriefingError}
+                    isFallback={!isAiBriefingActive}
+                    onRetry={() => void refetchBriefing()}
                   />
                 )}
               </FeatureGate>
@@ -1035,6 +1075,10 @@ function Pipeline() {
                   suggestions={coachSuggestions}
                   loading={coachingLoading}
                   onClose={() => setCoachOpen(false)}
+                  isAi={isAiCoachingActive}
+                  isError={isCoachingError}
+                  isFallback={!isAiCoachingActive}
+                  onRetry={() => void refetchCoaching()}
                 />
               </FeatureGate>
             </div>

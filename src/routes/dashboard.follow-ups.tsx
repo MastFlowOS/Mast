@@ -82,6 +82,7 @@ type MissionItem = FollowupWithLead & {
 
 function MissionsPage() {
   const navigate = useNavigate();
+  const { permissions } = usePermissions();
   const { data: rawFollowups = [], isLoading, isError, refetch } = useFollowups({ limit: 1000 });
   const { data: weekStats } = useMissionWeekStats();
   const updateFollowup = useUpdateFollowup();
@@ -118,9 +119,19 @@ function MissionsPage() {
   const mission = useMemo(() => buildMission(effectiveFollowups), [effectiveFollowups]);
   const busy = updateFollowup.isPending || recordActivity.isPending;
 
-  const { permissions } = usePermissions();
   const canUseMissionCoach = permissions.can("missionCoach");
-  const { data: missionCoachData } = useMissionCoach(canUseMissionCoach);
+  const {
+    data: missionCoachData,
+    isLoading: missionCoachLoading,
+    error: missionCoachError,
+    refetch: refetchMissionCoach,
+  } = useMissionCoach(canUseMissionCoach);
+
+  const isAiCoachUnconfigured = Boolean(
+    missionCoachError &&
+      (((missionCoachError as any)?.status === 503) || ((missionCoachError as any)?.code === "ai_unavailable"))
+  );
+  const isAiCoachError = Boolean(canUseMissionCoach && missionCoachError && !isAiCoachUnconfigured);
   const isAiCoachActive = Boolean(canUseMissionCoach && missionCoachData);
 
   const activeCoachBriefing = canUseMissionCoach && missionCoachData?.briefing ? missionCoachData.briefing : mission.missionBriefing;
@@ -468,7 +479,24 @@ function MissionsPage() {
                       <div className="size-7 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400 shadow-[0_0_12px_rgba(168,85,247,0.25)]">
                         <Sparkles className="size-4" />
                       </div>
-                      <span className="text-sm font-bold text-white">{isAiCoachActive ? "AI Coach" : "Mission Guide"}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-white">
+                          {isAiCoachActive ? "AI Coach" : "Mission Guide"}
+                        </span>
+                        {isAiCoachActive ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-[10px] font-semibold text-purple-300">
+                            AI Powered
+                          </span>
+                        ) : isAiCoachError ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+                            Rule-based Fallback
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-400">
+                            Rule-based
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <button
                       onClick={() => setShowCoachDialog(true)}
@@ -477,6 +505,19 @@ function MissionsPage() {
                       View all
                     </button>
                   </div>
+
+                  {isAiCoachError && (
+                    <div className="mt-2.5 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300">
+                      <span>AI Coach unavailable. Showing rule-based guide.</span>
+                      <button
+                        type="button"
+                        onClick={() => void refetchMissionCoach()}
+                        className="text-[11px] font-bold underline hover:text-white"
+                      >
+                        Retry AI
+                      </button>
+                    </div>
+                  )}
 
                   {/* Body Sentence */}
                   <p className="text-xs sm:text-[13px] text-slate-300 leading-relaxed mt-3 mb-2">
@@ -1044,10 +1085,39 @@ function MissionsPage() {
               <div className="size-7 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400">
                 <Sparkles className="size-4" />
               </div>
-              <DialogTitle className="text-white">{isAiCoachActive ? "AI Coach Insights" : "Mission Guide Insights"}</DialogTitle>
+              <div className="flex items-center gap-2">
+                <DialogTitle className="text-white">
+                  {isAiCoachActive ? "AI Coach Insights" : "Mission Guide Insights"}
+                </DialogTitle>
+                {isAiCoachActive ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-[10px] font-semibold text-purple-300">
+                    AI Powered
+                  </span>
+                ) : isAiCoachError ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+                    Rule-based Fallback
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-400">
+                    Rule-based
+                  </span>
+                )}
+              </div>
             </div>
           </DialogHeader>
           <div className="space-y-4 pt-3">
+            {isAiCoachError && (
+              <div className="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                <span>AI Coach request failed. Displaying rule-based mission guidance.</span>
+                <button
+                  type="button"
+                  onClick={() => void refetchMissionCoach()}
+                  className="font-bold underline hover:text-white"
+                >
+                  Retry AI
+                </button>
+              </div>
+            )}
             <div className="rounded-xl bg-[#080B14] border border-white/[0.08] p-4">
               <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-1">
                 Executive Strategy

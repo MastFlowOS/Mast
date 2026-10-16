@@ -29,8 +29,9 @@ import {
   Lightbulb,
   Eye,
   MapPin,
+  AlertCircle,
 } from "lucide-react";
-import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead } from "@/lib/api";
+import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead, type DiscoverOverview } from "@/lib/api";
 
 import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings, useDiscoverOverview, queryKeys } from "@/hooks/use-mast-api";
 import { useLiveDiscoveryState } from "@/hooks/use-live-discovery";
@@ -257,7 +258,19 @@ function GetLeads() {
   const queryClient = useQueryClient();
 
   const canUseAiOverview = permissions.can("discoverOverview");
-  const { data: aiOverviewData, isLoading: aiOverviewLoading } = useDiscoverOverview(canUseAiOverview);
+  const {
+    data: aiOverviewData,
+    isLoading: aiOverviewLoading,
+    error: aiOverviewError,
+    refetch: refetchAiOverview,
+  } = useDiscoverOverview(canUseAiOverview);
+
+  const isAiUnconfigured = Boolean(
+    aiOverviewError &&
+      (((aiOverviewError as any)?.status === 503) || ((aiOverviewError as any)?.code === "ai_unavailable"))
+  );
+  const isAiError = Boolean(canUseAiOverview && aiOverviewError && !isAiUnconfigured);
+  const isAiActive = Boolean(canUseAiOverview && aiOverviewData);
 
   // Live-streaming plumbing for Phase 4: the unsubscribe fn for whatever
   // discover job is currently being watched, and a set of lead ids already
@@ -1347,19 +1360,11 @@ function GetLeads() {
               if (v) toggleChannel(v);
             },
           }}
-          briefing={
-            canUseAiOverview && aiOverviewData
-              ? {
-                  label: aiOverviewData.label,
-                  headline: aiOverviewData.headline,
-                  body: aiOverviewData.body,
-                  confidence: aiOverviewData.confidence,
-                  tone: aiOverviewData.tone,
-                  action: aiOverviewData.action,
-                }
-              : undefined
-          }
-          isAiEntitled={Boolean(canUseAiOverview && aiOverviewData)}
+          aiOverview={canUseAiOverview ? aiOverviewData : undefined}
+          isAiActive={isAiActive}
+          isAiError={isAiError}
+          isAiUnconfigured={isAiUnconfigured}
+          onRetryAi={() => void refetchAiOverview()}
         />
       </div>
     </div>
@@ -1716,9 +1721,10 @@ function ContactChannelIcons({ lead, requested }: { lead: LeadChannelSource; req
 }
 
 /** AI Overview — a compact briefing: your CURRENT search (from the active form
- * state), one main recommendation, and recommendations for the next search. Recommendation content comes from buildDiscoverInsights()
- * (or a future `briefing`); the extra insights stay one click away behind
- * "View detailed analysis". */
+ * state), one main recommendation, and recommendations for the next search.
+ * When real AI is active, it renders the genuine LLM-generated briefing and
+ * surfaces model-generated patterns, promising opportunities, and next steps.
+ * Fallbacks are cleanly labeled as rule-based with recovery options. */
 function DiscoverAiOverview({
   currentSetup,
   insights,
@@ -1726,8 +1732,11 @@ function DiscoverAiOverview({
   suggestions,
   applied,
   onApply,
-  briefing,
-  isAiEntitled = false,
+  aiOverview,
+  isAiActive = false,
+  isAiError = false,
+  isAiUnconfigured = false,
+  onRetryAi,
 }: {
   /** The ACTIVE form state, built by the same function that builds the request. */
   currentSetup: { niche: string; region: string; amount: string; channels: string; methodLabel: string };
@@ -1737,24 +1746,47 @@ function DiscoverAiOverview({
   suggestions: NextSearchSuggestions;
   applied: AiApplied;
   onApply: AiApply;
-  /** Optional override, e.g. a real AI-generated recommendation. */
-  briefing?: AiBriefing;
-  /** Whether the user's plan is entitled to real AI overview. */
-  isAiEntitled?: boolean;
+  /** Genuine AI Overview data from server. */
+  aiOverview?: DiscoverOverview | null;
+  /** Whether real AI generation succeeded and is active. */
+  isAiActive?: boolean;
+  /** Whether real AI request was attempted but failed. */
+  isAiError?: boolean;
+  /** Whether AI provider is unconfigured on the deployment. */
+  isAiUnconfigured?: boolean;
+  /** Callback to retry failed AI request. */
+  onRetryAi?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
-  if (!loading && insights.length === 0 && !briefing) return null;
+  if (!loading && insights.length === 0 && !aiOverview) return null;
 
   const pool = insights.slice(0, 3);
   const extra = pool.slice(1);
-  const main = briefing ?? (pool[0] ? insightToBriefing(pool[0]) : null);
+  const main: AiBriefing | null = (isAiActive && aiOverview)
+    ? {
+        label: aiOverview.label,
+        headline: aiOverview.headline,
+        body: aiOverview.body,
+        confidence: aiOverview.confidence,
+        tone: aiOverview.tone,
+        action: aiOverview.action,
+      }
+    : (pool[0] ? insightToBriefing(pool[0]) : null);
+
   const ConfIcon = main ? CONFIDENCE_ICON[main.confidence] : TrendingUp;
   const [confHead, ...confRest] = (main?.confidence ?? "").split(" ");
 
   const channelLabel = suggestions.channel
     ? (channelOptions.find((c) => c.id === suggestions.channel!.value)?.short ?? suggestions.channel.value)
     : null;
+
+  const hasAiDetails = Boolean(
+    isAiActive &&
+    aiOverview &&
+    (aiOverview.patterns.length > 0 || aiOverview.promisingOpportunities.length > 0 || aiOverview.nextSteps.length > 0)
+  );
+  const hasDetails = !loading && (hasAiDetails || extra.length > 0);
 
   return (
     <section className={cn(panelSurface, "p-4 sm:p-5")}>
@@ -1767,17 +1799,34 @@ function DiscoverAiOverview({
             <Sparkles className="size-[18px]" />
           </span>
           <div className="min-w-0">
-            <h2 className="text-[15px] font-semibold leading-tight text-foreground">
-              {isAiEntitled ? "AI Overview" : "Discovery Overview"}
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-[15px] font-semibold leading-tight text-foreground">
+                {isAiActive ? "AI Overview" : "Discovery Overview"}
+              </h2>
+              {isAiActive ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-brand/30 bg-brand/10 px-2 py-0.5 text-[10px] font-semibold text-brand">
+                  <Sparkles className="size-2.5" /> AI Powered
+                </span>
+              ) : isAiError ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+                  Rule-based Fallback
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                  Rule-based
+                </span>
+              )}
+            </div>
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              {isAiEntitled
+              {isAiActive
                 ? "Your current search, plus AI recommendations for what to try next."
-                : "Your current search, plus recommendations for what to try next."}
+                : isAiError
+                  ? "Rule-based recommendations displayed while AI generation is temporarily unavailable."
+                  : "Your current search, plus recommendations for what to try next."}
             </p>
           </div>
         </div>
-        {!loading && extra.length > 0 && (
+        {hasDetails && (
           <button
             type="button"
             aria-expanded={expanded}
@@ -1789,6 +1838,24 @@ function DiscoverAiOverview({
           </button>
         )}
       </div>
+
+      {isAiError && (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-300">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="size-4 shrink-0 text-amber-400" />
+            <span>AI Overview request failed. Showing rule-based suggestions below.</span>
+          </div>
+          {onRetryAi && (
+            <button
+              type="button"
+              onClick={onRetryAi}
+              className="shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/20 px-2.5 py-1 text-[11px] font-semibold text-amber-200 transition-colors hover:bg-amber-500/30 hover:text-white"
+            >
+              Retry AI
+            </button>
+          )}
+        </div>
+      )}
 
       <div
         data-testid="ai-current-setup"
@@ -1879,19 +1946,74 @@ function DiscoverAiOverview({
             </div>
           </div>
 
-          {/* further insights from the same buildDiscoverInsights() output */}
-          {expanded && extra.length > 0 && (
-            <div className={cn("mt-3 grid gap-3", extra.length >= 2 && "md:grid-cols-2")}>
-              {extra.map((insight) => (
-                <div key={insight.id} className="space-y-1 rounded-xl border border-white/[0.06] bg-black/20 p-4">
-                  <p className={`text-[10px] font-bold uppercase tracking-wider ${CONFIDENCE_STYLES[insight.confidence]}`}>
-                    {insight.confidence}
-                  </p>
-                  <p className="text-[13px] font-medium leading-snug text-foreground/90">{insight.title}</p>
-                  <p className="line-clamp-2 text-xs leading-snug text-muted-foreground">{insight.reason}</p>
-                  <BriefingAction action={{ label: insight.actionLabel, href: insight.actionHref }} tone={insight.tone} />
+          {/* Detailed analysis: Real AI insights when active, or deterministic pool when fallback */}
+          {expanded && (
+            <div className="mt-4 space-y-3">
+              {isAiActive && aiOverview && hasAiDetails ? (
+                <div className="grid gap-3 md:grid-cols-3">
+                  {aiOverview.patterns.length > 0 && (
+                    <div className="rounded-xl border border-white/[0.06] bg-black/25 p-4 space-y-2">
+                      <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-brand">
+                        <Sparkles className="size-3.5" />
+                        <span>Observed Patterns</span>
+                      </div>
+                      <ul className="space-y-1.5 text-xs text-muted-foreground">
+                        {aiOverview.patterns.map((p, i) => (
+                          <li key={i} className="flex items-start gap-2 text-foreground/90 leading-snug">
+                            <span className="size-1.5 rounded-full bg-brand mt-1.5 shrink-0" />
+                            <span>{p}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {aiOverview.promisingOpportunities.length > 0 && (
+                    <div className="rounded-xl border border-white/[0.06] bg-black/25 p-4 space-y-2">
+                      <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-emerald-400">
+                        <TrendingUp className="size-3.5" />
+                        <span>Promising Opportunities</span>
+                      </div>
+                      <ul className="space-y-1.5 text-xs text-muted-foreground">
+                        {aiOverview.promisingOpportunities.map((o, i) => (
+                          <li key={i} className="flex items-start gap-2 text-foreground/90 leading-snug">
+                            <span className="size-1.5 rounded-full bg-emerald-400 mt-1.5 shrink-0" />
+                            <span>{o}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {aiOverview.nextSteps.length > 0 && (
+                    <div className="rounded-xl border border-white/[0.06] bg-black/25 p-4 space-y-2">
+                      <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-blue-400">
+                        <ArrowRight className="size-3.5" />
+                        <span>Strategic Next Steps</span>
+                      </div>
+                      <ul className="space-y-1.5 text-xs text-muted-foreground">
+                        {aiOverview.nextSteps.map((step, i) => (
+                          <li key={i} className="flex items-start gap-2 text-foreground/90 leading-snug">
+                            <span className="size-1.5 rounded-full bg-blue-400 mt-1.5 shrink-0" />
+                            <span>{step}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
-              ))}
+              ) : extra.length > 0 ? (
+                <div className={cn("grid gap-3", extra.length >= 2 && "md:grid-cols-2")}>
+                  {extra.map((insight) => (
+                    <div key={insight.id} className="space-y-1 rounded-xl border border-white/[0.06] bg-black/20 p-4">
+                      <p className={`text-[10px] font-bold uppercase tracking-wider ${CONFIDENCE_STYLES[insight.confidence]}`}>
+                        {insight.confidence}
+                      </p>
+                      <p className="text-[13px] font-medium leading-snug text-foreground/90">{insight.title}</p>
+                      <p className="line-clamp-2 text-xs leading-snug text-muted-foreground">{insight.reason}</p>
+                      <BriefingAction action={{ label: insight.actionLabel, href: insight.actionHref }} tone={insight.tone} />
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           )}
         </>

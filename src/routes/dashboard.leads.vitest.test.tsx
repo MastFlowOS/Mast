@@ -81,6 +81,7 @@ vi.mock("@/hooks/use-mast-api", () => ({
   useAnalytics: () => ({ data: {} }),
   useLeads: () => ({ data: [] }),
   useGenerateLeads: () => ({ mutateAsync: h.mutateAsync }),
+  useDiscoverOverview: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 
 vi.mock("@/hooks/use-permissions", async () => {
@@ -352,10 +353,10 @@ describe("Discover redesign — preserved behavior", () => {
 describe("Discover redesign — niche carousel", () => {
   it("search filters the carousel; picking a tile marks it selected and adds a removable chip", async () => {
     await renderDiscover("pro");
-    expect(screen.getByRole("button", { name: /^Gym/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Local Services/ })).toBeTruthy();
 
     fireEvent.change(screen.getByPlaceholderText(/search niches/i), { target: { value: "coffee" } });
-    expect(screen.queryByRole("button", { name: /^Gym/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Local Services/ })).toBeNull();
 
     const tile = await screen.findByRole("button", { name: /^Coffee Shop/ });
     expect(tile.getAttribute("aria-pressed")).toBe("false");

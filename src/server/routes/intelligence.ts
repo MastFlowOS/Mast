@@ -79,6 +79,19 @@ function isoWeekKey(d: Date): string {
 }
 
 /**
+ * GET /v1/intelligence/status
+ *
+ * Safe capability check exposing whether AI generation is configured
+ * and the active model identifier without exposing secrets or keys.
+ */
+intelligenceRouter.get("/status", requireAuth, (_req, res) => {
+  return res.json({
+    aiConfigured: aiEnabled(),
+    model: aiEnabled() ? AI_MODEL : null,
+  });
+});
+
+/**
  * GET /v1/intelligence/explain/:leadId
  *
  * Opportunity Explanations — available to every plan (not AI-gated at all;

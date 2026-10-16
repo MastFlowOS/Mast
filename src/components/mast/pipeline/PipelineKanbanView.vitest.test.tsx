@@ -198,7 +198,7 @@ describe("KanbanCoachPanel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Strategy" }));
     expect(screen.getByText("Follow up within two days")).toBeTruthy();
 
-    fireEvent.click(screen.getByLabelText("Close AI Sales Coach"));
+    fireEvent.click(screen.getByLabelText(/Close (AI )?Sales Coach/));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -40,6 +40,10 @@ export function PipelineBriefing({
   wonCount,
   onViewAttention,
   onViewPotential,
+  isAi = false,
+  isError = false,
+  isFallback = false,
+  onRetry,
 }: {
   headline: string;
   body: string;
@@ -49,6 +53,10 @@ export function PipelineBriefing({
   wonCount: number;
   onViewAttention: () => void;
   onViewPotential: () => void;
+  isAi?: boolean;
+  isError?: boolean;
+  isFallback?: boolean;
+  onRetry?: () => void;
 }) {
   return (
     <section className={cn(surface, "relative overflow-hidden border-brand/25 px-5 py-4 shadow-[0_0_40px_-24px_var(--brand)]")}>
@@ -60,13 +68,39 @@ export function PipelineBriefing({
           >
             <Sparkles className="size-6" strokeWidth={1.8} />
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="text-[13px] font-semibold text-foreground">AI Executive Briefing</span>
-              <span className="inline-flex items-center gap-1 rounded-md border border-success/30 bg-success/10 px-1.5 py-px text-[10px] font-semibold text-success">
-                <span className="size-1.5 rounded-full bg-success" /> Live
+              <span className="text-[13px] font-semibold text-foreground">
+                {isAi ? "AI Executive Briefing" : "Pipeline Briefing"}
               </span>
+              {isAi ? (
+                <span className="inline-flex items-center gap-1 rounded-md border border-success/30 bg-success/10 px-1.5 py-px text-[10px] font-semibold text-success">
+                  <span className="size-1.5 rounded-full bg-success" /> Live AI
+                </span>
+              ) : isError ? (
+                <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-px text-[10px] font-semibold text-amber-400">
+                  Rule-based Fallback
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-1.5 py-px text-[10px] font-semibold text-muted-foreground">
+                  Rule-based
+                </span>
+              )}
             </div>
+
+            {isError && onRetry && (
+              <div className="mt-1.5 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-300">
+                <span>AI Briefing unavailable. Showing rule-based summary.</span>
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="font-bold underline hover:text-white"
+                >
+                  Retry AI
+                </button>
+              </div>
+            )}
+
             <h2 className="mt-1.5 text-[17px] font-semibold leading-snug tracking-[-0.01em] text-foreground">{headline}</h2>
             <p className="mt-1 line-clamp-2 text-[12.5px] leading-relaxed text-muted-foreground">{body}</p>
           </div>
@@ -426,10 +460,18 @@ export function PipelineCoach({
   cards,
   counts,
   loading,
+  isAi = false,
+  isError = false,
+  isFallback = false,
+  onRetry,
 }: {
   cards: CoachCard[];
   counts: Record<FlowStage, number>;
   loading: boolean;
+  isAi?: boolean;
+  isError?: boolean;
+  isFallback?: boolean;
+  onRetry?: () => void;
 }) {
   const [stage, setStage] = useState<FlowStage | "all">("all");
   const shown = useMemo(() => (stage === "all" ? cards : cards.filter((c) => c.stages.includes(stage))), [cards, stage]);
@@ -446,8 +488,31 @@ export function PipelineCoach({
             <Sparkles className="size-5" strokeWidth={1.8} />
           </span>
           <div className="min-w-0">
-            <h2 className="text-[15px] font-semibold leading-tight text-foreground">AI Sales Coach</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">Personalized insights to help you move opportunities forward.</p>
+            <div className="flex items-center gap-2">
+              <h2 className="text-[15px] font-semibold leading-tight text-foreground">
+                {isAi ? "AI Sales Coach" : "Sales Coach"}
+              </h2>
+              {isAi ? (
+                <span className="inline-flex items-center gap-1 rounded-md border border-brand/30 bg-brand/10 px-1.5 py-px text-[10px] font-semibold text-brand">
+                  AI Powered
+                </span>
+              ) : isError ? (
+                <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-px text-[10px] font-semibold text-amber-400">
+                  Rule-based Fallback
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-1.5 py-px text-[10px] font-semibold text-muted-foreground">
+                  Rule-based
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {isAi
+                ? "AI-generated recommendations to help you move opportunities forward."
+                : isError
+                  ? "Rule-based recommendations displayed while AI generation is temporarily unavailable."
+                  : "Personalized insights to help you move opportunities forward."}
+            </p>
           </div>
         </div>
         <div role="tablist" aria-label="Filter by stage" className="flex flex-wrap gap-1.5">
@@ -474,6 +539,19 @@ export function PipelineCoach({
           })}
         </div>
       </div>
+
+      {isError && onRetry && (
+        <div className="mt-3 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-300">
+          <span>AI Sales Coach request failed. Showing rule-based recommendations.</span>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="font-bold underline hover:text-white"
+          >
+            Retry AI
+          </button>
+        </div>
+      )}
 
       <div className="mt-4 grid gap-3 md:grid-cols-3">
         {loading ? (

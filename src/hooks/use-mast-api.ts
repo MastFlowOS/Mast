@@ -72,6 +72,8 @@ import {
   type MissionCoachResult,
   getDiscoverOverview,
   getMissionCoach,
+  type IntelligenceStatusResponse,
+  getIntelligenceStatus,
   type OpsStats,
   type OpsHistoryEntry,
 } from "@/lib/api";
@@ -101,6 +103,7 @@ export const queryKeys = {
   pipelineCoaching: ["mast", "intelligence", "coaching"] as const,
   discoverOverview: ["mast", "intelligence", "discover-overview"] as const,
   missionCoach: ["mast", "intelligence", "mission-coach"] as const,
+  intelligenceStatus: ["mast", "intelligence", "status"] as const,
   // Phase 7 — Observability
   opsStats: (rangeHours: number) => ["mast", "ops", "stats", rangeHours] as const,
   opsHistory: (rangeHours: number) => ["mast", "ops", "history", rangeHours] as const,
@@ -774,6 +777,16 @@ export function useMissionCoach(enabled = true) {
     enabled,
     retry: false,
     staleTime: 5 * 60_000,
+  });
+}
+
+/** Intelligence status check (whether AI provider is configured and model id). */
+export function useIntelligenceStatus() {
+  return useQuery<IntelligenceStatusResponse>({
+    queryKey: queryKeys.intelligenceStatus,
+    queryFn: getIntelligenceStatus,
+    staleTime: 5 * 60_000,
+    retry: 1,
   });
 }
 

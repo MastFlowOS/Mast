@@ -80,6 +80,7 @@ vi.mock("@/hooks/use-mast-api", () => ({
   useAnalytics: () => ({ data: {} }),
   useLeads: () => ({ data: [] }),
   useGenerateLeads: () => ({ mutateAsync: h.mutateAsync }),
+  useDiscoverOverview: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 vi.mock("@/hooks/use-permissions", async () => {
   const { buildPermissionsManager } = await import("@/lib/permissions");

@@ -18,6 +18,7 @@ import {
   TrendingDown,
   TrendingUp,
   Inbox,
+  Loader2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { FlowStage } from "@/lib/lead-workspace";
@@ -43,6 +44,7 @@ export function PipelineBriefing({
   isAi = false,
   isError = false,
   isFallback = false,
+  isRetrying = false,
   onRetry,
 }: {
   headline: string;
@@ -56,6 +58,7 @@ export function PipelineBriefing({
   isAi?: boolean;
   isError?: boolean;
   isFallback?: boolean;
+  isRetrying?: boolean;
   onRetry?: () => void;
 }) {
   return (
@@ -94,9 +97,11 @@ export function PipelineBriefing({
                 <button
                   type="button"
                   onClick={onRetry}
-                  className="font-bold underline hover:text-white"
+                  disabled={isRetrying}
+                  className="inline-flex items-center gap-1 font-bold underline hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Retry AI
+                  {isRetrying && <Loader2 className="size-3 animate-spin" />}
+                  {isRetrying ? "Retrying..." : "Retry AI"}
                 </button>
               </div>
             )}
@@ -463,6 +468,7 @@ export function PipelineCoach({
   isAi = false,
   isError = false,
   isFallback = false,
+  isRetrying = false,
   onRetry,
 }: {
   cards: CoachCard[];
@@ -471,6 +477,7 @@ export function PipelineCoach({
   isAi?: boolean;
   isError?: boolean;
   isFallback?: boolean;
+  isRetrying?: boolean;
   onRetry?: () => void;
 }) {
   const [stage, setStage] = useState<FlowStage | "all">("all");
@@ -546,9 +553,11 @@ export function PipelineCoach({
           <button
             type="button"
             onClick={onRetry}
-            className="font-bold underline hover:text-white"
+            disabled={isRetrying}
+            className="inline-flex items-center gap-1 font-bold underline hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Retry AI
+            {isRetrying && <Loader2 className="size-3 animate-spin" />}
+            {isRetrying ? "Retrying..." : "Retry AI"}
           </button>
         </div>
       )}

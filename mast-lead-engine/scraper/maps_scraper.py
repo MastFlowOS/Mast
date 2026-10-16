@@ -313,6 +313,40 @@ def _looks_like_shutdown_noise(exc: BaseException) -> bool:
     return any(marker in text for marker in _SHUTDOWN_NOISE_MARKERS)
 
 
+class PlaceExtractionTimeout(Exception):
+    """The batched detail-panel `page.evaluate()` did not return in time.
+
+    Playwright's evaluate() has no timeout of its own: against an unresponsive
+    renderer it blocks forever (production saw 108-213s hangs that only the
+    Node inactivity watchdog ended, by killing the whole subprocess). This is
+    raised instead so `MapsScraper.search()` can route it through the same
+    crash-recovery path as "Target crashed" (fresh context/page, bounded by
+    `max_crash_retries`). The message carries no business data.
+    """
+
+    def __init__(self, operation: str, timeout_ms: int) -> None:
+        super().__init__(f"{operation} exceeded {timeout_ms}ms")
+        self.operation = operation
+        self.timeout_ms = timeout_ms
+
+
+# Upper bound on closing a page/context during per-attempt cleanup. A renderer
+# that stopped answering evaluate() must not also be able to stall the
+# cleanup that is supposed to recover from it.
+_CLOSE_TIMEOUT_S = 10.0
+
+
+async def _close_bounded(closer, what: str) -> None:
+    """Await `closer()` (a page/context `.close`) for at most _CLOSE_TIMEOUT_S,
+    swallowing ordinary errors exactly as the unbounded cleanup did."""
+    try:
+        await asyncio.wait_for(closer(), timeout=_CLOSE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        log.warning(f"[maps] {what}.close() did not finish within {_CLOSE_TIMEOUT_S:.0f}s — abandoning it")
+    except Exception:
+        pass
+
+
 async def _block_heavy_resources(ctx: BrowserContext) -> None:
     async def _handle(route):
         try:
@@ -1558,7 +1592,16 @@ async def _extract_place_data(
     place = RawPlace(query=query, niche=niche, region=region, city=city, country=country)
 
     try:
-        data = await page.evaluate(_PLACE_EXTRACT_JS, _PLACE_EXTRACT_SELECTORS)
+        data = await asyncio.wait_for(
+            page.evaluate(_PLACE_EXTRACT_JS, _PLACE_EXTRACT_SELECTORS),
+            timeout=config.place_extract_timeout_ms / 1000.0,
+        )
+    except asyncio.TimeoutError:
+        # NOT swallowed like the generic failure below: returning None would
+        # let the caller carry on against the same unresponsive page.
+        raise PlaceExtractionTimeout(
+            "page.evaluate(place_extract)", config.place_extract_timeout_ms
+        ) from None
     except Exception as exc:
         # Mirrors the legacy convergence: if the page/execution context is
         # in a state this bad, every individual query_selector call in the
@@ -2446,6 +2489,21 @@ class MapsScraper:
                                             city=city,
                                             country=country,
                                         )
+                                except PlaceExtractionTimeout as exc:
+                                    # Unresponsive page: hand it to the outer crash-recovery
+                                    # path (fresh context/page, bounded retries) instead of
+                                    # `continue`-ing on the same hung page. The stuck card
+                                    # is marked seen so recovery does not re-hang on it.
+                                    seen_hrefs.add(place_key)
+                                    self._profiler.incr("place_extraction_timeouts")
+                                    log.warning(
+                                        f"[maps][extract-timeout] operation={exc.operation} "
+                                        f"timeout_ms={exc.timeout_ms} attempt={attempt}/{max_attempts} "
+                                        f"yielded={yielded}"
+                                    )
+                                    if should_stop is not None and should_stop():
+                                        return  # cooperative stop: no recovery needed
+                                    raise
                                 except Exception as exc:
                                     log.info(f"[maps][diag] extraction raised, business dropped: {exc}")
                                     log.debug(f"[maps] extraction error: {exc}")
@@ -2697,14 +2755,8 @@ class MapsScraper:
                 # else: fall through to `finally`, then the `while` loop
                 # retries with a freshly built context/page.
             finally:
-                try:
-                    await page.close()
-                except Exception:
-                    pass
-                try:
-                    await ctx.close()
-                except Exception:
-                    pass
+                await _close_bounded(page.close, "page")
+                await _close_bounded(ctx.close, "context")
                 log_milestone(f"After search attempt cleanup (attempt {attempt})")
                 if not crashed and proxy:
                     self._proxy_manager.report_success(proxy)

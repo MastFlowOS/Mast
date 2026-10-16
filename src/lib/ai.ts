@@ -55,6 +55,7 @@ export function getClient(): AiClient {
     client = new OpenAI({
       apiKey: env.OPENROUTER_API_KEY,
       baseURL: env.OPENROUTER_BASE_URL,
+      maxRetries: 0,
       defaultHeaders: {
         "HTTP-Referer": "https://mast.ai",
         "X-Title": "MAST OS",
@@ -66,6 +67,7 @@ export function getClient(): AiClient {
     client = new Anthropic({
       apiKey: env.DEEPSEEK_API_KEY,
       baseURL: env.DEEPSEEK_BASE_URL,
+      maxRetries: 0,
     });
     return client;
   }
@@ -92,14 +94,31 @@ export interface ResponseAnalysis {
   refusalText?: string;
   hasToolCalls: boolean;
   responseModel?: string;
+  tokenUsage?: {
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+  };
 }
 
 /**
  * Extracts and analyzes choice payload from an OpenAI-compatible completion.
  * Handles strings, multi-part array content, legacy choice.text, refusal fields,
- * reasoning tokens, and tool calls.
+ * reasoning tokens, tool calls, and token usage counts.
  */
-export function analyzeChoice(choice: any, responseModel?: string): ResponseAnalysis {
+export function analyzeChoice(
+  choice: any,
+  responseModel?: string,
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number },
+): ResponseAnalysis {
+  const tokenUsage = usage
+    ? {
+        promptTokens: usage.prompt_tokens,
+        completionTokens: usage.completion_tokens,
+        totalTokens: usage.total_tokens,
+      }
+    : undefined;
+
   if (!choice) {
     return {
       text: "",
@@ -111,6 +130,7 @@ export function analyzeChoice(choice: any, responseModel?: string): ResponseAnal
       hasRefusal: false,
       hasToolCalls: false,
       responseModel,
+      tokenUsage,
     };
   }
 
@@ -164,6 +184,7 @@ export function analyzeChoice(choice: any, responseModel?: string): ResponseAnal
     refusalText,
     hasToolCalls,
     responseModel,
+    tokenUsage,
   };
 }
 
@@ -171,6 +192,14 @@ export function analyzeChoice(choice: any, responseModel?: string): ResponseAnal
  * Extracts and analyzes response payload from an Anthropic-compatible message.
  */
 export function analyzeAnthropicResponse(response: any): ResponseAnalysis {
+  const tokenUsage = response?.usage
+    ? {
+        promptTokens: response.usage.input_tokens,
+        completionTokens: response.usage.output_tokens,
+        totalTokens: (response.usage.input_tokens ?? 0) + (response.usage.output_tokens ?? 0),
+      }
+    : undefined;
+
   if (!response) {
     return {
       text: "",
@@ -182,6 +211,7 @@ export function analyzeAnthropicResponse(response: any): ResponseAnalysis {
       hasRefusal: false,
       hasToolCalls: false,
       responseModel: undefined,
+      tokenUsage,
     };
   }
 
@@ -210,6 +240,7 @@ export function analyzeAnthropicResponse(response: any): ResponseAnalysis {
     hasRefusal: false,
     hasToolCalls: false,
     responseModel: response.model,
+    tokenUsage,
   };
 }
 
@@ -231,15 +262,60 @@ function logAiDiagnostic(
   console.info(`[${tag}] ${JSON.stringify(safeData)}`);
 }
 
+export interface AiExecutionMetrics {
+  correlationId: string;
+  feature: string;
+  model: string;
+  responseModel?: string;
+  cacheHit: boolean;
+  contextPrepMs?: number;
+  modelDurationMs: number;
+  parseDurationMs: number;
+  totalDurationMs: number;
+  retryCount: number;
+  retryReasons: string[];
+  outcome:
+    | "success"
+    | "timeout"
+    | "rate_limited"
+    | "provider_failure"
+    | "invalid_response"
+    | "cancelled"
+    | "refusal";
+  tokenUsage?: {
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+  };
+}
+
+export function logAiMetric(metric: AiExecutionMetrics): void {
+  const safeData: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(metric)) {
+    if (val !== undefined) {
+      safeData[key] = val;
+    }
+  }
+  console.info(`[ai:metric] ${JSON.stringify(safeData)}`);
+}
+
 /**
  * Sanitizes and maps provider SDK exceptions to honest HTTP status errors.
  */
-function handleProviderError(err: unknown, model: string): never {
+export function handleProviderError(err: unknown, model: string): never {
   if (err && typeof err === "object") {
     const errObj = err as any;
-    if (errObj.name === "APIConnectionTimeoutError" || errObj.code === "ETIMEDOUT") {
+    if (
+      errObj.name === "APIConnectionTimeoutError" ||
+      errObj.name === "TimeoutError" ||
+      errObj.code === "ETIMEDOUT" ||
+      errObj.name === "AbortError" ||
+      errObj.code === "ABORT_ERR" ||
+      (typeof errObj.message === "string" && /timed?\s*out|deadline/i.test(errObj.message))
+    ) {
       const timeoutErr = new Error(`AI request timed out: ${errObj.message || "timeout"}`);
       (timeoutErr as any).status = 504;
+      (timeoutErr as any).code = "ai_timeout";
       throw timeoutErr;
     }
     if (errObj.status === 429) {
@@ -248,6 +324,7 @@ function handleProviderError(err: unknown, model: string): never {
       const sanitized = redactSensitiveData(rawMessage) as string;
       const rateLimitErr = new Error(`AI request rate limit reached: ${sanitized}`);
       (rateLimitErr as any).status = 429;
+      (rateLimitErr as any).code = "rate_limit_exceeded";
       throw rateLimitErr;
     }
     if (errObj.status === 401 || errObj.status === 403) {
@@ -255,6 +332,7 @@ function handleProviderError(err: unknown, model: string): never {
         "AI service authentication error. Please verify backend configuration.",
       );
       (authErr as any).status = 503;
+      (authErr as any).code = "ai_auth_error";
       throw authErr;
     }
     if (errObj.status === 404) {
@@ -262,6 +340,7 @@ function handleProviderError(err: unknown, model: string): never {
         `Configured AI model '${model}' is currently unavailable on OpenRouter free router.`,
       );
       (notFoundErr as any).status = 503;
+      (notFoundErr as any).code = "model_not_found";
       throw notFoundErr;
     }
     if (errObj.status === 502 || errObj.status === 503 || errObj.status === 504) {
@@ -269,12 +348,14 @@ function handleProviderError(err: unknown, model: string): never {
         "AI service is temporarily unavailable. Please try again shortly.",
       );
       (unavailableErr as any).status = 503;
+      (unavailableErr as any).code = "ai_unavailable";
       throw unavailableErr;
     }
     const rawMessage = typeof errObj.message === "string" ? errObj.message : String(err);
     const sanitized = redactSensitiveData(rawMessage) as string;
     const genericErr = new Error(sanitized);
     (genericErr as any).status = errObj.status || 500;
+    (genericErr as any).code = errObj.code || "ai_error";
     throw genericErr;
   }
   throw err;
@@ -285,8 +366,11 @@ function handleProviderError(err: unknown, model: string): never {
  * Features:
  * - Robust multi-part and string choice extraction.
  * - Distinguishes empty content, reasoning tokens, token exhaustion (finish_reason: length), and refusals.
- * - Single bounded retry for transient empty completions or length exhaustion during reasoning.
- * - Safe diagnostic structured logging without secrets or prompt data.
+ * - Bounded end-to-end deadline budget (defaults to ~18s; 15s in tests).
+ * - AbortController socket cleanup to prevent hanging connections.
+ * - Single bounded retry for transient empty completions or transient 502/503/504 errors within remaining budget.
+ * - Never retries non-transient failures (400, 401, 403, 429).
+ * - Safe diagnostic and performance metric logging without secrets or prompt data.
  * - Preserves honest errors when the API key is missing or the provider fails.
  */
 export async function generateJSON<T>(params: {
@@ -297,17 +381,63 @@ export async function generateJSON<T>(params: {
   model?: string;
   timeoutMs?: number;
   retryDelayMs?: number;
+  feature?: string;
+  contextPrepMs?: number;
+  correlationId?: string;
 }): Promise<T> {
   const ai = getClient();
+  const feature = params.feature ?? "general";
   const model = params.model ?? getAiModel(params.tier ?? "fast");
-  const maxTokens = params.maxTokens ?? 2048;
-  const correlationId = `ai-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  const maxTokens = params.maxTokens ?? (params.tier === "fast" ? 600 : 1024);
+  const correlationId = params.correlationId ?? `ai-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const retryDelayMs = params.retryDelayMs ?? (process.env.NODE_ENV === "test" ? 10 : 500);
 
+  // Total bounded execution deadline (default 18,000ms wall-clock budget for interactive AI)
+  const totalTimeoutMs = params.timeoutMs ?? (process.env.NODE_ENV === "test" ? 15_000 : 18_000);
+  const deadline = Date.now() + totalTimeoutMs;
+  const overallStart = Date.now();
+
+  let retryCount = 0;
+  const retryReasons: string[] = [];
+  let tokenUsage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | undefined;
+  let responseModel: string | undefined;
+  let modelDurationMs = 0;
   let rawText = "";
 
   for (let attempt = 1; attempt <= 2; attempt++) {
+    const remainingMs = deadline - Date.now();
+    if (attempt > 1 && remainingMs <= 2500) {
+      logAiMetric({
+        correlationId,
+        feature,
+        model,
+        responseModel,
+        cacheHit: false,
+        contextPrepMs: params.contextPrepMs,
+        modelDurationMs,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - overallStart,
+        retryCount,
+        retryReasons,
+        outcome: "timeout",
+        tokenUsage,
+      });
+      const deadlineErr = new Error(
+        `AI request exceeded total latency budget of ${totalTimeoutMs}ms before attempt ${attempt}`,
+      );
+      (deadlineErr as any).status = 504;
+      (deadlineErr as any).code = "ai_timeout";
+      throw deadlineErr;
+    }
+
+    const attemptTimeout = Math.max(1000, Math.min(remainingMs, 14_000));
+    const abortController = new AbortController();
+    const abortTimer = setTimeout(() => {
+      abortController.abort(new Error(`AI attempt timed out after ${attemptTimeout}ms`));
+    }, attemptTimeout);
+
     let lastAnalysis: ResponseAnalysis | null = null;
+    const modelStart = Date.now();
 
     try {
       if (typeof ai.chat?.completions?.create === "function") {
@@ -320,10 +450,15 @@ export async function generateJSON<T>(params: {
             ],
             max_tokens: maxTokens,
           },
-          params.timeoutMs ? { timeout: params.timeoutMs } : undefined,
+          {
+            timeout: attemptTimeout,
+            signal: abortController.signal,
+          },
         );
+        clearTimeout(abortTimer);
+        modelDurationMs += Date.now() - modelStart;
         const choice = completion?.choices?.[0];
-        lastAnalysis = analyzeChoice(choice, completion?.model);
+        lastAnalysis = analyzeChoice(choice, completion?.model, completion?.usage);
       } else if (typeof ai.messages?.create === "function") {
         const response = await ai.messages.create(
           {
@@ -332,14 +467,84 @@ export async function generateJSON<T>(params: {
             system: params.system,
             messages: [{ role: "user", content: params.user }],
           },
-          params.timeoutMs ? { timeout: params.timeoutMs } : undefined,
+          {
+            timeout: attemptTimeout,
+            signal: abortController.signal,
+          },
         );
+        clearTimeout(abortTimer);
+        modelDurationMs += Date.now() - modelStart;
         lastAnalysis = analyzeAnthropicResponse(response);
       } else {
+        clearTimeout(abortTimer);
         throw new Error("AI client does not support chat completions or messages");
       }
     } catch (err: unknown) {
+      clearTimeout(abortTimer);
+      modelDurationMs += Date.now() - modelStart;
+
+      const errObj = err as any;
+      const isTransient =
+        errObj?.status === 502 ||
+        errObj?.status === 503 ||
+        errObj?.status === 504 ||
+        errObj?.name === "APIConnectionError";
+      const isRateLimitOrAuth =
+        errObj?.status === 429 ||
+        errObj?.status === 401 ||
+        errObj?.status === 403 ||
+        errObj?.status === 400;
+
+      const timeRemaining = deadline - Date.now();
+      if (attempt === 1 && isTransient && !isRateLimitOrAuth && timeRemaining >= 4000) {
+        retryCount++;
+        const reason = `transient_error_${errObj?.status || errObj?.name || "unknown"}`;
+        retryReasons.push(reason);
+        logAiDiagnostic("ai:retry", {
+          correlationId,
+          attempt: 1,
+          reason,
+          delayMs: retryDelayMs,
+        });
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        continue;
+      }
+
+      const outcome =
+        errObj?.status === 504 ||
+        errObj?.name === "AbortError" ||
+        errObj?.name === "TimeoutError" ||
+        errObj?.name === "APIConnectionTimeoutError" ||
+        errObj?.code === "ETIMEDOUT"
+          ? "timeout"
+          : errObj?.status === 429
+            ? "rate_limited"
+            : "provider_failure";
+
+      logAiMetric({
+        correlationId,
+        feature,
+        model,
+        responseModel,
+        cacheHit: false,
+        contextPrepMs: params.contextPrepMs,
+        modelDurationMs,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - overallStart,
+        retryCount,
+        retryReasons,
+        outcome,
+        tokenUsage,
+      });
+
       handleProviderError(err, model);
+    }
+
+    if (lastAnalysis) {
+      responseModel = lastAnalysis.responseModel;
+      if (lastAnalysis.tokenUsage) {
+        tokenUsage = lastAnalysis.tokenUsage;
+      }
     }
 
     logAiDiagnostic("ai:response", {
@@ -357,22 +562,41 @@ export async function generateJSON<T>(params: {
       stage: "extracted",
     });
 
-    if (lastAnalysis.hasRefusal) {
+    if (lastAnalysis?.hasRefusal) {
+      logAiMetric({
+        correlationId,
+        feature,
+        model,
+        responseModel,
+        cacheHit: false,
+        contextPrepMs: params.contextPrepMs,
+        modelDurationMs,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - overallStart,
+        retryCount,
+        retryReasons,
+        outcome: "refusal",
+        tokenUsage,
+      });
       const refusalErr = new Error(`AI model refused request: ${lastAnalysis.refusalText}`);
       (refusalErr as any).status = 400;
+      (refusalErr as any).code = "model_refusal";
       throw refusalErr;
     }
 
-    if (!lastAnalysis.hasContent) {
-      if (attempt === 1) {
+    if (!lastAnalysis?.hasContent) {
+      const timeRemaining = deadline - Date.now();
+      if (attempt === 1 && timeRemaining >= 4000) {
+        retryCount++;
         const reason =
-          lastAnalysis.finishReason === "length"
+          lastAnalysis?.finishReason === "length"
             ? "length_truncation_empty"
-            : lastAnalysis.hasReasoning
+            : lastAnalysis?.hasReasoning
               ? "reasoning_without_content"
-              : lastAnalysis.hasToolCalls
+              : lastAnalysis?.hasToolCalls
                 ? "tool_calls_without_content"
                 : "empty_response";
+        retryReasons.push(reason);
         logAiDiagnostic("ai:retry", {
           correlationId,
           attempt: 1,
@@ -383,48 +607,87 @@ export async function generateJSON<T>(params: {
         continue;
       }
 
-      // Final attempt failed
-      if (lastAnalysis.finishReason === "length") {
+      logAiMetric({
+        correlationId,
+        feature,
+        model,
+        responseModel,
+        cacheHit: false,
+        contextPrepMs: params.contextPrepMs,
+        modelDurationMs,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - overallStart,
+        retryCount,
+        retryReasons,
+        outcome: "invalid_response",
+        tokenUsage,
+      });
+
+      if (lastAnalysis?.finishReason === "length") {
         const err = new Error(
           "AI response exceeded token limit (finish_reason: length). Please retry.",
         );
         (err as any).status = 503;
+        (err as any).code = "token_limit_exceeded";
         throw err;
       }
-      if (lastAnalysis.hasReasoning) {
+      if (lastAnalysis?.hasReasoning) {
         const err = new Error(
           "AI model returned reasoning without final text content. Please retry.",
         );
         (err as any).status = 503;
+        (err as any).code = "empty_content_reasoning";
         throw err;
       }
-      if (lastAnalysis.hasToolCalls) {
+      if (lastAnalysis?.hasToolCalls) {
         const err = new Error("AI model returned unexpected tool call. Please retry.");
         (err as any).status = 503;
+        (err as any).code = "unexpected_tool_call";
         throw err;
       }
       const err = new Error("AI response contained no text content. Please retry.");
       (err as any).status = 503;
+      (err as any).code = "empty_response";
       throw err;
     }
 
     // Strip potential reasoning tags (e.g. <think>...</think> from reasoning models)
     const withoutThinking = lastAnalysis.text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
     if (!withoutThinking) {
-      if (attempt === 1) {
+      const timeRemaining = deadline - Date.now();
+      if (attempt === 1 && timeRemaining >= 4000) {
+        retryCount++;
+        const reason = "thinking_tags_only_without_content";
+        retryReasons.push(reason);
         logAiDiagnostic("ai:retry", {
           correlationId,
           attempt: 1,
-          reason: "thinking_tags_only_without_content",
+          reason,
           delayMs: retryDelayMs,
         });
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }
+      logAiMetric({
+        correlationId,
+        feature,
+        model,
+        responseModel,
+        cacheHit: false,
+        contextPrepMs: params.contextPrepMs,
+        modelDurationMs,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - overallStart,
+        retryCount,
+        retryReasons,
+        outcome: "invalid_response",
+        tokenUsage,
+      });
       const err = new Error(
         "AI model returned reasoning tags without final content. Please retry.",
       );
       (err as any).status = 503;
+      (err as any).code = "thinking_tags_only";
       throw err;
     }
 
@@ -438,7 +701,7 @@ export async function generateJSON<T>(params: {
     characterCount: rawText.length,
   });
 
-  // Extract from markdown code fences if present, or strip fence tokens
+  const parseStart = Date.now();
   let candidate = rawText;
   const fenceMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenceMatch && fenceMatch[1].trim()) {
@@ -459,32 +722,88 @@ export async function generateJSON<T>(params: {
 
   try {
     const parsed = JSON.parse(candidate) as T;
+    const parseDurationMs = Date.now() - parseStart;
     logAiDiagnostic("ai:success", {
       correlationId,
       stage: "json_parsed",
     });
+
+    logAiMetric({
+      correlationId,
+      feature,
+      model,
+      responseModel,
+      cacheHit: false,
+      contextPrepMs: params.contextPrepMs,
+      modelDurationMs,
+      parseDurationMs,
+      totalDurationMs: Date.now() - overallStart,
+      retryCount,
+      retryReasons,
+      outcome: "success",
+      tokenUsage,
+    });
+
     return parsed;
   } catch (parseErr) {
     const objectMatch = candidate.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
     if (objectMatch) {
       try {
         const parsed = JSON.parse(objectMatch[1]) as T;
+        const parseDurationMs = Date.now() - parseStart;
         logAiDiagnostic("ai:success", {
           correlationId,
           stage: "json_parsed_regex_fallback",
         });
+
+        logAiMetric({
+          correlationId,
+          feature,
+          model,
+          responseModel,
+          cacheHit: false,
+          contextPrepMs: params.contextPrepMs,
+          modelDurationMs,
+          parseDurationMs,
+          totalDurationMs: Date.now() - overallStart,
+          retryCount,
+          retryReasons,
+          outcome: "success",
+          tokenUsage,
+        });
+
         return parsed;
       } catch {
         // Fall through
       }
     }
+
+    const parseDurationMs = Date.now() - parseStart;
+    logAiMetric({
+      correlationId,
+      feature,
+      model,
+      responseModel,
+      cacheHit: false,
+      contextPrepMs: params.contextPrepMs,
+      modelDurationMs,
+      parseDurationMs,
+      totalDurationMs: Date.now() - overallStart,
+      retryCount,
+      retryReasons,
+      outcome: "invalid_response",
+      tokenUsage,
+    });
+
     if (candidate.length > 0 && candidate.endsWith("...")) {
       const cutErr = new Error("AI response was cut off before valid JSON could finish. Please retry.");
       (cutErr as any).status = 503;
+      (cutErr as any).code = "incomplete_json";
       throw cutErr;
     }
     const jsonErr = new Error(`AI response was not valid JSON: ${(parseErr as Error).message}`);
     (jsonErr as any).status = 502;
+    (jsonErr as any).code = "invalid_json";
     throw jsonErr;
   }
 }

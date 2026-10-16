@@ -25,6 +25,7 @@ import {
   TrendingUp,
   Trophy,
   X,
+  Loader2,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -93,6 +94,7 @@ export function KanbanBriefing({
   isAi = false,
   isError = false,
   isFallback = false,
+  isRetrying = false,
   onRetry,
 }: {
   headline: string;
@@ -108,6 +110,7 @@ export function KanbanBriefing({
   isAi?: boolean;
   isError?: boolean;
   isFallback?: boolean;
+  isRetrying?: boolean;
   onRetry?: () => void;
 }) {
   return (
@@ -165,9 +168,11 @@ export function KanbanBriefing({
                 <button
                   type="button"
                   onClick={onRetry}
-                  className="font-bold underline hover:text-white"
+                  disabled={isRetrying}
+                  className="inline-flex items-center gap-1 font-bold underline hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Retry AI
+                  {isRetrying && <Loader2 className="size-3 animate-spin" />}
+                  {isRetrying ? "Retrying..." : "Retry AI"}
                 </button>
               </div>
             )}
@@ -871,6 +876,7 @@ export function KanbanCoachPanel({
   isAi = false,
   isError = false,
   isFallback = false,
+  isRetrying = false,
   onRetry,
 }: {
   insights: CoachInsight[];
@@ -883,6 +889,7 @@ export function KanbanCoachPanel({
   isAi?: boolean;
   isError?: boolean;
   isFallback?: boolean;
+  isRetrying?: boolean;
   onRetry?: () => void;
 }) {
   const [tab, setTab] = useState<CoachTab>("insights");
@@ -937,9 +944,11 @@ export function KanbanCoachPanel({
           <button
             type="button"
             onClick={onRetry}
-            className="font-bold underline hover:text-white"
+            disabled={isRetrying}
+            className="inline-flex items-center gap-1 font-bold underline hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Retry AI
+            {isRetrying && <Loader2 className="size-3 animate-spin" />}
+            {isRetrying ? "Retrying..." : "Retry AI"}
           </button>
         </div>
       )}

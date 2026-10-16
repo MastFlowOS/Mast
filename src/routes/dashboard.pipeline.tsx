@@ -113,12 +113,14 @@ function Pipeline() {
   const {
     data: realAiBriefing,
     isLoading: realAiBriefingLoading,
+    isFetching: realAiBriefingFetching,
     error: briefingError,
     refetch: refetchBriefing,
   } = useExecutiveBriefing(canBriefing);
   const {
     data: realCoaching,
     isLoading: realCoachingLoading,
+    isFetching: realCoachingFetching,
     error: coachingError,
     refetch: refetchCoaching,
   } = usePipelineCoaching(canCoaching);
@@ -957,6 +959,7 @@ function Pipeline() {
                 isAi={isAiBriefingActive}
                 isError={isBriefingError}
                 isFallback={!isAiBriefingActive}
+                isRetrying={realAiBriefingFetching}
                 onRetry={() => void refetchBriefing()}
               />
             )}
@@ -974,6 +977,7 @@ function Pipeline() {
               isAi={isAiCoachingActive}
               isError={isCoachingError}
               isFallback={!isAiCoachingActive}
+              isRetrying={realCoachingFetching}
               onRetry={() => void refetchCoaching()}
             />
           </FeatureGate>
@@ -1001,6 +1005,7 @@ function Pipeline() {
                     isAi={isAiBriefingActive}
                     isError={isBriefingError}
                     isFallback={!isAiBriefingActive}
+                    isRetrying={realAiBriefingFetching}
                     onRetry={() => void refetchBriefing()}
                   />
                 )}
@@ -1078,6 +1083,7 @@ function Pipeline() {
                   isAi={isAiCoachingActive}
                   isError={isCoachingError}
                   isFallback={!isAiCoachingActive}
+                  isRetrying={realCoachingFetching}
                   onRetry={() => void refetchCoaching()}
                 />
               </FeatureGate>

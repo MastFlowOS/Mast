@@ -30,6 +30,7 @@ import {
   Eye,
   MapPin,
   AlertCircle,
+  Loader2,
 } from "lucide-react";
 import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead, type DiscoverOverview } from "@/lib/api";
 
@@ -261,6 +262,7 @@ function GetLeads() {
   const {
     data: aiOverviewData,
     isLoading: aiOverviewLoading,
+    isFetching: aiOverviewFetching,
     error: aiOverviewError,
     refetch: refetchAiOverview,
   } = useDiscoverOverview(canUseAiOverview);
@@ -1364,6 +1366,7 @@ function GetLeads() {
           isAiActive={isAiActive}
           isAiError={isAiError}
           isAiUnconfigured={isAiUnconfigured}
+          isAiFetching={aiOverviewFetching}
           onRetryAi={() => void refetchAiOverview()}
         />
       </div>
@@ -1736,6 +1739,7 @@ function DiscoverAiOverview({
   isAiActive = false,
   isAiError = false,
   isAiUnconfigured = false,
+  isAiFetching = false,
   onRetryAi,
 }: {
   /** The ACTIVE form state, built by the same function that builds the request. */
@@ -1754,6 +1758,8 @@ function DiscoverAiOverview({
   isAiError?: boolean;
   /** Whether AI provider is unconfigured on the deployment. */
   isAiUnconfigured?: boolean;
+  /** Whether AI overview request is currently fetching / retrying. */
+  isAiFetching?: boolean;
   /** Callback to retry failed AI request. */
   onRetryAi?: () => void;
 }) {
@@ -1849,9 +1855,11 @@ function DiscoverAiOverview({
             <button
               type="button"
               onClick={onRetryAi}
-              className="shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/20 px-2.5 py-1 text-[11px] font-semibold text-amber-200 transition-colors hover:bg-amber-500/30 hover:text-white"
+              disabled={isAiFetching}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/20 px-2.5 py-1 text-[11px] font-semibold text-amber-200 transition-colors hover:bg-amber-500/30 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Retry AI
+              {isAiFetching && <Loader2 className="size-3 animate-spin" />}
+              {isAiFetching ? "Retrying..." : "Retry AI"}
             </button>
           )}
         </div>

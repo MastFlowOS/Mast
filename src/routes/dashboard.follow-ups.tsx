@@ -23,6 +23,7 @@ import {
   MessageSquare,
   ExternalLink,
   Copy,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import missionHeroBg from "@/assets/todays-mission-card-background.webp";
@@ -123,6 +124,7 @@ function MissionsPage() {
   const {
     data: missionCoachData,
     isLoading: missionCoachLoading,
+    isFetching: isFetchingMissionCoach,
     error: missionCoachError,
     refetch: refetchMissionCoach,
   } = useMissionCoach(canUseMissionCoach);
@@ -512,9 +514,11 @@ function MissionsPage() {
                       <button
                         type="button"
                         onClick={() => void refetchMissionCoach()}
-                        className="text-[11px] font-bold underline hover:text-white"
+                        disabled={isFetchingMissionCoach}
+                        className="inline-flex items-center gap-1 text-[11px] font-bold underline hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        Retry AI
+                        {isFetchingMissionCoach && <Loader2 className="size-3 animate-spin" />}
+                        {isFetchingMissionCoach ? "Retrying..." : "Retry AI"}
                       </button>
                     </div>
                   )}
@@ -1112,9 +1116,11 @@ function MissionsPage() {
                 <button
                   type="button"
                   onClick={() => void refetchMissionCoach()}
-                  className="font-bold underline hover:text-white"
+                  disabled={isFetchingMissionCoach}
+                  className="inline-flex items-center gap-1 font-bold underline hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Retry AI
+                  {isFetchingMissionCoach && <Loader2 className="size-3 animate-spin" />}
+                  {isFetchingMissionCoach ? "Retrying..." : "Retry AI"}
                 </button>
               </div>
             )}

@@ -5,7 +5,13 @@ import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan, type PlanId } from "../../config/plans.js";
 import { canUseAiFeature } from "../../lib/aiAccess.js";
-import { aiEnabled, generateJSON, AI_MODEL, getAiModel } from "../../lib/ai.js";
+import {
+  aiEnabled,
+  generateJSON,
+  AI_MODEL,
+  getAiModel,
+  logAiMetric,
+} from "../../lib/ai.js";
 import { singleFlight } from "../../lib/singleFlight.js";
 import { buildPipelineSnapshot } from "../../lib/intelligenceContext.js";
 import { runEngineScore } from "../../scraperBridge/pythonBridge.js";
@@ -14,15 +20,21 @@ import { professionSlugForLabel } from "../../lib/professions.js";
 
 export const intelligenceRouter = Router();
 
-// explain/trust are local reads (already-computed scores, or a straight
-// Supabase select) with no external calls — generous limit.
+// explain/trust and cached reads are local reads with no external AI calls — generous limit.
 const readLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
 
-// opportunities/briefing/weekly/coaching call out to an external AI
-// provider on a cache miss — daily/weekly caching keeps steady-state cost
-// low, but the limiter still bounds how fast a client can force
-// cache-miss generations. 5/min matches the cost profile of discovery.
-const aiGenerationLimiter = createRateLimiter({ windowMs: 60_000, max: 5 });
+// aiGenerationLimiter bounds how fast a client can trigger cache-miss AI generations.
+// Raised to 20/min to safely support multiple dashboard widget loads without false 429s.
+// Checked strictly on cache miss, never on cache hit.
+export const aiGenerationLimiter = createRateLimiter({ windowMs: 60_000, max: 20 });
+
+export function checkAiGenerationRateLimit(req: any, res: any): boolean {
+  let allowed = false;
+  aiGenerationLimiter(req, res, () => {
+    allowed = true;
+  });
+  return allowed;
+}
 
 export function resetIntelligenceRateLimiters(): void {
   readLimiter.reset();
@@ -229,8 +241,9 @@ intelligenceRouter.get("/trust/:leadId", requireAuth, readLimiter, async (req, r
  * cache doesn't exist yet, so this never gets more expensive than the size
  * of the pool.
  */
-intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLimiter, async (req, res, next) => {
+intelligenceRouter.get("/opportunities/:businessId", requireAuth, readLimiter, async (req, res, next) => {
   try {
+    const routeStart = Date.now();
     const userId = req.user!.id;
     const { plan, professionSlug } = await resolveUserPlanAndProfession(userId);
 
@@ -282,7 +295,24 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
     const stale = !cached || Math.abs((cached.score_snapshot as number) - result.score) > 10;
 
     if (!stale && cached) {
+      logAiMetric({
+        correlationId: `cache_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        feature: "opportunity_insight",
+        model: getAiModel("pro"),
+        cacheHit: true,
+        contextPrepMs: Date.now() - routeStart,
+        modelDurationMs: 0,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - routeStart,
+        retryCount: 0,
+        retryReasons: [],
+        outcome: "success",
+      });
       return res.json({ ...cached, explanation, cached: true });
+    }
+
+    if (!checkAiGenerationRateLimit(req, res)) {
+      return;
     }
 
     // Sprint 3: coalesce concurrent cache-miss generations for the same
@@ -306,7 +336,10 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
           reasons: explanation.reasons,
           summary: explanation.summary,
         }),
+        feature: "opportunity_insight",
+        contextPrepMs: Date.now() - routeStart,
         maxTokens: 512,
+        timeoutMs: 18000,
         tier: "pro",
       });
 
@@ -350,8 +383,9 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, aiGenerationLi
  * "Today's Briefing" reads as a considered snapshot taken at the start of
  * the day, not something that reshuffles on every dashboard visit.
  */
-intelligenceRouter.get("/briefing", requireAuth, aiGenerationLimiter, async (req, res, next) => {
+intelligenceRouter.get("/briefing", requireAuth, readLimiter, async (req, res, next) => {
   try {
+    const routeStart = Date.now();
     const userId = req.user!.id;
     const { plan } = await resolveUserPlanAndProfession(userId);
 
@@ -369,10 +403,29 @@ intelligenceRouter.get("/briefing", requireAuth, aiGenerationLimiter, async (req
       .eq("period_key", periodKey)
       .maybeSingle();
     if (cacheError) console.error("[intelligence] ai_intelligence (executive_briefing) read failed", cacheError);
-    if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    if (cached) {
+      logAiMetric({
+        correlationId: `cache_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        feature: "executive_briefing",
+        model: getAiModel("pro"),
+        cacheHit: true,
+        contextPrepMs: Date.now() - routeStart,
+        modelDurationMs: 0,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - routeStart,
+        retryCount: 0,
+        retryReasons: [],
+        outcome: "success",
+      });
+      return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    }
 
     if (!aiEnabled()) {
       return res.status(503).json({ code: "ai_unavailable", message: "AI Opportunity Intelligence is not configured on this deployment." });
+    }
+
+    if (!checkAiGenerationRateLimit(req, res)) {
+      return;
     }
 
     const snapshot = await buildPipelineSnapshot(userId);
@@ -389,7 +442,10 @@ intelligenceRouter.get("/briefing", requireAuth, aiGenerationLimiter, async (req
           '"priorities": string[] (1-4 concrete next actions, most important first), ' +
           '"tone": "brand" | "warning" | "success" (warning if things are stalling/overdue, success if strong momentum, brand otherwise)}.',
         user: JSON.stringify(snapshot),
+        feature: "executive_briefing",
+        contextPrepMs: Date.now() - routeStart,
         maxTokens: 512,
+        timeoutMs: 18000,
         tier: "pro",
       });
 
@@ -426,8 +482,9 @@ intelligenceRouter.get("/briefing", requireAuth, aiGenerationLimiter, async (req
  * Weekly Intelligence (Pro+): a reflective 7-day performance review.
  * Cached once per user per ISO week.
  */
-intelligenceRouter.get("/weekly", requireAuth, aiGenerationLimiter, async (req, res, next) => {
+intelligenceRouter.get("/weekly", requireAuth, readLimiter, async (req, res, next) => {
   try {
+    const routeStart = Date.now();
     const userId = req.user!.id;
     const { plan } = await resolveUserPlanAndProfession(userId);
 
@@ -445,10 +502,29 @@ intelligenceRouter.get("/weekly", requireAuth, aiGenerationLimiter, async (req, 
       .eq("period_key", periodKey)
       .maybeSingle();
     if (cacheError) console.error("[intelligence] ai_intelligence (weekly_intelligence) read failed", cacheError);
-    if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    if (cached) {
+      logAiMetric({
+        correlationId: `cache_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        feature: "weekly_intelligence",
+        model: getAiModel("pro"),
+        cacheHit: true,
+        contextPrepMs: Date.now() - routeStart,
+        modelDurationMs: 0,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - routeStart,
+        retryCount: 0,
+        retryReasons: [],
+        outcome: "success",
+      });
+      return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    }
 
     if (!aiEnabled()) {
       return res.status(503).json({ code: "ai_unavailable", message: "AI Opportunity Intelligence is not configured on this deployment." });
+    }
+
+    if (!checkAiGenerationRateLimit(req, res)) {
+      return;
     }
 
     const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
@@ -466,7 +542,10 @@ intelligenceRouter.get("/weekly", requireAuth, aiGenerationLimiter, async (req, 
           '"wins": string[] (0-3 genuine positives, empty array if none), ' +
           '"focusForNextWeek": string[] (1-3 concrete goals for next week)}.',
         user: JSON.stringify(snapshot),
-        maxTokens: 640,
+        feature: "weekly_intelligence",
+        contextPrepMs: Date.now() - routeStart,
+        maxTokens: 512,
+        timeoutMs: 18000,
         tier: "pro",
       });
 
@@ -503,8 +582,9 @@ intelligenceRouter.get("/weekly", requireAuth, aiGenerationLimiter, async (req, 
  * AI Pipeline Coaching (Pro+): alerts on stalled deals and suggested next
  * moves. Cached once per user per UTC day, same rationale as /briefing.
  */
-intelligenceRouter.get("/coaching", requireAuth, aiGenerationLimiter, async (req, res, next) => {
+intelligenceRouter.get("/coaching", requireAuth, readLimiter, async (req, res, next) => {
   try {
+    const routeStart = Date.now();
     const userId = req.user!.id;
     const { plan } = await resolveUserPlanAndProfession(userId);
 
@@ -522,10 +602,29 @@ intelligenceRouter.get("/coaching", requireAuth, aiGenerationLimiter, async (req
       .eq("period_key", periodKey)
       .maybeSingle();
     if (cacheError) console.error("[intelligence] ai_intelligence (pipeline_coaching) read failed", cacheError);
-    if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    if (cached) {
+      logAiMetric({
+        correlationId: `cache_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        feature: "pipeline_coaching",
+        model: getAiModel("pro"),
+        cacheHit: true,
+        contextPrepMs: Date.now() - routeStart,
+        modelDurationMs: 0,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - routeStart,
+        retryCount: 0,
+        retryReasons: [],
+        outcome: "success",
+      });
+      return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    }
 
     if (!aiEnabled()) {
       return res.status(503).json({ code: "ai_unavailable", message: "AI Opportunity Intelligence is not configured on this deployment." });
+    }
+
+    if (!checkAiGenerationRateLimit(req, res)) {
+      return;
     }
 
     const snapshot = await buildPipelineSnapshot(userId);
@@ -551,7 +650,10 @@ intelligenceRouter.get("/coaching", requireAuth, aiGenerationLimiter, async (req
           'string, "message": string (why this deal is at risk, 1 sentence), "suggestedAction": string ' +
           "(1 concrete next step)}]} — one alert per stalled deal given, same order.",
         user: JSON.stringify({ stalledDeals: snapshot.stalledDeals }),
-        maxTokens: 640,
+        feature: "pipeline_coaching",
+        contextPrepMs: Date.now() - routeStart,
+        maxTokens: 512,
+        timeoutMs: 18000,
         tier: "pro",
       });
 
@@ -588,8 +690,9 @@ intelligenceRouter.get("/coaching", requireAuth, aiGenerationLimiter, async (req
  * highlighting patterns, promising opportunities, and practical next steps.
  * Cached per material state of the user's discovery results.
  */
-intelligenceRouter.get("/discover-overview", requireAuth, aiGenerationLimiter, async (req, res, next) => {
+intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (req, res, next) => {
   try {
+    const routeStart = Date.now();
     const userId = req.user!.id;
     const { plan } = await resolveUserPlanAndProfession(userId);
 
@@ -685,7 +788,26 @@ intelligenceRouter.get("/discover-overview", requireAuth, aiGenerationLimiter, a
       .eq("period_key", periodKey)
       .maybeSingle();
     if (cacheError) console.error("[intelligence] ai_intelligence (discover_overview) read failed", cacheError);
-    if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    if (cached) {
+      logAiMetric({
+        correlationId: `cache_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        feature: "discover_overview",
+        model: getAiModel("pro"),
+        cacheHit: true,
+        contextPrepMs: Date.now() - routeStart,
+        modelDurationMs: 0,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - routeStart,
+        retryCount: 0,
+        retryReasons: [],
+        outcome: "success",
+      });
+      return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    }
+
+    if (!checkAiGenerationRateLimit(req, res)) {
+      return;
+    }
 
     const { overview, generatedAt } = await singleFlight(`discover_overview:${userId}:${periodKey}`, async () => {
 
@@ -716,7 +838,10 @@ intelligenceRouter.get("/discover-overview", requireAuth, aiGenerationLimiter, a
           '"nextSteps": string[] (1-3 practical next actions grounded in the data), ' +
           '"action": {"label": string, "href": string} (optional action link, default label "View Saved Leads", href "#leads-table")}',
         user: JSON.stringify(boundedPayload),
+        feature: "discover_overview",
+        contextPrepMs: Date.now() - routeStart,
         maxTokens: 512,
+        timeoutMs: 18000,
         tier: "pro",
       });
 
@@ -766,8 +891,9 @@ intelligenceRouter.get("/discover-overview", requireAuth, aiGenerationLimiter, a
  * to recommend a concrete, grounded next action with supporting rationale.
  * Cached per material state of the user's mission follow-ups.
  */
-intelligenceRouter.get("/mission-coach", requireAuth, aiGenerationLimiter, async (req, res, next) => {
+intelligenceRouter.get("/mission-coach", requireAuth, readLimiter, async (req, res, next) => {
   try {
+    const routeStart = Date.now();
     const userId = req.user!.id;
     const { plan } = await resolveUserPlanAndProfession(userId);
 
@@ -910,7 +1036,26 @@ intelligenceRouter.get("/mission-coach", requireAuth, aiGenerationLimiter, async
       .eq("period_key", periodKey)
       .maybeSingle();
     if (cacheError) console.error("[intelligence] ai_intelligence (mission_coach) read failed", cacheError);
-    if (cached) return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    if (cached) {
+      logAiMetric({
+        correlationId: `cache_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        feature: "mission_coach",
+        model: getAiModel("pro"),
+        cacheHit: true,
+        contextPrepMs: Date.now() - routeStart,
+        modelDurationMs: 0,
+        parseDurationMs: 0,
+        totalDurationMs: Date.now() - routeStart,
+        retryCount: 0,
+        retryReasons: [],
+        outcome: "success",
+      });
+      return res.json({ ...(cached.content as object), generatedAt: cached.generated_at, cached: true });
+    }
+
+    if (!checkAiGenerationRateLimit(req, res)) {
+      return;
+    }
 
     const { coaching, generatedAt } = await singleFlight(`mission_coach:${userId}:${periodKey}`, async () => {
 
@@ -933,7 +1078,10 @@ intelligenceRouter.get("/mission-coach", requireAuth, aiGenerationLimiter, async
           '"rationale": string (1-2 sentences explaining why this action makes sense right now), ' +
           '"reasons": string[] (1-3 short bullet reasons grounded in stage, timing, or score)}.',
         user: JSON.stringify(boundedPayload),
+        feature: "mission_coach",
+        contextPrepMs: Date.now() - routeStart,
         maxTokens: 512,
+        timeoutMs: 18000,
         tier: "pro",
       });
 

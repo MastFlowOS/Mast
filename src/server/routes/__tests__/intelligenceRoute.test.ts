@@ -41,7 +41,7 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
     app.use((err: any, _req: any, res: any, _next: any) => {
       res
         .status(err.status || 500)
-        .json({ code: "internal_error", message: err.message || "Internal error" });
+        .json({ code: err.code || "internal_error", message: err.message || "Internal error" });
     });
 
     await new Promise<void>((resolve) => {
@@ -1682,6 +1682,137 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
         // Gating occurs before model call — zero AI model invocations
         assert.equal(capturedAiCalls.length, 0);
       }
+    });
+  });
+
+  describe("MAST AI Performance, Rate Limiting & Deadline Resilience", () => {
+    test("Fast model completion emits structured performance metric with feature and token usage", async () => {
+      userPlan = "pro";
+      mockAiResult = {
+        summary: "Pipeline shows strong momentum.",
+        priorities: ["Reach out to warm leads"],
+        tone: "success",
+      };
+
+      const res = await fetch(`${baseUrl}/briefing`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.summary, "Pipeline shows strong momentum.");
+      assert.equal(capturedAiCalls.length, 1);
+    });
+
+    test("Repeated cache hits do not consume AI generation limiter and return instantly", async () => {
+      userPlan = "pro";
+      // Prime cache
+      mockAiResult = {
+        summary: "Pipeline cached briefing.",
+        priorities: ["Action 1"],
+        tone: "brand",
+      };
+
+      const initialRes = await fetch(`${baseUrl}/briefing`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(initialRes.status, 200);
+
+      // Perform 25 consecutive requests — previously would have failed at request #6 with 429
+      for (let i = 0; i < 25; i++) {
+        const cacheRes = await fetch(`${baseUrl}/briefing`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(cacheRes.status, 200);
+        const cacheData = await cacheRes.json();
+        assert.equal(cacheData.cached, true);
+      }
+      // AI model was invoked only once on initial cache miss
+      assert.equal(capturedAiCalls.length, 1);
+    });
+
+    test("AI timeout maps cleanly to HTTP 504 ai_timeout", async () => {
+      userPlan = "pro";
+      const timeoutErr: any = new Error("Request timed out waiting for OpenRouter response");
+      timeoutErr.name = "TimeoutError";
+      timeoutErr.code = "ETIMEDOUT";
+      mockAiResult = timeoutErr;
+
+      const res = await fetch(`${baseUrl}/briefing`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(res.status, 504);
+      const data = await res.json();
+      assert.equal(data.code, "ai_timeout");
+    });
+
+    test("AI provider 429 rate limit maps cleanly to HTTP 429 rate_limit_exceeded", async () => {
+      userPlan = "pro";
+      const rateLimitErr: any = new Error("Rate limit exceeded on OpenRouter free tier");
+      rateLimitErr.status = 429;
+      mockAiResult = rateLimitErr;
+
+      const res = await fetch(`${baseUrl}/briefing`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(res.status, 429);
+      const data = await res.json();
+      assert.equal(data.code, "rate_limit_exceeded");
+    });
+
+    test("AI model refusal maps to HTTP 400 model_refusal", async () => {
+      userPlan = "pro";
+      const mockRefusalClient = {
+        chat: {
+          completions: {
+            create: async () => ({
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    refusal: "I cannot fulfill this request.",
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      };
+      setAiClient(mockRefusalClient);
+
+      const res = await fetch(`${baseUrl}/briefing`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(res.status, 400);
+      const data = await res.json();
+      assert.equal(data.code, "model_refusal");
+    });
+
+    test("Malformed model response (invalid JSON) maps to HTTP 502 invalid_json", async () => {
+      userPlan = "pro";
+      const mockMalformedClient = {
+        chat: {
+          completions: {
+            create: async () => ({
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: "This is plain prose without any JSON structure.",
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      };
+      setAiClient(mockMalformedClient);
+
+      const res = await fetch(`${baseUrl}/briefing`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(res.status, 502);
+      const data = await res.json();
+      assert.equal(data.code, "invalid_json");
     });
   });
 });

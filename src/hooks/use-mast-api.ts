@@ -721,6 +721,7 @@ export function useOpportunityInsight(businessId: string | null | undefined, ena
     queryFn: () => getOpportunityInsight(businessId!),
     enabled: enabled && Boolean(businessId),
     retry: false,
+    refetchOnWindowFocus: false,
     staleTime: 5 * 60_000,
   });
 }
@@ -732,6 +733,7 @@ export function useExecutiveBriefing(enabled = true) {
     queryFn: getExecutiveBriefing,
     enabled,
     retry: false,
+    refetchOnWindowFocus: false,
     staleTime: 5 * 60_000,
   });
 }
@@ -743,6 +745,7 @@ export function useWeeklyIntelligence(enabled = true) {
     queryFn: getWeeklyIntelligence,
     enabled,
     retry: false,
+    refetchOnWindowFocus: false,
     staleTime: 5 * 60_000,
   });
 }
@@ -754,6 +757,7 @@ export function usePipelineCoaching(enabled = true) {
     queryFn: getPipelineCoaching,
     enabled,
     retry: false,
+    refetchOnWindowFocus: false,
     staleTime: 5 * 60_000,
   });
 }
@@ -765,6 +769,7 @@ export function useDiscoverOverview(enabled = true) {
     queryFn: getDiscoverOverview,
     enabled,
     retry: false,
+    refetchOnWindowFocus: false,
     staleTime: 5 * 60_000,
   });
 }
@@ -776,6 +781,7 @@ export function useMissionCoach(enabled = true) {
     queryFn: getMissionCoach,
     enabled,
     retry: false,
+    refetchOnWindowFocus: false,
     staleTime: 5 * 60_000,
   });
 }
@@ -786,6 +792,7 @@ export function useIntelligenceStatus() {
     queryKey: queryKeys.intelligenceStatus,
     queryFn: getIntelligenceStatus,
     staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
     retry: 1,
   });
 }

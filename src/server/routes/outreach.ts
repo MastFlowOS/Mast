@@ -88,6 +88,7 @@ outreachRouter.get("/status", requireAuth, (_req, res) => {
  */
 outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res, next) => {
   try {
+    const prepStart = Date.now();
     const userId = req.user!.id;
 
     if (!aiEnabled()) {
@@ -398,8 +399,10 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       system: systemPrompt,
       user: userPayloadString,
       tier,
-      maxTokens: 2048,
-      timeoutMs: 30000,
+      feature: "outreach_draft",
+      contextPrepMs: Date.now() - prepStart,
+      maxTokens: 600,
+      timeoutMs: 18000,
     });
 
     if (!aiResult || typeof aiResult.body !== "string" || !aiResult.body.trim()) {

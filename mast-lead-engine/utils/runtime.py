@@ -350,6 +350,12 @@ class ScraperConfig:
     # Timeouts (milliseconds)
     maps_timeout_ms: int = int(os.environ.get("MAPS_TIMEOUT_MS", "30000"))
     place_timeout_ms: int = int(os.environ.get("PLACE_TIMEOUT_MS", "25000"))
+    # Hard bound on the single page.evaluate() that extracts a place's detail
+    # panel (scraper/maps_scraper.py::_extract_place_data). Playwright's
+    # evaluate() has no timeout of its own, so an unresponsive renderer
+    # blocked it for 108-213s in production until the Node watchdog killed
+    # the whole subprocess. Kept in line with maps_timeout_ms / place_timeout_ms.
+    place_extract_timeout_ms: int = int(os.environ.get("PLACE_EXTRACT_TIMEOUT_MS", "30000"))
     site_timeout_ms: int = int(os.environ.get("SITE_TIMEOUT_MS", "20000"))
     ig_timeout_ms: int = int(os.environ.get("IG_TIMEOUT_MS", "18000"))
 

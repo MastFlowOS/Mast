@@ -106,8 +106,13 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
     const mockClient = {
       chat: {
         completions: {
-          create: async (params: any) => {
-            capturedAiCalls.push(params);
+          create: async (params: any, options?: any) => {
+            capturedAiCalls.push({
+              ...params,
+              ...(options || {}),
+              maxTokens: params.max_tokens,
+              timeoutMs: options?.timeout ?? params.timeoutMs,
+            });
             if (mockAiResult instanceof Error) {
               throw mockAiResult;
             }
@@ -1813,6 +1818,125 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
       assert.equal(res.status, 502);
       const data = await res.json();
       assert.equal(data.code, "invalid_json");
+    });
+
+    test("Discover Overview and Mission Coach pass sufficient maxTokens and timeoutMs budget to prevent token starvation", async () => {
+      userPlan = "pro";
+      dbLeads = [
+        {
+          id: 50,
+          user_id: validUserId,
+          business_name: "Apex Studio",
+          niche: "dentists",
+          status: "replied",
+          priority: "high",
+          opportunity_score: 92,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      ];
+      dbFollowups = [
+        {
+          id: "f-1",
+          user_id: validUserId,
+          lead_id: 50,
+          channel: "email",
+          status: "pending",
+          due_at: new Date(Date.now() - 3600000).toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      ];
+
+      capturedAiCalls = [];
+      mockAiResult = {
+        label: "AI High Opportunity",
+        headline: "Dentists in your area show strong scoring signals.",
+        body: "Review dental prospects.",
+        confidence: "Recommended",
+        tone: "brand",
+        patterns: ["Pattern 1"],
+        promisingOpportunities: ["Apex Studio"],
+        nextSteps: ["Step 1"],
+      };
+
+      const resOverview = await fetch(`${baseUrl}/discover-overview`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(resOverview.status, 200);
+      assert.ok(capturedAiCalls.length >= 1);
+      const overviewCall = capturedAiCalls[0];
+      assert.ok(overviewCall.maxTokens >= 1000, `Expected maxTokens >= 1000, got ${overviewCall.maxTokens}`);
+      assert.ok(overviewCall.timeoutMs >= 20000, `Expected timeoutMs >= 20000, got ${overviewCall.timeoutMs}`);
+
+      capturedAiCalls = [];
+      mockAiResult = {
+        briefing: "Execute follow-up today.",
+        recommendedLeadId: 50,
+        recommendedAction: "Send proposal to Apex Studio",
+        rationale: "Highest opportunity score in queue.",
+        reasons: ["Score 92"],
+      };
+
+      const resCoach = await fetch(`${baseUrl}/mission-coach`, {
+        headers: { Authorization: `Bearer ${validToken}` },
+      });
+      assert.equal(resCoach.status, 200);
+      assert.ok(capturedAiCalls.length >= 1);
+      const coachCall = capturedAiCalls[0];
+      assert.ok(coachCall.maxTokens >= 1000, `Expected maxTokens >= 1000, got ${coachCall.maxTokens}`);
+      assert.ok(coachCall.timeoutMs >= 20000, `Expected timeoutMs >= 20000, got ${coachCall.timeoutMs}`);
+    });
+
+    test("Discover Overview succeeds when model JSON output is slightly truncated and repaired", async () => {
+      userPlan = "pro";
+      dbLeads = [
+        {
+          id: 50,
+          user_id: validUserId,
+          business_name: "Apex Studio",
+          niche: "dentists",
+          status: "replied",
+          priority: "high",
+          opportunity_score: 92,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      ];
+
+      // Simulated truncated LLM response ending before closing string/braces
+      const mockTruncatedClient = {
+        chat: {
+          completions: {
+            create: async () => ({
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: '```json\n{"label": "AI High Opportunity", "headline": "Dentists show strong signals", "patterns": ["Dental growth"]\n```',
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      };
+      setAiClient(mockTruncatedClient);
+
+      try {
+        const res = await fetch(`${baseUrl}/discover-overview`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.equal(data.label, "AI High Opportunity");
+        assert.equal(data.headline, "Dentists show strong signals");
+        assert.deepEqual(data.patterns, ["Dental growth"]);
+        // Missing fields filled by normalizer
+        assert.ok(Array.isArray(data.promisingOpportunities));
+        assert.ok(Array.isArray(data.nextSteps));
+      } finally {
+        resetAiClient();
+      }
     });
   });
 });

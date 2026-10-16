@@ -269,7 +269,11 @@ function GetLeads() {
 
   const isAiUnconfigured = Boolean(
     aiOverviewError &&
-      (((aiOverviewError as any)?.status === 503) || ((aiOverviewError as any)?.code === "ai_unavailable"))
+      (((aiOverviewError as any)?.code === "ai_unavailable") ||
+        (!((aiOverviewError as any)?.code) &&
+          (aiOverviewError as any)?.status === 503 &&
+          typeof (aiOverviewError as any)?.message === "string" &&
+          (aiOverviewError as any)?.message.toLowerCase().includes("not configured")))
   );
   const isAiError = Boolean(canUseAiOverview && aiOverviewError && !isAiUnconfigured);
   const isAiActive = Boolean(canUseAiOverview && aiOverviewData);

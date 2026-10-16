@@ -10,6 +10,7 @@ import {
   setAiClient,
   resetAiClient,
   analyzeChoice,
+  repairAndParseJson,
 } from "../ai.js";
 import { env } from "../../config/env.js";
 
@@ -703,6 +704,82 @@ test("generateJSON rejects response containing only <think> tags without final o
       },
     );
   } finally {
+    resetAiClient();
+  }
+});
+
+test("repairAndParseJson recovers unclosed strings and brackets from truncated output", () => {
+  // Trailing commas
+  const trailingComma = repairAndParseJson('{"label": "High", "reasons": ["one", "two",],}');
+  assert.deepEqual(trailingComma, { label: "High", reasons: ["one", "two"] });
+
+  // Unclosed string and brace
+  const unclosedStr = repairAndParseJson('{"headline": "Dentists in your area');
+  assert.deepEqual(unclosedStr, { headline: "Dentists in your area" });
+
+  // Unclosed nested array and object
+  const unclosedNested = repairAndParseJson('{"label": "Patterns", "patterns": ["item 1", "item 2"');
+  assert.deepEqual(unclosedNested, { label: "Patterns", patterns: ["item 1", "item 2"] });
+
+  // Completely invalid non-JSON returns null
+  assert.equal(repairAndParseJson("not a json at all"), null);
+});
+
+test("getClient strips surrounding quotes and whitespace from OPENROUTER_API_KEY", () => {
+  const origKey = env.OPENROUTER_API_KEY;
+  const origBase = env.OPENROUTER_BASE_URL;
+  try {
+    (env as any).OPENROUTER_API_KEY = '  "sk-or-v1-quoted-secret"  ';
+    (env as any).OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1///";
+    resetAiClient();
+    const client = getClient();
+    assert.equal(client.apiKey, "sk-or-v1-quoted-secret");
+    assert.equal(client.baseURL, "https://openrouter.ai/api/v1");
+  } finally {
+    (env as any).OPENROUTER_API_KEY = origKey;
+    (env as any).OPENROUTER_BASE_URL = origBase;
+    resetAiClient();
+  }
+});
+
+test("generateJSON passes reasoning: { effort: 'low' } and fallback models for OpenRouter", async () => {
+  let capturedPayload: any = null;
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async (params: any) => {
+          capturedPayload = params;
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: '{"result": "ok"}',
+                },
+              },
+            ],
+          };
+        },
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  const origKey = env.OPENROUTER_API_KEY;
+  try {
+    (env as any).OPENROUTER_API_KEY = "sk-or-v1-test-key";
+    const result = await generateJSON<{ result: string }>({
+      system: "system prompt",
+      user: "user prompt",
+      model: "openrouter/free",
+    });
+    assert.equal(result.result, "ok");
+    assert.ok(capturedPayload);
+    assert.equal(capturedPayload.reasoning?.effort, "low");
+    assert.ok(Array.isArray(capturedPayload.models));
+    assert.ok(capturedPayload.models.includes("openrouter/free"));
+  } finally {
+    (env as any).OPENROUTER_API_KEY = origKey;
     resetAiClient();
   }
 });

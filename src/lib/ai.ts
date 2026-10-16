@@ -52,9 +52,13 @@ export function getClient(): AiClient {
     return client;
   }
   if (env.OPENROUTER_API_KEY) {
+    const apiKey = env.OPENROUTER_API_KEY.trim().replace(/^["']|["']$/g, "");
+    const baseURL = (env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1")
+      .trim()
+      .replace(/\/+$/, "");
     client = new OpenAI({
-      apiKey: env.OPENROUTER_API_KEY,
-      baseURL: env.OPENROUTER_BASE_URL,
+      apiKey,
+      baseURL,
       maxRetries: 0,
       defaultHeaders: {
         "HTTP-Referer": "https://mast.ai",
@@ -64,9 +68,13 @@ export function getClient(): AiClient {
     return client;
   }
   if (env.DEEPSEEK_API_KEY) {
+    const apiKey = env.DEEPSEEK_API_KEY.trim().replace(/^["']|["']$/g, "");
+    const baseURL = (env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/anthropic")
+      .trim()
+      .replace(/\/+$/, "");
     client = new Anthropic({
-      apiKey: env.DEEPSEEK_API_KEY,
-      baseURL: env.DEEPSEEK_BASE_URL,
+      apiKey,
+      baseURL,
       maxRetries: 0,
     });
     return client;
@@ -348,7 +356,7 @@ export function handleProviderError(err: unknown, model: string): never {
         "AI service is temporarily unavailable. Please try again shortly.",
       );
       (unavailableErr as any).status = 503;
-      (unavailableErr as any).code = "ai_unavailable";
+      (unavailableErr as any).code = "ai_provider_unavailable";
       throw unavailableErr;
     }
     const rawMessage = typeof errObj.message === "string" ? errObj.message : String(err);
@@ -359,6 +367,79 @@ export function handleProviderError(err: unknown, model: string): never {
     throw genericErr;
   }
   throw err;
+}
+
+/**
+ * Attempts to repair common LLM JSON syntax errors:
+ * 1. Trailing commas before closing braces/brackets (e.g. `[1, 2, ]`)
+ * 2. Truncated output with unclosed strings (e.g. `{"headline": "Review your leads`)
+ * 3. Truncated output with unclosed brackets and braces (e.g. `{"items": [{"name": "Foo"`)
+ */
+export function repairAndParseJson<T>(candidate: string): T | null {
+  let text = candidate.trim();
+  const startIdx = text.search(/[{\[]/);
+  if (startIdx === -1) return null;
+  text = text.slice(startIdx);
+
+  // Strip trailing commas before } or ]
+  let fixed = text.replace(/,(\s*[}\]])/g, "$1");
+
+  try {
+    return JSON.parse(fixed) as T;
+  } catch {
+    // Continue with structural repair
+  }
+
+  // Scan for unbalanced quotes, brackets, and braces
+  let inString = false;
+  let escaped = false;
+  const stack: ("{" | "[")[] = [];
+
+  for (let i = 0; i < fixed.length; i++) {
+    const char = fixed[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === "{" || char === "[") {
+        stack.push(char);
+      } else if (char === "}" && stack.length > 0 && stack[stack.length - 1] === "{") {
+        stack.pop();
+      } else if (char === "]" && stack.length > 0 && stack[stack.length - 1] === "[") {
+        stack.pop();
+      }
+    }
+  }
+
+  // If ended mid-string, close the quote
+  if (inString) {
+    fixed += '"';
+  }
+
+  // Close remaining open brackets and braces in LIFO order
+  while (stack.length > 0) {
+    const open = stack.pop();
+    if (open === "{") fixed += "}";
+    else if (open === "[") fixed += "]";
+  }
+
+  // Clean trailing commas again if any were exposed before newly added closing tokens
+  fixed = fixed.replace(/,(\s*[}\]])/g, "$1");
+
+  try {
+    return JSON.parse(fixed) as T;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -388,12 +469,12 @@ export async function generateJSON<T>(params: {
   const ai = getClient();
   const feature = params.feature ?? "general";
   const model = params.model ?? getAiModel(params.tier ?? "fast");
-  const maxTokens = params.maxTokens ?? (params.tier === "fast" ? 600 : 1024);
+  const maxTokens = params.maxTokens ?? (params.tier === "fast" ? 800 : 1200);
   const correlationId = params.correlationId ?? `ai-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const retryDelayMs = params.retryDelayMs ?? (process.env.NODE_ENV === "test" ? 10 : 500);
 
-  // Total bounded execution deadline (default 18,000ms wall-clock budget for interactive AI)
-  const totalTimeoutMs = params.timeoutMs ?? (process.env.NODE_ENV === "test" ? 15_000 : 18_000);
+  // Total bounded execution deadline (default 28,000ms wall-clock budget for interactive AI across free routers)
+  const totalTimeoutMs = params.timeoutMs ?? (process.env.NODE_ENV === "test" ? 15_000 : 28_000);
   const deadline = Date.now() + totalTimeoutMs;
   const overallStart = Date.now();
 
@@ -430,7 +511,7 @@ export async function generateJSON<T>(params: {
       throw deadlineErr;
     }
 
-    const attemptTimeout = Math.max(1000, Math.min(remainingMs, 14_000));
+    const attemptTimeout = Math.max(1000, Math.min(remainingMs, 24_000));
     const abortController = new AbortController();
     const abortTimer = setTimeout(() => {
       abortController.abort(new Error(`AI attempt timed out after ${attemptTimeout}ms`));
@@ -441,15 +522,31 @@ export async function generateJSON<T>(params: {
 
     try {
       if (typeof ai.chat?.completions?.create === "function") {
+        const completionParams: Record<string, unknown> = {
+          model,
+          messages: [
+            { role: "system", content: params.system },
+            { role: "user", content: params.user },
+          ],
+          max_tokens: maxTokens,
+          temperature: 0.3,
+        };
+
+        // OpenRouter optimizations for free tier router
+        if (env.OPENROUTER_API_KEY) {
+          completionParams.reasoning = { effort: "low" };
+          if (model === "openrouter/free" || model.includes(":free")) {
+            completionParams.models = [
+              model,
+              "google/gemma-4-26b-a4b-it:free",
+              "nvidia/nemotron-3.5-lightning:free",
+              "openrouter/free",
+            ];
+          }
+        }
+
         const completion = await ai.chat.completions.create(
-          {
-            model,
-            messages: [
-              { role: "system", content: params.system },
-              { role: "user", content: params.user },
-            ],
-            max_tokens: maxTokens,
-          },
+          completionParams as any,
           {
             timeout: attemptTimeout,
             signal: abortController.signal,
@@ -488,7 +585,12 @@ export async function generateJSON<T>(params: {
         errObj?.status === 502 ||
         errObj?.status === 503 ||
         errObj?.status === 504 ||
-        errObj?.name === "APIConnectionError";
+        errObj?.name === "APIConnectionError" ||
+        errObj?.name === "AbortError" ||
+        errObj?.name === "TimeoutError" ||
+        errObj?.name === "APIConnectionTimeoutError" ||
+        errObj?.code === "ETIMEDOUT" ||
+        errObj?.code === "ECONNRESET";
       const isRateLimitOrAuth =
         errObj?.status === 429 ||
         errObj?.status === 401 ||
@@ -498,7 +600,7 @@ export async function generateJSON<T>(params: {
       const timeRemaining = deadline - Date.now();
       if (attempt === 1 && isTransient && !isRateLimitOrAuth && timeRemaining >= 4000) {
         retryCount++;
-        const reason = `transient_error_${errObj?.status || errObj?.name || "unknown"}`;
+        const reason = `transient_error_${errObj?.status || errObj?.name || errObj?.code || "unknown"}`;
         retryReasons.push(reason);
         logAiDiagnostic("ai:retry", {
           correlationId,
@@ -746,14 +848,18 @@ export async function generateJSON<T>(params: {
 
     return parsed;
   } catch (parseErr) {
-    const objectMatch = candidate.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
-    if (objectMatch) {
-      try {
-        const parsed = JSON.parse(objectMatch[1]) as T;
+    const trimmed = candidate.trim();
+    const startsWithObj = trimmed.startsWith("{");
+    const startsWithArr = trimmed.startsWith("[");
+
+    // If candidate starts with { or [, attempt structural repair of the top-level entity first
+    if (startsWithObj || startsWithArr) {
+      const repaired = repairAndParseJson<T>(candidate);
+      if (repaired && typeof repaired === "object") {
         const parseDurationMs = Date.now() - parseStart;
         logAiDiagnostic("ai:success", {
           correlationId,
-          stage: "json_parsed_regex_fallback",
+          stage: "json_parsed_repaired",
         });
 
         logAiMetric({
@@ -772,10 +878,70 @@ export async function generateJSON<T>(params: {
           tokenUsage,
         });
 
-        return parsed;
-      } catch {
-        // Fall through
+        return repaired;
       }
+    }
+
+    const objectMatch = candidate.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+    if (objectMatch) {
+      try {
+        const parsed = JSON.parse(objectMatch[1]) as T;
+        // Don't return an inner array if candidate began with an object
+        if (!startsWithObj || (parsed && typeof parsed === "object" && !Array.isArray(parsed))) {
+          const parseDurationMs = Date.now() - parseStart;
+          logAiDiagnostic("ai:success", {
+            correlationId,
+            stage: "json_parsed_regex_fallback",
+          });
+
+          logAiMetric({
+            correlationId,
+            feature,
+            model,
+            responseModel,
+            cacheHit: false,
+            contextPrepMs: params.contextPrepMs,
+            modelDurationMs,
+            parseDurationMs,
+            totalDurationMs: Date.now() - overallStart,
+            retryCount,
+            retryReasons,
+            outcome: "success",
+            tokenUsage,
+          });
+
+          return parsed;
+        }
+      } catch {
+        // Fall through to repair
+      }
+    }
+
+    const repaired = repairAndParseJson<T>(candidate);
+    if (repaired) {
+      const parseDurationMs = Date.now() - parseStart;
+      logAiDiagnostic("ai:success", {
+        correlationId,
+        stage: "json_parsed_repaired",
+      });
+
+      logAiMetric({
+        correlationId,
+        feature,
+        model,
+        responseModel,
+        cacheHit: false,
+        contextPrepMs: params.contextPrepMs,
+        modelDurationMs,
+        parseDurationMs,
+        totalDurationMs: Date.now() - overallStart,
+        retryCount,
+        retryReasons,
+        outcome: "success",
+        tokenUsage,
+      });
+
+      return repaired;
     }
 
     const parseDurationMs = Date.now() - parseStart;

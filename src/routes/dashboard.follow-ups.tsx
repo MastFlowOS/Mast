@@ -131,7 +131,11 @@ function MissionsPage() {
 
   const isAiCoachUnconfigured = Boolean(
     missionCoachError &&
-      (((missionCoachError as any)?.status === 503) || ((missionCoachError as any)?.code === "ai_unavailable"))
+      (((missionCoachError as any)?.code === "ai_unavailable") ||
+        (!((missionCoachError as any)?.code) &&
+          (missionCoachError as any)?.status === 503 &&
+          typeof (missionCoachError as any)?.message === "string" &&
+          (missionCoachError as any)?.message.toLowerCase().includes("not configured")))
   );
   const isAiCoachError = Boolean(canUseMissionCoach && missionCoachError && !isAiCoachUnconfigured);
   const isAiCoachActive = Boolean(canUseMissionCoach && missionCoachData);

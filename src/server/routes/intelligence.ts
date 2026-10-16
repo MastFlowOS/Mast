@@ -338,8 +338,8 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, readLimiter, a
         }),
         feature: "opportunity_insight",
         contextPrepMs: Date.now() - routeStart,
-        maxTokens: 512,
-        timeoutMs: 18000,
+        maxTokens: 1024,
+        timeoutMs: 28000,
         tier: "pro",
       });
 
@@ -444,8 +444,8 @@ intelligenceRouter.get("/briefing", requireAuth, readLimiter, async (req, res, n
         user: JSON.stringify(snapshot),
         feature: "executive_briefing",
         contextPrepMs: Date.now() - routeStart,
-        maxTokens: 512,
-        timeoutMs: 18000,
+        maxTokens: 1024,
+        timeoutMs: 28000,
         tier: "pro",
       });
 
@@ -544,8 +544,8 @@ intelligenceRouter.get("/weekly", requireAuth, readLimiter, async (req, res, nex
         user: JSON.stringify(snapshot),
         feature: "weekly_intelligence",
         contextPrepMs: Date.now() - routeStart,
-        maxTokens: 512,
-        timeoutMs: 18000,
+        maxTokens: 1024,
+        timeoutMs: 28000,
         tier: "pro",
       });
 
@@ -652,8 +652,8 @@ intelligenceRouter.get("/coaching", requireAuth, readLimiter, async (req, res, n
         user: JSON.stringify({ stalledDeals: snapshot.stalledDeals }),
         feature: "pipeline_coaching",
         contextPrepMs: Date.now() - routeStart,
-        maxTokens: 512,
-        timeoutMs: 18000,
+        maxTokens: 1024,
+        timeoutMs: 28000,
         tier: "pro",
       });
 
@@ -840,8 +840,8 @@ intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (re
         user: JSON.stringify(boundedPayload),
         feature: "discover_overview",
         contextPrepMs: Date.now() - routeStart,
-        maxTokens: 512,
-        timeoutMs: 18000,
+        maxTokens: 1200,
+        timeoutMs: 28000,
         tier: "pro",
       });
 
@@ -1080,8 +1080,8 @@ intelligenceRouter.get("/mission-coach", requireAuth, readLimiter, async (req, r
         user: JSON.stringify(boundedPayload),
         feature: "mission_coach",
         contextPrepMs: Date.now() - routeStart,
-        maxTokens: 512,
-        timeoutMs: 18000,
+        maxTokens: 1024,
+        timeoutMs: 28000,
         tier: "pro",
       });
 

@@ -160,7 +160,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
 };
 
 export function getPlan(planId: string | null | undefined): PlanConfig {
-  return PLANS[(planId as PlanId) ?? "free"] ?? PLANS.free;
+  const normalized = (planId ?? "free").toLowerCase().trim() as PlanId;
+  return PLANS[normalized] ?? PLANS.free;
 }
 
 /**

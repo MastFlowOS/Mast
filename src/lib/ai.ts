@@ -468,7 +468,7 @@ export async function generateJSON<T>(params: {
 }): Promise<T> {
   const ai = getClient();
   const feature = params.feature ?? "general";
-  const model = params.model ?? getAiModel(params.tier ?? "fast");
+  let model = params.model ?? getAiModel(params.tier ?? "fast");
   const maxTokens = params.maxTokens ?? (params.tier === "fast" ? 800 : 1200);
   const correlationId = params.correlationId ?? `ai-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const retryDelayMs = params.retryDelayMs ?? (process.env.NODE_ENV === "test" ? 10 : 500);
@@ -609,6 +609,9 @@ export async function generateJSON<T>(params: {
           reason,
           delayMs: retryDelayMs,
         });
+        if (model === "openrouter/free") {
+          model = "google/gemma-4-26b-a4b-it:free";
+        }
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }

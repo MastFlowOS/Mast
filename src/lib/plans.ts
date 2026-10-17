@@ -116,5 +116,6 @@ export const PLANS: PlanConfig[] = [
 ];
 
 export function getPlan(plan?: string | null) {
-  return PLANS.find((item) => item.id === plan) ?? PLANS[0];
+  const normalized = (plan ?? "free").toLowerCase().trim();
+  return PLANS.find((item) => item.id === normalized) ?? PLANS[0];
 }

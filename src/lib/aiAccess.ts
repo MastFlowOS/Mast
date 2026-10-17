@@ -44,7 +44,8 @@ const PLAN_RANK: Record<PlanId, number> = { free: 0, starter: 1, pro: 2, premium
 
 export function canUseAiFeature(plan: PlanId | string | null | undefined, feature: AiFeature): boolean {
   if (!plan) return false;
-  const rank = PLAN_RANK[plan as PlanId];
+  const normalized = String(plan).toLowerCase().trim() as PlanId;
+  const rank = PLAN_RANK[normalized];
   if (rank === undefined) return false;
   const requiredPlan = AI_FEATURE_PLANS[feature];
   if (!requiredPlan) return false;

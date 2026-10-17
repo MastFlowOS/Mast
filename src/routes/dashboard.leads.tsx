@@ -267,16 +267,29 @@ function GetLeads() {
     refetch: refetchAiOverview,
   } = useDiscoverOverview(canUseAiOverview);
 
+  const isPlanRestricted = Boolean(
+    aiOverviewError &&
+      ((aiOverviewError as any)?.status === 403 ||
+        (aiOverviewError as any)?.code === "plan_restricted")
+  );
+
   const isAiUnconfigured = Boolean(
     aiOverviewError &&
+      !isPlanRestricted &&
       (((aiOverviewError as any)?.code === "ai_unavailable") ||
-        (!((aiOverviewError as any)?.code) &&
-          (aiOverviewError as any)?.status === 503 &&
+        (aiOverviewError as any)?.status === 0 ||
+        ((aiOverviewError as any)?.status === 503 &&
           typeof (aiOverviewError as any)?.message === "string" &&
           (aiOverviewError as any)?.message.toLowerCase().includes("not configured")))
   );
-  const isAiError = Boolean(canUseAiOverview && aiOverviewError && !isAiUnconfigured);
+  const isAiError = Boolean(canUseAiOverview && aiOverviewError && !isAiUnconfigured && !isPlanRestricted);
   const isAiActive = Boolean(canUseAiOverview && aiOverviewData);
+
+  useEffect(() => {
+    if (aiOverviewError && !isPlanRestricted) {
+      console.warn("[DiscoverAI] AI overview request failed:", aiOverviewError);
+    }
+  }, [aiOverviewError, isPlanRestricted]);
 
   // Live-streaming plumbing for Phase 4: the unsubscribe fn for whatever
   // discover job is currently being watched, and a set of lead ids already
@@ -1369,6 +1382,7 @@ function GetLeads() {
           aiOverview={canUseAiOverview ? aiOverviewData : undefined}
           isAiActive={isAiActive}
           isAiError={isAiError}
+          errorMessage={isAiError && aiOverviewError ? ((aiOverviewError as any)?.message || String(aiOverviewError)) : undefined}
           isAiUnconfigured={isAiUnconfigured}
           isAiFetching={aiOverviewFetching}
           onRetryAi={() => void refetchAiOverview()}
@@ -1742,6 +1756,7 @@ function DiscoverAiOverview({
   aiOverview,
   isAiActive = false,
   isAiError = false,
+  errorMessage,
   isAiUnconfigured = false,
   isAiFetching = false,
   onRetryAi,
@@ -1760,6 +1775,8 @@ function DiscoverAiOverview({
   isAiActive?: boolean;
   /** Whether real AI request was attempted but failed. */
   isAiError?: boolean;
+  /** Sanitized error message to display in the fallback banner. */
+  errorMessage?: string;
   /** Whether AI provider is unconfigured on the deployment. */
   isAiUnconfigured?: boolean;
   /** Whether AI overview request is currently fetching / retrying. */
@@ -1853,7 +1870,11 @@ function DiscoverAiOverview({
         <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-300">
           <div className="flex items-center gap-2">
             <AlertCircle className="size-4 shrink-0 text-amber-400" />
-            <span>AI Overview request failed. Showing rule-based suggestions below.</span>
+            <span>
+              {errorMessage && !errorMessage.toLowerCase().includes("object")
+                ? `AI Overview: ${errorMessage}. Showing rule-based suggestions below.`
+                : "AI Overview request failed. Showing rule-based suggestions below."}
+            </span>
           </div>
           {onRetryAi && (
             <button

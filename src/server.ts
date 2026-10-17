@@ -58,9 +58,37 @@ app.use(pinoHttp({
   },
 }));
 app.use(express.json({ limit: "1mb" }));
+const configuredOrigins = (env.ALLOWED_ORIGIN || "")
+  .split(",")
+  .map((o) => o.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
 app.use(
   cors({
-    origin: env.ALLOWED_ORIGIN,
+    origin: (requestOrigin, callback) => {
+      if (!requestOrigin) return callback(null, true);
+      const cleanOrigin = requestOrigin.replace(/\/+$/, "");
+      const isConfigured = configuredOrigins.some((allowed) => {
+        if (allowed === cleanOrigin) return true;
+        const allowedHost = allowed.replace(/^https?:\/\//, "");
+        const cleanHost = cleanOrigin.replace(/^https?:\/\//, "");
+        return (
+          allowedHost === `www.${cleanHost}` ||
+          cleanHost === `www.${allowedHost}` ||
+          allowedHost === cleanHost
+        );
+      });
+
+      if (
+        isConfigured ||
+        cleanOrigin.endsWith(".vercel.app") ||
+        cleanOrigin.includes("localhost") ||
+        cleanOrigin.includes("127.0.0.1")
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, configuredOrigins[0] || true);
+    },
     credentials: true,
   }),
 );

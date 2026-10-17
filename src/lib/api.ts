@@ -42,7 +42,8 @@ export function isMissingBackendEndpoint(_error: unknown): boolean {
 // still talks to Supabase directly, unchanged.
 function getApiBaseUrl(): string | undefined {
   const apiEnv = (typeof import.meta !== "undefined" && import.meta.env) ? import.meta.env : (process.env as Record<string, string | undefined>);
-  return (apiEnv?.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
+  const raw = (apiEnv?.VITE_API_BASE_URL || apiEnv?.VITE_API_URL || apiEnv?.VITE_BACKEND_URL) as string | undefined;
+  return raw ? raw.trim().replace(/\/+$/, "") : undefined;
 }
 
 async function backendFetch<T>(path: string, options: RequestInit = {}): Promise<T> {

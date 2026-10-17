@@ -129,16 +129,29 @@ function MissionsPage() {
     refetch: refetchMissionCoach,
   } = useMissionCoach(canUseMissionCoach);
 
+  const isAiCoachPlanRestricted = Boolean(
+    missionCoachError &&
+      ((missionCoachError as any)?.status === 403 ||
+        (missionCoachError as any)?.code === "plan_restricted")
+  );
+
   const isAiCoachUnconfigured = Boolean(
     missionCoachError &&
+      !isAiCoachPlanRestricted &&
       (((missionCoachError as any)?.code === "ai_unavailable") ||
-        (!((missionCoachError as any)?.code) &&
-          (missionCoachError as any)?.status === 503 &&
+        (missionCoachError as any)?.status === 0 ||
+        ((missionCoachError as any)?.status === 503 &&
           typeof (missionCoachError as any)?.message === "string" &&
           (missionCoachError as any)?.message.toLowerCase().includes("not configured")))
   );
-  const isAiCoachError = Boolean(canUseMissionCoach && missionCoachError && !isAiCoachUnconfigured);
+  const isAiCoachError = Boolean(canUseMissionCoach && missionCoachError && !isAiCoachUnconfigured && !isAiCoachPlanRestricted);
   const isAiCoachActive = Boolean(canUseMissionCoach && missionCoachData);
+
+  useEffect(() => {
+    if (missionCoachError && !isAiCoachPlanRestricted) {
+      console.warn("[MissionCoach] AI coach request failed:", missionCoachError);
+    }
+  }, [missionCoachError, isAiCoachPlanRestricted]);
 
   const activeCoachBriefing = canUseMissionCoach && missionCoachData?.briefing ? missionCoachData.briefing : mission.missionBriefing;
   const activeCoachTip = canUseMissionCoach && missionCoachData?.recommendedAction ? missionCoachData.recommendedAction : mission.coachTip;
@@ -514,7 +527,11 @@ function MissionsPage() {
 
                   {isAiCoachError && (
                     <div className="mt-2.5 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300">
-                      <span>AI Coach unavailable. Showing rule-based guide.</span>
+                      <span>
+                        {(missionCoachError as any)?.message && typeof (missionCoachError as any)?.message === "string" && !(missionCoachError as any)?.message.toLowerCase().includes("object")
+                          ? `AI Coach: ${(missionCoachError as any).message}. Showing rule-based guide.`
+                          : "AI Coach unavailable. Showing rule-based guide."}
+                      </span>
                       <button
                         type="button"
                         onClick={() => void refetchMissionCoach()}
@@ -1116,7 +1133,11 @@ function MissionsPage() {
           <div className="space-y-4 pt-3">
             {isAiCoachError && (
               <div className="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-                <span>AI Coach request failed. Displaying rule-based mission guidance.</span>
+                <span>
+                  {(missionCoachError as any)?.message && typeof (missionCoachError as any)?.message === "string" && !(missionCoachError as any)?.message.toLowerCase().includes("object")
+                    ? `AI Coach: ${(missionCoachError as any).message}. Displaying rule-based mission guidance.`
+                    : "AI Coach request failed. Displaying rule-based mission guidance."}
+                </span>
                 <button
                   type="button"
                   onClick={() => void refetchMissionCoach()}

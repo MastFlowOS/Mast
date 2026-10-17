@@ -894,6 +894,49 @@ describe("POST /v1/outreach/draft", () => {
     }
   });
 
+  test("POST /v1/outreach/draft resiliently extracts message body from alternative keys (message, content, draft)", async () => {
+    const origOr = env.OPENROUTER_API_KEY;
+    try {
+      (env as any).OPENROUTER_API_KEY = "sk-or-v1-mock-key";
+      userPlan = "pro";
+
+      // Mock AI returning { subject: "...", message: "..." } instead of body
+      setAiClient({
+        chat: {
+          completions: {
+            create: async () => ({
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: JSON.stringify({
+                      subject: "Quick question for Apex Dental",
+                      message: "Hi Dr. Smith, I saw your great patient reviews and wanted to reach out.",
+                    }),
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      } as any);
+
+      const res = await fetch(`${baseUrl}/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+        body: JSON.stringify({ leadId: 1, channel: "email" }),
+      });
+
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.subject, "Quick question for Apex Dental");
+      assert.equal(data.body, "Hi Dr. Smith, I saw your great patient reviews and wanted to reach out.");
+    } finally {
+      (env as any).OPENROUTER_API_KEY = origOr;
+      resetAiClient();
+    }
+  });
+
   test("GET /v1/outreach/status returns safe AI configuration state without exposing secrets", async () => {
     const origOr = env.OPENROUTER_API_KEY;
     const origDs = env.DEEPSEEK_API_KEY;

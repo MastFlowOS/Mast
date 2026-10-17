@@ -401,16 +401,55 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       tier,
       feature: "outreach_draft",
       contextPrepMs: Date.now() - prepStart,
-      maxTokens: 600,
-      timeoutMs: 18000,
+      maxTokens: 1200,
+      timeoutMs: 28000,
     });
 
-    if (!aiResult || typeof aiResult.body !== "string" || !aiResult.body.trim()) {
+    const rawResult = aiResult as any;
+    // Unwrap common nested response wrappers if present
+    const payload =
+      rawResult && typeof rawResult === "object" && rawResult.data && typeof rawResult.data === "object"
+        ? rawResult.data
+        : rawResult && typeof rawResult === "object" && rawResult.response && typeof rawResult.response === "object"
+          ? rawResult.response
+          : rawResult;
+
+    const extractedBody =
+      typeof payload?.body === "string" && payload.body.trim()
+        ? payload.body.trim()
+        : typeof payload?.message === "string" && payload.message.trim()
+          ? payload.message.trim()
+          : typeof payload?.content === "string" && payload.content.trim()
+            ? payload.content.trim()
+            : typeof payload?.text === "string" && payload.text.trim()
+              ? payload.text.trim()
+              : typeof payload?.draft === "string" && payload.draft.trim()
+                ? payload.draft.trim()
+                : typeof payload?.email === "string" && payload.email.trim()
+                  ? payload.email.trim()
+                  : typeof payload?.output === "string" && payload.output.trim()
+                    ? payload.output.trim()
+                    : typeof payload === "string" && payload.trim()
+                      ? payload.trim()
+                      : null;
+
+    if (!extractedBody) {
       throw new Error("AI response did not contain a valid generated message body");
     }
 
+    const extractedSubject =
+      typeof payload?.subject === "string" && payload.subject.trim()
+        ? payload.subject.trim()
+        : typeof payload?.subjectLine === "string" && payload.subjectLine.trim()
+          ? payload.subjectLine.trim()
+          : typeof payload?.subject_line === "string" && payload.subject_line.trim()
+            ? payload.subject_line.trim()
+            : typeof payload?.title === "string" && payload.title.trim()
+              ? payload.title.trim()
+              : null;
+
     const { subject, body } = sanitizeOutreachOutput(
-      aiResult,
+      { subject: extractedSubject, body: extractedBody },
       channel as OutreachChannel,
       clientSubject,
     );

@@ -152,7 +152,7 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
     "- expand: Add depth, concrete proof points, and richer context without corporate fluff.",
     "- objections: Write an empathetic, persuasive response validating their hesitation with zero pressure.",
     "",
-    '### 6. OUTPUT CONTRACT: Respond with ONLY a valid JSON object matching the exact shape: {"subject": string | null, "body": string}. No markdown fences or extraneous text.',
+    '### 6. OUTPUT CONTRACT: Respond with ONLY a valid JSON object matching the exact shape: {"subject": string | null, "body": string}. The "body" property MUST contain the full outreach message. Do NOT use other key names. No markdown fences or extraneous text.',
   ].join("\n");
 
   // User Prompt Payload: Structured runtime context

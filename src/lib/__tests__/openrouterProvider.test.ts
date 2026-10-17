@@ -777,6 +777,7 @@ test("generateJSON passes reasoning: { effort: 'low' } and fallback models for O
     assert.ok(capturedPayload);
     assert.equal(capturedPayload.reasoning?.effort, "low");
     assert.ok(Array.isArray(capturedPayload.models));
+    assert.ok(capturedPayload.models.length <= 3, "'models' array must have 3 items or fewer");
     assert.ok(capturedPayload.models.includes("openrouter/free"));
   } finally {
     (env as any).OPENROUTER_API_KEY = origKey;

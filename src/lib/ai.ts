@@ -536,12 +536,13 @@ export async function generateJSON<T>(params: {
         if (env.OPENROUTER_API_KEY) {
           completionParams.reasoning = { effort: "low" };
           if (model === "openrouter/free" || model.includes(":free")) {
-            completionParams.models = [
+            // OpenRouter strictly enforces: 'models' array must have 3 items or fewer
+            const candidateModels = [
               model,
               "google/gemma-4-26b-a4b-it:free",
-              "nvidia/nemotron-3.5-lightning:free",
               "openrouter/free",
             ];
+            completionParams.models = Array.from(new Set(candidateModels)).slice(0, 3);
           }
         }
 

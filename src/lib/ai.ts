@@ -532,17 +532,17 @@ export async function generateJSON<T>(params: {
           temperature: 0.3,
         };
 
-        // OpenRouter optimizations for free tier router
+        // OpenRouter optimizations
         if (env.OPENROUTER_API_KEY) {
-          completionParams.reasoning = { effort: "low" };
-          if (model === "openrouter/free" || model.includes(":free")) {
-            // OpenRouter strictly enforces: 'models' array must have 3 items or fewer
-            const candidateModels = [
-              model,
-              "google/gemma-4-26b-a4b-it:free",
-              "openrouter/free",
-            ];
-            completionParams.models = Array.from(new Set(candidateModels)).slice(0, 3);
+          // OpenRouter only accepts 'reasoning' for models with reasoning capabilities (e.g. DeepSeek R1, OpenAI o1/o3).
+          // Non-reasoning models reject this parameter with a 400 or downstream 502/503 error.
+          if (/(?:reasoning|thinking|\br1\b|\bo1\b|\bo3\b)/i.test(model)) {
+            completionParams.reasoning = { effort: "low" };
+          }
+          // If a specific free model is requested, supply a fallback to openrouter/free (max 3 items strictly enforced).
+          // When model is already openrouter/free, we omit 'models' to let OpenRouter auto-route cleanly.
+          if (model !== "openrouter/free" && model.includes(":free")) {
+            completionParams.models = [model, "openrouter/free"];
           }
         }
 

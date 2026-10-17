@@ -742,7 +742,7 @@ test("getClient strips surrounding quotes and whitespace from OPENROUTER_API_KEY
   }
 });
 
-test("generateJSON passes reasoning: { effort: 'low' } and fallback models for OpenRouter", async () => {
+test("generateJSON passes clean payload for openrouter/free (no reasoning parameter, no models array)", async () => {
   let capturedPayload: any = null;
   const mockClient = {
     chat: {
@@ -775,10 +775,101 @@ test("generateJSON passes reasoning: { effort: 'low' } and fallback models for O
     });
     assert.equal(result.result, "ok");
     assert.ok(capturedPayload);
+    // openrouter/free must not have reasoning parameter (unsupported by standard free models)
+    assert.equal(capturedPayload.reasoning, undefined);
+    // openrouter/free must not have models array (it is already the meta-router)
+    assert.equal(capturedPayload.models, undefined);
+    assert.equal(capturedPayload.model, "openrouter/free");
+  } finally {
+    (env as any).OPENROUTER_API_KEY = origKey;
+    resetAiClient();
+  }
+});
+
+test("generateJSON passes fallback models for specific :free models (length <= 3)", async () => {
+  let capturedPayload: any = null;
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async (params: any) => {
+          capturedPayload = params;
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: '{"result": "ok"}',
+                },
+              },
+            ],
+          };
+        },
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  const origKey = env.OPENROUTER_API_KEY;
+  try {
+    (env as any).OPENROUTER_API_KEY = "sk-or-v1-test-key";
+    const specificFreeModel = "google/gemma-4-26b-a4b-it:free";
+    const result = await generateJSON<{ result: string }>({
+      system: "system prompt",
+      user: "user prompt",
+      model: specificFreeModel,
+    });
+    assert.equal(result.result, "ok");
+    assert.ok(capturedPayload);
+    // Non-reasoning model must not have reasoning parameter
+    assert.equal(capturedPayload.reasoning, undefined);
+    // Fallback models must be set and strictly <= 3 items
+    assert.ok(Array.isArray(capturedPayload.models));
+    assert.ok(capturedPayload.models.length <= 3, "'models' array must have 3 items or fewer");
+    assert.deepEqual(capturedPayload.models, [specificFreeModel, "openrouter/free"]);
+  } finally {
+    (env as any).OPENROUTER_API_KEY = origKey;
+    resetAiClient();
+  }
+});
+
+test("generateJSON passes reasoning: { effort: 'low' } only for reasoning models", async () => {
+  let capturedPayload: any = null;
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async (params: any) => {
+          capturedPayload = params;
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: '{"result": "ok"}',
+                },
+              },
+            ],
+          };
+        },
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  const origKey = env.OPENROUTER_API_KEY;
+  try {
+    (env as any).OPENROUTER_API_KEY = "sk-or-v1-test-key";
+    const reasoningModel = "deepseek/deepseek-r1:free";
+    const result = await generateJSON<{ result: string }>({
+      system: "system prompt",
+      user: "user prompt",
+      model: reasoningModel,
+    });
+    assert.equal(result.result, "ok");
+    assert.ok(capturedPayload);
     assert.equal(capturedPayload.reasoning?.effort, "low");
     assert.ok(Array.isArray(capturedPayload.models));
     assert.ok(capturedPayload.models.length <= 3, "'models' array must have 3 items or fewer");
-    assert.ok(capturedPayload.models.includes("openrouter/free"));
+    assert.deepEqual(capturedPayload.models, [reasoningModel, "openrouter/free"]);
   } finally {
     (env as any).OPENROUTER_API_KEY = origKey;
     resetAiClient();

@@ -3,26 +3,9 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": [
-    "main",
     "*"
   ],
-  "webviews": [
-    "main",
-    "*"
-  ],
-  "remote": {
-    "urls": [
-      "http://localhost:*",
-      "http://tauri.localhost",
-      "http://tauri.localhost/*",
-      "https://tauri.localhost",
-      "https://tauri.localhost/*",
-      "tauri://localhost",
-      "tauri://localhost/*"
-    ]
-  },
   "permissions": [
-    "core:default",
-    "allow-desktop-commands"
+    "core:default"
   ]
 }

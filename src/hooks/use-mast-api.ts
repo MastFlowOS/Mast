@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { isTauri } from "@tauri-apps/api/core";
 import {
   ApiError,
   isFutureIatApiError,
@@ -131,7 +132,7 @@ export function useMe(enabled = true) {
     queryKey: queryKeys.me,
     queryFn: async () => {
       const res = await getMe();
-      if (!res.user && import.meta.env.DEV) return { user: DEV_MOCK_USER };
+      if (!res.user && import.meta.env.DEV && !isTauri()) return { user: DEV_MOCK_USER };
       return res;
     },
     retry: false,

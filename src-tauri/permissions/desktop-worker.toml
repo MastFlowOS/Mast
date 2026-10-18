@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "allow-desktop-worker-commands"
+description = "Allows the frontend to manage the local MAST discovery worker"
+commands.allow = [
+  "get_desktop_info",
+  "get_worker_status",
+  "start_worker",
+  "stop_worker",
+  "update_worker_token"
+]

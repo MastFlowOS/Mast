@@ -19,6 +19,9 @@
     "format": "prettier --write .",
     "start:gateway": "node dist/server.js",
     "start:worker": "node dist/workers/index.js",
+    "stage:worker": "node scripts/stage-desktop-worker.mjs",
+    "build:desktop": "node scripts/stage-desktop-worker.mjs && tauri build",
+    "tauri": "tauri",
     "migrate": "node scripts/run-migrations.mjs"
   },
   "dependencies": {
@@ -93,6 +96,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/cli": "^2.12.3",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/cors": "^2.8.17",

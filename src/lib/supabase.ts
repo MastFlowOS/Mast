@@ -15,9 +15,9 @@ const supabaseUrl = envObj?.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = envObj?.VITE_SUPABASE_ANON_KEY as string | undefined;
 
 /**
- * Non-null when required env vars are missing at build/runtime. `__root.tsx`
- * checks this before rendering anything else, and every call site that uses
- * `supabase` guards on `if (!supabase) ...` first (see src/lib/api.ts).
+ * Non-null when required env vars are missing or contain placeholder values at
+ * build/runtime. `__root.tsx` checks this before rendering anything else, and
+ * every call site that uses `supabase` guards on `if (!supabase) ...` first.
  */
 export const supabaseConfigError: string | null = (() => {
   const missing = [
@@ -25,15 +25,40 @@ export const supabaseConfigError: string | null = (() => {
     !supabaseAnonKey && "VITE_SUPABASE_ANON_KEY",
   ].filter(Boolean);
 
-  if (missing.length === 0) return null;
-  return `Missing required environment variable(s): ${missing.join(", ")}`;
+  if (missing.length > 0) {
+    return `Missing required environment variable(s): ${missing.join(", ")}`;
+  }
+
+  const isPlaceholderUrl =
+    !supabaseUrl ||
+    /placeholder|your-project|example\.supabase/i.test(supabaseUrl);
+
+  if (isPlaceholderUrl) {
+    return "Invalid Supabase configuration: VITE_SUPABASE_URL contains a placeholder domain. Configure your production Supabase URL.";
+  }
+
+  const isPlaceholderKey =
+    !supabaseAnonKey ||
+    /placeholder|your-anon/i.test(supabaseAnonKey) ||
+    supabaseAnonKey.length < 20;
+
+  if (isPlaceholderKey) {
+    return "Invalid Supabase configuration: VITE_SUPABASE_ANON_KEY contains a placeholder key. Configure your production Supabase anon/publishable key.";
+  }
+
+  const isSecretKey = /^sb_sec/i.test(supabaseAnonKey);
+  if (isSecretKey) {
+    return "Security error: VITE_SUPABASE_ANON_KEY must not contain a private server key. Use the public publishable or anon key.";
+  }
+
+  return null;
 })();
 
 // null when misconfigured, so every consumer must guard with `if (!supabase)`
 // before use — the pattern already followed throughout src/lib/api.ts and
 // the auth-related route components.
 export let supabase: SupabaseClient | null =
-  supabaseUrl && supabaseAnonKey
+  !supabaseConfigError && supabaseUrl && supabaseAnonKey
     ? createClient(supabaseUrl, supabaseAnonKey, {
         auth: {
           persistSession: true,

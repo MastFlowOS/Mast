@@ -73,6 +73,9 @@ const DiscoverRequestSchema = z.object({
    * job with its own counters and its own credit charges.
    */
   followsJobId: z.string().uuid().optional(),
+  /** Execution target: "cloud" (default) or "desktop". */
+  execution_target: z.enum(["cloud", "desktop"]).optional(),
+  executionTarget: z.enum(["cloud", "desktop"]).optional(),
 });
 
 /**
@@ -245,6 +248,8 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
 
     const quantity = Math.min(body.quantity, plan.dailyLeadLimit - dailyUsed, plan.monthlyLeadLimit - monthlyUsed);
 
+    const executionTarget: "cloud" | "desktop" = body.execution_target ?? body.executionTarget ?? "cloud";
+
     const { data: job, error: jobError } = await supabaseAdmin
       .from("scrape_jobs")
       .insert({
@@ -258,6 +263,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
           currencies: body.currencies,
           profession_slug: professionSlug,
           quantity,
+          execution_target: executionTarget,
           ...(body.followsJobId ? { follows_job_id: body.followsJobId } : {}),
         },
       })
@@ -301,6 +307,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
           quantity,
           dailyLimit: plan.dailyLeadLimit,
           monthlyLimit: plan.monthlyLeadLimit,
+          executionTarget,
         });
       } catch (enqueueErr) {
         // The job row exists but no plan could be queued: terminate it
@@ -325,6 +332,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         status: "queued",
         requested: quantity,
         requestedByUser: body.quantity,
+        executionTarget,
         ...(body.followsJobId ? { followsJobId: body.followsJobId } : {}),
       });
     }

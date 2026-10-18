@@ -187,6 +187,37 @@ test("buildDiscoverRequest: multi-select joins, follow-up carries followsJobId a
   assert.equal(summarizeDiscoverRequest(req).channels, "Any");
 });
 
+test("buildDiscoverRequest preserves execution_target when provided and omits it when absent", () => {
+  const desktopReq = buildDiscoverRequest({
+    quantity: 5,
+    regions: ["United States"],
+    niches: ["Coffee Shops"],
+    channels: ["email"],
+    method: "live",
+    execution_target: "desktop",
+  });
+  assert.equal(desktopReq.execution_target, "desktop");
+
+  const cloudReq = buildDiscoverRequest({
+    quantity: 5,
+    regions: ["United States"],
+    niches: ["Coffee Shops"],
+    channels: ["email"],
+    method: "live",
+    execution_target: "cloud",
+  });
+  assert.equal(cloudReq.execution_target, "cloud");
+
+  const defaultReq = buildDiscoverRequest({
+    quantity: 5,
+    regions: ["United States"],
+    niches: ["Coffee Shops"],
+    channels: ["email"],
+    method: "live",
+  });
+  assert.equal("execution_target" in defaultReq, false, "omits execution_target when unspecified");
+});
+
 // ── Live stream: repeated events never double-count ─────────────────────────
 
 test("live stream: a repeated lead_delivered event counts once; completion carries real counts; failure terminates visibly", () => {

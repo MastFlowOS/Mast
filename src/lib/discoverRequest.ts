@@ -16,6 +16,7 @@ export type DiscoverFormState = {
   method: DiscoveryMode;
   /** set only by the explicit "Find remaining with Live Discovery" action */
   followsJobId?: string;
+  execution_target?: "cloud" | "desktop";
 };
 
 export type DiscoverRequestPayload = {
@@ -26,6 +27,7 @@ export type DiscoverRequestPayload = {
   method: DiscoveryMode;
   mode: ReturnType<typeof generationModeFor>;
   followsJobId?: string;
+  execution_target?: "cloud" | "desktop";
 };
 
 export function buildDiscoverRequest(form: DiscoverFormState): DiscoverRequestPayload {
@@ -38,6 +40,7 @@ export function buildDiscoverRequest(form: DiscoverFormState): DiscoverRequestPa
     mode: generationModeFor(form.method),
   };
   if (form.followsJobId) payload.followsJobId = form.followsJobId;
+  if (form.execution_target) payload.execution_target = form.execution_target;
   return payload;
 }
 

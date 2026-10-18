@@ -16,6 +16,14 @@ dist-ssr
 .nitro
 *.local
 
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+dist-worker/
+build-worker/
+spec-worker/
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

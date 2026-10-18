@@ -443,6 +443,23 @@ export function repairAndParseJson<T>(candidate: string): T | null {
 }
 
 /**
+ * Automatically rotates candidate model identifiers for retry attempts
+ * to prevent hammering a congested or unresponsive upstream endpoint.
+ */
+function rotateModelForRetry(currentModel: string): string {
+  if (currentModel === "google/gemma-4-26b-a4b-it:free") {
+    return "google/gemma-4-31b-it:free";
+  }
+  if (currentModel === "google/gemma-4-31b-it:free") {
+    return "google/gemma-4-26b-a4b-it:free";
+  }
+  if (currentModel === "openrouter/free") {
+    return "google/gemma-4-26b-a4b-it:free";
+  }
+  return currentModel;
+}
+
+/**
  * Sends a system + user prompt and parses the reply as JSON.
  * Features:
  * - Robust multi-part and string choice extraction.
@@ -471,7 +488,7 @@ export async function generateJSON<T>(params: {
   let model = params.model ?? getAiModel(params.tier ?? "fast");
   const maxTokens = params.maxTokens ?? (params.tier === "fast" ? 800 : 1200);
   const correlationId = params.correlationId ?? `ai-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-  const retryDelayMs = params.retryDelayMs ?? (process.env.NODE_ENV === "test" ? 10 : 500);
+  const retryDelayMs = params.retryDelayMs ?? (process.env.NODE_ENV === "test" ? 10 : 200);
 
   // Total bounded execution deadline (default 28,000ms wall-clock budget for interactive AI across free routers)
   const totalTimeoutMs = params.timeoutMs ?? (process.env.NODE_ENV === "test" ? 15_000 : 28_000);
@@ -511,7 +528,15 @@ export async function generateJSON<T>(params: {
       throw deadlineErr;
     }
 
-    const attemptTimeout = Math.max(1000, Math.min(remainingMs, 24_000));
+    // Attempt 1 is capped to prevent a hanging or congested endpoint from starving Attempt 2
+    const attemptBudget =
+      attempt === 1
+        ? Math.min(
+            remainingMs - (process.env.NODE_ENV === "test" ? 2000 : 4000),
+            22_000,
+          )
+        : remainingMs;
+    const attemptTimeout = Math.max(1000, Math.min(remainingMs, attemptBudget));
     const abortController = new AbortController();
     const abortTimer = setTimeout(() => {
       abortController.abort(new Error(`AI attempt timed out after ${attemptTimeout}ms`));
@@ -609,9 +634,7 @@ export async function generateJSON<T>(params: {
           reason,
           delayMs: retryDelayMs,
         });
-        if (model === "openrouter/free") {
-          model = "google/gemma-4-26b-a4b-it:free";
-        }
+        model = rotateModelForRetry(model);
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }
@@ -709,6 +732,7 @@ export async function generateJSON<T>(params: {
           reason,
           delayMs: retryDelayMs,
         });
+        model = rotateModelForRetry(model);
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }
@@ -771,6 +795,7 @@ export async function generateJSON<T>(params: {
           reason,
           delayMs: retryDelayMs,
         });
+        model = rotateModelForRetry(model);
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }

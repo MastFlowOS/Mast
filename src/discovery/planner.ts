@@ -39,6 +39,7 @@ export type DiscoveryPlanRequest = {
   quantity: number;
   dailyLimit: number;
   monthlyLimit: number;
+  executionTarget?: "cloud" | "desktop";
 };
 
 
@@ -64,6 +65,13 @@ export async function enqueueDiscoveryPlan(request: DiscoveryPlanRequest): Promi
     .select("id")
     .single();
   if (error) throw error;
+
+  // When targeted for desktop, materialize the discovery tasks immediately so the
+  // authenticated desktop worker can claim them, but DO NOT dispatch them to pg-boss.
+  if (request.executionTarget === "desktop") {
+    await materializeDiscoveryPlan(data.id, request);
+    return data.id as string;
+  }
 
   const boss = await getBoss();
   // `planId` (the discovery_plans.id UUID) is spread LAST and explicitly,
@@ -272,6 +280,10 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
         city,
         candidate_budget: candidateBudget,
         priority,
+        execution_target: request.executionTarget ?? "cloud",
+        task_summary: {
+          execution_target: request.executionTarget ?? "cloud",
+        },
       };
     }),
   );
@@ -335,6 +347,9 @@ export const DISCOVERY_TASK_RETRY_OPTIONS = {
  * messages that would otherwise be immediately re-queued by that check.
  */
 export async function dispatchQueuedDiscoveryTasks(planId: string, request: DiscoveryPlanRequest): Promise<void> {
+  // Desktop tasks are executed by the user's local desktop worker, not cloud workers.
+  if (request.executionTarget === "desktop") return;
+
   const { data: plan } = await db.from("discovery_plans")
     .select("status, delivered_count, requested_count, user_id").eq("id", planId).maybeSingle();
   if (!plan || plan.status === "cancelled" || plan.status === "completed" || plan.delivered_count >= plan.requested_count) return;

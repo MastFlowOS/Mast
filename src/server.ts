@@ -13,6 +13,7 @@ import { discoverRouter } from "./server/routes/discover.js";
 import { intelligenceRouter } from "./server/routes/intelligence.js";
 import { outreachRouter } from "./server/routes/outreach.js";
 import { observabilityRouter } from "./server/routes/observability.js";
+import { desktopRouter } from "./server/routes/desktop.js";
 
 // Catch anything that escapes Express entirely (e.g. an unawaited promise
 // rejection deep in pg-boss/Supabase client internals) — without these,
@@ -96,6 +97,7 @@ app.use(
 app.use("/health", healthRouter);
 app.use("/v1/account", accountRouter);
 app.use("/v1/discover", discoverRouter);
+app.use("/v1/desktop", desktopRouter);
 app.use("/v1/intelligence", intelligenceRouter);
 app.use("/v1/outreach", outreachRouter);
 app.use("/v1/observability", observabilityRouter);

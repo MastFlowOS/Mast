@@ -710,6 +710,27 @@ function logAreaPoolEvent(payload: DiscoveryTaskPayload, task: any, event: AreaW
   publishAreaPoolLifecycleEvent(payload.planId, startedScoutSlots, event, (area) => area);
 }
 
+/**
+ * Checks whether a discovery task is leased to or targeted for a desktop worker.
+ * If so, cloud workers must not claim or process it.
+ */
+export function isDesktopTaskLeased(task: any, leaseTtlMs = 60_000): boolean {
+  if (!task) return false;
+  const executionTarget = task.execution_target ?? task.task_summary?.execution_target;
+  const hasDesktopLease = Boolean(task.task_summary?.lease_token);
+  if (executionTarget === "desktop" || hasDesktopLease) {
+    if (task.status === "queued" && executionTarget === "desktop") {
+      return true;
+    }
+    if (task.status === "running") {
+      if (!task.last_heartbeat_at) return true;
+      const elapsed = Date.now() - new Date(task.last_heartbeat_at).getTime();
+      return elapsed < leaseTtlMs;
+    }
+  }
+  return false;
+}
+
 export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promise<void> {
   // Phase 2: job-level profiler
   const profiler = new JobProfiler();
@@ -726,6 +747,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
   const { data: task, error: taskError } = await db.from("discovery_tasks").select("*").eq("id", payload.taskId).single();
   if (taskError) throw taskError;
+
+  // ── Desktop execution target check ──────────────────────────────────────
+  // If the task is targeted for desktop execution or is actively leased to a
+  // desktop worker, a cloud worker must never execute it.
+  if (isDesktopTaskLeased(task)) {
+    console.info(`[discoveryTask] task=${payload.taskId} is reserved for desktop worker. Cloud worker skipping.`);
+    return;
+  }
 
   // ── Stale-task crash recovery ───────────────────────────────────────────
   // A task stuck in "running" with a heartbeat older than STALE_TASK_TIMEOUT_MS
@@ -1445,7 +1474,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   }
 }
 
-async function recordTaskOutcome(
+export async function recordTaskOutcome(
   task: any,
   outcome: {
     discovered: number;
@@ -1521,7 +1550,7 @@ async function recordTaskOutcome(
  * "completed" so the frontend can distinguish a full fill from a genuine
  * shortfall without needing to compare requested vs delivered counts.
  */
-async function completePlanIfDrained(planId: string) {
+export async function completePlanIfDrained(planId: string) {
   const { data: remaining } = await db.from("discovery_tasks")
     .select("id").eq("plan_id", planId).in("status", ["queued", "running", "rate_limited"]).limit(1);
   if (remaining?.length) return; // still tasks in flight — do not close yet

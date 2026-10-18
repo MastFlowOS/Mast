@@ -465,7 +465,7 @@ intelligenceRouter.get("/briefing", requireAuth, readLimiter, async (req, res, n
         },
         { onConflict: "user_id,kind,period_key" },
       );
-      if (upsertError) throw upsertError;
+      if (upsertError) console.error("[intelligence] ai_intelligence (executive_briefing) upsert failed", upsertError);
 
       return { briefing: nextBriefing, generatedAt: nextGeneratedAt };
     });
@@ -565,7 +565,7 @@ intelligenceRouter.get("/weekly", requireAuth, readLimiter, async (req, res, nex
         },
         { onConflict: "user_id,kind,period_key" },
       );
-      if (upsertError) throw upsertError;
+      if (upsertError) console.error("[intelligence] ai_intelligence (weekly_intelligence) upsert failed", upsertError);
 
       return { weekly: nextWeekly, generatedAt: nextGeneratedAt };
     });
@@ -671,7 +671,7 @@ intelligenceRouter.get("/coaching", requireAuth, readLimiter, async (req, res, n
         { user_id: userId, kind: "pipeline_coaching", period_key: periodKey, content: nextContent, model: getAiModel("pro"), generated_at: nextGeneratedAt },
         { onConflict: "user_id,kind,period_key" },
       );
-      if (upsertError) throw upsertError;
+      if (upsertError) console.error("[intelligence] ai_intelligence (pipeline_coaching) upsert failed", upsertError);
 
       return { content: nextContent, generatedAt: nextGeneratedAt };
     });
@@ -827,7 +827,7 @@ intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (re
           "discovered leads and opportunities. You are provided with real, already-aggregated lead statistics and top " +
           "opportunity scores. Do NOT invent businesses, market trends, conversion rates, or facts not present in the input. " +
           "Never use em dashes ('—' or '–'). Avoid generic buzzwords ('elevate', 'streamline', 'synergy'). " +
-          "Respond with ONLY a JSON object: " +
+          "Respond with ONLY a raw JSON object without preamble, conversational intro, or markdown fences outside the JSON: " +
           '{"label": string (<=3 words, e.g. "High Potential" or "Key Patterns"), ' +
           '"headline": string (1 concise sentence summarizing what the current discovery results suggest), ' +
           '"body": string (2-3 sentences explaining notable patterns, promising angles, and immediate next steps), ' +
@@ -872,7 +872,7 @@ intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (re
         },
         { onConflict: "user_id,kind,period_key" },
       );
-      if (upsertError) throw upsertError;
+      if (upsertError) console.error("[intelligence] ai_intelligence (discover_overview) upsert failed", upsertError);
 
       return { overview: nextOverview, generatedAt: nextGeneratedAt };
     });
@@ -1071,7 +1071,7 @@ intelligenceRouter.get("/mission-coach", requireAuth, readLimiter, async (req, r
           "You are given real mission progress, follow-up counts, and top lead facts. Do NOT invent contacts, messages, " +
           "replies, dates, or tasks not present in the input. Never use em dashes ('—' or '–'). Avoid generic motivational cliches. " +
           "Keep advice practical, concise, and grounded in the data. " +
-          "Respond with ONLY a JSON object: " +
+          "Respond with ONLY a raw JSON object without preamble, conversational intro, or markdown fences outside the JSON: " +
           '{"briefing": string (1-2 sentences summarizing today\'s executive mission priority based on overdue/due counts), ' +
           '"recommendedLeadId": number | null (the id of the lead to act on first, from the provided items, or null if none), ' +
           '"recommendedAction": string (1 concrete next step for the recommended lead, <=15 words), ' +
@@ -1105,7 +1105,7 @@ intelligenceRouter.get("/mission-coach", requireAuth, readLimiter, async (req, r
         },
         { onConflict: "user_id,kind,period_key" },
       );
-      if (upsertError) throw upsertError;
+      if (upsertError) console.error("[intelligence] ai_intelligence (mission_coach) upsert failed", upsertError);
 
       return { coaching: nextCoaching, generatedAt: nextGeneratedAt };
     });

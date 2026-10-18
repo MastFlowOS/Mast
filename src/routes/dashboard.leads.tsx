@@ -31,8 +31,13 @@ import {
   MapPin,
   AlertCircle,
   Loader2,
+  Monitor,
+  Cloud,
+  RefreshCw,
 } from "lucide-react";
 import { ApiError, subscribeToDiscoverJob, cancelDiscoverJob, type Lead, type DiscoverOverview } from "@/lib/api";
+import { useDesktopWorker } from "@/lib/desktop/useDesktopWorker";
+import { isDesktopApp } from "@/lib/desktop";
 
 import { useAccount, useAnalytics, useGenerateLeads, useLeads, useSettings, useDiscoverOverview, queryKeys } from "@/hooks/use-mast-api";
 import { useLiveDiscoveryState } from "@/hooks/use-live-discovery";
@@ -340,6 +345,8 @@ function GetLeads() {
 
   // Loading & completion states
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isBusy = isGenerating || isSubmitting;
   const [showCompletion, setShowCompletion] = useState(false);
   const [newOpportunities, setNewOpportunities] = useState<Lead[]>([]);
   const [firstOpportunityId, setFirstOpportunityId] = useState<number | null>(null);
@@ -359,6 +366,34 @@ function GetLeads() {
   // The last finished run: its truthful outcome (requested / delivered /
   // shortfall), the exact request sent, and whether a Live follow-up is offered.
   const [lastRun, setLastRun] = useState<LastDiscoverRun | null>(null);
+
+  // Desktop discovery worker integration (Phase 5)
+  const {
+    isDesktop,
+    workerStatus,
+    isLoading: isWorkerLoading,
+    ensureWorkerRunning,
+    startWorker,
+  } = useDesktopWorker();
+  const [executionTarget, setExecutionTarget] = useState<"desktop" | "cloud">("desktop");
+
+  const handleSelectExecutionTarget = (target: "desktop" | "cloud") => {
+    setExecutionTarget(target);
+    if (target === "desktop" && (isDesktop || isDesktopApp())) {
+      void ensureWorkerRunning().catch((err) => {
+        console.warn("Could not start desktop worker on target selection:", err);
+      });
+    }
+  };
+
+  // Warm up and verify desktop worker on desktop app launch
+  useEffect(() => {
+    if ((isDesktop || isDesktopApp()) && executionTarget === "desktop") {
+      void ensureWorkerRunning().catch((err) => {
+        console.debug("Background worker warmup on mount:", err);
+      });
+    }
+  }, [isDesktop, executionTarget, ensureWorkerRunning]);
 
 
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
@@ -487,15 +522,40 @@ function GetLeads() {
     !channelRestricted &&
     !exceedsDailyLimit &&
     !exceedsMonthlyLimit &&
-    !isGenerating;
+    !isBusy;
 
   // The request is built by ONE function shared with the AI Overview's
   // "Your search" summary, so what the page shows is what gets sent.
   const handleGenerate = async () => {
-    if (!canGenerate) return;
-    await runDiscovery(
-      buildDiscoverRequest({ quantity, regions, niches, channels, method: selectedMethod.id }),
-    );
+    if (!canGenerate || isBusy) return;
+    setIsSubmitting(true);
+    const isApp = isDesktop || isDesktopApp();
+    const target: "desktop" | "cloud" | undefined = isApp ? executionTarget : undefined;
+    if (target === "desktop") {
+      try {
+        await ensureWorkerRunning();
+      } catch (err) {
+        setIsSubmitting(false);
+        toast.error("Local discovery worker could not be started", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+    }
+    try {
+      await runDiscovery(
+        buildDiscoverRequest({
+          quantity,
+          regions,
+          niches,
+          channels,
+          method: selectedMethod.id,
+          ...(target ? { execution_target: target } : {}),
+        }),
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // EXPLICIT user action after a partial Instant result. It starts a
@@ -504,14 +564,33 @@ function GetLeads() {
   // under the normal plan rules). Never triggered automatically.
   const handleFindRemainingLive = async () => {
     const run = lastRun;
-    if (isGenerating || !run?.liveFollowUp?.available || run.liveFollowUp.remaining <= 0) return;
-    await runDiscovery({
-      ...run.request,
-      quantity: run.liveFollowUp.remaining,
-      method: "live",
-      mode: generationModeFor("live"),
-      followsJobId: run.jobId,
-    });
+    if (isBusy || !run?.liveFollowUp?.available || run.liveFollowUp.remaining <= 0) return;
+    setIsSubmitting(true);
+    const isApp = isDesktop || isDesktopApp();
+    const target: "desktop" | "cloud" | undefined = isApp ? executionTarget : undefined;
+    if (target === "desktop") {
+      try {
+        await ensureWorkerRunning();
+      } catch (err) {
+        setIsSubmitting(false);
+        toast.error("Local discovery worker could not be started", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+    }
+    try {
+      await runDiscovery({
+        ...run.request,
+        quantity: run.liveFollowUp.remaining,
+        method: "live",
+        mode: generationModeFor("live"),
+        followsJobId: run.jobId,
+        ...(target ? { execution_target: target } : {}),
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const runDiscovery = async (request: DiscoverRequestPayload) => {
@@ -615,6 +694,9 @@ function GetLeads() {
         // still carries the field, so send the explicit empty default.
         currencies: [],
         ...(request.followsJobId ? { followsJobId: request.followsJobId } : {}),
+        ...(request.execution_target || isDesktop || isDesktopApp()
+          ? { execution_target: request.execution_target ?? executionTarget }
+          : {}),
       });
 
       // Whatever arrived synchronously (Instant Discovery's pool hit) shows
@@ -1260,6 +1342,102 @@ function GetLeads() {
                 </StepCard>
               </div>
 
+              {/* Desktop Execution Mode Selector (Desktop App Only) */}
+              {(isDesktop || isDesktopApp()) && (
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-sm">
+                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                    <div className="flex items-center gap-2">
+                      <Monitor className="size-4 text-brand" />
+                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        Execution Target
+                      </span>
+                    </div>
+                    {/* Worker status pill */}
+                    {executionTarget === "desktop" && (
+                      <div className="flex items-center gap-1.5 text-xs">
+                        {workerStatus.is_running ? (
+                          <span className="flex items-center gap-1 text-emerald-400 font-medium">
+                            <span className="size-2 rounded-full bg-emerald-400 animate-pulse" />
+                            Worker Active{workerStatus.pid ? ` (${workerStatus.pid})` : ""}
+                          </span>
+                        ) : workerStatus.status === "error" ? (
+                          <span
+                            className="flex items-center gap-1 text-rose-400 font-medium"
+                            title={workerStatus.last_error || "Worker error"}
+                          >
+                            <AlertCircle className="size-3" />
+                            Worker Error
+                          </span>
+                        ) : isWorkerLoading ? (
+                          <span className="flex items-center gap-1 text-amber-400 font-medium">
+                            <Loader2 className="size-3 animate-spin" />
+                            Starting...
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-muted-foreground font-medium">
+                            <span className="size-2 rounded-full bg-zinc-500" />
+                            Worker Standby
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 mt-3">
+                    <button
+                      type="button"
+                      onClick={() => handleSelectExecutionTarget("desktop")}
+                      className={cn(
+                        "flex flex-col items-start gap-1 p-3 rounded-xl border text-left transition-all",
+                        executionTarget === "desktop"
+                          ? "border-brand bg-brand/10 text-foreground"
+                          : "border-white/10 bg-white/[0.02] text-muted-foreground hover:border-white/20 hover:text-foreground",
+                      )}
+                    >
+                      <div className="flex items-center gap-2 font-medium text-xs">
+                        <Monitor className="size-3.5" />
+                        <span>Local Desktop</span>
+                      </div>
+                      <span className="text-[11px] leading-tight text-muted-foreground">
+                        Runs discovery locally on your PC
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectExecutionTarget("cloud")}
+                      className={cn(
+                        "flex flex-col items-start gap-1 p-3 rounded-xl border text-left transition-all",
+                        executionTarget === "cloud"
+                          ? "border-brand bg-brand/10 text-foreground"
+                          : "border-white/10 bg-white/[0.02] text-muted-foreground hover:border-white/20 hover:text-foreground",
+                      )}
+                    >
+                      <div className="flex items-center gap-2 font-medium text-xs">
+                        <Cloud className="size-3.5" />
+                        <span>Cloud Workers</span>
+                      </div>
+                      <span className="text-[11px] leading-tight text-muted-foreground">
+                        Executes through cloud infrastructure
+                      </span>
+                    </button>
+                  </div>
+
+                  {executionTarget === "desktop" && workerStatus.status === "error" && (
+                    <div className="mt-3 flex items-center justify-between rounded-lg bg-rose-500/10 border border-rose-500/20 p-2.5 text-xs text-rose-300">
+                      <span className="truncate mr-2">{workerStatus.last_error || "Local worker failed to start"}</span>
+                      <button
+                        type="button"
+                        onClick={() => void startWorker()}
+                        className="shrink-0 flex items-center gap-1 text-[11px] font-semibold underline underline-offset-2 hover:text-rose-100"
+                      >
+                        <RefreshCw className="size-3" /> Retry
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Launch */}
               <div>
                 <button
@@ -1286,8 +1464,8 @@ function GetLeads() {
                     <path d="M0 30 C 200 -6, 340 60, 520 24 S 800 0, 1000 28" opacity="0.25" />
                   </svg>
                   <Search className="relative size-5 shrink-0" />
-                  <span className="relative">{isGenerating ? "Analyzing..." : "Launch Discovery"}</span>
-                  {!isGenerating && (
+                  <span className="relative">{isBusy ? "Analyzing..." : "Launch Discovery"}</span>
+                  {!isBusy && (
                     <ArrowRight className="relative size-5 shrink-0 transition-transform group-hover:translate-x-1" />
                   )}
                 </button>

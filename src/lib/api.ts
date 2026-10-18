@@ -423,6 +423,10 @@ export type LeadGenerationRequest = {
    * continues. Requires `method: "live"`.
    */
   followsJobId?: string;
+  /**
+   * Execution target: "cloud" (default, cloud worker pool) or "desktop" (local desktop worker).
+   */
+  execution_target?: "cloud" | "desktop";
 };
 
 export type LeadGenerationResponse = {
@@ -1545,6 +1549,7 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
       currencies: body.currencies ?? [],
       method: body.method,
       followsJobId: body.followsJobId,
+      execution_target: body.execution_target ?? "cloud",
     }),
   });
 

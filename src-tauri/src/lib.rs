@@ -448,7 +448,39 @@ mod tests {
     #[test]
     fn test_validate_api_url_rejects_insecure_remote_http() {
         let res = validate_api_url("http://mast-production-4e64.up.railway.app");
-        assert!(res.is_err());
         assert!(res.unwrap_err().contains("Remote API connections must use HTTPS"));
+    }
+
+    #[test]
+    fn test_acl_permission_resolution() {
+        let acl_json = include_str!("../gen/schemas/acl-manifests.json");
+        let cap_json = include_str!("../gen/schemas/capabilities.json");
+        let acl: std::collections::BTreeMap<String, tauri::utils::acl::manifest::Manifest> =
+            serde_json::from_str(acl_json).unwrap();
+        let cap: std::collections::BTreeMap<String, tauri::utils::acl::capability::Capability> =
+            serde_json::from_str(cap_json).unwrap();
+        let target = tauri::utils::platform::Target::Windows;
+        let resolved =
+            tauri::utils::acl::resolved::Resolved::resolve(&acl, cap, target).unwrap();
+        assert!(resolved.has_app_acl);
+
+        let required_commands = [
+            "get_desktop_info",
+            "get_worker_status",
+            "start_worker",
+            "stop_worker",
+            "update_worker_token",
+        ];
+
+        for cmd in required_commands {
+            assert!(
+                resolved.allowed_commands.contains_key(cmd),
+                "allowed_commands does not contain {}! Found: {:?}",
+                cmd,
+                resolved.allowed_commands.keys().collect::<Vec<_>>()
+            );
+            let cmds = resolved.allowed_commands.get(cmd).unwrap();
+            assert!(!cmds.is_empty(), "Resolved command list is empty for {}", cmd);
+        }
     }
 }

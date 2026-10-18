@@ -5,6 +5,9 @@
   "windows": [
     "*"
   ],
+  "webviews": [
+    "*"
+  ],
   "permissions": [
     "core:default",
     "allow-desktop-worker-commands"

@@ -403,6 +403,13 @@ pub fn run() {
             stop_worker,
             update_worker_token
         ])
+        // Temporary diagnostic: print every page-load URL so we can determine whether
+        // the webview starts on localhost and later navigates to a remote origin.
+        .on_page_load(|_webview, payload| {
+            if cfg!(debug_assertions) {
+                println!("[MAST PAGE LOAD] event={:?} url={}", payload.event(), payload.url());
+            }
+        })
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {

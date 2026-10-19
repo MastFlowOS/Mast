@@ -252,6 +252,18 @@ class DesktopCoordinatorClient:
             log.debug("Could not read auth.token from disk: %s", exc)
         return self.auth_token
 
+    def _get_active_plan(self) -> Optional[str]:
+        """Dynamically retrieves preferred active discovery plan ID set by desktop host."""
+        try:
+            plan_path = get_desktop_data_dir() / "active_plan.txt"
+            if plan_path.is_file():
+                tok = plan_path.read_text(encoding="utf-8").strip()
+                if tok:
+                    return tok
+        except Exception as exc:
+            log.debug("Could not read active_plan.txt from disk: %s", exc)
+        return None
+
     def _headers(self) -> Dict[str, str]:
         token = self._get_token()
         headers = {"Content-Type": "application/json"}
@@ -269,6 +281,9 @@ class DesktopCoordinatorClient:
         payload: Dict[str, Any] = {"workerId": self.worker_id}
         if preferred_task_id:
             payload["preferredTaskId"] = preferred_task_id
+        active_plan = self._get_active_plan()
+        if active_plan:
+            payload["preferredPlanId"] = active_plan
 
         async with self.session.post(url, json=payload, headers=self._headers()) as resp:
             if resp.status == 200:
@@ -708,7 +723,9 @@ class DesktopWorker:
                         # Avoid aggressive polling when unauthenticated; back off until token refreshes
                         await asyncio.sleep(min(poll_interval_s * 4, 30.0))
                     else:
-                        await asyncio.sleep(poll_interval_s)
+                        active_plan = self.client._get_active_plan() if hasattr(self.client, "_get_active_plan") else None
+                        eff_interval = min(1.5, poll_interval_s) if active_plan else poll_interval_s
+                        await asyncio.sleep(eff_interval)
             except asyncio.CancelledError:
                 break
             except Exception as exc:

@@ -1513,4 +1513,66 @@ describe("Desktop Discovery Cloud Coordination (/v1/desktop)", () => {
     assert.ok(noWebEvt, "Must emit candidateRejectedEvent with businessName for missing website");
     assert.equal(noWebEvt.rejectionCategory, "missing_website");
   });
+
+  // ── 18. Claim strictly ignores stale/terminal plans and prioritizes newest active plan ──
+
+  test("claim strictly ignores stale/terminal/satisfied plans and prioritizes newest active plan or preferredPlanId", async () => {
+    const oldPlanId = randomUUID();
+    const oldTaskId = randomUUID();
+    mockDiscoveryPlans[oldPlanId] = {
+      id: oldPlanId,
+      user_id: userA,
+      requested_count: 5,
+      delivered_count: 5, // Already satisfied
+      status: "completed",
+      created_at: new Date(Date.now() - 3600_000).toISOString(),
+    };
+    mockDiscoveryTasks[oldTaskId] = {
+      id: oldTaskId,
+      plan_id: oldPlanId,
+      user_id: userA,
+      city: "Old City",
+      niche: "dentists",
+      priority: 10,
+      status: "queued",
+      task_summary: { execution_target: "desktop" },
+      created_at: new Date(Date.now() - 3600_000).toISOString(),
+    };
+
+    const newPlanId = randomUUID();
+    const newTaskId = randomUUID();
+    mockDiscoveryPlans[newPlanId] = {
+      id: newPlanId,
+      user_id: userA,
+      requested_count: 5,
+      delivered_count: 0,
+      status: "running",
+      created_at: new Date().toISOString(),
+    };
+    mockDiscoveryTasks[newTaskId] = {
+      id: newTaskId,
+      plan_id: newPlanId,
+      user_id: userA,
+      city: "Fresh City",
+      niche: "dentists",
+      priority: 10,
+      status: "queued",
+      task_summary: { execution_target: "desktop" },
+      created_at: new Date().toISOString(),
+    };
+
+    // Worker claims task without preferredPlanId: must claim newTaskId from fresh plan, ignoring oldTaskId
+    const claimRes1 = await fetch(`${baseUrl}/tasks/claim`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenUserA}`,
+      },
+      body: JSON.stringify({ workerId: "worker-test-priority" }),
+    });
+    assert.equal(claimRes1.status, 200);
+    const data1 = await claimRes1.json();
+    assert.ok(data1.task, "Must claim a task");
+    assert.equal(data1.task.id, newTaskId, "Must claim new task from active plan, never old task from satisfied plan");
+  });
 });

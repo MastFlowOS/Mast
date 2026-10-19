@@ -6,5 +6,6 @@ commands.allow = [
   "get_worker_status",
   "start_worker",
   "stop_worker",
-  "update_worker_token"
+  "update_worker_token",
+  "set_active_plan"
 ]

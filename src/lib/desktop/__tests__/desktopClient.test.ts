@@ -141,6 +141,12 @@ describe("Desktop Client & Runtime Boundary", () => {
     await updateDesktopWorkerToken("");
     await updateDesktopWorkerToken("   ");
   });
+
+  test("setActiveDesktopPlan is safe no-op on web", async () => {
+    const { setActiveDesktopPlan } = await import("../index");
+    await setActiveDesktopPlan("plan-123");
+    await setActiveDesktopPlan(null);
+  });
 });
 
 describe("Desktop Discovery Routing & Target Resolution", () => {

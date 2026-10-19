@@ -145,6 +145,18 @@ fn remove_auth_token_file() {
     let _ = std::fs::remove_file(token_file);
 }
 
+fn write_active_plan_file(plan_id: &str) {
+    let dir = get_mast_data_dir();
+    let plan_file = dir.join("active_plan.txt");
+    let _ = std::fs::write(&plan_file, plan_id.trim());
+}
+
+fn remove_active_plan_file() {
+    let dir = get_mast_data_dir();
+    let plan_file = dir.join("active_plan.txt");
+    let _ = std::fs::remove_file(plan_file);
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedWorker {
     pub executable: PathBuf,
@@ -521,6 +533,19 @@ fn update_worker_token(auth_token: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn set_active_plan(plan_id: Option<String>) -> Result<(), String> {
+    match plan_id {
+        Some(ref id) if !id.trim().is_empty() => {
+            write_active_plan_file(id);
+        }
+        _ => {
+            remove_active_plan_file();
+        }
+    }
+    Ok(())
+}
+
 fn terminate_child_process_tree(child: &mut Child) {
     #[cfg(windows)]
     {
@@ -545,6 +570,7 @@ fn stop_worker(state: State<AppState>) -> Result<WorkerStatus, String> {
     *child_guard = None;
     *state.status.lock().unwrap() = "stopped".to_string();
     remove_auth_token_file();
+    remove_active_plan_file();
 
     Ok(WorkerStatus {
         is_running: false,
@@ -572,7 +598,8 @@ pub fn run() {
             get_worker_status,
             start_worker,
             stop_worker,
-            update_worker_token
+            update_worker_token,
+            set_active_plan
         ])
         // Temporary diagnostic: print every page-load URL so we can determine whether
         // the webview starts on localhost and later navigates to a remote origin.

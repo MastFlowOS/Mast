@@ -6,6 +6,7 @@ fn main() {
             "start_worker",
             "stop_worker",
             "update_worker_token",
+            "set_active_plan",
         ]),
     );
 

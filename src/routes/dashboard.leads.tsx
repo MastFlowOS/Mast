@@ -363,6 +363,24 @@ function GetLeads() {
   // separate counters, so the live state always starts from 0.
   const [liveTarget, setLiveTarget] = useState(quantity);
   const liveDiscoveryState = useLiveDiscoveryState(planId, liveTarget, 0);
+  const liveDiscoveryStateRef = useRef<typeof liveDiscoveryState>(null);
+  useEffect(() => {
+    liveDiscoveryStateRef.current = liveDiscoveryState;
+  }, [liveDiscoveryState]);
+
+  // Clear startup watchdog as soon as any scout becomes active or progress begins
+  useEffect(() => {
+    if (!liveDiscoveryState) return;
+    const scouts = liveDiscoveryState.scouts ? Object.values(liveDiscoveryState.scouts) : [];
+    const anyScoutActive = scouts.some((s) => s?.status !== "idle");
+    if (anyScoutActive || liveDiscoveryState.status === "discovering" || (liveDiscoveryState.delivered ?? 0) > 0) {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+      }
+    }
+  }, [liveDiscoveryState]);
+
   // The last finished run: its truthful outcome (requested / delivered /
   // shortfall), the exact request sent, and whether a Live follow-up is offered.
   const [lastRun, setLastRun] = useState<LastDiscoverRun | null>(null);
@@ -377,6 +395,7 @@ function GetLeads() {
     prepareAndStartWorker,
     stopWorker,
     startWorker,
+    setActivePlan,
   } = useDesktopWorker();
   const [executionTarget, setExecutionTarget] = useState<"desktop" | "cloud">("desktop");
 
@@ -625,6 +644,7 @@ function GetLeads() {
       setIsCancelling(false);
 
       if (isDesktop || isDesktopApp()) {
+        void setActivePlan(null);
         void stopWorker().catch((err) => {
           console.debug("[desktop-worker] stopWorker on run conclusion:", err);
         });
@@ -737,6 +757,7 @@ function GetLeads() {
       setLiveTarget(liveRequested);
       if (result.planId) {
         setPlanId(result.planId);
+        void setActivePlan(result.planId);
       }
       unsubscribeJobRef.current = subscribeToDiscoverJob(
         result.jobId,
@@ -760,10 +781,14 @@ function GetLeads() {
         { requestedQuantity: liveRequested },
       );
 
-      // Truthful startup watchdog: if after 45s no leads have arrived and all scouts are still idle
+      // Truthful startup watchdog: only fires if after 45s NO scouts started and no leads arrived
       const WATCHDOG_TIMEOUT_MS = 45000;
       watchdogTimerRef.current = setTimeout(() => {
-        if (seenLeadIdsRef.current.size === 0 && activeJobIdRef.current) {
+        const state = liveDiscoveryStateRef.current;
+        const scouts = state?.scouts ? Object.values(state.scouts) : [];
+        const anyScoutActive = scouts.some((s) => s?.status !== "idle") || state?.status === "discovering";
+
+        if (!anyScoutActive && seenLeadIdsRef.current.size === 0 && activeJobIdRef.current) {
           toast.error("Discovery startup timed out", {
             description: "No scouts started within 45 seconds. Terminating discovery run.",
           });
@@ -842,6 +867,7 @@ function GetLeads() {
     } finally {
       // Clean up desktop worker process tree immediately to release all RAM and kill browsers
       if (isDesktop || isDesktopApp()) {
+        void setActivePlan(null);
         try {
           await stopWorker();
         } catch (stopErr) {

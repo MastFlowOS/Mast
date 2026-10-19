@@ -5,6 +5,7 @@ import {
   startDesktopWorker,
   stopDesktopWorker,
   updateDesktopWorkerToken,
+  setActiveDesktopPlan,
   type DesktopWorkerStatus,
 } from "./index";
 import { supabase } from "../supabase";
@@ -18,6 +19,7 @@ export interface UseDesktopWorkerResult {
   stopWorker: () => Promise<void>;
   prepareAndStartWorker: (timeoutMs?: number) => Promise<boolean>;
   ensureWorkerRunning: () => Promise<boolean>;
+  setActivePlan: (planId: string | null) => Promise<void>;
   refreshStatus: () => Promise<void>;
 }
 
@@ -249,6 +251,11 @@ export function useDesktopWorker(): UseDesktopWorkerResult {
     return prepareAndStartWorker();
   }, [prepareAndStartWorker]);
 
+  const setActivePlan = useCallback(async (planId: string | null): Promise<void> => {
+    if (!isDesktopApp() && !isDesktop) return;
+    await setActiveDesktopPlan(planId);
+  }, [isDesktop]);
+
   return {
     isDesktop,
     workerStatus,
@@ -258,6 +265,7 @@ export function useDesktopWorker(): UseDesktopWorkerResult {
     stopWorker,
     prepareAndStartWorker,
     ensureWorkerRunning,
+    setActivePlan,
     refreshStatus,
   };
 }

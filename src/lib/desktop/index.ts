@@ -162,3 +162,16 @@ export async function updateDesktopWorkerToken(authToken: string): Promise<void>
     console.warn("Failed to propagate refreshed auth token to desktop host:", error);
   }
 }
+
+/**
+ * Sets or clears the active discovery plan ID in the desktop host.
+ * The local Python worker uses this to target tasks for the user's active search.
+ */
+export async function setActiveDesktopPlan(planId: string | null): Promise<void> {
+  if (!isDesktopApp()) return;
+  try {
+    await invoke("set_active_plan", { planId: planId?.trim() || null });
+  } catch (error) {
+    console.warn("Failed to set active discovery plan in desktop host:", error);
+  }
+}

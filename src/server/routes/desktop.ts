@@ -58,6 +58,7 @@ export const desktopDeps = {
 const ClaimTaskSchema = z.object({
   workerId: z.string().min(1).max(128),
   preferredTaskId: z.string().uuid().optional(),
+  preferredPlanId: z.string().uuid().optional(),
 });
 
 const HeartbeatSchema = z.object({
@@ -188,12 +189,37 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
       });
     }
 
-    // 3. Query candidate eligible tasks
-    // Must be owned by user, execution_target = "desktop", and either queued or expired running lease
+    // 3. Query candidate eligible tasks strictly for active, non-terminal discovery plans
+    let planQuery = desktopDeps.db
+      .from("discovery_plans")
+      .select("id, status, requested_count, delivered_count, created_at")
+      .eq("user_id", userId)
+      .in("status", ["queued", "planning", "running"])
+      .order("created_at", { ascending: false });
+
+    if (body.preferredPlanId) {
+      planQuery = planQuery.eq("id", body.preferredPlanId);
+    }
+
+    const { data: userActivePlans, error: activePlansErr } = await planQuery;
+    if (activePlansErr) throw activePlansErr;
+
+    // Filter down to plans that are not already satisfied
+    const eligiblePlans = (userActivePlans || []).filter(
+      (p: any) => (p.delivered_count ?? 0) < (p.requested_count ?? 0),
+    );
+
+    if (eligiblePlans.length === 0) {
+      return res.status(200).json({ task: null, reason: "no_active_plans" });
+    }
+
+    const eligiblePlanIds = eligiblePlans.map((p: any) => p.id);
+
     let query = desktopDeps.db
       .from("discovery_tasks")
-      .select("id, plan_id, user_id, city, niche, country_code, country_name, candidate_budget, priority, status, last_heartbeat_at, task_summary")
+      .select("id, plan_id, user_id, city, niche, country_code, country_name, candidate_budget, priority, status, last_heartbeat_at, task_summary, created_at")
       .eq("user_id", userId)
+      .in("plan_id", eligiblePlanIds)
       .in("status", ["queued", "running"]);
 
     if (body.preferredTaskId) {
@@ -203,7 +229,7 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
     const { data: candidateTasks, error: candidateError } = await query
       .order("priority", { ascending: false })
       .order("created_at", { ascending: true })
-      .limit(10);
+      .limit(20);
 
     if (candidateError) throw candidateError;
 
@@ -222,6 +248,22 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
     if (eligibleTasks.length === 0) {
       return res.status(200).json({ task: null });
     }
+
+    // Sort eligible tasks so the newest active plan's tasks are claimed first,
+    // and within each plan by priority descending then created_at ascending (Scout 1 -> 2 -> 3)
+    const primaryPlanId = body.preferredPlanId && eligiblePlanIds.includes(body.preferredPlanId)
+      ? body.preferredPlanId
+      : eligiblePlanIds[0];
+
+    eligibleTasks.sort((a: any, b: any) => {
+      if (a.plan_id === primaryPlanId && b.plan_id !== primaryPlanId) return -1;
+      if (b.plan_id === primaryPlanId && a.plan_id !== primaryPlanId) return 1;
+      const planIndexA = eligiblePlanIds.indexOf(a.plan_id);
+      const planIndexB = eligiblePlanIds.indexOf(b.plan_id);
+      if (planIndexA !== planIndexB) return planIndexA - planIndexB;
+      if ((b.priority ?? 0) !== (a.priority ?? 0)) return (b.priority ?? 0) - (a.priority ?? 0);
+      return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+    });
 
     // 4. Attempt atomic compare-and-set claim on the first available task
     const leaseToken = crypto.randomUUID();
@@ -621,6 +663,18 @@ desktopRouter.post("/tasks/:taskId/ingest", requireAuth, ingestLimiter, async (r
       currentPlan && (currentPlan.status === "cancelled" || currentPlan.delivered_count >= currentPlan.requested_count),
     );
 
+    if (planTargetReached) {
+      await desktopDeps.db
+        .from("discovery_tasks")
+        .update({
+          status: "cancelled",
+          termination_reason: "PLAN_TARGET_REACHED",
+          completed_at: new Date().toISOString(),
+        })
+        .eq("plan_id", task.plan_id)
+        .in("status", ["queued"]);
+    }
+
     const batchResult = {
       batchId: body.batchId,
       accepted,
@@ -741,6 +795,17 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
     };
 
     await desktopDeps.recordTaskOutcome(task, outcome);
+    if (body.terminationReason === "PLAN_TARGET_REACHED" || body.completionReason === "target_reached") {
+      await desktopDeps.db
+        .from("discovery_tasks")
+        .update({
+          status: "cancelled",
+          termination_reason: "PLAN_TARGET_REACHED",
+          completed_at: new Date().toISOString(),
+        })
+        .eq("plan_id", task.plan_id)
+        .in("status", ["queued"]);
+    }
     await desktopDeps.completePlanIfDrained(task.plan_id);
 
     return res.status(200).json({

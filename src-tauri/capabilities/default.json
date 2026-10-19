@@ -25,7 +25,8 @@
     "allow-get-worker-status",
     "allow-start-worker",
     "allow-stop-worker",
-    "allow-update-worker-token"
+    "allow-update-worker-token",
+    "allow-set-active-plan"
   ]
 }
 

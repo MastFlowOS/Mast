@@ -208,6 +208,15 @@ async function run() {
     const { jobId, planId } = discoveryLaunch.data;
     console.log(`\n[STEP 4] Tracking Discovery Run: Job ${jobId}, Plan ${planId}...`);
 
+    // Set active plan on desktop worker so it immediately prioritizes this plan
+    await page.evaluate(async (pId) => {
+      try {
+        await window.__TAURI_INTERNALS__.invoke("set_active_plan", { planId: pId });
+      } catch (e) {
+        console.warn("set_active_plan invoke failed:", e);
+      }
+    }, planId);
+
     // Poll the job, plan, tasks, and worker logs until completion or timeout (max 120s)
     const startTime = Date.now();
     let completed = false;

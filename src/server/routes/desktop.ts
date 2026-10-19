@@ -10,6 +10,16 @@ import { validateLead } from "../../lib/leadValidation.js";
 import { deliverLead, type DeliveryContext, type DeliveryResult } from "../../scraperBridge/deliverLead.js";
 import type { EngineLead } from "../../scraperBridge/pythonBridge.js";
 import { recordTaskOutcome, completePlanIfDrained } from "../../jobs/discoveryPlanJob.js";
+import { processDiscoveredCandidate, type ProcessCandidateParams, type ProcessCandidateResult } from "../../discovery/candidatePipeline.js";
+import {
+  publishDiscoveryLiveEvent,
+  scoutStartedEvent,
+  areaStartedEvent,
+  areaCompletedEvent,
+} from "../../discovery/liveDiscoveryEvent.js";
+import { getAreasForCity } from "../../lib/geo/cityAreas.js";
+import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../../discovery/areaRotation.js";
+import { classifyRejectionReason } from "../../discovery/liveDiscoveryState.js";
 
 export const desktopRouter = Router();
 
@@ -30,6 +40,17 @@ export const desktopDeps = {
   deliverLead,
   recordTaskOutcome,
   completePlanIfDrained,
+  processCandidate: (params: ProcessCandidateParams) => {
+    return processDiscoveredCandidate(params, {
+      db: desktopDeps.db,
+      deliverLead: desktopDeps.deliverLead,
+      publishDiscoveryLiveEvent: desktopDeps.publishDiscoveryLiveEvent,
+    });
+  },
+  publishDiscoveryLiveEvent,
+  claimAreaForCity,
+  recordAreaOutcome,
+  getAreasForCity,
 };
 
 // ── Validation Schemas ────────────────────────────────────────────────────────
@@ -52,6 +73,7 @@ const HeartbeatSchema = z.object({
 });
 
 const CandidateSchema = z.object({
+  pipeline_id: z.string().optional(),
   name: z.string().min(1),
   query: z.string().optional().default(""),
   city: z.string().optional().default(""),
@@ -134,12 +156,15 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
     // 1. Resolve user's billing tier and concurrency cap
     const { data: profile } = await desktopDeps.db
       .from("profiles")
-      .select("plan")
+      .select("subscription_plan")
       .eq("id", userId)
       .maybeSingle();
 
-    const planTierId = (profile?.plan as PlanId) ?? "free";
-    const concurrencyCap = getPlanConcurrency(planTierId, env.PLAN_CONCURRENCY_OVERRIDES);
+    const planTierId = (profile?.subscription_plan as PlanId) ?? "free";
+    const baseConcurrencyCap = getPlanConcurrency(planTierId, env.PLAN_CONCURRENCY_OVERRIDES);
+    // Desktop worker runs locally on the user's desktop hardware, driving up to 3 concurrent scouts
+    // (matching the 3 scouts rendered on the live discovery UI and cloud area worker pool).
+    const concurrencyCap = Math.max(3, baseConcurrencyCap);
 
     // 2. Count active running tasks for this user
     const { data: userRunningTasks } = await desktopDeps.db
@@ -204,12 +229,62 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
 
     for (const task of eligibleTasks) {
       const currentHeartbeat = task.last_heartbeat_at;
+
+      // Assign an active scout ID (1..3) based on currently running tasks for this plan
+      const { data: runningPlanTasks } = await desktopDeps.db
+        .from("discovery_tasks")
+        .select("id, task_summary")
+        .eq("plan_id", task.plan_id)
+        .eq("status", "running");
+
+      const usedScoutIds = new Set<number>();
+      for (const t of runningPlanTasks || []) {
+        if (t.id === task.id) continue;
+        const sid = t.task_summary?.scout_id;
+        if (typeof sid === "number") usedScoutIds.add(sid);
+      }
+      let assignedScoutId = 1;
+      for (let i = 1; i <= 3; i++) {
+        if (!usedScoutIds.has(i)) {
+          assignedScoutId = i;
+          break;
+        }
+      }
+
+      // Curated area rotation for cities with area breakdowns
+      let claimedArea: string | undefined =
+        task.task_summary?.area ??
+        (task.task_summary?.area_label && task.task_summary.area_label !== task.city
+          ? task.task_summary.area_label
+          : undefined);
+
+      if (!claimedArea) {
+        const curatedAreas = desktopDeps.getAreasForCity(task.country_code, task.city);
+        if (hasCuratedAreas(curatedAreas)) {
+          try {
+            claimedArea = await desktopDeps.claimAreaForCity(desktopDeps.db, {
+              niche: task.niche,
+              countryCode: task.country_code,
+              city: task.city,
+              source: task.source ?? "google_maps",
+              areas: curatedAreas,
+            });
+          } catch (err) {
+            console.warn(`[desktop-coordination] claimAreaForCity failed for ${task.city}:`, err);
+          }
+        }
+      }
+      const areaLabel = claimedArea || task.city;
+
       const updatedSummary = {
         ...(task.task_summary || {}),
         execution_target: "desktop",
         lease_token: leaseToken,
         worker_id: body.workerId,
         lease_expires_at: leaseExpiresAt.toISOString(),
+        scout_id: assignedScoutId,
+        area: claimedArea || null,
+        area_label: areaLabel,
       };
 
       let updateQuery = desktopDeps.db
@@ -243,12 +318,26 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
       }
 
       if (updated) {
+        // Real live discovery progress events for scout startup and area exploration
+        desktopDeps.publishDiscoveryLiveEvent(
+          scoutStartedEvent(task.plan_id, assignedScoutId, areaLabel),
+        );
+        desktopDeps.publishDiscoveryLiveEvent(
+          areaStartedEvent(task.plan_id, assignedScoutId, areaLabel),
+        );
+
         // Fetch parent plan parameters to provide discovery context
         const { data: plan } = await desktopDeps.db
           .from("discovery_plans")
           .select("channels, region, profession_slug")
           .eq("id", task.plan_id)
           .maybeSingle();
+
+        // Authoritative query string matching cloud GoogleMapsSearchGenerator:
+        // "${niche} in ${area}, ${city}" or "${niche} in ${city}"
+        const queryString = claimedArea
+          ? `${task.niche} in ${claimedArea}, ${task.city}`
+          : `${task.niche} in ${task.city}`;
 
         // Safe client payload containing only task execution parameters — no secrets or DB credentials
         return res.status(200).json({
@@ -263,6 +352,11 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
             channels: plan?.channels ?? [],
             region: plan?.region ?? "",
             professionSlug: plan?.profession_slug ?? null,
+            scoutId: assignedScoutId,
+            area: claimedArea || null,
+            areaLabel,
+            queryString,
+            query: queryString,
             leaseToken,
             leaseExpiresAt: leaseExpiresAt.toISOString(),
           },
@@ -425,26 +519,20 @@ desktopRouter.post("/tasks/:taskId/ingest", requireAuth, ingestLimiter, async (r
     // Resolve plan tier limits
     const { data: profile } = await desktopDeps.db
       .from("profiles")
-      .select("plan")
+      .select("subscription_plan")
       .eq("id", userId)
       .maybeSingle();
 
-    const planConfig = getPlan((profile?.plan as PlanId) ?? "free");
+    const planConfig = getPlan((profile?.subscription_plan as PlanId) ?? "free");
 
     let accepted = 0;
     let duplicates = 0;
     let rejected = 0;
     let limitReached = false;
+    const rejectionReasons: Record<string, number> = {};
 
-    const deliveryContext: DeliveryContext = {
-      userId,
-      professionSlug: plan.profession_slug,
-      discoveryMode: "live",
-      scrapeJobId: plan.scrape_job_id,
-      dailyLimit: planConfig.dailyLeadLimit,
-      monthlyLimit: planConfig.monthlyLeadLimit,
-      discoveryPlanId: plan.id,
-    };
+    const scoutId = task.task_summary?.scout_id ?? 1;
+    const areaLabel = task.task_summary?.area_label ?? task.city;
 
     for (const rawCandidate of body.candidates) {
       // Validate candidate shape & fields
@@ -489,30 +577,49 @@ desktopRouter.post("/tasks/:taskId/ingest", requireAuth, ingestLimiter, async (r
         is_disqualified: rawCandidate.is_disqualified ?? false,
       };
 
-      const validation = validateLead(candidate);
-      if (!validation.valid) {
+      // Canonical processing: validation, quality gate, early prune, business upsert,
+      // enrichment gating, authoritative deliverLead (dedup & credit charging), and live events.
+      const result = await desktopDeps.processCandidate({
+        lead: candidate,
+        planId: plan.id,
+        effectiveScoutId: scoutId,
+        areaLabel,
+        pipelineId: rawCandidate.pipeline_id,
+        requestedChannels: plan.channels ?? [],
+        userId,
+        professionSlug: plan.profession_slug,
+        region: plan.region,
+        scrapeJobId: plan.scrape_job_id,
+        dailyLimit: planConfig.dailyLeadLimit,
+        monthlyLimit: planConfig.monthlyLeadLimit,
+        startedAt: task.started_at ? Date.parse(task.started_at) : undefined,
+      });
+
+      if (result.outcome === "accepted") {
+        accepted++;
+      } else if (result.outcome === "duplicate") {
+        duplicates++;
+        rejectionReasons.duplicate = (rejectionReasons.duplicate || 0) + 1;
+      } else if (result.outcome === "rejected") {
         rejected++;
-        continue;
-      }
-
-      // Cloud ingestion: deduplication, credit increment, and persistence
-      const result: DeliveryResult = await desktopDeps.deliverLead(
-        candidate,
-        deliveryContext,
-        plan.region,
-      );
-
-      if (result.limitReached) {
+        const cat = classifyRejectionReason(result.reason);
+        rejectionReasons[cat] = (rejectionReasons[cat] || 0) + 1;
+      } else if (result.outcome === "limit_reached") {
         limitReached = true;
         break;
       }
-
-      if (!result.wasNewForUser) {
-        duplicates++;
-      } else {
-        accepted++;
-      }
     }
+
+    // Refresh plan to check whether plan reached target or was cancelled
+    const { data: currentPlan } = await desktopDeps.db
+      .from("discovery_plans")
+      .select("status, delivered_count, requested_count")
+      .eq("id", task.plan_id)
+      .maybeSingle();
+
+    const planTargetReached = Boolean(
+      currentPlan && (currentPlan.status === "cancelled" || currentPlan.delivered_count >= currentPlan.requested_count),
+    );
 
     const batchResult = {
       batchId: body.batchId,
@@ -521,7 +628,10 @@ desktopRouter.post("/tasks/:taskId/ingest", requireAuth, ingestLimiter, async (r
       duplicates,
       discovered: body.candidates.length,
       limitReached,
-      planTargetReached: false,
+      planTargetReached,
+      planDelivered: currentPlan?.delivered_count ?? (plan.delivered_count + accepted),
+      planRequested: currentPlan?.requested_count ?? plan.requested_count,
+      rejectionReasons,
     };
 
     // Atomically record counts and idempotent batch record
@@ -583,6 +693,39 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
     }
 
     const startedAt = task.started_at ? Date.parse(task.started_at) : Date.now();
+
+    // Record outcome for claimed curated area if one was assigned
+    const claimedArea = task.task_summary?.area;
+    if (claimedArea) {
+      try {
+        await desktopDeps.recordAreaOutcome(desktopDeps.db, {
+          niche: task.niche,
+          countryCode: task.country_code,
+          city: task.city,
+          area: claimedArea,
+          source: task.source ?? "google_maps",
+          discovered: body.discovered,
+          accepted: body.accepted,
+        });
+      } catch (areaErr) {
+        console.warn(`[desktop-coordination] recordAreaOutcome failed for ${task.id}:`, areaErr);
+      }
+    }
+
+    // Publish area completion live event for the live discovery UI
+    const scoutId = task.task_summary?.scout_id ?? 1;
+    const areaLabel = task.task_summary?.area_label ?? task.city;
+    desktopDeps.publishDiscoveryLiveEvent(
+      areaCompletedEvent(task.plan_id, scoutId, areaLabel, {
+        discovered: body.discovered,
+        accepted: body.accepted,
+        rejected: body.rejected,
+        duplicates: body.duplicates,
+        exhausted: body.exhausted,
+        failed: body.status === "failed",
+        error: body.error,
+      }),
+    );
 
     const outcome = {
       discovered: body.discovered,

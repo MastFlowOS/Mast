@@ -24,29 +24,36 @@ pub struct AppState {
     pub recent_logs: Arc<Mutex<Vec<String>>>,
 }
 
-fn push_log(logs: &Arc<Mutex<Vec<String>>>, raw_line: &str) {
-    let mut sanitized = raw_line.to_string();
+fn sanitize_log_line(raw: &str) -> String {
+    let mut sanitized = raw.to_string();
 
     // Redact Bearer credentials if present
     if let Some(idx) = sanitized.find("Bearer ") {
-        sanitized = format!("{}[REDACTED_AUTH_TOKEN]", &sanitized[..idx + 7]);
+        let after = &sanitized[idx + 7..];
+        let token_len = after.find(|c: char| c.is_whitespace() || c == '"' || c == '\'').unwrap_or(after.len());
+        sanitized.replace_range(idx + 7..idx + 7 + token_len, "[REDACTED_AUTH_TOKEN]");
     }
 
     // Redact standalone JWT tokens (eyJ...)
-    if let Some(idx) = sanitized.find("eyJ") {
+    while let Some(idx) = sanitized.find("eyJ") {
         if let Some(end_idx) = sanitized[idx..].find(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
             sanitized.replace_range(idx..idx + end_idx, "[REDACTED_JWT]");
         } else {
             sanitized.truncate(idx);
             sanitized.push_str("[REDACTED_JWT]");
+            break;
         }
     }
 
+    sanitized
+}
+
+fn push_log(logs: &Arc<Mutex<Vec<String>>>, sanitized: &str) {
     let mut l = logs.lock().unwrap();
     if l.len() >= 200 {
         l.remove(0);
     }
-    l.push(sanitized);
+    l.push(sanitized.to_string());
 }
 
 fn validate_api_url(raw_url: &str) -> Result<String, String> {
@@ -138,52 +145,178 @@ fn remove_auth_token_file() {
     let _ = std::fs::remove_file(token_file);
 }
 
-fn resolve_worker_path(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
-    // 1. Packaged resource directory (<resource_dir>/bin/mast-desktop-worker/mast-desktop-worker.exe or <resource_dir>/bin/mast-desktop-worker.exe)
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        let packaged_sub = resource_dir.join("bin").join("mast-desktop-worker").join("mast-desktop-worker.exe");
-        if packaged_sub.exists() {
-            return Ok((packaged_sub, vec![]));
-        }
-        let packaged_root = resource_dir.join("bin").join("mast-desktop-worker.exe");
-        if packaged_root.exists() {
-            return Ok((packaged_root, vec![]));
+#[derive(Debug, Clone)]
+pub struct ResolvedWorker {
+    pub executable: PathBuf,
+    pub args: Vec<String>,
+    pub work_dir: PathBuf,
+    pub is_python: bool,
+    pub mode: String,
+}
+
+fn resolve_worker(app: &AppHandle) -> Result<ResolvedWorker, String> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    // 0. Manual environment variable override (e.g. MAST_DESKTOP_WORKER_PATH or MAST_WORKER_EXECUTABLE)
+    if let Ok(override_path_str) = std::env::var("MAST_DESKTOP_WORKER_PATH").or_else(|_| std::env::var("MAST_WORKER_EXECUTABLE")) {
+        let override_path = PathBuf::from(&override_path_str);
+        if override_path.exists() {
+            if override_path.extension().map_or(false, |ext| ext == "py") {
+                let work_dir = override_path.parent().and_then(|p| p.parent()).unwrap_or(&cwd).to_path_buf();
+                return Ok(ResolvedWorker {
+                    executable: PathBuf::from("python"),
+                    args: vec![override_path.to_string_lossy().to_string()],
+                    work_dir,
+                    is_python: true,
+                    mode: "custom-override-python".to_string(),
+                });
+            } else {
+                let work_dir = override_path.parent().unwrap_or(&cwd).to_path_buf();
+                return Ok(ResolvedWorker {
+                    executable: override_path,
+                    args: vec![],
+                    work_dir,
+                    is_python: false,
+                    mode: "custom-override-binary".to_string(),
+                });
+            }
         }
     }
 
-    // 2. Relative to current exe
+    // 1. In development mode (debug_assertions), prioritize the live Python source script
+    // unless explicitly overridden by MAST_DESKTOP_USE_PACKAGED_WORKER=1
+    let force_packaged = std::env::var("MAST_DESKTOP_USE_PACKAGED_WORKER")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if cfg!(debug_assertions) && !force_packaged {
+        // Find mast-lead-engine/desktop_worker.py
+        let candidate_dirs = [
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().map(|p| p.to_path_buf()),
+            Some(cwd.clone()),
+            cwd.parent().map(|p| p.to_path_buf()),
+        ];
+
+        for base in candidate_dirs.into_iter().flatten() {
+            let py_script = base.join("mast-lead-engine").join("desktop_worker.py");
+            if py_script.exists() {
+                return Ok(ResolvedWorker {
+                    executable: PathBuf::from("python"),
+                    args: vec![py_script.to_string_lossy().to_string()],
+                    work_dir: base,
+                    is_python: true,
+                    mode: "development-python".to_string(),
+                });
+            }
+        }
+    }
+
+    // 2. Packaged resource directory (<resource_dir>/bin/mast-desktop-worker/mast-desktop-worker.exe or <resource_dir>/bin/mast-desktop-worker.exe)
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let packaged_sub = resource_dir.join("bin").join("mast-desktop-worker").join("mast-desktop-worker.exe");
+        if packaged_sub.exists() {
+            let work_dir = packaged_sub.parent().unwrap_or(&cwd).to_path_buf();
+            return Ok(ResolvedWorker {
+                executable: packaged_sub,
+                args: vec![],
+                work_dir,
+                is_python: false,
+                mode: "packaged-resource".to_string(),
+            });
+        }
+        let packaged_root = resource_dir.join("bin").join("mast-desktop-worker.exe");
+        if packaged_root.exists() {
+            let work_dir = packaged_root.parent().unwrap_or(&cwd).to_path_buf();
+            return Ok(ResolvedWorker {
+                executable: packaged_root,
+                args: vec![],
+                work_dir,
+                is_python: false,
+                mode: "packaged-resource".to_string(),
+            });
+        }
+    }
+
+    // 3. Relative to current exe (installed or release build)
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(exe_dir) = current_exe.parent() {
             let local_sub = exe_dir.join("bin").join("mast-desktop-worker").join("mast-desktop-worker.exe");
             if local_sub.exists() {
-                return Ok((local_sub, vec![]));
+                let work_dir = local_sub.parent().unwrap_or(&cwd).to_path_buf();
+                return Ok(ResolvedWorker {
+                    executable: local_sub,
+                    args: vec![],
+                    work_dir,
+                    is_python: false,
+                    mode: "packaged-exe-relative".to_string(),
+                });
             }
             let local_bin = exe_dir.join("mast-desktop-worker.exe");
             if local_bin.exists() {
-                return Ok((local_bin, vec![]));
+                let work_dir = local_bin.parent().unwrap_or(&cwd).to_path_buf();
+                return Ok(ResolvedWorker {
+                    executable: local_bin,
+                    args: vec![],
+                    work_dir,
+                    is_python: false,
+                    mode: "packaged-exe-relative".to_string(),
+                });
             }
             let dist_bin = exe_dir.join("dist-worker").join("mast-desktop-worker").join("mast-desktop-worker.exe");
             if dist_bin.exists() {
-                return Ok((dist_bin, vec![]));
+                let work_dir = dist_bin.parent().unwrap_or(&cwd).to_path_buf();
+                return Ok(ResolvedWorker {
+                    executable: dist_bin,
+                    args: vec![],
+                    work_dir,
+                    is_python: false,
+                    mode: "packaged-dist".to_string(),
+                });
             }
         }
     }
 
-    // 3. Workspace dev / staged directories
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // 4. Staged or dist binaries in dev/build directory (used when packaging or testing binary builds)
     let staged = cwd.join("src-tauri").join("bin").join("mast-desktop-worker").join("mast-desktop-worker.exe");
     if staged.exists() {
-        return Ok((staged, vec![]));
+        let work_dir = staged.parent().unwrap_or(&cwd).to_path_buf();
+        return Ok(ResolvedWorker {
+            executable: staged,
+            args: vec![],
+            work_dir,
+            is_python: false,
+            mode: "development-staged-binary".to_string(),
+        });
     }
     let dev_dist = cwd.join("dist-worker").join("mast-desktop-worker").join("mast-desktop-worker.exe");
     if dev_dist.exists() {
-        return Ok((dev_dist, vec![]));
+        let work_dir = dev_dist.parent().unwrap_or(&cwd).to_path_buf();
+        return Ok(ResolvedWorker {
+            executable: dev_dist,
+            args: vec![],
+            work_dir,
+            is_python: false,
+            mode: "development-dist-binary".to_string(),
+        });
     }
 
-    // 4. Dev fallback: python mast-lead-engine/desktop_worker.py
-    let py_script = cwd.join("mast-lead-engine").join("desktop_worker.py");
-    if py_script.exists() {
-        return Ok((PathBuf::from("python"), vec![py_script.to_string_lossy().to_string()]));
+    // 5. Fallback to python script if binaries not found (even in non-debug mode)
+    let candidate_dirs = [
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().map(|p| p.to_path_buf()),
+        Some(cwd.clone()),
+        cwd.parent().map(|p| p.to_path_buf()),
+    ];
+    for base in candidate_dirs.into_iter().flatten() {
+        let py_script = base.join("mast-lead-engine").join("desktop_worker.py");
+        if py_script.exists() {
+            return Ok(ResolvedWorker {
+                executable: PathBuf::from("python"),
+                args: vec![py_script.to_string_lossy().to_string()],
+                work_dir: base,
+                is_python: true,
+                mode: "python-fallback".to_string(),
+            });
+        }
     }
 
     Err("MAST Desktop Worker executable not found. Build mast-desktop-worker or bundle in bin/.".to_string())
@@ -283,20 +416,25 @@ fn start_worker(
         }
     }
 
-    let (executable, initial_args) = resolve_worker_path(&app)?;
-    let mut cmd = Command::new(&executable);
-    if let Some(parent_dir) = executable.parent() {
-        cmd.current_dir(parent_dir);
-    }
-    for arg in initial_args {
+    let resolved = resolve_worker(&app)?;
+    let mut cmd = Command::new(&resolved.executable);
+    cmd.current_dir(&resolved.work_dir);
+
+    for arg in &resolved.args {
         cmd.arg(arg);
     }
 
     cmd.arg("--api-url").arg(validated_api_url);
+    cmd.arg("--concurrency").arg("1");
 
     // Pass auth token securely via environment variable (not visible in command line / Process Explorer)
     write_auth_token_file(&auth_token);
     cmd.env("MAST_AUTH_TOKEN", auth_token.trim());
+
+    if resolved.is_python {
+        cmd.env("PYTHONUNBUFFERED", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
 
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -308,8 +446,17 @@ fn start_worker(
         cmd.creation_flags(0x08000000);
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn worker ({:?}): {}", executable, e))?;
+    println!(
+        "[desktop-worker:launcher] Spawning worker mode={} executable={:?} work_dir={:?} args={:?}",
+        resolved.mode, resolved.executable, resolved.work_dir, resolved.args
+    );
+
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn worker ({:?}): {}", resolved.executable, e))?;
     let pid = child.id();
+    println!(
+        "[desktop-worker:launcher] Worker process started successfully with PID {}",
+        pid
+    );
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -322,7 +469,9 @@ fn start_worker(
         thread::spawn(move || {
             let reader = BufReader::new(out);
             for line in reader.lines().flatten() {
-                push_log(&logs, &line);
+                let sanitized = sanitize_log_line(&line);
+                println!("[desktop-worker:stdout] {}", sanitized);
+                push_log(&logs, &sanitized);
             }
         });
     }
@@ -333,11 +482,19 @@ fn start_worker(
         thread::spawn(move || {
             let reader = BufReader::new(err);
             for line in reader.lines().flatten() {
-                if line.contains("[ERROR]") || line.contains("Error") {
+                let sanitized = sanitize_log_line(&line);
+                eprintln!("[desktop-worker:stderr] {}", sanitized);
+                if sanitized.contains("[ERROR]")
+                    || sanitized.contains("Error")
+                    || sanitized.contains("Exception")
+                    || sanitized.contains("Traceback")
+                {
                     let mut e = err_slot_clone.lock().unwrap();
-                    *e = Some(line.clone());
+                    if e.is_none() {
+                        *e = Some(sanitized.clone());
+                    }
                 }
-                push_log(&logs, &line);
+                push_log(&logs, &sanitized);
             }
         });
     }
@@ -364,12 +521,26 @@ fn update_worker_token(auth_token: String) -> Result<(), String> {
     Ok(())
 }
 
+fn terminate_child_process_tree(child: &mut Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let pid = child.id();
+        println!("[desktop-worker:lifecycle] Terminating process tree for PID {}", pid);
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(0x08000000)
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 #[tauri::command]
 fn stop_worker(state: State<AppState>) -> Result<WorkerStatus, String> {
     let mut child_guard = state.worker_child.lock().unwrap();
     if let Some(ref mut child) = *child_guard {
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_child_process_tree(child);
     }
     *child_guard = None;
     *state.status.lock().unwrap() = "stopped".to_string();
@@ -416,8 +587,7 @@ pub fn run() {
                     let state = window.state::<AppState>();
                     let mut child_guard = state.worker_child.lock().unwrap();
                     if let Some(ref mut child) = *child_guard {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        terminate_child_process_tree(child);
                     }
                     *child_guard = None;
                     remove_auth_token_file();
@@ -489,5 +659,53 @@ mod tests {
             let cmds = resolved.allowed_commands.get(cmd).unwrap();
             assert!(!cmds.is_empty(), "Resolved command list is empty for {}", cmd);
         }
+
+        let authority = tauri::ipc::RuntimeAuthority::new(acl, resolved);
+        let allowed_origins = [
+            tauri::ipc::Origin::Local,
+            tauri::ipc::Origin::Remote {
+                url: "https://mast-flow.vercel.app/dashboard/leads".parse().unwrap(),
+            },
+            tauri::ipc::Origin::Remote {
+                url: "https://app.mast-flow.com/dashboard/leads".parse().unwrap(),
+            },
+            tauri::ipc::Origin::Remote {
+                url: "http://localhost:5173/dashboard/leads".parse().unwrap(),
+            },
+        ];
+
+        for origin in &allowed_origins {
+            for cmd in required_commands {
+                let access = authority.resolve_access(cmd, "main", "main", origin);
+                assert!(
+                    access.is_some(),
+                    "resolve_access returned None for command: {} on origin: {}",
+                    cmd,
+                    origin
+                );
+            }
+        }
+
+        let unauthorized_origin = tauri::ipc::Origin::Remote {
+            url: "https://evil.example.com/dashboard/leads".parse().unwrap(),
+        };
+        for cmd in required_commands {
+            let access = authority.resolve_access(cmd, "main", "main", &unauthorized_origin);
+            assert!(
+                access.is_none(),
+                "resolve_access should have returned None for command: {} on unauthorized origin: {}",
+                cmd,
+                unauthorized_origin
+            );
+        }
+    }
+
+    #[test]
+    fn test_sanitize_log_line_redacts_tokens() {
+        let raw = "Sending request with Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abc and standalone eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.token.data here";
+        let sanitized = sanitize_log_line(raw);
+        assert!(!sanitized.contains("eyJhbGciOiJIUzI1NiJ9"));
+        assert!(sanitized.contains("[REDACTED_AUTH_TOKEN]"));
+        assert!(sanitized.contains("[REDACTED_JWT]"));
     }
 }

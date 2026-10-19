@@ -233,14 +233,20 @@ def _cross_process_init_lock(db_path: Path):
     lock_path = db_path.parent / f"{db_path.name}.initlock"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(lock_path, "a+")
+    locked = False
     try:
         if _HAVE_FCNTL:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            locked = True
         elif _HAVE_MSVCRT:
-            # msvcrt.locking has no blocking mode — poll until acquired.
-            while True:
+            # msvcrt.locking has no blocking mode — poll until acquired, with 10s bounded timeout
+            fh.seek(0)
+            start_t = time.time()
+            while time.time() - start_t < 10.0:
                 try:
+                    fh.seek(0)
                     msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    locked = True
                     break
                 except OSError:
                     time.sleep(0.02)
@@ -248,13 +254,15 @@ def _cross_process_init_lock(db_path: Path):
     finally:
         try:
             if _HAVE_FCNTL:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                if locked:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
             elif _HAVE_MSVCRT:
-                try:
-                    fh.seek(0)
-                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-                except OSError:
-                    pass
+                if locked:
+                    try:
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    except OSError:
+                        pass
         finally:
             fh.close()
 

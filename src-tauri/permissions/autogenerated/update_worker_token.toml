@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-worker-token"
+description = "Enables the update_worker_token command without any pre-configured scope."
+commands.allow = ["update_worker_token"]
+
+[[permission]]
+identifier = "deny-update-worker-token"
+description = "Denies the update_worker_token command without any pre-configured scope."
+commands.deny = ["update_worker_token"]

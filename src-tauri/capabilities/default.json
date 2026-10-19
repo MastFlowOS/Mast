@@ -8,8 +8,24 @@
   "webviews": [
     "*"
   ],
+  "local": true,
+  "remote": {
+    "urls": [
+      "https://*.vercel.app/*",
+      "https://*.mast-flow.com/*",
+      "https://mast-flow.com/*",
+      "http://localhost:*/*",
+      "http://127.0.0.1:*/*"
+    ]
+  },
   "permissions": [
     "core:default",
-    "allow-desktop-worker-commands"
+    "allow-desktop-worker-commands",
+    "allow-get-desktop-info",
+    "allow-get-worker-status",
+    "allow-start-worker",
+    "allow-stop-worker",
+    "allow-update-worker-token"
   ]
 }
+

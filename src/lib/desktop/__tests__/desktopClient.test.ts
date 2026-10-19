@@ -307,6 +307,42 @@ describe("Desktop Discovery Routing & Target Resolution", () => {
     assert.strictEqual(req.execution_target, "desktop");
     assert.notStrictEqual(req.execution_target, "cloud");
   });
+
+  test("getDesktopWorkerStatus performs read-only query and does not invoke start", async () => {
+    let invokedCommand: string | null = null;
+    (globalThis as any).window = {
+      __TAURI_INTERNALS__: {
+        invoke: async (cmd: string) => {
+          invokedCommand = cmd;
+          return { is_running: false, status: "stopped", recent_logs: [] };
+        },
+      },
+      location: { origin: "http://localhost:5173", protocol: "http:" },
+    };
+
+    const status = await getDesktopWorkerStatus();
+    assert.strictEqual(status.is_running, false);
+    assert.strictEqual(status.status, "stopped");
+    assert.strictEqual(invokedCommand, "get_worker_status");
+  });
+
+  test("stopDesktopWorker cleanly dispatches stop_worker command to shell", async () => {
+    let invokedCommand: string | null = null;
+    (globalThis as any).window = {
+      __TAURI_INTERNALS__: {
+        invoke: async (cmd: string) => {
+          invokedCommand = cmd;
+          return { is_running: false, status: "stopped", recent_logs: [] };
+        },
+      },
+      location: { origin: "http://localhost:5173", protocol: "http:" },
+    };
+
+    const status = await stopDesktopWorker();
+    assert.strictEqual(status.is_running, false);
+    assert.strictEqual(status.status, "stopped");
+    assert.strictEqual(invokedCommand, "stop_worker");
+  });
 });
 
 

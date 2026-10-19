@@ -366,34 +366,23 @@ function GetLeads() {
   // The last finished run: its truthful outcome (requested / delivered /
   // shortfall), the exact request sent, and whether a Live follow-up is offered.
   const [lastRun, setLastRun] = useState<LastDiscoverRun | null>(null);
+  const watchdogTimerRef = useRef<NodeJS.Timeout | number | null>(null);
+  const concludeRef = useRef<((outcome: DiscoverOutcome, meta: Pick<LastDiscoverRun, "jobId" | "source" | "ranking" | "liveFollowUp">) => void) | null>(null);
 
   // Desktop discovery worker integration (Phase 5)
   const {
     isDesktop,
     workerStatus,
     isLoading: isWorkerLoading,
-    ensureWorkerRunning,
+    prepareAndStartWorker,
+    stopWorker,
     startWorker,
   } = useDesktopWorker();
   const [executionTarget, setExecutionTarget] = useState<"desktop" | "cloud">("desktop");
 
   const handleSelectExecutionTarget = (target: "desktop" | "cloud") => {
     setExecutionTarget(target);
-    if (target === "desktop" && (isDesktop || isDesktopApp())) {
-      void ensureWorkerRunning().catch((err) => {
-        console.warn("Could not start desktop worker on target selection:", err);
-      });
-    }
   };
-
-  // Warm up and verify desktop worker on desktop app launch
-  useEffect(() => {
-    if ((isDesktop || isDesktopApp()) && executionTarget === "desktop") {
-      void ensureWorkerRunning().catch((err) => {
-        console.debug("Background worker warmup on mount:", err);
-      });
-    }
-  }, [isDesktop, executionTarget, ensureWorkerRunning]);
 
 
   const dailyRemaining = account?.dailyUsage.remaining ?? 0;
@@ -533,7 +522,7 @@ function GetLeads() {
     const target: "desktop" | "cloud" | undefined = isApp ? executionTarget : undefined;
     if (target === "desktop") {
       try {
-        await ensureWorkerRunning();
+        await prepareAndStartWorker();
       } catch (err) {
         setIsSubmitting(false);
         toast.error("Local discovery worker could not be started", {
@@ -570,7 +559,7 @@ function GetLeads() {
     const target: "desktop" | "cloud" | undefined = isApp ? executionTarget : undefined;
     if (target === "desktop") {
       try {
-        await ensureWorkerRunning();
+        await prepareAndStartWorker();
       } catch (err) {
         setIsSubmitting(false);
         toast.error("Local discovery worker could not be started", {
@@ -604,6 +593,11 @@ function GetLeads() {
     setLiveTarget(request.quantity);
     setLastRun(null);
 
+    if (watchdogTimerRef.current) {
+      clearTimeout(watchdogTimerRef.current);
+      watchdogTimerRef.current = null;
+    }
+
     setIsGenerating(true);
     setShowCompletion(false);
     setNewOpportunities([]);
@@ -621,10 +615,20 @@ function GetLeads() {
       outcome: DiscoverOutcome,
       meta: Pick<LastDiscoverRun, "jobId" | "source" | "ranking" | "liveFollowUp">,
     ) => {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+      }
       unsubscribeJobRef.current?.();
       unsubscribeJobRef.current = null;
       activeJobIdRef.current = null;
       setIsCancelling(false);
+
+      if (isDesktop || isDesktopApp()) {
+        void stopWorker().catch((err) => {
+          console.debug("[desktop-worker] stopWorker on run conclusion:", err);
+        });
+      }
 
       const elapsed = Date.now() - startTime;
       const wait = Math.max(0, MIN_VISIBLE_MS - elapsed);
@@ -659,7 +663,13 @@ function GetLeads() {
       }, wait);
     };
 
+    concludeRef.current = conclude;
+
     const appendLead = (lead: Lead) => {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+      }
       if (seenLeadIdsRef.current.has(lead.id)) return; // no duplicate opportunities, ever
       seenLeadIdsRef.current.add(lead.id);
       setNewOpportunities((prev) => {
@@ -750,7 +760,21 @@ function GetLeads() {
         { requestedQuantity: liveRequested },
       );
 
+      // Truthful startup watchdog: if after 45s no leads have arrived and all scouts are still idle
+      const WATCHDOG_TIMEOUT_MS = 45000;
+      watchdogTimerRef.current = setTimeout(() => {
+        if (seenLeadIdsRef.current.size === 0 && activeJobIdRef.current) {
+          toast.error("Discovery startup timed out", {
+            description: "No scouts started within 45 seconds. Terminating discovery run.",
+          });
+          void handleCancelSearch();
+        }
+      }, WATCHDOG_TIMEOUT_MS);
     } catch (err) {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+      }
       setIsGenerating(false);
       if (err instanceof ApiError) {
         if (err.message.includes("LIMIT_EXCEEDED_DAILY")) {
@@ -766,9 +790,13 @@ function GetLeads() {
     }
   };
 
-  // Stop listening for a job's results if the user navigates away mid-search.
+  // Stop listening for a job's results and clear watchdog if the user navigates away mid-search.
   useEffect(() => {
     return () => {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+      }
       unsubscribeJobRef.current?.();
     };
   }, []);
@@ -793,20 +821,48 @@ function GetLeads() {
 
   const handleCancelSearch = async () => {
     const jobId = activeJobIdRef.current;
-    if (!jobId || isCancelling) return;
+    if (isCancelling) return;
     setIsCancelling(true);
+
+    if (watchdogTimerRef.current) {
+      clearTimeout(watchdogTimerRef.current);
+      watchdogTimerRef.current = null;
+    }
+
     try {
-      await cancelDiscoverJob(jobId);
-      // UI update comes via the Realtime subscription's
-      // onStatusChange('cancelled') callback; we don't need to tear down
-      // state here.
+      if (jobId) {
+        await cancelDiscoverJob(jobId);
+      }
     } catch (err) {
-      setIsCancelling(false);
       if (err instanceof ApiError && err.status === 409) {
-        // Already terminal — treat as if we'd received the callback.
         toast.info("Search already completed.");
       } else {
-        toast.error("Failed to cancel search. Please try again.");
+        toast.info("Cancellation requested.");
+      }
+    } finally {
+      // Clean up desktop worker process tree immediately to release all RAM and kill browsers
+      if (isDesktop || isDesktopApp()) {
+        try {
+          await stopWorker();
+        } catch (stopErr) {
+          console.debug("[desktop-worker] stopWorker on cancel:", stopErr);
+        }
+      }
+
+      if (concludeRef.current) {
+        concludeRef.current(
+          describeDiscoverOutcome({
+            requested: liveTarget,
+            delivered: seenLeadIdsRef.current.size,
+            status: "cancelled",
+            shortfallReason: null,
+            source: "live",
+          }),
+          { jobId: jobId || "", source: "live" },
+        );
+      } else {
+        setIsGenerating(false);
+        setIsCancelling(false);
       }
     }
   };

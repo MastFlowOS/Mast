@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -172,11 +173,12 @@ def setup_playwright_browsers_path(provision_if_missing: bool = True) -> str:
 def normalize_candidate_for_ingest(lead: dict, task: dict) -> dict:
     """Normalizes an engine lead dictionary to match server-side CandidateSchema."""
     return {
+        "pipeline_id": str(lead.get("_pipeline_id") or lead.get("pipeline_id") or "").strip() or None,
         "name": str(lead.get("name") or "Unknown Business").strip(),
         "query": str(lead.get("query") or task.get("niche") or "").strip(),
         "city": str(lead.get("city") or task.get("city") or "").strip(),
-        "country": str(lead.get("country") or task.get("countryName") or "United States").strip(),
-        "country_code": str(lead.get("country_code") or task.get("countryCode") or "US").strip(),
+        "country": str(lead.get("country") or task.get("countryName") or task.get("country_name") or "United States").strip(),
+        "country_code": str(lead.get("country_code") or task.get("countryCode") or task.get("country_code") or "US").strip(),
         "niche": str(lead.get("niche") or task.get("niche") or "").strip(),
         "region": str(lead.get("region") or task.get("region") or "").strip(),
         "address": str(lead.get("address") or "").strip(),
@@ -187,7 +189,7 @@ def normalize_candidate_for_ingest(lead: dict, task: dict) -> dict:
         "facebook": str(lead.get("facebook") or "").strip(),
         "linkedin": str(lead.get("linkedin") or "").strip(),
         "contact_form": str(lead.get("contact_form") or "").strip(),
-        "maps_link": str(lead.get("maps_link") or "").strip(),
+        "maps_link": str(lead.get("maps_link") or lead.get("maps_url") or "").strip(),
         "rating": float(lead["rating"]) if lead.get("rating") is not None else None,
         "reviews": int(lead.get("reviews") or 0),
         "category": str(lead.get("category") or "").strip(),
@@ -220,6 +222,8 @@ class DesktopCoordinatorClient:
     auth_token: str = ""
 
     last_auth_error: bool = False
+    last_ingest_error: Optional[str] = None
+    last_complete_error: Optional[str] = None
     _last_token_mtime: float = 0.0
 
     def __init__(self, api_base_url: str, auth_token: str, worker_id: str, session: Any):
@@ -228,6 +232,8 @@ class DesktopCoordinatorClient:
         self.worker_id = worker_id
         self.session = session
         self.last_auth_error = False
+        self.last_ingest_error = None
+        self.last_complete_error = None
         self._last_token_mtime = 0.0
 
     def _get_token(self) -> str:
@@ -316,13 +322,16 @@ class DesktopCoordinatorClient:
             "candidates": candidates,
         }
 
+        self.last_ingest_error = None
         for attempt in range(1, max_retries + 1):
             try:
                 async with self.session.post(url, json=payload, headers=self._headers()) as resp:
                     if resp.status == 200:
+                        self.last_ingest_error = None
                         return await resp.json()
+                    error_text = await resp.text()
+                    self.last_ingest_error = f"HTTP {resp.status}: {error_text.strip()}"
                     if resp.status in (404, 409):
-                        error_text = await resp.text()
                         log.error("Ingest rejected by server (status %d): %s", resp.status, error_text)
                         return None
                     if resp.status == 401:
@@ -334,9 +343,9 @@ class DesktopCoordinatorClient:
                             continue
                         self.last_auth_error = True
                         return None
-                    error_text = await resp.text()
                     log.warning("Ingest attempt %d returned %d: %s", attempt, resp.status, error_text)
             except Exception as exc:
+                self.last_ingest_error = f"Network error: {type(exc).__name__}: {exc}"
                 log.warning("Ingest attempt %d network error: %s", attempt, exc)
 
             if attempt < max_retries:
@@ -374,6 +383,7 @@ class DesktopCoordinatorClient:
         if error:
             payload["error"] = error
 
+        self.last_complete_error = None
         try:
             async with self.session.post(url, json=payload, headers=self._headers()) as resp:
                 if resp.status == 200:
@@ -381,9 +391,11 @@ class DesktopCoordinatorClient:
                     log.info("Task %s completed: planDrained=%s", task_id, data.get("planDrained"))
                     return True
                 error_text = await resp.text()
+                self.last_complete_error = f"HTTP {resp.status}: {error_text.strip()}"
                 log.error("complete_task failed (status %d): %s", resp.status, error_text)
                 return False
         except Exception as exc:
+            self.last_complete_error = f"Network error: {type(exc).__name__}: {exc}"
             log.error("complete_task request failed: %s", exc)
             return False
 
@@ -394,33 +406,56 @@ class DesktopWorker:
     def __init__(
         self,
         client: DesktopCoordinatorClient,
-        batch_size: int = 10,
+        batch_size: int = 1,
         heartbeat_interval_s: float = 15.0,
+        concurrency: int = 1,
         engine_runner: Optional[Callable[..., AsyncIterator[dict]]] = None,
     ):
         self.client = client
-        self.batch_size = batch_size
+        self.batch_size = max(1, batch_size)
         self.heartbeat_interval_s = heartbeat_interval_s
+        self.concurrency = max(1, concurrency)
         self._engine_runner = engine_runner
         self._shutdown_event = asyncio.Event()
+        self._active_tasks: Dict[str, asyncio.Event] = {}
+        self._plan_tasks: Dict[str, set[str]] = {}
 
-    async def execute_task(self, task: dict) -> bool:
+    async def execute_task(self, task: dict, task_abort: Optional[asyncio.Event] = None) -> bool:
         task_id = task["id"]
         lease_token = task["leaseToken"]
+        plan_id = task.get("planId")
         niche = task.get("niche") or "general"
         city = task.get("city") or ""
         country_code = task.get("countryCode") or "US"
-        candidate_budget = task.get("candidateBudget") or 20
+        candidate_budget = int(task.get("candidateBudget") or 20)
         channels = task.get("channels") or []
 
+        # Localized search query matching cloud GoogleMapsSearchGenerator:
+        # e.g. "Coffee Shop in Lincoln Square, Chicago"
+        search_query = task.get("queryString") or task.get("query")
+        if not search_query:
+            area = task.get("area") or task.get("areaLabel")
+            if area:
+                search_query = f"{niche} in {area}, {city}"
+            else:
+                search_query = f"{niche} in {city}" if city else niche
+
+        # Forward ONLY lead-only channels (website, phone) to discovery_only engine,
+        # exactly matching cloud's engineRequiredChannels(channels).
+        # email/instagram are never pruned at discovery time because enrichment satisfies them.
+        engine_required_channels = [c for c in channels if c in ("website", "phone")]
+
         log.info(
-            "Executing task %s: niche=%r city=%r budget=%d channels=%s",
-            task_id, niche, city, candidate_budget, channels,
+            "Executing task %s: query=%r niche=%r city=%r budget=%d channels=%s",
+            task_id, search_query, niche, city, candidate_budget, channels,
         )
 
         metrics = {"discovered": 0, "accepted": 0, "rejected": 0, "duplicates": 0}
         stop_heartbeat = asyncio.Event()
-        task_abort = asyncio.Event()
+        if task_abort is None:
+            task_abort = asyncio.Event()
+
+        task_shutdown_event = threading.Event()
 
         # Background heartbeat loop
         async def _heartbeat_worker():
@@ -435,9 +470,24 @@ class DesktopWorker:
                 if not ok:
                     log.warning("Heartbeat failed or lease expired/cancelled for task %s; aborting task", task_id)
                     task_abort.set()
+                    task_shutdown_event.set()
                     break
 
         hb_task = asyncio.create_task(_heartbeat_worker())
+
+        # Cooperative cancellation watcher: immediately signals task_shutdown_event
+        # so service.run_query and GoogleMapsProvider abort active Playwright scraper
+        async def _abort_watcher():
+            while not stop_heartbeat.is_set():
+                if task_abort.is_set() or self._shutdown_event.is_set():
+                    task_shutdown_event.set()
+                    break
+                try:
+                    await asyncio.sleep(0.2)
+                except asyncio.CancelledError:
+                    break
+
+        abort_task = asyncio.create_task(_abort_watcher())
 
         # Resolve engine runner
         runner = self._engine_runner
@@ -445,8 +495,11 @@ class DesktopWorker:
             if os.environ.get("MAST_MOCK_DISCOVERY") == "1":
                 async def _mock_query(**kwargs):
                     target = min(kwargs.get("deliver_target", 2), 2)
+                    s_event = kwargs.get("shutdown_event")
                     log.info("Running controlled mock discovery (target=%d)", target)
                     for i in range(target):
+                        if s_event and s_event.is_set():
+                            break
                         await asyncio.sleep(0.3)
                         yield {
                             "name": f"Controlled Desktop Lead {i + 1}",
@@ -458,8 +511,10 @@ class DesktopWorker:
                             "address": f"{100 + i} Test St, TestCity, US",
                             "phone": f"+1555555010{i}",
                             "website": f"https://test-controlled-discovery-{i}.example.com",
+                            "maps_link": f"https://www.google.com/maps/place/controlled-lead-{i + 1}",
                             "rating": 4.5,
                             "reviews": 10,
+                            "_pipeline_id": f"mock-pipe-{i + 1}",
                         }
                 runner = _mock_query
             else:
@@ -474,24 +529,31 @@ class DesktopWorker:
         task_error: Optional[str] = None
 
         data_dir = get_desktop_data_dir()
-        db_path = str(data_dir / "cache" / "local_dedup.db")
+        db_path = str(data_dir / "cache" / f"discovery-task-{task_id}.db")
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         try:
             query_params = {
-                "query": niche,
+                "query": search_query,
                 "city": city,
                 "country": country_code,
-                "required_channels": channels,
+                "niche": niche,
+                "region": task.get("region") or "",
+                "required_channels": engine_required_channels if engine_required_channels else None,
                 "deliver_target": candidate_budget,
                 "max_results": candidate_budget * 2,
                 "db_path": db_path,
+                "discovery_only": True,
+                "require_viability": False,
+                "area": task.get("area") or "",
+                "shutdown_event": task_shutdown_event,
             }
 
             async for raw_lead in runner(**query_params):
-                if self._shutdown_event.is_set() or task_abort.is_set():
+                if self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set():
                     log.info("Task %s aborted via cancellation or shutdown", task_id)
                     termination_reason = "CANCELLED"
+                    task_shutdown_event.set()
                     break
 
                 metrics["discovered"] += 1
@@ -504,20 +566,26 @@ class DesktopWorker:
                     to_send = list(batch_buffer)
                     res = await self.client.ingest_batch(task_id, lease_token, batch_id, to_send)
                     if res is not None:
-                        metrics["accepted"] += res.get("accepted", len(to_send))
+                        metrics["accepted"] += res.get("accepted", 0)
                         metrics["duplicates"] += res.get("duplicates", 0)
                         metrics["rejected"] += res.get("rejected", 0)
                         batch_buffer.clear()
-                        if res.get("planTargetReached"):
-                            log.info("Parent plan target reached or cancelled for task %s. Stopping execution.", task_id)
+                        if res.get("planTargetReached") or res.get("limitReached"):
+                            log.info("Parent plan target reached or limit reached for task %s. Stopping execution.", task_id)
                             termination_reason = "PLAN_TARGET_REACHED"
                             task_abort.set()
+                            if plan_id and plan_id in self._plan_tasks:
+                                for sib_id in list(self._plan_tasks[plan_id]):
+                                    if sib_id in self._active_tasks:
+                                        self._active_tasks[sib_id].set()
                             break
                     else:
-                        log.error("Ingest failed for batch %s of task %s after retries. Aborting task.", batch_id, task_id)
+                        raw_err = getattr(self.client, "last_ingest_error", None)
+                        ingest_err = raw_err if isinstance(raw_err, str) and raw_err else f"Ingestion failed for batch {batch_id}"
+                        log.error("Ingest failed for batch %s of task %s: %s. Aborting task.", batch_id, task_id, ingest_err)
                         task_status = "failed"
-                        task_error = f"Ingestion failed for batch {batch_id}"
-                        termination_reason = "FAILURE"
+                        task_error = ingest_err
+                        termination_reason = "FAILURE_INGESTION"
                         task_abort.set()
                         break
 
@@ -533,15 +601,22 @@ class DesktopWorker:
                 to_send = list(batch_buffer)
                 res = await self.client.ingest_batch(task_id, lease_token, batch_id, to_send)
                 if res is not None:
-                    metrics["accepted"] += res.get("accepted", len(to_send))
+                    metrics["accepted"] += res.get("accepted", 0)
                     metrics["duplicates"] += res.get("duplicates", 0)
                     metrics["rejected"] += res.get("rejected", 0)
                     batch_buffer.clear()
+                    if res.get("planTargetReached") or res.get("limitReached"):
+                        if plan_id and plan_id in self._plan_tasks:
+                            for sib_id in list(self._plan_tasks[plan_id]):
+                                if sib_id in self._active_tasks:
+                                        self._active_tasks[sib_id].set()
                 else:
-                    log.error("Ingest failed for final batch %s of task %s. Aborting task.", batch_id, task_id)
+                    raw_err = getattr(self.client, "last_ingest_error", None)
+                    ingest_err = raw_err if isinstance(raw_err, str) and raw_err else f"Ingestion failed for final batch {batch_id}"
+                    log.error("Ingest failed for final batch %s of task %s: %s. Aborting task.", batch_id, task_id, ingest_err)
                     task_status = "failed"
-                    task_error = f"Ingestion failed for final batch {batch_id}"
-                    termination_reason = "FAILURE"
+                    task_error = ingest_err
+                    termination_reason = "FAILURE_INGESTION"
 
             if metrics["accepted"] < candidate_budget and not (self._shutdown_event.is_set() or task_abort.is_set()):
                 exhausted = True
@@ -550,15 +625,39 @@ class DesktopWorker:
         except Exception as exc:
             log.exception("Engine failure during task %s: %s", task_id, exc)
             task_status = "failed"
-            task_error = str(exc)
-            termination_reason = "FAILURE"
+            exc_type = type(exc).__name__
+            task_error = f"{exc_type}: {exc}" if str(exc) else exc_type
+            termination_reason = f"FAILURE_{exc_type.upper()}"
         finally:
             stop_heartbeat.set()
+            task_shutdown_event.set()
             hb_task.cancel()
+            abort_task.cancel()
             try:
-                await hb_task
-            except (asyncio.CancelledError, Exception):
+                await asyncio.gather(hb_task, abort_task, return_exceptions=True)
+            except Exception:
                 pass
+
+            # Clean up task-specific SQLite cache files to save RAM and disk space
+            try:
+                db_parent = Path(db_path).parent
+                db_name = Path(db_path).name
+                for p in db_parent.glob(f"{db_name}*"):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            if task_status == "failed":
+                completion_reason = "failed"
+            elif metrics["accepted"] >= candidate_budget:
+                completion_reason = "target_reached"
+            elif task_abort.is_set():
+                completion_reason = "cancelled"
+            else:
+                completion_reason = "exhausted"
 
             await self.client.complete_task(
                 task_id=task_id,
@@ -569,37 +668,41 @@ class DesktopWorker:
                 rejected=metrics["rejected"],
                 duplicates=metrics["duplicates"],
                 exhausted=exhausted,
-                completion_reason="target_reached" if metrics["accepted"] >= candidate_budget else ("cancelled" if task_abort.is_set() else "exhausted"),
+                completion_reason=completion_reason,
                 termination_reason=termination_reason,
                 error=task_error,
             )
 
         return task_status == "completed"
 
-    async def run_loop(self, poll_interval_s: float = 5.0, once: bool = False) -> None:
-        """Main polling loop claiming and executing discovery tasks."""
-        if hasattr(self.client, "_get_token"):
-            try:
-                self.client._get_token()
-            except Exception:
-                pass
-        if not getattr(self.client, "auth_token", None):
-            log.error("Desktop worker cannot run: No user authentication token provided (--auth-token or MAST_AUTH_TOKEN).")
-            return
-
-        log.info("Desktop worker loop started (worker_id=%s, once=%s)", self.client.worker_id, once)
-
+    async def _worker_slot_loop(self, slot_index: int, poll_interval_s: float, once: bool) -> None:
+        log.info("Desktop scout slot %d started", slot_index + 1)
         while not self._shutdown_event.is_set():
             try:
                 task = await self.client.claim_task()
                 if task:
-                    await self.execute_task(task)
+                    task_id = task.get("id")
+                    plan_id = task.get("planId")
+                    task_abort = asyncio.Event()
+                    if task_id:
+                        self._active_tasks[task_id] = task_abort
+                    if plan_id and task_id:
+                        self._plan_tasks.setdefault(plan_id, set()).add(task_id)
+
+                    try:
+                        await self.execute_task(task, task_abort=task_abort)
+                    finally:
+                        if task_id:
+                            self._active_tasks.pop(task_id, None)
+                        if plan_id and task_id and plan_id in self._plan_tasks:
+                            self._plan_tasks[plan_id].discard(task_id)
+
                     if once:
-                        log.info("Single-task mode (--once) completed, exiting.")
+                        log.info("Desktop scout slot %d completed single task mode (--once), exiting.", slot_index + 1)
                         break
                 else:
                     if once:
-                        log.info("No task available in single-task mode (--once), exiting.")
+                        log.info("Desktop scout slot %d found no task in single task mode (--once), exiting.", slot_index + 1)
                         break
                     if getattr(self.client, "last_auth_error", False):
                         # Avoid aggressive polling when unauthenticated; back off until token refreshes
@@ -609,10 +712,47 @@ class DesktopWorker:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                log.warning("Unexpected error in worker loop: %s", exc)
+                log.warning("Unexpected error in scout slot %d: %s", slot_index + 1, exc)
                 if once:
                     break
                 await asyncio.sleep(poll_interval_s)
+
+    async def run_loop(self, poll_interval_s: float = 5.0, once: bool = False) -> None:
+        """Main polling loop claiming and executing discovery tasks across concurrent scout slots."""
+        if hasattr(self.client, "_get_token"):
+            try:
+                self.client._get_token()
+            except Exception:
+                pass
+        if not getattr(self.client, "auth_token", None):
+            log.error("Desktop worker cannot run: No user authentication token provided (--auth-token or MAST_AUTH_TOKEN).")
+            return
+
+        log.info(
+            "Desktop worker loop started (worker_id=%s, concurrency=%d, once=%s)",
+            self.client.worker_id,
+            self.concurrency,
+            once,
+        )
+
+        if once:
+            await self._worker_slot_loop(0, poll_interval_s=poll_interval_s, once=True)
+            return
+
+        slots = [
+            asyncio.create_task(
+                self._worker_slot_loop(i, poll_interval_s=poll_interval_s, once=False),
+                name=f"desktop-scout-slot-{i + 1}",
+            )
+            for i in range(self.concurrency)
+        ]
+
+        try:
+            await asyncio.gather(*slots)
+        except asyncio.CancelledError:
+            for s in slots:
+                s.cancel()
+            await asyncio.gather(*slots, return_exceptions=True)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -623,8 +763,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="MAST User JWT Bearer Token")
     p.add_argument("--worker-id", default="",
                    help="Unique worker identifier (defaults to desktop-<hostname>-<shortid>)")
-    p.add_argument("--batch-size", type=int, default=10,
-                   help="Batch size for lead ingestion (default: 10)")
+    p.add_argument("--batch-size", type=int, default=1,
+                   help="Batch size for lead ingestion (default: 1)")
+    p.add_argument("--concurrency", type=int, default=int(os.environ.get("MAST_DESKTOP_CONCURRENCY", "1")),
+                   help="Maximum concurrent scout tasks (default: 1)")
     p.add_argument("--poll-interval", type=float, default=5.0,
                    help="Polling interval when idle in seconds (default: 5.0)")
     p.add_argument("--heartbeat-interval", type=float, default=15.0,
@@ -635,6 +777,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="Skip automatic Chromium provisioning check (for dry-run/testing)")
     p.add_argument("--test-browser", action="store_true",
                    help="Test launching and closing Chromium via Playwright, then exit")
+    p.add_argument("--test-engine", action="store_true",
+                   help="Test importing and verifying discovery engine (service.run_query), then exit")
     return p
 
 
@@ -655,6 +799,13 @@ async def run_browser_test(browsers_path: str) -> int:
 async def async_main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    if args.test_engine:
+        log.info("Testing engine run_query import and resolution...")
+        from service import run_query
+        assert callable(run_query)
+        log.info("Engine run_query resolved and verified successfully!")
+        return 0
 
     # Configure Playwright browsers path
     browsers_path = setup_playwright_browsers_path(provision_if_missing=not args.skip_browser_check)
@@ -677,6 +828,7 @@ async def async_main() -> int:
             client=client,
             batch_size=args.batch_size,
             heartbeat_interval_s=args.heartbeat_interval,
+            concurrency=args.concurrency,
         )
         await worker.run_loop(poll_interval_s=args.poll_interval, once=args.once)
 

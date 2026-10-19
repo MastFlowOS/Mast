@@ -9,6 +9,7 @@ import { lookupAndDeliverFromPool, type PoolLookupResult } from "../../lib/poolL
 import { professionSlugForLabel } from "../../lib/professions.js";
 import { enqueueDiscoveryPlan } from "../../discovery/planner.js";
 import { terminateRequest } from "../../discovery/requestLifecycle.js";
+import { publishDiscoveryLiveEvent, discoveryFailedEvent } from "../../discovery/liveDiscoveryEvent.js";
 
 export const discoverRouter = Router();
 
@@ -24,7 +25,7 @@ export const discoverRouter = Router();
  *    A shortfall is reported (completed_partial); the user may then start a
  *    SEPARATE live run via `followsJobId`.
  */
-export const discoverDeps = { enqueueDiscoveryPlan, lookupAndDeliverFromPool };
+export const discoverDeps = { enqueueDiscoveryPlan, lookupAndDeliverFromPool, publishDiscoveryLiveEvent };
 
 // Discovery queues real background scraping work (and, on the "live" plan
 // path, dispatches directly into pg-boss) — 5/min is well above what a
@@ -493,10 +494,11 @@ discoverRouter.post("/:jobId/cancel", requireAuth, cancelLimiter, async (req, re
         .from("discovery_tasks")
         .update({ status: "cancelled", termination_reason: "USER_CANCELLED", completed_at: new Date().toISOString() })
         .eq("plan_id", plan.id)
-        .eq("status", "queued");
+        .in("status", ["queued", "running"]);
       // Same-process workers stop immediately; remote workers see the plan
       // update through their short lifecycle poll.
       terminateRequest(plan.id, "USER_CANCELLED");
+      discoverDeps.publishDiscoveryLiveEvent(discoveryFailedEvent(plan.id, "cancelled"));
     }
 
     const { error: updateError } = await supabaseAdmin

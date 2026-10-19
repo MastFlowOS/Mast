@@ -384,3 +384,35 @@ test("events for a scoutId outside 1-3 still update global counters but never cr
   assert.equal(state.delivered, 1);
   assert.equal(Object.keys(state.scouts).length, 3);
 });
+
+test("41. candidate_rejected accurately increments granular rejectionReasons categories", () => {
+  let state = createInitialLiveDiscoveryState(10);
+  assert.deepEqual(state.rejectionReasons, {
+    duplicate: 0,
+    missing_contact: 0,
+    missing_website: 0,
+    invalid_business: 0,
+    low_viability: 0,
+    enrichment_failure: 0,
+    other: 0,
+  });
+
+  // Rejection with explicit category
+  const evtDup = candidateRejectedEvent(PLAN, 1, "#1", "duplicate_already_owned_by_user", "Area A", "Dup Biz", "duplicate");
+  state = reduceLiveDiscoveryEvent(state, evtDup);
+  assert.equal(state.rejected, 1);
+  assert.equal(state.rejectionReasons.duplicate, 1);
+
+  // Rejection with classified reason (missing website)
+  const evtNoWeb = candidateRejectedEvent(PLAN, 2, "#2", "maps_channel_gate:website_required", "Area B", "NoWeb Biz");
+  state = reduceLiveDiscoveryEvent(state, evtNoWeb);
+  assert.equal(state.rejected, 2);
+  assert.equal(state.rejectionReasons.missing_website, 1);
+
+  // Rejection with enrichment failure
+  const evtEnrich = candidateRejectedEvent(PLAN, 3, "#3", "ensureEnriched_threw", "Area C", "Crash Biz", "enrichment_failure");
+  state = reduceLiveDiscoveryEvent(state, evtEnrich);
+  assert.equal(state.rejected, 3);
+  assert.equal(state.rejectionReasons.enrichment_failure, 1);
+});
+

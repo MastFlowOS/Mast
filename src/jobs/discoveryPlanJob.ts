@@ -1490,10 +1490,11 @@ export async function recordTaskOutcome(
   },
 ) {
   const runtimeMs = Date.now() - outcome.startedAt;
+  const errorPart = outcome.error ? ` error=${outcome.error}` : "";
   console.info(
     `[discovery] worker=${String(task.id).slice(0, 8)} finished plan=${task.plan_id} city=${task.city} ` +
       `status=${outcome.status} reason=${outcome.terminationReason ?? outcome.completionReason} ` +
-      `accepted=${outcome.accepted} runtime_ms=${runtimeMs}`,
+      `accepted=${outcome.accepted} runtime_ms=${runtimeMs}${errorPart}`,
   );
   const taskSummary = {
     discovered: outcome.discovered,
@@ -1571,6 +1572,35 @@ export async function completePlanIfDrained(planId: string) {
     // discovery_failed's failureReason string (there is no dedicated
     // cancelled event type in this pass — see the final report).
     publishDiscoveryLiveEvent(discoveryFailedEvent(planId, "cancelled"));
+    return;
+  }
+
+  // All-tasks-failed scenario: if all tasks failed and 0 leads were delivered,
+  // mark the plan and job failed and emit a truthful terminal failure event.
+  const { data: allTasks } = await db.from("discovery_tasks")
+    .select("status, error").eq("plan_id", planId);
+  const allFailed = (allTasks || []).length > 0 && (allTasks || []).every((t: any) => t.status === "failed");
+  if (allFailed && plan.delivered_count === 0) {
+    const firstError = (allTasks || []).find((t: any) => t.error)?.error || "all_tasks_failed";
+    await db.from("discovery_plans").update({
+      status: "failed",
+      completed_at: new Date().toISOString(),
+    }).eq("id", planId);
+
+    await supabaseAdmin.from("scrape_jobs").update({
+      status: "failed",
+      results_count: 0,
+      completed_at: new Date().toISOString(),
+      job_summary: buildJobSummary(plan, "all_tasks_failed"),
+    }).eq("id", plan.scrape_job_id);
+
+    finalizeJobMetrics({
+      planId,
+      deliveredCount: 0,
+      completionStatus: "failed",
+    });
+
+    publishDiscoveryLiveEvent(discoveryFailedEvent(planId, firstError));
     return;
   }
 

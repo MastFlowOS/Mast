@@ -19,8 +19,9 @@
     "format": "prettier --write .",
     "start:gateway": "node dist/server.js",
     "start:worker": "node dist/workers/index.js",
+    "build:worker": "python -m PyInstaller --distpath dist-worker --workpath build-worker --noconfirm spec-worker/mast-desktop-worker.spec",
     "stage:worker": "node scripts/stage-desktop-worker.mjs",
-    "build:desktop": "node scripts/stage-desktop-worker.mjs && tauri build",
+    "build:desktop": "npm run build:worker && node scripts/stage-desktop-worker.mjs && tauri build",
     "tauri": "tauri",
     "migrate": "node scripts/run-migrations.mjs"
   },

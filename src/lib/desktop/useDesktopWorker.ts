@@ -16,6 +16,7 @@ export interface UseDesktopWorkerResult {
   error: string | null;
   startWorker: () => Promise<void>;
   stopWorker: () => Promise<void>;
+  prepareAndStartWorker: (timeoutMs?: number) => Promise<boolean>;
   ensureWorkerRunning: () => Promise<boolean>;
   refreshStatus: () => Promise<void>;
 }
@@ -180,37 +181,73 @@ export function useDesktopWorker(): UseDesktopWorkerResult {
     };
   }, [isDesktop, workerStatus.status, workerStatus.last_error]);
 
-  const ensureWorkerRunning = useCallback(async (): Promise<boolean> => {
-    const isApp = isDesktopApp() || isDesktop;
-    if (!isApp) {
-      throw new Error("Cannot run local desktop worker outside of the desktop application.");
-    }
-    if (!isDesktop) {
-      setIsDesktop(true);
-    }
-    try {
-      const current = await getDesktopWorkerStatus();
-      if (current.is_running) {
-        setWorkerStatus(current);
+  const prepareAndStartWorker = useCallback(
+    async (timeoutMs = 15000): Promise<boolean> => {
+      const isApp = isDesktopApp() || isDesktop;
+      if (!isApp) {
+        throw new Error("Cannot run local desktop worker outside of the desktop application.");
+      }
+      if (!isDesktop) {
+        setIsDesktop(true);
+      }
+
+      try {
+        const current = await getDesktopWorkerStatus();
+        if (current.is_running) {
+          setWorkerStatus(current);
+          return true;
+        }
+      } catch {
+        // Non-fatal query error; proceed to startWorker
+      }
+
+      await startWorker();
+
+      // Poll for confirmed readiness
+      const startTime = Date.now();
+      while (Date.now() - startTime < timeoutMs) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        try {
+          const verified = await getDesktopWorkerStatus();
+          if (verified.is_running) {
+            setWorkerStatus(verified);
+            return true;
+          }
+          if (verified.status === "error" || verified.last_error) {
+            const errMsg = verified.last_error || "Desktop worker failed to start.";
+            throw new Error(errMsg);
+          }
+        } catch (err) {
+          if (
+            err instanceof Error &&
+            !err.message.includes("fetch") &&
+            !err.message.includes("Network")
+          ) {
+            throw err;
+          }
+        }
+      }
+
+      // Final verification before timeout failure
+      const finalCheck = await getDesktopWorkerStatus().catch(() => null);
+      if (finalCheck?.is_running) {
+        setWorkerStatus(finalCheck);
         return true;
       }
-    } catch {
-      // Non-fatal query error; continue to startWorker
-    }
 
-    await startWorker();
+      const timeoutErr = finalCheck?.last_error
+        ? `Desktop worker failed to start: ${finalCheck.last_error}`
+        : `Desktop worker startup timed out after ${Math.round(
+            timeoutMs / 1000,
+          )}s without confirmed readiness.`;
+      throw new Error(timeoutErr);
+    },
+    [isDesktop, startWorker],
+  );
 
-    // Short stabilization delay to allow process spawn and catch immediate exit/crash
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    const verified = await getDesktopWorkerStatus();
-    if (!verified.is_running) {
-      const errMsg = verified.last_error || "Desktop worker failed to remain running after start.";
-      throw new Error(errMsg);
-    }
-    setWorkerStatus(verified);
-    return true;
-  }, [isDesktop, startWorker]);
+  const ensureWorkerRunning = useCallback(async (): Promise<boolean> => {
+    return prepareAndStartWorker();
+  }, [prepareAndStartWorker]);
 
   return {
     isDesktop,
@@ -219,6 +256,7 @@ export function useDesktopWorker(): UseDesktopWorkerResult {
     error,
     startWorker,
     stopWorker,
+    prepareAndStartWorker,
     ensureWorkerRunning,
     refreshStatus,
   };

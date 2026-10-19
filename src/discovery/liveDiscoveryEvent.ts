@@ -97,6 +97,7 @@ export type DiscoveryLiveEvent = {
    * Never a newly invented taxonomy — see this file's module doc comment.
    */
   reason?: string;
+  rejectionCategory?: string;
 
   /**
    * discovery_plans.delivered_count / requested_count, read fresh at the
@@ -176,8 +177,10 @@ export function candidateRejectedEvent(
   pipelineId: string,
   reason: string,
   areaLabel: string | undefined,
+  businessName?: string,
+  rejectionCategory?: string,
 ): DiscoveryLiveEvent {
-  return { ...baseEvent(planId, "candidate_rejected"), scoutId, pipelineId, reason, areaLabel };
+  return { ...baseEvent(planId, "candidate_rejected"), scoutId, pipelineId, reason, areaLabel, businessName, rejectionCategory };
 }
 
 export function leadDeliveredEvent(

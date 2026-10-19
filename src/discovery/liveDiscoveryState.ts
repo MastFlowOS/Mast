@@ -43,6 +43,29 @@ export type ScoutLiveState = {
 
 export type DiscoveryStatus = "starting" | "discovering" | "completed" | "exhausted" | "failed";
 
+export type RejectionCategory =
+  | "duplicate"
+  | "missing_contact"
+  | "missing_website"
+  | "invalid_business"
+  | "low_viability"
+  | "enrichment_failure"
+  | "other";
+
+export type RejectionReasonCounts = Record<RejectionCategory, number>;
+
+export function initialRejectionReasonCounts(): RejectionReasonCounts {
+  return {
+    duplicate: 0,
+    missing_contact: 0,
+    missing_website: 0,
+    invalid_business: 0,
+    low_viability: 0,
+    enrichment_failure: 0,
+    other: 0,
+  };
+}
+
 export type DiscoveryLiveState = {
   scouts: Record<ScoutId, ScoutLiveState>;
   delivered: number;
@@ -51,6 +74,7 @@ export type DiscoveryLiveState = {
   progressPercent: number;
   status: DiscoveryStatus;
   latestEventAt?: number;
+  rejectionReasons: RejectionReasonCounts;
 
   /**
    * Internal de-dup bookkeeping (SPEC #25: "the reducer/state layer should
@@ -94,6 +118,7 @@ export function createInitialLiveDiscoveryState(target: number, initialDelivered
     target,
     progressPercent: computeProgressPercent(initialDelivered, target),
     status: "starting",
+    rejectionReasons: initialRejectionReasonCounts(),
     _internal: { processedEventIds: [] },
   };
 }
@@ -229,6 +254,32 @@ function countsAsRejection(reason: string | undefined): boolean {
   return reason !== "plan_limit_reached";
 }
 
+export function classifyRejectionReason(reason: string | undefined): RejectionCategory {
+  if (!reason) return "other";
+  const r = reason.toLowerCase();
+  if (r === "duplicate_already_owned_by_user" || r.includes("duplicate")) {
+    return "duplicate";
+  }
+  if (r === "ensureenriched_threw" || (r.includes("enrich") && r.includes("threw")) || r.includes("enrichment_fail")) {
+    return "enrichment_failure";
+  }
+  if (r.startsWith("validatediscoverycandidate:")) {
+    if (r.includes("no_usable_channel")) return "missing_contact";
+    return "invalid_business";
+  }
+  if (r.includes("quality_gate") || r.includes("lead_quality") || r.includes("rating") || r.includes("review")) {
+    return "low_viability";
+  }
+  if (r.startsWith("maps_channel_gate:") || r.startsWith("post_enrichment_channel_gate:")) {
+    const requested = extractRequestedChannels(reason);
+    if ((requested && requested.length === 1 && requested[0] === "website") || r.includes("website")) {
+      return "missing_website";
+    }
+    return "missing_contact";
+  }
+  return "other";
+}
+
 // ── Single-event reducer ────────────────────────────────────────────────
 
 /**
@@ -288,6 +339,11 @@ export function reduceLiveDiscoveryEvent(state: DiscoveryLiveState, event: Disco
       }
       if (countsAsRejection(event.reason) && !hasProcessed(next, event.id)) {
         next.rejected += 1;
+        const cat = classifyRejectionReason(event.reason);
+        next.rejectionReasons = {
+          ...next.rejectionReasons,
+          [cat]: (next.rejectionReasons[cat] ?? 0) + 1,
+        };
         markProcessed(next, event.id);
       }
       return next;

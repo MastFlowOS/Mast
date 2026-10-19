@@ -218,8 +218,43 @@ class TestDesktopWorkerCoordination(unittest.IsolatedAsyncioTestCase):
         client.complete_task.assert_called_once()
         complete_kwargs = client.complete_task.call_args.kwargs
         self.assertEqual(complete_kwargs["status"], "failed")
-        self.assertEqual(complete_kwargs["termination_reason"], "FAILURE")
+        self.assertEqual(complete_kwargs["completion_reason"], "failed")
+        self.assertEqual(complete_kwargs["termination_reason"], "FAILURE_INGESTION")
         self.assertIn("Ingestion failed", complete_kwargs["error"])
+
+    async def test_worker_reports_engine_exception_with_distinct_reason_and_details(self):
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.complete_task = AsyncMock(return_value=True)
+
+        async def failing_engine(**kwargs):
+            raise RuntimeError("Database connection timed out")
+            yield {}
+
+        worker = DesktopWorker(
+            client=client,
+            batch_size=1,
+            heartbeat_interval_s=10.0,
+            engine_runner=failing_engine,
+        )
+
+        task = {
+            "id": "task-uuid-exc",
+            "leaseToken": "lease-token-exc",
+            "niche": "bakeries",
+            "city": "Austin",
+            "candidateBudget": 10,
+        }
+
+        success = await worker.execute_task(task)
+        self.assertFalse(success)
+
+        client.complete_task.assert_called_once()
+        complete_kwargs = client.complete_task.call_args.kwargs
+        self.assertEqual(complete_kwargs["status"], "failed")
+        self.assertEqual(complete_kwargs["completion_reason"], "failed")
+        self.assertEqual(complete_kwargs["termination_reason"], "FAILURE_RUNTIMEERROR")
+        self.assertIn("RuntimeError: Database connection timed out", complete_kwargs["error"])
 
     async def test_worker_run_loop_aborts_without_auth_token(self):
         client = MagicMock(spec=DesktopCoordinatorClient)
@@ -230,6 +265,140 @@ class TestDesktopWorkerCoordination(unittest.IsolatedAsyncioTestCase):
         await worker.run_loop(once=True)
 
         client.claim_task.assert_not_called()
+
+    async def test_worker_passes_localized_query_to_runner(self):
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.ingest_batch = AsyncMock(return_value={"accepted": 1, "duplicates": 0, "rejected": 0})
+        client.complete_task = AsyncMock(return_value=True)
+
+        captured_kwargs = {}
+
+        async def fake_engine(**kwargs):
+            captured_kwargs.update(kwargs)
+            yield {"name": "Local Cafe"}
+
+        worker = DesktopWorker(client=client, batch_size=1, engine_runner=fake_engine)
+
+        # 1. With explicit queryString
+        task_with_query_string = {
+            "id": "t-1",
+            "leaseToken": "lt-1",
+            "queryString": "Coffee Shop in Lincoln Square, Chicago",
+            "niche": "Coffee Shop",
+            "city": "Chicago",
+            "area": "Lincoln Square",
+            "candidateBudget": 1,
+        }
+        await worker.execute_task(task_with_query_string)
+        self.assertEqual(captured_kwargs.get("query"), "Coffee Shop in Lincoln Square, Chicago")
+
+        # 2. Without queryString, but with area, niche, city
+        captured_kwargs.clear()
+        task_with_area = {
+            "id": "t-2",
+            "leaseToken": "lt-2",
+            "niche": "Bakeries",
+            "city": "Chicago",
+            "area": "Logan Square",
+            "candidateBudget": 1,
+        }
+        await worker.execute_task(task_with_area)
+        self.assertEqual(captured_kwargs.get("query"), "Bakeries in Logan Square, Chicago")
+
+    async def test_worker_filters_required_channels_to_maps_channels(self):
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.ingest_batch = AsyncMock(return_value={"accepted": 1, "duplicates": 0, "rejected": 0})
+        client.complete_task = AsyncMock(return_value=True)
+
+        captured_kwargs = {}
+
+        async def fake_engine(**kwargs):
+            captured_kwargs.update(kwargs)
+            yield {"name": "Lead"}
+
+        worker = DesktopWorker(client=client, batch_size=1, engine_runner=fake_engine)
+
+        task = {
+            "id": "t-ch",
+            "leaseToken": "lt-ch",
+            "niche": "Cafes",
+            "city": "Seattle",
+            "candidateBudget": 1,
+            "channels": ["email", "instagram", "website", "phone"],
+        }
+        await worker.execute_task(task)
+        # Only website and phone should be sent to engine runner; email and instagram are resolved during website enrichment
+        self.assertEqual(captured_kwargs.get("required_channels"), ["website", "phone"])
+
+    async def test_worker_cancels_sibling_tasks_when_plan_target_reached(self):
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.ingest_batch = AsyncMock(return_value={"accepted": 1, "duplicates": 0, "rejected": 0, "planTargetReached": True})
+        client.complete_task = AsyncMock(return_value=True)
+
+        async def fake_engine(**kwargs):
+            yield {"name": "Biz 1"}
+
+        worker = DesktopWorker(client=client, batch_size=1, engine_runner=fake_engine)
+
+        plan_id = "plan-multi-123"
+        task1_abort = asyncio.Event()
+        task2_abort = asyncio.Event()
+
+        worker._active_tasks["task-1"] = task1_abort
+        worker._active_tasks["task-2"] = task2_abort
+        worker._plan_tasks[plan_id] = {"task-1", "task-2"}
+
+        task1 = {
+            "id": "task-1",
+            "leaseToken": "lt-1",
+            "planId": plan_id,
+            "niche": "cafes",
+            "city": "Austin",
+            "candidateBudget": 5,
+        }
+
+        await worker.execute_task(task1, task_abort=task1_abort)
+
+        self.assertTrue(task1_abort.is_set())
+        self.assertTrue(task2_abort.is_set())
+
+    async def test_worker_run_loop_starts_concurrent_scout_slots(self):
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.auth_token = "valid-token"
+        claimed_tasks = []
+
+        async def fake_claim():
+            await asyncio.sleep(0.01)
+            t_id = f"task-{len(claimed_tasks) + 1}"
+            task = {"id": t_id, "leaseToken": f"lt-{t_id}", "niche": "cafes", "city": "Austin", "candidateBudget": 1}
+            claimed_tasks.append(task)
+            return task
+
+        client.claim_task = AsyncMock(side_effect=fake_claim)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.ingest_batch = AsyncMock(return_value={"accepted": 1, "duplicates": 0, "rejected": 0})
+        client.complete_task = AsyncMock(return_value=True)
+
+        async def fake_engine(**kwargs):
+            await asyncio.sleep(0.05)
+            yield {"name": "Cafe"}
+
+        worker = DesktopWorker(client=client, concurrency=3, batch_size=1, engine_runner=fake_engine)
+
+        async def stopper():
+            while len(worker._active_tasks) < 2 and len(claimed_tasks) < 3:
+                await asyncio.sleep(0.01)
+            worker._shutdown_event.set()
+
+        await asyncio.gather(
+            worker.run_loop(poll_interval_s=0.01),
+            stopper(),
+        )
+
+        self.assertGreaterEqual(len(claimed_tasks), 2)
 
 
 class TestBrowserDetectionAndProvisioning(unittest.IsolatedAsyncioTestCase):
@@ -280,6 +449,14 @@ class TestBrowserDetectionAndProvisioning(unittest.IsolatedAsyncioTestCase):
 
 
 class TestDesktopCoordinatorClient(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._patcher = patch("desktop_worker.get_desktop_data_dir", return_value=Path(self._temp_dir.name))
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+        self._temp_dir.cleanup()
     async def test_claim_task_success(self):
         mock_response = MagicMock()
         mock_response.status = 200

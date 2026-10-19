@@ -122,12 +122,20 @@ async function claimOrCreateProcessingTask(businessId: string, kind: ProcessingK
 export async function enqueueBusinessProcessing(businessId: string, kind: ProcessingKind): Promise<void> {
   const task = await claimOrCreateProcessingTask(businessId, kind);
   if (!task) return; // already queued or running — no new wake-up needed
-  const boss = await getBoss();
-  await boss.send(
-    kind === "enrich" ? QUEUES.businessEnrich : QUEUES.businessScore,
-    { taskId: task.id },
-  );
+  try {
+    const boss = await getBoss();
+    await boss.send(
+      kind === "enrich" ? QUEUES.businessEnrich : QUEUES.businessScore,
+      { taskId: task.id },
+    );
+  } catch (err) {
+    // The task row is safely persisted as 'queued' in business_processing_tasks.
+    // If pg-boss is unreachable (e.g. desktop gateway, offline/local development, or pooler disconnection),
+    // logging a warning satisfies the contract without crashing inline enrichment or candidate delivery.
+    console.warn(`[enqueueBusinessProcessing] could not wake worker via pg-boss for task ${task.id} (${kind}):`, err);
+  }
 }
+
 
 /**
  * Re-dispatch durable task rows that were left queued after the known

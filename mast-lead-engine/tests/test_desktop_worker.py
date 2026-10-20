@@ -5,6 +5,7 @@ browser detection/provisioning, and candidate normalization.
 """
 
 import asyncio
+import time
 import os
 import tempfile
 import unittest
@@ -77,7 +78,7 @@ class TestDesktopWorkerCoordination(unittest.IsolatedAsyncioTestCase):
     async def test_worker_executes_task_batches_and_completes(self):
         client = MagicMock(spec=DesktopCoordinatorClient)
         client.heartbeat = AsyncMock(return_value=True)
-        client.ingest_batch = AsyncMock(return_value={"accepted": 2, "duplicates": 0, "rejected": 0})
+        client.ingest_batch = AsyncMock(side_effect=lambda t, l, b, c: {"accepted": len(c), "duplicates": 0, "rejected": 0})
         client.complete_task = AsyncMock(return_value=True)
 
         async def fake_engine(**kwargs):
@@ -102,11 +103,14 @@ class TestDesktopWorkerCoordination(unittest.IsolatedAsyncioTestCase):
         success = await worker.execute_task(task)
 
         self.assertTrue(success)
-        self.assertEqual(client.ingest_batch.call_count, 1)
-        args, kwargs = client.ingest_batch.call_args
-        self.assertEqual(args[0], "task-uuid-1")
-        self.assertEqual(args[1], "lease-token-abc")
-        self.assertEqual(len(args[3]), 2)  # 2 candidates in batch
+        # Immediate first-lead flush dispatches Candidate 1 in batch 1, then Candidate 2 in batch 2
+        self.assertEqual(client.ingest_batch.call_count, 2)
+        batch1 = client.ingest_batch.call_args_list[0][0][3]
+        batch2 = client.ingest_batch.call_args_list[1][0][3]
+        self.assertEqual(len(batch1), 1)
+        self.assertEqual(len(batch2), 1)
+        self.assertEqual(batch1[0]["name"], "Biz 1")
+        self.assertEqual(batch2[0]["name"], "Biz 2")
 
         client.complete_task.assert_called_once()
         complete_kwargs = client.complete_task.call_args.kwargs
@@ -399,6 +403,254 @@ class TestDesktopWorkerCoordination(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertGreaterEqual(len(claimed_tasks), 2)
+
+
+    async def test_producer_consumer_decoupling_does_not_block_discovery(self):
+        """Proves discovery scraper produces candidates ahead into bounded queue while ingestion sends batches."""
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.complete_task = AsyncMock(return_value=True)
+
+        async def slow_ingest(task_id, lease_token, batch_id, candidates):
+            await asyncio.sleep(0.05)
+            return {"accepted": len(candidates), "duplicates": 0, "rejected": 0}
+
+        client.ingest_batch = AsyncMock(side_effect=slow_ingest)
+
+        discovery_times = []
+
+        async def fast_engine(**kwargs):
+            for i in range(4):
+                discovery_times.append(time.time())
+                yield {"name": f"Fast Biz {i}"}
+                await asyncio.sleep(0.01)
+
+        worker = DesktopWorker(
+            client=client,
+            batch_size=2,
+            engine_runner=fast_engine,
+        )
+
+        task = {
+            "id": "t-pipelined",
+            "leaseToken": "lt-pipe",
+            "niche": "plumbers",
+            "city": "Austin",
+            "candidateBudget": 4,
+        }
+
+        ok = await worker.execute_task(task)
+        self.assertTrue(ok)
+        # Immediate first lead (1 lead) + full batch (2 leads) + remaining final (1 lead) = 3 batches
+        self.assertEqual(client.ingest_batch.call_count, 3)
+        self.assertEqual(len(discovery_times), 4)
+        client.complete_task.assert_called_once()
+        complete_kwargs = client.complete_task.call_args.kwargs
+        self.assertEqual(complete_kwargs["accepted"], 4)
+        self.assertEqual(complete_kwargs["status"], "completed")
+
+    async def test_immediate_first_candidate_flush(self):
+        """Proves the first discovered candidate is immediately dispatched without waiting for batch size."""
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        first_ingest_time: list[float] = []
+        second_yield_time: list[float] = []
+
+        async def staggered_engine(**kwargs):
+            yield {"name": "Candidate 1", "rating": 4.5}
+            await asyncio.sleep(0.2)
+            second_yield_time.append(time.time())
+            yield {"name": "Candidate 2", "rating": 4.6}
+
+        async def tracking_ingest(task_id, lease_token, batch_id, candidates):
+            if not first_ingest_time:
+                first_ingest_time.append(time.time())
+            return {"accepted": len(candidates), "duplicates": 0, "rejected": 0}
+
+        client.ingest_batch = AsyncMock(side_effect=tracking_ingest)
+        client.complete_task = AsyncMock(return_value=True)
+
+        worker = DesktopWorker(
+            client=client,
+            batch_size=5,  # batch size 5!
+            heartbeat_interval_s=10.0,
+            engine_runner=staggered_engine,
+        )
+
+        task = {
+            "id": "t-first-flush",
+            "leaseToken": "lt-first",
+            "niche": "cafes",
+            "city": "Seattle",
+            "candidateBudget": 2,
+        }
+
+        ok = await worker.execute_task(task)
+        self.assertTrue(ok)
+        self.assertEqual(client.ingest_batch.call_count, 2)
+        batch1 = client.ingest_batch.call_args_list[0][0][3]
+        self.assertEqual(len(batch1), 1, "First batch must flush immediately with 1 candidate")
+        self.assertEqual(batch1[0]["name"], "Candidate 1")
+        if second_yield_time and first_ingest_time:
+            self.assertLess(first_ingest_time[0], second_yield_time[0] + 0.05)
+
+    async def test_time_based_partial_batch_flush_in_sparse_market(self):
+        """Proves that buffered candidates flush on bounded idle timer (1.5s) in sparse markets."""
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.complete_task = AsyncMock(return_value=True)
+
+        batch_times: list[float] = []
+
+        async def sparse_engine(**kwargs):
+            yield {"name": "Sparse 1"}
+            yield {"name": "Sparse 2"}
+            await asyncio.sleep(1.8)
+            yield {"name": "Sparse 3"}
+
+        async def recording_ingest(task_id, lease_token, batch_id, candidates):
+            batch_times.append(time.time())
+            return {"accepted": len(candidates), "duplicates": 0, "rejected": 0}
+
+        client.ingest_batch = AsyncMock(side_effect=recording_ingest)
+
+        worker = DesktopWorker(
+            client=client,
+            batch_size=5,
+            heartbeat_interval_s=10.0,
+            engine_runner=sparse_engine,
+        )
+
+        task = {
+            "id": "t-sparse-timer",
+            "leaseToken": "lt-sparse",
+            "niche": "specialty",
+            "city": "RemoteTown",
+            "candidateBudget": 3,
+        }
+
+        ok = await worker.execute_task(task)
+        self.assertTrue(ok)
+        self.assertEqual(client.ingest_batch.call_count, 3)
+
+    async def test_sparse_markets_fewer_candidates_than_batch_size(self):
+        """Proves sparse markets delivering fewer candidates than batch size complete with exhausted=True."""
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.ingest_batch = AsyncMock(side_effect=lambda t, l, b, c: {"accepted": len(c), "duplicates": 0, "rejected": 0})
+        client.complete_task = AsyncMock(return_value=True)
+
+        async def small_market_engine(**kwargs):
+            yield {"name": "Small 1"}
+            yield {"name": "Small 2"}
+
+        worker = DesktopWorker(
+            client=client,
+            batch_size=5,
+            engine_runner=small_market_engine,
+        )
+
+        task = {
+            "id": "t-sparse-exhaust",
+            "leaseToken": "lt-sparse-ex",
+            "niche": "rare",
+            "city": "SmallTown",
+            "candidateBudget": 10,
+        }
+
+        ok = await worker.execute_task(task)
+        self.assertTrue(ok)
+        client.complete_task.assert_called_once()
+        complete_kwargs = client.complete_task.call_args.kwargs
+        self.assertTrue(complete_kwargs["exhausted"])
+        self.assertEqual(complete_kwargs["status"], "completed")
+        self.assertEqual(complete_kwargs["accepted"], 2)
+
+    async def test_final_partial_batch_flushing(self):
+        """Proves remaining buffered candidates are properly flushed when discovery completes normally."""
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.ingest_batch = AsyncMock(side_effect=lambda t, l, b, c: {"accepted": len(c), "duplicates": 0, "rejected": 0})
+        client.complete_task = AsyncMock(return_value=True)
+
+        async def engine_4_items(**kwargs):
+            for i in range(4):
+                yield {"name": f"Lead {i+1}"}
+
+        worker = DesktopWorker(
+            client=client,
+            batch_size=5,
+            engine_runner=engine_4_items,
+        )
+
+        task = {
+            "id": "t-final-flush",
+            "leaseToken": "lt-final",
+            "niche": "plumbers",
+            "city": "Dallas",
+            "candidateBudget": 10,
+        }
+
+        ok = await worker.execute_task(task)
+        self.assertTrue(ok)
+        self.assertEqual(client.ingest_batch.call_count, 2)
+        batch2 = client.ingest_batch.call_args_list[1][0][3]
+        self.assertEqual(len(batch2), 3)
+
+    async def test_cancellation_discards_queued_and_does_not_send_new_work(self):
+        """Proves cancelling task aborts cleanly without sending buffered work over the network."""
+        client = MagicMock(spec=DesktopCoordinatorClient)
+        client.heartbeat = AsyncMock(return_value=True)
+        client.complete_task = AsyncMock(return_value=True)
+
+        ingest_calls: list[list[dict]] = []
+
+        async def slow_ingest(task_id, lease_token, batch_id, candidates):
+            ingest_calls.append(candidates)
+            await asyncio.sleep(0.05)
+            return {"accepted": len(candidates), "duplicates": 0, "rejected": 0}
+
+        client.ingest_batch = AsyncMock(side_effect=slow_ingest)
+
+        async def continuous_engine(**kwargs):
+            s_event = kwargs.get("shutdown_event")
+            for i in range(50):
+                if s_event and s_event.is_set():
+                    break
+                yield {"name": f"Cont Lead {i}"}
+                await asyncio.sleep(0.01)
+
+        worker = DesktopWorker(
+            client=client,
+            batch_size=5,
+            engine_runner=continuous_engine,
+        )
+
+        task = {
+            "id": "t-cancel-nowork",
+            "leaseToken": "lt-cancel",
+            "niche": "lawyers",
+            "city": "Miami",
+            "candidateBudget": 50,
+        }
+
+        abort_event = asyncio.Event()
+
+        async def cancel_soon():
+            await asyncio.sleep(0.08)
+            abort_event.set()
+
+        await asyncio.gather(
+            worker.execute_task(task, task_abort=abort_event),
+            cancel_soon(),
+        )
+
+        client.complete_task.assert_called_once()
+        complete_kwargs = client.complete_task.call_args.kwargs
+        self.assertEqual(complete_kwargs["termination_reason"], "CANCELLED")
+        calls_count_after_cancel = len(ingest_calls)
+        await asyncio.sleep(0.1)
+        self.assertEqual(len(ingest_calls), calls_count_after_cancel)
 
 
 class TestBrowserDetectionAndProvisioning(unittest.IsolatedAsyncioTestCase):

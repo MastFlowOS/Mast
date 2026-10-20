@@ -4,7 +4,7 @@ import { evaluateLeadQuality } from "../lib/leadQualityPolicy.js";
 import { evaluateEarlyChannelPrune } from "./earlyPrune.js";
 import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.js";
 import { deliverLead, upsertBusinessFromEngineLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
-import { enqueueBusinessProcessing, ensureEnriched, ensureIntelligence } from "../jobs/businessProcessingJob.js";
+import { enqueueBusinessProcessing, ensureEnriched, ensureIntelligence, PidAdmissionUnavailableError } from "../jobs/businessProcessingJob.js";
 import { recordTimeToFirstLead } from "../lib/observability.js";
 import {
   publishDiscoveryLiveEvent,
@@ -56,6 +56,7 @@ export interface ProcessCandidateParams {
   dailyLimit?: number;
   monthlyLimit?: number;
   startedAt?: number;
+  signal?: AbortSignal;
 }
 
 export type ProcessCandidateResult =
@@ -135,20 +136,59 @@ export async function processDiscoveredCandidate(
 
   // 6. Enrich if required by requested channels
   if (needsEnrichmentToDecide) {
-    try {
-      await deps.ensureEnriched(businessId);
-      if (requestedChannels.includes("instagram")) {
-        await deps.ensureIntelligence(businessId);
+    const admissionDeadlineMs = 5000;
+    const pollIntervalMs = 250;
+    const startTime = Date.now();
+    let enrichmentSucceeded = false;
+
+    while (Date.now() - startTime < admissionDeadlineMs) {
+      if (params.signal?.aborted) {
+        return { outcome: "rejected", reason: "pipeline_aborted" };
       }
-    } catch (enrichErr) {
+      try {
+        await deps.ensureEnriched(businessId);
+        if (requestedChannels.includes("instagram")) {
+          await deps.ensureIntelligence(businessId);
+        }
+        enrichmentSucceeded = true;
+        break;
+      } catch (enrichErr) {
+        const isAdmissionErr =
+          enrichErr instanceof PidAdmissionUnavailableError ||
+          (enrichErr instanceof Error &&
+            (enrichErr.name === "PidAdmissionUnavailableError" ||
+              enrichErr.message.includes("admission unavailable") ||
+              enrichErr.message.includes("ADMISSION_BLOCKED"))) ||
+          String(enrichErr).includes("admission unavailable");
+
+        if (isAdmissionErr) {
+          const elapsed = Date.now() - startTime;
+          const remaining = admissionDeadlineMs - elapsed;
+          if (remaining <= 0) break;
+          await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, remaining)));
+          continue;
+        }
+
+        console.warn(
+          `[candidatePipeline] ensureEnriched/ensureIntelligence failed for businessId=${businessId}:`,
+          enrichErr,
+        );
+        deps.publishDiscoveryLiveEvent(
+          candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, "ensureEnriched_threw", params.areaLabel, params.lead.name, "enrichment_failure"),
+        );
+        return { outcome: "rejected", reason: "ensureEnriched_threw" };
+      }
+    }
+
+    if (!enrichmentSucceeded) {
+      const reason = "enrichment_failure:admission_timeout";
       console.warn(
-        `[candidatePipeline] ensureEnriched/ensureIntelligence failed for businessId=${businessId}:`,
-        enrichErr,
+        `[candidatePipeline] enrichment admission timed out after ${Date.now() - startTime}ms for businessId=${businessId}`,
       );
       deps.publishDiscoveryLiveEvent(
-        candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, "ensureEnriched_threw", params.areaLabel, params.lead.name, "enrichment_failure"),
+        candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, reason, params.areaLabel, params.lead.name, "enrichment_failure"),
       );
-      return { outcome: "rejected", reason: "ensureEnriched_threw" };
+      return { outcome: "rejected", reason };
     }
 
     const { data: enriched } = await deps.db

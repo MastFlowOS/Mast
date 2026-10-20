@@ -371,7 +371,7 @@ _RETRYABLE_STATUS_CODES: set[int] = {429, 502, 503, 504}
 # every attempt (not only after one fails).
 import os as _os
 
-_DEFAULT_MAX_WALL_CLOCK_SECONDS = 45.0
+_DEFAULT_MAX_WALL_CLOCK_SECONDS = 25.0
 
 
 def _overpass_max_wall_clock_seconds() -> float:
@@ -509,6 +509,17 @@ class _StopRequested(Exception):
     """
 
 
+def _sleep_interruptible(seconds: float, should_stop: Optional[Callable[[], bool]] = None, step: float = 0.05) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if should_stop is not None and should_stop():
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(step, max(0.0, remaining)))
+    return bool(should_stop() if should_stop else False)
+
 def _http_post_urllib(
     url: str,
     data: str,
@@ -630,6 +641,8 @@ def _http_post_urllib(
     # therefore no sequence of attempts, can spend more real wall-clock
     # time than `max_wall_clock_seconds` allows in total.
     def _effective_attempt_timeout() -> float:
+        if should_stop is not None and should_stop():
+            return 0.0
         if max_wall_clock_seconds is None:
             return timeout
         remaining = max_wall_clock_seconds - (time.monotonic() - _wall_clock_start)
@@ -706,7 +719,9 @@ def _http_post_urllib(
                             max_retries_per_endpoint,
                             delay,
                         )
-                        time.sleep(delay)
+                        if _sleep_interruptible(delay, should_stop):
+                            log.info("[overpass] should_stop reported true during retry delay from %s - aborting.", target_url)
+                            raise _StopRequested() from None
                     else:
                         raise
                 except (URLError, TimeoutError, OSError) as exc:
@@ -728,7 +743,9 @@ def _http_post_urllib(
                         max_retries_per_endpoint,
                         delay,
                     )
-                    time.sleep(delay)
+                    if _sleep_interruptible(delay, should_stop):
+                        log.info("[overpass] should_stop reported true during network error retry delay from %s - aborting.", target_url)
+                        raise _StopRequested() from None
 
             log.warning(
                 "[overpass] Exhausted retries for %s. Attempting fallback mirror...",

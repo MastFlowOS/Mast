@@ -20,6 +20,7 @@ import {
 import { getAreasForCity } from "../../lib/geo/cityAreas.js";
 import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../../discovery/areaRotation.js";
 import { classifyRejectionReason } from "../../discovery/liveDiscoveryState.js";
+import { sanitizeWorkerError } from "../../lib/safeRequestLog.js";
 
 export const desktopRouter = Router();
 
@@ -141,6 +142,356 @@ function isTaskLeasedToOther(task: any, now: number): boolean {
   if (!task.last_heartbeat_at) return false;
   const heartbeatTime = new Date(task.last_heartbeat_at).getTime();
   return now - heartbeatTime < DESKTOP_LEASE_TTL_MS;
+}
+
+/**
+ * Normalizes multi-identifier keys across Maps URLs/place IDs, website domains,
+ * phone numbers, email, social handles, and engine fingerprints for intra-batch deduplication.
+ */
+// ── Intra-Batch Deduplication & Normalization ─────────────────────────────────
+
+const PLATFORM_DOMAINS = new Set([
+  "linktr.ee",
+  "linktree.com",
+  "facebook.com",
+  "fb.com",
+  "instagram.com",
+  "toasttab.com",
+  "booksy.com",
+  "square.site",
+  "squareup.com",
+  "calendly.com",
+  "yelp.com",
+  "tripadvisor.com",
+  "foursquare.com",
+  "opentable.com",
+  "resy.com",
+  "vagaro.com",
+  "mindbodyonline.com",
+  "glofox.com",
+  "ubereats.com",
+  "doordash.com",
+  "grubhub.com",
+  "justeat.com",
+  "deliveroo.com",
+  "fresha.com",
+  "styleseat.com",
+  "wixsite.com",
+  "wix.com",
+  "wordpress.com",
+  "blogspot.com",
+  "myshopify.com",
+  "carrd.co",
+  "bitly.com",
+  "sites.google.com",
+  "business.site",
+]);
+
+const TOLL_FREE_AREA_CODES = new Set(["800", "888", "877", "866", "855", "844", "833"]);
+
+export function extractPlaceId(raw: any): string | null {
+  if (Array.isArray(raw?.fingerprints)) {
+    const fp = raw.fingerprints.find((f: any) => typeof f === "string" && f.trim().toLowerCase().startsWith("place:"));
+    if (fp) return fp.trim().toLowerCase();
+  }
+  if (typeof raw?.maps_link === "string" && raw.maps_link.trim()) {
+    const rawLink = raw.maps_link.trim();
+    const chijMatch = rawLink.match(/(ChIJ[\w\-]+)/i);
+    if (chijMatch) return `place:${chijMatch[1].toLowerCase()}`;
+    const hexMatch = rawLink.match(/!1s(0x[a-f0-9]+:0x[a-f0-9]+)/i);
+    if (hexMatch) return `place:${hexMatch[1].toLowerCase()}`;
+  }
+  return null;
+}
+
+export function normalizeMapsUrl(rawLink?: string | null): string | null {
+  if (!rawLink || typeof rawLink !== "string") return null;
+  const trimmed = rawLink.trim();
+  if (!trimmed || trimmed.includes("/maps/search/")) return null;
+  try {
+    const parsed = new URL(trimmed);
+    const cleanPath = `${parsed.hostname}${parsed.pathname}`.replace(/\/+$/, "").toLowerCase();
+    return cleanPath;
+  } catch {
+    const stripped = trimmed.split("?")[0].replace(/\/+$/, "").toLowerCase();
+    return stripped || null;
+  }
+}
+
+export function getCustomDomain(url?: string | null): string | null {
+  if (!url || typeof url !== "string") return null;
+  try {
+    let u = url.trim().toLowerCase();
+    if (!u.startsWith("http://") && !u.startsWith("https://")) {
+      u = `https://${u}`;
+    }
+    const host = new URL(u).hostname.replace(/^www\./, "");
+    if (!host || !host.includes(".")) return null;
+    for (const plat of PLATFORM_DOMAINS) {
+      if (host === plat || host.endsWith(`.${plat}`)) {
+        return null;
+      }
+    }
+    return host;
+  } catch {
+    return null;
+  }
+}
+
+export function getCanonicalPlatformUrl(url?: string | null): string | null {
+  if (!url || typeof url !== "string") return null;
+  try {
+    let u = url.trim().toLowerCase();
+    if (!u.startsWith("http://") && !u.startsWith("https://")) {
+      u = `https://${u}`;
+    }
+    const parsed = new URL(u);
+    const host = parsed.hostname.replace(/^www\./, "");
+    for (const plat of PLATFORM_DOMAINS) {
+      if (host === plat || host.endsWith(`.${plat}`)) {
+        const cleanPath = parsed.pathname.replace(/\/+$/, "");
+        if (cleanPath && cleanPath !== "/") {
+          return `${host}${cleanPath}`;
+        }
+        return null;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeFullPhone(rawPhone?: string | null, countryCode?: string | null): string | null {
+  if (!rawPhone || typeof rawPhone !== "string") return null;
+  const s = rawPhone.trim();
+  if (!s) return null;
+  const digits = s.replace(/\D/g, "");
+  if (digits.length < 7 || digits.length > 15) return null;
+
+  if (s.startsWith("+")) {
+    return `+${digits}`;
+  }
+  if (s.startsWith("00")) {
+    return `+${digits.slice(2)}`;
+  }
+
+  const cc = (countryCode || "").toUpperCase();
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  if (digits.length === 10) {
+    if (cc === "GB" || cc === "UK") {
+      return `+44${digits}`;
+    }
+    return `+1${digits}`;
+  }
+  if (cc === "GB" || cc === "UK") {
+    if (digits.length === 11 && digits.startsWith("0")) {
+      return `+44${digits.slice(1)}`;
+    }
+    return `+44${digits}`;
+  }
+
+  return `+${digits}`;
+}
+
+export function isTollFree(phone: string): boolean {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) {
+    const area = digits.slice(1, 4);
+    return TOLL_FREE_AREA_CODES.has(area);
+  }
+  if (digits.length === 10) {
+    const area = digits.slice(0, 3);
+    return TOLL_FREE_AREA_CODES.has(area);
+  }
+  return false;
+}
+
+export function normalizeBusinessName(name?: string | null): string {
+  if (!name || typeof name !== "string") return "";
+  return name
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function namesAreSimilar(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.includes(b) && b.length / a.length >= 0.5) return true;
+  if (b.includes(a) && a.length / b.length >= 0.5) return true;
+
+  const tokensA = a.split(/\s+/).filter((t) => t.length > 2);
+  const tokensB = b.split(/\s+/).filter((t) => t.length > 2);
+  if (tokensA.length > 0 && tokensB.length > 0) {
+    const common = tokensA.filter((t) => tokensB.includes(t));
+    if (common.length >= 2 || common.length / Math.min(tokensA.length, tokensB.length) >= 0.5) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function isDuplicateCandidateInBatch(candidate: any, seenCandidates: any[]): boolean {
+  const candPlaceId = extractPlaceId(candidate);
+  const candMapsUrl = normalizeMapsUrl(candidate.maps_link);
+  const candCustomDomain = getCustomDomain(candidate.website);
+  const candPlatformUrl = getCanonicalPlatformUrl(candidate.website);
+  const candPhone = normalizeFullPhone(candidate.phone, candidate.country_code);
+  const candName = normalizeBusinessName(candidate.name);
+  const candCity = (candidate.city || "").trim().toLowerCase();
+  const candAddress = (candidate.address || "").trim().toLowerCase();
+  const candEmail = (candidate.email || "").trim().toLowerCase();
+  const candIg = (candidate.instagram || "").trim().toLowerCase().replace(/^@/, "");
+
+  for (const seen of seenCandidates) {
+    const seenPlaceId = extractPlaceId(seen);
+
+    // 1. Authoritative Place ID Isolation
+    // If BOTH candidates have an authoritative Google Place ID:
+    if (candPlaceId && seenPlaceId) {
+      if (candPlaceId === seenPlaceId) {
+        return true; // Exactly identical Google Maps listing -> DUPLICATE
+      }
+      // Separate Place IDs -> DISTINCT physical locations (franchise branches, etc.)!
+      // Never discard as duplicate based on shared domain, phone, or IG.
+      continue;
+    }
+
+    // 2. Canonical Maps URL Match (e.g. identical URL when Place ID was not formatted as ChIJ/0x)
+    const seenMapsUrl = normalizeMapsUrl(seen.maps_link);
+    if (candMapsUrl && seenMapsUrl && candMapsUrl === seenMapsUrl) {
+      return true;
+    }
+
+    // 3. For candidates without authoritative Place IDs, use compound matching
+    const seenCustomDomain = getCustomDomain(seen.website);
+    const seenPlatformUrl = getCanonicalPlatformUrl(seen.website);
+    const seenPhone = normalizeFullPhone(seen.phone, seen.country_code);
+    const seenName = normalizeBusinessName(seen.name);
+    const seenCity = (seen.city || "").trim().toLowerCase();
+    const seenAddress = (seen.address || "").trim().toLowerCase();
+    const seenEmail = (seen.email || "").trim().toLowerCase();
+    const seenIg = (seen.instagram || "").trim().toLowerCase().replace(/^@/, "");
+
+    const sameName = namesAreSimilar(candName, seenName);
+    const sameCity = Boolean(candCity && seenCity && candCity === seenCity);
+    const sameAddress = Boolean(candAddress && seenAddress && candAddress === seenAddress);
+    const samePhone = Boolean(candPhone && seenPhone && candPhone === seenPhone && !isTollFree(candPhone));
+
+    // Compound Rule A: Shared custom domain (must corroborate with phone, matching name, or location)
+    if (candCustomDomain && seenCustomDomain && candCustomDomain === seenCustomDomain) {
+      if (samePhone || (sameName && (sameCity || sameAddress || !candCity || !seenCity))) {
+        return true;
+      }
+    }
+
+    // Compound Rule B: Matching platform profile URL (e.g. linktr.ee/marios)
+    if (candPlatformUrl && seenPlatformUrl && candPlatformUrl === seenPlatformUrl) {
+      if (sameName || samePhone || sameCity) {
+        return true;
+      }
+    }
+
+    // Compound Rule C: Non-toll-free full phone match
+    if (samePhone) {
+      if (sameName || sameCity || sameAddress) {
+        return true;
+      }
+    }
+
+    // Compound Rule D: Valid email match + name or location
+    if (candEmail && seenEmail && candEmail === seenEmail && candEmail.includes("@")) {
+      if (sameName || samePhone || sameCity) {
+        return true;
+      }
+    }
+
+    // Compound Rule E: Valid Instagram handle match + name
+    if (candIg && seenIg && candIg === seenIg && !["p", "reel", "reels", "stories", "explore"].includes(candIg)) {
+      if (sameName || samePhone) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+export function extractCandidateDedupKeys(raw: any): string[] {
+  const keys: string[] = [];
+
+  // 1. Engine precomputed strong fingerprints
+  if (Array.isArray(raw.fingerprints)) {
+    for (const fp of raw.fingerprints) {
+      if (typeof fp === "string" && fp.trim()) {
+        const trimmed = fp.trim().toLowerCase();
+        if (
+          trimmed.startsWith("place:") ||
+          trimmed.startsWith("map:") ||
+          trimmed.startsWith("web:") ||
+          trimmed.startsWith("tel:") ||
+          trimmed.startsWith("email:") ||
+          trimmed.startsWith("ig:")
+        ) {
+          keys.push(trimmed);
+        }
+      }
+    }
+  }
+
+  // 2. Maps link & Place ID normalization
+  const placeId = extractPlaceId(raw);
+  if (placeId) {
+    keys.push(placeId);
+  }
+  const cleanMap = normalizeMapsUrl(raw.maps_link);
+  if (cleanMap) {
+    keys.push(`map:${cleanMap}`);
+  }
+
+  // 3. Website normalization (excludes platform domains like linktr.ee)
+  const customDom = getCustomDomain(raw.website);
+  if (customDom) {
+    keys.push(`web:${customDom}`);
+  }
+  const platformUrl = getCanonicalPlatformUrl(raw.website);
+  if (platformUrl) {
+    keys.push(`web_path:${platformUrl}`);
+  }
+
+  // 4. Phone normalization: E.164 full number and 10-digit backward-compat for NANP
+  const normPhone = normalizeFullPhone(raw.phone, raw.country_code);
+  if (normPhone) {
+    keys.push(`tel:${normPhone}`);
+    if (normPhone.startsWith("+1") && normPhone.length === 12) {
+      keys.push(`tel:${normPhone.slice(2)}`);
+    }
+  }
+
+  // 5. Email normalization
+  if (typeof raw.email === "string" && raw.email.trim()) {
+    const email = raw.email.trim().toLowerCase();
+    if (email.includes("@")) {
+      keys.push(`email:${email}`);
+    }
+  }
+
+  // 6. Instagram normalization
+  if (typeof raw.instagram === "string" && raw.instagram.trim()) {
+    let ig = raw.instagram.trim().toLowerCase().replace(/^@/, "");
+    const match = ig.match(/instagram\.com\/([^/?#]+)/);
+    if (match) ig = match[1];
+    ig = ig.replace(/\/+$/, "");
+    if (ig && !["p", "reel", "reels", "stories", "explore"].includes(ig)) {
+      keys.push(`ig:${ig}`);
+    }
+  }
+
+  return Array.from(new Set(keys));
 }
 
 // ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -573,12 +924,12 @@ desktopRouter.post("/tasks/:taskId/ingest", requireAuth, ingestLimiter, async (r
     let limitReached = false;
     const rejectionReasons: Record<string, number> = {};
 
+    // Process candidates with intra-batch dedup and bounded concurrency
     const scoutId = task.task_summary?.scout_id ?? 1;
     const areaLabel = task.task_summary?.area_label ?? task.city;
 
-    for (const rawCandidate of body.candidates) {
-      // Validate candidate shape & fields
-      const candidate: EngineLead = {
+    function buildCandidate(rawCandidate: any): EngineLead {
+      return {
         name: rawCandidate.name,
         address: rawCandidate.address,
         city: rawCandidate.city || task.city,
@@ -618,39 +969,76 @@ desktopRouter.post("/tasks/:taskId/ingest", requireAuth, ingestLimiter, async (r
         fingerprints: rawCandidate.fingerprints ?? [],
         is_disqualified: rawCandidate.is_disqualified ?? false,
       };
-
-      // Canonical processing: validation, quality gate, early prune, business upsert,
-      // enrichment gating, authoritative deliverLead (dedup & credit charging), and live events.
-      const result = await desktopDeps.processCandidate({
-        lead: candidate,
-        planId: plan.id,
-        effectiveScoutId: scoutId,
-        areaLabel,
-        pipelineId: rawCandidate.pipeline_id,
-        requestedChannels: plan.channels ?? [],
-        userId,
-        professionSlug: plan.profession_slug,
-        region: plan.region,
-        scrapeJobId: plan.scrape_job_id,
-        dailyLimit: planConfig.dailyLeadLimit,
-        monthlyLimit: planConfig.monthlyLeadLimit,
-        startedAt: task.started_at ? Date.parse(task.started_at) : undefined,
-      });
-
-      if (result.outcome === "accepted") {
-        accepted++;
-      } else if (result.outcome === "duplicate") {
-        duplicates++;
-        rejectionReasons.duplicate = (rejectionReasons.duplicate || 0) + 1;
-      } else if (result.outcome === "rejected") {
-        rejected++;
-        const cat = classifyRejectionReason(result.reason);
-        rejectionReasons[cat] = (rejectionReasons[cat] || 0) + 1;
-      } else if (result.outcome === "limit_reached") {
-        limitReached = true;
-        break;
-      }
     }
+
+    const seenBatchCandidates: any[] = [];
+    const candidatesToProcess: Array<{ raw: any; candidate: EngineLead; isDuplicateInBatch: boolean }> = [];
+
+    for (const rawCandidate of body.candidates) {
+      const isDup = isDuplicateCandidateInBatch(rawCandidate, seenBatchCandidates);
+      if (!isDup) {
+        seenBatchCandidates.push(rawCandidate);
+      }
+      candidatesToProcess.push({
+        raw: rawCandidate,
+        candidate: buildCandidate(rawCandidate),
+        isDuplicateInBatch: isDup,
+      });
+    }
+
+    // Preserve safe parallelism for light DB operations (website, phone), while bounding
+    // concurrency to 1 when enrichment subprocesses (email, instagram) are needed.
+    const needsEnrichment = (plan.channels ?? []).some((c: string) => c === "email" || c === "instagram");
+    const BATCH_CONCURRENCY = needsEnrichment ? 1 : 3;
+    let nextCandidateIndex = 0;
+
+    const candidateWorker = async () => {
+      while (nextCandidateIndex < candidatesToProcess.length) {
+        if (limitReached) break;
+        const itemIndex = nextCandidateIndex++;
+        const item = candidatesToProcess[itemIndex];
+
+        if (item.isDuplicateInBatch) {
+          duplicates++;
+          rejectionReasons.duplicate = (rejectionReasons.duplicate || 0) + 1;
+          continue;
+        }
+
+        const result = await desktopDeps.processCandidate({
+          lead: item.candidate,
+          planId: plan.id,
+          effectiveScoutId: scoutId,
+          areaLabel,
+          pipelineId: item.raw.pipeline_id,
+          requestedChannels: plan.channels ?? [],
+          userId,
+          professionSlug: plan.profession_slug,
+          region: plan.region,
+          scrapeJobId: plan.scrape_job_id,
+          dailyLimit: planConfig.dailyLeadLimit,
+          monthlyLimit: planConfig.monthlyLeadLimit,
+          startedAt: task.started_at ? Date.parse(task.started_at) : undefined,
+        });
+
+        if (result.outcome === "accepted") {
+          accepted++;
+        } else if (result.outcome === "duplicate") {
+          duplicates++;
+          rejectionReasons.duplicate = (rejectionReasons.duplicate || 0) + 1;
+        } else if (result.outcome === "rejected") {
+          rejected++;
+          const cat = classifyRejectionReason(result.reason);
+          rejectionReasons[cat] = (rejectionReasons[cat] || 0) + 1;
+        } else if (result.outcome === "limit_reached") {
+          limitReached = true;
+          break;
+        }
+      }
+    };
+
+    const workerCount = Math.min(BATCH_CONCURRENCY, candidatesToProcess.length);
+    const workerPromises = Array.from({ length: workerCount }, () => candidateWorker());
+    await Promise.all(workerPromises);
 
     // Refresh plan to check whether plan reached target or was cancelled
     const { data: currentPlan } = await desktopDeps.db
@@ -766,6 +1154,8 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
       }
     }
 
+    const sanitizedError = sanitizeWorkerError(body.error);
+
     // Publish area completion live event for the live discovery UI
     const scoutId = task.task_summary?.scout_id ?? 1;
     const areaLabel = task.task_summary?.area_label ?? task.city;
@@ -777,7 +1167,7 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
         duplicates: body.duplicates,
         exhausted: body.exhausted,
         failed: body.status === "failed",
-        error: body.error,
+        error: sanitizedError,
       }),
     );
 
@@ -788,7 +1178,7 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
       duplicates: body.duplicates,
       exhausted: body.exhausted,
       status: body.status,
-      error: body.error,
+      error: sanitizedError,
       startedAt,
       completionReason: body.completionReason,
       terminationReason: body.terminationReason,

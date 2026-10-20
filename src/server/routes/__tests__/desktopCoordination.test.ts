@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import express from "express";
 import jwt from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
-import { desktopRouter, desktopDeps, DESKTOP_LEASE_TTL_MS } from "../desktop.js";
+import { desktopRouter, desktopDeps, DESKTOP_LEASE_TTL_MS, extractCandidateDedupKeys } from "../desktop.js";
 import { isDesktopTaskLeased, completePlanIfDrained } from "../../../jobs/discoveryPlanJob.js";
 import { candidatePipelineDeps } from "../../../discovery/candidatePipeline.js";
+import { PidAdmissionUnavailableError } from "../../../jobs/businessProcessingJob.js";
 import { discoverRouter, discoverDeps } from "../discover.js";
 import { supabaseAdmin } from "../../../lib/supabaseAdmin.js";
 import { env } from "../../../config/env.js";
@@ -1365,6 +1366,69 @@ describe("Desktop Discovery Cloud Coordination (/v1/desktop)", () => {
     assert.equal(areaEvt.areaOutcome.error, "RuntimeError: Browser launch crashed with code -1073741819");
   });
 
+  test("failed task with sensitive credentials in error sanitizes error in live event and recordTaskOutcome", async () => {
+    const planId = randomUUID();
+    const taskId = randomUUID();
+    const leaseToken = randomUUID();
+
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userA,
+      requested_count: 5,
+      delivered_count: 0,
+      status: "running",
+      channels: ["email"],
+      region: "United States",
+      profession_slug: "dentists",
+    };
+
+    mockDiscoveryTasks[taskId] = {
+      id: taskId,
+      plan_id: planId,
+      user_id: userA,
+      city: "Tucson",
+      niche: "dentists",
+      priority: 10,
+      status: "running",
+      task_summary: { execution_target: "desktop", lease_token: leaseToken, scout_id: 3, area_label: "Tucson Foothills" },
+    };
+
+    const compRes = await fetch(`${baseUrl}/tasks/${taskId}/complete`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenUserA}`,
+      },
+      body: JSON.stringify({
+        leaseToken,
+        status: "failed",
+        discovered: 0,
+        accepted: 0,
+        rejected: 0,
+        duplicates: 0,
+        exhausted: false,
+        error: "Failed connect to https://admin:fake_secret_pwd_999@api.example.com?token=fake_tok_secret_888 with Bearer fake_bearer_secret_777",
+        completionReason: "failed",
+        terminationReason: "FAILURE_NETWORK",
+      }),
+    });
+    assert.equal(compRes.status, 200);
+
+    const recordedOutcome = mockRecordOutcomeCalls[mockRecordOutcomeCalls.length - 1].outcome;
+    assert.equal(recordedOutcome.status, "failed");
+    assert.ok(!recordedOutcome.error.includes("fake_secret_pwd_999"));
+    assert.ok(!recordedOutcome.error.includes("fake_tok_secret_888"));
+    assert.ok(!recordedOutcome.error.includes("fake_bearer_secret_777"));
+    assert.ok(recordedOutcome.error.includes("[Redacted]"));
+
+    const areaEvt = mockLiveEvents.find((e) => e.type === "area_completed" && e.areaLabel === "Tucson Foothills");
+    assert.ok(areaEvt);
+    assert.ok(!areaEvt.areaOutcome.error.includes("fake_secret_pwd_999"));
+    assert.ok(!areaEvt.areaOutcome.error.includes("fake_tok_secret_888"));
+    assert.ok(!areaEvt.areaOutcome.error.includes("fake_bearer_secret_777"));
+    assert.ok(areaEvt.areaOutcome.error.includes("[Redacted]"));
+  });
+
   // ── 16. Desktop concurrency cap permits at least 3 scouts and returns localized query ─
 
   test("desktop task claim enforces concurrency >= 3 and returns localized queryString", async () => {
@@ -1574,5 +1638,534 @@ describe("Desktop Discovery Cloud Coordination (/v1/desktop)", () => {
     const data1 = await claimRes1.json();
     assert.ok(data1.task, "Must claim a task");
     assert.equal(data1.task.id, newTaskId, "Must claim new task from active plan, never old task from satisfied plan");
+  });
+
+  // ── 19. Intra-batch deduplication and concurrent batch processing ──────────
+
+  test("intra-batch deduplication and concurrent batch processing preserve exact delivery and duplicate counts", async () => {
+    const planId = randomUUID();
+    const taskId = randomUUID();
+    const leaseToken = randomUUID();
+
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userA,
+      requested_count: 10,
+      delivered_count: 0,
+      status: "running",
+      channels: ["website"],
+      region: "United States",
+      profession_slug: "dentists",
+    };
+
+    mockDiscoveryTasks[taskId] = {
+      id: taskId,
+      plan_id: planId,
+      user_id: userA,
+      city: "Denver",
+      niche: "dentists",
+      status: "running",
+      last_heartbeat_at: new Date().toISOString(),
+      task_summary: {
+        execution_target: "desktop",
+        lease_token: leaseToken,
+      },
+    };
+
+    // Send a batch of 4 candidates: 2 are identical (intra-batch dup), 2 are distinct unique candidates
+    const res = await fetch(`${baseUrl}/tasks/${taskId}/ingest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenUserA}`,
+      },
+      body: JSON.stringify({
+        leaseToken,
+        batchId: "batch-intra-dedup-1",
+        candidates: [
+          {
+            name: "Denver Dental 1",
+            address: "101 Denver St",
+            maps_link: "https://www.google.com/maps/place/denver-dental-1",
+            website: "https://denverdental1.example.com",
+            phone: "+13035550101",
+          },
+          {
+            name: "Denver Dental 1 Duplicate",
+            address: "101 Denver St Suite B",
+            maps_link: "https://www.google.com/maps/place/denver-dental-1",
+            website: "https://denverdental1.example.com/",
+            phone: "+13035550101",
+          },
+          {
+            name: "Denver Dental 2",
+            address: "202 Denver St",
+            maps_link: "https://www.google.com/maps/place/denver-dental-2",
+            website: "https://denverdental2.example.com",
+            phone: "+13035550102",
+          },
+          {
+            name: "Denver Dental 3",
+            address: "303 Denver St",
+            maps_link: "https://www.google.com/maps/place/denver-dental-3",
+            website: "https://denverdental3.example.com",
+            phone: "+13035550103",
+          },
+        ],
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.accepted, 3, "3 distinct candidates should be accepted");
+    assert.equal(data.duplicates, 1, "1 duplicate candidate within the batch should be recorded");
+    assert.equal(data.rejectionReasons?.duplicate, 1);
+  });
+
+  // ── 20. Multi-identifier intra-batch deduplication across different Maps URLs ─
+
+  test("intra-batch dedup identifies different Maps URLs pointing to the same website or phone", async () => {
+    const planId = randomUUID();
+    const taskId = randomUUID();
+    const leaseToken = randomUUID();
+
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userA,
+      requested_count: 10,
+      delivered_count: 0,
+      status: "running",
+      channels: ["website"],
+      region: "United States",
+      profession_slug: "dentists",
+    };
+
+    mockDiscoveryTasks[taskId] = {
+      id: taskId,
+      plan_id: planId,
+      user_id: userA,
+      city: "Chicago",
+      niche: "dentists",
+      status: "running",
+      last_heartbeat_at: new Date().toISOString(),
+      task_summary: { execution_target: "desktop", lease_token: leaseToken },
+    };
+
+    // Candidate 1 has maps link A and website acmedental.com
+    // Candidate 2 has maps link B (different maps link!) but same website acmedental.com -> MUST be deduplicated
+    // Candidate 3 has maps link C, different website, but same phone digits as Candidate 1 -> MUST be deduplicated
+    // Candidate 4 is completely unique -> MUST be accepted
+    const res = await fetch(`${baseUrl}/tasks/${taskId}/ingest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenUserA}`,
+      },
+      body: JSON.stringify({
+        leaseToken,
+        batchId: "batch-multi-id-dedup-1",
+        candidates: [
+          {
+            name: "Acme Dental Primary",
+            address: "100 Chicago Ave",
+            maps_link: "https://www.google.com/maps/place/Acme+Dental/@41.88,-87.62,17z/data=!1s0x880e2cb1:0x123",
+            website: "https://www.acmedental.com/",
+            phone: "+1 (312) 555-0101",
+          },
+          {
+            name: "Acme Dental Query Link",
+            address: "100 Chicago Ave #200",
+            maps_link: "https://maps.google.com/?cid=999888777",
+            website: "http://acmedental.com/contact",
+            phone: "+1 (312) 555-0999",
+          },
+          {
+            name: "Acme Dental Alternate Location",
+            address: "102 Chicago Ave",
+            maps_link: "https://maps.google.com/?cid=111222333",
+            website: "https://different-site.com",
+            phone: "312-555-0101",
+          },
+          {
+            name: "Totally Distinct Dental",
+            address: "500 Michigan Ave",
+            maps_link: "https://www.google.com/maps/place/Distinct+Dental",
+            website: "https://distinctdental.example.com",
+            phone: "+1 (312) 555-9999",
+          },
+        ],
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.accepted, 2, "Candidate 1 and Candidate 4 should be accepted");
+    assert.equal(data.duplicates, 2, "Candidate 2 (shared website) and Candidate 3 (shared phone) should be duplicates");
+    assert.equal(data.rejectionReasons?.duplicate, 2);
+  });
+
+  // ── 21. Temporarily unavailable enrichment capacity defers rather than permanently losing candidate ─
+
+  test("temporarily unavailable enrichment capacity defers candidate and preserves it in DB without marking rejected", async () => {
+    const planId = randomUUID();
+    const taskId = randomUUID();
+    const leaseToken = randomUUID();
+
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userA,
+      requested_count: 10,
+      delivered_count: 0,
+      status: "running",
+      channels: ["email"],
+      region: "United States",
+      profession_slug: "dentists",
+    };
+
+    mockDiscoveryTasks[taskId] = {
+      id: taskId,
+      plan_id: planId,
+      user_id: userA,
+      city: "Seattle",
+      niche: "dentists",
+      status: "running",
+      last_heartbeat_at: new Date().toISOString(),
+      task_summary: { execution_target: "desktop", lease_token: leaseToken },
+    };
+
+    // 21A. Simulate enrichment capacity recovered after waiting: admission unavailable on first attempt, then succeeds
+    const origEnsureEnriched = candidatePipelineDeps.ensureEnriched;
+    let admissionAttempts = 0;
+    try {
+      candidatePipelineDeps.ensureEnriched = async () => {
+        admissionAttempts++;
+        if (admissionAttempts === 1) {
+          throw new PidAdmissionUnavailableError("PID limit reached: temporarily busy");
+        }
+        for (const b of Object.values(mockBusinesses)) {
+          b.email = "clinic@recoveredclinic.example.com";
+        }
+      };
+
+      const res = await fetch(`${baseUrl}/tasks/${taskId}/ingest`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({
+          leaseToken,
+          batchId: "batch-admission-recovered-1",
+          candidates: [
+            {
+              name: "Recovered Enrichment Clinic",
+              address: "123 Pine St, Seattle, WA",
+              maps_link: "https://www.google.com/maps/place/recovered-clinic",
+              website: "https://recoveredclinic.example.com",
+              phone: "+12065550199",
+            },
+          ],
+        }),
+      });
+
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.accepted, 1, "Lead must be accepted once admission recovers after bounded wait");
+      assert.equal(data.rejected, 0);
+      assert.ok(admissionAttempts >= 2, "Must have retried after initial PidAdmissionUnavailableError");
+    } finally {
+      candidatePipelineDeps.ensureEnriched = origEnsureEnriched;
+    }
+  });
+
+  test("enrichment admission timeout cleanly rejects without orphaning lead or reporting false delivery", async () => {
+    const taskId = "c1a2b3c4-0000-0000-0000-000000000021";
+    const planId = "d1a2b3c4-0000-0000-0000-000000000021";
+    const leaseToken = "e1a2b3c4-0000-0000-0000-000000000021";
+
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userA,
+      status: "running",
+      channels: ["email"],
+      delivered_count: 0,
+      requested_count: 10,
+    };
+
+    mockDiscoveryTasks[taskId] = {
+      id: taskId,
+      user_id: userA,
+      plan_id: planId,
+      status: "running",
+      discovered_count: 0,
+      accepted_count: 0,
+      rejected_count: 0,
+      last_heartbeat_at: new Date().toISOString(),
+      task_summary: { execution_target: "desktop", lease_token: leaseToken },
+    };
+
+    const origEnsureEnriched = candidatePipelineDeps.ensureEnriched;
+    try {
+      candidatePipelineDeps.ensureEnriched = async () => {
+        throw new PidAdmissionUnavailableError("PID limit 1 reached: permanently busy");
+      };
+
+      const res = await fetch(`${baseUrl}/tasks/${taskId}/ingest`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({
+          leaseToken,
+          batchId: "batch-admission-timeout-1",
+          candidates: [
+            {
+              name: "Timeout Clinic",
+              address: "456 Oak St, Seattle, WA",
+              maps_link: "https://www.google.com/maps/place/timeout-clinic",
+              website: "https://timeoutclinic.example.com",
+              phone: "+12065550299",
+            },
+          ],
+        }),
+      });
+
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.accepted, 0);
+      assert.equal(data.rejected, 1, "Must be rejected after admission deadline expires");
+      assert.equal(data.rejectionReasons.enrichment_failure, 1);
+
+      // Verify that candidate_rejected event was published with category enrichment_failure
+      const rejectedEvent = mockLiveEvents.find(
+        (e) => e.type === "candidate_rejected" && e.reason === "enrichment_failure:admission_timeout",
+      );
+      assert.ok(rejectedEvent, "Must emit candidate_rejected event with enrichment_failure:admission_timeout");
+    } finally {
+      candidatePipelineDeps.ensureEnriched = origEnsureEnriched;
+    }
+  });
+
+  // ── 22. Deduplication regression tests ────────────────────────────────────────
+
+  test("separate franchise branches with distinct Google Maps Place IDs sharing domain and 1-800 phone are both accepted", async () => {
+    const taskId = "c1a2b3c4-0000-0000-0000-000000000022";
+    const planId = "d1a2b3c4-0000-0000-0000-000000000022";
+    const leaseToken = "e1a2b3c4-0000-0000-0000-000000000022";
+
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userA,
+      status: "running",
+      channels: ["website", "phone"],
+      delivered_count: 0,
+      requested_count: 10,
+    };
+
+    mockDiscoveryTasks[taskId] = {
+      id: taskId,
+      user_id: userA,
+      plan_id: planId,
+      status: "running",
+      discovered_count: 0,
+      accepted_count: 0,
+      rejected_count: 0,
+      last_heartbeat_at: new Date().toISOString(),
+      task_summary: { execution_target: "desktop", lease_token: leaseToken },
+    };
+
+    const res = await fetch(`${baseUrl}/tasks/${taskId}/ingest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenUserA}`,
+      },
+      body: JSON.stringify({
+        leaseToken,
+        batchId: "batch-franchise-branches-1",
+        candidates: [
+          {
+            name: "Starbucks Downtown",
+            address: "100 Pike St, Seattle, WA",
+            maps_link: "https://www.google.com/maps/place/Starbucks/@47.6,-122.3/data=!1s0x54906ab1:0x1111",
+            website: "https://www.starbucks.com",
+            phone: "+1 (800) 782-7282",
+          },
+          {
+            name: "Starbucks Uptown",
+            address: "500 Queen Anne Ave N, Seattle, WA",
+            maps_link: "https://www.google.com/maps/place/Starbucks/@47.62,-122.35/data=!1s0x54906ab2:0x2222",
+            website: "https://www.starbucks.com",
+            phone: "+1 (800) 782-7282",
+          },
+        ],
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.discovered, 2);
+    assert.equal(data.accepted, 2, "Both franchise branches with distinct Place IDs must be accepted");
+    assert.equal(data.duplicates, 0, "Neither branch should be discarded as intra-batch duplicate");
+  });
+
+  test("separate businesses sharing a website platform or booking domain are both accepted", async () => {
+    const taskId = "c1a2b3c4-0000-0000-0000-000000000023";
+    const planId = "d1a2b3c4-0000-0000-0000-000000000023";
+    const leaseToken = "e1a2b3c4-0000-0000-0000-000000000023";
+
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userA,
+      status: "running",
+      channels: ["website", "phone"],
+      delivered_count: 0,
+      requested_count: 10,
+    };
+
+    mockDiscoveryTasks[taskId] = {
+      id: taskId,
+      user_id: userA,
+      plan_id: planId,
+      status: "running",
+      discovered_count: 0,
+      accepted_count: 0,
+      rejected_count: 0,
+      last_heartbeat_at: new Date().toISOString(),
+      task_summary: { execution_target: "desktop", lease_token: leaseToken },
+    };
+
+    const res = await fetch(`${baseUrl}/tasks/${taskId}/ingest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenUserA}`,
+      },
+      body: JSON.stringify({
+        leaseToken,
+        batchId: "batch-shared-platform-1",
+        candidates: [
+          {
+            name: "Downtown Barber",
+            address: "10 1st Ave, Seattle, WA",
+            maps_link: "https://www.google.com/maps/place/Downtown+Barber/@47.60,-122.33",
+            website: "https://linktr.ee/downtownbarber",
+            phone: "+1 (206) 555-1111",
+          },
+          {
+            name: "Luigi's Tacos",
+            address: "20 2nd Ave, Seattle, WA",
+            maps_link: "https://www.google.com/maps/place/Luigis+Tacos/@47.61,-122.34",
+            website: "https://linktr.ee/luigistacos",
+            phone: "+1 (206) 555-2222",
+          },
+        ],
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.discovered, 2);
+    assert.equal(data.accepted, 2, "Separate businesses sharing linktr.ee must not be deduplicated against each other");
+    assert.equal(data.duplicates, 0);
+  });
+
+  test("genuine duplicate listings with different Maps URLs but matching custom domain, phone, and name are deduplicated", async () => {
+    const taskId = "c1a2b3c4-0000-0000-0000-000000000024";
+    const planId = "d1a2b3c4-0000-0000-0000-000000000024";
+    const leaseToken = "e1a2b3c4-0000-0000-0000-000000000024";
+
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userA,
+      status: "running",
+      channels: ["website", "phone"],
+      delivered_count: 0,
+      requested_count: 10,
+    };
+
+    mockDiscoveryTasks[taskId] = {
+      id: taskId,
+      user_id: userA,
+      plan_id: planId,
+      status: "running",
+      discovered_count: 0,
+      accepted_count: 0,
+      rejected_count: 0,
+      last_heartbeat_at: new Date().toISOString(),
+      task_summary: { execution_target: "desktop", lease_token: leaseToken },
+    };
+
+    const res = await fetch(`${baseUrl}/tasks/${taskId}/ingest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenUserA}`,
+      },
+      body: JSON.stringify({
+        leaseToken,
+        batchId: "batch-genuine-dup-1",
+        candidates: [
+          {
+            name: "Acme Plumbing",
+            address: "789 Main St, Seattle, WA",
+            maps_link: "https://www.google.com/maps/place/Acme+Plumbing/@47.6,-122.3",
+            website: "https://acmeplumbingseattle.com",
+            phone: "+1 (206) 555-0199",
+          },
+          {
+            name: "Acme Plumbing",
+            address: "789 Main St, Seattle, WA",
+            maps_link: "https://maps.google.com/?cid=9876543210123",
+            website: "https://acmeplumbingseattle.com",
+            phone: "+1 (206) 555-0199",
+          },
+        ],
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.discovered, 2);
+    assert.equal(data.accepted, 1);
+    assert.equal(data.duplicates, 1, "Second listing of Acme Plumbing must be detected as intra-batch duplicate");
+  });
+
+  test("international phone numbers do not collide after normalization", async () => {
+    const keysUK = extractCandidateDedupKeys({
+      name: "London Cafe",
+      phone: "+44 20 7946 0999",
+      country_code: "GB",
+    });
+    const keysUS = extractCandidateDedupKeys({
+      name: "Maine Diner",
+      phone: "+1 (207) 946-0999",
+      country_code: "US",
+    });
+
+    assert.ok(keysUK.includes("tel:+442079460999"));
+    assert.ok(!keysUK.includes("tel:2079460999"), "UK phone must not be truncated to last 10 digits");
+
+    assert.ok(keysUS.includes("tel:+12079460999"));
+
+    // Check intersection
+    const commonKeys = keysUK.filter((k) => keysUS.includes(k));
+    assert.equal(commonKeys.length, 0, "UK and US phone numbers must never collide");
+  });
+
+  test("extractCandidateDedupKeys correctly extracts normalized place, domain, phone, email and fingerprints", async () => {
+    const keysA = extractCandidateDedupKeys({
+      maps_link: "https://www.google.com/maps/place/Acme/@41.8,-87.6/data=!1s0x880e2cb:0x123",
+      website: "https://www.acme.com/path?foo=bar",
+      phone: "+1 (555) 012-3456",
+      email: "Contact@Acme.Com",
+      instagram: "@acme_official",
+    });
+    assert.ok(keysA.includes("place:0x880e2cb:0x123"));
+    assert.ok(keysA.includes("web:acme.com"));
+    assert.ok(keysA.includes("tel:5550123456"));
+    assert.ok(keysA.includes("email:contact@acme.com"));
+    assert.ok(keysA.includes("ig:acme_official"));
   });
 });

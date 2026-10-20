@@ -114,7 +114,7 @@ app.use("/v1/observability", observabilityRouter);
  */
 function serializeError(err: unknown): Record<string, unknown> {
   if (err instanceof Error) {
-    return {
+    const serialized: Record<string, unknown> = {
       name: err.name,
       message: err.message,
       stack: err.stack,
@@ -124,9 +124,38 @@ function serializeError(err: unknown): Record<string, unknown> {
       details: (err as { details?: string }).details,
       hint: (err as { hint?: string }).hint,
     };
+    if (typeof (err as any).status === "number") serialized.status = (err as any).status;
+    if (typeof (err as any).statusCode === "number") serialized.statusCode = (err as any).statusCode;
+    return serialized;
   }
   if (err && typeof err === "object") {
-    return { ...(err as Record<string, unknown>) };
+    const obj = err as Record<string, unknown>;
+    const serialized: Record<string, unknown> = {};
+    const ALLOWED_ERROR_KEYS = new Set([
+      "name",
+      "message",
+      "code",
+      "details",
+      "hint",
+      "status",
+      "statusCode",
+      "statusText",
+      "reason",
+      "category",
+      "field",
+      "path",
+    ]);
+
+    for (const [k, v] of Object.entries(obj)) {
+      if (ALLOWED_ERROR_KEYS.has(k)) {
+        serialized[k] = v;
+      }
+    }
+
+    if (Object.keys(serialized).length === 0) {
+      serialized.message = typeof obj.message === "string" ? obj.message : String(err);
+    }
+    return serialized;
   }
   return { message: String(err) };
 }

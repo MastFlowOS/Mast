@@ -260,7 +260,7 @@ export function classifyRejectionReason(reason: string | undefined): RejectionCa
   if (r === "duplicate_already_owned_by_user" || r.includes("duplicate")) {
     return "duplicate";
   }
-  if (r === "ensureenriched_threw" || (r.includes("enrich") && r.includes("threw")) || r.includes("enrichment_fail")) {
+  if (r === "ensureenriched_threw" || (r.includes("enrich") && (r.includes("threw") || r.includes("admission") || r.includes("timeout"))) || r.includes("enrichment_fail")) {
     return "enrichment_failure";
   }
   if (r.startsWith("validatediscoverycandidate:")) {

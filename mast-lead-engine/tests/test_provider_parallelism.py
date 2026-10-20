@@ -493,6 +493,80 @@ class TestCancellation:
         )
         assert results == []
 
+    def test_cancellation_during_streaming_stops_all_threads_and_cleans_up(self):
+        threads_seen = []
+
+        class _CancellableProvider(DiscoveryProviderInterface):
+            def __init__(self, provider_id: str):
+                self._provider_id = provider_id
+
+            @property
+            def provider_id(self) -> str:
+                return self._provider_id
+
+            @property
+            def display_name(self) -> str:
+                return self._provider_id
+
+            def discover(self, request: Any) -> Iterator[BusinessCandidate]:
+                threads_seen.append(threading.current_thread())
+                should_stop = getattr(request, "should_stop", None)
+                for i in range(100):
+                    if callable(should_stop) and should_stop():
+                        break
+                    time.sleep(0.01)
+                    yield _candidate(name=f"{self._provider_id}-{i}")
+
+        p1 = _CancellableProvider("p1")
+        p2 = _CancellableProvider("p2")
+        composite = ParallelCompositeDiscoveryProvider([p1, p2])
+
+        req1 = {"should_stop": None}
+        req2 = {"should_stop": None}
+        stream = composite.discover(ParallelDiscoveryRequest(requests={"p1": req1, "p2": req2}))
+
+        results = []
+        for c in stream:
+            results.append(c)
+            break
+        stream.close()
+
+        assert len(results) == 1
+        assert len(threads_seen) == 2
+        for t in threads_seen:
+            t.join(timeout=0.5)
+            assert not t.is_alive(), f"Thread {t.name} must not be alive after cancellation"
+
+    def test_overpass_provider_cancellation_terminates_immediately_inside_composite(self):
+        from providers.overpass_provider import OverpassProvider, OverpassDiscoveryRequest
+
+        network_attempts = {"count": 0}
+
+        def fake_http_post(url, data, headers, **kwargs):
+            network_attempts["count"] += 1
+            should_stop = kwargs.get("should_stop")
+            if callable(should_stop) and should_stop():
+                return {"elements": []}
+            return {"elements": [{"type": "node", "id": 1, "tags": {"name": "Cafe 1"}}]}
+
+        overpass = OverpassProvider(http_post=fake_http_post)
+        composite = ParallelCompositeDiscoveryProvider([overpass])
+
+        op_req = OverpassDiscoveryRequest(
+            session_id="s1",
+            tags={"amenity": "cafe"},
+            area_name="Austin",
+        )
+        stream = composite.discover(ParallelDiscoveryRequest(requests={"overpass": op_req}))
+        items = []
+        for item in stream:
+            items.append(item)
+            break
+        stream.close()
+
+        assert len(items) == 1
+        assert network_attempts["count"] >= 1
+
 
 # ---------------------------------------------------------------------------
 # Test I — No relevant / unsupported provider configuration fails

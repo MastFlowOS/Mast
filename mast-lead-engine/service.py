@@ -1238,7 +1238,7 @@ async def run_query(
                 "[provider] discovery_only composed providers=%s",
                 composed.selected_provider_ids,
             )
-            result_q: "thread_queue.Queue" = thread_queue.Queue(maxsize=1)
+            result_q: "thread_queue.Queue" = thread_queue.Queue(maxsize=20)
 
             def _discover_worker() -> None:
                 # PHASE 2B (discovery wall-clock instrumentation):

@@ -504,10 +504,44 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
         result_queue: "queue.Queue[Any]" = queue.Queue()
         stop_event = threading.Event()
 
+        effective_requests: dict[str, Any] = {}
+        for provider in self._providers:
+            req = request.requests[provider.provider_id]
+            orig_stop = getattr(req, "should_stop", None) if hasattr(req, "should_stop") else (req.get("should_stop") if isinstance(req, dict) else None)
+            def _make_stop_fn(orig, stop_ev):
+                def _stop():
+                    if stop_ev.is_set():
+                        return True
+                    if callable(orig):
+                        return bool(orig())
+                    return bool(orig)
+                return _stop
+            new_stop = _make_stop_fn(orig_stop, stop_event)
+            import dataclasses
+            if dataclasses.is_dataclass(req):
+                try:
+                    req_copy = dataclasses.replace(req, should_stop=new_stop)
+                except Exception:
+                    req_copy = req
+            elif isinstance(req, dict):
+                req_copy = dict(req)
+                req_copy["should_stop"] = new_stop
+            else:
+                import copy
+                req_copy = copy.copy(req)
+                try:
+                    setattr(req_copy, "should_stop", new_stop)
+                except Exception:
+                    try:
+                        object.__setattr__(req_copy, "should_stop", new_stop)
+                    except Exception:
+                        req_copy = req
+            effective_requests[provider.provider_id] = req_copy
+
         threads = [
             threading.Thread(
                 target=self._run_provider,
-                args=(provider, request.requests[provider.provider_id], result_queue, stop_event),
+                args=(provider, effective_requests[provider.provider_id], result_queue, stop_event),
                 name=f"parallel-discovery-{provider.provider_id}",
                 daemon=True,
             )
@@ -544,7 +578,7 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
             # limit on how fast a producer can actually respond.
             stop_event.set()
             for thread in threads:
-                thread.join()
+                thread.join(timeout=0.25)
 
     # ------------------------------------------------------------------
     # Producer — runs on its own thread, one per wrapped provider.
@@ -588,7 +622,11 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
             gen = provider.discover(provider_request)
             while True:
                 if stop_event.is_set():
-                    gen.close()
+                    if hasattr(gen, "close"):
+                        try:
+                            gen.close()
+                        except Exception:
+                            pass
                     return
                 try:
                     candidate = next(gen)
@@ -599,4 +637,5 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
             result_queue.put(_ProviderError(provider.provider_id, exc))
             return
 
-        result_queue.put(_ProviderDone(provider.provider_id))
+        if not stop_event.is_set():
+            result_queue.put(_ProviderDone(provider.provider_id))

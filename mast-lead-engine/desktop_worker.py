@@ -421,7 +421,7 @@ class DesktopWorker:
     def __init__(
         self,
         client: DesktopCoordinatorClient,
-        batch_size: int = 1,
+        batch_size: int = 5,
         heartbeat_interval_s: float = 15.0,
         concurrency: int = 1,
         engine_runner: Optional[Callable[..., AsyncIterator[dict]]] = None,
@@ -536,7 +536,6 @@ class DesktopWorker:
                 from service import run_query
                 runner = run_query
 
-        batch_buffer: List[dict] = []
         batch_index = 0
         exhausted = False
         termination_reason = "SUCCESS_TARGET_REACHED"
@@ -564,36 +563,89 @@ class DesktopWorker:
                 "shutdown_event": task_shutdown_event,
             }
 
-            async for raw_lead in runner(**query_params):
-                if self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set():
-                    log.info("Task %s aborted via cancellation or shutdown", task_id)
-                    termination_reason = "CANCELLED"
+            # Bounded async queue decouples discovery scraping from gateway ingestion.
+            # Scraper produces ahead into the queue while ingest sends batches over network.
+            candidate_queue: asyncio.Queue[Optional[dict]] = asyncio.Queue(maxsize=30)
+            consumer_task: Optional[asyncio.Task] = None
+
+            async def _discovery_producer():
+                try:
+                    async for raw_lead in runner(**query_params):
+                        if (
+                            self._shutdown_event.is_set()
+                            or task_abort.is_set()
+                            or task_shutdown_event.is_set()
+                            or (consumer_task is not None and consumer_task.done())
+                        ):
+                            log.info("Task %s producer observed cancellation, shutdown, or consumer termination", task_id)
+                            break
+                        metrics["discovered"] += 1
+                        normalized = normalize_candidate_for_ingest(raw_lead, task)
+                        while not (
+                            self._shutdown_event.is_set()
+                            or task_abort.is_set()
+                            or task_shutdown_event.is_set()
+                            or (consumer_task is not None and consumer_task.done())
+                        ):
+                            try:
+                                await asyncio.wait_for(candidate_queue.put(normalized), timeout=0.2)
+                                break
+                            except asyncio.TimeoutError:
+                                continue
+                except Exception as exc:
+                    log.exception("Discovery runner exception in task %s: %s", task_id, exc)
+                    task_abort.set()
                     task_shutdown_event.set()
-                    break
+                    raise
+                finally:
+                    # Signal completion to consumer safely with bounded retry
+                    for _ in range(5):
+                        if (
+                            self._shutdown_event.is_set()
+                            or task_abort.is_set()
+                            or task_shutdown_event.is_set()
+                            or (consumer_task is not None and consumer_task.done())
+                        ):
+                            break
+                        try:
+                            await asyncio.wait_for(candidate_queue.put(None), timeout=0.2)
+                            break
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                            continue
 
-                metrics["discovered"] += 1
-                normalized = normalize_candidate_for_ingest(raw_lead, task)
-                batch_buffer.append(normalized)
+            MAX_BATCH_LATENCY_S = 1.5
 
-                if len(batch_buffer) >= self.batch_size:
+            async def _ingest_consumer():
+                nonlocal batch_index, exhausted, termination_reason, task_status, task_error
+                batch_buffer: List[dict] = []
+                last_flush_time = time.monotonic()
+
+                async def _flush_current_buffer() -> bool:
+                    nonlocal batch_index, task_status, task_error, termination_reason, last_flush_time
+                    if not batch_buffer:
+                        return True
                     batch_index += 1
                     batch_id = f"{task_id}-batch-{batch_index}"
                     to_send = list(batch_buffer)
+                    batch_buffer.clear()
+                    last_flush_time = time.monotonic()
+
                     res = await self.client.ingest_batch(task_id, lease_token, batch_id, to_send)
                     if res is not None:
                         metrics["accepted"] += res.get("accepted", 0)
                         metrics["duplicates"] += res.get("duplicates", 0)
                         metrics["rejected"] += res.get("rejected", 0)
-                        batch_buffer.clear()
                         if res.get("planTargetReached") or res.get("limitReached"):
                             log.info("Parent plan target reached or limit reached for task %s. Stopping execution.", task_id)
                             termination_reason = "PLAN_TARGET_REACHED"
                             task_abort.set()
+                            task_shutdown_event.set()
                             if plan_id and plan_id in self._plan_tasks:
                                 for sib_id in list(self._plan_tasks[plan_id]):
                                     if sib_id in self._active_tasks:
                                         self._active_tasks[sib_id].set()
-                            break
+                            return False
+                        return True
                     else:
                         raw_err = getattr(self.client, "last_ingest_error", None)
                         ingest_err = raw_err if isinstance(raw_err, str) and raw_err else f"Ingestion failed for batch {batch_id}"
@@ -602,40 +654,71 @@ class DesktopWorker:
                         task_error = ingest_err
                         termination_reason = "FAILURE_INGESTION"
                         task_abort.set()
+                        task_shutdown_event.set()
+                        return False
+
+                while True:
+                    if self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set():
+                        log.info("Task %s ingest consumer observed cancellation or shutdown", task_id)
+                        if termination_reason == "SUCCESS_TARGET_REACHED":
+                            termination_reason = "CANCELLED"
                         break
 
-                if metrics["accepted"] >= candidate_budget:
-                    log.info("Task %s reached candidate budget %d", task_id, candidate_budget)
-                    termination_reason = "SUCCESS_TARGET_REACHED"
-                    break
+                    try:
+                        candidate = await asyncio.wait_for(candidate_queue.get(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        if len(batch_buffer) > 0 and (time.monotonic() - last_flush_time >= MAX_BATCH_LATENCY_S):
+                            ok = await _flush_current_buffer()
+                            if not ok:
+                                break
+                        continue
 
-            # Flush remaining candidates in buffer
-            if batch_buffer and not (self._shutdown_event.is_set() or task_abort.is_set()):
-                batch_index += 1
-                batch_id = f"{task_id}-batch-{batch_index}"
-                to_send = list(batch_buffer)
-                res = await self.client.ingest_batch(task_id, lease_token, batch_id, to_send)
-                if res is not None:
-                    metrics["accepted"] += res.get("accepted", 0)
-                    metrics["duplicates"] += res.get("duplicates", 0)
-                    metrics["rejected"] += res.get("rejected", 0)
-                    batch_buffer.clear()
-                    if res.get("planTargetReached") or res.get("limitReached"):
-                        if plan_id and plan_id in self._plan_tasks:
-                            for sib_id in list(self._plan_tasks[plan_id]):
-                                if sib_id in self._active_tasks:
-                                        self._active_tasks[sib_id].set()
-                else:
-                    raw_err = getattr(self.client, "last_ingest_error", None)
-                    ingest_err = raw_err if isinstance(raw_err, str) and raw_err else f"Ingestion failed for final batch {batch_id}"
-                    log.error("Ingest failed for final batch %s of task %s: %s. Aborting task.", batch_id, task_id, ingest_err)
-                    task_status = "failed"
-                    task_error = ingest_err
-                    termination_reason = "FAILURE_INGESTION"
+                    if candidate is None:
+                        # Discovery stream completed
+                        if self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set():
+                            if termination_reason not in ("FAILURE_INGESTION", "PLAN_TARGET_REACHED") and metrics["accepted"] < candidate_budget:
+                                termination_reason = "CANCELLED"
+                        break
 
-            if metrics["accepted"] < candidate_budget and not (self._shutdown_event.is_set() or task_abort.is_set()):
-                exhausted = True
-                termination_reason = "SUCCESS_EXHAUSTED"
+                    batch_buffer.append(candidate)
+
+                    # Flush criteria:
+                    # 1. Immediate first lead (batch_index == 0) for lowest TTFL
+                    # 2. Batch size reached (batch_size >= 5)
+                    # 3. Candidate budget reached
+                    should_flush = (
+                        (batch_index == 0 and len(batch_buffer) >= 1)
+                        or len(batch_buffer) >= self.batch_size
+                        or (metrics["accepted"] + len(batch_buffer) >= candidate_budget)
+                    )
+
+                    if should_flush:
+                        ok = await _flush_current_buffer()
+                        if not ok:
+                            break
+
+                    if metrics["accepted"] >= candidate_budget:
+                        log.info("Task %s reached candidate budget %d", task_id, candidate_budget)
+                        termination_reason = "SUCCESS_TARGET_REACHED"
+                        task_abort.set()
+                        task_shutdown_event.set()
+                        break
+
+                # Flush remaining candidates in buffer on normal completion only
+                if batch_buffer and not (self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set()) and task_status != "failed":
+                    await _flush_current_buffer()
+
+                if metrics["accepted"] < candidate_budget and not (self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set()) and task_status != "failed":
+                    exhausted = True
+                    termination_reason = "SUCCESS_EXHAUSTED"
+
+            consumer_task = asyncio.create_task(_ingest_consumer())
+            producer_task = asyncio.create_task(_discovery_producer())
+
+            await asyncio.gather(producer_task, consumer_task)
+
+            if (self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set()) and termination_reason not in ("FAILURE_INGESTION", "PLAN_TARGET_REACHED") and metrics["accepted"] < candidate_budget:
+                termination_reason = "CANCELLED"
 
         except Exception as exc:
             log.exception("Engine failure during task %s: %s", task_id, exc)
@@ -780,8 +863,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="MAST User JWT Bearer Token")
     p.add_argument("--worker-id", default="",
                    help="Unique worker identifier (defaults to desktop-<hostname>-<shortid>)")
-    p.add_argument("--batch-size", type=int, default=1,
-                   help="Batch size for lead ingestion (default: 1)")
+    p.add_argument("--batch-size", type=int, default=int(os.environ.get("MAST_DESKTOP_BATCH_SIZE", "5")),
+                   help="Batch size for lead ingestion (default: 5)")
     p.add_argument("--concurrency", type=int, default=int(os.environ.get("MAST_DESKTOP_CONCURRENCY", "1")),
                    help="Maximum concurrent scout tasks (default: 1)")
     p.add_argument("--poll-interval", type=float, default=5.0,

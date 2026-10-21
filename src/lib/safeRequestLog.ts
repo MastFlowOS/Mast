@@ -218,6 +218,9 @@ export function serializeError(err: unknown): Record<string, unknown> {
     };
     if (typeof (err as any).status === "number") serialized.status = (err as any).status;
     if (typeof (err as any).statusCode === "number") serialized.statusCode = (err as any).statusCode;
+    if ((err as any).cause !== undefined) {
+      serialized.cause = serializeError((err as any).cause);
+    }
     return serialized;
   }
   if (err && typeof err === "object") {
@@ -242,6 +245,10 @@ export function serializeError(err: unknown): Record<string, unknown> {
       if (ALLOWED_ERROR_KEYS.has(k)) {
         serialized[k] = v;
       }
+    }
+
+    if (obj.cause !== undefined) {
+      serialized.cause = serializeError(obj.cause);
     }
 
     if (Object.keys(serialized).length === 0) {

@@ -271,3 +271,24 @@ test("redacts synthetic fake credentials: JWTs, refresh tokens, cookies, passwor
   assert.equal(sanitized.password, "[Redacted]");
   assert.equal(sanitized["x-api-key"], "[Redacted]");
 });
+
+test("serializeError recursively sanitizes nested cause errors and scrubs sensitive fields inside cause", () => {
+  const causeErr = new Error("Underlying network timeout on https://api.internal?token=fake_underlying_token_777");
+  (causeErr as any).request = {
+    headers: { authorization: "Bearer fake_cause_bearer_888" },
+    socket: { remoteAddress: "127.0.0.1" },
+  };
+
+  const topErr = new Error("Upstream service failed", { cause: causeErr });
+  const serialized = serializeError(topErr);
+  const sanitized = redactSensitiveData(serialized) as any;
+
+  assert.equal(sanitized.name, "Error");
+  assert.equal(sanitized.message, "Upstream service failed");
+  assert.ok(sanitized.cause !== undefined);
+  assert.equal(sanitized.cause.name, "Error");
+  assert.ok(!JSON.stringify(sanitized).includes("fake_underlying_token_777"));
+  assert.ok(!JSON.stringify(sanitized).includes("fake_cause_bearer_888"));
+  assert.equal(sanitized.cause.request, undefined);
+  assert.equal(sanitized.cause.socket, undefined);
+});

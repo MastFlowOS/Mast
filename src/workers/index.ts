@@ -16,6 +16,7 @@ import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance
 import { initResourceCapacity, initResourceWorkerSlotPool, logStartupResourceTelemetry, initEnrichmentCapacity, splitEnrichmentCapacity } from "../lib/resourceCapacity.js";
 import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
 import { getEnrichmentTelemetrySnapshot, getEnrichmentQueueDepth, formatEnrichmentTelemetryLog } from "../lib/enrichmentTelemetry.js";
+import { redactSensitiveData, serializeError } from "../lib/safeRequestLog.js";
 
 // Ensure the provider registry is initialised at startup so any
 // getProvider() call in handleDiscoveryTask has the implementations loaded.
@@ -32,11 +33,11 @@ import "../discovery/providerRegistry.js";
 // zombie process holding claimed work. A short setTimeout gives the log
 // line a chance to flush before the process dies.
 process.on("uncaughtException", (err) => {
-  console.error("[worker] uncaughtException — exiting so the process supervisor can restart us", { message: err?.message, stack: err?.stack, err });
+  console.error("[worker] uncaughtException — exiting so the process supervisor can restart us", redactSensitiveData(serializeError(err)));
   setTimeout(() => process.exit(1), 250);
 });
 process.on("unhandledRejection", (reason) => {
-  console.error("[worker] unhandledRejection — exiting so the process supervisor can restart us", { reason });
+  console.error("[worker] unhandledRejection — exiting so the process supervisor can restart us", redactSensitiveData(serializeError(reason)));
   setTimeout(() => process.exit(1), 250);
 });
 
@@ -396,7 +397,7 @@ async function runJob(bossJobId: string, scrapeJobId: string | null, fn: () => P
         .in("status", ["running", "streaming"]); // only apply when handler left it non-terminal
     }
   } catch (err) {
-    console.error(`[worker] job ${bossJobId} failed`, err);
+    console.error(`[worker] job ${bossJobId} failed`, redactSensitiveData(serializeError(err)));
     if (scrapeJobId) {
       await supabaseAdmin
         .from("scrape_jobs")
@@ -410,6 +411,6 @@ async function runJob(bossJobId: string, scrapeJobId: string | null, fn: () => P
 
 
 main().catch((err) => {
-  console.error("[worker] fatal startup error", err);
+  console.error("[worker] fatal startup error", redactSensitiveData(serializeError(err)));
   process.exit(1);
 });

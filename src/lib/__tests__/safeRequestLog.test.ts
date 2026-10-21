@@ -8,6 +8,7 @@ import {
   redactHeaderString,
   sanitizeWorkerError,
   sanitizeRequestUrl,
+  serializeError,
 } from "../safeRequestLog.js";
 
 test("redacts authorization and cookie headers case-insensitively", () => {
@@ -195,4 +196,78 @@ test("redacts sensitive URL query parameters while preserving useful query value
 
 test("fails closed on malformed URLs with query strings", () => {
   assert.equal(sanitizeRequestUrl("http://[invalid?token=secret"), "http://[invalid");
+});
+
+test("serializeError uses safe allowlisted fields and strips custom attached request/response trees", () => {
+  const err = new Error("Database connection refused");
+  (err as any).code = "ECONNREFUSED";
+  (err as any).details = "TCP connection to host failed";
+  (err as any).hint = "Check network connectivity";
+  (err as any).request = {
+    method: "POST",
+    headers: { authorization: "Bearer fake_secret_bearer_token" },
+  };
+  (err as any).response = {
+    status: 503,
+    data: { error: "upstream unavailable" },
+  };
+  (err as any).config = {
+    url: "https://db.internal?secret=fake_super_secret",
+  };
+
+  const serialized = serializeError(err);
+
+  // Safe allowlisted fields are retained
+  assert.equal(serialized.name, "Error");
+  assert.equal(serialized.message, "Database connection refused");
+  assert.equal(serialized.code, "ECONNREFUSED");
+  assert.equal(serialized.details, "TCP connection to host failed");
+  assert.equal(serialized.hint, "Check network connectivity");
+
+  // Raw request/response/config properties are excluded from allowlist
+  assert.equal(serialized.request, undefined);
+  assert.equal(serialized.response, undefined);
+  assert.equal(serialized.config, undefined);
+});
+
+test("redacts synthetic fake credentials: JWTs, refresh tokens, cookies, passwords, API keys, and authorization headers", () => {
+  const fakePayload = {
+    authorization: "Bearer fake_bearer_token_xyz123",
+    "x-refresh-token": "fake_refresh_token_abc789",
+    cookie: "session=fake_cookie_session_val; sb-access-token=fake_supabase_cookie",
+    "set-cookie": "refresh_token=fake_new_refresh_token_456; Path=/; HttpOnly",
+    password: "fake_plaintext_password_999",
+    "x-api-key": "sk-fake-api-key-abcdef1234567890",
+    url: "https://app.mast.internal/v1/auth/callback?code=fake_auth_code_111&refresh_token=fake_query_refresh_222&api_key=fake_query_key_333",
+    nestedError: {
+      message: "Authentication failed for user with Bearer fake_nested_bearer_444 and refresh_token: fake_nested_refresh_555",
+      jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+    },
+  };
+
+  const sanitized = redactSensitiveData(fakePayload) as any;
+  const jsonStr = JSON.stringify(sanitized);
+
+  // Assert all synthetic credentials are completely scrubbed
+  assert.ok(!jsonStr.includes("fake_bearer_token_xyz123"));
+  assert.ok(!jsonStr.includes("fake_refresh_token_abc789"));
+  assert.ok(!jsonStr.includes("fake_cookie_session_val"));
+  assert.ok(!jsonStr.includes("fake_supabase_cookie"));
+  assert.ok(!jsonStr.includes("fake_new_refresh_token_456"));
+  assert.ok(!jsonStr.includes("fake_plaintext_password_999"));
+  assert.ok(!jsonStr.includes("sk-fake-api-key-abcdef1234567890"));
+  assert.ok(!jsonStr.includes("fake_auth_code_111"));
+  assert.ok(!jsonStr.includes("fake_query_refresh_222"));
+  assert.ok(!jsonStr.includes("fake_query_key_333"));
+  assert.ok(!jsonStr.includes("fake_nested_bearer_444"));
+  assert.ok(!jsonStr.includes("fake_nested_refresh_555"));
+  assert.ok(!jsonStr.includes("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"));
+
+  // Check expected redacted placeholders
+  assert.equal(sanitized.authorization, "[Redacted]");
+  assert.equal(sanitized["x-refresh-token"], "[Redacted]");
+  assert.equal(sanitized.cookie, "[Redacted]");
+  assert.equal(sanitized["set-cookie"], "[Redacted]");
+  assert.equal(sanitized.password, "[Redacted]");
+  assert.equal(sanitized["x-api-key"], "[Redacted]");
 });

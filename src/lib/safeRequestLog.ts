@@ -16,6 +16,8 @@ const SENSITIVE_HEADER_NAMES = new Set([
   "x-session-id",
   "x-supabase-api-key",
   "x-service-key",
+  "refresh-token",
+  "x-refresh-token",
 ]);
 
 const SENSITIVE_FIELD =
@@ -29,8 +31,8 @@ const BASIC_AUTH_VALUE = /\bBasic\s+[A-Za-z0-9+/=]+/gi;
 const JWT_VALUE = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g;
 const API_KEY_VALUE = /\b(?:sk-(?:or-v1-)?|key-|ghp_|glpat-)[A-Za-z0-9_-]{10,}\b/gi;
 const URL_BASIC_AUTH = /(https?:\/\/)([^:\/\s@]+):([^@\/\s]+)@/gi;
-const SENSITIVE_QUERY_STRING = /([?&](?:authorization|access_token|api_key|apikey|key|token|secret|password|session|code)=)[^&\s]+/gi;
-const INLINE_CREDENTIAL_KV = /(?<=(?:^|[\s,;{]))(?:"?)(?:password|secret|token|api_key|apikey|access_token)(?:"?)\s*[:=]\s*(?:"?)([^"'\s,;}]+)(?:"?)/gi;
+const SENSITIVE_QUERY_STRING = /([?&](?:authorization|access_token|refresh_token|api_key|apikey|key|token|secret|password|session|code)=)[^&\s]+/gi;
+const INLINE_CREDENTIAL_KV = /(?<=(?:^|[\s,;{]))(?:"?)(?:password|secret|token|api_key|apikey|access_token|refresh_token)(?:"?)\s*[:=]\s*(?:"?)([^"'\s,;}]+)(?:"?)/gi;
 
 export function redactSensitiveHeaders(headers: Record<string, unknown>): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {};
@@ -198,6 +200,56 @@ export function redactSensitiveData(value: unknown): unknown {
     return sanitized;
   }
   return value;
+}
+
+/**
+ * Serializes an unknown thrown error value into a plain object with only safe allowlisted fields.
+ * Strips raw request/response/socket/agent objects and custom nested state.
+ */
+export function serializeError(err: unknown): Record<string, unknown> {
+  if (err instanceof Error) {
+    const serialized: Record<string, unknown> = {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+      code: (err as { code?: string }).code,
+      details: (err as { details?: string }).details,
+      hint: (err as { hint?: string }).hint,
+    };
+    if (typeof (err as any).status === "number") serialized.status = (err as any).status;
+    if (typeof (err as any).statusCode === "number") serialized.statusCode = (err as any).statusCode;
+    return serialized;
+  }
+  if (err && typeof err === "object") {
+    const obj = err as Record<string, unknown>;
+    const serialized: Record<string, unknown> = {};
+    const ALLOWED_ERROR_KEYS = new Set([
+      "name",
+      "message",
+      "code",
+      "details",
+      "hint",
+      "status",
+      "statusCode",
+      "statusText",
+      "reason",
+      "category",
+      "field",
+      "path",
+    ]);
+
+    for (const [k, v] of Object.entries(obj)) {
+      if (ALLOWED_ERROR_KEYS.has(k)) {
+        serialized[k] = v;
+      }
+    }
+
+    if (Object.keys(serialized).length === 0) {
+      serialized.message = typeof obj.message === "string" ? obj.message : String(err);
+    }
+    return serialized;
+  }
+  return { message: String(err) };
 }
 
 /** Keep useful paths and ordinary query params while removing auth-like values. */

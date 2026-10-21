@@ -324,6 +324,7 @@ class WebsiteIntel:
     # Metrics
     response_time: Optional[float] = None
     crawl_duration: Optional[float] = None
+    homepage_html: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

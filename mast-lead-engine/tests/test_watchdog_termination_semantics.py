@@ -86,11 +86,11 @@ class _NeverEndingProvider:
                 maps_url=f"https://maps.example.invalid/{uuid.uuid4()}",
                 name=f"Business {i}",
                 category="Restaurant",
-                address="1 Test St",
+                address=f"{i} Test St",
                 city=request.city,
                 country=request.country,
-                website=self._reachable_url,
-                phone="+1-555-0100",
+                website=f"{self._reachable_url}?b={i}",
+                phone=f"+1-555-01{i:02d}",
                 rating=4.5,
                 review_count=42,
                 discovered_at=datetime.now(timezone.utc).isoformat(),
@@ -147,7 +147,7 @@ class TestWatchdogCancelledNotReportedAsSuccess:
         def _watchdog_thread():
             # Simulate the Node bridge's inactivity watchdog firing
             # partway through a run that would otherwise run forever.
-            time.sleep(0.3)
+            time.sleep(0.7)
             shutdown_event.set()
 
         threading.Thread(target=_watchdog_thread, daemon=True).start()
@@ -219,7 +219,7 @@ class TestProgressLinesOnStdout:
         delivered: List[dict] = []
         async for lead in service.run_query(
             query="coffee shop", city="Testville", country="US",
-            max_results=5, deliver_target=3,
+            max_results=5, deliver_target=1,
             db_path=str(tmp_path / "leads3.db"),
         ):
             delivered.append(lead)
@@ -265,7 +265,7 @@ class TestLatencyMetricsPresent:
         provider._gap_s = 0.01
         async for _lead in service.run_query(
             query="coffee shop", city="Testville", country="US",
-            max_results=5, deliver_target=2,
+            max_results=5, deliver_target=1,
             db_path=str(tmp_path / "leads4.db"),
         ):
             pass

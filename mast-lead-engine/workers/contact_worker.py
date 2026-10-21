@@ -252,7 +252,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Dict, Optional, Sequence, Set, Tuple
+from typing import List, Dict, Optional, Sequence, Set, Tuple
 from urllib.parse import urljoin
 
 from engine.contracts import ContactIntel, WebsiteIntel
@@ -435,12 +435,21 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             fetched_htmls.append((html, page_url))
             tried_urls.add(page_url.strip())
 
+            # Unified single-pass anchor extraction
+            raw_anchors = _ANCHOR_RE.findall(html) if html else []
+            resolved_anchors = [
+                strip_control_characters(urljoin(page_url, h.strip()))
+                for h in raw_anchors
+                if h.strip()
+            ]
+
             self._extract_page_contact_data(
                 html=html,
                 page_url=page_url,
                 page_role=role,
                 emails=emails,
                 phones=phones,
+                raw_anchors=raw_anchors,
             )
             if any(s == "mailto" for s in emails.values()):
                 mailto_extracted = True
@@ -450,14 +459,23 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             if contact_form_url is None and _FORM_RE.search(html):
                 contact_form_url = page_url
 
-            if whatsapp_link is None:
-                whatsapp_link = self._extract_first_link(html, page_url, _WHATSAPP_RE)
-            if messenger_link is None:
-                messenger_link = self._extract_first_link(html, page_url, _MESSENGER_RE)
-            if telegram_link is None:
-                telegram_link = self._extract_first_link(html, page_url, _TELEGRAM_RE)
-            if linkedin_url is None:
-                linkedin_url = self._extract_first_link(html, page_url, _LINKEDIN_RE)
+            if whatsapp_link is None or messenger_link is None or telegram_link is None or linkedin_url is None:
+                for resolved in resolved_anchors:
+                    if whatsapp_link is None and _WHATSAPP_RE.search(resolved):
+                        whatsapp_link = resolved
+                    if messenger_link is None and _MESSENGER_RE.search(resolved):
+                        messenger_link = resolved
+                    if telegram_link is None and _TELEGRAM_RE.search(resolved):
+                        telegram_link = resolved
+                    if linkedin_url is None and _LINKEDIN_RE.search(resolved):
+                        linkedin_url = resolved
+                    if (
+                        whatsapp_link is not None
+                        and messenger_link is not None
+                        and telegram_link is not None
+                        and linkedin_url is not None
+                    ):
+                        break
             if instagram_url is None:
                 instagram_url, instagram_source = self._extract_instagram_evidence(html)
                 if instagram_url is None and has_invalid_ig_candidate(html):
@@ -496,6 +514,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             for role, url in pages
             if not url.strip().lower().startswith(_MAILTO_PREFIX)
             and not url.strip().lower().startswith(_TEL_PREFIX)
+            and not (role == "homepage" and item.homepage_html is not None)
         ]
 
         futures_by_url: "Dict[str, concurrent.futures.Future]" = {}
@@ -530,6 +549,12 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                         phones.setdefault(number, "tel")
                         tel_extracted = True
                     any_page_recovered = True
+                    continue
+
+                if role == "homepage" and item.homepage_html is not None:
+                    _process_page_content(role, item.homepage_html, url_clean, 0.0)
+                    if not self._is_requirement_unsatisfied(emails, phones, instagram_url):
+                        break
                     continue
 
                 total_fetches += 1
@@ -804,9 +829,15 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         page_role: str,
         emails: "dict[str, str]",
         phones: "dict[str, str]",
+        raw_anchors: Optional[List[str]] = None,
     ) -> None:
         if not html:
             return
+
+        phone_keys: set[str] = {
+            (digits_only(p)[-10:] if len(digits_only(p)) >= 10 else digits_only(p))
+            for p in phones
+        }
 
         def _add_phone(num: str, source: str) -> None:
             if not num:
@@ -815,15 +846,14 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                 return
             d = digits_only(num)
             key_d = d[-10:] if len(d) >= 10 else d
-            for existing in phones:
-                ex_d = digits_only(existing)
-                ex_key = ex_d[-10:] if len(ex_d) >= 10 else ex_d
-                if key_d == ex_key:
-                    return
+            if key_d in phone_keys:
+                return
+            phone_keys.add(key_d)
             phones[num] = source
 
-        # 1. Anchor mailto: and tel: links
-        for href in _ANCHOR_RE.findall(html):
+        # 1. Anchor mailto: and tel: links (reuses pre-extracted anchors if supplied)
+        anchors = raw_anchors if raw_anchors is not None else _ANCHOR_RE.findall(html)
+        for href in anchors:
             href_clean = href.strip()
             if href_clean.lower().startswith(_MAILTO_PREFIX):
                 address = href_clean[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()

@@ -113,9 +113,12 @@ in this file.
 
 from __future__ import annotations
 
+import collections
+import dataclasses
 import re
 import socket
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -123,6 +126,7 @@ from typing import List, Optional
 from urllib.parse import urljoin, urlparse
 
 from engine.contracts import BusinessCandidate, WebsiteIntel
+from utils.single_flight import SingleFlight
 from utils.parsing import is_ordering_platform, is_social_platform, strip_control_characters
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
@@ -200,11 +204,60 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
     Owns nothing else — see module docstring.
     """
 
+    _cache_lock: threading.Lock = threading.Lock()
+    _domain_cache: collections.OrderedDict[str, WebsiteIntel] = collections.OrderedDict()
+    _single_flight: SingleFlight[WebsiteIntel] = SingleFlight()
+    _MAX_CACHE_SIZE: int = 512
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Clear cached domain inspection results across worker instances."""
+        with cls._cache_lock:
+            cls._domain_cache.clear()
+        cls._single_flight.clear()
+
+    @staticmethod
+    def canonicalize_url(raw_url: str) -> str:
+        """
+        Produce a canonical cache and SingleFlight key:
+        1. Normalizes scheme and hostname to lowercase (RFC 3986 §3.1, §3.2.2).
+        2. Drops standard default ports (:80 for http, :443 for https).
+        3. Normalizes root URLs safely: empty path and single slash '/' produce '/'
+           so https://example.com and https://example.com/ share work.
+        4. Preserves exact case and trailing slashes for non-root paths.
+        5. Preserves exact case and parameters for query strings.
+        6. Preserves scheme distinction: http:// and https:// remain distinct targets.
+        7. Strips fragments (client-side only, not sent to HTTP servers).
+        """
+        cleaned = strip_control_characters((raw_url or "").strip())
+        if not cleaned:
+            return ""
+
+        if not re.match(r"^https?://", cleaned, re.IGNORECASE):
+            cleaned = "https://" + cleaned
+
+        p = urllib.parse.urlsplit(cleaned)
+        scheme = p.scheme.lower()
+        netloc = p.netloc.lower()
+
+        # Omit default ports if explicitly present
+        if scheme == "https" and netloc.endswith(":443"):
+            netloc = netloc[:-4]
+        elif scheme == "http" and netloc.endswith(":80"):
+            netloc = netloc[:-3]
+
+        path = p.path
+        if path in ("", "/"):
+            path = "/"
+
+        return urllib.parse.urlunsplit((scheme, netloc, path, p.query, ""))
+
     def __init__(
         self,
         *,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         worker_id: Optional[str] = None,
+        enable_cache: bool = True,
     ) -> None:
         super().__init__(
             worker_type=WORKER_TYPE,
@@ -212,6 +265,7 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
             worker_id=worker_id,
         )
         self._timeout = timeout
+        self._enable_cache = enable_cache
 
     # -- WorkerInterface -------------------------------------------------
 
@@ -225,6 +279,76 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
         raw_website = strip_control_characters((item.website or "").strip())
         if not raw_website or is_social_platform(raw_website) or is_ordering_platform(raw_website):
             return WebsiteIntel(pipeline_id=item.pipeline_id, website_reachable=False)
+
+        cache_key = self.canonicalize_url(raw_website)
+
+        if self._enable_cache:
+            with self._cache_lock:
+                cached = self._domain_cache.get(cache_key)
+                if cached is not None:
+                    self._domain_cache.move_to_end(cache_key)
+                    return dataclasses.replace(cached, pipeline_id=item.pipeline_id)
+                    return dataclasses.replace(cached, pipeline_id=item.pipeline_id)
+
+            intel_proto: Optional[WebsiteIntel] = None
+            is_leader: bool = False
+            try:
+                intel_proto, is_leader = self._single_flight.do_detailed(
+                    cache_key,
+                    lambda: self._inspect_website(item, raw_website, cache_key),
+                )
+            except Exception:
+                intel_proto = None
+
+            # Fallback guard for FOLLOWERS ONLY:
+            # If a follower received an unreachable, transient error, or exception from another thread's
+            # leader run, the follower MUST NOT accept the negative result. The follower immediately
+            # performs its own independent inspection!
+            if not is_leader:
+                is_transient_or_failed = (
+                    intel_proto is None
+                    or not intel_proto.website_reachable
+                    or (intel_proto.http_status and intel_proto.http_status in (408, 429, 500, 502, 503, 504))
+                )
+                if is_transient_or_failed:
+                    return self._inspect_website(item, raw_website, cache_key)
+
+            if intel_proto is None:
+                return self._inspect_website(item, raw_website, cache_key)
+
+            return dataclasses.replace(intel_proto, pipeline_id=item.pipeline_id)
+
+        return self._inspect_website(item, raw_website, cache_key)
+
+    def _inspect_website(self, item: BusinessCandidate, raw_website: str, cache_key: str) -> WebsiteIntel:
+        if self._enable_cache:
+            with self._cache_lock:
+                cached = self._domain_cache.get(cache_key)
+                if cached is not None:
+                    return cached
+
+        def _commit_cache(intel: WebsiteIntel) -> WebsiteIntel:
+            # Positive Caching Rule: NEVER cache negative or transient failures!
+            # Only cache when:
+            # 1. website_reachable is True
+            # 2. http_status is 2xx or 3xx (successful/redirected)
+            # 3. http_status is not a transient error (408, 429, 500, 502, 503, 504)
+            # 4. homepage_html is present and non-empty
+            is_transient = intel.http_status in (408, 429, 500, 502, 503, 504)
+            is_cacheable = (
+                self._enable_cache
+                and intel.website_reachable is True
+                and intel.http_status is not None
+                and 200 <= intel.http_status < 400
+                and not is_transient
+                and bool(intel.homepage_html)
+            )
+            if is_cacheable:
+                with self._cache_lock:
+                    self._domain_cache[cache_key] = intel
+                    if len(self._domain_cache) > self._MAX_CACHE_SIZE:
+                        self._domain_cache.popitem(last=False)
+            return intel
 
         if not re.match(r"^https?://", raw_website, re.IGNORECASE):
             target_url = "https://" + raw_website
@@ -255,15 +379,17 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
         except urllib.error.HTTPError as exc:
             # Server responded — reachable, just an error status.
             elapsed = time.monotonic() - start
-            return WebsiteIntel(
-                pipeline_id=item.pipeline_id,
-                website_reachable=True,
-                https=urlparse(exc.url or target_url).scheme == "https",
-                final_url=exc.url or target_url,
-                http_status=exc.code,
-                redirect_chain=tuple(redirect_tracker.chain) or None,
-                response_time=elapsed,
-                crawl_duration=elapsed,
+            return _commit_cache(
+                WebsiteIntel(
+                    pipeline_id=item.pipeline_id,
+                    website_reachable=True,
+                    https=urlparse(exc.url or target_url).scheme == "https",
+                    final_url=exc.url or target_url,
+                    http_status=exc.code,
+                    redirect_chain=tuple(redirect_tracker.chain) or None,
+                    response_time=elapsed,
+                    crawl_duration=elapsed,
+                )
             )
         except (urllib.error.URLError, socket.timeout, ConnectionError, ValueError) as exc:
             # Check if this failure qualifies for HTTP fallback:
@@ -294,52 +420,61 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
                         charset = response.headers.get_content_charset() or "utf-8"
                 except urllib.error.HTTPError as exc:
                     elapsed = time.monotonic() - start
-                    return WebsiteIntel(
-                        pipeline_id=item.pipeline_id,
-                        website_reachable=True,
-                        https=False,
-                        final_url=exc.url or effective_fallback_url,
-                        http_status=exc.code,
-                        redirect_chain=tuple(redirect_tracker.chain) or None,
-                        response_time=elapsed,
-                        crawl_duration=elapsed,
+                    return _commit_cache(
+                        WebsiteIntel(
+                            pipeline_id=item.pipeline_id,
+                            website_reachable=True,
+                            https=False,
+                            final_url=exc.url or effective_fallback_url,
+                            http_status=exc.code,
+                            redirect_chain=tuple(redirect_tracker.chain) or None,
+                            response_time=elapsed,
+                            crawl_duration=elapsed,
+                        )
                     )
                 except (urllib.error.URLError, socket.timeout, ConnectionError, ValueError):
                     elapsed = time.monotonic() - start
-                    return WebsiteIntel(
+                    return _commit_cache(
+                        WebsiteIntel(
+                            pipeline_id=item.pipeline_id,
+                            website_reachable=False,
+                            response_time=elapsed,
+                            crawl_duration=elapsed,
+                        )
+                    )
+            else:
+                # No response at all — this is the "unreachable" fact.
+                elapsed = time.monotonic() - start
+                return _commit_cache(
+                    WebsiteIntel(
                         pipeline_id=item.pipeline_id,
                         website_reachable=False,
                         response_time=elapsed,
                         crawl_duration=elapsed,
                     )
-            else:
-                # No response at all — this is the "unreachable" fact.
-                elapsed = time.monotonic() - start
-                return WebsiteIntel(
-                    pipeline_id=item.pipeline_id,
-                    website_reachable=False,
-                    response_time=elapsed,
-                    crawl_duration=elapsed,
                 )
 
         html = raw.decode(charset, errors="replace")
         contact_page, contact_page_hint = self._extract_contact_page(html, final_url)
 
-        return WebsiteIntel(
-            pipeline_id=item.pipeline_id,
-            website_reachable=True,
-            https=urlparse(final_url).scheme == "https",
-            final_url=final_url,
-            http_status=status,
-            redirect_chain=tuple(redirect_tracker.chain) or None,
-            title=self._extract_title(html),
-            description=self._extract_meta_description(html),
-            contact_page=contact_page,
-            contact_page_hint=contact_page_hint,
-            detected_platform=self._detect_platform(html),
-            page_language=self._extract_language(html),
-            response_time=elapsed,
-            crawl_duration=elapsed,
+        return _commit_cache(
+            WebsiteIntel(
+                pipeline_id=item.pipeline_id,
+                website_reachable=True,
+                https=urlparse(final_url).scheme == "https",
+                final_url=final_url,
+                http_status=status,
+                redirect_chain=tuple(redirect_tracker.chain) or None,
+                title=self._extract_title(html),
+                description=self._extract_meta_description(html),
+                contact_page=contact_page,
+                contact_page_hint=contact_page_hint,
+                detected_platform=self._detect_platform(html),
+                page_language=self._extract_language(html),
+                response_time=elapsed,
+                crawl_duration=elapsed,
+                homepage_html=html,
+            )
         )
 
     def timeout_seconds(self) -> float:

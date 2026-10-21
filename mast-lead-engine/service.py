@@ -1500,7 +1500,10 @@ async def run_query(
                 # "Phase 5E" module docstring section. Instagram, Merge,
                 # Qualification, and Storage remain untouched (implicit
                 # concurrency 1).
-                stage_concurrency=DEFAULT_STAGE_CONCURRENCY,
+                stage_concurrency={
+                    "website": int(os.environ.get("MAST_STAGE_CONCURRENCY_WEBSITE", "4")),
+                    "contact": int(os.environ.get("MAST_STAGE_CONCURRENCY_CONTACT", "4")),
+                },
                 # STOP-PROPAGATION FIX: give the driver a read-only view
                 # of this call's own `shutdown_event` (set from the
                 # SIGTERM handler -- see _on_sigterm / the module-level
@@ -1706,12 +1709,18 @@ async def run_query(
                         if _fully_drained():
                             if driver is not None and driver.last_error is not None:
                                 raise driver.last_error
+                            if shutdown_event is not None and shutdown_event.is_set():
+                                _stopped_by_shutdown = True
+                                break
                             log.info(
                                 "[run_query] pipeline fully drained — exhausted before "
                                 "reaching deliver_target (delivered=%d/%d)",
                                 gate.accepted, _deliver_target,
                             )
                             break
+                        # Paced idle backoff: avoid CPU spin during async I/O or worker wait
+                        backoff = min(0.01 * (1.5 ** min(idle_passes, 6)), 0.10)
+                        await asyncio.sleep(backoff)
                     else:
                         idle_passes = 0
 

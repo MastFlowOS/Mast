@@ -77,7 +77,7 @@ def test_website_worker_control_character_url_does_not_raise():
     process() -- it must return WebsiteIntel(website_reachable=False),
     exactly as any other unreachable-site fact would, instead of raising
     ValueError."""
-    worker = WebsiteWorker()
+    worker = WebsiteWorker(enable_cache=False)
 
     def _raise_value_error(request, timeout=None):
         raise ValueError("URL can't contain control characters")
@@ -99,7 +99,7 @@ def test_website_worker_control_character_url_does_not_raise():
             provider="google_maps",
             pipeline_id="p-malformed-url",
             name="Malformed URL Biz",
-            website=_CONTROL_CHAR_URL,
+            website="example-firm.com/\x00my\x0bbiz\x1fpage",
         )
         intel = worker.process(candidate)
         assert isinstance(intel, WebsiteIntel)
@@ -112,7 +112,7 @@ def test_website_worker_control_character_url_does_not_raise():
 def test_website_worker_sanitizes_input_before_building_target_url():
     """`raw_website` is sanitized up front, so the sanitized (not the
     original polluted) URL is what actually gets requested."""
-    worker = WebsiteWorker()
+    worker = WebsiteWorker(enable_cache=False)
     requested_urls = []
 
     import urllib.request as _urllib_request
@@ -133,7 +133,7 @@ def test_website_worker_sanitizes_input_before_building_target_url():
             provider="google_maps",
             pipeline_id="p-sanitized-url",
             name="Sanitized URL Biz",
-            website=_CONTROL_CHAR_URL,
+            website="example-firm.com/\x00my\x0bbiz\x1fpage",
         )
         worker.process(candidate)
         assert requested_urls, "expected at least one request attempt"

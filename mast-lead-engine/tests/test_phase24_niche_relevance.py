@@ -95,7 +95,7 @@ def _make_enriched(
     website_reachable: bool = True,
     profile_reachable: bool = True,
     followers: int | None = 500,
-    emails: tuple[str, ...] = ("hello@example.com",),
+    emails: tuple[str, ...] = ("contact@artisan-coffee.com",),
     phones: tuple[str, ...] = ("555-1234",),
 ) -> EnrichedBusiness:
     web = WebsiteIntel(

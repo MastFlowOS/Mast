@@ -3,7 +3,7 @@ import { runEngineQuery } from "../scraperBridge/pythonBridge.js";
 import { deliverLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
-import { validateLead } from "../lib/leadValidation.js";
+import { sanitizeLeadContacts, validateLead } from "../lib/leadValidation.js";
 import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
 import type { CountryInfo } from "../lib/geo/countries.js";
 import { PipelineTracer } from "../lib/pipelineTrace.js";
@@ -244,6 +244,13 @@ export async function handleDiscoverJob(payload: DiscoverJobPayload): Promise<vo
           console.log(`[discoverJob] [trace] ${leadName} \u2193 received from engine (city=${city})`);
 
           try {
+            // Drop malformed OPTIONAL contact values (junk email, non-profile
+            // Instagram link, ...) so they can neither satisfy a requested
+            // channel nor fail the whole lead in validateLead().
+            const droppedContacts = sanitizeLeadContacts(lead);
+            if (droppedContacts.length > 0) {
+              console.log(`[discoverJob] [trace] ${leadName} sanitized invalid contact field(s): ${droppedContacts.join(",")}`);
+            }
             if (!channelsSatisfied(lead, payload.channels)) {
               recordRejection(`failed channel requirement (needed ${JSON.stringify(payload.channels)})`);
               tracer.reject(pid, `channel_filter:${JSON.stringify(payload.channels)}`);

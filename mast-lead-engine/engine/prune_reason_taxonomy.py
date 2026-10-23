@@ -140,7 +140,7 @@ def is_channel_satisfied_post_enrichment(
     Evaluates whether a business satisfies a specific channel requirement
     using all facts collected across Discovery, Website, Instagram, and Contact stages.
     """
-    from utils.parsing import is_valid_email
+    from utils.parsing import ig_url_from_provider_value, is_valid_email, is_valid_phone
 
     if channel == "website":
         has_site = bool(business and getattr(business, "website", None))
@@ -148,12 +148,18 @@ def is_channel_satisfied_post_enrichment(
         return has_site and site_ok
 
     elif channel == "phone":
-        has_maps_phone = bool(business and getattr(business, "phone", None))
-        has_contact_phone = bool(contact_intel and getattr(contact_intel, "phones", None))
+        # Real phone data, not merely a non-empty string: a value must
+        # carry a plausible number of digits (is_valid_phone).
+        has_maps_phone = bool(business and is_valid_phone(getattr(business, "phone", None)))
+        has_contact_phone = bool(
+            contact_intel
+            and getattr(contact_intel, "phones", None)
+            and any(is_valid_phone(p) for p in contact_intel.phones)
+        )
         return has_maps_phone or has_contact_phone
 
     elif channel == "email":
-        has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
+        has_maps_email = bool(business and is_valid_email(getattr(business, "provider_email", None)))
         has_contact_email = bool(
             contact_intel
             and getattr(contact_intel, "emails", None)
@@ -162,9 +168,13 @@ def is_channel_satisfied_post_enrichment(
         return has_maps_email or has_contact_email
 
     elif channel == "instagram":
-        has_maps_ig = bool(business and getattr(business, "instagram_url", None))
+        # A listed profile URL counts only if it is a real profile URL
+        # (not /sharer.php, /embed.js, a post link, ...); a fetch that
+        # merely returned an HTTP error / login wall never counts
+        # (profile_reachable is True only for a retrieved profile page).
+        has_maps_ig = bool(business and ig_url_from_provider_value(getattr(business, "instagram_url", None)))
         has_intel_ig = bool(instagram_intel and getattr(instagram_intel, "profile_reachable", None) is True)
-        has_contact_ig = bool(contact_intel and getattr(contact_intel, "instagram_url", None))
+        has_contact_ig = bool(contact_intel and ig_url_from_provider_value(getattr(contact_intel, "instagram_url", None)))
         return has_maps_ig or has_intel_ig or has_contact_ig
 
     return False

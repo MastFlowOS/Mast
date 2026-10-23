@@ -131,6 +131,7 @@ import urllib.request
 from typing import Optional
 
 from engine.contracts import BusinessCandidate, InstagramIntel
+from utils.http_limits import fetch_slot, read_capped
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
 
@@ -140,6 +141,12 @@ DEFAULT_TIMEOUT_SECONDS = 6.0
 WORKER_TYPE = "instagram"
 
 _USER_AGENT = "MAST-InstagramWorker/1.0 (+profile inspection only)"
+
+# Markers of Instagram's logged-out login interstitial.
+_LOGIN_WALL_RE = re.compile(
+    r"(?:accounts/login|Log\s*in\s*(?:to|\|)\s*Instagram|loginForm|\"login_required\")",
+    re.IGNORECASE,
+)
 
 # -- Regexes over the public profile page's own <meta> tags and --------
 # -- embedded page JSON. Every one of these matches a fact Instagram --
@@ -217,35 +224,59 @@ class InstagramWorker(BaseWorker[BusinessCandidate, InstagramIntel]):
         """
         if not item.instagram_url:
             return InstagramIntel(
-                pipeline_id=item.pipeline_id, profile_reachable=False
+                pipeline_id=item.pipeline_id,
+                profile_reachable=False,
+                profile_status="no_url",
             )
 
         request = urllib.request.Request(
             item.instagram_url, headers={"User-Agent": _USER_AGENT}
         )
 
+        # Verification outcomes (see InstagramIntel.profile_status).
+        # `profile_reachable is True` is reserved for a profile page that
+        # was actually retrieved and recognized. An HTTP error, a login
+        # wall or an unrecognizable page is NOT proof the profile exists,
+        # so those return None ("not verified") rather than True; only a
+        # definitive 404/410 is False.
         start = time.monotonic()
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            with fetch_slot(), urllib.request.urlopen(request, timeout=self._timeout) as response:
                 elapsed = time.monotonic() - start
-                raw = response.read()
+                final_url = response.geturl() or ""
+                raw = read_capped(response)
                 charset = response.headers.get_content_charset() or "utf-8"
-        except urllib.error.HTTPError:
-            # Server responded — the profile page is reachable, just
-            # an error status (e.g. a private/removed profile page).
+        except urllib.error.HTTPError as exc:
             elapsed = time.monotonic() - start
+            if exc.code in (404, 410):
+                status, reachable = "missing", False
+            elif exc.code == 429:
+                status, reachable = "rate_limited", None
+            elif exc.code in (401, 403):
+                status, reachable = "blocked", None
+            else:
+                status, reachable = "inconclusive", None
             return InstagramIntel(
                 pipeline_id=item.pipeline_id,
-                profile_reachable=True,
-                profile_url=item.instagram_url,
+                profile_reachable=reachable,
+                profile_status=status,
                 fetch_duration=elapsed,
             )
         except (urllib.error.URLError, socket.timeout, ConnectionError):
-            # No response at all — this is the "unreachable" fact.
+            # No response at all.
             elapsed = time.monotonic() - start
             return InstagramIntel(
                 pipeline_id=item.pipeline_id,
                 profile_reachable=False,
+                profile_status="error",
+                fetch_duration=elapsed,
+            )
+
+        if "/accounts/login" in final_url.lower():
+            return InstagramIntel(
+                pipeline_id=item.pipeline_id,
+                profile_reachable=None,
+                profile_status="blocked",
                 fetch_duration=elapsed,
             )
 
@@ -253,9 +284,20 @@ class InstagramWorker(BaseWorker[BusinessCandidate, InstagramIntel]):
         display_name, username = self._extract_name_and_handle(html)
         followers, following, posts = self._extract_counts(html)
 
+        if display_name is None and username is None:
+            # 200 OK but no recognizable profile markup: typically the
+            # logged-out login wall / interstitial. Inconclusive.
+            return InstagramIntel(
+                pipeline_id=item.pipeline_id,
+                profile_reachable=None,
+                profile_status="blocked" if _LOGIN_WALL_RE.search(html) else "inconclusive",
+                fetch_duration=elapsed,
+            )
+
         return InstagramIntel(
             pipeline_id=item.pipeline_id,
             profile_reachable=True,
+            profile_status="found",
             profile_url=item.instagram_url,
             username=username,
             display_name=display_name,

@@ -61,7 +61,7 @@ export function buildDedupWasteLogFields(args: {
   instagram?: string | null;
   email?: string | null;
   phone?: string | null;
-  emails?: { email: string; role: string }[];
+  emails?: Array<string | { email: string; role: string }>;
   phones?: string[];
 }): DedupWasteLogFields {
   return {

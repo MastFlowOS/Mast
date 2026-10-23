@@ -16,6 +16,8 @@
  * channels — requesting Email+Phone requires BOTH, not either).
  */
 
+import { isValidEmail, isValidInstagram, isValidPhone, isValidWebsite } from "./leadValidation.js";
+
 export type ChannelCandidate = {
   email?: string | null;
   phone?: string | null;
@@ -33,7 +35,26 @@ function hasChannel(candidate: ChannelCandidate, channel: string): boolean {
     return false;
   }
   const value = candidate[channel as ChannelField];
-  return typeof value === "string" && value.trim().length > 0;
+  return isUsableChannelValue(channel as ChannelField, value);
+}
+
+/**
+ * A channel is satisfied only by a REAL value of that kind — not merely a
+ * non-empty string. Previously `logo@2x.png` satisfied "email" and an
+ * Instagram `/embed.js` URL satisfied "instagram".
+ */
+function isUsableChannelValue(channel: ChannelField, value: unknown): boolean {
+  if (typeof value !== "string" || value.trim().length === 0) return false;
+  switch (channel) {
+    case "email":
+      return isValidEmail(value);
+    case "phone":
+      return isValidPhone(value);
+    case "instagram":
+      return isValidInstagram(value);
+    case "website":
+      return isValidWebsite(value);
+  }
 }
 
 /**
@@ -64,7 +85,7 @@ export function mergeEnrichedChannels<T extends ChannelCandidate>(
   const merged: T = { ...lead };
   for (const field of CHANNEL_FIELDS) {
     const value = enriched[field];
-    if (typeof value === "string" && value.trim().length > 0) {
+    if (isUsableChannelValue(field, value)) {
       (merged as ChannelCandidate)[field] = value;
     }
   }

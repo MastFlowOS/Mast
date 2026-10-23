@@ -51,13 +51,98 @@ _PHONE_BLOCKLIST = frozenset({
 })
 
 _TEL_HREF_RE = re.compile(r'href=["\']tel:([^"\']+)["\']', re.I)
+# Inline "tel:" values that are not an href (e.g. Google Maps'
+# `data-item-id="phone:tel:+15551234567"`): authoritative like a tel: link.
+_TEL_INLINE_RE = re.compile(r"\btel:\s*(\+?[\d][\d\s().\-]{5,})", re.I)
 _JSON_PHONE_RE = re.compile(
     r'"(?:telephone|phone|phoneNumber|formatted_phone_number)"\s*:\s*"([^"]+)"',
     re.I,
 )
+# Visible-text phone candidate: an optional "+"/"00" prefix, then digits
+# with common separators. Deliberately allows a single-digit area code
+# after the country code ("+20 2 2735 9999"), which the previous
+# pattern could not match.
 _PHONE_PATTERN = re.compile(
-    r"(?:\+?\d{1,3}[\s.\-]?)?\(?\d{2,4}\)?[\s.\-]?\d{2,4}[\s.\-]?\d{2,4}(?:[\s.\-]?\d{1,4})?",
+    r"(?<![\w@/:.\-])(?:\+|00)?\(?\d[\d\s().\-]{5,22}\d(?![\w@])",
 )
+
+_PHONE_EXT_RE = re.compile(
+    r"\s*(?:;ext=|[,;]|\bext(?:ension)?\.?|\bx|#)\s*\d{1,6}\s*$",
+    re.IGNORECASE,
+)
+
+# Values that look like dates, times, IPs, versions or ranges rather than
+# phone numbers. Applied to visible-text candidates only.
+_NOT_PHONE_RES = (
+    # Date-shaped PREFIXES (so "2024-10-22 12" cut from "2024-10-22 12:30"
+    # is rejected too): 2024-10-22, 2024/10/22, 10/22/2026, 22.10.2024.
+    re.compile(r"^\d{4}[\-/.]\d{1,2}[\-/.]\d{1,2}(?!\d)"),
+    re.compile(r"^\d{1,2}[\-/.]\d{1,2}[\-/.]\d{2,4}(?!\d)"),
+    re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$"),                 # IPv4
+    re.compile(r"^\d{4}\s*[\-\u2013]\s*\d{4}$"),             # 2020-2024
+    re.compile(r".*\d{1,2}:\d{2}.*"),                         # clock times
+)
+
+# ISO-3166 alpha-2 -> (calling code, national trunk prefix).
+_REGION_TABLE: dict[str, tuple[str, str]] = {
+    "US": ("1", "1"), "CA": ("1", "1"),
+    "EG": ("20", "0"), "GB": ("44", "0"), "IE": ("353", "0"),
+    "AE": ("971", "0"), "SA": ("966", "0"), "QA": ("974", ""),
+    "KW": ("965", ""), "JO": ("962", "0"), "LB": ("961", "0"),
+    "MA": ("212", "0"), "DZ": ("213", "0"), "TN": ("216", ""),
+    "TR": ("90", "0"), "DE": ("49", "0"), "FR": ("33", "0"),
+    "ES": ("34", ""), "IT": ("39", ""), "NL": ("31", "0"),
+    "BE": ("32", "0"), "CH": ("41", "0"), "AT": ("43", "0"),
+    "SE": ("46", "0"), "NO": ("47", ""), "DK": ("45", ""),
+    "PL": ("48", ""), "PT": ("351", ""), "GR": ("30", ""),
+    "AU": ("61", "0"), "NZ": ("64", "0"), "IN": ("91", "0"),
+    "PK": ("92", "0"), "ZA": ("27", "0"), "NG": ("234", "0"),
+    "KE": ("254", "0"), "MX": ("52", ""), "BR": ("55", "0"),
+    "AR": ("54", "0"), "CL": ("56", ""), "CO": ("57", ""),
+    "SG": ("65", ""), "MY": ("60", "0"), "PH": ("63", "0"),
+    "ID": ("62", "0"), "TH": ("66", "0"), "JP": ("81", "0"),
+    "KR": ("82", "0"), "CN": ("86", "0"),
+}
+
+_REGION_ALIASES: dict[str, str] = {
+    "USA": "US", "UNITED STATES": "US", "UNITED STATES OF AMERICA": "US",
+    "AMERICA": "US", "CANADA": "CA", "EGYPT": "EG", "UK": "GB",
+    "UNITED KINGDOM": "GB", "GREAT BRITAIN": "GB", "ENGLAND": "GB",
+    "IRELAND": "IE", "UAE": "AE", "UNITED ARAB EMIRATES": "AE",
+    "SAUDI ARABIA": "SA", "QATAR": "QA", "KUWAIT": "KW", "JORDAN": "JO",
+    "LEBANON": "LB", "MOROCCO": "MA", "ALGERIA": "DZ", "TUNISIA": "TN",
+    "TURKEY": "TR", "GERMANY": "DE", "FRANCE": "FR", "SPAIN": "ES",
+    "ITALY": "IT", "NETHERLANDS": "NL", "BELGIUM": "BE",
+    "SWITZERLAND": "CH", "AUSTRIA": "AT", "SWEDEN": "SE", "NORWAY": "NO",
+    "DENMARK": "DK", "POLAND": "PL", "PORTUGAL": "PT", "GREECE": "GR",
+    "AUSTRALIA": "AU", "NEW ZEALAND": "NZ", "INDIA": "IN",
+    "PAKISTAN": "PK", "SOUTH AFRICA": "ZA", "NIGERIA": "NG",
+    "KENYA": "KE", "MEXICO": "MX", "BRAZIL": "BR", "ARGENTINA": "AR",
+    "CHILE": "CL", "COLOMBIA": "CO", "SINGAPORE": "SG", "MALAYSIA": "MY",
+    "PHILIPPINES": "PH", "INDONESIA": "ID", "THAILAND": "TH",
+    "JAPAN": "JP", "SOUTH KOREA": "KR", "KOREA": "KR", "CHINA": "CN",
+}
+
+# Longest calling codes first so "+971" wins over "+97".
+_CC_TO_REGION = sorted(
+    {cc: r for r, (cc, _t) in _REGION_TABLE.items() if r not in ("CA",)}.items(),
+    key=lambda kv: -len(kv[0]),
+)
+
+_EG_MOBILE_RE = re.compile(r"^1[0125]\d{8}$")
+_EG_LANDLINE_RE = re.compile(r"^(?:2\d{8}|3\d{7}|13\d{7}|(?:4[0-9]|5[0-9]|6[2-9]|8[2-9]|9[0-9])\d{7})$")
+
+
+def resolve_region(country: str | None) -> str | None:
+    """Map a country code or name to an ISO-3166 alpha-2 code, or None."""
+    if not country:
+        return None
+    c = str(country).strip().upper()
+    if not c:
+        return None
+    if c in _REGION_TABLE:
+        return c
+    return _REGION_ALIASES.get(c)
 
 
 def digits_only(v: str | None) -> str:
@@ -77,60 +162,268 @@ def is_valid_phone(v: str | None, *, min_digits: int = 7) -> bool:
     return True
 
 
-def normalize_phone(raw: str | None, region: str = "US") -> str:
-    """Return a normalized display phone or empty string."""
+def _nanp_valid(d10: str, *, strict: bool = True) -> bool:
+    """North American Numbering Plan plausibility for a 10-digit number.
+
+    ``strict`` (used only when we must GUESS that an unprefixed number is
+    North American) also requires a valid exchange digit. Numbers that
+    state their country explicitly (``+1`` / a US region) only need a
+    valid area-code lead digit, so fixture-style numbers such as
+    ``+1 555 123 4567`` are still accepted.
+    """
+    if not (
+        len(d10) == 10
+        and d10[0] in "23456789"
+        and d10 not in _PHONE_BLOCKLIST
+        and len(set(d10)) > 2
+    ):
+        return False
+    return d10[3] in "23456789" if strict else True
+
+
+def _fmt_us(d10: str) -> str:
+    return f"+1 ({d10[:3]}) {d10[3:6]}-{d10[6:]}"
+
+
+def _national_ok(region: str, national: str) -> bool:
+    """Length/shape sanity for a national significant number (no trunk)."""
+    if region == "EG":
+        return bool(_EG_MOBILE_RE.match(national) or _EG_LANDLINE_RE.match(national))
+    if region in ("US", "CA"):
+        return _nanp_valid(national, strict=False)
+    if region == "GB":
+        return 9 <= len(national) <= 10
+    return 6 <= len(national) <= 12
+
+
+def _intl_digits(digits: str) -> str:
+    """Normalize an already-international digit string (no '+') to display form."""
+    if not (8 <= len(digits) <= 15):
+        return ""
+    if digits in _PHONE_BLOCKLIST or len(set(digits)) <= 2:
+        return ""
+    if digits.startswith("1") and len(digits) == 11:
+        return _fmt_us(digits[1:]) if _nanp_valid(digits[1:], strict=False) else ""
+    for cc, region in _CC_TO_REGION:
+        if digits.startswith(cc):
+            national = digits[len(cc):]
+            trunk = _REGION_TABLE[region][1]
+            # "+44 020 ..." / "+20 (0)2 ...": drop a redundant trunk zero.
+            if trunk == "0" and national.startswith("0"):
+                national = national[1:]
+            if not _national_ok(region, national):
+                return ""
+            return f"+{cc}{national}"
+    # Unknown calling code: accept a plausible E.164 length as-is.
+    return f"+{digits}" if 9 <= len(digits) <= 15 else ""
+
+
+def normalize_phone(
+    raw: str | None,
+    region: str | None = None,
+    *,
+    strict: bool = False,
+) -> str:
+    """Return a normalized display phone, or "" when it is not a phone.
+
+    * NANP numbers render as ``+1 (AAA) BBB-CCCC``; every other
+      international number renders as compact E.164 (``+201001234567``).
+    * ``region`` (ISO code or country name) lets national numbers be
+      placed (e.g. Egyptian ``010 0123 4567`` -> ``+201001234567``).
+    * With no usable region, a number without ``+``/``00`` is accepted
+      only if it is a valid North American number; in non-``strict``
+      mode any other plausible national number is kept as written
+      (whitespace-collapsed) instead of being mislabeled with a guessed
+      country code.
+    * Extensions (``x22``, ``ext. 5``) are stripped.
+    """
     if not raw:
         return ""
-    s = raw.strip()
+    s = str(raw).strip()
     if s.lower().startswith("tel:"):
         s = s[4:].strip()
+    s = s.split("?", 1)[0].split(";", 1)[0].strip()
+    s = re.sub(r"\(0\)", "", s)           # "+20 (0)2 ..." trunk marker
+    s = _PHONE_EXT_RE.sub("", s).strip()
+    if not s:
+        return ""
     d = digits_only(s)
     if not is_valid_phone(d, min_digits=7):
         return ""
-    if len(d) == 10 and region.upper() in ("US", "CA", "USA", "CANADA"):
-        return f"+1 ({d[:3]}) {d[3:6]}-{d[6:]}"
-    if len(d) == 11 and d.startswith("1"):
-        return f"+1 ({d[1:4]}) {d[4:7]}-{d[7:]}"
-    if is_valid_phone(d, min_digits=10):
-        if s.startswith("+"):
-            return s
-        return f"+{d}"
-    if is_valid_phone(d, min_digits=7):
-        return d
-    return ""
+
+    if s.startswith("+") or s.startswith("00"):
+        intl = d[2:] if s.startswith("00") else d
+        return _intl_digits(intl)
+
+    reg = resolve_region(region)
+    if reg is not None:
+        cc, trunk = _REGION_TABLE[reg]
+        if reg in ("US", "CA"):
+            if len(d) == 10 and _nanp_valid(d, strict=False):
+                return _fmt_us(d)
+            if len(d) == 11 and d.startswith("1") and _nanp_valid(d[1:], strict=False):
+                return _fmt_us(d[1:])
+            return ""
+        national = d
+        if trunk and national.startswith(trunk):
+            national = national[len(trunk):]
+        elif national.startswith(cc) and _national_ok(reg, national[len(cc):].lstrip("0")):
+            national = national[len(cc):].lstrip("0")   # "20 100 123 4567" typed without "+"
+        if _national_ok(reg, national):
+            return f"+{cc}{national}"
+        return ""
+
+    # Unknown region.
+    if len(d) == 10 and _nanp_valid(d):
+        return _fmt_us(d)
+    if len(d) == 11 and d.startswith("1") and _nanp_valid(d[1:]):
+        return _fmt_us(d[1:])
+    if strict:
+        return ""
+    # Lenient fallback for authoritative sources (provider fields, tel:
+    # links) when the country is unknown: keep the national digits
+    # rather than inventing a country code, but never for date/IP-shaped
+    # or non-phone-looking strings.
+    if re.search(r"[^\d\s().\-+]", s):
+        return ""
+    if any(rx.match(s) for rx in _NOT_PHONE_RES[:4]):
+        return ""
+    return re.sub(r"\s+", " ", s) if 8 <= len(d) <= 15 else ""
 
 
-def extract_phones(text: str) -> list[str]:
-    """Find all phone-like strings in HTML or plain text."""
+def phone_dedup_key(value: str | None) -> str:
+    """Dedup key for an already-normalized/extracted phone: its last 10
+    digits (the whole number if shorter). Makes ``+1 (555) 012-3456``,
+    ``555.012.3456`` and ``15550123456`` one number, and
+    ``+20 100 123 4567`` equal to ``0100 123 4567``."""
+    d = digits_only(value)
+    return d[-10:] if len(d) >= 10 else d
+
+
+def phone_key(raw: str | None, region: str | None = None) -> str:
+    """Canonical dedup key for a raw phone string ('' if invalid)."""
+    n = normalize_phone(raw, region)
+    return phone_dedup_key(n)
+
+
+def _looks_like_phone_token(token: str) -> bool:
+    t = token.strip()
+    for rx in _NOT_PHONE_RES:
+        if rx.match(t):
+            return False
+    d = digits_only(t)
+    has_sep = bool(re.search(r"[\s().\-]", t))
+    has_prefix = t.startswith("+") or t.startswith("00")
+    # Unseparated digit runs are only trusted with an international
+    # prefix or a leading national zero (order numbers, ids and
+    # timestamps are otherwise indistinguishable from phones).
+    if not has_sep and not has_prefix and not d.startswith("0"):
+        return False
+    return 8 <= len(d) <= 15
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_scripts_and_styles(html: str) -> str:
+    """Remove <script>/<style> blocks in linear time.
+
+    Replaces a lazy ``<script>.*?</script>`` DOTALL regex, which rescans
+    to the end of the document for every unclosed ``<script``.
+    """
+    if not html:
+        return html
+    low = html.lower()
+    out: list[str] = []
+    pos = 0
+    n = len(html)
+    while pos < n:
+        nxt = -1
+        tag = ""
+        for t in ("<script", "<style"):
+            i = low.find(t, pos)
+            if i != -1 and (nxt == -1 or i < nxt):
+                nxt, tag = i, t[1:]
+        if nxt == -1:
+            out.append(html[pos:])
+            break
+        out.append(html[pos:nxt])
+        close = low.find(f"</{tag}", nxt)
+        if close == -1:
+            # Unclosed block: drop only the opening tag, keep the rest.
+            gt = html.find(">", nxt)
+            pos = gt + 1 if gt != -1 else nxt + 1 + len(tag)
+            out.append(" ")
+            continue
+        gt = html.find(">", close)
+        pos = gt + 1 if gt != -1 else n
+        out.append(" ")
+    return "".join(out)
+
+
+def extract_phones(
+    text: str,
+    region: str | None = None,
+    *,
+    trusted: bool = False,
+) -> list[str]:
+    """Find phone numbers in HTML or plain text, normalized and de-duplicated.
+
+    ``tel:`` hrefs and JSON ``telephone`` keys are authoritative.
+    Visible-text candidates are filtered (dates, times, versions, ids)
+    and normalized strictly. ``trusted=True`` (text already known to be a
+    phone field, e.g. a Maps panel button) keeps plausible national
+    numbers even when no region is known.
+    """
     if not text:
         return []
     found: list[str] = []
     seen: set[str] = set()
 
-    def _add(raw: str) -> None:
-        n = normalize_phone(raw)
-        if n and n not in seen:
-            seen.add(n)
+    def _add(raw: str, *, strict: bool) -> None:
+        n = normalize_phone(raw, region, strict=strict)
+        if not n:
+            return
+        # Trusted phone-field text with no known region that is written in
+        # the unmistakable North American shape "(AAA) BBB-CCCC" /
+        # "AAA-BBB-CCCC" is rendered as a US number (previous behaviour),
+        # instead of being left unformatted.
+        if (
+            trusted
+            and region is None
+            and not n.startswith("+")
+            and re.fullmatch(r"\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}", raw.strip())
+            and _nanp_valid(digits_only(raw), strict=False)
+        ):
+            n = _fmt_us(digits_only(raw))
+        k = phone_dedup_key(n)
+        if k and k not in seen:
+            seen.add(k)
             found.append(n)
 
     for m in _TEL_HREF_RE.findall(text):
-        _add(m)
+        _add(m, strict=False)
     for m in _JSON_PHONE_RE.findall(text):
-        _add(m)
-    # For visible text: strip script/style and tags so attributes like data-id / width / height aren't matched
-    cleaned_text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.DOTALL | re.IGNORECASE)
-    cleaned_text = re.sub(r"<[^>]+>", " ", cleaned_text)
+        _add(m, strict=False)
+    for m in _TEL_INLINE_RE.findall(text):
+        _add(m.strip(), strict=False)
+    # For visible text: strip script/style and tags so attributes like
+    # data-id / width / height aren't matched.
+    cleaned_text = _TAG_RE.sub(" ", strip_scripts_and_styles(text))
 
     for m in _PHONE_PATTERN.finditer(cleaned_text):
         token = m.group(0).strip()
-        if len(digits_only(token)) >= 7:
-            _add(token)
+        if len(digits_only(token)) < 7:
+            continue
+        if not trusted and not _looks_like_phone_token(token):
+            continue
+        _add(token, strict=not trusted)
 
     return found
 
 
 def pick_best_phone(candidates: list[str], country: str = "") -> str:
-    region = "US" if country.upper() in ("US", "USA", "CA", "CANADA") else "GB"
+    region = resolve_region(country)
     scored: list[tuple[int, str]] = []
     for c in candidates:
         n = normalize_phone(c, region=region)
@@ -204,6 +497,18 @@ _EMAIL_PRIORITY = (
 )
 
 
+# TLD-shaped suffixes that are really file names / assets ("logo@2x.png").
+_ASSET_TLDS = frozenset({
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "tif", "tiff",
+    "avif", "heic", "css", "js", "mjs", "map", "json", "xml", "html", "htm",
+    "php", "asp", "aspx", "woff", "woff2", "ttf", "otf", "eot", "mp3", "mp4",
+    "webm", "mov", "avi", "wav", "pdf", "zip", "gz", "tar", "rar", "txt",
+    "csv", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "exe", "dmg", "apk",
+    "wasm", "md", "yml", "yaml", "ts", "tsx", "jsx", "scss", "less",
+})
+_HEX_LOCAL_RE = re.compile(r"^[0-9a-f]{24,}$")
+
+
 def is_valid_email(value: str | None) -> bool:
     """Canonical email validation matching Node's leadValidation.ts isValidEmail().
 
@@ -229,6 +534,17 @@ def is_valid_email(value: str | None) -> bool:
     if any(email.startswith(p) for p in _EMAIL_BLOCKLIST_PREFIXES):
         return False
     if domain in _PLACEHOLDER_EMAIL_DOMAINS or any(domain == d or domain.endswith("." + d) for d in _PLACEHOLDER_EMAIL_DOMAINS):
+        return False
+    labels = domain.split(".")
+    if any(not lab or lab.startswith("-") or lab.endswith("-") for lab in labels):
+        return False
+    if labels[-1] in _ASSET_TLDS:
+        return False
+    # "2x"/"3x" retina-suffix labels and hash-like local parts are
+    # build artifacts (sentry keys, srcset names), not mailboxes.
+    if any(re.fullmatch(r"\d+x", lab) for lab in labels):
+        return False
+    if _HEX_LOCAL_RE.match(local):
         return False
     return True
 
@@ -257,6 +573,57 @@ _OBFUSCATED_EMAIL_RE = re.compile(
     r"\b([A-Za-z0-9._%+\-]+)\s*(?:\[at\]|\(at\)|\bat\b|\[@\])\s*([A-Za-z0-9.\-]+)\s*(?:\[dot\]|\(dot\)|\bdot\b|\[\.\]|\.)\s*([A-Za-z]{2,})\b",
     re.IGNORECASE,
 )
+# Strict obfuscated form: requires an explicit bracketed/parenthesised
+# "at" marker so ordinary prose ("meet us at home. Visit") never matches.
+_BRACKET_OBFUSCATED_EMAIL_RE = re.compile(
+    r"([A-Za-z0-9._%+\-]+)\s*(?:\[\s*at\s*\]|\(\s*at\s*\)|\{\s*at\s*\}|\[@\])\s*"
+    r"((?:[A-Za-z0-9\-]+\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|\[\.\]|\.)\s*)+)"
+    r"([A-Za-z]{2,})",
+    re.IGNORECASE,
+)
+_DOT_SEP_RE = re.compile(r"\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|\[\.\])\s*", re.IGNORECASE)
+
+
+def extract_obfuscated_emails(text: str) -> list[str]:
+    """Decode bracketed obfuscations: ``name [at] shop [dot] com``,
+    ``name(at)shop(dot)co(dot)uk``, ``name[@]shop.com``. Only valid,
+    de-duplicated addresses are returned."""
+    if not text:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for local, dom_head, tld in _BRACKET_OBFUSCATED_EMAIL_RE.findall(text):
+        host = _DOT_SEP_RE.sub(".", dom_head)
+        host = re.sub(r"\s+", "", host).strip(".")
+        e = f"{local}@{host}.{tld}".lower()
+        if e not in seen and is_valid_email(e):
+            seen.add(e)
+            out.append(e)
+    return out
+
+
+def decode_entities(text: str) -> str:
+    """Decode HTML entities (``&#64;``, ``&commat;``) and ``%40`` so
+    entity-obfuscated addresses are visible to the scanners."""
+    if not text or ("&" not in text and "%40" not in text):
+        return text
+    import html as _html
+    return _html.unescape(text).replace("%40", "@")
+
+
+def select_primary_email(emails: list[str], preferred_domain: str = "") -> list[str]:
+    """Return valid, de-duplicated emails ordered best-first: own-domain
+    first, then the outreach role priority used by ``pick_best_email``."""
+    cleaned = [e for e in dict.fromkeys((x or "").strip().lower() for x in emails) if e and is_valid_email(e)]
+    if not cleaned:
+        return []
+    best = pick_best_email(cleaned, preferred_domain)
+    if best and best.lower() in cleaned:
+        cleaned.remove(best.lower())
+        cleaned.insert(0, best.lower())
+    return cleaned
+
+
 _CF_EMAIL_HREF_RE = re.compile(r'/cdn-cgi/l/email-protection#([a-f0-9]+)', re.IGNORECASE)
 _CF_EMAIL_ATTR_RE = re.compile(r'data-cfemail=["\']([a-f0-9]+)["\']', re.IGNORECASE)
 
@@ -385,7 +752,7 @@ def pick_best_email(candidates: list[str], preferred_domain: str = "") -> str:
         low = email.lower()
         score = 0
         if preferred_domain:
-            pd = preferred_domain.lower().lstrip("www.")
+            pd = preferred_domain.lower().removeprefix("www.")
             domain = low.split("@", 1)[-1]
             if domain == pd or domain.endswith("." + pd):
                 score += 100
@@ -628,9 +995,35 @@ _IG_NON_HANDLES = frozenset({
     # Phase 27, Step 5: explicitly named in the reserved-path reject
     # list ("/direct/") but missing from this set before now.
     "direct",
+    # Contact-data audit: non-profile paths seen in embeds, share
+    # widgets and static assets that were being accepted as handles.
+    # Deliberately conservative: only paths that are never a business
+    # profile (words a real business might use as a handle, e.g.
+    # "business" or "blog", are NOT listed). File-like names such as
+    # "embed.js" / "sharer.php" are also rejected by suffix.
+    "sharer", "embed", "static", "web", "developer", "developers",
+    "nametag", "oembed", "emails", "session", "ajax", "graphql", "_u",
 })
 
-_IG_HANDLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{1,}$")
+_IG_HANDLE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.]{1,29}$")
+# A real handle never ends in a file extension or a dot, and never has
+# consecutive dots ("embed.js", "sharer.php", "x..y", "name.").
+_IG_FILELIKE_SUFFIX_RE = re.compile(
+    r"\.(?:js|mjs|php|asp|aspx|html?|json|xml|css|png|jpe?g|gif|webp|svg|ico|txt|map|woff2?|ttf)$",
+    re.IGNORECASE,
+)
+
+
+def is_valid_ig_handle(handle: str | None) -> bool:
+    """True only for a plausible public profile handle."""
+    if not handle:
+        return False
+    h = handle.strip().lower()
+    if not h or h in _IG_NON_HANDLES or h.isdigit():
+        return False
+    if h.endswith(".") or ".." in h or _IG_FILELIKE_SUFFIX_RE.search(h):
+        return False
+    return bool(_IG_HANDLE_RE.match(h))
 
 # Phase 27 (Instagram acquisition control-flow + extraction hardening):
 # broadened from a scheme-required `https?://` prefix to also recognize
@@ -649,7 +1042,7 @@ _IG_HANDLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{1,}$")
 # (`extract_ig_urls`, `extract_ig_urls_with_source`,
 # `has_invalid_ig_candidate`) gets the broadened recognition for free.
 _IG_URL_RE = re.compile(
-    r"(?<![\w.-])(?:(?:https?:)?//)?(?:www\.)?(?:instagram\.com|instagr\.am)/([A-Za-z0-9_.]+)(?:/[^\"'\s<>]*)?",
+    r"(?<![\w.-])(?:(?:https?:)?//)?(?:www\.|m\.)?(?:instagram\.com|instagr\.am)/([A-Za-z0-9_.]+)(?:/[^\"'\s<>]*)?",
     re.IGNORECASE,
 )
 
@@ -661,10 +1054,33 @@ def is_real_ig_handle(url: str) -> bool:
         return False
     if not path:
         return False
-    handle = path.split("/")[0].lower()
-    if not handle or handle in _IG_NON_HANDLES or handle.isdigit():
-        return False
-    return bool(_IG_HANDLE_RE.match(handle))
+    return is_valid_ig_handle(path.split("/")[0])
+
+
+def ig_url_from_provider_value(value: str | None) -> str | None:
+    """Canonical profile URL from a provider-supplied Instagram value.
+
+    Providers return a URL (OSM ``contact:instagram`` is often a full
+    URL), an ``@handle`` or a bare handle (Foursquare
+    ``social_media.instagram``). Normalizing a handle the provider itself
+    published is not guessing. Returns None for anything that is not a
+    valid public profile (posts, reserved paths, junk).
+    """
+    if not value:
+        return None
+    v = strip_control_characters(str(value)).strip()
+    if not v:
+        return None
+    if "instagram.com" in v.lower() or "instagr.am" in v.lower():
+        m = _IG_URL_RE.search(v)
+        handle = m.group(1) if m else ""
+    else:
+        handle = v.lstrip("@").strip().strip("/")
+        if "/" in handle or " " in handle:
+            return None
+    if not is_valid_ig_handle(handle):
+        return None
+    return f"https://www.instagram.com/{handle.lower()}/"
 
 
 def clean_ig_url(raw: str) -> str:
@@ -704,7 +1120,7 @@ def extract_ig_urls(text: str) -> list[str]:
     seen: set[str] = set()
     for m in _IG_URL_RE.findall(text):
         handle = m.split("/")[0].lower()
-        if not handle or handle in _IG_NON_HANDLES or handle.isdigit():
+        if not is_valid_ig_handle(handle):
             continue
         url = f"https://www.instagram.com/{handle}/"
         if url not in seen and is_real_ig_handle(url):
@@ -805,9 +1221,7 @@ def _ig_handle_from_attr_value(value: str) -> "str | None":
         handle = url_match.group(1).split("/")[0].lower()
     else:
         handle = value.lstrip("@").split("/")[0].split("?")[0].lower()
-    if not handle or handle in _IG_NON_HANDLES or handle.isdigit():
-        return None
-    if not _IG_HANDLE_RE.match(handle):
+    if not is_valid_ig_handle(handle):
         return None
     return handle
 
@@ -869,9 +1283,7 @@ def _find_plain_ig_handles(html: str) -> list[str]:
         low = handle.lower()
         if low in seen:
             continue
-        if low in _IG_NON_HANDLES or low == "instagram" or handle.isdigit():
-            continue
-        if not _IG_HANDLE_RE.match(handle):
+        if low == "instagram" or not is_valid_ig_handle(handle):
             continue
         window = text[
             max(0, m.start() - _PLAIN_HANDLE_CONTEXT_WINDOW):
@@ -896,10 +1308,8 @@ def _find_plain_ig_handles(html: str) -> list[str]:
                         low_h = h.lower()
                         if (
                             low_h not in seen
-                            and low_h not in _IG_NON_HANDLES
                             and low_h != "instagram"
-                            and not h.isdigit()
-                            and _IG_HANDLE_RE.match(h)
+                            and is_valid_ig_handle(h)
                         ):
                             seen.add(low_h)
                             results.append(h)

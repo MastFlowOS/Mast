@@ -241,6 +241,27 @@ Phase 8.1 (built on Phase 5.6). Depends only on WebsiteIntel,
 ContactIntel, BaseWorker, WorkerCapability, and the standard library.
 No queue/, providers/, engine.coordinator, or runtime import anywhere
 in this file.
+
+Contact-data audit fixes (extraction accuracy + wasted work)
+------------------------------------------------------------
+* Pages that cost no request (a mailto:/tel: contact target, the homepage
+  HTML WebsiteWorker already fetched) are consumed FIRST; the contact
+  page is fetched only if they did not satisfy what is needed.
+* Extraction is demand-driven: `WebsiteIntel.known_channels` lists
+  channels the discovery provider already supplied (not chased again),
+  and `required_channels == ()` means "nothing mandatory" (primary pages
+  only, no secondary crawl). `None` keeps the historical all-channels
+  behavior for direct/library use.
+* Emails: asset file names ("logo@2x.png"), hash ids and placeholder
+  hosts are rejected; entity- and bracket-obfuscated addresses are
+  decoded; the own-domain / role-ranked address is returned first.
+* Phones: country-aware (`WebsiteIntel.region_hint`), extension-safe,
+  date/time/id false positives rejected, deduplicated on their canonical
+  key. Invalid `tel:` values are dropped.
+* Every value keeps its source (`email_provenance` / `phone_provenance`).
+* Fetching: bodies are size-capped, permanent HTTP errors (400/401/403/
+  404/410...) are never retried, and requests hold one of the bounded
+  process-wide fetch slots (`utils/http_limits.py`).
 """
 
 from __future__ import annotations
@@ -256,11 +277,14 @@ from typing import List, Dict, Optional, Sequence, Set, Tuple
 from urllib.parse import urljoin
 
 from engine.contracts import ContactIntel, WebsiteIntel
+from utils.http_limits import fetch_slot, is_permanent_http_error, read_capped
 from utils.parsing import (
+    decode_entities,
     digits_only,
     extract_contextual_attribute_contacts,
     extract_ig_urls_with_source,
     extract_jsonld_contact_data,
+    extract_obfuscated_emails,
     extract_phones,
     find_secondary_contact_link,
     get_standard_contact_candidates,
@@ -268,6 +292,8 @@ from utils.parsing import (
     is_valid_email,
     is_valid_phone,
     normalize_phone,
+    phone_dedup_key,
+    select_primary_email,
     strip_control_characters,
 )
 from workers.base_worker import BaseWorker
@@ -281,6 +307,10 @@ DEFAULT_TIMEOUT_SECONDS = 6.0
 
 WORKER_TYPE = "contact"
 
+#: Hard cap on page fetches per candidate (contact page, homepage and
+#: secondary/fallback pages combined).
+_MAX_PAGE_FETCHES = 3
+
 _USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 MAST-ContactWorker/1.0"
 
 # -- Anchor scan, same shape as WebsiteWorker's own _ANCHOR_RE — a ------
@@ -291,12 +321,12 @@ _ANCHOR_RE = re.compile(
 _FORM_RE = re.compile(r"<form\b", re.IGNORECASE)
 
 #: Plain-text email pattern — a literal syntactic match against
-#: whatever the page already renders, same category as WebsiteWorker's
-#: _PLATFORM_SIGNATURES substring matches. No phone-number equivalent
-#: is used: unlike email syntax, phone formats vary too widely for a
-#: literal pattern to avoid becoming a guess (see module docstring's
-#: "do not guess" discussion) — phones are extracted only from
-#: explicit tel: links below.
+#: whatever the page already renders. Every hit still has to pass
+#: `utils.parsing.is_valid_email` (which rejects asset file names such as
+#: `logo@2x.png`, placeholders and system mailboxes). Visible-text phone
+#: numbers are extracted by `utils.parsing.extract_phones`, which is
+#: region-aware and rejects dates, times and ids; `tel:` links and
+#: JSON-LD `telephone` values are also read.
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 _MAILTO_PREFIX = "mailto:"
@@ -347,25 +377,59 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         emails: "dict[str, str]",
         phones: "dict[str, str]",
         instagram_url: Optional[str],
+        known: "frozenset[str]" = frozenset(),
     ) -> bool:
-        """Check if any required contact/Instagram channel is still missing.
+        """True while more crawling could still satisfy what is *needed*.
 
-        If required_channels is specified for this worker instance, only those
-        relevant channels ('email', 'phone', 'instagram') are evaluated.
-        If required_channels is None (default / legacy), all three channels are
-        considered unsatisfied until found, preserving existing semantics.
+        Demand-driven: only the channels this run requires are chased,
+        minus any the discovery provider already supplied (`known`, from
+        `WebsiteIntel.known_channels`).
+
+        * `required_channels` non-empty: only those channels.
+        * `required_channels == ()` (the service passes this when the run
+          required none): primary pages only, harvested while email or
+          phone is missing; no secondary crawl, and Instagram never
+          drives extra fetches.
+        * `required_channels is None` (library default / unspecified):
+          the historical "all three channels" behaviour.
         """
-        if self._required_channels is not None:
-            req = set(self._required_channels)
-            if "email" in req and not emails:
+        if self._required_channels is None:
+            # Library default ("unspecified"): historical behaviour of
+            # acquiring all three channels, minus anything the provider
+            # already supplied.
+            return (
+                not (bool(emails) or "email" in known)
+                or not (bool(phones) or "phone" in known)
+                or not (instagram_url is not None or "instagram" in known)
+            )
+
+        req = set(self._required_channels)
+        if req:
+            if "email" in req and "email" not in known and not emails:
                 return True
-            if "phone" in req and not phones:
+            if "phone" in req and "phone" not in known and not phones:
                 return True
-            if "instagram" in req and instagram_url is None:
+            if "instagram" in req and "instagram" not in known and instagram_url is None:
                 return True
             return False
 
-        return not bool(emails) or not bool(phones) or instagram_url is None
+        # Explicitly NO channel required (empty tuple, what the service
+        # passes when the run requested none): the primary pages (cached
+        # homepage, contact page) are still harvested while email or
+        # phone is missing, but nothing is mandatory, so no secondary
+        # pages are crawled (`_may_fetch_secondary`). Instagram is rarely
+        # on a page; treating it as "missing" used to force the full
+        # 3-page budget on nearly every candidate.
+        return (
+            not (bool(emails) or "email" in known)
+            or not (bool(phones) or "phone" in known)
+        )
+
+    def _may_fetch_secondary(self) -> bool:
+        """Secondary/fallback pages are crawled only when some channel is
+        actually required (or the requirement is unspecified/legacy).
+        With an explicit empty requirement nothing is mandatory."""
+        return self._required_channels is None or len(self._required_channels) > 0
 
     # -- WorkerInterface -------------------------------------------------
 
@@ -450,6 +514,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                 emails=emails,
                 phones=phones,
                 raw_anchors=raw_anchors,
+                region=item.region_hint,
             )
             if any(s == "mailto" for s in emails.values()):
                 mailto_extracted = True
@@ -482,40 +547,66 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                     instagram_invalid_candidate_seen = True
 
         total_fetches = 0
+        known = frozenset(item.known_channels or ())
+        region = item.region_hint
 
-        # Phase 5D: `contact_page` and `homepage` are independent pages
-        # -- neither's content depends on the other -- so their HTTP
-        # requests are dispatched concurrently through a small, bounded,
-        # per-call ThreadPoolExecutor (<= number of pages that actually
-        # need a network fetch; mailto:/tel: entries need no fetch and
-        # are excluded from it). The executor is created fresh here and
-        # joined via `shutdown(wait=True)` before this call returns --
-        # never persistent across candidates, never the process-wide
-        # default executor. With at most two primary pages this stays
-        # well inside the existing <= 3 fetch-per-candidate budget.
-        #
-        # Results are still merged strictly sequentially, in the same
-        # role-priority order (`contact_page` before `homepage`) the
-        # original loop used, and the same early-exit rule is evaluated
-        # after each page in that order. This reproduces the exact same
-        # final state (merged fields, `total_fetches`, fetch-failed
-        # flags, precedence) the sequential version produces for the
-        # same page responses -- concurrency only removes network wait
-        # time, it changes nothing about which results get merged or in
-        # what order. One consequence: if `contact_page` alone already
-        # satisfies the early-exit condition, `homepage`'s fetch (already
-        # dispatched) is still awaited during executor shutdown so no
-        # thread is left running past this call, but its result is never
-        # consulted -- same merged output as today, just without the
-        # (rare) latency saving that case used to get from never
-        # starting the second request at all.
-        fetch_needed = [
-            (role, url.strip())
-            for role, url in pages
-            if not url.strip().lower().startswith(_MAILTO_PREFIX)
-            and not url.strip().lower().startswith(_TEL_PREFIX)
-            and not (role == "homepage" and item.homepage_html is not None)
-        ]
+        def _unsatisfied() -> bool:
+            return self._is_requirement_unsatisfied(emails, phones, instagram_url, known)
+
+        # Pages that cost no network request (a mailto:/tel: contact
+        # target, or the homepage HTML WebsiteWorker already fetched) are
+        # consumed FIRST, in their original relative order. If they
+        # already satisfy what is needed, no further page is requested.
+        # Previously the contact page was fetched before the free cached
+        # homepage was even looked at.
+        free_pages: "list[tuple[str, str]]" = []
+        net_pages: "list[tuple[str, str]]" = []
+        for role, url in pages:
+            u = url.strip()
+            low = u.lower()
+            if (
+                low.startswith(_MAILTO_PREFIX)
+                or low.startswith(_TEL_PREFIX)
+                or (role == "homepage" and item.homepage_html is not None)
+            ):
+                free_pages.append((role, u))
+            else:
+                net_pages.append((role, u))
+
+        satisfied_from_free = False
+        for role, url_clean in free_pages:
+            tried_urls.add(url_clean)
+            low = url_clean.lower()
+            if low.startswith(_MAILTO_PREFIX):
+                address = url_clean[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
+                address = urllib.parse.unquote(address)
+                if address and is_valid_email(address):
+                    emails.setdefault(address.lower(), "mailto")
+                    mailto_extracted = True
+                any_page_recovered = True
+            elif low.startswith(_TEL_PREFIX):
+                number = url_clean[len(_TEL_PREFIX):].split("?", 1)[0].strip()
+                number = urllib.parse.unquote(number)
+                # Same validation/normalization as every other phone
+                # source: an invalid tel: value (e.g. "tel:0000") is
+                # dropped instead of being stored verbatim.
+                normalized = normalize_phone(number, region)
+                if normalized and is_valid_phone(normalized):
+                    if phone_dedup_key(normalized) not in {phone_dedup_key(p) for p in phones}:
+                        phones[normalized] = "tel"
+                    tel_extracted = True
+                any_page_recovered = True
+            else:
+                _process_page_content(role, item.homepage_html, url_clean, 0.0)
+            if not _unsatisfied():
+                satisfied_from_free = True
+                break
+
+        # Network pages: only if still needed. `contact_page` and a
+        # homepage that has no cached HTML are independent, so when both
+        # need a request they are dispatched concurrently through a small
+        # per-call executor (Phase 5D), joined before returning.
+        fetch_needed = [] if satisfied_from_free or not _unsatisfied() else list(net_pages)
 
         futures_by_url: "Dict[str, concurrent.futures.Future]" = {}
         executor: "Optional[concurrent.futures.ThreadPoolExecutor]" = None
@@ -528,35 +619,10 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             }
 
         try:
-            for role, url in pages:
-                url_clean = url.strip()
+            for role, url_clean in fetch_needed:
+                if not _unsatisfied():
+                    break
                 tried_urls.add(url_clean)
-                if url_clean.lower().startswith(_MAILTO_PREFIX):
-                    address = url_clean[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
-                    address = urllib.parse.unquote(address)
-                    if address and is_valid_email(address):
-                        emails.setdefault(address.lower(), "mailto")
-                        mailto_extracted = True
-                    any_page_recovered = True
-                    continue
-                if url_clean.lower().startswith(_TEL_PREFIX):
-                    number = url_clean[len(_TEL_PREFIX):].split("?", 1)[0].strip()
-                    number = urllib.parse.unquote(number)
-                    if number and is_valid_phone(number):
-                        phones.setdefault(number, "tel")
-                        tel_extracted = True
-                    elif number:
-                        phones.setdefault(number, "tel")
-                        tel_extracted = True
-                    any_page_recovered = True
-                    continue
-
-                if role == "homepage" and item.homepage_html is not None:
-                    _process_page_content(role, item.homepage_html, url_clean, 0.0)
-                    if not self._is_requirement_unsatisfied(emails, phones, instagram_url):
-                        break
-                    continue
-
                 total_fetches += 1
                 try:
                     if url_clean in futures_by_url:
@@ -570,10 +636,6 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                         contact_page_fetch_failed = True
                     else:
                         homepage_fetch_failed = True
-
-                # Early Exit: if valid email, valid phone, AND Instagram are all present (or required channels satisfied)
-                if not self._is_requirement_unsatisfied(emails, phones, instagram_url):
-                    break
         finally:
             if executor is not None:
                 executor.shutdown(wait=True)
@@ -587,11 +649,10 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         secondary_fallback_success = False
         secondary_fallback_fetch_failed = False
 
-        if self._is_requirement_unsatisfied(emails, phones, instagram_url) and total_fetches < 3:
+        if _unsatisfied() and total_fetches < _MAX_PAGE_FETCHES and self._may_fetch_secondary():
             base_url = item.final_url or item.contact_page or (fetched_htmls[0][1] if fetched_htmls else "")
             sec_url: Optional[str] = None
             sec_type: Optional[str] = None
-            is_fallback = False
 
             if fetched_htmls:
                 sec_url, sec_type = find_secondary_contact_link(
@@ -600,43 +661,28 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                     tried_urls=tried_urls,
                 )
 
-            # Fallback to standard contact candidates if no usable secondary link was found in HTML
-            # even when previously fetched pages succeeded.
-            if not sec_url and base_url:
-                std_cands = get_standard_contact_candidates(base_url, tried_urls)
-                if std_cands:
-                    sec_type, sec_url = std_cands[0]
-                    is_fallback = True
-
+            # A real link discovered in the HTML is fetched on its own.
             if sec_url:
                 tried_urls.add(sec_url.strip())
                 total_fetches += 1
                 secondary_page_fetched = True
                 secondary_page_type = sec_type
-                if is_fallback:
-                    secondary_fallback_attempted = True
-                    secondary_fallback_url = sec_url
                 try:
                     sec_html, sec_page_url, sec_elapsed = self._fetch(sec_url)
                     _process_page_content("secondary_page", sec_html, sec_page_url, sec_elapsed)
-                    if is_fallback:
-                        secondary_fallback_success = True
                 except Exception as exc:
                     secondary_page_fetch_failed = True
-                    if is_fallback:
-                        secondary_fallback_fetch_failed = True
                     if last_exc is None:
                         last_exc = exc
 
-            # Continue trying untried standard fallback candidates while:
-            # - required information remains unsatisfied
-            # - total_fetches < 3
-            # - untried standard candidates exist
-            while (
-                self._is_requirement_unsatisfied(emails, phones, instagram_url)
-                and total_fetches < 3
-                and base_url
-            ):
+            # Standard-path fallback (no discovered link, or it did not
+            # satisfy the need): one candidate at a time, in priority
+            # order, inside the shared <= _MAX_PAGE_FETCHES budget.
+            # Probing several guessed paths in parallel was considered and
+            # rejected: it issues speculative extra requests whenever the
+            # first path already works, which defeats "fewer requests per
+            # lead".
+            while _unsatisfied() and total_fetches < _MAX_PAGE_FETCHES and base_url:
                 alt_cands = get_standard_contact_candidates(base_url, tried_urls)
                 if not alt_cands:
                     break
@@ -646,6 +692,8 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                 secondary_page_fetched = True
                 secondary_fallback_attempted = True
                 secondary_fallback_url = alt_url
+                if secondary_page_type is None:
+                    secondary_page_type = alt_type
                 try:
                     alt_html, alt_page_url, alt_elapsed = self._fetch(alt_url)
                     secondary_page_fetch_failed = False
@@ -720,6 +768,14 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             )
         )
 
+        # Best (own-domain, outreach-role) email first, so the primary
+        # email chosen downstream is the most relevant valid one rather
+        # than whichever happened to be found first.
+        if len(emails) > 1:
+            site_host = urllib.parse.urlparse(item.final_url or "").netloc.lower()
+            ordered = select_primary_email(list(emails), site_host)
+            emails = {e: emails[e] for e in ordered if e in emails}
+
         email_source = next(iter(emails.values())) if emails else None
         phone_source = next(iter(phones.values())) if phones else None
 
@@ -743,6 +799,8 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             partial_contact_success=partial_contact_success,
             email_source=email_source,
             phone_source=phone_source,
+            email_provenance=tuple(emails.items()) or None,
+            phone_provenance=tuple(phones.items()) or None,
             secondary_page_type=secondary_page_type,
             secondary_page_fetched=secondary_page_fetched,
             secondary_page_fetch_failed=secondary_page_fetch_failed,
@@ -778,7 +836,12 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
     def _fetch(self, url: str) -> Tuple[str, str, float]:
         """
         Fetch `url` and return (html, resolved_url, elapsed_seconds).
-        Implements bounded 429/500 retry and URL normalization.
+
+        Bounded retry for TRANSIENT failures only (429 with Retry-After,
+        500/502/503/504 once). Permanent client errors (400/401/403/404/
+        410...) are raised immediately — a retry cannot change them. The
+        body is read through a hard size cap and each request holds one of
+        the process-wide bounded fetch slots.
         """
         raw_url = strip_control_characters(url.strip())
         if not re.match(r"^https?://", raw_url, re.IGNORECASE):
@@ -794,17 +857,20 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         def _do_http(target: str) -> Tuple[str, str, float]:
             req = urllib.request.Request(target, headers=headers)
             start = time.monotonic()
-            with urllib.request.urlopen(req, timeout=self._timeout) as response:
-                elapsed = time.monotonic() - start
-                resolved_url = response.geturl()
-                raw = response.read()
-                charset = response.headers.get_content_charset() or "utf-8"
+            with fetch_slot():
+                with urllib.request.urlopen(req, timeout=self._timeout) as response:
+                    elapsed = time.monotonic() - start
+                    resolved_url = response.geturl()
+                    raw = read_capped(response)
+                    charset = response.headers.get_content_charset() or "utf-8"
             html = raw.decode(charset, errors="replace")
             return html, resolved_url, elapsed
 
         try:
             return _do_http(raw_url)
         except urllib.error.HTTPError as exc:
+            if is_permanent_http_error(exc.code):
+                raise
             if exc.code == 429:
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
                 wait = 0.5
@@ -815,7 +881,7 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                         wait = 0.5
                 time.sleep(wait)
                 return _do_http(raw_url)
-            elif exc.code in (400, 500, 502, 503, 504):
+            elif exc.code in (500, 502, 503, 504):
                 time.sleep(0.2)
                 return _do_http(raw_url)
             else:
@@ -830,36 +896,42 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         emails: "dict[str, str]",
         phones: "dict[str, str]",
         raw_anchors: Optional[List[str]] = None,
+        region: Optional[str] = None,
     ) -> None:
         if not html:
             return
 
-        phone_keys: set[str] = {
-            (digits_only(p)[-10:] if len(digits_only(p)) >= 10 else digits_only(p))
-            for p in phones
-        }
+        phone_keys: set[str] = {phone_dedup_key(p) for p in phones}
 
         def _add_phone(num: str, source: str) -> None:
+            # Normalize first (country-aware, extension-safe), then dedup
+            # on the canonical digits so "+20 100 123 4567" and
+            # "0100 123 4567" are one number, not two.
             if not num:
                 return
-            if not is_valid_phone(num):
+            norm = normalize_phone(num, region)
+            if not norm or not is_valid_phone(norm):
                 return
-            d = digits_only(num)
-            key_d = d[-10:] if len(d) >= 10 else d
-            if key_d in phone_keys:
+            key = phone_dedup_key(norm)
+            if key in phone_keys:
                 return
-            phone_keys.add(key_d)
-            phones[num] = source
+            phone_keys.add(key)
+            phones[norm] = source
+
+        def _add_email(addr: str, source: str) -> None:
+            clean = urllib.parse.unquote(addr).strip().lower()
+            if clean and is_valid_email(clean):
+                emails.setdefault(clean, source)
 
         # 1. Anchor mailto: and tel: links (reuses pre-extracted anchors if supplied)
         anchors = raw_anchors if raw_anchors is not None else _ANCHOR_RE.findall(html)
         for href in anchors:
-            href_clean = href.strip()
+            href_clean = decode_entities(href.strip())
             if href_clean.lower().startswith(_MAILTO_PREFIX):
                 address = href_clean[len(_MAILTO_PREFIX):].split("?", 1)[0].strip()
-                address = urllib.parse.unquote(address)
-                if address and is_valid_email(address):
-                    emails.setdefault(address.lower(), "mailto")
+                # A mailto may list several recipients ("a@x.com,b@x.com").
+                for part in re.split(r"[,;]", address):
+                    _add_email(part, "mailto")
             elif href_clean.lower().startswith(_TEL_PREFIX):
                 number = href_clean[len(_TEL_PREFIX):].split("?", 1)[0].strip()
                 number = urllib.parse.unquote(number)
@@ -868,58 +940,29 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         # 2. JSON-LD structured data (Organization / LocalBusiness / ContactPoint)
         jsonld_data = extract_jsonld_contact_data(html)
         for e in jsonld_data.get("emails", []):
-            if is_valid_email(e):
-                emails.setdefault(e.lower(), "jsonld")
+            _add_email(e, "jsonld")
         for p in jsonld_data.get("phones", []):
             _add_phone(p, "jsonld")
 
         # 3. Contextual HTML attributes (aria-label, title, alt, data-*) & icon containers
         attr_data = extract_contextual_attribute_contacts(html)
         for e in attr_data.get("emails", []):
-            if is_valid_email(e):
-                emails.setdefault(e.lower(), page_role)
+            _add_email(e, page_role)
         for p in attr_data.get("phones", []):
             _add_phone(p, page_role)
 
-        # 4. Text regex emails
-        for match in _EMAIL_RE.findall(html):
-            clean = urllib.parse.unquote(match).lower()
-            if is_valid_email(clean):
-                emails.setdefault(clean, page_role)
+        # 4. Text regex emails (entity-decoded so `info&#64;shop.com` is seen)
+        decoded_html = decode_entities(html)
+        for match in _EMAIL_RE.findall(decoded_html):
+            _add_email(match, page_role)
+
+        # 4b. Bracket-obfuscated emails ("name [at] shop [dot] com")
+        for e in extract_obfuscated_emails(decoded_html):
+            _add_email(e, page_role)
 
         # 5. Text / visible phones
-        for token in extract_phones(html):
+        for token in extract_phones(html, region):
             _add_phone(token, page_role)
-
-    @staticmethod
-    def _extract_emails(html: str) -> Tuple[str, ...]:
-        if not html:
-            return ()
-        emails: "dict[str, str]" = {}
-        phones: "dict[str, str]" = {}
-        ContactWorker._extract_page_contact_data(
-            html=html,
-            page_url="",
-            page_role="homepage",
-            emails=emails,
-            phones=phones,
-        )
-        return tuple(emails)
-
-    @staticmethod
-    def _extract_phones(html: str) -> Tuple[str, ...]:
-        if not html:
-            return ()
-        emails: "dict[str, str]" = {}
-        phones: "dict[str, str]" = {}
-        ContactWorker._extract_page_contact_data(
-            html=html,
-            page_url="",
-            page_role="homepage",
-            emails=emails,
-            phones=phones,
-        )
-        return tuple(phones)
 
     @staticmethod
     def _extract_first_link(

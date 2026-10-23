@@ -85,7 +85,15 @@ from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
 from utils.lifecycle_tracker import log_milestone
 from utils.perf import RunProfiler, NullProfiler
 from utils.pipeline_trace import PipelineTracer
-from utils.parsing import is_valid_email, is_weak_site
+from utils.parsing import (
+    is_valid_email,
+    is_valid_phone,
+    is_weak_site,
+    normalize_phone,
+    phone_dedup_key,
+    resolve_region,
+    select_primary_email,
+)
 
 # Engine 2.0 — production entrypoint now drives discovery / enrichment /
 # qualification / storage through the real seven-stage runtime instead of
@@ -688,6 +696,55 @@ def _resolve_instagram_url(candidate, instagram_intel, contact_intel) -> str | N
     return None
 
 
+def _build_field_provenance(
+    *,
+    candidate: Any,
+    website_intel: Any,
+    contact_intel: Any,
+    email_sources: dict[str, str],
+    phone_sources: dict[str, str],
+    emails: list[str],
+    phones: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Per-field attribution in the shape the Node gateway's
+    `buildFieldTrust` reads: ``{field: {value, source, method}}`` with
+    ``method`` one of google_maps / website_crawl / schema_org / unknown.
+    Only fields we actually have attribution for are emitted; nothing is
+    fabricated. `source` is a real URL (the page the value came from)
+    where one is known, else a provider id."""
+    out: dict[str, dict[str, Any]] = {}
+    provider = getattr(candidate, "provider", None) or "unknown"
+    is_maps = "maps" in str(provider).lower()
+    site_url = getattr(website_intel, "final_url", None) or getattr(candidate, "website", None) or ""
+    contact_url = getattr(website_intel, "contact_page", None) or site_url
+
+    def _page_url(role: str) -> str:
+        return contact_url if role == "contact_page" else site_url
+
+    def _entry(value: str, role: str) -> dict[str, Any]:
+        if role == "provider":
+            return {
+                "value": value,
+                "source": str(provider),
+                "method": "google_maps" if is_maps else "unknown",
+            }
+        if role == "jsonld":
+            return {"value": value, "source": site_url, "method": "schema_org"}
+        return {"value": value, "source": _page_url(role), "method": "website_crawl"}
+
+    if emails:
+        out["email"] = _entry(emails[0], email_sources.get(emails[0], "website"))
+    if phones:
+        out["phone"] = _entry(phones[0], phone_sources.get(phones[0], "website"))
+    if candidate is not None and getattr(candidate, "website", None):
+        out["website"] = {
+            "value": candidate.website,
+            "source": str(provider),
+            "method": "google_maps" if is_maps else "unknown",
+        }
+    return out
+
+
 def _opportunity_to_lead_dict(
     opportunity: QualifiedOpportunity, stored: StoredOpportunity
 ) -> dict[str, Any]:
@@ -706,8 +763,45 @@ def _opportunity_to_lead_dict(
     qualification = opportunity.qualification
     score = opportunity.score
 
-    emails = [e for e in (contact_intel.emails or ()) if is_valid_email(e)] if contact_intel else []
-    phones = list(contact_intel.phones) if contact_intel and contact_intel.phones else []
+    region = resolve_region(candidate.country) if candidate else None
+    site_host = ""
+    if candidate and candidate.website:
+        site_host = candidate.website.split("//")[-1].split("/")[0].lower()
+
+    # --- emails: provider-published + extracted, valid only, best first.
+    email_sources: dict[str, str] = {}
+    provider_email = getattr(candidate, "provider_email", None) if candidate else None
+    if provider_email and is_valid_email(provider_email):
+        email_sources[provider_email.strip().lower()] = "provider"
+    if contact_intel and contact_intel.emails:
+        _prov = dict(contact_intel.email_provenance or ())
+        for e in contact_intel.emails:
+            if is_valid_email(e):
+                email_sources.setdefault(e.strip().lower(), _prov.get(e, "website"))
+    emails = select_primary_email(list(email_sources), site_host)
+
+    # --- phones: the provider's own number first (authoritative), then
+    # extracted ones, normalized with the business's country and
+    # de-duplicated on their canonical key (so one number written two
+    # ways is never listed twice).
+    phone_sources: dict[str, str] = {}
+    seen_phone_keys: set[str] = set()
+
+    def _add_phone(raw: Optional[str], source: str) -> None:
+        if not raw:
+            return
+        norm = normalize_phone(raw, region) or (raw.strip() if is_valid_phone(raw) else "")
+        key = phone_dedup_key(norm)
+        if norm and key and key not in seen_phone_keys:
+            seen_phone_keys.add(key)
+            phone_sources[norm] = source
+
+    _add_phone(candidate.phone if candidate else None, "provider")
+    if contact_intel and contact_intel.phones:
+        _pprov = dict(contact_intel.phone_provenance or ())
+        for ph in contact_intel.phones:
+            _add_phone(ph, _pprov.get(ph, "website"))
+    phones = list(phone_sources)
 
     lead_dict: dict[str, Any] = {
         "pipeline_id": opportunity.pipeline_id,
@@ -723,7 +817,7 @@ def _opportunity_to_lead_dict(
         "maps_link": candidate.maps_url if candidate else None,
         "rating": candidate.rating if candidate else None,
         "review_count": candidate.review_count if candidate else None,
-        "phone": (candidate.phone if candidate else None) or (phones[0] if phones else None),
+        "phone": phones[0] if phones else (candidate.phone if candidate else None),
         "phones": phones,
         "email": emails[0] if emails else None,
         "emails": emails,
@@ -736,6 +830,22 @@ def _opportunity_to_lead_dict(
         # production trace (candidate_qualified -> storage success ->
         # NODE_RECEIVED -> REJECTED reason=channel_filter:[...]).
         "instagram": _resolve_instagram_url(candidate, instagram_intel, contact_intel),
+        # Other channels ContactWorker extracts. Previously dropped here
+        # even though the gateway / data model can carry them.
+        "linkedin": contact_intel.linkedin_url if contact_intel else None,
+        "whatsapp": contact_intel.whatsapp_link if contact_intel else None,
+        "messenger": contact_intel.messenger_link if contact_intel else None,
+        "telegram": contact_intel.telegram_link if contact_intel else None,
+        "contact_form_url": contact_intel.contact_form_url if contact_intel else None,
+        "field_provenance": _build_field_provenance(
+            candidate=candidate,
+            website_intel=website_intel,
+            contact_intel=contact_intel,
+            email_sources=email_sources,
+            phone_sources=phone_sources,
+            emails=emails,
+            phones=phones,
+        ),
         "ig_username": instagram_intel.username if instagram_intel else None,
         "ig_followers": instagram_intel.followers if instagram_intel else None,
         "ig_verified": instagram_intel.verified if instagram_intel else None,
@@ -1455,7 +1565,7 @@ async def run_query(
                 on_progress=_on_progress,
                 on_stage_timing=_on_stage_timing,
                 early_dedup_checker=_build_early_dedup_checker(),
-                required_channels=tuple(required_channels) if required_channels else None,
+                required_channels=tuple(required_channels or ()),
                 instance_counts=instance_counts,
                 # Phase 1A — thread the real requesting user_id through so
                 # the early dedup decision is user-scoped ownership, not

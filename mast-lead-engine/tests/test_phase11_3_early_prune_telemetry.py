@@ -385,7 +385,8 @@ def test_email_gate_not_pruned_and_no_telemetry_when_website_present(caplog):
     assert _prune_log_records(caplog) == []
     assert fan_in.get_business("p-has-site") is not None
     assert website_queue.size() == 1
-    assert instagram_queue.size() == 1
+    # No Instagram URL on the candidate -> no Instagram queue item is spent on it.
+    assert instagram_queue.size() == 0
 
 
 # ---------------------------------------------------------------------------

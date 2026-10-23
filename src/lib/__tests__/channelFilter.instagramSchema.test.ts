@@ -50,7 +50,7 @@ test("a lead with website + email + phone + Instagram (Instagram supplied only v
   assert.equal(typeof lead.instagram, "string");
   assert.ok((lead.instagram as string).length > 0);
   assert.equal(lead.email, "hello@bakery.com");
-  assert.equal(lead.phone, "+14165550199");
+  assert.equal(lead.phone, "+1 (416) 555-0199");
   assert.equal(lead.website, "https://bakery.com");
 
   assert.equal(
@@ -68,7 +68,7 @@ test("a lead with Instagram genuinely absent still fails channelsSatisfied using
   // Instagram specifically (AND semantics — one missing channel fails
   // the whole requirement).
   assert.equal(lead.email, "hello@bakery.com");
-  assert.equal(lead.phone, "+14165550199");
+  assert.equal(lead.phone, "+1 (416) 555-0199");
   assert.equal(lead.website, "https://bakery.com");
 
   assert.equal(

@@ -210,7 +210,7 @@ class TestFourChannelQualificationUnblocked:
         """
         contact_intel = _run_contact_worker(html)
         assert contact_intel.emails == ("hello@bakery.com",)
-        assert contact_intel.phones == ("+14165550199",)
+        assert contact_intel.phones == ("+1 (416) 555-0199",)
         assert contact_intel.instagram_url == "https://www.instagram.com/thebakery/"
 
         lead = _make_enriched_business(
@@ -289,7 +289,7 @@ class TestExistingChannelsUnaffected:
         intel = _run_contact_worker(html)
 
         assert intel.emails == ("info@bakery.com",)  # deduped
-        assert intel.phones == ("+14165550199",)
+        assert intel.phones == ("+1 (416) 555-0199",)
         assert intel.whatsapp_link == "https://wa.me/14165550199"
         assert intel.telegram_link == "https://t.me/thebakery"
         assert intel.linkedin_url == "https://www.linkedin.com/company/thebakery"

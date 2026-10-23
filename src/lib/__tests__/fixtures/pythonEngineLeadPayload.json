@@ -3,7 +3,7 @@
     "pipeline_id": "p1",
     "session_id": "s1",
     "opportunity_id": "opp_1",
-    "stored_at": "2026-10-20T07:59:43.476872+00:00",
+    "stored_at": "2026-10-23T08:33:05.471606+00:00",
     "name": "Test Bakery",
     "category": null,
     "address": null,
@@ -13,9 +13,9 @@
     "maps_link": null,
     "rating": null,
     "review_count": null,
-    "phone": "+14165550199",
+    "phone": "+1 (416) 555-0199",
     "phones": [
-      "+14165550199"
+      "+1 (416) 555-0199"
     ],
     "email": "hello@bakery.com",
     "emails": [
@@ -23,6 +23,28 @@
     ],
     "website_reachable": true,
     "instagram": "https://www.instagram.com/thebakery/",
+    "linkedin": null,
+    "whatsapp": null,
+    "messenger": null,
+    "telegram": null,
+    "contact_form_url": null,
+    "field_provenance": {
+      "email": {
+        "value": "hello@bakery.com",
+        "source": "https://bakery.com",
+        "method": "website_crawl"
+      },
+      "phone": {
+        "value": "+1 (416) 555-0199",
+        "source": "google_maps",
+        "method": "google_maps"
+      },
+      "website": {
+        "value": "https://bakery.com",
+        "source": "google_maps",
+        "method": "google_maps"
+      }
+    },
     "ig_username": null,
     "ig_followers": null,
     "ig_verified": null,
@@ -38,7 +60,7 @@
     "pipeline_id": "p1",
     "session_id": "s1",
     "opportunity_id": "opp_1",
-    "stored_at": "2026-10-20T07:59:43.476986+00:00",
+    "stored_at": "2026-10-23T08:33:05.471761+00:00",
     "name": "Test Bakery",
     "category": null,
     "address": null,
@@ -48,9 +70,9 @@
     "maps_link": null,
     "rating": null,
     "review_count": null,
-    "phone": "+14165550199",
+    "phone": "+1 (416) 555-0199",
     "phones": [
-      "+14165550199"
+      "+1 (416) 555-0199"
     ],
     "email": "hello@bakery.com",
     "emails": [
@@ -58,6 +80,28 @@
     ],
     "website_reachable": true,
     "instagram": null,
+    "linkedin": null,
+    "whatsapp": null,
+    "messenger": null,
+    "telegram": null,
+    "contact_form_url": null,
+    "field_provenance": {
+      "email": {
+        "value": "hello@bakery.com",
+        "source": "https://bakery.com",
+        "method": "website_crawl"
+      },
+      "phone": {
+        "value": "+1 (416) 555-0199",
+        "source": "google_maps",
+        "method": "google_maps"
+      },
+      "website": {
+        "value": "https://bakery.com",
+        "source": "google_maps",
+        "method": "google_maps"
+      }
+    },
     "ig_username": null,
     "ig_followers": null,
     "ig_verified": null,

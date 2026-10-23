@@ -1082,12 +1082,12 @@ async def _extract_phone(page: Page) -> str:
                 if href.startswith("tel:"):
                     return href[4:].strip()
                 if "phone" in aria.lower() or "call" in aria.lower():
-                    phones = extract_phones(aria)
+                    phones = extract_phones(aria, trusted=True)
                     if phones:
                         return phones[0]
 
                 text = (await el.inner_text()).strip()
-                phones = extract_phones(text)
+                phones = extract_phones(text, trusted=True)
                 if phones:
                     return phones[0]
         except Exception:
@@ -1446,12 +1446,12 @@ def _phone_from_candidates(candidates: "list[dict]") -> str:
         if href.startswith("tel:"):
             return href[4:].strip()
         if "phone" in aria.lower() or "call" in aria.lower():
-            phones = extract_phones(aria)
+            phones = extract_phones(aria, trusted=True)
             if phones:
                 return phones[0]
 
         text = c.get("innerText") or ""
-        phones = extract_phones(text)
+        phones = extract_phones(text, trusted=True)
         if phones:
             return phones[0]
 

@@ -208,12 +208,15 @@ class BusinessCandidate:
     # guaranteed one: a discovery provider MAY populate it when that
     # provider naturally exposes an Instagram profile as part of its
     # own discovery process. A provider that has no way to discover an
-    # Instagram profile leaves it as None — that is the normal,
-    # expected case for every provider today (none currently populate
-    # it), not an error or a partial-discovery signal. InstagramWorker
-    # already treats None here as "no profile to inspect" rather than
-    # a failure — see workers/instagram_worker.py's own reachability
-    # handling.
+    # Instagram profile leaves it as None — that is the normal case
+    # (Google Maps never exposes one), not an error or a
+    # partial-discovery signal. Foursquare (`social_media.instagram`)
+    # and Overpass (`contact:instagram` / `instagram`) DO populate it:
+    # the provider-published handle or URL is canonicalized with
+    # `utils.parsing.ig_url_from_provider_value` (a published handle is
+    # normalized, never guessed) and dropped if it is not a valid
+    # profile. The driver validates it again at intake and enqueues
+    # InstagramWorker only when a valid URL exists.
     instagram_url: Optional[str] = None
 
     # Phase 4A addition: surfaces RawPlace.closed (scraper/maps_scraper.py)
@@ -232,6 +235,19 @@ class BusinessCandidate:
     # BusinessCandidate (no provider currently populates this) is
     # unaffected.
     closed: bool = False
+
+    # Contact-data fix: an email a discovery provider itself published
+    # (e.g. OSM `email` / `contact:email`). Optional and appended
+    # additively; None for every provider that does not expose one
+    # (Google Maps never does). Carried through so a provider-asserted
+    # address is never silently discarded and can satisfy the "email"
+    # channel without a website fetch.
+    #
+    # Deliberately NOT named `email`: the existing contract tests
+    # (tests/test_engine_crash_regression.py, test_phase4a_discovery_
+    # filters.py) pin that BusinessCandidate has no `.email` attribute so
+    # that no stage can accidentally read a field that does not exist.
+    provider_email: Optional[str] = None
 
     # Traceability addition: records what niche a candidate's run actually
     # requested from the discovery provider. Purely additive and observational
@@ -326,6 +342,15 @@ class WebsiteIntel:
     crawl_duration: Optional[float] = None
     homepage_html: Optional[str] = None
 
+    # Demand-driven extraction hints (set by the execution driver, never
+    # by WebsiteWorker's own inspection). `known_channels` lists channels
+    # the discovery provider already supplied for this business ("phone",
+    # "instagram", "email") so ContactWorker does not crawl for them;
+    # `region_hint` is the business's country, used for country-aware
+    # phone normalization. Both default to None (no hint).
+    known_channels: Optional[tuple[str, ...]] = None
+    region_hint: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # 3. InstagramIntel
@@ -405,6 +430,14 @@ class InstagramIntel:
     profile_picture: Optional[str] = None
     contact_buttons: Optional[tuple[str, ...]] = None
     last_post_date: Optional[str] = None
+
+    # Verification outcome. `profile_reachable is True` now means ONLY
+    # that a public profile page was actually retrieved ("found").
+    # Other values never prove existence: "missing" (HTTP 404/410),
+    # "blocked" (403 / login wall), "rate_limited" (429),
+    # "inconclusive" (other HTTP errors or unrecognizable page),
+    # "error" (network failure), "no_url" (nothing to verify).
+    profile_status: Optional[str] = None
 
     # Metrics
     fetch_duration: Optional[float] = None
@@ -561,6 +594,12 @@ class ContactIntel:
     secondary_fallback_url: Optional[str] = None
     secondary_fallback_success: bool = False
     secondary_fallback_fetch_failed: bool = False
+
+    # Provenance for every extracted value: tuples of (value, source),
+    # in the same order as `emails` / `phones`. Observational; lets the
+    # lead payload carry per-field provenance to the gateway.
+    email_provenance: Optional[tuple[tuple[str, str], ...]] = None
+    phone_provenance: Optional[tuple[tuple[str, str], ...]] = None
 
 
 

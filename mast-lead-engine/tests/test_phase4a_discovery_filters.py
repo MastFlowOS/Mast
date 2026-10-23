@@ -137,7 +137,8 @@ def test_closed_false_candidate_follows_current_path():
 
     assert fan_in.get_business("p-open") is not None
     assert website_queue.size() == 1
-    assert instagram_queue.size() == 1
+    # No Instagram URL on the candidate -> no Instagram queue item is spent on it.
+    assert instagram_queue.size() == 0
 
 
 def test_closed_unknown_default_follows_current_path():
@@ -160,7 +161,8 @@ def test_closed_unknown_default_follows_current_path():
 
     assert fan_in.get_business("p-unknown") is not None
     assert website_queue.size() == 1
-    assert instagram_queue.size() == 1
+    # No Instagram URL on the candidate -> no Instagram queue item is spent on it.
+    assert instagram_queue.size() == 0
 
 
 def test_no_valid_open_business_is_affected_by_closed_check():
@@ -173,7 +175,8 @@ def test_no_valid_open_business_is_affected_by_closed_check():
     for i in range(5):
         assert fan_in.get_business(f"p-open-{i}") is not None
     assert website_queue.size() == 5
-    assert instagram_queue.size() == 5
+    # No Instagram URL on the candidate -> no Instagram queue item is spent on it.
+    assert instagram_queue.size() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +216,8 @@ def test_non_matching_candidates_remain_unchanged():
 
     assert fan_in.get_business("p-normal") is not None
     assert website_queue.size() == 1
-    assert instagram_queue.size() == 1
+    # No Instagram URL on the candidate -> no Instagram queue item is spent on it.
+    assert instagram_queue.size() == 0
 
 
 def test_discovery_keyword_prune_agrees_with_scoring_worker_verdict():
@@ -287,7 +291,8 @@ def test_email_required_channel_preserved_website_fallback_exactly():
 
     assert fan_in.get_business("p-has-site") is not None
     assert website_queue.size() == 1
-    assert instagram_queue.size() == 1
+    # No Instagram URL on the candidate -> no Instagram queue item is spent on it.
+    assert instagram_queue.size() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -376,4 +381,5 @@ def test_phone_present_no_website_survives_when_only_phone_required():
 
     assert fan_in.get_business("p-phone-no-site-2") is not None
     assert website_queue.size() == 1
-    assert instagram_queue.size() == 1
+    # No Instagram URL on the candidate -> no Instagram queue item is spent on it.
+    assert instagram_queue.size() == 0

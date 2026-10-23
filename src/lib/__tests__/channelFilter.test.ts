@@ -34,8 +34,8 @@ test("channelsSatisfied handles ['phone'] requirement", () => {
 });
 
 test("channelsSatisfied handles ['email'] requirement", () => {
-  const withEmail = { email: "hello@domain.com" };
-  const noEmail = { email: "   ", phone: "+12345" };
+  const withEmail = { email: "hello@bakery.com" };
+  const noEmail = { email: "   ", phone: "+12125550123" };
 
   assert.equal(channelsSatisfied(withEmail, ["email"]), true);
   assert.equal(channelsSatisfied(noEmail, ["email"]), false);
@@ -43,7 +43,7 @@ test("channelsSatisfied handles ['email'] requirement", () => {
 
 test("channelsSatisfied handles ['website'] requirement", () => {
   const withSite = { website: "https://site.org" };
-  const noSite = { website: "", phone: "+12345" };
+  const noSite = { website: "", phone: "+12125550123" };
 
   assert.equal(channelsSatisfied(withSite, ["website"]), true);
   assert.equal(channelsSatisfied(noSite, ["website"]), false);
@@ -58,16 +58,16 @@ test("channelsSatisfied handles ['instagram'] requirement", () => {
 });
 
 test("channelsSatisfied handles ['email', 'instagram'] requirement", () => {
-  const Both = { email: "test@co.com", instagram: "https://instagram.com/co" };
-  const EmailOnly = { email: "test@co.com", instagram: "" };
+  const Both = { email: "hello@co.com", instagram: "https://instagram.com/co" };
+  const EmailOnly = { email: "hello@co.com", instagram: "" };
 
   assert.equal(channelsSatisfied(Both, ["email", "instagram"]), true);
   assert.equal(channelsSatisfied(EmailOnly, ["email", "instagram"]), false);
 });
 
 test("channelsSatisfied handles ['phone', 'website', 'instagram'] requirement", () => {
-  const AllThree = { phone: "+12345", website: "https://a.com", instagram: "https://instagram.com/a" };
-  const MissingPhone = { phone: "", website: "https://a.com", instagram: "https://instagram.com/a" };
+  const AllThree = { phone: "+12125550123", website: "https://a.com", instagram: "https://instagram.com/acafe" };
+  const MissingPhone = { phone: "", website: "https://a.com", instagram: "https://instagram.com/acafe" };
 
   assert.equal(channelsSatisfied(AllThree, ["phone", "website", "instagram"]), true);
   assert.equal(channelsSatisfied(MissingPhone, ["phone", "website", "instagram"]), false);
@@ -81,8 +81,8 @@ test("channelsSatisfied handles ['phone', 'website', 'instagram'] requirement", 
 test("PHASE 5 regression: strict four-channel qualification (website+email+phone+instagram) is unchanged", () => {
   const fourChannels = ["website", "email", "phone", "instagram"];
   const full = {
-    website: "https://biz.example.com",
-    email: "hello@biz.example.com",
+    website: "https://bizco.com",
+    email: "hello@bizco.com",
     phone: "+15551234567",
     instagram: "https://instagram.com/biz",
   };

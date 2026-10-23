@@ -326,7 +326,8 @@ def test_b_new_place_enters_enrichment_normally():
     result = _run([cand], checker=checker)
 
     assert result["website_calls"] == ["pid-new"]
-    assert result["instagram_calls"] == ["pid-new"]
+    # The candidate has no Instagram URL, so no Instagram work is enqueued.
+    assert result["instagram_calls"] == []
     assert len(result["backend"].stored) == 1
     assert result["backend"].stored[0].pipeline_id == "pid-new"
     assert len(checker.calls) == 1

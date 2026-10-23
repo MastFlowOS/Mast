@@ -4,7 +4,7 @@ import type { EngineLead, EngineDoneInfo } from "../scraperBridge/pythonBridge.j
 import { deliverLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { splitNicheQuery } from "../lib/niches.js";
 import { channelsSatisfied } from "../lib/channelFilter.js";
-import { validateLead } from "../lib/leadValidation.js";
+import { sanitizeLeadContacts, validateLead } from "../lib/leadValidation.js";
 import { resolveCountriesForSelection, CountryRotation } from "../lib/geo/regions.js";
 import type { CountryInfo } from "../lib/geo/countries.js";
 import { PipelineTracer } from "../lib/pipelineTrace.js";
@@ -582,6 +582,10 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
         publishDiscoveryLiveEvent(candidateDiscoveredEvent(discoveryPlanId, effectiveScoutId, pid, lead.name, eventAreaLabel));
       }
       try {
+        // Drop malformed OPTIONAL contact values so they can neither satisfy a
+        // requested channel, be persisted into the shared pool, nor fail the
+        // whole lead in validateLead().
+        sanitizeLeadContacts(lead);
         if (followUp && !channelsSatisfied(lead, followUp.channels)) {
           tracer.reject(pid, `channel_filter:${JSON.stringify(followUp.channels)}`);
           if (productivity) recordCandidateRejected(productivity);

@@ -35,6 +35,8 @@ import sys
 import urllib.error
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from engine.contracts import (
@@ -104,23 +106,37 @@ def test_real_timeout_sets_fetch_duration_not_short_circuit_shape():
     assert intel.fetch_duration is not None
 
 
-# ── Test 3: HTTP error -> profile_reachable=True (server responded) ──────
-def test_http_error_response_sets_profile_reachable_true():
-    """An HTTPError means the server DID respond (e.g. private/removed
-    profile) -- this is reachable, not a short-circuit or a network
-    failure."""
+# ── Test 3: HTTP errors are NOT proof the profile exists ─────────────────
+@pytest.mark.parametrize(
+    "code, expected_reachable, expected_status",
+    [
+        (404, False, "missing"),        # definitively absent
+        (410, False, "missing"),
+        (429, None, "rate_limited"),    # inconclusive
+        (403, None, "blocked"),
+        (401, None, "blocked"),
+        (500, None, "inconclusive"),
+    ],
+)
+def test_http_error_response_is_never_proof_profile_exists(code, expected_reachable, expected_status):
+    """Contact-data audit fix: an HTTP error status used to set
+    profile_reachable=True (so a deleted profile, a login wall or a rate
+    limit all "satisfied" the Instagram channel). Now only a retrieved
+    profile page is True; 404/410 is False; everything else is None
+    (not verified). A fetch was still attempted (fetch_duration set)."""
     worker = InstagramWorker()
     item = _candidate("p-http-error", instagram_url="https://instagram.com/somebiz")
 
     with patch(
         "urllib.request.urlopen",
-        side_effect=urllib.error.HTTPError("https://instagram.com/somebiz", 404, "Not Found", {}, None),
+        side_effect=urllib.error.HTTPError("https://instagram.com/somebiz", code, "err", {}, None),
     ):
         intel = worker.process(item)
 
-    assert intel.profile_reachable is True
+    assert intel.profile_reachable is expected_reachable
+    assert intel.profile_status == expected_status
     assert intel.fetch_duration is not None
-    assert intel.profile_url == "https://instagram.com/somebiz"
+    assert intel.profile_url is None
 
 
 # ── Test 4: _instagram_telemetry_events() shape discrimination ───────────

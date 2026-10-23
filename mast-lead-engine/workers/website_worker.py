@@ -126,6 +126,7 @@ from typing import List, Optional
 from urllib.parse import urljoin, urlparse
 
 from engine.contracts import BusinessCandidate, WebsiteIntel
+from utils.http_limits import fetch_slot, read_capped
 from utils.single_flight import SingleFlight
 from utils.parsing import is_ordering_platform, is_social_platform, strip_control_characters
 from workers.base_worker import BaseWorker
@@ -288,7 +289,6 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
                 if cached is not None:
                     self._domain_cache.move_to_end(cache_key)
                     return dataclasses.replace(cached, pipeline_id=item.pipeline_id)
-                    return dataclasses.replace(cached, pipeline_id=item.pipeline_id)
 
             intel_proto: Optional[WebsiteIntel] = None
             is_leader: bool = False
@@ -370,11 +370,11 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
 
         start = time.monotonic()
         try:
-            with opener.open(request, timeout=self._timeout) as response:
+            with fetch_slot(), opener.open(request, timeout=self._timeout) as response:
                 elapsed = time.monotonic() - start
                 final_url = response.geturl()
                 status = response.status
-                raw = response.read()
+                raw = read_capped(response)
                 charset = response.headers.get_content_charset() or "utf-8"
         except urllib.error.HTTPError as exc:
             # Server responded — reachable, just an error status.
@@ -412,11 +412,11 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
             if effective_fallback_url:
                 try:
                     fallback_req = urllib.request.Request(effective_fallback_url, headers=headers)
-                    with opener.open(fallback_req, timeout=self._timeout) as response:
+                    with fetch_slot(), opener.open(fallback_req, timeout=self._timeout) as response:
                         elapsed = time.monotonic() - start
                         final_url = response.geturl()
                         status = response.status
-                        raw = response.read()
+                        raw = read_capped(response)
                         charset = response.headers.get_content_charset() or "utf-8"
                 except urllib.error.HTTPError as exc:
                     elapsed = time.monotonic() - start

@@ -32,9 +32,30 @@ const IG_NON_HANDLES = new Set([
   "signup",
   "direct",
   "instagram",
+  // Non-profile paths seen in embeds / share widgets / static assets
+  // (mirrors utils/parsing.py::_IG_NON_HANDLES). Deliberately limited to
+  // paths that are never a business profile.
+  "sharer",
+  "embed",
+  "static",
+  "web",
+  "developer",
+  "developers",
+  "nametag",
+  "oembed",
+  "emails",
+  "session",
+  "ajax",
+  "graphql",
+  "_u",
 ]);
 
-const IG_HANDLE_RE = /^[A-Za-z][A-Za-z0-9_.]{1,29}$/;
+// A handle is 2-30 chars of letters, digits, "_" and "." (it may start with
+// a digit or underscore). Mirrors utils/parsing.py::is_valid_ig_handle.
+const IG_HANDLE_RE = /^[A-Za-z0-9_][A-Za-z0-9_.]{1,29}$/;
+// A real handle never looks like a file ("embed.js", "sharer.php").
+const IG_FILELIKE_SUFFIX_RE =
+  /\.(?:js|mjs|php|asp|aspx|html?|json|xml|css|png|jpe?g|gif|webp|svg|ico|txt|map|woff2?|ttf)$/i;
 
 /**
  * Extracts and validates a canonical Instagram handle from any raw input format:
@@ -54,8 +75,10 @@ export function extractInstagramHandle(raw?: string | null): string | null {
   text = text.replace(/^["']+|["']+$/g, "").trim();
 
   // Strip leading and duplicated protocol/domain prefixes
-  while (/^https?:\/\/(?:www\.)?instagram\.com\/?/i.test(text)) {
-    text = text.replace(/^https?:\/\/(?:www\.)?instagram\.com\/?/i, "").trim();
+  while (/^(?:https?:\/\/|\/\/)?(?:www\.|m\.)?(?:instagram\.com|instagr\.am)\/?/i.test(text)) {
+    text = text
+      .replace(/^(?:https?:\/\/|\/\/)?(?:www\.|m\.)?(?:instagram\.com|instagr\.am)\/?/i, "")
+      .trim();
   }
 
   while (/^https?:\/\//i.test(text)) {
@@ -66,7 +89,10 @@ export function extractInstagramHandle(raw?: string | null): string | null {
   text = text.split(/[?#]/)[0].trim();
 
   // Strip leading @, slashes, or whitespace
-  text = text.replace(/^[/@]+/, "").replace(/\/+$/, "").trim();
+  text = text
+    .replace(/^[/@]+/, "")
+    .replace(/\/+$/, "")
+    .trim();
 
   // Take the primary path segment
   const segment = text.split("/")[0].trim().toLowerCase();
@@ -82,8 +108,13 @@ export function extractInstagramHandle(raw?: string | null): string | null {
     return null;
   }
 
-  // Validate character shape and length: starts with a letter, 2-30 chars, alphanumeric + _ + .
+  // Validate character shape and length: 2-30 chars, alphanumeric + _ + .
   if (!IG_HANDLE_RE.test(segment)) {
+    return null;
+  }
+
+  // Reject file-like names, trailing dots and consecutive dots.
+  if (segment.endsWith(".") || segment.includes("..") || IG_FILELIKE_SUFFIX_RE.test(segment)) {
     return null;
   }
 

@@ -4,6 +4,7 @@ import type { EngineLead } from "./pythonBridge.js";
 import { normalizeDiscoveryNiche, resolveLeadNiche } from "../lib/niches.js";
 import { applyRediscoverySuccess, CONFIDENCE_DEFAULT, VERIFICATION_INTERVAL_MS } from "../scoring/confidenceModel.js";
 import { buildFieldTrust } from "../scoring/fieldTrust.js";
+import { buildContactUpdate } from "./contactMerge.js";
 import type { Json } from "../types/database.types.js";
 import { buildDedupWasteLogFields, logDedupWasteDecision } from "../lib/dedupWasteAudit.js";
 
@@ -85,6 +86,17 @@ function extractSignals(lead: EngineLead) {
     ig_legitimacy: lead.ig_legitimacy,
     ig_last_post_days: lead.ig_last_post_days,
     owner_responds_to_reviews: lead.owner_responds_to_reviews,
+    // Other channels the engine extracted that have no column of their own.
+    ...(lead.whatsapp || lead.messenger || lead.telegram || lead.contact_form_url
+      ? {
+          contact_channels: {
+            whatsapp: lead.whatsapp || null,
+            messenger: lead.messenger || null,
+            telegram: lead.telegram || null,
+            contact_form_url: lead.contact_form_url || null,
+          },
+        }
+      : {}),
     growth_signals: lead.growth_signals && Object.keys(lead.growth_signals).length > 0 ? lead.growth_signals : null,
     seo: lead.seo ?? null,
     blog: lead.blog ?? null,
@@ -125,7 +137,7 @@ async function findExistingBusiness(fingerprints: string[]) {
 
   const { data, error } = await supabaseAdmin
     .from("businesses")
-    .select("id, confidence, niche, country_code")
+    .select("id, confidence, niche, country_code, website, email, phone, instagram, facebook, emails, phones")
     .overlaps("fingerprints", fingerprints)
     .limit(1)
     .maybeSingle();
@@ -207,8 +219,10 @@ export async function upsertBusinessFromEngineLead(
         // discovery happened to find, exactly like refreshedFields does in
         // verificationJob.ts's success path.
         ...(lead.linkedin ? { linkedin: lead.linkedin } : {}),
-        ...(lead.emails?.length ? { emails: lead.emails } : {}),
-        ...(lead.phones?.length ? { phones: lead.phones } : {}),
+        // Contact fields: fill-only for the singular columns and MERGE for the
+        // arrays (see contactMerge.ts) — previously the arrays were replaced
+        // wholesale and email/phone/instagram/website were never refreshed.
+        ...buildContactUpdate(existing, lead),
         ...(lead.field_provenance ? { field_provenance: buildFieldTrust(lead) } : {}),
         ...(lead.website_is_weak != null ? { website_is_weak: lead.website_is_weak } : {}),
         ...(lead.ssl_valid !== undefined ? { ssl_valid: lead.ssl_valid } : {}),

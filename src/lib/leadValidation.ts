@@ -39,7 +39,147 @@ const PLACEHOLDER_EMAIL_LOCAL_PARTS = new Set([
   "email",
 ]);
 
-const PLACEHOLDER_EMAIL_DOMAINS = new Set(["example.com", "example.org", "test.com", "domain.com", "email.com", "yourdomain.com"]);
+const PLACEHOLDER_EMAIL_DOMAINS = new Set([
+  "example.com",
+  "example.org",
+  "test.com",
+  "domain.com",
+  "email.com",
+  "yourdomain.com",
+  // Parity with utils/parsing.py::_PLACEHOLDER_EMAIL_DOMAINS: platform /
+  // vendor addresses that are never the business's own mailbox.
+  "placeholder.com",
+  "sentry.io",
+  "wixpress.com",
+  "godaddy.com",
+  "squarespace.com",
+  "shopify.com",
+  "wix.com",
+  "mailchimp.com",
+  "klaviyo.com",
+  "sendgrid.net",
+  "constantcontact.com",
+  "hubspot.com",
+  "amazonaws.com",
+  "cloudflare.com",
+]);
+
+// Automated / system mailbox prefixes (parity with
+// utils/parsing.py::_EMAIL_BLOCKLIST_PREFIXES).
+const BLOCKED_EMAIL_PREFIXES = [
+  "noreply@",
+  "no-reply@",
+  "donotreply@",
+  "do-not-reply@",
+  "wordpress@",
+  "example@",
+  "sentry@",
+  "mailer-daemon@",
+  "privacy@",
+  "legal@",
+  "abuse@",
+  "webmaster@",
+  "postmaster@",
+  "newsletter@",
+  "unsubscribe@",
+  "subscriptions@",
+  "bounce@",
+  "daemon@",
+  "spam@",
+  "phishing@",
+  "security@",
+  "test@",
+  "demo@",
+  "hostmaster@",
+  "admin@wordpress",
+];
+
+// File-name suffixes that look like a TLD ("logo@2x.png").
+const ASSET_TLDS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "ico",
+  "bmp",
+  "tif",
+  "tiff",
+  "avif",
+  "heic",
+  "css",
+  "js",
+  "mjs",
+  "map",
+  "json",
+  "xml",
+  "html",
+  "htm",
+  "php",
+  "asp",
+  "aspx",
+  "woff",
+  "woff2",
+  "ttf",
+  "otf",
+  "eot",
+  "mp3",
+  "mp4",
+  "webm",
+  "mov",
+  "avi",
+  "wav",
+  "pdf",
+  "zip",
+  "gz",
+  "tar",
+  "rar",
+  "txt",
+  "csv",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "exe",
+  "dmg",
+  "apk",
+  "wasm",
+  "md",
+  "yml",
+  "yaml",
+  "ts",
+  "tsx",
+  "jsx",
+  "scss",
+  "less",
+]);
+
+/**
+ * Structural checks shared by isValidEmail() and validateLead(): placeholder
+ * local-parts/domains, system mailboxes, asset-file "TLDs", retina ("2x")
+ * labels and hash-like local parts. Mirrors utils/parsing.py::is_valid_email
+ * so the Python engine and this gateway agree on what a real mailbox is.
+ */
+function emailRejectionReason(email: string): string | null {
+  const at = email.indexOf("@");
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  if (local.length > 50) return "invalid_email_format";
+  if (PLACEHOLDER_EMAIL_LOCAL_PARTS.has(local)) return "placeholder_email";
+  if (BLOCKED_EMAIL_PREFIXES.some((p) => email.startsWith(p))) return "placeholder_email";
+  for (const d of PLACEHOLDER_EMAIL_DOMAINS) {
+    if (domain === d || domain.endsWith("." + d)) return "placeholder_email";
+  }
+  const labels = domain.split(".");
+  if (labels.some((l) => !l || l.startsWith("-") || l.endsWith("-"))) return "invalid_email_format";
+  if (ASSET_TLDS.has(labels[labels.length - 1])) return "invalid_email_format";
+  if (labels.some((l) => /^\d+x$/.test(l))) return "invalid_email_format";
+  if (/^[0-9a-f]{24,}$/.test(local)) return "invalid_email_format";
+  return null;
+}
 
 const PLACEHOLDER_PHONE_RE = /^(\d)\1+$/; // e.g. "0000000000", "1111111111"
 
@@ -69,9 +209,7 @@ export function isValidEmail(value: string | null | undefined): boolean {
   const email = (value || "").trim().toLowerCase();
   if (!email) return false;
   if (!EMAIL_RE.test(email)) return false;
-  const [local, domain] = email.split("@");
-  if (PLACEHOLDER_EMAIL_LOCAL_PARTS.has(local) || PLACEHOLDER_EMAIL_DOMAINS.has(domain)) return false;
-  return true;
+  return emailRejectionReason(email) === null;
 }
 
 export function isValidPhone(value: string | null | undefined): boolean {
@@ -104,9 +242,9 @@ export function validateLead(lead: LeadValidationCandidate): LeadValidationResul
     if (!EMAIL_RE.test(email)) {
       return { valid: false, reason: "invalid_email_format" };
     }
-    const [local, domain] = email.split("@");
-    if (PLACEHOLDER_EMAIL_LOCAL_PARTS.has(local) || PLACEHOLDER_EMAIL_DOMAINS.has(domain)) {
-      return { valid: false, reason: "placeholder_email" };
+    const reason = emailRejectionReason(email);
+    if (reason) {
+      return { valid: false, reason };
     }
   }
 
@@ -132,4 +270,56 @@ export function validateLead(lead: LeadValidationCandidate): LeadValidationResul
   }
 
   return { valid: true };
+}
+
+/**
+ * Optional-channel sanitation. A malformed OPTIONAL contact value (a junk
+ * email, a non-profile Instagram link, a bad phone) used to make
+ * validateLead() reject the WHOLE lead even when the business had other
+ * perfectly good channels. This drops each invalid contact field in place
+ * (email/phone/instagram/website -> "" and the emails/phones arrays are
+ * filtered to valid entries) so that:
+ *   - an invalid value can never satisfy a requested channel
+ *     (channelsSatisfied() sees it as missing), and
+ *   - a lead is only rejected when it genuinely has no name or no usable
+ *     channel left (validateLead's own whole-lead rules).
+ * Valid values are never altered, and nothing is invented. Returns the
+ * names of the fields that were dropped (for logging).
+ */
+export function sanitizeLeadContacts(lead: {
+  email?: string | null;
+  phone?: string | null;
+  website?: string | null;
+  instagram?: string | null;
+  emails?: Array<string | { email: string }> | null;
+  phones?: string[] | null;
+}): string[] {
+  const dropped: string[] = [];
+  const email = (lead.email || "").trim();
+  if (email && !isValidEmail(email)) {
+    lead.email = "";
+    dropped.push("email");
+  }
+  const phone = (lead.phone || "").trim();
+  if (phone && !isValidPhone(phone)) {
+    lead.phone = "";
+    dropped.push("phone");
+  }
+  const website = (lead.website || "").trim();
+  if (website && !isValidWebsite(website)) {
+    lead.website = "";
+    dropped.push("website");
+  }
+  const instagram = (lead.instagram || "").trim();
+  if (instagram && !isValidInstagram(instagram)) {
+    lead.instagram = "";
+    dropped.push("instagram");
+  }
+  if (Array.isArray(lead.emails)) {
+    lead.emails = lead.emails.filter((e) => isValidEmail(typeof e === "string" ? e : e?.email));
+  }
+  if (Array.isArray(lead.phones)) {
+    lead.phones = lead.phones.filter((p) => isValidPhone(p));
+  }
+  return dropped;
 }

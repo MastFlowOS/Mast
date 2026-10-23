@@ -127,7 +127,8 @@ def test_on_candidate_discovery_path_with_required_email_channel():
     website_q = ctx.runtime.queue_manager.get_queue(queue_ids.website_in)
     instagram_q = ctx.runtime.queue_manager.get_queue(queue_ids.instagram_in)
     assert not website_q.is_empty()
-    assert not instagram_q.is_empty()
+    # No Instagram URL on the candidate -> no Instagram queue item.
+    assert instagram_q.is_empty()
 
     # Candidate without website must be early-pruned (never registered in fan_in, emit event)
     assert fan_in.get_business("cand_no_site") is None

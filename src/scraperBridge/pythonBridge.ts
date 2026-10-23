@@ -47,6 +47,11 @@ export type EngineLead = {
   facebook: string;
   linkedin: string;
   contact_form: string;
+  /** Other channels extracted by the engine's ContactWorker (optional). */
+  contact_form_url?: string | null;
+  whatsapp?: string | null;
+  messenger?: string | null;
+  telegram?: string | null;
   maps_link: string;
   rating: number | null;
   reviews: number;
@@ -73,8 +78,12 @@ export type EngineLead = {
   is_disqualified: boolean;
 
   // ── Quality & Intelligence pass additions ──────────────────────────────
-  /** C5 fix — every email found, role-ranked: [{email, role}] */
-  emails?: { email: string; role: string }[];
+  /**
+   * C5 fix — every email found. The V2 engine sends plain strings (best
+   * first); older/legacy rows carry role-ranked `{email, role}` objects, so
+   * both shapes are accepted.
+   */
+  emails?: Array<string | { email: string; role: string }>;
   /** C5 fix — every distinct phone number found */
   phones?: string[];
   /** C3 fix — only keys actually detected; never a fabricated negative */

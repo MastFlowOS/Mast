@@ -190,15 +190,13 @@ and AzureMapsProvider all already apply to their own sources:
     - coordinates: the response's own top-level `latitude` / `longitude`
       fields, populated as a `(lat, lon)` tuple when both are present.
     - instagram_url: the response's own `social_media.instagram`
-      subfield is documented as a bare identifier
-      ("`social_media`... `instagram`... Not all FSQ Places will have
-      all subfields"), not a URL — Foursquare's Response Fields
-      reference gives it no `https://instagram.com/...` format
-      guarantee, the same "handle, not URL" ambiguity OverpassProvider's
-      own docstring already documents for OSM's `contact:instagram` tag
-      and declines to resolve by guessing. Left None here for the
-      identical reason — constructing a URL from a bare handle would be
-      asserting a format the response itself never asserted.
+      subfield is a bare handle. Canonicalizing a handle the provider
+      itself published into `https://www.instagram.com/<handle>/` is not
+      fabrication (`utils.parsing.ig_url_from_provider_value`); a value
+      that is not a valid public profile handle yields None.
+    - provider_email: the response's own `email` field (a Premium field,
+      present only when requested via `fields`), kept only if it is a
+      valid address.
 
 Request shape
 --------------
@@ -324,6 +322,7 @@ from urllib.parse import urlencode
 
 from engine.contracts import BusinessCandidate
 from engine.interfaces import DiscoveryProviderInterface
+from utils.parsing import ig_url_from_provider_value, is_valid_email
 from providers.provider_capabilities import ProviderCapabilities
 from providers.provider_metadata import ProviderMetadata
 
@@ -648,6 +647,18 @@ class FoursquareProvider(DiscoveryProviderInterface):
 
         stats = result.get("stats") or {}
 
+        # Instagram: Foursquare's `social_media.instagram` is a bare
+        # handle. Canonicalizing a handle the provider itself published
+        # is not guessing; anything that is not a valid public profile
+        # handle yields None.
+        social = result.get("social_media") or {}
+        instagram_url = ig_url_from_provider_value(
+            social.get("instagram") if isinstance(social, dict) else None
+        )
+        # Email (a Premium field, present only when the caller opted in).
+        _email = _or_none(result.get("email"))
+        provider_email = _email.lower() if _email and is_valid_email(_email) else None
+
         return BusinessCandidate(
             pipeline_id=str(uuid.uuid4()),
             session_id=session_id,
@@ -665,5 +676,6 @@ class FoursquareProvider(DiscoveryProviderInterface):
             review_count=stats.get("total_ratings"),  # Premium field — same as above.
             coordinates=coordinates,
             discovered_at=datetime.now(timezone.utc).isoformat(),
-            instagram_url=None,  # social_media.instagram is a bare handle, not a URL — never fabricated.
+            instagram_url=instagram_url,  # canonicalized from `social_media.instagram` when it is a valid handle.
+            provider_email=provider_email,
         )

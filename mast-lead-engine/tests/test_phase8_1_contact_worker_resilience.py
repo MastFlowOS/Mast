@@ -121,7 +121,7 @@ def test_tel_contact_page_does_not_trigger_urllib(monkeypatch):
     item = _website_intel(contact_page="tel:+15551234567")
     result = worker.process(item)
 
-    assert result.phones == ("+15551234567",)
+    assert result.phones == ("+1 (555) 123-4567",)  # normalized
 
 
 def test_tel_phone_is_extracted_correctly(monkeypatch):
@@ -316,7 +316,7 @@ def test_end_to_end_kettl_co_style_four_channel_recovery(monkeypatch):
 
     assert isinstance(result, ContactIntel)
     assert result.contact_page_fetch_failed is True
-    assert result.phones == ("+15559876543",)
+    assert result.phones == ("+1 (555) 987-6543",)  # normalized
     assert result.whatsapp_link == "https://wa.me/15559876543"
     assert result.instagram_url == "https://www.instagram.com/kettlco/"
     assert result.linkedin_url == "https://www.linkedin.com/company/kettlco"

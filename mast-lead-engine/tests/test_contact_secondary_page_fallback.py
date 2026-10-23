@@ -380,8 +380,11 @@ class TestContactSecondaryPageFallback:
     # ── Follow-Up Test 2: First fallback succeeds and satisfies Instagram ─────
     def test_followup_2_first_fallback_satisfies_instagram_no_additional_fetch(self):
         """When first fallback succeeds and satisfies missing Instagram, stops immediately without extra fetches."""
-        # Email and phone already found on homepage, only Instagram is missing
-        worker = ContactWorker()
+        # Email and phone already found on homepage, only Instagram is missing.
+        # Instagram is explicitly REQUIRED here: since the "no required
+        # channels" fix, an unrequired Instagram no longer drives extra
+        # fetches (see tests/test_contact_extraction_fixes.py).
+        worker = ContactWorker(required_channels=("instagram",))
         fetched_urls = []
 
         def mock_fetch(url: str):

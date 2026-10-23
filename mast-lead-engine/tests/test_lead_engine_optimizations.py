@@ -47,7 +47,7 @@ def test_contact_worker_reuses_homepage_html_without_network_call():
 
     assert fetch_mock.call_count == 0, "Expected zero network calls when homepage_html is present"
     assert "hello@testcafe.com" in contact_intel.emails
-    assert any("5550199999" in p for p in contact_intel.phones)
+    assert any("5550199999" in "".join(ch for ch in p if ch.isdigit()) for p in contact_intel.phones)
     assert contact_intel.instagram_url == "https://www.instagram.com/testcafe/"
 
 
@@ -252,7 +252,7 @@ def test_contact_worker_unified_multi_channel_anchor_extraction():
         contact = worker.process(intel)
 
     assert "support@omnichannel.com" in contact.emails
-    assert any("18005550199" in p for p in contact.phones)
+    assert any("18005550199" in "".join(ch for ch in p if ch.isdigit()) for p in contact.phones)
     assert contact.whatsapp_link == "https://wa.me/18005550199"
     assert contact.messenger_link == "https://m.me/omnichannel"
     assert contact.telegram_link == "https://t.me/omnichannel_official"

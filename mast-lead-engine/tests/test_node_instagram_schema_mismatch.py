@@ -201,7 +201,7 @@ class TestOpportunityToLeadDictInstagramField:
 
         assert lead_dict["instagram"] == "https://www.instagram.com/thebakery/"
         assert lead_dict["email"] == "hello@bakery.com"
-        assert lead_dict["phone"] == "+14165550199"
+        assert lead_dict["phone"] == "+1 (416) 555-0199"
         assert lead_dict["website"] == "https://bakery.com"
 
     def test_genuinely_missing_instagram_stays_empty_in_lead_dict(self):

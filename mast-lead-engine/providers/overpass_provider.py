@@ -248,16 +248,13 @@ contains the corresponding value:
       `center.lon` for every element regardless of type. Populated as
       a `(lat, lon)` tuple when the applicable field pair is present,
       None otherwise.
-    - instagram_url: OSM does define a `contact:instagram` tag in
-      practice, but — unlike `website`/`phone`, whose values are always
-      plain URLs/numbers — contributors populate `contact:instagram`
-      inconsistently (sometimes a full URL, sometimes a bare handle,
-      sometimes an `@handle`), and Overpass returns whatever raw string
-      was mapped, with no normalization. Turning a bare handle into a
-      URL would be this provider constructing something OSM's own data
-      didn't actually assert. Left None, matching all three existing
-      providers' treatment of this same optional field, rather than
-      guessing at a format.
+    - instagram_url: OSM's `contact:instagram` (or `instagram`) tag is
+      populated inconsistently (a full URL, a bare handle or an
+      `@handle`). Each of those is something the data DID assert, so it
+      is normalized with `utils.parsing.ig_url_from_provider_value`;
+      anything that is not a valid public profile yields None.
+    - provider_email: OSM's `email` / `contact:email` tag (several
+      addresses may be ";"-separated); the first VALID one is kept.
 
 Pagination
 -----------
@@ -304,6 +301,7 @@ from urllib.parse import urlencode
 
 from engine.contracts import BusinessCandidate
 from engine.interfaces import DiscoveryProviderInterface
+from utils.parsing import ig_url_from_provider_value, is_valid_email
 from providers.provider_capabilities import ProviderCapabilities
 from providers.provider_metadata import ProviderMetadata
 from utils.perf import NullProfiler
@@ -1066,6 +1064,18 @@ class OverpassProvider(DiscoveryProviderInterface):
 
         website = tags.get("website") or tags.get("contact:website")
         phone = tags.get("phone") or tags.get("contact:phone")
+        # OSM's own contact tags: `contact:instagram` (URL or handle) and
+        # `email` / `contact:email` (possibly several, ";"-separated).
+        # Normalized/validated, never guessed; invalid values -> None.
+        instagram_url = ig_url_from_provider_value(
+            tags.get("contact:instagram") or tags.get("instagram")
+        )
+        provider_email = None
+        for _raw in str(tags.get("email") or tags.get("contact:email") or "").replace(",", ";").split(";"):
+            _cand = _raw.strip().lower()
+            if _cand and is_valid_email(_cand):
+                provider_email = _cand
+                break
 
         return BusinessCandidate(
             pipeline_id=str(uuid.uuid4()),
@@ -1084,6 +1094,7 @@ class OverpassProvider(DiscoveryProviderInterface):
             review_count=None,  # OSM has no reviews concept — never fabricated.
             coordinates=coordinates,
             discovered_at=datetime.now(timezone.utc).isoformat(),
-            instagram_url=None,  # contact:instagram format is unnormalized — never guessed.
+            instagram_url=instagram_url,  # from OSM `contact:instagram`, normalized.
+            provider_email=provider_email,
             requested_niche=_or_none(request.requested_niche),
         )

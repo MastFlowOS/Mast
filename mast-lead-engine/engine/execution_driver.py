@@ -335,12 +335,13 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from engine.contracts import (
     BusinessCandidate,
     EnrichedBusiness,
+    InstagramIntel,
     QualificationResult,
     QualifiedOpportunity,
     WebsiteIntel,
@@ -371,7 +372,16 @@ from workers.scoring_worker import _is_cannabis as _keyword_is_cannabis
 from workers.scoring_worker import _is_chain as _keyword_is_chain
 from workers.storage_worker import StorageWorker
 from opportunity_qualification.niche_relevance import evaluate_niche_relevance
-from utils.parsing import is_valid_email, is_weak_site, is_ordering_platform, is_social_platform, clean_ig_url
+from utils.parsing import (
+    clean_ig_url,
+    ig_url_from_provider_value,
+    is_ordering_platform,
+    is_social_platform,
+    is_valid_email,
+    is_valid_phone,
+    is_weak_site,
+    resolve_region,
+)
 
 # -- Batch intelligence chain (Part 3, MAST Lead Engine 2.0 continuation) --
 # The domain-layer subsystems Prioritization/Ranking/Mission Generation/
@@ -440,6 +450,11 @@ __all__ = [
 # the bounded _concurrency_executor, and WorkerAllocator/Queue's own
 # locking) -- no Instagram-specific code path was added, and none needs
 # removing now that Instagram is back at the default.
+# NOTE: this is the driver-level fallback used when no explicit
+# `stage_concurrency` is passed. The production entry point
+# (`service.run_query`) passes its own values (default 4 for website and
+# contact, overridable through its MAST_STAGE_CONCURRENCY_* settings), so
+# the effective production concurrency is the service's, not this dict.
 DEFAULT_STAGE_CONCURRENCY: Dict[str, int] = {"website": 2, "contact": 2}
 
 
@@ -1984,27 +1999,24 @@ def build_seven_stage_pipeline(
                     normalized_ig = clean_ig_url(cleaned_site)
                     if normalized_ig:
                         new_ig_url = normalized_ig
-                candidate = BusinessCandidate(
-                    pipeline_id=candidate.pipeline_id,
-                    session_id=candidate.session_id,
-                    provider=candidate.provider,
-                    provider_business_id=candidate.provider_business_id,
-                    maps_url=candidate.maps_url,
-                    name=candidate.name,
-                    category=candidate.category,
-                    address=candidate.address,
-                    city=candidate.city,
-                    country=candidate.country,
-                    website=None,
-                    phone=candidate.phone,
-                    rating=candidate.rating,
-                    review_count=candidate.review_count,
-                    coordinates=candidate.coordinates,
-                    discovered_at=candidate.discovered_at,
-                    instagram_url=new_ig_url,
-                    closed=candidate.closed,
-                    requested_niche=candidate.requested_niche,
-                )
+                # `replace` (not a field-by-field copy) so every other
+                # field -- including ones added later, e.g.
+                # `provider_email` -- is carried through untouched.
+                candidate = _dc_replace(candidate, website=None, instagram_url=new_ig_url)
+
+        # Provider-supplied contact facts are validated once, here, so
+        # everything downstream can trust them: an invalid Instagram URL
+        # or email is dropped (never fails the lead), a valid one is
+        # canonicalized.
+        if candidate.instagram_url:
+            _ig_norm = ig_url_from_provider_value(candidate.instagram_url)
+            if _ig_norm != candidate.instagram_url:
+                candidate = _dc_replace(candidate, instagram_url=_ig_norm)
+        if candidate.provider_email:
+            _pe = candidate.provider_email.strip().lower()
+            _pe = _pe if is_valid_email(_pe) else None
+            if _pe != candidate.provider_email:
+                candidate = _dc_replace(candidate, provider_email=_pe)
 
         decision = _early_dedup_decision(candidate)
         log_early_dedup_decision(decision)
@@ -2062,20 +2074,13 @@ def build_seven_stage_pipeline(
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                     log.info("discovery: pipeline_id=%s safe-pruned (missing website for website channel)", candidate.pipeline_id)
                     return
-                elif ch == "email" and not has_site:
-                    # BusinessCandidate carries no `email` field (Google
-                    # Maps discovery never surfaces one — see
-                    # BusinessCandidate's own docstring: "no email").
-                    # The `has_maps_valid_email` branch this replaced
-                    # read `getattr(candidate, "email", None)`, which is
-                    # always None, so that branch was structurally dead:
-                    # it could never evaluate to True and never changed
-                    # this decision. The website-based email fallback
-                    # (email is only ever discoverable once a website
-                    # exists, via ContactWorker downstream) is preserved
-                    # exactly — this condition is unchanged for every
-                    # real input, since has_maps_valid_email was always
-                    # False.
+                elif ch == "email" and not has_site and not candidate.provider_email:
+                    # `BusinessCandidate.email` does not exist (Google
+                    # Maps never surfaces one), but a provider can publish
+                    # one in `provider_email` (e.g. OSM `contact:email`,
+                    # validated just above). Such a candidate is NOT
+                    # pruned; any other candidate without a website has no
+                    # way to yield an email downstream and is pruned.
                     _emit("discovery", "candidate_early_channel_pruned", candidate.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                     log.info("discovery: pipeline_id=%s safe-pruned (no valid email on Maps and no website to discover email)", candidate.pipeline_id)
                     _log_discovery_early_prune(candidate, decision)
@@ -2093,9 +2098,24 @@ def build_seven_stage_pipeline(
         website_queue.enqueue(
             pipeline_id=candidate.pipeline_id, stage="website", payload=candidate
         )
-        instagram_queue.enqueue(
-            pipeline_id=candidate.pipeline_id, stage="instagram", payload=candidate
-        )
+        if candidate.instagram_url:
+            instagram_queue.enqueue(
+                pipeline_id=candidate.pipeline_id, stage="instagram", payload=candidate
+            )
+        else:
+            # No valid Instagram URL: there is nothing for InstagramWorker
+            # to verify, so no queue item / worker slot is spent on it.
+            # The branch is still completed terminally (same result shape
+            # InstagramWorker returns for an empty URL), so fan-in
+            # completion and the short-circuit telemetry are unchanged.
+            _no_ig = InstagramIntel(
+                pipeline_id=candidate.pipeline_id,
+                profile_reachable=False,
+                profile_status="no_url",
+            )
+            for _event in _instagram_telemetry_events(_no_ig, url_input_present=False):
+                _emit("instagram", _event, candidate.pipeline_id)
+            fan_in.record_instagram_result(candidate.pipeline_id, _no_ig)
         _emit("discovery", "candidate_queued", candidate.pipeline_id)
         # Phase 3B-VALIDATION: label this early_new candidate weak vs
         # normal site. Purely additive — a new, distinctly-named event
@@ -2124,7 +2144,7 @@ def build_seven_stage_pipeline(
     def _website_downstream(intel: WebsiteIntel) -> Optional[WebsiteIntel]:
         if required_channels:
             business = fan_in.get_business(intel.pipeline_id)
-            has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
+            has_maps_email = bool(business and is_valid_email(getattr(business, "provider_email", None)))
             if "website" in required_channels and intel.website_reachable is False:
                 _emit("website", "candidate_early_channel_pruned", intel.pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                 fan_in.prune_business(intel.pipeline_id, "unreachable_website")
@@ -2171,7 +2191,29 @@ def build_seven_stage_pipeline(
             # is None`) cases -- this branch runs after both, unconditionally.
             fan_in.record_contact_result(intel.pipeline_id, None)
             return None
-        return intel
+        # Demand-driven extraction: tell ContactWorker which channels the
+        # discovery provider already supplied (so it does not crawl for
+        # them) and the business's region (country-aware phone parsing).
+        # The hints ride only on the forwarded copy; the recorded
+        # WebsiteIntel above is untouched.
+        business = fan_in.get_business(intel.pipeline_id)
+        if business is None:
+            return intel
+        _known: List[str] = []
+        _region = resolve_region(getattr(business, "country", None))
+        if getattr(business, "phone", None) and is_valid_phone(business.phone):
+            _known.append("phone")
+        if getattr(business, "instagram_url", None):
+            _known.append("instagram")
+        if getattr(business, "provider_email", None):
+            _known.append("email")
+        if not _known and _region is None:
+            return intel
+        return _dc_replace(
+            intel,
+            known_channels=tuple(_known) or None,
+            region_hint=_region,
+        )
 
     website_stage = StageConfig(
         name="website",
@@ -2225,7 +2267,7 @@ def build_seven_stage_pipeline(
     def _contact_downstream(intel) -> None:
         if required_channels:
             business = fan_in.get_business(intel.pipeline_id)
-            has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
+            has_maps_email = bool(business and is_valid_email(getattr(business, "provider_email", None)))
             has_contact_email = bool(intel and any(is_valid_email(e) for e in (intel.emails or ())))
             has_maps_phone = bool(business and getattr(business, "phone", None))
             has_contact_phone = bool(intel and intel.phones)
@@ -2644,7 +2686,7 @@ def build_seven_stage_pipeline(
         if outcome.stage_name == "website":
             if required_channels:
                 business = fan_in.get_business(pipeline_id)
-                has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
+                has_maps_email = bool(business and is_valid_email(getattr(business, "provider_email", None)))
                 if "website" in required_channels or ("email" in required_channels and not has_maps_email):
                     _emit("website", "candidate_early_channel_pruned", pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")
                     fan_in.prune_business(pipeline_id, "website_stage_failed")
@@ -2659,7 +2701,7 @@ def build_seven_stage_pipeline(
         elif outcome.stage_name == "contact":
             if required_channels:
                 business = fan_in.get_business(pipeline_id)
-                has_maps_email = bool(business and is_valid_email(getattr(business, "email", None)))
+                has_maps_email = bool(business and is_valid_email(getattr(business, "provider_email", None)))
                 has_maps_phone = bool(business and getattr(business, "phone", None))
                 if ("email" in required_channels and not has_maps_email) or ("phone" in required_channels and not has_maps_phone):
                     _emit("contact", "candidate_early_channel_pruned", pipeline_id, terminal=True, terminal_reason="candidate_early_channel_pruned")

@@ -515,9 +515,13 @@ describe("SEC-01: Profile Security & Entitlement Enforcement", () => {
     assert.ok(/grant\s+execute\s+on\s+function\s+public\.award_goal_xp\([^)]*\)\s+to\s+service_role,\s*postgres/i.test(sql044),
       "Migration 044 must grant execute only to service_role, postgres");
 
-    // Migration 044 must reject NULL XP
-    assert.ok(/p_xp\s+is\s+null\s+or\s+p_xp\s*<\s*0/i.test(sql044),
-      "Migration 044 must explicitly reject NULL XP");
+    // Migration 044 must be permission-only (no function redefinition or comment statements)
+    assert.ok(!/create\s+or\s+replace\s+function/i.test(sql044),
+      "Migration 044 must be permission-only and not contain CREATE OR REPLACE FUNCTION");
+    assert.ok(!/alter\s+function\s+.*owner\s+to/i.test(sql044),
+      "Migration 044 must not contain ALTER FUNCTION ... OWNER");
+    assert.ok(!/comment\s+on\s+function/i.test(sql044),
+      "Migration 044 must not contain COMMENT ON FUNCTION");
   });
 
   test("RPC execution denial: authenticated users cannot call legacy award_goal_xp, but can claim completed daily goals", async () => {

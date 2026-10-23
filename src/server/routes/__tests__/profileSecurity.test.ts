@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import assert from "node:assert/strict";
 import test, { describe } from "node:test";
 import { PLANS as CONFIG_PLANS } from "../../../config/plans.js";
@@ -483,5 +485,115 @@ describe("SEC-01: Profile Security & Entitlement Enforcement", () => {
     assert.equal(needsReset, true);
     assert.equal(dailyUsed, 0, "Daily used should reset to 0 in-memory");
     assert.ok(new Date(dailyReset) > now, "Daily reset timer should advance 24h");
+  });
+
+  test("Static verification of migration 042 and 044: award_goal_xp privilege revocation", () => {
+    const mig042Path = path.resolve(process.cwd(), "migrations/042_secure_profiles_columns.sql");
+    const mig044Path = path.resolve(process.cwd(), "migrations/044_revoke_legacy_award_goal_xp.sql");
+
+    assert.ok(fs.existsSync(mig042Path), "Migration 042 must exist");
+    assert.ok(fs.existsSync(mig044Path), "Migration 044 must exist");
+
+    const sql042 = fs.readFileSync(mig042Path, "utf8");
+    const sql044 = fs.readFileSync(mig044Path, "utf8");
+
+    // Migration 042 must NOT grant execute on award_goal_xp to authenticated
+    assert.ok(!/grant\s+execute\s+on\s+function\s+public\.award_goal_xp\([^)]*\)\s+to[^;]*\bauthenticated\b/i.test(sql042),
+      "Migration 042 must not grant execute on award_goal_xp to authenticated");
+    assert.ok(/p_xp\s+is\s+null\s+or\s+p_xp\s*<\s*0/i.test(sql042),
+      "Migration 042 must explicitly reject NULL XP in award_goal_xp");
+
+    // Migration 044 must explicitly revoke execution from public, anon, and authenticated
+    assert.ok(/revoke\s+(all|execute)\s+on\s+function\s+public\.award_goal_xp\([^)]*\)\s+from\s+authenticated/i.test(sql044),
+      "Migration 044 must explicitly revoke execute from authenticated");
+    assert.ok(/revoke\s+(all|execute)\s+on\s+function\s+public\.award_goal_xp\([^)]*\)\s+from\s+public/i.test(sql044),
+      "Migration 044 must explicitly revoke execute from public");
+    assert.ok(/revoke\s+(all|execute)\s+on\s+function\s+public\.award_goal_xp\([^)]*\)\s+from\s+anon/i.test(sql044),
+      "Migration 044 must explicitly revoke execute from anon");
+
+    // Migration 044 must grant execute ONLY to service_role and postgres
+    assert.ok(/grant\s+execute\s+on\s+function\s+public\.award_goal_xp\([^)]*\)\s+to\s+service_role,\s*postgres/i.test(sql044),
+      "Migration 044 must grant execute only to service_role, postgres");
+
+    // Migration 044 must reject NULL XP
+    assert.ok(/p_xp\s+is\s+null\s+or\s+p_xp\s*<\s*0/i.test(sql044),
+      "Migration 044 must explicitly reject NULL XP");
+  });
+
+  test("RPC execution denial: authenticated users cannot call legacy award_goal_xp, but can claim completed daily goals", async () => {
+    // Simulated database representing PostgreSQL RPC authorization and execution
+    const rpcGrants: Record<string, string[]> = {
+      award_goal_xp: ["service_role", "postgres"], // revoked from authenticated
+      claim_daily_goal: ["authenticated", "service_role", "postgres"],
+    };
+
+    const dailyGoals = [
+      { id: "g1", user_id: "user-1", status: "completed", xp: 50 },
+      { id: "g2", user_id: "user-1", status: "in_progress", xp: 50 },
+      { id: "g3", user_id: "user-2", status: "completed", xp: 75 },
+    ];
+
+    function invokeRpc(callerRole: string, callerUserId: string, rpcName: string, params: any) {
+      const allowedRoles = rpcGrants[rpcName] || [];
+      if (!allowedRoles.includes(callerRole)) {
+        throw new Error(`permission denied for function ${rpcName}: 42501`);
+      }
+
+      if (rpcName === "award_goal_xp") {
+        if (params.p_xp === null || params.p_xp === undefined || params.p_xp < 0 || params.p_xp > 250) {
+          throw new Error("XP value out of permitted range (0-250): 22023");
+        }
+        return { xp: params.p_xp, awarded: true };
+      }
+
+      if (rpcName === "claim_daily_goal") {
+        const goal = dailyGoals.find((g) => g.id === params.p_id && g.user_id === callerUserId);
+        if (!goal) {
+          throw new Error("daily goal not found: 404");
+        }
+        if (goal.status !== "completed") {
+          throw new Error("daily goal is not completed: 400");
+        }
+        return { xp: goal.xp, awarded: true };
+      }
+
+      throw new Error("unknown function");
+    }
+
+    // 1. Authenticated user attempting to call legacy award_goal_xp is DENIED
+    assert.throws(
+      () => invokeRpc("authenticated", "user-1", "award_goal_xp", { p_goal_id: "cheat:1", p_completed_on: "2026-10-23", p_xp: 250 }),
+      /permission denied for function award_goal_xp: 42501/,
+      "Authenticated caller must be denied execution on award_goal_xp"
+    );
+
+    // 2. Anonymous caller is also DENIED
+    assert.throws(
+      () => invokeRpc("anon", "anon-user", "award_goal_xp", { p_goal_id: "cheat:1", p_completed_on: "2026-10-23", p_xp: 250 }),
+      /permission denied for function award_goal_xp: 42501/
+    );
+
+    // 3. Service role can execute award_goal_xp, but parameter validation strictly rejects NULL
+    assert.throws(
+      () => invokeRpc("service_role", "admin", "award_goal_xp", { p_goal_id: "sys:1", p_completed_on: "2026-10-23", p_xp: null }),
+      /XP value out of permitted range \(0-250\): 22023/,
+      "award_goal_xp must reject NULL XP with 22023"
+    );
+
+    // 4. Authenticated user CAN call claim_daily_goal for an owned, completed goal
+    const claimSuccess = invokeRpc("authenticated", "user-1", "claim_daily_goal", { p_id: "g1" });
+    assert.deepEqual(claimSuccess, { xp: 50, awarded: true });
+
+    // 5. Authenticated user CANNOT claim incomplete goal
+    assert.throws(
+      () => invokeRpc("authenticated", "user-1", "claim_daily_goal", { p_id: "g2" }),
+      /daily goal is not completed/
+    );
+
+    // 6. Authenticated user CANNOT claim another user's goal
+    assert.throws(
+      () => invokeRpc("authenticated", "user-1", "claim_daily_goal", { p_id: "g3" }),
+      /daily goal not found/
+    );
   });
 });

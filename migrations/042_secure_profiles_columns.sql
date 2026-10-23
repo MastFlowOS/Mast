@@ -292,7 +292,7 @@ begin
     raise exception 'award_goal_xp requires an authenticated user' using errcode = '42501';
   end if;
 
-  if p_xp < 0 or p_xp > 250 then
+  if p_xp is null or p_xp < 0 or p_xp > 250 then
     raise exception 'XP value out of permitted range (0-250)' using errcode = '22023';
   end if;
 
@@ -317,7 +317,8 @@ $$;
 alter function public.award_goal_xp(text, date, integer) owner to postgres;
 revoke all on function public.award_goal_xp(text, date, integer) from public;
 revoke all on function public.award_goal_xp(text, date, integer) from anon;
-grant execute on function public.award_goal_xp(text, date, integer) to authenticated, service_role, postgres;
+revoke all on function public.award_goal_xp(text, date, integer) from authenticated;
+grant execute on function public.award_goal_xp(text, date, integer) to service_role, postgres;
 
 -- Ensure claim_daily_goal has explicit public search_path
 alter function public.claim_daily_goal(uuid) set search_path = public;

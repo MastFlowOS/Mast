@@ -94,23 +94,32 @@ export class UsageService {
   }
 
   /**
-   * Validates allowance and updates profile usage counts.
+   * Validates allowance and updates profile usage counts atomically via server-side RPC.
    */
   static async consumeAllowance(userId: string, quantity: number): Promise<void> {
-    // Check allowance first (will throw if exceeded)
-    await this.checkAllowance(userId, quantity);
-    const status = await this.getUsageStatus(userId);
+    if (!supabase) throw new ApiError(0, "Supabase not configured", null);
+    if (quantity <= 0) return;
 
-    const { error } = await supabase!
-      .from("profiles")
-      .update({
-        daily_leads_used: status.dailyUsed + quantity,
-        monthly_leads_used: status.monthlyUsed + quantity,
-      })
-      .eq("id", userId);
+    // Verify caller session matches the requested userId to prevent user mismatch
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user || user.id !== userId) {
+      throw new ApiError(403, "User ID mismatch: authenticated user does not match target user", null);
+    }
+
+    // Delegate to atomic server-side SECURITY DEFINER RPC
+    const { data: allowed, error } = await supabase.rpc("consume_crm_lead_credit", {
+      p_count: quantity,
+    });
 
     if (error) {
-      throw new ApiError(500, error.message, error);
+      throw new ApiError(400, error.message, error);
+    }
+
+    if (!allowed) {
+      throw new ApiError(400, "LIMIT_EXCEEDED", {
+        reason: "quota_exceeded",
+        requested: quantity,
+      });
     }
   }
 }

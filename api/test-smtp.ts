@@ -25,7 +25,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const store = createSupabaseSmtpStore(auth.userSupabase);
   try {
     const outcome = await testStoredSmtp(store, auth.user.id, async (cfg) => {
-      await createSmtpTransport({ ...cfg, connectionTimeout: 10000 }).verify();
+      const transport = await createSmtpTransport({ ...cfg, connectionTimeout: 10000 });
+      await transport.verify();
     });
 
     if (!outcome.success) {

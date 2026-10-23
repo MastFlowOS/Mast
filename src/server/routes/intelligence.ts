@@ -258,6 +258,20 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, readLimiter, a
     }
 
     const businessId = req.params.businessId;
+
+    // Authoritative ownership check: the calling user must own a lead linked to this business
+    const { data: userLead, error: leadCheckErr } = await supabaseAdmin
+      .from("leads")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("business_id", businessId)
+      .limit(1)
+      .maybeSingle();
+
+    if (leadCheckErr) throw leadCheckErr;
+    if (!userLead) {
+      return res.status(404).json({ code: "not_found", message: "Business not found or access denied." });
+    }
     const { data: business, error: bizError } = await supabaseAdmin
       .from("businesses")
       .select("id, name, niche, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")

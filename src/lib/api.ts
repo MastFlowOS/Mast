@@ -69,7 +69,11 @@ async function backendFetch<T>(path: string, options: RequestInit = {}): Promise
 
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new ApiError(res.status, (payload as { message?: string }).message ?? res.statusText, payload);
+    const errorMsg =
+      (payload as { message?: string; error?: string }).message ??
+      (payload as { message?: string; error?: string }).error ??
+      res.statusText;
+    throw new ApiError(res.status, errorMsg, payload);
   }
   return payload as T;
 }
@@ -1040,19 +1044,13 @@ async function checkAndResetUsage(profile: any): Promise<any> {
       updateObj.pending_plan_change = pendingPlan;
     }
 
-    const { error } = await supabase
-      .from("profiles")
-      .update(updateObj)
-      .eq("id", profile.id);
-
-    if (error) {
-      console.error("[Mast:checkAndResetUsage] Error writing lazy reset to DB:", error.message);
-    } else {
-      return {
-        ...profile,
-        ...updateObj,
-      };
-    }
+    // In-memory calculation only: direct client writes to profiles usage columns are restricted.
+    // The authoritative database update is executed atomically on the backend
+    // via try_increment_lead_usage upon the next credit-consuming action.
+    return {
+      ...profile,
+      ...updateObj,
+    };
   }
 
   return profile;
@@ -1273,29 +1271,27 @@ function buildAccountFromProfile(userId: string, activeProfile: any): Account {
 export async function updateSubscription(plan: PlanId): Promise<Account> {
   const userId = await requireUserId();
 
-  // Single read to decide upgrade vs. downgrade — no second getAccount() call
-  // after the write, since that was firing a redundant checkAndResetUsage pass
-  // that could race with this very update.
-  const currentAccount = await getAccount();
-  const currentPlanConfig = getPlan(currentAccount.subscription.plan);
-  const targetPlanConfig = getPlan(plan);
+  // In pre-launch without Creem payment integration, self-assigning paid plans is disabled.
+  if (plan !== "free") {
+    throw new ApiError(
+      402,
+      "Payment gateway integration pending. Self-upgrading to paid plans is currently disabled.",
+    );
+  }
 
-  const isDowngrade = targetPlanConfig.priceMonthly < currentPlanConfig.priceMonthly;
+  // Route subscription change through the server-authoritative endpoint.
+  // Direct client-side updates to profiles.subscription_plan are restricted by column privileges.
+  const response = await backendFetch<{
+    success: boolean;
+    plan: string;
+    profile: Record<string, unknown>;
+  }>("/v1/account/subscription", {
+    method: "POST",
+    body: JSON.stringify({ plan }),
+  });
 
-  const patch = isDowngrade
-    ? { pending_plan_change: plan }
-    : { subscription_plan: plan, pending_plan_change: null };
-
-  const { data: updated, error } = await supabase!
-    .from("profiles")
-    .update(patch)
-    .eq("id", userId)
-    .select()
-    .single();
-
-  if (error) throw new ApiError(500, error.message, error);
-
-  return buildAccountFromProfile(userId, updated);
+  const updatedProfile = response.profile ?? (await supabase!.from("profiles").select("*").eq("id", userId).single()).data;
+  return buildAccountFromProfile(userId, updatedProfile);
 }
 
 // ─── Leads (Supabase) ─────────────────────────────────────────────────────────
@@ -1337,12 +1333,19 @@ export async function getLead(id: number | string): Promise<Lead> {
 export async function createLead(body: CreateLeadBody): Promise<Lead> {
   const userId = await requireUserId();
   
-  // Enforce usage limit check and consumption
-  await UsageService.consumeAllowance(userId, 1);
+  // Call atomic RPC create_crm_lead which handles quota check, dynamic plan limit lookup,
+  // atomic credit reservation, and lead insertion in a single transaction with rollback safety.
+  const { data, error } = await supabase!.rpc("create_crm_lead", {
+    p_lead: body as unknown as Record<string, unknown>,
+  });
 
-  const row = { ...leadToDbRow(body as Partial<Lead>), user_id: userId };
-  const { data, error } = await supabase!.from("leads").insert(row).select().single();
-  if (error) throw new ApiError(500, error.message, error);
+  if (error) {
+    if (error.code === "54000" || error.message?.includes("quota exceeded")) {
+      throw new ApiError(400, "Daily or monthly lead quota exceeded. Upgrade your plan for more leads.", error);
+    }
+    throw new ApiError(500, error.message, error);
+  }
+
   return dbRowToLead(data);
 }
 

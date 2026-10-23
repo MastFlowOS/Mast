@@ -11,6 +11,11 @@ import {
   isSmtpKeyConfigured,
   loadSmtpKey,
 } from "./_smtpCrypto.js";
+import {
+  validateSmtpHostFormat,
+  classifyProhibitedIpv4,
+  classifyProhibitedIpv6,
+} from "./_ipValidator.js";
 
 export type SmtpTestStatus = "success" | "failed";
 
@@ -177,6 +182,28 @@ export async function saveSmtpSettings(
       throw new SmtpServiceError(400, "smtp_invalid", "SMTP encryption must be None, TLS, or SSL.");
     }
 
+    const hostValidation = validateSmtpHostFormat(host);
+    if (hostValidation.type === "ipv4") {
+      const prohibited = classifyProhibitedIpv4(hostValidation.cleanHost);
+      if (prohibited) {
+        throw new SmtpServiceError(
+          400,
+          "smtp_invalid",
+          `SMTP host ${hostValidation.cleanHost} is in a prohibited private or reserved network range (${prohibited}).`,
+        );
+      }
+    } else if (hostValidation.type === "ipv6") {
+      const prohibited = classifyProhibitedIpv6(hostValidation.cleanHost);
+      if (prohibited) {
+        throw new SmtpServiceError(
+          400,
+          "smtp_invalid",
+          `SMTP host [${hostValidation.cleanHost}] is in a prohibited private or reserved network range (${prohibited}).`,
+        );
+      }
+    }
+    const validatedHost = hostValidation.cleanHost;
+
     const existing = await store.get(userId);
     if (!existing && !password) {
       throw new SmtpServiceError(400, "smtp_invalid", "An SMTP password is required.");
@@ -201,7 +228,7 @@ export async function saveSmtpSettings(
     const connectionChanged =
       !existing ||
       passwordChanged ||
-      existing.host !== host ||
+      existing.host !== validatedHost ||
       existing.port !== portNum ||
       existing.username !== username ||
       existing.encryption !== encryption;
@@ -212,7 +239,7 @@ export async function saveSmtpSettings(
 
     const row: SmtpRow = {
       user_id: userId,
-      host,
+      host: validatedHost,
       port: portNum,
       username,
       encryption,

@@ -112,7 +112,7 @@ export async function handleSendEmail(
     const senderName = settings.smtpSenderName || settings.senderName;
     const senderEmail = settings.smtpSenderEmail || settings.senderEmail || smtpUser;
 
-    const transporter = deps.createTransport({
+    const transporter = await deps.createTransport({
       host,
       port,
       user: smtpUser,

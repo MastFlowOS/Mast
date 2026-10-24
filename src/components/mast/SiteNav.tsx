@@ -32,18 +32,25 @@ type SiteNavProps = {
 export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mql = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setPrefersReducedMotion(mql.matches);
+    const onChange = (e: MediaQueryListEvent) => setPrefersReducedMotion(e.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
 
   // Auth state — read from React Query cache (populated by /api/me).
   // SiteNav is only ever rendered on public marketing routes (landing,
   // pricing, terms, privacy, refunds, security, status) — anonymous
   // visitors don't need auth-gating for first paint, so the request is
   // deferred until the browser is idle instead of firing immediately on
-  // mount. This keeps it from competing with hero-critical work (fonts,
-  // the globe image) without changing the Login/Logout/Focus behavior:
-  // the existing skeleton below covers the brief window before it
-  // resolves, exactly as it already did while the request was in flight.
+  // mount.
   const [meEnabled, setMeEnabled] = useState(false);
   useEffect(() => {
     const win = window as typeof window & {
@@ -59,11 +66,6 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   }, []);
 
   const { data: auth, isLoading: meIsLoading } = useMe(meEnabled);
-  // While the query is deliberately not yet enabled, React Query reports
-  // isLoading as false (it isn't fetching) — but the nav still doesn't
-  // know the real auth state yet, so treat that window as loading too.
-  // Otherwise the unauthenticated markup would flash before swapping to
-  // the authenticated one once the deferred request resolves.
   const authLoading = !meEnabled || meIsLoading;
   const user = auth?.user ?? null;
   const logout = useLogout();
@@ -120,7 +122,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
         if (isClickScrollingRef.current) return;
         const scrollY = window.scrollY;
         if (scrollY < 300) {
-          setActiveKey("features");
+          setActiveKey((prev) => (prev === "features" ? prev : "features"));
           return;
         }
 
@@ -136,7 +138,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
             (rect.top <= navOffset && rect.bottom > navOffset) ||
             isNearBottom
           ) {
-            setActiveKey("customers");
+            setActiveKey((prev) => (prev === "customers" ? prev : "customers"));
             return;
           }
         }
@@ -145,12 +147,12 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
         if (solutionsEl) {
           const rect = solutionsEl.getBoundingClientRect();
           if (rect.top <= navOffset && rect.bottom > navOffset) {
-            setActiveKey("solutions");
+            setActiveKey((prev) => (prev === "solutions" ? prev : "solutions"));
             return;
           }
         }
 
-        setActiveKey("features");
+        setActiveKey((prev) => (prev === "features" ? prev : "features"));
       });
     };
 
@@ -158,11 +160,13 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
     return () => window.removeEventListener("scroll", handleScrollSpy);
   }, [pathname]);
 
-  // Measure and position the pill behind activeKey (selected choice)
+  // Measure and position the pill behind activeKey (selected choice).
+  // Uses direct element offsets relative to navLinksRef to avoid layout reflows,
+  // and checks previous geometry to prevent redundant re-renders during navbar transitions.
   const measurePill = useCallback(() => {
     const container = navLinksRef.current;
     if (!container || !activeKey) {
-      setPillStyle((prev) => ({ ...prev, opacity: 0 }));
+      setPillStyle((prev) => (prev.opacity === 0 ? prev : { ...prev, opacity: 0 }));
       return;
     }
 
@@ -171,16 +175,29 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
     );
     if (!targetEl) return;
 
-    const cr = container.getBoundingClientRect();
-    const er = targetEl.getBoundingClientRect();
+    const nextX = targetEl.offsetLeft;
+    const nextY = targetEl.offsetTop;
+    const nextW = targetEl.offsetWidth;
+    const nextH = targetEl.offsetHeight;
 
-    if (er.width > 0 && er.height > 0) {
-      setPillStyle({
-        x: er.left - cr.left,
-        y: er.top - cr.top,
-        width: er.width,
-        height: er.height,
-        opacity: 1,
+    if (nextW > 0 && nextH > 0) {
+      setPillStyle((prev) => {
+        if (
+          Math.abs(prev.x - nextX) < 0.5 &&
+          Math.abs(prev.y - nextY) < 0.5 &&
+          Math.abs(prev.width - nextW) < 0.5 &&
+          Math.abs(prev.height - nextH) < 0.5 &&
+          prev.opacity === 1
+        ) {
+          return prev;
+        }
+        return {
+          x: nextX,
+          y: nextY,
+          width: nextW,
+          height: nextH,
+          opacity: 1,
+        };
       });
 
       if (!pillMounted.current) {
@@ -200,12 +217,17 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
     const container = navLinksRef.current;
     if (!container) return;
 
+    let roRaf = 0;
     const ro = new ResizeObserver(() => {
-      measurePill();
+      if (roRaf) return;
+      roRaf = requestAnimationFrame(() => {
+        roRaf = 0;
+        measurePill();
+      });
     });
     ro.observe(container);
 
-    window.addEventListener("resize", measurePill);
+    window.addEventListener("resize", measurePill, { passive: true });
     const onVisible = () => {
       if (!document.hidden) measurePill();
     };
@@ -217,6 +239,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
 
     return () => {
       ro.disconnect();
+      if (roRaf) cancelAnimationFrame(roRaf);
       window.removeEventListener("resize", measurePill);
       document.removeEventListener("visibilitychange", onVisible);
     };
@@ -226,7 +249,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   // through React state. As state it re-rendered the whole nav (and forced an
   // extra style recalc + repaint) on every scroll frame; the value is purely
   // visual, so React never needs to know about it. The callback ref also seeds
-  // the position the moment the sheen mounts (it only exists while `scrolled`).
+  // the position the moment the sheen mounts.
   const sheenElRef = useRef<HTMLDivElement | null>(null);
   const sheenOffsetRef = useRef(0);
   const setSheenEl = useCallback((el: HTMLDivElement | null) => {
@@ -236,11 +259,15 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
 
   useEffect(() => {
     let rafId = 0;
+    let lastScrollY = -1;
+
     const handler = () => {
       if (rafId) return;
       rafId = requestAnimationFrame(() => {
         rafId = 0;
         const scrollY = window.scrollY;
+        if (Math.abs(scrollY - lastScrollY) < 0.5) return;
+        lastScrollY = scrollY;
 
         // Hysteresis threshold: trigger compact state when scrollY > 20px,
         // expand back to wide transparent top state when scrollY <= 8px.
@@ -321,38 +348,51 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
   return (
     <nav
       aria-label="Main navigation"
-      className={`sticky top-0 z-50 w-full px-4 sm:px-6 lg:px-8 pointer-events-none transition-[padding] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-        scrolled ? "pt-3 sm:pt-3.5 pb-2" : "pt-2 sm:pt-3 pb-1"
-      }`}
+      className="sticky top-0 z-50 w-full px-4 sm:px-6 lg:px-8 pointer-events-none pt-2 sm:pt-3 pb-1"
     >
-      <div className="relative mx-auto">
+      <div
+        className={`relative mx-auto transition-transform motion-reduce:transition-none duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+          scrolled ? "translate-y-[2px]" : "translate-y-0"
+        }`}
+      >
         {/* Dynamic expanding / collapsing nav container */}
         <div
-          className={`pointer-events-auto relative mx-auto flex items-center justify-between transition-[max-width,height,padding,background-color,border-color,box-shadow,backdrop-filter] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] overflow-hidden rounded-full ${
+          className={`pointer-events-auto relative mx-auto flex items-center justify-between transition-[max-width,height,padding] motion-reduce:transition-none duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] overflow-hidden rounded-full will-change-[max-width,height] ${
             scrolled
-              ? "max-w-5xl h-14 px-5 sm:px-7 " +
-                (disableBackdropBlur
-                  ? "bg-[#050814] border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]"
-                  : "bg-[#020511]/85 backdrop-blur-xl border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]")
-              : "max-w-7xl h-16 px-6 sm:px-8 lg:px-10 bg-transparent border border-transparent shadow-none backdrop-blur-none"
+              ? "max-w-5xl h-14 px-5 sm:px-7"
+              : "max-w-7xl h-16 px-6 sm:px-8 lg:px-10"
           }`}
         >
-          {scrolled && (
-            <div
-              ref={setSheenEl}
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 opacity-40 rounded-full animate-fade-in"
-              style={{
-                backgroundImage:
-                  "linear-gradient(115deg, transparent 20%, color-mix(in oklab, var(--brand, #c9a66b) 12%, transparent) 50%, transparent 80%)",
-                backgroundSize: "220% 100%",
-              }}
-            />
-          )}
+          {/* Compositor-friendly background capsule layer:
+              Smooth opacity crossfade avoids expensive runtime backdrop-filter and shadow recalculations */}
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-0 rounded-full transition-opacity motion-reduce:transition-none duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-[opacity] ${
+              scrolled ? "opacity-100" : "opacity-0"
+            } ${
+              disableBackdropBlur
+                ? "bg-[#050814] border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]"
+                : "bg-[#020511]/85 backdrop-blur-xl border border-white/[0.12] shadow-[0_12px_36px_rgba(0,0,0,0.55),0_1px_0_rgba(255,255,255,0.06)_inset]"
+            }`}
+          />
+
+          {/* Celestial sheen: drifts smoothly across the header as you scroll */}
+          <div
+            ref={setSheenEl}
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-0 opacity-40 rounded-full transition-opacity motion-reduce:transition-none duration-500 ${
+              scrolled ? "opacity-40" : "opacity-0"
+            }`}
+            style={{
+              backgroundImage:
+                "linear-gradient(115deg, transparent 20%, color-mix(in oklab, var(--brand, #c9a66b) 12%, transparent) 50%, transparent 80%)",
+              backgroundSize: "220% 100%",
+            }}
+          />
 
           {/* Left group: Logo + Nav links */}
           <div
-            className={`relative z-10 flex items-center transition-[gap] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+            className={`relative z-10 flex items-center transition-[gap] motion-reduce:transition-none duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
               scrolled ? "gap-7 lg:gap-9" : "gap-8 lg:gap-12"
             }`}
           >
@@ -372,7 +412,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
                   width: `${pillStyle.width}px`,
                   height: `${pillStyle.height}px`,
                   opacity: pillStyle.opacity,
-                  transition: pillAnimReady
+                  transition: !prefersReducedMotion && pillAnimReady
                     ? "transform 350ms cubic-bezier(0.16, 1, 0.3, 1), width 350ms cubic-bezier(0.16, 1, 0.3, 1), height 350ms cubic-bezier(0.16, 1, 0.3, 1), opacity 150ms ease"
                     : "none",
                   willChange: "transform, width, height",

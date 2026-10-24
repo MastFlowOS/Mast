@@ -5,7 +5,7 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Zap,
@@ -426,14 +426,15 @@ function GetLeads() {
     ? leadsPayload
     : leadsPayload?.leads ?? [];
 
-  const discoverInsights: DiscoverInsight[] =
-    account && analytics
+  const discoverInsights: DiscoverInsight[] = useMemo(() => {
+    return account && analytics
       ? buildDiscoverInsights({
           leads,
           analytics,
           account,
         })
       : [];
+  }, [leads, analytics, account]);
 
   // Clamp slider to plan max as soon as account loads (fixes stuck slider for new free users)
   useEffect(() => {
@@ -491,21 +492,23 @@ function GetLeads() {
     setChannels((c) => toggleChannelSelection(c, id));
   };
 
-  const nextSuggestions: NextSearchSuggestions = buildNextSearchSuggestions({
-    leads,
-    nicheCatalog: NICHE_CATALOG,
-    isUsableRegion: (t) =>
-      t !== GLOBAL_SCOPE &&
-      parseGeoScope(t).invalid.length === 0 &&
-      (permissions.can("regionalSearch") || isLocalGeoToken(t)),
-    quantitySteps: QUANTITY_STEPS,
-    maxQuantity: permissions.limits.dailyOpportunities,
-    dailyRemaining,
-    monthlyRemaining,
-    allowedChannels: channelOptions
-      .filter((c) => permissions.can(channelToFeature[c.id]))
-      .map((c) => c.id),
-  });
+  const nextSuggestions: NextSearchSuggestions = useMemo(() => {
+    return buildNextSearchSuggestions({
+      leads,
+      nicheCatalog: NICHE_CATALOG,
+      isUsableRegion: (t) =>
+        t !== GLOBAL_SCOPE &&
+        parseGeoScope(t).invalid.length === 0 &&
+        (permissions.can("regionalSearch") || isLocalGeoToken(t)),
+      quantitySteps: QUANTITY_STEPS,
+      maxQuantity: permissions.limits.dailyOpportunities,
+      dailyRemaining,
+      monthlyRemaining,
+      allowedChannels: channelOptions
+        .filter((c) => permissions.can(channelToFeature[c.id]))
+        .map((c) => c.id),
+    });
+  }, [leads, dailyRemaining, monthlyRemaining, permissions]);
 
   const filteredNiches = NICHE_CATALOG.filter((n) =>
     n.toLowerCase().includes(nicheSearch.toLowerCase())

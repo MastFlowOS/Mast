@@ -108,6 +108,7 @@ export function DiscoverGlobe({ className }: { className?: string }) {
           height={GLOBE_ART.h}
           draggable={false}
           decoding="async"
+          loading="lazy"
           className="absolute inset-0 size-full max-w-none"
           style={{ filter: "brightness(0.86) saturate(0.95)" }}
         />

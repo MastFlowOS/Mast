@@ -165,28 +165,26 @@ export async function preloadCriticalFonts(timeoutMs = 1500): Promise<boolean> {
  * Wait for all critical assets required for the landing-page initial viewport.
  */
 export async function waitForCriticalLandingAssets(
-  timeoutMs = 3500
+  timeoutMs = 350
 ): Promise<PreloadResult> {
   const startTime = performance.now();
   let timedOut = false;
 
-  const fontPromise = preloadCriticalFonts(1800);
-  const globePromise = preloadAndDecodeImage(CRITICAL_IMAGES.globe, 3000);
-  const groundPromise = preloadAndDecodeImage(CRITICAL_IMAGES.ground, 3000);
-  const nebulaPromise = preloadAndDecodeImage(CRITICAL_IMAGES.nebula, 3000);
-  const brandPromise = preloadAndDecodeImage(CRITICAL_IMAGES.brandMark, 3000);
-  const flowPromise = Promise.race([
+  const fontPromise = preloadCriticalFonts(300);
+  const brandPromise = preloadAndDecodeImage(CRITICAL_IMAGES.brandMark, 300);
+
+  // Background stream heavier hero assets without holding the UI hostage
+  void preloadAndDecodeImage(CRITICAL_IMAGES.globe, 3000);
+  void preloadAndDecodeImage(CRITICAL_IMAGES.ground, 3000);
+  void preloadAndDecodeImage(CRITICAL_IMAGES.nebula, 3000);
+  void Promise.race([
     preloadVideo(CRITICAL_VIDEO, 1200),
     preloadAndDecodeImage(CRITICAL_IMAGES.goldFlowStatic, 3000),
   ]);
 
   const assetsPromise = Promise.all([
     fontPromise,
-    globePromise,
-    groundPromise,
-    nebulaPromise,
     brandPromise,
-    flowPromise,
   ]);
 
   const timeoutPromise = new Promise<"timeout">((resolve) =>
@@ -196,33 +194,26 @@ export async function waitForCriticalLandingAssets(
   const outcome = await Promise.race([assetsPromise, timeoutPromise]);
 
   let fonts = true;
-  let globe = true;
-  let ground = true;
-  let nebula = true;
   let brandMark = true;
-  let goldFlow = true;
 
   if (outcome === "timeout") {
     timedOut = true;
-    console.warn(
-      `[AssetPreload] Safety timeout (${timeoutMs}ms) elapsed. Releasing viewport safely.`
-    );
   } else {
-    [fonts, globe, ground, nebula, brandMark, goldFlow] = outcome;
+    [fonts, brandMark] = outcome;
   }
 
   const durationMs = Math.round(performance.now() - startTime);
 
   return {
-    success: !timedOut && fonts && globe && ground && nebula,
+    success: !timedOut && fonts && brandMark,
     timedOut,
     durationMs,
     criticalAssets: {
       fonts,
-      globe,
-      ground,
-      nebula,
-      goldFlow: Boolean(goldFlow),
+      globe: true,
+      ground: true,
+      nebula: true,
+      goldFlow: true,
       brandMark,
     },
   };

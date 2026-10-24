@@ -159,30 +159,21 @@ function DashboardLayout() {
     try { localStorage.setItem("mast_notifications", JSON.stringify(updated)); } catch { /* ignore */ }
   };
 
-  // ── Loading / unauthenticated / pending onboarding ────────────────────────
-  // Keep showing the loading state (instead of a flash of dashboard content)
-  // while we redirect users who haven't completed onboarding yet.
-  if (authLoading || !user || !user.onboardingCompleted) {
-    return (
-      <div className="min-h-screen bg-background text-foreground grid place-items-center">
-        <div className="text-sm text-muted-foreground animate-pulse">
-          Loading workspace…
-        </div>
-      </div>
-    );
-  }
+  const isWorkspaceReady = !authLoading && !!user && user.onboardingCompleted;
 
   // ── Credits ────────────────────────────────────────────────────────────────
   const credits = account?.credits ?? {
-    limit: user.creditsLimit, used: user.creditsUsed, remaining: user.creditsRemaining,
+    limit: user?.creditsLimit ?? 1000,
+    used: user?.creditsUsed ?? 0,
+    remaining: user?.creditsRemaining ?? 1000,
   };
-  const planName  = account?.subscription.name ?? user.plan;
+  const planName  = account?.subscription?.name ?? user?.plan ?? "Pro";
   const creditPct = credits.limit > 0
     ? Math.min(100, Math.round((credits.used / credits.limit) * 100)) : 0;
 
-  const initials = user.fullName
-    .split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("")
-    || user.email[0]?.toUpperCase() || "M";
+  const initials = user?.fullName
+    ? user.fullName.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("")
+    : (user?.email?.[0]?.toUpperCase() || "M");
 
   const handleLogout = async () => {
     await logout.mutateAsync();
@@ -190,7 +181,7 @@ function DashboardLayout() {
   };
 
   // ── Workspace Paused Guard ──────────────────────────────────────────────────
-  if (user.workspaceStatus === "disabled") {
+  if (user && user.workspaceStatus === "disabled") {
     return <WorkspacePausedScreen user={user} onLogout={handleLogout} />;
   }
 
@@ -341,7 +332,7 @@ function DashboardLayout() {
             })}
 
             {/* ── Engineering ops nav item — only visible to engineers/admins ── */}
-            {(user.internalRole === "engineer" || user.internalRole === "admin") && (() => {
+            {(user?.internalRole === "engineer" || user?.internalRole === "admin") && (() => {
               const opsTo = "/dashboard/ops";
               const opsActive = pathname.startsWith(opsTo);
               return (
@@ -408,7 +399,7 @@ function DashboardLayout() {
                     mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
                   }}
                 />
-                {user.avatarUrl ? (
+                {user?.avatarUrl ? (
                   <img
                     src={user.avatarUrl}
                     alt={user.fullName || "User avatar"}
@@ -421,7 +412,7 @@ function DashboardLayout() {
               </div>
               <div className="min-w-0 overflow-hidden">
                 <p className="text-xs font-semibold text-foreground truncate" style={labelStyle}>
-                  {user.fullName}
+                  {user?.fullName || "My Workspace"}
                 </p>
                 <p className="text-[10px] text-muted-foreground truncate" style={labelStyle}>
                   {planName} Plan
@@ -557,7 +548,7 @@ function DashboardLayout() {
             {/* User */}
             <div className="flex items-center gap-2.5 shrink-0">
               <div className="size-9 rounded-full bg-brand/20 border border-brand/30 flex items-center justify-center text-sm font-bold text-brand shrink-0 overflow-hidden">
-                {user.avatarUrl ? (
+                {user?.avatarUrl ? (
                   <img
                     src={user.avatarUrl}
                     alt={user.fullName || "User avatar"}
@@ -569,7 +560,7 @@ function DashboardLayout() {
                 )}
               </div>
               <div className="hidden md:block">
-                <p className="text-sm font-semibold leading-tight">{user.fullName}</p>
+                <p className="text-sm font-semibold leading-tight">{user?.fullName || "My Workspace"}</p>
                 <p className="text-[11px] text-muted-foreground leading-tight">{planName} Plan</p>
               </div>
             </div>
@@ -592,7 +583,16 @@ function DashboardLayout() {
             overscroll-behavior: contain stops any residual scroll chaining
             from ever bleeding into a scrollable ancestor. */}
         <main ref={mainRef} className="flex-1 min-h-0 overflow-y-auto" style={{ overscrollBehavior: "contain" }}>
-          <Outlet />
+          {!isWorkspaceReady ? (
+            <div className="h-full min-h-[400px] flex flex-col items-center justify-center p-8 space-y-3">
+              <div className="size-8 rounded-full border-2 border-brand/30 border-t-brand animate-spin" />
+              <div className="text-xs font-medium text-muted-foreground tracking-wide uppercase">
+                Loading workspace…
+              </div>
+            </div>
+          ) : (
+            <Outlet />
+          )}
         </main>
       </div>
       <DevPlanSwitcher />

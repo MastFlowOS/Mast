@@ -102,12 +102,26 @@ function SettingsPage() {
   // Baseline for dirty tracking
   const [baseline, setBaseline] = useState<SettingsBaseline | null>(null);
 
-  // Profile
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [avatarUrl, setAvatarUrl] = useState("");
+  // Profile - initialize immediately from auth user/settings so basic identity renders without delay
+  const [fullName, setFullName] = useState(() => auth?.user?.fullName ?? "");
+  const [email, setEmail] = useState(() => auth?.user?.email ?? "");
+  const [avatarUrl, setAvatarUrl] = useState(() => settings?.avatarUrl ?? auth?.user?.avatarUrl ?? "");
   const [cropModalOpen, setCropModalOpen] = useState(false);
   const [cropImageSrc, setCropImageSrc] = useState<string | null>(null);
+
+  // Sync profile details as soon as auth or settings resolves, without waiting for SMTP or billing
+  useEffect(() => {
+    if (auth?.user?.fullName && !fullName) {
+      setFullName(auth.user.fullName);
+    }
+    if (auth?.user?.email && !email) {
+      setEmail(auth.user.email);
+    }
+    const resolvedAvatar = settings?.avatarUrl ?? auth?.user?.avatarUrl;
+    if (resolvedAvatar && !avatarUrl) {
+      setAvatarUrl(resolvedAvatar);
+    }
+  }, [auth?.user, settings?.avatarUrl, fullName, email, avatarUrl]);
 
   // Workspace
   const [workspaceName, setWorkspaceName] = useState("");
@@ -173,9 +187,9 @@ function SettingsPage() {
     // initialises from stale/empty state and then "forgets" the saved config.
     if (smtpQuery.isLoading) return;
 
-    const initialFullName = auth?.user?.fullName ?? "";
-    const initialEmail = auth?.user?.email ?? "";
-    const initialAvatarUrl = settings.avatarUrl ?? auth?.user?.avatarUrl ?? "";
+    const initialFullName = fullName || auth?.user?.fullName || "";
+    const initialEmail = email || auth?.user?.email || "";
+    const initialAvatarUrl = avatarUrl || settings.avatarUrl || auth?.user?.avatarUrl || "";
     setFullName(initialFullName);
     setEmail(initialEmail);
     setAvatarUrl(initialAvatarUrl);
@@ -1392,7 +1406,7 @@ function SettingsPage() {
               setPasswordLoading(true);
 
               try {
-                const { error: updateErr } = await supabase.auth.updateUser({
+                const { error: updateErr } = await supabase!.auth.updateUser({
                   password: newPassword,
                 });
 

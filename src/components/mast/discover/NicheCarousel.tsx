@@ -354,6 +354,7 @@ export function NicheCarousel({ niches, matches, selected, focused, query, onTog
                     src={nicheImage(name)}
                     alt=""
                     decoding="async"
+                    loading="lazy"
                     draggable={false}
                     onError={(e) => {
                       if (failed.has(name)) return;

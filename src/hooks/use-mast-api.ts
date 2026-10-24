@@ -164,7 +164,7 @@ export function useAccount(enabled = true) {
     },
     retry: false,
     enabled,
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
 }
 
@@ -173,6 +173,7 @@ export function useLeads(params?: Record<string, string | number | undefined>, e
     queryKey: queryKeys.leads(params),
     queryFn: () => getLeads(params),
     enabled,
+    staleTime: 60_000,
   });
 }
 
@@ -181,6 +182,7 @@ export function useAnalytics(enabled = true) {
     queryKey: queryKeys.analytics,
     queryFn: getAnalyticsSummary,
     enabled,
+    staleTime: 60_000,
   });
 }
 
@@ -189,6 +191,7 @@ export function usePipelineStats(enabled = true) {
     queryKey: queryKeys.pipeline,
     queryFn: getPipelineStats,
     enabled,
+    staleTime: 60_000,
   });
 }
 
@@ -197,6 +200,7 @@ export function useRecentActivity(enabled = true) {
     queryKey: queryKeys.activity,
     queryFn: getRecentActivity,
     enabled,
+    staleTime: 30_000,
   });
 }
 
@@ -210,6 +214,7 @@ export function useStageActivity(stage: string | null, leadIds: number[]) {
     queryKey: ["mast", "leads", "stage-activity", stage, leadIds.join(",")] as const,
     queryFn: () => getStageActivity(leadIds, 5),
     enabled: stage !== null && leadIds.length > 0,
+    staleTime: 30_000,
   });
 }
 
@@ -218,6 +223,8 @@ export function useSettings(enabled = true) {
     queryKey: queryKeys.settings,
     queryFn: getSettings,
     enabled,
+    staleTime: 60_000,
+    retry: false,
   });
 }
 
@@ -658,8 +665,7 @@ export function useSmtpSettings(enabled = true) {
     queryKey: queryKeys.smtp,
     queryFn: getSmtpSettings,
     enabled,
-    staleTime: 0,
-    refetchOnMount: "always",
+    staleTime: 30_000,
     retry: false,
   });
 }

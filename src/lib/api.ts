@@ -20,7 +20,7 @@ export class ApiError extends Error {
   code?: string;
   payload: unknown;
 
-  constructor(status: number, message: string, payload: unknown) {
+  constructor(status: number, message: string, payload: unknown = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -58,24 +58,38 @@ async function backendFetch<T>(path: string, options: RequestInit = {}): Promise
   } = await supabase.auth.getSession();
   if (!session) throw new ApiError(401, "Not authenticated", {});
 
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-      ...(options.headers ?? {}),
-    },
-  });
+  // 12-second safety timeout so unresponsive/paused backends fail gracefully
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const errorMsg =
-      (payload as { message?: string; error?: string }).message ??
-      (payload as { message?: string; error?: string }).error ??
-      res.statusText;
-    throw new ApiError(res.status, errorMsg, payload);
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      ...options,
+      signal: options.signal || controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+        ...(options.headers ?? {}),
+      },
+    });
+
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const errorMsg =
+        (payload as { message?: string; error?: string }).message ??
+        (payload as { message?: string; error?: string }).error ??
+        res.statusText;
+      throw new ApiError(res.status, errorMsg, payload);
+    }
+    return payload as T;
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new ApiError(504, "Backend request timed out. Please check backend service status.", { code: "backend_timeout" });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return payload as T;
 }
 
 // ─── Auth types ───────────────────────────────────────────────────────────────
@@ -1056,6 +1070,64 @@ async function checkAndResetUsage(profile: any): Promise<any> {
   return profile;
 }
 
+// ─── Profile Caching & In-flight Deduplication ────────────────────────────────
+type ProfileCacheEntry = {
+  userId: string;
+  profile: any;
+  activeProfile: any;
+  fetchedAt: number;
+};
+
+let cachedProfileEntry: ProfileCacheEntry | null = null;
+let profileInFlight: { userId: string; promise: Promise<{ profile: any; activeProfile: any }> } | null = null;
+
+export function invalidateProfileCache() {
+  cachedProfileEntry = null;
+  profileInFlight = null;
+}
+
+export async function fetchProfileWithDedup(userId: string): Promise<{ profile: any; activeProfile: any }> {
+  const now = Date.now();
+  if (cachedProfileEntry && cachedProfileEntry.userId === userId && now - cachedProfileEntry.fetchedAt < 30_000) {
+    return {
+      profile: cachedProfileEntry.profile,
+      activeProfile: cachedProfileEntry.activeProfile,
+    };
+  }
+
+  if (profileInFlight && profileInFlight.userId === userId) {
+    return profileInFlight.promise;
+  }
+
+  const promise = (async () => {
+    try {
+      console.log("[Mast:fetchProfileWithDedup] profiles query → request started", { userId });
+      const { data: profile, error } = await supabase!
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .single();
+
+      if (error) throw error;
+      const activeProfile = profile ? await checkAndResetUsage(profile) : profile;
+      cachedProfileEntry = {
+        userId,
+        profile,
+        activeProfile,
+        fetchedAt: Date.now(),
+      };
+      return { profile, activeProfile };
+    } finally {
+      if (profileInFlight?.promise === promise) {
+        profileInFlight = null;
+      }
+    }
+  })();
+
+  profileInFlight = { userId, promise };
+  return promise;
+}
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 export async function getMe() {
@@ -1063,28 +1135,18 @@ export async function getMe() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return { user: null };
 
-  console.log("[Mast:getMe] profiles query → request started", { userId: session.user.id });
-  const { data: profile, error } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", session.user.id)
-    .single();
+  let profile: any = null;
+  let activeProfile: any = null;
 
-  if (error) {
+  try {
+    const res = await fetchProfileWithDedup(session.user.id);
+    profile = res.profile;
+    activeProfile = res.activeProfile;
+    console.log("[Mast:getMe] profiles query → success", { plan: profile?.subscription_plan ?? "none" });
+  } catch (error: any) {
     if (error.code === "PGRST116") {
       console.warn("[Mast:getMe] profiles query → no row found (PGRST116).", { userId: session.user.id });
     } else if (isFutureIatRejection(error)) {
-      // Confirmed NOT a transient/client-side condition: the diagnostic has
-      // shown the same JWT persistently failing with a matching project ref
-      // and a browser clock within seconds of `iat`. This is Supabase's
-      // Auth-issuer/PostgREST-validator disagreeing about the token, on
-      // their infrastructure — no client-side retry can fix it, so we make
-      // exactly one attempt and stop. Per the explicit requirement for this
-      // condition: do NOT sign out, do NOT clear the session, do NOT
-      // redirect — the session itself is fine. Surface a single clear,
-      // distinct error instead of silently returning `{ user: null }`
-      // (which every "if (!user) navigate to /login" guard reads as a
-      // normal logged-out state).
       logAuthRejectionDiagnostics(session, error);
       console.error(
         "[Mast:getMe] profiles query → PGRST303, session preserved, surfacing error (no retry, no sign-out)",
@@ -1092,24 +1154,16 @@ export async function getMe() {
       );
       throw new ApiError(FUTURE_IAT_ERROR_STATUS, FUTURE_IAT_ERROR_MESSAGE, error);
     } else if (isAuthRejection(error)) {
-      // The server rejected this session's token outright. Treat it the
-      // same as "not logged in" rather than falling through to a default
-      // profile — see isAuthRejection's doc comment for why this matters.
       console.error("[Mast:getMe] profiles query → auth rejected, clearing session", { message: error.message, code: error.code });
       await clearRejectedSession(session, error);
       return { user: null };
     } else {
       console.error("[Mast:getMe] profiles query → error", { message: error.message, code: error.code });
     }
-  } else {
-    console.log("[Mast:getMe] profiles query → success", { plan: profile?.subscription_plan ?? "none" });
   }
 
   const emailConfirmed = session.user.email_confirmed_at ? true : false;
-  
-  // Lazy reset checks
-  let activeProfile = profile;
-  if (profile) {
+  if (!activeProfile && profile) {
     activeProfile = await checkAndResetUsage(profile);
   }
 
@@ -1175,6 +1229,7 @@ export async function signup(body: { fullName: string; email: string; password: 
 }
 
 export async function logout() {
+  invalidateProfileCache();
   if (!supabase) return { success: true };
   const { error } = await supabase.auth.signOut();
   if (error) throw error;
@@ -1259,13 +1314,14 @@ function buildAccountFromProfile(userId: string, activeProfile: any): Account {
   };
 }
 
-  export async function getAccount(): Promise<Account> {
+export async function getAccount(): Promise<Account> {
   const userId = await requireUserId();
-  const { data: profile, error } = await supabase!.from("profiles").select("*").eq("id", userId).single();
-  if (error) throw new ApiError(500, error.message, error);
-
-  const activeProfile = await checkAndResetUsage(profile);
-  return buildAccountFromProfile(userId, activeProfile);
+  try {
+    const { activeProfile } = await fetchProfileWithDedup(userId);
+    return buildAccountFromProfile(userId, activeProfile);
+  } catch (error: any) {
+    throw new ApiError(500, error.message || "Failed to load account profile", error);
+  }
 }
 
 export async function updateSubscription(plan: PlanId): Promise<Account> {
@@ -1290,6 +1346,7 @@ export async function updateSubscription(plan: PlanId): Promise<Account> {
     body: JSON.stringify({ plan }),
   });
 
+  invalidateProfileCache();
   const updatedProfile = response.profile ?? (await supabase!.from("profiles").select("*").eq("id", userId).single()).data;
   return buildAccountFromProfile(userId, updatedProfile);
 }
@@ -1965,6 +2022,10 @@ export async function getStageActivity(leadIds: number[], limit = 5): Promise<St
 
 export async function getSettings(): Promise<SettingsMap> {
   const userId = await requireUserId();
+  const now = Date.now();
+  if (cachedProfileEntry && cachedProfileEntry.userId === userId && now - cachedProfileEntry.fetchedAt < 30_000) {
+    return omitSmtpPassword((cachedProfileEntry.activeProfile?.settings as SettingsMap) ?? {});
+  }
   const { data, error } = await supabase!.from("profiles").select("settings").eq("id", userId).single();
   if (error) {
     console.warn("[Mast:getSettings] failed, returning empty settings", error.message);
@@ -2024,6 +2085,7 @@ export async function updateSettings(body: SettingsMap, fullName?: string): Prom
     await supabase!.auth.updateUser({ data: { full_name: fullName } });
   }
   
+  invalidateProfileCache();
   return omitSmtpPassword(merged);
 }
 
@@ -2572,10 +2634,14 @@ async function smtpRequest(
   const token = session?.access_token;
   if (!token) throw new SmtpApiError(401, "Not authenticated", "auth_failed");
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+
   let response: Response;
   try {
     response = await fetch(path, {
       method,
+      signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
@@ -2584,6 +2650,8 @@ async function smtpRequest(
     });
   } catch {
     throw new SmtpApiError(0, "Could not reach the server. Check your connection and try again.", "network_error");
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   let data: any = null;

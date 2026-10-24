@@ -342,15 +342,15 @@ function AuthGate({ queryClient }: { queryClient: QueryClient }) {
       >
     ).catch(() => ({ data: { session: null }, error: null }));
 
-    // Check actual critical landing-page assets (fonts, hero images, globe, flow)
+    // Non-blocking asset warming: avoid holding the viewport hostage on slow image or font downloads.
     const isLandingRoute = typeof window !== "undefined" && window.location.pathname === "/";
     const assetsPromise = isLandingRoute
-      ? waitForCriticalLandingAssets(import.meta.env.DEV ? 3500 : 5000)
-      : preloadCriticalFonts(1500);
+      ? waitForCriticalLandingAssets(import.meta.env.DEV ? 350 : 450)
+      : Promise.resolve();
 
     const allReadyPromise = Promise.all([sessionPromise, assetsPromise]);
     const safetyTimeout = new Promise((resolve) =>
-      setTimeout(resolve, import.meta.env.DEV ? 4000 : 6000)
+      setTimeout(resolve, import.meta.env.DEV ? 600 : 800)
     );
 
     Promise.race([allReadyPromise, safetyTimeout])

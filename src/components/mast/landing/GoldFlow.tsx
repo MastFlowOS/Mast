@@ -105,6 +105,13 @@
  * the static PHASE 3A.2 PNG and skips video/canvas/WebGL entirely — nothing
  * autoplays, nothing to pause.
  *
+ * HERO SYNCHRONIZATION:
+ * The static flow image is always mounted as the solid base layer, synchronized
+ * with the globe via useHeroVisualSync so both appear together once decoded.
+ * The video and WebGL layer load in parallel; once the first GPU frame is drawn,
+ * the animation smoothly crossfades in over the static flow. If video or WebGL
+ * fails or times out, the static flow remains displayed without visual interruption.
+ *
  * LAYERING (see Hero in routes/index.tsx)
  *
  *   atmosphere  →  GroundSurface  →  GOLD FLOW  →  globe + stand + copy
@@ -145,7 +152,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const FLOW_ASSET_MOTION = "/images/mast-gold-flow-motion.mp4";
-const FLOW_ASSET_STATIC = "/images/mast-gold-flow.png";
+const FLOW_ASSET_STATIC_WEBP = "/images/mast-gold-flow.webp";
+const FLOW_ASSET_STATIC_PNG = "/images/mast-gold-flow.png";
 // Natural asset proportions (1536 x 1024 px per channel) — 1.5 aspect ratio.
 // The video file itself is 1536x2048 (color+matte stacked); this is the
 // displayed/composited aspect ratio, unchanged from every prior phase.
@@ -206,6 +214,7 @@ function useAlphaVideoLayer(
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
   videoRef: React.RefObject<HTMLVideoElement | null>,
   onFail: () => void,
+  onFirstFrameReady: () => void,
 ) {
   useEffect(() => {
     if (!enabled) return;
@@ -268,6 +277,14 @@ function useAlphaVideoLayer(
     let stopped = false;
     let vfcId = 0;
     let rafId = 0;
+    let notifiedReady = false;
+
+    const notifyReady = () => {
+      if (!notifiedReady) {
+        notifiedReady = true;
+        onFirstFrameReady();
+      }
+    };
 
     const draw = () => {
       if (stopped || video.readyState < 2 /* HAVE_CURRENT_DATA */) return;
@@ -277,6 +294,7 @@ function useAlphaVideoLayer(
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        notifyReady();
       } catch {
         stopped = true;
         onFail();
@@ -331,31 +349,46 @@ function useAlphaVideoLayer(
       gl.deleteBuffer(buf);
       gl.deleteProgram(prog);
     };
-  }, [enabled, canvasRef, videoRef, onFail]);
+  }, [enabled, canvasRef, videoRef, onFail, onFirstFrameReady]);
 }
 
 type Frame = { x: number; y: number; w: number; h: number };
 
 export function GoldFlow({
   globeBox,
+  isReady = true,
+  onStaticLoad,
 }: {
   // The globe's own box, measured once by Hero via useGlobeBox and shared
   // with GroundSurface — see that hook for why this replaced GoldFlow's own
   // resize/fonts-ready measurement of the same element.
   globeBox: DOMRect | null;
+  isReady?: boolean;
+  onStaticLoad?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const staticImgRef = useRef<HTMLImageElement>(null);
   const [frame, setFrame] = useState<Frame | null>(null);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const [motionFailed, setMotionFailed] = useState(false);
+  const [motionReady, setMotionReady] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const onMotionFail = useCallback(() => setMotionFailed(true), []);
+
+  const onMotionFail = useCallback(() => {
+    setMotionFailed(true);
+    setMotionReady(false);
+  }, []);
+
+  const onMotionReady = useCallback(() => {
+    setMotionReady(true);
+  }, []);
+
   const useStatic = prefersReducedMotion || motionFailed;
 
   // Only start the compositor once the flow box exists (canvas + video are
   // mounted together with it).
-  useAlphaVideoLayer(!useStatic && !!frame, canvasRef, videoRef, onMotionFail);
+  useAlphaVideoLayer(!useStatic && !!frame, canvasRef, videoRef, onMotionFail, onMotionReady);
 
   // Backing-store size: the flow box's CSS size x DPR, capped at the video's
   // native per-channel resolution (no point rendering past the source).
@@ -363,6 +396,24 @@ export function GoldFlow({
   const cssW = frame ? (frame.w * FLOW_WIDTH_PCT) / 100 : 0;
   const pxW = Math.max(1, Math.min(1536, Math.round(cssW * dpr)));
   const pxH = Math.max(1, Math.round((pxW * 1024) / 1536));
+
+  // Check if static image is already cached on mount
+  useEffect(() => {
+    if (staticImgRef.current?.complete && staticImgRef.current.naturalWidth > 0) {
+      onStaticLoad?.();
+    }
+  }, [onStaticLoad]);
+
+  // Motion fallback safety timer: if video fails to play/render within 4.5s, stay on static flow
+  useEffect(() => {
+    if (useStatic || motionReady) return;
+    const timer = setTimeout(() => {
+      if (!motionReady) {
+        onMotionFail();
+      }
+    }, 4500);
+    return () => clearTimeout(timer);
+  }, [useStatic, motionReady, onMotionFail]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
@@ -414,6 +465,22 @@ export function GoldFlow({
       aria-hidden="true"
       className="pointer-events-none absolute inset-0 z-0 select-none"
     >
+      {/* Pre-mount video so hardware buffering starts immediately without waiting for layout measurement */}
+      {!useStatic && (
+        <video
+          ref={videoRef}
+          src={FLOW_ASSET_MOTION}
+          muted
+          loop
+          playsInline
+          autoPlay
+          preload="auto"
+          onError={onMotionFail}
+          className="pointer-events-none absolute left-0 top-0"
+          style={{ width: 1, height: 1, opacity: 0 }}
+        />
+      )}
+
       {frame && (
         // Globe frame: same box as the globe asset. Everything inside is
         // expressed as a percentage of it.
@@ -434,39 +501,37 @@ export function GoldFlow({
               aspectRatio: FLOW_ASPECT_RATIO,
             }}
           >
-            {useStatic ? (
+            {/* 1. High-fidelity static gold flow — always mounted as base layer, revealed with globe */}
+            <picture className="contents">
+              <source srcSet={FLOW_ASSET_STATIC_WEBP} type="image/webp" />
               <img
-                src={FLOW_ASSET_STATIC}
+                ref={staticImgRef}
+                src={FLOW_ASSET_STATIC_PNG}
                 alt=""
                 draggable={false}
+                loading="eager"
+                fetchPriority="high"
                 decoding="async"
-                className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
+                onLoad={() => onStaticLoad?.()}
+                onError={() => onStaticLoad?.()}
+                className={`pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none transition-opacity duration-400 ease-out ${
+                  isReady && (!motionReady || useStatic) ? "opacity-100" : "opacity-0"
+                }`}
                 style={flowLayerStyle}
               />
-            ) : (
-              <>
-                <canvas
-                  ref={canvasRef}
-                  width={pxW}
-                  height={pxH}
-                  className="pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none"
-                  style={flowLayerStyle}
-                />
-                {/* Decode-only source for the canvas; 1px + transparent rather
-                    than display:none so browsers don't throttle its decode. */}
-                <video
-                  ref={videoRef}
-                  src={FLOW_ASSET_MOTION}
-                  muted
-                  loop
-                  playsInline
-                  autoPlay
-                  preload="auto"
-                  onError={onMotionFail}
-                  className="pointer-events-none absolute left-0 top-0"
-                  style={{ width: 1, height: 1, opacity: 0 }}
-                />
-              </>
+            </picture>
+
+            {/* 2. Real alpha-video WebGL hardware layer — crossfades in smoothly when first frame is rendered */}
+            {!useStatic && (
+              <canvas
+                ref={canvasRef}
+                width={pxW}
+                height={pxH}
+                className={`pointer-events-none absolute inset-0 block w-full h-full max-w-none select-none transition-opacity duration-400 ease-out ${
+                  isReady && motionReady ? "opacity-100" : "opacity-0"
+                }`}
+                style={flowLayerStyle}
+              />
             )}
           </div>
         </div>

@@ -38,11 +38,17 @@
  * asymmetric contact/taper shape) and reverted — it produced a visible
  * rectangular boundary in the browser. This file is back to the exact
  * Phase 2A.1 (round 2) state above; no shape experiment is in place.
+ *
+ * HERO SYNCHRONIZATION:
+ * Coordinated with GoldFlow via useHeroVisualSync so the static globe and
+ * static gold flow appear together once both are decoded, preventing visual
+ * popping or one asset appearing alone while the other is in flight.
  */
 
-import type { RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
-const GLOBE_ASSET = "/images/mast-globe-final.png";
+const GLOBE_ASSET_WEBP = "/images/mast-globe-final.webp";
+const GLOBE_ASSET_PNG = "/images/mast-globe-final.png";
 const GLOBE_WIDTH_PX = 1072;
 const GLOBE_HEIGHT_PX = 1467;
 const GLOBE_ASPECT_RATIO = `${GLOBE_WIDTH_PX} / ${GLOBE_HEIGHT_PX}`;
@@ -58,14 +64,7 @@ const PEDESTAL_TOP = "94.2%";
 // PHASE 2A / 2A.1 — reflection layer. A wide ellipse (reflections
 // foreshorten on a floor) centered on the pedestal's contact point. Sized
 // off viewport width like the rest of the hero's floor treatment so it
-// scales gently across breakpoints instead of jumping. 2A.1 widened it and
-// gave it real vertical extent (was near-flat) so it reads as a pool on the
-// floor rather than a sliver, brightened the inner stop, and (round 2)
-// pushed both dimensions further with a longer low-opacity tail so it blends
-// into the dark floor gradually rather than stopping short. The vertical
-// shift keeps most of the shape below the contact line, with just enough
-// tucked upward that it sits behind the pedestal's own base pixels rather
-// than peeking past them.
+// scales gently across breakpoints instead of jumping.
 const REFLECTION_WIDTH = "clamp(130px, 14vw, 290px)";
 const REFLECTION_HEIGHT = "clamp(60px, 7vw, 150px)";
 const REFLECTION_GRADIENT =
@@ -74,10 +73,23 @@ const REFLECTION_GRADIENT =
 export function GlobeStand({
   className = "",
   pedestalAnchorRef,
+  isReady = true,
+  onReady,
 }: {
   className?: string;
   pedestalAnchorRef?: RefObject<HTMLDivElement | null>;
+  isReady?: boolean;
+  onReady?: () => void;
 }) {
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  useEffect(() => {
+    // If the browser already has the image loaded and decoded (e.g. cached on warm reload)
+    if (imgRef.current?.complete && imgRef.current.naturalWidth > 0) {
+      onReady?.();
+    }
+  }, [onReady]);
+
   return (
     // 92.5% of the column keeps the whole pedestal comfortably inside the hero
     // (a small reduction, proportions untouched), and the -3% lift is a
@@ -91,7 +103,9 @@ export function GlobeStand({
           pixels around the base rather than drawing over the pedestal. */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute z-0"
+        className={`pointer-events-none absolute z-0 transition-opacity duration-300 ease-out ${
+          isReady ? "opacity-100" : "opacity-0"
+        }`}
         style={{
           left: PEDESTAL_LEFT,
           top: PEDESTAL_TOP,
@@ -102,15 +116,24 @@ export function GlobeStand({
         }}
       />
 
-      <img
-        src={GLOBE_ASSET}
-        alt=""
-        aria-hidden="true"
-        draggable={false}
-        fetchPriority="high"
-        loading="eager"
-        className="pointer-events-none relative z-10 h-full w-full select-none object-contain"
-      />
+      <picture className="contents">
+        <source srcSet={GLOBE_ASSET_WEBP} type="image/webp" />
+        <img
+          ref={imgRef}
+          src={GLOBE_ASSET_PNG}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          fetchPriority="high"
+          loading="eager"
+          decoding="async"
+          onLoad={() => onReady?.()}
+          onError={() => onReady?.()}
+          className={`pointer-events-none relative z-10 h-full w-full select-none object-contain transition-opacity duration-300 ease-out ${
+            isReady ? "opacity-100" : "opacity-0"
+          }`}
+        />
+      </picture>
 
       {/* Zero-size pedestal ground-contact marker — not rendered visually,
           only read via getBoundingClientRect() by GroundSurface. */}

@@ -1,4 +1,6 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useLayoutEffect, useEffect, useState, type RefObject } from "react";
+
+const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 /**
  * Reads the globe's own box — GlobeStand's root element, via the pedestal
@@ -7,13 +9,13 @@ import { useEffect, useState, type RefObject } from "react";
  * GoldFlow and GroundSurface can both consume the same measurement instead
  * of each running its own resize/fonts-ready listener against the same
  * element. Triggers match what both call sites already relied on: a mount
- * measurement, window resize, and the font swap that can shift layout on
- * first load.
+ * measurement (synchronous layout pass before paint), window resize, and
+ * the font swap that can shift layout on first load.
  */
 export function useGlobeBox(pedestalAnchorRef: RefObject<HTMLDivElement | null>) {
   const [box, setBox] = useState<DOMRect | null>(null);
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     const measure = () => {
       const el = pedestalAnchorRef.current?.parentElement;
       if (!el) return;

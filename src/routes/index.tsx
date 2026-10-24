@@ -8,6 +8,7 @@ import { SectionAtmosphere, GlobalAtmosphereFoundation } from "@/components/mast
 import { GroundSurface } from "@/components/mast/landing/GroundSurface";
 import { GoldFlow } from "@/components/mast/landing/GoldFlow";
 import { useGlobeBox } from "@/hooks/use-globe-box";
+import { useHeroVisualSync } from "@/hooks/use-hero-visual-sync";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -85,6 +86,7 @@ function Hero() {
   // instead of each independently re-deriving the same globe box on every
   // resize/fonts-ready pass.
   const globeBox = useGlobeBox(pedestalAnchorRef);
+  const { isStaticReady, onGlobeReady, onFlowReady } = useHeroVisualSync();
   return (
     <header className="relative -mt-16 pt-24 pb-14 sm:pt-26 sm:pb-16 px-6 sm:px-8 md:px-12 lg:px-16 overflow-x-clip">
       {/* Autonomous section-specific atmosphere: moving clouds behind Earth, stars, subtle haze */}
@@ -94,7 +96,11 @@ function Hero() {
       <GroundSurface pedestalAnchorRef={pedestalAnchorRef} globeBox={globeBox} />
       {/* Static gold flow: sits above the floor, below the globe + copy (z-0 sibling,
           later in DOM than GroundSurface; the z-10 content container is above it). */}
-      <GoldFlow globeBox={globeBox} />
+      <GoldFlow
+        globeBox={globeBox}
+        isReady={isStaticReady}
+        onStaticLoad={onFlowReady}
+      />
       <div className="relative z-10 max-w-7xl mx-auto grid lg:grid-cols-[1.15fr_1fr] gap-8 lg:gap-12 items-center">
         {/* Copy column */}
         <div className="text-center lg:text-left lg:max-w-[560px] w-full mx-auto lg:mx-0">
@@ -157,7 +163,12 @@ function Hero() {
 
         {/* Globe column — overflow-visible so zoom animations never clip, z-20 above background atmosphere */}
         <div className="relative h-[270px] sm:h-[340px] md:h-[420px] lg:h-[470px] lg:-mr-4 xl:-mr-6 overflow-visible z-20">
-          <GlobeStand className="overflow-visible" pedestalAnchorRef={pedestalAnchorRef} />
+          <GlobeStand
+            className="overflow-visible"
+            pedestalAnchorRef={pedestalAnchorRef}
+            isReady={isStaticReady}
+            onReady={onGlobeReady}
+          />
         </div>
       </div>
     </header>

@@ -20,10 +20,10 @@ export interface PreloadResult {
 }
 
 const CRITICAL_IMAGES = {
-  globe: "/images/mast-globe-final.png",
+  globe: "/images/mast-globe-final.webp",
   ground: "/images/mast-hero-ground.webp",
   nebula: "/images/mast-hero-nebula.webp",
-  goldFlowStatic: "/images/mast-gold-flow.png",
+  goldFlowStatic: "/images/mast-gold-flow.webp",
   brandMark: "/images/mast-wordmark.png",
 };
 

@@ -380,7 +380,7 @@ export function SiteNav({ disableBackdropBlur = false }: SiteNavProps = {}) {
           <div
             ref={setSheenEl}
             aria-hidden="true"
-            className={`pointer-events-none absolute inset-0 opacity-40 rounded-full transition-opacity motion-reduce:transition-none duration-500 ${
+            className={`pointer-events-none absolute inset-0 rounded-full transition-opacity motion-reduce:transition-none duration-500 ${
               scrolled ? "opacity-40" : "opacity-0"
             }`}
             style={{

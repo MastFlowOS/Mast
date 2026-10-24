@@ -1,5 +1,5 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
-import { runEngineScore } from "../scraperBridge/pythonBridge.js";
+import { runEngineScore, type EngineScoreResult } from "../scraperBridge/pythonBridge.js";
 import { PROFESSION_SLUGS } from "./professionWeights.js";
 
 /**
@@ -11,8 +11,15 @@ import { PROFESSION_SLUGS } from "./professionWeights.js";
  * Node's only role here is: fetch → delegate to Python → persist.
  * The TypeScript `computeOpportunityScores` function is no longer called
  * from this path.
+ *
+ * Returns the full `EngineScoreResult` so callers can pass it directly
+ * to `computeAndStoreBusinessHealth(businessId, scoreResult)` without
+ * spawning a second Python subprocess or querying the database again.
  */
-export async function computeAndStoreOpportunityScores(businessId: string): Promise<void> {
+export async function computeAndStoreOpportunityScores(
+  businessId: string,
+  scoreRunner = runEngineScore,
+): Promise<EngineScoreResult> {
   const { data: business, error } = await supabaseAdmin
     .from("businesses")
     .select(
@@ -23,7 +30,7 @@ export async function computeAndStoreOpportunityScores(businessId: string): Prom
   if (error) throw error;
 
   // Engine 2.0 computes all profession scores.
-  const engineResult = await runEngineScore({
+  const engineResult = await scoreRunner({
     ...business,
     id: businessId,
     // Flatten signals for the engine's flat-dict intake format
@@ -48,4 +55,6 @@ export async function computeAndStoreOpportunityScores(businessId: string): Prom
     .from("business_opportunity_scores")
     .upsert(rows, { onConflict: "business_id,profession_slug" });
   if (upsertError) throw upsertError;
+
+  return engineResult;
 }

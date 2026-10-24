@@ -277,6 +277,7 @@ from typing import List, Dict, Optional, Sequence, Set, Tuple
 from urllib.parse import urljoin
 
 from engine.contracts import ContactIntel, WebsiteIntel
+from utils.egress_guard import assert_loopback_url, is_local_isolation_enforced, LocalIsolationRedirectHandler
 from utils.http_limits import fetch_slot, is_permanent_http_error, read_capped
 from utils.parsing import (
     decode_entities,
@@ -847,6 +848,9 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         if not re.match(r"^https?://", raw_url, re.IGNORECASE):
             raw_url = "https://" + raw_url
 
+        if is_local_isolation_enforced():
+            assert_loopback_url(raw_url)
+
         headers = {
             "User-Agent": _USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -855,14 +859,24 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         }
 
         def _do_http(target: str) -> Tuple[str, str, float]:
+            if is_local_isolation_enforced():
+                assert_loopback_url(target)
             req = urllib.request.Request(target, headers=headers)
             start = time.monotonic()
             with fetch_slot():
-                with urllib.request.urlopen(req, timeout=self._timeout) as response:
-                    elapsed = time.monotonic() - start
-                    resolved_url = response.geturl()
-                    raw = read_capped(response)
-                    charset = response.headers.get_content_charset() or "utf-8"
+                if is_local_isolation_enforced():
+                    opener = urllib.request.build_opener(LocalIsolationRedirectHandler())
+                    with opener.open(req, timeout=self._timeout) as response:
+                        elapsed = time.monotonic() - start
+                        resolved_url = response.geturl()
+                        raw = read_capped(response)
+                        charset = response.headers.get_content_charset() or "utf-8"
+                else:
+                    with urllib.request.urlopen(req, timeout=self._timeout) as response:
+                        elapsed = time.monotonic() - start
+                        resolved_url = response.geturl()
+                        raw = read_capped(response)
+                        charset = response.headers.get_content_charset() or "utf-8"
             html = raw.decode(charset, errors="replace")
             return html, resolved_url, elapsed
 

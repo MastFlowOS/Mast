@@ -48,7 +48,7 @@ import sys as _sys
 # redirected sys.stdout. Search/verify mode (no "enrich" argv) are
 # unaffected — this only swaps sys.stdout under `enrich`.
 _REAL_STDOUT = _sys.stdout
-_JSON_CLI_MODES = ("enrich", "score", "qualify", "prioritize", "workflow", "crm", "analytics", "ai_coach", "mission_intelligence", "feedback", "street_inventory")
+_JSON_CLI_MODES = ("enrich", "enrich-daemon", "score", "qualify", "prioritize", "workflow", "crm", "analytics", "ai_coach", "mission_intelligence", "feedback", "street_inventory")
 if len(_sys.argv) > 1 and _sys.argv[1] in _JSON_CLI_MODES:
     _sys.stdout = _sys.stderr
 
@@ -2404,6 +2404,9 @@ async def enrich_business_v2(payload: dict) -> dict:
 
 
 async def _enrich_cli() -> None:
+    from utils.egress_guard import is_local_isolation_enforced, install_python_socket_isolation_guard
+    if is_local_isolation_enforced():
+        install_python_socket_isolation_guard()
     # See the _REAL_STDOUT / sys.stdout swap at the top of this module for
     # why the result is written there rather than to `sys.stdout` directly
     # (sys.stdout has been redirected to stderr for this mode, so logging
@@ -2414,6 +2417,81 @@ async def _enrich_cli() -> None:
     result = await enrich_business_v2(params)
     _REAL_STDOUT.write(json.dumps(result, default=str))
     _REAL_STDOUT.flush()
+
+
+async def _enrich_daemon_cli() -> None:
+    """
+    Phase 3 optimization: Persistent enrichment worker daemon.
+    Processes line-delimited JSON requests from stdin without restarting the
+    Python interpreter or re-importing modules. Preserves domain cache and
+    single-flight coordination across requests.
+
+    Protocol:
+      Input (stdin):  {"id": "<req_id>", "params": {...}}
+      Output (stdout): {"id": "<req_id>", "result": {...}}
+                  or  {"id": "<req_id>", "error": "<message>"}
+      Ping (stdin):   {"id": "<req_id>", "ping": true}
+      Pong (stdout):  {"id": "<req_id>", "pong": true}
+    """
+    from utils.egress_guard import is_local_isolation_enforced, install_python_socket_isolation_guard
+    if is_local_isolation_enforced():
+        install_python_socket_isolation_guard()
+
+    semaphore = asyncio.Semaphore(16)
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+
+    def _stdin_reader() -> None:
+        try:
+            for line in iter(_sys.stdin.readline, ""):
+                loop.call_soon_threadsafe(queue.put_nowait, line)
+        except Exception:
+            pass
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    reader_thread = threading.Thread(target=_stdin_reader, name="enrich-stdin-reader", daemon=True)
+    reader_thread.start()
+
+    active_tasks: set[asyncio.Task] = set()
+
+    async def _handle_request(req_id: str, params: dict) -> None:
+        async with semaphore:
+            try:
+                res = await loop.run_in_executor(None, _engine_enrich_business, params)
+                payload = {"id": req_id, "result": res}
+            except Exception as exc:
+                payload = {"id": req_id, "error": str(exc)}
+            line = json.dumps(payload, default=str) + "\n"
+            _REAL_STDOUT.write(line)
+            _REAL_STDOUT.flush()
+
+    while True:
+        raw_line = await queue.get()
+        if raw_line is None:
+            break
+        text = raw_line.strip()
+        if not text:
+            continue
+        try:
+            msg = json.loads(text)
+            req_id = msg.get("id")
+            if not req_id:
+                continue
+            if msg.get("ping"):
+                _REAL_STDOUT.write(json.dumps({"id": req_id, "pong": True}) + "\n")
+                _REAL_STDOUT.flush()
+                continue
+            params = msg.get("params", {})
+            task = asyncio.create_task(_handle_request(req_id, params))
+            active_tasks.add(task)
+            task.add_done_callback(active_tasks.discard)
+        except Exception as exc:
+            _REAL_STDOUT.write(json.dumps({"error": f"Invalid JSON line: {exc}"}) + "\n")
+            _REAL_STDOUT.flush()
+
+    if active_tasks:
+        await asyncio.gather(*active_tasks, return_exceptions=True)
 
 
 async def build_street_inventory_v2(payload: dict) -> dict:
@@ -3286,6 +3364,8 @@ if __name__ == "__main__":
         asyncio.run(_run_with_graceful_shutdown(_verify_cli))
     elif len(sys.argv) > 1 and sys.argv[1] == "enrich":
         asyncio.run(_run_with_graceful_shutdown(_enrich_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "enrich-daemon":
+        asyncio.run(_run_with_graceful_shutdown(_enrich_daemon_cli))
     elif len(sys.argv) > 1 and sys.argv[1] == "score":
         asyncio.run(_run_with_graceful_shutdown(_score_cli))
     elif len(sys.argv) > 1 and sys.argv[1] == "qualify":

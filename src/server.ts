@@ -15,6 +15,7 @@ import { intelligenceRouter } from "./server/routes/intelligence.js";
 import { outreachRouter } from "./server/routes/outreach.js";
 import { observabilityRouter } from "./server/routes/observability.js";
 import { desktopRouter } from "./server/routes/desktop.js";
+import { closePersistentEnrichmentWorkerGraceful } from "./scraperBridge/pythonBridge.js";
 
 // Catch anything that escapes Express entirely (e.g. an unawaited promise
 // rejection deep in pg-boss/Supabase client internals) — without these,
@@ -174,7 +175,12 @@ function shutdown(signal: NodeJS.Signals) {
   }, GRACEFUL_STOP_TIMEOUT_MS);
   forceExitTimer.unref();
 
-  server.close((err) => {
+  server.close(async (err) => {
+    try {
+      await closePersistentEnrichmentWorkerGraceful(5000);
+    } catch (daemonErr) {
+      console.warn("[gateway] error during enrichment daemon graceful shutdown (non-fatal):", daemonErr);
+    }
     clearTimeout(forceExitTimer);
     if (err) {
       console.error("[gateway] error during graceful shutdown", err);

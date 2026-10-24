@@ -474,8 +474,8 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
     }
 
     // Scoring
-    await computeAndStoreOpportunityScores(businessId);
-    await computeAndStoreBusinessHealth(businessId);
+    const scoreResult = await computeAndStoreOpportunityScores(businessId);
+    await computeAndStoreBusinessHealth(businessId, scoreResult);
 
     // Push to intelligence queue
     await enqueueBusinessProcessing(businessId, "score");
@@ -536,8 +536,8 @@ async function scoreBusiness(businessId: string): Promise<void> {
     if (updateError) throw updateError;
 
     // Final scoring & health
-    await computeAndStoreOpportunityScores(businessId);
-    await computeAndStoreBusinessHealth(businessId);
+    const scoreResult = await computeAndStoreOpportunityScores(businessId);
+    await computeAndStoreBusinessHealth(businessId, scoreResult);
 
     // AI intelligence: pre-generate opportunity insights only if both AI and background precomputation are explicitly enabled
     if (aiEnabled() && env.AI_BACKGROUND_OPPORTUNITY_INSIGHTS) {

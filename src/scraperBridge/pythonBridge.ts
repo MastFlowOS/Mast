@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import fs from "node:fs";
@@ -18,6 +18,7 @@ import {
   recordAfterAreaStart,
   recordAfterAreaCleanup,
 } from "../lib/areaWorkerTelemetry.js";
+import { assertLocalEnrichmentUrl, getSanitizedSubprocessEnv } from "./isolationGuard.js";
 
 export type EngineLead = {
   name: string;
@@ -673,13 +674,20 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
  * Same spawn/pipe/kill lifecycle as runEngineVerify — only the CLI mode
  * argument and result type differ.
  */
-export async function runEngineEnrich(params: EngineEnrichParams, signal?: AbortSignal): Promise<EngineEnrichResult> {
+export async function runEngineEnrichOneShot(params: EngineEnrichParams, signal?: AbortSignal): Promise<EngineEnrichResult> {
+  if (process.env.ENFORCE_LOCAL_ISOLATION === "true") {
+    assertLocalEnrichmentUrl(params.website);
+    if (params.instagram) {
+      assertLocalEnrichmentUrl(params.instagram);
+    }
+  }
   const enginePath = resolveEnginePath();
 
   const child = spawn(PYTHON_CMD, ["service.py", "enrich"], {
     cwd: enginePath,
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
+    env: process.env.ENFORCE_LOCAL_ISOLATION === "true" ? getSanitizedSubprocessEnv() : process.env,
   });
 
   child.on("error", (err) => {
@@ -741,6 +749,594 @@ export async function runEngineEnrich(params: EngineEnrichParams, signal?: Abort
     if (child.exitCode === null && child.signalCode === null) {
       killProcessTree(child);
     }
+  }
+}
+
+/**
+ * Phase 3.2 Operational Hardening Error Classes:
+ * Distinct identifiable errors for queue overload and shutdown rejection.
+ */
+export class EnrichmentOverloadError extends Error {
+  readonly code = "ENRICHMENT_OVERLOAD";
+  constructor(message: string = "Enrichment queue is at capacity; request rejected due to overload") {
+    super(message);
+    this.name = "EnrichmentOverloadError";
+  }
+}
+
+export class EnrichmentShutdownError extends Error {
+  readonly code = "ENRICHMENT_SHUTDOWN";
+  constructor(message: string = "Enrichment bridge is shutting down; request rejected") {
+    super(message);
+    this.name = "EnrichmentShutdownError";
+  }
+}
+
+interface QueuedAdmission {
+  id: string;
+  resolve: () => void;
+  reject: (err: Error) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+  timer?: NodeJS.Timeout;
+}
+
+interface InFlightEntry {
+  child: ChildProcess;
+  reqId: string;
+  resolve?: (res: EngineEnrichResult) => void;
+  reject?: (err: Error) => void;
+  callerTimer?: NodeJS.Timeout;
+  backendTimer?: NodeJS.Timeout;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+  abandoned: boolean;
+}
+
+/**
+ * Phase 3 optimization: Persistent Python enrichment worker bridge.
+ * Maintains a persistent `service.py enrich-daemon` child process to eliminate
+ * the 150-250ms process-spawn penalty per lead, reuse initialized Python modules,
+ * and preserve WebsiteWorker's in-memory domain LRU cache across requests.
+ *
+ * Architecture Guarantees (Phase 3.3 Hardened):
+ * 1. Request correlation: Unique IDs per request (`${process.pid}-${++reqSeq}-${Date.now()}`)
+ * 2. Bounded concurrency: Node-side concurrency slot admission (default 16)
+ * 3. Bounded queue backpressure: Rejects excess queued requests with EnrichmentOverloadError
+ * 4. Overall deadline accounting: Queue wait time subtracts from overall 35s execution budget
+ * 5. Cancellation accounting: In-flight cancellation rejects caller promise immediately but
+ *    retains backend resource slot until Python execution genuinely completes
+ * 6. Orderly shutdown: Clean drainage, stdin closure, bounded exit, and process tree termination
+ * 7. Restart handling: Automatically restarts worker if child process dies/crashes
+ * 8. Explicit opt-in: Only process.env.USE_PERSISTENT_ENRICHMENT === "true" activates persistent mode
+ */
+export class PersistentEnrichmentBridge {
+  private child: ChildProcess | null = null;
+  private rl: ReturnType<typeof createInterface> | null = null;
+  private pending = new Map<string, InFlightEntry>();
+  private activeConcurrency = 0;
+  private maxConcurrency = 16;
+  private maxWaitQueue = parseInt(process.env.MAST_ENRICHMENT_MAX_QUEUE || "256", 10);
+  private backendTimeoutMs = parseInt(process.env.MAST_ENRICHMENT_BACKEND_TIMEOUT_MS || "45000", 10);
+  private waitQueue: QueuedAdmission[] = [];
+  private reqSeq = 0;
+  private spawnPromise: Promise<ChildProcess> | null = null;
+  private isShuttingDown = false;
+
+  public setMaxConcurrency(max: number): void {
+    if (max > 0) this.maxConcurrency = max;
+  }
+
+  public setMaxQueueLength(max: number): void {
+    if (max > 0) this.maxWaitQueue = max;
+  }
+
+  public setBackendTimeoutMs(ms: number): void {
+    if (ms > 0) this.backendTimeoutMs = ms;
+  }
+
+  public getBackendTimeoutMs(): number {
+    return this.backendTimeoutMs;
+  }
+
+  public getChildPid(): number | undefined {
+    return this.child?.pid;
+  }
+
+  public getMaxQueueLength(): number {
+    return this.maxWaitQueue;
+  }
+
+  public getWaitQueueLength(): number {
+    return this.waitQueue.length;
+  }
+
+  public getActiveConcurrency(): number {
+    return this.activeConcurrency;
+  }
+
+  public getActivePendingCount(): number {
+    return this.pending.size;
+  }
+
+  public getCallerPendingCount(): number {
+    let count = 0;
+    for (const entry of this.pending.values()) {
+      if (!entry.abandoned) count++;
+    }
+    return count;
+  }
+
+  public getAbandonedPendingCount(): number {
+    let count = 0;
+    for (const entry of this.pending.values()) {
+      if (entry.abandoned) count++;
+    }
+    return count;
+  }
+
+  public isProcessAlive(): boolean {
+    return this.child !== null && !this.child.killed && this.child.exitCode === null && this.child.signalCode === null;
+  }
+
+  public isShutdown(): boolean {
+    return this.isShuttingDown;
+  }
+
+  private async acquireSlot(reqId: string, signal?: AbortSignal, deadlineMs: number = 35000): Promise<void> {
+    if (this.isShuttingDown) {
+      throw new EnrichmentShutdownError();
+    }
+    if (signal?.aborted) {
+      throw new Error("Enrichment aborted before slot acquisition");
+    }
+    if (this.activeConcurrency < this.maxConcurrency) {
+      this.activeConcurrency++;
+      return;
+    }
+    if (this.waitQueue.length >= this.maxWaitQueue) {
+      throw new EnrichmentOverloadError(
+        `Enrichment queue limit reached (${this.maxWaitQueue}); request rejected due to overload`,
+      );
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      let timer: NodeJS.Timeout | undefined;
+      let onAbort: (() => void) | undefined;
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+        const idx = this.waitQueue.findIndex((item) => item.id === reqId);
+        if (idx !== -1) {
+          this.waitQueue.splice(idx, 1);
+        }
+      };
+
+      onAbort = () => {
+        cleanup();
+        reject(new Error("Enrichment aborted while waiting in queue"));
+      };
+
+      if (signal) {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Enrichment request timed out after ${deadlineMs}ms waiting in queue`));
+      }, deadlineMs);
+
+      this.waitQueue.push({
+        id: reqId,
+        resolve: () => {
+          cleanup();
+          this.activeConcurrency++;
+          resolve();
+        },
+        reject: (err: Error) => {
+          cleanup();
+          reject(err);
+        },
+        signal,
+        onAbort,
+        timer,
+      });
+    });
+  }
+
+  private releaseSlot(): void {
+    this.activeConcurrency = Math.max(0, this.activeConcurrency - 1);
+    while (this.waitQueue.length > 0) {
+      const next = this.waitQueue.shift();
+      if (!next) break;
+      if (next.signal?.aborted) {
+        continue;
+      }
+      next.resolve();
+      return;
+    }
+  }
+
+  private handleProcessClose(child: ChildProcess, exitErr: Error): void {
+    if (this.child === child) {
+      this.child = null;
+      this.rl = null;
+      this.spawnPromise = null;
+    }
+    // Only reject requests that were submitted to THIS child instance
+    for (const [id, entry] of this.pending.entries()) {
+      if (entry.child === child) {
+        if (entry.callerTimer) clearTimeout(entry.callerTimer);
+        if (entry.backendTimer) clearTimeout(entry.backendTimer);
+        if (entry.signal && entry.onAbort) {
+          entry.signal.removeEventListener("abort", entry.onAbort);
+        }
+        this.pending.delete(id);
+        this.releaseSlot();
+        if (!entry.abandoned) {
+          entry.reject?.(exitErr);
+        }
+      }
+    }
+  }
+
+  private async getOrSpawn(): Promise<ChildProcess> {
+    if (this.child && !this.child.killed && this.child.exitCode === null && this.child.signalCode === null) {
+      return this.child;
+    }
+    if (this.spawnPromise) {
+      return this.spawnPromise;
+    }
+
+    this.spawnPromise = (async () => {
+      const enginePath = resolveEnginePath();
+      const child = spawn(PYTHON_CMD, ["service.py", "enrich-daemon"], {
+        cwd: enginePath,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+        env: process.env.ENFORCE_LOCAL_ISOLATION === "true" ? getSanitizedSubprocessEnv() : process.env,
+      });
+
+      child.on("error", (err) => {
+        console.warn(`[scraper-bridge:enrich-daemon] child process error (PID: ${child.pid})`, err);
+        this.handleProcessClose(child, new Error(`Enrichment daemon error: ${err.message}`));
+      });
+
+      child.stdin?.on("error", (err: any) => {
+        if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
+          console.warn(`[scraper-bridge:enrich-daemon] stdin error (PID: ${child.pid})`, err);
+        }
+      });
+
+      child.stderr?.on("data", (chunk) => {
+        console.debug(`[scraper-bridge:enrich-daemon] ${chunk.toString().trimEnd()}`);
+      });
+
+      child.on("close", (code, signal) => {
+        this.handleProcessClose(child, new Error(`Enrichment daemon exited unexpectedly (code: ${code}, signal: ${signal})`));
+      });
+
+      const rl = createInterface({
+        input: child.stdout!,
+        crlfDelay: Infinity,
+      });
+
+      rl.on("line", (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        try {
+          const msg = JSON.parse(trimmed);
+          const reqId = msg.id;
+          if (!reqId) return;
+          const entry = this.pending.get(reqId);
+          if (!entry) return;
+
+          // Python has finished executing this request!
+          this.pending.delete(reqId);
+          if (entry.callerTimer) clearTimeout(entry.callerTimer);
+          if (entry.backendTimer) clearTimeout(entry.backendTimer);
+          if (entry.signal && entry.onAbort) {
+            entry.signal.removeEventListener("abort", entry.onAbort);
+          }
+
+          // Release the backend execution slot
+          this.releaseSlot();
+
+          // If caller already abandoned this request, do not resolve/reject caller
+          if (entry.abandoned) {
+            return;
+          }
+
+          if (msg.error) {
+            entry.reject?.(new Error(msg.error));
+          } else {
+            entry.resolve?.(msg.result as EngineEnrichResult);
+          }
+        } catch (err: any) {
+          console.warn(`[scraper-bridge:enrich-daemon] failed to parse response line: ${trimmed}`, err);
+        }
+      });
+
+      this.child = child;
+      this.rl = rl;
+      this.spawnPromise = null;
+      return child;
+    })();
+
+    return this.spawnPromise;
+  }
+
+  public async enrich(params: EngineEnrichParams, signal?: AbortSignal): Promise<EngineEnrichResult> {
+    if (this.isShuttingDown) {
+      throw new EnrichmentShutdownError();
+    }
+    if (signal?.aborted) {
+      throw new Error("Enrichment aborted before start");
+    }
+
+    const startTime = Date.now();
+    const overallTimeoutMs = 35000;
+    const reqId = `req-${process.pid}-${++this.reqSeq}-${startTime}`;
+
+    // 1. Acquire admission slot (respects maxConcurrency and maxWaitQueue)
+    await this.acquireSlot(reqId, signal, overallTimeoutMs);
+
+    const elapsedInQueue = Date.now() - startTime;
+    const remainingExecutionMs = Math.max(100, overallTimeoutMs - elapsedInQueue);
+
+    let child: ChildProcess;
+    try {
+      child = await this.getOrSpawn();
+    } catch (spawnErr) {
+      this.releaseSlot();
+      throw spawnErr;
+    }
+
+    return new Promise<EngineEnrichResult>((resolve, reject) => {
+      let onAbort: (() => void) | undefined;
+      let callerTimer: NodeJS.Timeout | undefined;
+      let backendTimer: NodeJS.Timeout | undefined;
+
+      const inFlightEntry: InFlightEntry = {
+        child,
+        reqId,
+        resolve,
+        reject,
+        signal,
+        abandoned: false,
+      };
+
+      onAbort = () => {
+        if (inFlightEntry.abandoned) return;
+        inFlightEntry.abandoned = true;
+        if (callerTimer) clearTimeout(callerTimer);
+        signal?.removeEventListener("abort", onAbort!);
+        const rej = inFlightEntry.reject;
+        inFlightEntry.resolve = undefined;
+        inFlightEntry.reject = undefined;
+        rej?.(new Error(`Enrichment aborted for PID: ${child.pid}`));
+        // NOTE: Backend execution slot is NOT released here! Python is still executing.
+        // It will be released when Python completes the work in rl.on("line"),
+        // or when backendTimer / handleProcessClose fires.
+      };
+
+      if (signal) {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      callerTimer = setTimeout(() => {
+        if (inFlightEntry.abandoned) return;
+        inFlightEntry.abandoned = true;
+        if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+        const rej = inFlightEntry.reject;
+        inFlightEntry.resolve = undefined;
+        inFlightEntry.reject = undefined;
+        rej?.(new Error(`Enrichment request timed out after ${overallTimeoutMs}ms (PID: ${child.pid})`));
+        // NOTE: Backend execution slot is NOT released here!
+      }, remainingExecutionMs);
+
+      // Backend safety timeout: If Python hangs and never returns a response
+      backendTimer = setTimeout(() => {
+        if (this.pending.has(reqId)) {
+          console.warn(
+            `[scraper-bridge:enrich-daemon] backend execution deadline (${this.backendTimeoutMs}ms) expired for ${reqId} (PID: ${child.pid}); terminating hung daemon to preserve admission bounds`
+          );
+          const entry = this.pending.get(reqId);
+          if (entry) {
+            if (entry.callerTimer) clearTimeout(entry.callerTimer);
+            if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+            if (!entry.abandoned) {
+              entry.abandoned = true;
+              entry.reject?.(
+                new Error(
+                  `Enrichment backend execution timed out after ${this.backendTimeoutMs}ms (PID: ${child.pid})`
+                )
+              );
+              entry.resolve = undefined;
+              entry.reject = undefined;
+            }
+          }
+          // CRITICAL INVARIANT: The bridge must never admit replacement work by freeing
+          // a backend execution slot while its previous operation remains active.
+          // Because synchronous Python execution cannot be stopped cooperatively from Node,
+          // we terminate the hung child process tree.
+          // Note: We do NOT call this.releaseSlot() or this.pending.delete(reqId) here!
+          // They will be executed strictly in handleProcessClose() when the OS confirms
+          // the child process has closed, ensuring old work has actually stopped before
+          // any replacement slot is freed.
+          killProcessTree(child);
+        }
+      }, this.backendTimeoutMs);
+
+      inFlightEntry.callerTimer = callerTimer;
+      inFlightEntry.backendTimer = backendTimer;
+      inFlightEntry.onAbort = onAbort;
+
+      this.pending.set(reqId, inFlightEntry);
+
+      try {
+        const payload = JSON.stringify({ id: reqId, params }) + "\n";
+        child.stdin!.write(payload, (err) => {
+          if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
+            if (this.pending.has(reqId)) {
+              const entry = this.pending.get(reqId)!;
+              this.pending.delete(reqId);
+              if (entry.callerTimer) clearTimeout(entry.callerTimer);
+              if (entry.backendTimer) clearTimeout(entry.backendTimer);
+              if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+              this.releaseSlot();
+              if (!entry.abandoned) {
+                entry.reject?.(err);
+              }
+            }
+          }
+        });
+      } catch (writeErr: any) {
+        if (this.pending.has(reqId)) {
+          const entry = this.pending.get(reqId)!;
+          this.pending.delete(reqId);
+          if (entry.callerTimer) clearTimeout(entry.callerTimer);
+          if (entry.backendTimer) clearTimeout(entry.backendTimer);
+          if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+          this.releaseSlot();
+          if (!entry.abandoned) {
+            entry.reject?.(writeErr);
+          }
+        }
+      }
+    });
+  }
+
+  public async gracefulShutdown(timeoutMs: number = 20000): Promise<void> {
+    if (this.isShuttingDown) return;
+    this.isShuttingDown = true;
+
+    try {
+      // 1. Reject any queued requests waiting for admission
+      while (this.waitQueue.length > 0) {
+        const next = this.waitQueue.shift();
+        next?.reject(new EnrichmentShutdownError());
+      }
+
+      // 2. Await in-flight requests in this.pending (including abandoned ones) up to timeoutMs
+      const deadline = Date.now() + timeoutMs;
+      while (this.pending.size > 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+
+      // 3. Close daemon stdin and wait for clean exit before escalating to killProcessTree
+      if (this.child) {
+        const child = this.child;
+        try {
+          child.stdin?.end();
+        } catch {
+          // ignore
+        }
+
+        let exitTimeout: NodeJS.Timeout | undefined;
+        const childExitPromise = new Promise<void>((resolve) => {
+          child.once("close", () => {
+            if (exitTimeout) clearTimeout(exitTimeout);
+            resolve();
+          });
+        });
+        const exitTimer = new Promise<void>((resolve) => {
+          exitTimeout = setTimeout(resolve, 1500);
+        });
+        await Promise.race([childExitPromise, exitTimer]);
+        if (exitTimeout) clearTimeout(exitTimeout);
+
+        // 4. Forcefully terminate child process tree if still running and clean up pending
+        this.close();
+      }
+    } finally {
+      this.isShuttingDown = false;
+    }
+  }
+
+  public close(): void {
+    this.isShuttingDown = false;
+    if (this.child) {
+      const child = this.child;
+      try {
+        child.stdin?.end();
+      } catch {
+        // ignore
+      }
+      killProcessTree(child);
+      this.child = null;
+      this.rl = null;
+      this.spawnPromise = null;
+    }
+    // Clean up all pending requests, timers, and queued admissions
+    for (const [id, entry] of this.pending.entries()) {
+      if (entry.callerTimer) clearTimeout(entry.callerTimer);
+      if (entry.backendTimer) clearTimeout(entry.backendTimer);
+      if (entry.signal && entry.onAbort) {
+        entry.signal.removeEventListener("abort", entry.onAbort);
+      }
+      this.pending.delete(id);
+      if (!entry.abandoned) {
+        entry.reject?.(new Error("Enrichment daemon closed"));
+      }
+    }
+    this.activeConcurrency = 0;
+    while (this.waitQueue.length > 0) {
+      const queued = this.waitQueue.shift();
+      if (queued?.timer) clearTimeout(queued.timer);
+      queued?.reject(new Error("Enrichment daemon closed"));
+    }
+  }
+}
+
+export const persistentEnrichmentBridge = new PersistentEnrichmentBridge();
+
+export function closePersistentEnrichmentWorker(): void {
+  persistentEnrichmentBridge.close();
+}
+
+export async function closePersistentEnrichmentWorkerGraceful(timeoutMs: number = 5000): Promise<void> {
+  await persistentEnrichmentBridge.gracefulShutdown(timeoutMs);
+}
+
+process.once("exit", () => {
+  persistentEnrichmentBridge.close();
+});
+
+export async function runEngineEnrich(params: EngineEnrichParams, signal?: AbortSignal): Promise<EngineEnrichResult> {
+  if (process.env.ENFORCE_LOCAL_ISOLATION === "true") {
+    assertLocalEnrichmentUrl(params.website);
+    if (params.instagram) {
+      assertLocalEnrichmentUrl(params.instagram);
+    }
+  }
+  // Phase 3.3 Safe Default: Explicit opt-in.
+  // The safe default is the existing one-shot implementation.
+  // Unset, "false", "", "0", or any unexpected string all route to one-shot.
+  // Enable the persistent bridge only when the setting explicitly equals "true".
+  if (process.env.USE_PERSISTENT_ENRICHMENT !== "true") {
+    return runEngineEnrichOneShot(params, signal);
+  }
+  try {
+    return await persistentEnrichmentBridge.enrich(params, signal);
+  } catch (err: any) {
+    // Phase 3.2 & 3.3: NEVER fall back to one-shot on overload, shutdown, or abort!
+    if (
+      err instanceof EnrichmentOverloadError ||
+      err?.code === "ENRICHMENT_OVERLOAD" ||
+      err instanceof EnrichmentShutdownError ||
+      err?.code === "ENRICHMENT_SHUTDOWN" ||
+      err?.name === "AbortError" ||
+      err?.message?.includes("aborted")
+    ) {
+      throw err;
+    }
+    if (err?.message?.includes("Enrichment daemon error") || err?.message?.includes("ENOENT")) {
+      console.warn("[scraper-bridge:enrich] persistent worker fallback to one-shot:", err.message);
+      return runEngineEnrichOneShot(params, signal);
+    }
+    throw err;
   }
 }
 

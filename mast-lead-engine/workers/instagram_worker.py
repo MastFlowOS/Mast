@@ -131,6 +131,11 @@ import urllib.request
 from typing import Optional
 
 from engine.contracts import BusinessCandidate, InstagramIntel
+from utils.egress_guard import (
+    LocalIsolationRedirectHandler,
+    assert_loopback_url,
+    is_local_isolation_enforced,
+)
 from utils.http_limits import fetch_slot, read_capped
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
@@ -241,7 +246,12 @@ class InstagramWorker(BaseWorker[BusinessCandidate, InstagramIntel]):
         # definitive 404/410 is False.
         start = time.monotonic()
         try:
-            with fetch_slot(), urllib.request.urlopen(request, timeout=self._timeout) as response:
+            if is_local_isolation_enforced():
+                assert_loopback_url(item.instagram_url)
+                opener = urllib.request.build_opener(LocalIsolationRedirectHandler())
+            else:
+                opener = urllib.request.build_opener()
+            with fetch_slot(), opener.open(request, timeout=self._timeout) as response:
                 elapsed = time.monotonic() - start
                 final_url = response.geturl() or ""
                 raw = read_capped(response)

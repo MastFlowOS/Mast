@@ -17,6 +17,7 @@ import { initResourceCapacity, initResourceWorkerSlotPool, logStartupResourceTel
 import { captureSystemSnapshot, workerMetrics } from "../lib/observability.js";
 import { getEnrichmentTelemetrySnapshot, getEnrichmentQueueDepth, formatEnrichmentTelemetryLog } from "../lib/enrichmentTelemetry.js";
 import { redactSensitiveData, serializeError } from "../lib/safeRequestLog.js";
+import { closePersistentEnrichmentWorkerGraceful } from "../scraperBridge/pythonBridge.js";
 
 // Ensure the provider registry is initialised at startup so any
 // getProvider() call in handleDiscoveryTask has the implementations loaded.
@@ -204,14 +205,20 @@ async function main() {
 
     try {
       await boss.stop({ graceful: true, timeout: GRACEFUL_STOP_TIMEOUT_MS });
-      console.log("[worker] pg-boss stopped cleanly — exiting");
-      clearTimeout(forceExitTimer);
-      process.exit(0);
+      console.log("[worker] pg-boss stopped cleanly");
     } catch (err) {
       console.error("[worker] error during graceful shutdown", err);
-      clearTimeout(forceExitTimer);
-      process.exit(1);
     }
+
+    try {
+      await closePersistentEnrichmentWorkerGraceful(5000);
+      console.log("[worker] enrichment daemon stopped cleanly — exiting");
+    } catch (err) {
+      console.warn("[worker] error during enrichment daemon graceful shutdown (non-fatal):", err);
+    }
+
+    clearTimeout(forceExitTimer);
+    process.exit(0);
   }
 
   process.on("SIGTERM", () => { void shutdown("SIGTERM"); });

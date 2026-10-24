@@ -126,6 +126,7 @@ from typing import List, Optional
 from urllib.parse import urljoin, urlparse
 
 from engine.contracts import BusinessCandidate, WebsiteIntel
+from utils.egress_guard import assert_loopback_url, is_local_isolation_enforced, is_loopback_host
 from utils.http_limits import fetch_slot, read_capped
 from utils.single_flight import SingleFlight
 from utils.parsing import is_ordering_platform, is_social_platform, strip_control_characters
@@ -194,6 +195,8 @@ class _RedirectTracker(urllib.request.HTTPRedirectHandler):
         self.chain: List[str] = []
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        if is_local_isolation_enforced():
+            assert_loopback_url(newurl)
         self.chain.append(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -370,6 +373,8 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
 
         start = time.monotonic()
         try:
+            if is_local_isolation_enforced():
+                assert_loopback_url(target_url)
             with fetch_slot(), opener.open(request, timeout=self._timeout) as response:
                 elapsed = time.monotonic() - start
                 final_url = response.geturl()
@@ -411,6 +416,8 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
 
             if effective_fallback_url:
                 try:
+                    if is_local_isolation_enforced():
+                        assert_loopback_url(effective_fallback_url)
                     fallback_req = urllib.request.Request(effective_fallback_url, headers=headers)
                     with fetch_slot(), opener.open(fallback_req, timeout=self._timeout) as response:
                         elapsed = time.monotonic() - start
@@ -531,5 +538,10 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
         for href, text in _ANCHOR_RE.findall(html):
             match = _CONTACT_HINT_RE.search(href) or _CONTACT_HINT_RE.search(text)
             if match:
-                return urljoin(base_url, href.strip()), match.group(1).lower()
+                cand_url = urljoin(base_url, href.strip())
+                if is_local_isolation_enforced():
+                    parsed = urlparse(cand_url)
+                    if not is_loopback_host(parsed.hostname):
+                        continue
+                return cand_url, match.group(1).lower()
         return None, None

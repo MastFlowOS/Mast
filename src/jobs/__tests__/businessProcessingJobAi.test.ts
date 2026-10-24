@@ -59,8 +59,8 @@ test("Part C - scoreBusiness gates AI precomputation behind env.AI_BACKGROUND_OP
   );
 
   // Verify non-LLM worker tasks (enrichment, deterministic scoring, health) are preserved before the AI gate
-  const scoreComputeIndex = businessProcessingJobSrc.indexOf("await computeAndStoreOpportunityScores(businessId);");
-  const healthComputeIndex = businessProcessingJobSrc.indexOf("await computeAndStoreBusinessHealth(businessId);");
+  const scoreComputeIndex = businessProcessingJobSrc.indexOf("computeAndStoreOpportunityScores(businessId)");
+  const healthComputeIndex = businessProcessingJobSrc.indexOf("computeAndStoreBusinessHealth(businessId");
 
   assert.ok(scoreComputeIndex !== -1, "computeAndStoreOpportunityScores must be present");
   assert.ok(healthComputeIndex !== -1, "computeAndStoreBusinessHealth must be present");

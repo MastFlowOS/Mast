@@ -185,8 +185,8 @@ async function verifyOne(business: DueBusiness): Promise<"success" | "failure" |
       })
       .eq("id", business.id);
 
-    await computeAndStoreOpportunityScores(business.id);
-    await computeAndStoreBusinessHealth(business.id);
+    const scoreResult = await computeAndStoreOpportunityScores(business.id);
+    await computeAndStoreBusinessHealth(business.id, scoreResult);
     return "success";
   }
 
@@ -230,8 +230,8 @@ async function applyFailureAndMaybeArchive(business: DueBusiness): Promise<boole
 
   // Rescore regardless — a failed channel (e.g. website now unreachable)
   // is itself a signal change worth reflecting in the Opportunity Score.
-  await computeAndStoreOpportunityScores(business.id);
-  await computeAndStoreBusinessHealth(business.id);
+  const scoreResult = await computeAndStoreOpportunityScores(business.id);
+  await computeAndStoreBusinessHealth(business.id, scoreResult);
 
   return archive;
 }

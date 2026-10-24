@@ -1,5 +1,5 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
-import { runEngineScore } from "../scraperBridge/pythonBridge.js";
+import { runEngineScore, type EngineScoreResult } from "../scraperBridge/pythonBridge.js";
 
 /**
  * Computes the Business Health Score for one business via Engine 2.0
@@ -9,24 +9,41 @@ import { runEngineScore } from "../scraperBridge/pythonBridge.js";
  * The `health_score` field maps to `engineResult.health_score` which
  * ScoringWorker._business_health_component computes in Python.
  * Node's only role here is: fetch → delegate to Python → persist.
+ *
+ * Performance optimization: if `precomputed` is supplied by the caller
+ * (e.g., from `computeAndStoreOpportunityScores`), that exact result is
+ * reused directly, avoiding a redundant `service.py score` child process
+ * spawn and a redundant database read.
+ *
+ * If `precomputed` is omitted (standalone caller), this function queries
+ * `businesses` and invokes `runEngineScore` as a standalone operation.
  */
-export async function computeAndStoreBusinessHealth(businessId: string): Promise<void> {
-  const { data: business, error } = await supabaseAdmin
-    .from("businesses")
-    .select(
-      "id, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, confidence, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
-    )
-    .eq("id", businessId)
-    .single();
-  if (error) throw error;
+export async function computeAndStoreBusinessHealth(
+  businessId: string,
+  precomputed?: EngineScoreResult,
+  scoreRunner = runEngineScore,
+): Promise<void> {
+  let engineResult: EngineScoreResult;
+  if (precomputed) {
+    engineResult = precomputed;
+  } else {
+    const { data: business, error } = await supabaseAdmin
+      .from("businesses")
+      .select(
+        "id, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, confidence, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
+      )
+      .eq("id", businessId)
+      .single();
+    if (error) throw error;
 
-  // Engine 2.0 computes both the universal breakdown and the health score.
-  const engineResult = await runEngineScore({
-    ...business,
-    id: businessId,
-    // Flatten signals for the engine's flat-dict intake format
-    ...(business.signals != null && typeof business.signals === "object" ? business.signals : {}),
-  });
+    // Engine 2.0 computes both the universal breakdown and the health score.
+    engineResult = await scoreRunner({
+      ...business,
+      id: businessId,
+      // Flatten signals for the engine's flat-dict intake format
+      ...(business.signals != null && typeof business.signals === "object" ? business.signals : {}),
+    });
+  }
 
   const { error: upsertError } = await supabaseAdmin.from("business_health_scores").upsert(
     {

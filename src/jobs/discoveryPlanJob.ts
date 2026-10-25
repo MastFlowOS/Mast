@@ -17,6 +17,7 @@ import { registerRequestAbortController, terminateRequest, type RequestTerminalR
 import { cityTransitionFor, resolveZeroSlotCityScheduling, reconcileDiscoveryCounters } from "../discovery/cityScheduling.js";
 import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
+import { COUNTRIES } from "../lib/geo/countries.js";
 import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
 import {
   claimDiscoveryStreet,
@@ -25,6 +26,7 @@ import {
   heartbeatDiscoveryStreetClaim,
   discoveryModeForStreetInventory,
   streetInventoryFreshCount,
+  ensureStreetInventory,
   type StreetClaim,
   type StreetScope,
 } from "../discovery/streetDiscovery.js";
@@ -244,6 +246,49 @@ type AreaAttemptResult = {
  * area from the pool wrapper (recordAreaOutcome) / once in aggregate
  * (recordTaskOutcome), per Worker Pools B Step 10.
  */
+/**
+ * Scoped lookup of existing Google Maps place IDs already owned/discovered
+ * for this user in this city / country, allowing the scraper to skip known
+ * cards before clicking into them.
+ */
+export async function getKnownPlaceIdsForTask(
+  db: any,
+  userId: string | undefined,
+  countryCode: string,
+  city?: string,
+): Promise<string[]> {
+  if (!userId) return [];
+  try {
+    let query = db
+      .from("businesses")
+      .select("fingerprints, leads!inner(user_id)")
+      .eq("leads.user_id", userId)
+      .eq("country_code", countryCode);
+    if (city) {
+      query = query.eq("city", city);
+    }
+    const { data, error } = await query.limit(500);
+    if (error || !data) return [];
+    const placeIds = new Set<string>();
+    for (const row of data) {
+      const fingerprints = row.fingerprints as string[] | undefined;
+      if (Array.isArray(fingerprints)) {
+        for (const fp of fingerprints) {
+          if (fp.startsWith("place:")) {
+            placeIds.add(fp.slice("place:".length));
+          } else if (fp.startsWith("map:")) {
+            placeIds.add(fp.slice("map:".length));
+          }
+        }
+      }
+    }
+    return Array.from(placeIds);
+  } catch (err) {
+    console.warn("[discoveryPlanJob] failed to load known place IDs for pre-click skip (failing open)", err);
+    return [];
+  }
+}
+
 async function runOneAreaAttempt(
   ctx: {
     db: any;
@@ -292,6 +337,7 @@ async function runOneAreaAttempt(
     street,
   };
   const searchQueries = generator.generate(searchTarget);
+  const knownPlaceIds = await getKnownPlaceIdsForTask(db, task.user_id, task.country_code, task.city);
   const pythonTimer = profiler.timer("python_subprocess_total");
 
   // Outer loop: one iteration per SearchQuery (most providers produce one;
@@ -315,6 +361,7 @@ async function runOneAreaAttempt(
         // early channel check can run. email/instagram are never forwarded:
         // enrichment can still satisfy them. Omitted when empty.
         requiredChannels: engineRequiredChannels(payload.request.channels),
+        knownPlaceIds,
       },
       requestAbort.signal,
       (done) => {
@@ -358,6 +405,10 @@ async function runOneAreaAttempt(
     }
 
     discovered += 1;
+    for (const fp of lead.fingerprints ?? []) {
+      if (fp.startsWith("place:")) knownPlaceIds.push(fp.slice("place:".length));
+      else if (fp.startsWith("map:")) knownPlaceIds.push(fp.slice("map:".length));
+    }
     const pid = lead._pipeline_id ?? `local:${discovered}`;
     traceLog(`PIPELINE ${pid}`);
     traceLog(`DISCOVERED name=${JSON.stringify(lead.name)}`);
@@ -918,6 +969,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   // attempt, so a slot claiming its 2nd/3rd/... area within the same pool
   // run does not re-announce "started" (see publishAreaPoolLifecycleEvent).
   const startedScoutSlots = new Set<number>();
+  let useStreetPool = false;
+  let fallbackReason = "none";
 
   try {
     // ── Provider registry routing (Phase 5 Refinement 3) ─────────────────
@@ -936,17 +989,45 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     // streetDiscovery.ts:CURRENT_STREET_BOUNDARY_VERSION) is correctly
     // treated as having no usable street inventory here too, not just in
     // ensureStreetInventory()'s own build-triggering check.
-    const streetCount = sourceId === "google_maps"
+    const initialStreetCount = sourceId === "google_maps"
       ? await streetInventoryFreshCount(db, task.country_code, task.city)
       : 0;
-    const useStreetPool = discoveryModeForStreetInventory(sourceId, streetCount) === "street";
-    const fallbackReason = useStreetPool
-      ? "none"
-      : sourceId !== "google_maps"
-        ? "unsupported_source"
-        : "zero_inventory";
+    let streetCount = initialStreetCount;
+    fallbackReason = "none";
+
+    // FIX 1 — If no fresh street inventory exists, invoke the existing
+    // ensureStreetInventory() builder before deciding mode.
+    if (sourceId === "google_maps" && streetCount === 0) {
+      if (task.user_id && task.user_id === payload.request.userId) {
+        const country = COUNTRIES.find((c) => c.code === task.country_code);
+        const inventoryOutcome = await ensureStreetInventory(db, task.country_code, task.city, {
+          countryName: country?.name,
+          region: task.region ?? payload.request.region,
+        });
+        if (inventoryOutcome.mode === "street") {
+          streetCount = inventoryOutcome.count;
+          fallbackReason = "none";
+        } else {
+          streetCount = inventoryOutcome.count;
+          fallbackReason = inventoryOutcome.fallbackReason;
+        }
+      } else {
+        fallbackReason = "missing_task_user";
+      }
+    } else if (sourceId !== "google_maps") {
+      fallbackReason = "unsupported_source";
+    }
+
+    useStreetPool = discoveryModeForStreetInventory(sourceId, streetCount) === "street";
+    if (!useStreetPool && fallbackReason === "none") fallbackReason = "zero_inventory";
+
+
+
+
+
     console.info(
-      `[discoveryPlanJob] taskId=${payload.taskId} mode=${useStreetPool ? "street" : "area"} inventory=${streetCount} fallback_reason=${fallbackReason}`,
+      `[discoveryPlanJob] taskId=${payload.taskId} city=${task.city} mode=${useStreetPool ? "street" : "area"} ` +
+        `inventory_before=${initialStreetCount} inventory_after=${streetCount} inventory=${streetCount} fallback_reason=${fallbackReason}`,
     );
 
     // Worker Pools B — Google Maps area worker pool. Street inventory takes
@@ -1470,7 +1551,19 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         `maxConcurrentAreas=${poolResult?.poolSize ?? 1} maxConcurrentBrowsers=${getBrowserSlotPool().capacity}`,
     );
 
-    await recordTaskOutcome(task, { discovered, accepted, rejected, duplicates, exhausted, status: terminalReason === "USER_CANCELLED" ? "cancelled" : "completed", startedAt, completionReason, terminationReason: cityReason });
+    await recordTaskOutcome(task, {
+      discovered,
+      accepted,
+      rejected,
+      duplicates,
+      exhausted,
+      status: terminalReason === "USER_CANCELLED" ? "cancelled" : "completed",
+      startedAt,
+      completionReason,
+      terminationReason: cityReason,
+      discoveryMode: useStreetPool ? "street" : "area",
+      fallbackReason: fallbackReason !== "none" ? fallbackReason : undefined,
+    });
     // PHASE 3C-4C-B: record this claimed area's outcome — a separate
     // dimension on the SAME kind of counters as the city-level table
     // above, not a second incompatible definition of "productive"
@@ -1523,6 +1616,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       error: error instanceof Error ? error.message : String(error),
       startedAt,
       completionReason: willRetry ? "retrying" : "failed",
+      discoveryMode: useStreetPool ? "street" : "area",
+      fallbackReason: fallbackReason !== "none" ? fallbackReason : undefined,
     });
     // PHASE 3C-4C-B: still record whatever partial outcome this claimed
     // area produced before the crash — mirrors record_discovery_location_outcome
@@ -1592,6 +1687,8 @@ export async function recordTaskOutcome(
     startedAt: number;
     completionReason: string;
     terminationReason?: string;
+    discoveryMode?: "street" | "area";
+    fallbackReason?: string;
   },
 ) {
   const runtimeMs = Date.now() - outcome.startedAt;
@@ -1610,6 +1707,9 @@ export async function recordTaskOutcome(
     runtime_ms: runtimeMs,
     completion_reason: outcome.completionReason,
     termination_reason: outcome.terminationReason ?? outcome.completionReason,
+    discovery_mode: outcome.discoveryMode,
+
+    ...(outcome.fallbackReason && outcome.fallbackReason !== "none" ? { fallback_reason: outcome.fallbackReason } : {}),
   };
 
   await db.from("discovery_tasks").update({

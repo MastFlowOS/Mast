@@ -59,6 +59,9 @@ export function buildGoogleMapsEngineParams(
     ...(options.requiredChannels && options.requiredChannels.length > 0
       ? { required_channels: options.requiredChannels }
       : {}),
+    ...(options.knownPlaceIds && options.knownPlaceIds.length > 0
+      ? { known_place_ids: options.knownPlaceIds }
+      : {}),
   };
 }
 

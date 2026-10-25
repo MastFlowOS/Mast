@@ -170,6 +170,11 @@ export type EngineQueryParams = {
    * global `businesses` existence check on the Python side.
    */
   user_id?: string;
+  /**
+   * Scoped/batched set of known Google Maps place IDs or normalized keys
+   * used by the Python scraper to skip cards BEFORE clicking detail panels.
+   */
+  known_place_ids?: string[];
 };
 
 export type EngineRunOptions = {

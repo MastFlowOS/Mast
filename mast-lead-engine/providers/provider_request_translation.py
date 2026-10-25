@@ -125,6 +125,7 @@ class DiscoveryQueryContext:
     should_stop: Optional[Callable[[], bool]] = None
     on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None
     require_website: bool = False
+    known_place_ids: Optional[Sequence[str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +194,7 @@ def _translate_google_maps(context: DiscoveryQueryContext) -> GoogleMapsDiscover
         should_stop=context.should_stop,
         on_progress=context.on_progress,
         require_website=context.require_website,
+        known_place_ids=context.known_place_ids,
     )
 
 

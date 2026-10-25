@@ -2128,6 +2128,7 @@ class MapsScraper:
         should_stop: "Callable[[], bool] | None" = None,
         on_progress: "Callable[[str, str, str | None], None] | None" = None,
         require_website: bool = False,
+        known_place_ids: "Iterable[str] | None" = None,
     ) -> AsyncIterator[RawPlace]:
         """Search Google Maps and yield RawPlace objects.
 
@@ -2232,6 +2233,19 @@ class MapsScraper:
         total_mismatch_recoveries = 0
         search_nav_recovery_used = False
         last_verified_panel: dict | None = None
+        known_place_ids_norm: set[str] = set()
+        if known_place_ids:
+            for raw_id in known_place_ids:
+                if not raw_id:
+                    continue
+                s = str(raw_id).strip()
+                if s.startswith("place:"):
+                    s = s[len("place:"):]
+                elif s.startswith("map:"):
+                    s = s[len("map:"):]
+                if s:
+                    known_place_ids_norm.add(s.lower())
+                    known_place_ids_norm.add(s)
         # Rounds actually scrolled so far, summed ACROSS every attempt —
         # this is what a post-crash rebuild fast-forwards through, and it
         # also caps total work across all retries so a search that keeps
@@ -2617,6 +2631,20 @@ class MapsScraper:
                             # round; fall through to the EOL check / scroll.
                             break
 
+                        candidate_pid = _stable_place_id_from_url(card_href)
+                        if candidate_pid and (
+                            candidate_pid.lower() in known_place_ids_norm
+                            or candidate_pid in known_place_ids_norm
+                        ):
+                            log.info(
+                                f"[maps][pre-click] skipping known place_id={candidate_pid} "
+                                f"(place_key={place_key!r}, card_href={card_href!r})"
+                            )
+                            self._profiler.incr("maps_candidates_known_place_skipped")
+                            _emit_progress("candidate_duplicate_skipped", candidate_pid)
+                            seen_hrefs.add(place_key)
+                            continue
+
                         card_signals = await _extract_card_signals(anchor)
                         if card_signals.get("closed"):
                             log.info(
@@ -2899,6 +2927,8 @@ class MapsScraper:
                             if verified_pid:
                                 place.extra.setdefault("maps_place_id", verified_pid)
                                 place.extra.setdefault("mapsPlaceId", verified_pid)
+                                known_place_ids_norm.add(verified_pid.lower())
+                                known_place_ids_norm.add(verified_pid)
 
                             last_verified_panel = {
                                 "place_key": place_key,

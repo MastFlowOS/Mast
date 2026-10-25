@@ -895,6 +895,7 @@ async def run_query(
     # `None` (the default) preserves old behavior for any other caller
     # (library use, tests/validate_service_run_query.py) that doesn't
     # pass one — such a caller simply never requests early shutdown.
+    known_place_ids: Optional[list[str]] = None,
     shutdown_event: Optional[threading.Event] = None,
     shutdown_reason: Optional[str] = None,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -1342,6 +1343,7 @@ async def run_query(
                 overpass_factory=_overpass_factory,
                 profiler=profiler,
                 require_website=require_website,
+                known_place_ids=known_place_ids,
             )
             provider, request = composed.provider, composed.request
             log.info(
@@ -1533,6 +1535,7 @@ async def run_query(
                 overpass_factory=_overpass_factory,
                 profiler=profiler,
                 require_website=require_website,
+                known_place_ids=known_place_ids,
             )
             discovery_provider = composed.provider
             discovery_request = composed.request

@@ -202,6 +202,7 @@ class GoogleMapsDiscoveryRequest:
     # BusinessCandidate and must never be treated as one.
     on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None
     require_website: bool = False
+    known_place_ids: Optional[Sequence[str]] = None
 
 
 def _or_none(value: str) -> Optional[str]:
@@ -420,6 +421,7 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
                     should_stop=request.should_stop,
                     on_progress=request.on_progress,
                     require_website=request.require_website,
+                    known_place_ids=request.known_place_ids,
                 )
             except TypeError:
                 search_gen = scraper.search(

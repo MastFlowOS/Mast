@@ -47,6 +47,11 @@ export type DiscoverySearchOptions = {
    * instagram, which enrichment may still satisfy.
    */
   requiredChannels?: string[];
+  /**
+   * Optional scoped batch of stable place IDs or URLs already known/owned
+   * for this user/scope, enabling pre-click skipping in Maps scraper.
+   */
+  knownPlaceIds?: string[];
 };
 
 export interface DiscoveryProvider {

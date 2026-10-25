@@ -195,6 +195,7 @@ def compose_discovery(
     overpass_factory: Optional[Callable[[], DiscoveryProviderInterface]] = None,
     profiler: Any = None,
     require_website: bool = False,
+    known_place_ids: Optional[Sequence[str]] = None,
 ) -> ComposedDiscovery:
     """
     Build the one DiscoveryProviderInterface + request pair
@@ -262,6 +263,7 @@ def compose_discovery(
         should_stop=should_stop,
         on_progress=on_progress,
         require_website=require_website,
+        known_place_ids=known_place_ids,
     )
 
     selected_ids: list[str] = []

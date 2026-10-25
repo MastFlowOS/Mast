@@ -2,7 +2,11 @@ import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
-import { getPlan, PLANS } from "../../config/plans.js";
+import { getPlan, PLANS, type PlanId } from "../../config/plans.js";
+
+function isPlanId(val: string): val is PlanId {
+  return Object.prototype.hasOwnProperty.call(PLANS, val);
+}
 
 export const accountRouter = Router();
 
@@ -83,7 +87,7 @@ accountRouter.post("/subscription", requireAuth, async (req, res, next) => {
       });
     }
 
-    if (!PLANS[targetPlan]) {
+    if (!isPlanId(targetPlan) || !PLANS[targetPlan]) {
       return res.status(400).json({
         error: "Unknown plan tier.",
         message: "Unknown plan tier.",

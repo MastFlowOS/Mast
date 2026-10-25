@@ -449,10 +449,54 @@ function describeSpawnError(mode: string, enginePath: string, err: unknown): str
  */
 export type ChildCloseResult = { code: number | null; signal: NodeJS.Signals | null };
 
+const childClosePromises = new WeakMap<ReturnType<typeof spawn>, Promise<ChildCloseResult>>();
+
 function watchChildClose(child: ReturnType<typeof spawn>): Promise<ChildCloseResult> {
-  return new Promise((resolve) => {
+  const existing = childClosePromises.get(child);
+  if (existing) return existing;
+  const promise = new Promise<ChildCloseResult>((resolve) => {
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
+  childClosePromises.set(child, promise);
+  return promise;
+}
+
+/**
+ * Events on the `"type": "progress"` stdout channel that represent
+ * diagnostics, liveness heartbeats, or stale-panel recovery attempts rather
+ * than verified forward discovery progress. These must NOT reset the bridge
+ * inactivity watchdog timer (`SCRAPER_SUBPROCESS_INACTIVITY_MS`).
+ */
+export const NON_PROGRESS_EVENTS = new Set<string>([
+  "stale_panel_mismatch",
+  "stale_panel_recovery",
+  "stale_panel_search_nav_recovery",
+  "card_deadline_exceeded",
+  "return_to_results_failed",
+  "phone_extraction_diagnostic",
+  "heartbeat",
+  "round_scanned",
+  "crash_detected",
+]);
+
+/**
+ * Returns `true` only when a parsed stdout JSON line represents genuine
+ * forward discovery progress (a verified candidate/stage milestone, a
+ * yielded lead, or the `__done__` completion sentinel). Diagnostic lines
+ * and stale-panel recovery events return `false` so a stalled crawler
+ * cannot keep resetting the inactivity timer indefinitely.
+ */
+export function isGenuineProgressEvent(parsed: Record<string, unknown>): boolean {
+  if (!parsed || typeof parsed !== "object") return false;
+  if (parsed.type === "diagnostic") return false;
+  if (parsed.type === "progress") {
+    if (parsed.diagnostic === true || parsed.progress === false) return false;
+    if (typeof parsed.event === "string" && NON_PROGRESS_EVENTS.has(parsed.event)) {
+      return false;
+    }
+    return true;
+  }
+  return true;
 }
 
 /**
@@ -548,36 +592,74 @@ const GRACEFUL_SHUTDOWN_MS = 3000;
  * `WATCHDOG_TIMEOUT`, or a descriptive fallback) instead of leaving Python
  * to fall back to `reason=None`/`unspecified`.
  */
-async function gracefulKillProcessTree(
+const inFlightShutdowns = new WeakMap<ReturnType<typeof spawn>, Promise<void>>();
+
+export function gracefulKillProcessTree(
   child: ReturnType<typeof spawn>,
-  closed: Promise<ChildCloseResult>,
-  graceMs = GRACEFUL_SHUTDOWN_MS,
-  reason?: string,
-) {
-  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  if (reason) writeStopReasonFile(child.pid, reason);
-  if (process.platform === "win32") {
-    // No SIGTERM-equivalent process-tree signal on Windows.
-    killProcessTree(child);
-    return;
+  closedOrGraceMs?: Promise<ChildCloseResult> | number,
+  graceMsOrReason?: number | string,
+  maybeReason?: string,
+): Promise<void> {
+  const existing = inFlightShutdowns.get(child);
+  if (existing) return existing;
+
+  let closed: Promise<ChildCloseResult>;
+  let graceMs = GRACEFUL_SHUTDOWN_MS;
+  let reason: string | undefined;
+
+  if (closedOrGraceMs && typeof (closedOrGraceMs as Promise<ChildCloseResult>).then === "function") {
+    closed = closedOrGraceMs as Promise<ChildCloseResult>;
+    if (typeof graceMsOrReason === "number") {
+      graceMs = graceMsOrReason;
+      reason = maybeReason;
+    } else if (typeof graceMsOrReason === "string") {
+      reason = graceMsOrReason;
+    }
+  } else {
+    closed = watchChildClose(child);
+    if (typeof closedOrGraceMs === "number") {
+      graceMs = closedOrGraceMs;
+    }
+    if (typeof graceMsOrReason === "string") {
+      reason = graceMsOrReason;
+    } else if (typeof maybeReason === "string") {
+      reason = maybeReason;
+    }
   }
 
-  try {
-    process.kill(-child.pid, "SIGTERM");
-  } catch (err) {
-    killProcessTree(child);
-    return;
-  }
+  const run = (async () => {
+    if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+    if (reason) writeStopReasonFile(child.pid, reason);
+    if (process.platform === "win32") {
+      // No SIGTERM-equivalent process-tree signal on Windows.
+      killProcessTree(child);
+      return;
+    }
 
-  const timedOut = await Promise.race([
-    closed.then(() => false),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(true), graceMs)),
-  ]);
+    try {
+      // Send SIGTERM to the Python leader first so service.py can close the
+      // Playwright browser/driver cleanly without killing the Node driver
+      // mid-pipe (which causes EPIPE); escalate to process-group SIGKILL if
+      // the grace window expires.
+      process.kill(child.pid, "SIGTERM");
+    } catch (err) {
+      killProcessTree(child);
+      return;
+    }
 
-  if (timedOut && child.exitCode === null && child.signalCode === null) {
-    console.log(`[scraper-bridge] PID ${child.pid} did not exit within ${graceMs}ms of SIGTERM — sending SIGKILL`);
-    killProcessTree(child);
-  }
+    const timedOut = await Promise.race([
+      closed.then(() => false),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(true), graceMs)),
+    ]);
+
+    if (timedOut && child.exitCode === null && child.signalCode === null) {
+      console.log(`[scraper-bridge] PID ${child.pid} did not exit within ${graceMs}ms of SIGTERM — sending SIGKILL`);
+      killProcessTree(child);
+    }
+  })();
+
+  inFlightShutdowns.set(child, run);
+  return run;
 }
 
 /**
@@ -1838,11 +1920,19 @@ export async function* runEngineQuery(
         continue;
       }
 
-      // LIFECYCLE FIX: any line that parsed as real protocol JSON — lead
-      // or __done__ — counts as forward progress. Reset the inactivity
-      // timer here, once, ahead of the lead/__done__ branch below, so
-      // both cases benefit identically.
-      resetInactivityTimer();
+      // LIFECYCLE FIX: only genuine forward progress (verified progress events,
+      // leads, or __done__) resets the inactivity timer. Stale-panel mismatch
+      // diagnostics and non-progress heartbeats must NOT reset the watchdog.
+      if (isGenuineProgressEvent(parsed)) {
+        resetInactivityTimer();
+      }
+
+      if (parsed.type === "diagnostic") {
+        console.debug(
+          `[scraper-bridge] diagnostic event=${parsed.event ?? "unknown"} item=${parsed.item_id ?? "n/a"}`,
+        );
+        continue;
+      }
 
       // PART C (Phase 2B — watchdog progress protocol): a "progress"
       // line is real protocol-level forward progress too (that's why the
@@ -2060,8 +2150,19 @@ export async function* runEngineQuery(
     // flag for exactly that case; `abortRequested` now means ONLY a
     // genuine request-level abort, never this generic early-break path.
     let consumerStoppedEarly = false;
+    if (sawDone() && !abortRequested && !timedOut && child.exitCode === null && child.signalCode === null) {
+      // Ordered shutdown: __done__ was already emitted by Python after
+      // MapsScraper.__aexit__ completed. Give the Python process a short
+      // bounded grace window to flush stdout/stderr and exit naturally before
+      // sending SIGTERM/taskkill.
+      const naturalExitGraceMs = Math.min(env.SCRAPER_GRACEFUL_SHUTDOWN_MS, 1500);
+      await Promise.race([
+        childClosed.then(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, naturalExitGraceMs)),
+      ]);
+    }
     if (child.exitCode === null && child.signalCode === null) {
-      if (!abortRequested) {
+      if (!abortRequested && !sawDone()) {
         consumerStoppedEarly = true;
       }
       console.log(

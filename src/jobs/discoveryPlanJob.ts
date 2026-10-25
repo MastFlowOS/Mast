@@ -14,7 +14,7 @@ import { getPlan, getPlanConcurrency } from "../config/plans.js";
 import type { PlanId } from "../config/plans.js";
 import type { EngineLead, EngineDoneInfo } from "../scraperBridge/pythonBridge.js";
 import { registerRequestAbortController, terminateRequest, type RequestTerminalReason } from "../discovery/requestLifecycle.js";
-import { cityTransitionFor } from "../discovery/cityScheduling.js";
+import { cityTransitionFor, resolveZeroSlotCityScheduling, reconcileDiscoveryCounters } from "../discovery/cityScheduling.js";
 import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
@@ -79,6 +79,16 @@ const DISCOVERY_TASK_MAX_ATTEMPTS = 9;
  * is legitimately still at cap.
  */
 const CONCURRENCY_RECHECK_DELAY_SECONDS = 5;
+
+const noSlotDeferralsByTask = new Map<string, number>();
+
+function getPriorNoSlotDeferrals(task: any): number {
+  const inMemory = noSlotDeferralsByTask.get(String(task.id)) ?? 0;
+  const errStr = typeof task?.error === "string" ? task.error : "";
+  const match = errStr.match(/^CITY_DEFERRED_NO_SLOT:(\d+)$/);
+  const persisted = match ? Number.parseInt(match[1], 10) : 0;
+  return Math.max(inMemory, Number.isFinite(persisted) ? persisted : 0);
+}
 
 /**
  * Heartbeat interval (ms). Workers pulse this on every iteration of the
@@ -1319,6 +1329,67 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     }
 
     const completionReason: string = cityReason;
+    if (
+      !terminalReason &&
+      poolResult?.deferredNoSlot &&
+      poolResult.perArea.length === 0 &&
+      discovered === 0 &&
+      accepted === 0
+    ) {
+      const priorDeferrals = getPriorNoSlotDeferrals(task);
+      const decision = resolveZeroSlotCityScheduling({
+        hasRemainingWork: (useStreetPool ? streetCount : curatedAreas.length) > 0,
+        deferredNoSlot: true,
+        priorDeferrals,
+      });
+
+      if (decision.action === "defer") {
+        noSlotDeferralsByTask.set(String(task.id), decision.nextDeferrals);
+        const preservedAttempts = Math.max(0, currentAttempt - 1);
+        console.info(
+          `[discovery-city] CITY_DEFERRED_NO_SLOT plan=${payload.planId} task=${payload.taskId} ` +
+            `city=${task.city} deferral=${decision.nextDeferrals} attempts_preserved=${preservedAttempts}`,
+        );
+        await db.from("discovery_tasks").update({
+          status: "queued",
+          attempts: preservedAttempts,
+          error: `${decision.reason}:${decision.nextDeferrals}`,
+          termination_reason: decision.reason,
+          last_heartbeat_at: null,
+        }).eq("id", task.id);
+
+        const boss = await getBoss();
+        await boss.send(
+          QUEUES.discoveryTask,
+          { taskId: payload.taskId, planId: payload.planId, request: payload.request },
+          { ...DISCOVERY_TASK_RETRY_OPTIONS, startAfter: CONCURRENCY_RECHECK_DELAY_SECONDS },
+        );
+        return;
+      }
+
+      if (decision.action === "terminal_no_slot") {
+        noSlotDeferralsByTask.delete(String(task.id));
+        console.warn(
+          `[discovery-city] CITY_NO_SLOT_CAPACITY_EXHAUSTED plan=${payload.planId} task=${payload.taskId} ` +
+            `city=${task.city} deferrals=${decision.nextDeferrals}`,
+        );
+        await recordTaskOutcome(task, {
+          discovered: 0,
+          accepted: 0,
+          rejected: 0,
+          duplicates: 0,
+          exhausted: false,
+          status: "failed",
+          error: decision.reason,
+          startedAt,
+          completionReason: decision.reason,
+          terminationReason: decision.reason,
+        });
+        await completePlanIfDrained(payload.planId);
+        return;
+      }
+    }
+    noSlotDeferralsByTask.delete(String(task.id));
     console.info(`[discovery-city] CITY_FINISHED city=${task.city} country=${task.country_code} elapsed_ms=${Date.now() - startedAt} candidates_found=${discovered} accepted=${accepted} rejected=${rejected} reason=${cityReason}`);
 
     // PHASE 3C-1 STEP 2 — ONE structured timing line per task (not
@@ -1357,6 +1428,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
     const totalDurationMs = Date.now() - startedAt;
     const firstLeadMs = profiler.getMarkMs("first_lead_delivered") ?? "n/a";
+    const staleMismatches = Number((pythonPerfData as any)?.counts?.stale_panel_mismatch ?? 0);
+    const accounting = reconcileDiscoveryCounters({
+      stalePanelMismatches: staleMismatches,
+      verifiedCandidatesYielded: discovered,
+      accepted,
+      duplicates,
+      rejectedByChannelOrQuality: rejected,
+    });
     console.info(
       `[discovery-summary] plan=${payload.planId} task=${payload.taskId} firstLeadMs=${firstLeadMs} ` +
         `totalDurationMs=${totalDurationMs} newForUser=${accepted} rawCandidates=${discovered} ` +

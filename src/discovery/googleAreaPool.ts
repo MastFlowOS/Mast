@@ -35,7 +35,7 @@ export type AreaRunOutcome = {
   error?: string;
 };
 
-export type PoolStopReason = "cancelled" | "target_reached" | "areas_exhausted" | "pool_size_zero" | "admission_capped";
+export type PoolStopReason = "cancelled" | "target_reached" | "areas_exhausted" | "pool_size_zero" | "no_slot_available" | "admission_capped";
 
 export type AreaWorkerLogEvent =
   | { type: "pool_start"; configured: number; availableAreas: number; capacity: number; poolSize: number }
@@ -60,6 +60,10 @@ export type AreaWorkerPoolResult = {
   perArea: { area: string; outcome: AreaRunOutcome }[];
   /** True if every area worker that ran failed (used to decide task-level retry). */
   allFailed: boolean;
+  /** Terminal stop reason for the worker pool pass. */
+  stoppedReason?: PoolStopReason;
+  /** True when curated areas remain (> 0) but no worker could run solely because browser slot capacity was 0. */
+  deferredNoSlot?: boolean;
 };
 
 /**
@@ -186,9 +190,9 @@ export type RunAreaWorkerPoolParams = {
    */
   runArea: (area: string, slotIndex: number) => Promise<AreaRunOutcome>;
   /** Non-blocking: attempts to reserve one browser slot. Returns a release fn, or undefined if none free right now. */
-  tryAcquireSlot: () => (() => void) | undefined;
+  tryAcquireSlot?: () => (() => void) | undefined;
   /** Polled before starting each new area claim; true once the plan is cancelled/target-reached. */
-  isTerminal: () => Promise<boolean> | boolean;
+  isTerminal?: () => Promise<boolean> | boolean;
   /**
    * Optional, additional admission gate — polled immediately after
    * `isTerminal()` (which already handles "fully satisfied/cancelled"),
@@ -248,8 +252,8 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     requestedQuantity,
     claimNextArea,
     runArea,
-    tryAcquireSlot,
-    isTerminal,
+    tryAcquireSlot = () => () => {},
+    isTerminal = () => false,
     shouldAdmitNextArea,
     onEvent,
   } = params;
@@ -281,7 +285,9 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
   let stoppedReason: PoolStopReason = "areas_exhausted";
 
   if (poolSize <= 0) {
-    onEvent?.({ type: "pool_stopped", reason: "pool_size_zero" });
+    const isNoSlot = totalCuratedAreas > 0 && (availableCapacity <= 0 || safeResourceWorkers <= 0);
+    const reason: PoolStopReason = isNoSlot ? "no_slot_available" : "pool_size_zero";
+    onEvent?.({ type: "pool_stopped", reason });
     return {
       configured: configuredWorkers,
       poolSize: 0,
@@ -290,10 +296,14 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
       totals: { discovered: 0, accepted: 0, rejected: 0, duplicates: 0 },
       perArea: [],
       allFailed: false,
+      stoppedReason: reason,
+      deferredNoSlot: isNoSlot,
     };
   }
 
   let startedWorkers = 0;
+  let sawSlotSkip = false;
+  let sawNoAreaSkip = false;
 
   // One "worker" is a loop that keeps claiming + running distinct areas
   // until it has a reason to stop. Each loop iteration holds exactly one
@@ -332,6 +342,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
 
       const release = tryAcquireSlot();
       if (!release) {
+        sawSlotSkip = true;
         onEvent?.({ type: "worker_skipped_no_slot", slot: slotIndex });
         return; // no capacity right now — do not queue; another worker's release() will let a fresh claim happen next loop tick elsewhere
       }
@@ -346,6 +357,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
 
       if (!area || usedAreas.has(area)) {
         release();
+        sawNoAreaSkip = true;
         onEvent?.({ type: "worker_skipped_no_area" });
         return; // no distinct new area left for this task's pool this run
       }
@@ -389,7 +401,13 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
   for (let i = 0; i < poolSize; i++) workers.push(workerLoop(i));
   await Promise.all(workers);
 
-  if (await isTerminal()) stoppedReason = usedAreas.size >= totalCuratedAreas ? "areas_exhausted" : (stoppedReason === "areas_exhausted" ? "target_reached" : stoppedReason);
+  const terminalNow = await isTerminal();
+  const deferredNoSlot = !terminalNow && startedWorkers === 0 && totalCuratedAreas > 0 && sawSlotSkip && !sawNoAreaSkip;
+  if (terminalNow) {
+    stoppedReason = usedAreas.size >= totalCuratedAreas ? "areas_exhausted" : (stoppedReason === "areas_exhausted" ? "target_reached" : stoppedReason);
+  } else if (deferredNoSlot) {
+    stoppedReason = "no_slot_available";
+  }
   onEvent?.({ type: "pool_stopped", reason: stoppedReason });
 
   const totals = perArea.reduce(
@@ -410,5 +428,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     totals,
     perArea,
     allFailed: perArea.length > 0 && perArea.every((p) => p.outcome.failed),
+    stoppedReason,
+    deferredNoSlot,
   };
 }

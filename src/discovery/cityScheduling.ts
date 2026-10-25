@@ -16,7 +16,9 @@ export type CityTransitionReason =
   | "USER_CANCELLED"
   | "TARGET_REACHED"
   | "WATCHDOG_TIMEOUT"
-  | "SCRAPER_FAILURE";
+  | "SCRAPER_FAILURE"
+  | "CITY_DEFERRED_NO_SLOT"
+  | "CITY_NO_SLOT_CAPACITY_EXHAUSTED";
 
 /**
  * Mirrors `EngineDoneInfo["terminationReason"]` (src/scraperBridge/pythonBridge.ts)
@@ -100,4 +102,91 @@ export function shouldScheduleCity(attempt: Pick<CityAttempt, "attempted">): boo
 export function computeDispatchSlots(concurrencyCap: number, runningCount: number, queuedCount: number): number {
   const available = Math.max(0, concurrencyCap - Math.max(0, runningCount));
   return Math.max(0, Math.min(available, Math.max(0, queuedCount)));
+}
+
+export const MAX_NO_SLOT_DEFERRALS = 5;
+
+export type ZeroSlotCityDecision = {
+  action: "defer" | "terminal_no_slot" | "not_deferred";
+  reason: CityTransitionReason;
+  nextDeferrals: number;
+  consumeAttempt: boolean;
+};
+
+/**
+ * Resolves how a city task should be handled when `runAreaWorkerPool` (or
+ * legacy Google Maps slot admission) encounters zero available browser slots
+ * while the city still has remaining curated areas/streets.
+ */
+export function resolveZeroSlotCityScheduling(input: {
+  hasRemainingWork: boolean;
+  deferredNoSlot: boolean;
+  priorDeferrals: number;
+  maxDeferrals?: number;
+}): ZeroSlotCityDecision {
+  const maxDeferrals = input.maxDeferrals ?? MAX_NO_SLOT_DEFERRALS;
+  const prior = Math.max(0, input.priorDeferrals);
+
+  if (!input.hasRemainingWork || !input.deferredNoSlot) {
+    return {
+      action: "not_deferred",
+      reason: "CITY_NO_PROGRESS",
+      nextDeferrals: prior,
+      consumeAttempt: true,
+    };
+  }
+
+  const nextDeferrals = prior + 1;
+  if (prior >= maxDeferrals) {
+    return {
+      action: "terminal_no_slot",
+      reason: "CITY_NO_SLOT_CAPACITY_EXHAUSTED",
+      nextDeferrals,
+      consumeAttempt: true,
+    };
+  }
+
+  return {
+    action: "defer",
+    reason: "CITY_DEFERRED_NO_SLOT",
+    nextDeferrals,
+    consumeAttempt: false,
+  };
+}
+
+export type DiscoveryCounterReconciliation = {
+  valid: boolean;
+  discovered: number;
+  accounted: number;
+  discrepancy: number;
+  stalePanelMismatchesExcluded: boolean;
+};
+
+/**
+ * Reconciles verified candidate discovery counters with downstream delivery,
+ * duplicate, and filter/quality rejection counters while keeping unverified
+ * stale-panel mismatches strictly outside `discovered`.
+ */
+export function reconcileDiscoveryCounters(input: {
+  stalePanelMismatches: number;
+  verifiedCandidatesYielded: number;
+  accepted: number;
+  duplicates: number;
+  rejectedByChannelOrQuality: number;
+  unexaminedAtEarlyStop?: number;
+}): DiscoveryCounterReconciliation {
+  const discovered = Math.max(0, input.verifiedCandidatesYielded);
+  const accounted =
+    Math.max(0, input.accepted) +
+    Math.max(0, input.duplicates) +
+    Math.max(0, input.rejectedByChannelOrQuality) +
+    Math.max(0, input.unexaminedAtEarlyStop ?? 0);
+  const discrepancy = discovered - accounted;
+  return {
+    valid: discrepancy === 0 && input.stalePanelMismatches >= 0,
+    discovered,
+    accounted,
+    discrepancy,
+    stalePanelMismatchesExcluded: true,
+  };
 }

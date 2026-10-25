@@ -115,6 +115,9 @@ def norm_maps_place_id(value: str | None) -> str:
     m = re.search(r"!1s(0x[a-f0-9]+:0x[a-f0-9]+)", raw, re.IGNORECASE)
     if m:
         return m.group(1).lower()
+    m = re.search(r"(0x[a-f0-9]+:0x[a-f0-9]+)", raw, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
     return ""
 
 
@@ -143,7 +146,11 @@ def fingerprints_for(biz: dict) -> set[str]:
     if email:
         keys.add(f"email:{email}")
 
-    place = norm_maps_place_id(biz.get("maps_link"))
+    place = (
+        norm_maps_place_id(biz.get("maps_link"))
+        or norm_maps_place_id(biz.get("maps_place_id"))
+        or norm_maps_place_id(biz.get("mapsPlaceId"))
+    )
     if place:
         keys.add(f"place:{place.lower()}")
 

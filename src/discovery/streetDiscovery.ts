@@ -164,7 +164,7 @@ export async function ensureStreetInventory(
   db: any,
   countryCode: string,
   city: string,
-  opts?: { countryName?: string; region?: string },
+  opts?: { countryName?: string; region?: string; osmRelationId?: number },
   // Test-only injection point (mirrors build.py's own `repository`
   // constructor-injection convention for the same reason): defaults to the
   // real subprocess bridge for both production call sites, which never
@@ -216,6 +216,7 @@ export async function ensureStreetInventory(
         city,
         country_name: opts?.countryName,
         region: opts?.region,
+        osm_relation_id: opts?.osmRelationId,
       },
       timeoutController.signal,
     )

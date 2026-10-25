@@ -18,6 +18,7 @@ import { cityTransitionFor, resolveZeroSlotCityScheduling, reconcileDiscoveryCou
 import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { COUNTRIES } from "../lib/geo/countries.js";
+import { getCityGeographicContext } from "../lib/geo/cityMetadata.js";
 import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
 import {
   claimDiscoveryStreet,
@@ -1000,9 +1001,12 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     if (sourceId === "google_maps" && streetCount === 0) {
       if (task.user_id && task.user_id === payload.request.userId) {
         const country = COUNTRIES.find((c) => c.code === task.country_code);
+        const cityContext = getCityGeographicContext(task.country_code, task.city);
+        const resolvedRegion = task.region ?? cityContext?.subdivision ?? payload.request.region;
         const inventoryOutcome = await ensureStreetInventory(db, task.country_code, task.city, {
           countryName: country?.name,
-          region: task.region ?? payload.request.region,
+          region: resolvedRegion,
+          osmRelationId: cityContext?.osmRelationId,
         });
         if (inventoryOutcome.mode === "street") {
           streetCount = inventoryOutcome.count;

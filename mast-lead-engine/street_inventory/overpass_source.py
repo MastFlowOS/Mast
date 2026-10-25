@@ -814,8 +814,176 @@ def build_relation_boundary_ql(
 #: something unrelated) rather than degrading safely.
 _MAX_ISO3166_2_SUBDIVISION_CODE_LENGTH = 3
 
+# Authoritative canonical OSM boundaries for major cities.
+# Used to deterministically disambiguate cities whose names collide with
+# multiple boundaries in OSM (e.g. Chicago, IL vs 16 distinct Chicago entities).
+_CANONICAL_CITY_BOUNDARIES: dict[tuple[str, str], dict[str, Any]] = {
+    ("US", "chicago"): {
+        "subdivision": "IL",
+        "relation_id": 122604,
+        "admin_level": 8,
+        "name": "Chicago",
+    },
+    ("US", "new york"): {
+        "subdivision": "NY",
+        "relation_id": 175905,
+        "admin_level": 8,
+        "name": "New York City",
+    },
+    ("US", "los angeles"): {
+        "subdivision": "CA",
+        "relation_id": 207359,
+        "admin_level": 8,
+        "name": "Los Angeles",
+    },
+    ("US", "houston"): {
+        "subdivision": "TX",
+        "relation_id": 2688911,
+        "admin_level": 8,
+        "name": "Houston",
+    },
+    ("US", "phoenix"): {
+        "subdivision": "AZ",
+        "relation_id": 111838,
+        "admin_level": 8,
+        "name": "Phoenix",
+    },
+    ("US", "philadelphia"): {
+        "subdivision": "PA",
+        "relation_id": 188022,
+        "admin_level": 8,
+        "name": "Philadelphia",
+    },
+    ("CA", "toronto"): {
+        "subdivision": "ON",
+        "relation_id": 3235142,
+        "admin_level": 8,
+        "name": "Toronto",
+    },
+    ("CA", "montreal"): {
+        "subdivision": "QC",
+        "relation_id": 1634158,
+        "admin_level": 8,
+        "name": "Montreal",
+    },
+    ("CA", "vancouver"): {
+        "subdivision": "BC",
+        "relation_id": 1852574,
+        "admin_level": 8,
+        "name": "Vancouver",
+    },
+    ("GB", "london"): {
+        "subdivision": "ENG",
+        "relation_id": 65606,
+        "admin_level": 8,
+        "name": "London",
+    },
+    ("FR", "paris"): {
+        "subdivision": "IDF",
+        "relation_id": 7444,
+        "admin_level": 8,
+        "name": "Paris",
+    },
+    ("DE", "berlin"): {
+        "subdivision": "BE",
+        "relation_id": 62422,
+        "admin_level": 4,
+        "name": "Berlin",
+    },
+    ("DE", "munich"): {
+        "subdivision": "BY",
+        "relation_id": 62428,
+        "admin_level": 6,
+        "name": "München",
+    },
+    ("DE", "hamburg"): {
+        "subdivision": "HH",
+        "relation_id": 62782,
+        "admin_level": 4,
+        "name": "Hamburg",
+    },
+}
 
-def _resolve_iso3166_2(country_code: Optional[str], region: Optional[str]) -> Optional[str]:
+
+def get_canonical_city_boundary(country_code: Optional[str], city: Optional[str]) -> Optional[dict[str, Any]]:
+    if not country_code or not city:
+        return None
+    return _CANONICAL_CITY_BOUNDARIES.get((country_code.strip().upper(), city.strip().lower()))
+
+
+def _disambiguate_municipal_boundary(
+    elements: list[dict],
+    city: str,
+    target_relation_id: Optional[int] = None,
+) -> Optional[dict]:
+    """
+    Deterministically selects the intended municipal boundary from multiple OSM
+    boundary elements using administrative boundary level, type, relation status,
+    and optional canonical relation ID.
+    Returns the unique matching element, or None if ambiguous / unresolvable.
+    """
+    if not elements:
+        return None
+    if len(elements) == 1:
+        return elements[0]
+
+    # 1. If target canonical relation ID is known, check for it directly
+    if target_relation_id is not None:
+        target_area_id = _OVERPASS_RELATION_AREA_ID_OFFSET + target_relation_id
+        for el in elements:
+            if el.get("id") == target_area_id or el.get("id") == target_relation_id:
+                return el
+
+    # 2. Filter candidates by administrative boundary constraints
+    candidates: list[tuple[dict, Optional[int], dict]] = []
+    for el in elements:
+        tags = el.get("tags") or {}
+        admin_level_raw = tags.get("admin_level")
+        try:
+            admin_level = int(admin_level_raw) if admin_level_raw is not None else None
+        except (TypeError, ValueError):
+            admin_level = None
+
+        # Exclude country/state level boundaries (<= 4)
+        if admin_level is not None and admin_level <= _MAX_BROAD_ADMIN_LEVEL:
+            continue
+
+        # If boundary tag is present, must be administrative
+        boundary_type = tags.get("boundary")
+        if boundary_type and boundary_type != "administrative":
+            continue
+
+        candidates.append((el, admin_level, tags))
+
+    if not candidates:
+        return None
+
+    # 3. Prefer incorporated municipal level (admin_level 8 in US/FR/CA)
+    admin_8_candidates = [c[0] for c in candidates if c[1] == 8]
+    if len(admin_8_candidates) == 1:
+        return admin_8_candidates[0]
+
+    # 4. Prefer relation-derived over way-derived
+    rel_candidates = [
+        c[0] for c in candidates
+        if (c[0].get("id") or 0) >= _OVERPASS_RELATION_AREA_ID_OFFSET or c[0].get("type") == "relation"
+    ]
+    if len(rel_candidates) == 1:
+        return rel_candidates[0]
+
+    # 5. Prefer place in (city, town, municipality)
+    place_city_candidates = [
+        c[0] for c in candidates
+        if c[2].get("place") in ("city", "town", "municipality")
+    ]
+    if len(place_city_candidates) == 1:
+        return place_city_candidates[0]
+
+    return None
+
+
+
+def _resolve_iso3166_2(country_code: Optional[str], region: Optional[str], city: Optional[str] = None) -> Optional[str]:
     """
     Builds a best-effort ISO 3166-2 subdivision code (e.g. "US" + "NY"
     -> "US-NY") from the caller-supplied `country_code` + `region`,
@@ -837,15 +1005,20 @@ def _resolve_iso3166_2(country_code: Optional[str], region: Optional[str]) -> Op
     degrades to the pre-existing "reject as ambiguous" behavior; it
     never fabricates a guessed code.
     """
-    if not country_code or not region:
+    if not country_code:
         return None
     cc = country_code.strip().upper()
-    rc = region.strip().upper()
-    if not cc or not rc:
+    if not cc:
         return None
-    if " " in rc or len(rc) > _MAX_ISO3166_2_SUBDIVISION_CODE_LENGTH:
-        return None
-    return f"{cc}-{rc}"
+    if region:
+        rc = region.strip().upper()
+        if " " not in rc and len(rc) <= _MAX_ISO3166_2_SUBDIVISION_CODE_LENGTH:
+            return f"{cc}-{rc}"
+    if city:
+        canon = get_canonical_city_boundary(cc, city)
+        if canon and canon.get("subdivision") and city.strip().lower() != "new york":
+            return f"{cc}-{canon['subdivision']}"
+    return None
 
 
 def _run_boundary_check_query(
@@ -906,6 +1079,7 @@ def _resolve_area_scope(
     hard_deadline: float,
     region: Optional[str] = None,
     country_code: Optional[str] = None,
+    osm_relation_id: Optional[int] = None,
 ) -> tuple[Optional[StreetInventoryResult], Optional[str], Optional[int]]:
     """
     Confirms `resolved_area` names exactly one OSM boundary — resolving
@@ -1052,7 +1226,9 @@ def _resolve_area_scope(
         )
 
     if len(elements) > 1:
-        iso3166_2 = _resolve_iso3166_2(country_code, region)
+        iso3166_2 = _resolve_iso3166_2(country_code, region, city=city)
+        canonical = get_canonical_city_boundary(country_code, city) if country_code else None
+        target_rel_id = osm_relation_id or (canonical.get("relation_id") if canonical and (iso3166_2 or osm_relation_id) else None)
         if iso3166_2:
             log.info(
                 "[street-inventory] area name %r for city=%r matched %d boundaries — retrying "
@@ -1066,8 +1242,12 @@ def _resolve_area_scope(
             )
             if failure is not None:
                 return failure, None, None
-            if narrowed_elements and len(narrowed_elements) == 1:
-                elements = narrowed_elements
+
+            disambiguated = _disambiguate_municipal_boundary(
+                narrowed_elements or [], city, target_relation_id=target_rel_id,
+            )
+            if disambiguated is not None:
+                elements = [disambiguated]
                 iso3166_2_used = iso3166_2
                 fallback_area_id, replaced_elements, fallback_failure = (
                     _use_relation_fallback_if_way_derived(elements, iso3166_2)
@@ -1075,43 +1255,57 @@ def _resolve_area_scope(
                 if fallback_failure is not None:
                     return fallback_failure, None, None
                 if replaced_elements is not None:
-                    # Way-derived: relation fallback found the real
-                    # boundary relation and its computed area id.
                     area_id_used = fallback_area_id
                     elements = replaced_elements
                 else:
-                    # Not way-derived (the common case for this
-                    # narrowed-to-one path) — same as before this fix,
-                    # use the matched area's own id directly.
                     area_id_used = elements[0].get("id")
             else:
+                matched_count = len(narrowed_elements) if narrowed_elements is not None else 0
                 log.warning(
                     "[street-inventory] ambiguous OSM area name %r for city=%r matched %d distinct "
                     "boundaries and narrowing to subdivision %r matched %d — refusing to silently "
                     "pick one",
-                    resolved_area, city, len(elements), iso3166_2, len(narrowed_elements),
+                    resolved_area, city, len(elements), iso3166_2, matched_count,
                 )
                 return StreetInventoryResult(
                     status="unavailable",
                     reason=(
                         f"ambiguous OSM area name {resolved_area!r} for city={city!r} matched "
                         f"{len(elements)} distinct boundaries (narrowing to subdivision "
-                        f"{iso3166_2!r} matched {len(narrowed_elements)})"
+                        f"{iso3166_2!r} matched {matched_count})"
                     ),
                 ), None, None
         else:
-            log.warning(
-                "[street-inventory] ambiguous OSM area name %r for city=%r matched %d distinct "
-                "boundaries — refusing to silently pick one",
-                resolved_area, city, len(elements),
+            disambiguated = (
+                _disambiguate_municipal_boundary(elements, city, target_relation_id=target_rel_id)
+                if target_rel_id is not None
+                else None
             )
-            return StreetInventoryResult(
-                status="unavailable",
-                reason=(
-                    f"ambiguous OSM area name {resolved_area!r} for city={city!r} matched "
-                    f"{len(elements)} distinct boundaries"
-                ),
-            ), None, None
+            if disambiguated is not None:
+                elements = [disambiguated]
+                fallback_area_id, replaced_elements, fallback_failure = (
+                    _use_relation_fallback_if_way_derived(elements, None)
+                )
+                if fallback_failure is not None:
+                    return fallback_failure, None, None
+                if replaced_elements is not None:
+                    area_id_used = fallback_area_id
+                    elements = replaced_elements
+                else:
+                    area_id_used = elements[0].get("id")
+            else:
+                log.warning(
+                    "[street-inventory] ambiguous OSM area name %r for city=%r matched %d distinct "
+                    "boundaries — refusing to silently pick one",
+                    resolved_area, city, len(elements),
+                )
+                return StreetInventoryResult(
+                    status="unavailable",
+                    reason=(
+                        f"ambiguous OSM area name {resolved_area!r} for city={city!r} matched "
+                        f"{len(elements)} distinct boundaries"
+                    ),
+                ), None, None
 
     # CRITMODE — way-derived area ID fix, single-match gap (see above):
     # this is the flat, never-ambiguous case — `elements` still has its
@@ -1166,6 +1360,7 @@ def fetch_city_street_inventory(
     country_name: Optional[str] = None,
     region: Optional[str] = None,
     area_name: Optional[str] = None,
+    osm_relation_id: Optional[int] = None,
     endpoint_url: str = DEFAULT_ENDPOINT_URL,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     http_post: Optional[HttpPost] = None,
@@ -1225,7 +1420,7 @@ def fetch_city_street_inventory(
         _t_verify_start = time.monotonic()
         verification_failure, resolved_iso3166_2, resolved_area_id = _resolve_area_scope(
             poster, endpoint_url, resolved_area, city, timeout_seconds, hard_deadline,
-            region=region, country_code=country_code,
+            region=region, country_code=country_code, osm_relation_id=osm_relation_id,
         )
         log.info(
             "[street-inventory] boundary verification city=%r area=%r ok=%s iso3166_2=%r "

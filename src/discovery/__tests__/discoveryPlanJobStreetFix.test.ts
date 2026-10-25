@@ -7,6 +7,11 @@ import {
   discoveryModeForStreetInventory,
   streetInventoryFreshCount,
 } from "../streetDiscovery.js";
+import {
+  getCityGeographicContext,
+  resolveCitySubdivision,
+  resolveCityOsmRelationId,
+} from "../../lib/geo/cityMetadata.js";
 
 describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
   test("buildGoogleMapsEngineParams maps knownPlaceIds to known_place_ids only when non-empty", () => {
@@ -197,5 +202,78 @@ describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
     assert.equal(streetCount, 0);
     assert.equal(useStreetPool, false);
     assert.equal(fallbackReason, "unavailable:osm_overpass_timeout");
+  });
+
+  test("resolveCitySubdivision and getCityGeographicContext provide authoritative metadata for major cities", () => {
+    const chicagoMeta = getCityGeographicContext("US", "Chicago");
+    assert.ok(chicagoMeta);
+    assert.equal(chicagoMeta.subdivision, "IL");
+    assert.equal(chicagoMeta.iso3166_2, "US-IL");
+    assert.equal(chicagoMeta.osmRelationId, 122604);
+    assert.equal(chicagoMeta.adminLevel, 8);
+    assert.equal(resolveCitySubdivision("US", "Chicago"), "IL");
+    assert.equal(resolveCityOsmRelationId("US", "Chicago"), 122604);
+
+    const nyMeta = getCityGeographicContext("US", "New York");
+    assert.ok(nyMeta);
+    assert.equal(nyMeta.subdivision, "NY");
+    assert.equal(nyMeta.iso3166_2, "US-NY");
+    assert.equal(nyMeta.osmRelationId, 175905);
+
+    const laMeta = getCityGeographicContext("US", "Los Angeles");
+    assert.ok(laMeta);
+    assert.equal(laMeta.subdivision, "CA");
+    assert.equal(laMeta.osmRelationId, 207359);
+
+    const torontoMeta = getCityGeographicContext("CA", "Toronto");
+    assert.ok(torontoMeta);
+    assert.equal(torontoMeta.subdivision, "ON");
+    assert.equal(torontoMeta.osmRelationId, 3235142);
+
+    assert.equal(resolveCitySubdivision("US", "UnknownVille"), undefined);
+    assert.equal(resolveCityOsmRelationId("US", "UnknownVille"), undefined);
+  });
+
+  test("Discovery plan job passes resolved subdivision and osmRelationId when building Chicago street inventory", async () => {
+    let capturedParams: any = null;
+    const mockBuildFn = async (params: any) => {
+      capturedParams = params;
+      return { status: "ok" as const, fetched: 500, upserted: 500, batches: 5 };
+    };
+
+    let count = 0;
+    const mockDb = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              eq: () => ({
+                then: (resolve: any) => resolve({ count, error: null }),
+              }),
+              then: (resolve: any) => resolve({ count, error: null }),
+            }),
+          }),
+        }),
+      }),
+    };
+
+    const cityContext = getCityGeographicContext("US", "Chicago");
+    const outcome = await ensureStreetInventory(
+      mockDb as any,
+      "US",
+      "Chicago",
+      {
+        countryName: "United States",
+        region: cityContext?.subdivision,
+        osmRelationId: cityContext?.osmRelationId,
+      },
+      mockBuildFn,
+    );
+
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.country_code, "US");
+    assert.equal(capturedParams.city, "Chicago");
+    assert.equal(capturedParams.region, "IL");
+    assert.equal(capturedParams.osm_relation_id, 122604);
   });
 });

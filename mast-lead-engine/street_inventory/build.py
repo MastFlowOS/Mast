@@ -33,6 +33,7 @@ def build_city_street_inventory(
     country_name: Optional[str] = None,
     region: Optional[str] = None,
     area_name: Optional[str] = None,
+    osm_relation_id: Optional[int] = None,
     repository: Optional[SupabaseStreetInventoryRepository] = None,
     **fetch_kwargs,
 ) -> dict:
@@ -59,6 +60,7 @@ def build_city_street_inventory(
         country_name=country_name,
         region=region,
         area_name=area_name,
+        osm_relation_id=osm_relation_id,
         **fetch_kwargs,
     )
 

@@ -40,6 +40,7 @@ import {
   type StreetClaim,
   type StreetScope,
 } from "../discovery/streetDiscovery.js";
+import { getCityGeographicContext } from "../lib/geo/cityMetadata.js";
 import { areaStreamTarget, cityStreamTarget, computeAskFor } from "../discovery/roundSizing.js";
 import {
   createAreaScanBudgetCoordinator,
@@ -843,8 +844,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
       let streetScope: StreetScope | undefined;
       let streetInventoryCountForCity = 0;
       if (followUp?.userId) {
+        const cityContext = getCityGeographicContext(country.code, city);
         const inventoryOutcome = await ensureStreetInventory(supabaseAdmin, country.code, city, {
           countryName: country.name,
+          region: cityContext?.subdivision,
+          osmRelationId: cityContext?.osmRelationId,
         });
         if (inventoryOutcome.mode === "street") {
           streetInventoryCountForCity = inventoryOutcome.count;

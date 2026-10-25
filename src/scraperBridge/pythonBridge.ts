@@ -304,6 +304,7 @@ export type EngineStreetInventoryParams = {
   country_name?: string;
   region?: string;
   area_name?: string;
+  osm_relation_id?: number;
 };
 
 /**

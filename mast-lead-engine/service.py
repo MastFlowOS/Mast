@@ -2518,6 +2518,7 @@ async def build_street_inventory_v2(payload: dict) -> dict:
         country_name=payload.get("country_name"),
         region=payload.get("region"),
         area_name=payload.get("area_name"),
+        osm_relation_id=payload.get("osm_relation_id"),
     )
 
 

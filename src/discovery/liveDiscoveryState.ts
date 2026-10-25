@@ -66,6 +66,14 @@ export function initialRejectionReasonCounts(): RejectionReasonCounts {
   };
 }
 
+export type DiscoveryInitializationState = {
+  active: boolean;
+  stage?: string;
+  message?: string;
+  lastHeartbeatAt: number;
+  startedAt?: number;
+};
+
 export type DiscoveryLiveState = {
   scouts: Record<ScoutId, ScoutLiveState>;
   delivered: number;
@@ -75,6 +83,8 @@ export type DiscoveryLiveState = {
   status: DiscoveryStatus;
   latestEventAt?: number;
   rejectionReasons: RejectionReasonCounts;
+  initialization?: DiscoveryInitializationState;
+  initializationCompletedAt?: number;
 
   /**
    * Internal de-dup bookkeeping (SPEC #25: "the reducer/state layer should
@@ -400,6 +410,32 @@ export function reduceLiveDiscoveryEvent(state: DiscoveryLiveState, event: Disco
       next.status = "failed";
       for (const id of SCOUT_IDS) {
         next.scouts[id] = { ...next.scouts[id], status: "error", sentence: DISCOVERY_PROBLEM, businessName: undefined };
+      }
+      return next;
+    }
+
+    case "initialization_progress": {
+      const isCompleted = event.phase === "completed" || event.phase === "fallback" || event.phase === "failed";
+      const message = event.message ?? event.reason ?? "";
+      next.initialization = {
+        active: !isCompleted,
+        stage: event.phase ?? (isCompleted ? "completed" : "initializing"),
+        message,
+        lastHeartbeatAt: event.timestamp,
+        startedAt: state.initialization?.startedAt ?? event.timestamp,
+      };
+      if (isCompleted) {
+        next.initializationCompletedAt = event.timestamp;
+        if (next.scouts[1].status === "idle" && next.scouts[1].sentence.startsWith("Preparing street map")) {
+          next.scouts[1] = { ...next.scouts[1], sentence: "Waiting to start..." };
+        }
+      } else {
+        if (next.scouts[1].status === "idle") {
+          next.scouts[1] = {
+            ...next.scouts[1],
+            sentence: message || "Preparing street map...",
+          };
+        }
       }
       return next;
     }

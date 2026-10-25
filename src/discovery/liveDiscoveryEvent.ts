@@ -47,7 +47,8 @@ export type DiscoveryLiveEventType =
   | "lead_delivered"
   | "area_completed"
   | "discovery_completed"
-  | "discovery_failed";
+  | "discovery_failed"
+  | "initialization_progress";
 
 /**
  * One normalized live-discovery event.
@@ -136,6 +137,10 @@ export type DiscoveryLiveEvent = {
 
   /** Only on discovery_failed. */
   failureReason?: string;
+
+  /** Only on initialization_progress — preflight / inventory progress description. */
+  message?: string;
+  phase?: "initializing" | "completed" | "fallback" | "failed";
 };
 
 let _seq = 0;
@@ -218,6 +223,19 @@ export function discoveryFailedEvent(planId: string, failureReason: string): Dis
   return { ...baseEvent(planId, "discovery_failed"), failureReason };
 }
 
+export function initializationProgressEvent(
+  planId: string,
+  message: string,
+  phase: "initializing" | "completed" | "fallback" | "failed" = "initializing",
+): DiscoveryLiveEvent {
+  return {
+    ...baseEvent(planId, "initialization_progress"),
+    reason: message,
+    message,
+    phase,
+  };
+}
+
 // ── Process-local pub/sub, keyed by discovery_plans.id ─────────────────────
 //
 // Mirrors requestLifecycle.ts's runtimes Map exactly: process-local (a
@@ -293,7 +311,7 @@ async function persistDiscoveryLiveEvent(event: DiscoveryLiveEvent): Promise<voi
       area_label: event.areaLabel ?? null,
       pipeline_id: event.pipelineId ?? null,
       business_name: event.businessName ?? null,
-      reason: event.reason ?? null,
+      reason: event.reason ?? event.message ?? null,
       delivered_count: event.deliveredCount ?? null,
       target: event.target ?? null,
       area_outcome: event.areaOutcome ?? null,

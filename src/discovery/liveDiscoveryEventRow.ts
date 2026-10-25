@@ -42,6 +42,7 @@ export function rowToDiscoveryLiveEvent(row: DiscoveryLiveEventRow): DiscoveryLi
     pipelineId: row.pipeline_id ?? undefined,
     businessName: row.business_name ?? undefined,
     reason: row.reason ?? undefined,
+    message: row.event_type === "initialization_progress" ? (row.reason ?? undefined) : undefined,
     deliveredCount: row.delivered_count ?? undefined,
     target: row.target ?? undefined,
     areaOutcome: row.area_outcome ?? undefined,

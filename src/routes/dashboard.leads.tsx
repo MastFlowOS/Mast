@@ -48,6 +48,7 @@ import { LiveDiscoveryScreen } from "@/components/mast/LiveDiscoveryScreen";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildDiscoverInsights, type DiscoverInsight } from "@/lib/discover-insights";
 import { buildNextSearchSuggestions, type NextSearchSuggestions } from "@/lib/discover-suggestions";
+import { evaluateStartupWatchdog, STARTUP_WATCHDOG_TIMEOUT_MS } from "@/discovery/startupWatchdog";
 import { usePermissions } from "@/hooks/use-permissions";
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { type FeatureId } from "@/lib/permissions";
@@ -368,23 +369,62 @@ function GetLeads() {
     liveDiscoveryStateRef.current = liveDiscoveryState;
   }, [liveDiscoveryState]);
 
-  // Clear startup watchdog as soon as any scout becomes active or progress begins
-  useEffect(() => {
-    if (!liveDiscoveryState) return;
-    const scouts = liveDiscoveryState.scouts ? Object.values(liveDiscoveryState.scouts) : [];
-    const anyScoutActive = scouts.some((s) => s?.status !== "idle");
-    if (anyScoutActive || liveDiscoveryState.status === "discovering" || (liveDiscoveryState.delivered ?? 0) > 0) {
+  const watchdogTimerRef = useRef<NodeJS.Timeout | number | null>(null);
+  const searchStartedAtRef = useRef<number>(0);
+  const handleCancelSearchRef = useRef<(() => Promise<void>) | null>(null);
+
+  const scheduleStartupWatchdogCheck = useCallback((delayMs: number) => {
+    if (watchdogTimerRef.current) {
+      clearTimeout(watchdogTimerRef.current);
+      watchdogTimerRef.current = null;
+    }
+    watchdogTimerRef.current = setTimeout(() => {
+      runStartupWatchdogCheck();
+    }, delayMs);
+  }, []);
+
+  const runStartupWatchdogCheck = useCallback(() => {
+    if (!activeJobIdRef.current) return;
+    const evaluation = evaluateStartupWatchdog({
+      now: Date.now(),
+      searchStartedAt: searchStartedAtRef.current,
+      state: liveDiscoveryStateRef.current,
+      seenLeadsCount: seenLeadIdsRef.current.size,
+      hasActiveJob: Boolean(activeJobIdRef.current),
+    });
+
+    if (evaluation.status === "satisfied") {
       if (watchdogTimerRef.current) {
         clearTimeout(watchdogTimerRef.current);
         watchdogTimerRef.current = null;
       }
+      return;
     }
-  }, [liveDiscoveryState]);
+
+    if (evaluation.status === "timed_out") {
+      if (watchdogTimerRef.current) {
+        clearTimeout(watchdogTimerRef.current);
+        watchdogTimerRef.current = null;
+      }
+      toast.error(evaluation.title, { description: evaluation.description });
+      void handleCancelSearchRef.current?.();
+      return;
+    }
+
+    if (evaluation.status === "active_progress") {
+      scheduleStartupWatchdogCheck(evaluation.nextCheckDelayMs);
+    }
+  }, [scheduleStartupWatchdogCheck]);
+
+  // Evaluate startup watchdog whenever live discovery state changes
+  useEffect(() => {
+    if (!activeJobIdRef.current) return;
+    runStartupWatchdogCheck();
+  }, [liveDiscoveryState, runStartupWatchdogCheck]);
 
   // The last finished run: its truthful outcome (requested / delivered /
   // shortfall), the exact request sent, and whether a Live follow-up is offered.
   const [lastRun, setLastRun] = useState<LastDiscoverRun | null>(null);
-  const watchdogTimerRef = useRef<NodeJS.Timeout | number | null>(null);
   const concludeRef = useRef<((outcome: DiscoverOutcome, meta: Pick<LastDiscoverRun, "jobId" | "source" | "ranking" | "liveFollowUp">) => void) | null>(null);
 
   // Desktop discovery worker integration (Phase 5)
@@ -784,20 +824,10 @@ function GetLeads() {
         { requestedQuantity: liveRequested },
       );
 
-      // Truthful startup watchdog: only fires if after 45s NO scouts started and no leads arrived
-      const WATCHDOG_TIMEOUT_MS = 45000;
-      watchdogTimerRef.current = setTimeout(() => {
-        const state = liveDiscoveryStateRef.current;
-        const scouts = state?.scouts ? Object.values(state.scouts) : [];
-        const anyScoutActive = scouts.some((s) => s?.status !== "idle") || state?.status === "discovering";
-
-        if (!anyScoutActive && seenLeadIdsRef.current.size === 0 && activeJobIdRef.current) {
-          toast.error("Discovery startup timed out", {
-            description: "No scouts started within 45 seconds. Terminating discovery run.",
-          });
-          void handleCancelSearch();
-        }
-      }, WATCHDOG_TIMEOUT_MS);
+      // Truthful startup watchdog: differentiates active preflight/inventory initialization
+      // from stalled scout startup using evaluateStartupWatchdog.
+      searchStartedAtRef.current = Date.now();
+      scheduleStartupWatchdogCheck(STARTUP_WATCHDOG_TIMEOUT_MS);
     } catch (err) {
       if (watchdogTimerRef.current) {
         clearTimeout(watchdogTimerRef.current);
@@ -895,6 +925,7 @@ function GetLeads() {
       }
     }
   };
+  handleCancelSearchRef.current = handleCancelSearch;
 
   // ─── 1. Live Discovery State ────────────────────────────────────────────────
   // Free's Live Discovery: a real discovery_plans row exists, so real Scout

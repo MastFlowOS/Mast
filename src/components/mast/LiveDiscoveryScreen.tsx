@@ -81,7 +81,10 @@ function ScoutRow({ scout }: { scout: ScoutLiveState }) {
 
 function headerCopy(state: DiscoveryLiveState | null): { title: string; subtitle: string } {
   if (!state || state.status === "starting" || state.status === "discovering") {
-    return { title: "Discovering Opportunities", subtitle: "Find the best businesses for you in real time" };
+    const subtitle = state?.initialization?.active && state?.initialization?.message
+      ? state.initialization.message
+      : "Find the best businesses for you in real time";
+    return { title: "Discovering Opportunities", subtitle };
   }
   if (state.status === "completed") return { title: "Discovery Complete", subtitle: "Target reached 🎯" };
   if (state.status === "exhausted") return { title: "Discovery complete", subtitle: "We've searched the available opportunities." };

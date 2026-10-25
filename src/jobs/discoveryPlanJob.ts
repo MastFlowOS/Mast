@@ -28,6 +28,7 @@ import {
   discoveryModeForStreetInventory,
   streetInventoryFreshCount,
   ensureStreetInventory,
+  type StreetInventoryOutcome,
   type StreetClaim,
   type StreetScope,
 } from "../discovery/streetDiscovery.js";
@@ -50,6 +51,7 @@ import {
   leadDeliveredEvent,
   discoveryCompletedEvent,
   discoveryFailedEvent,
+  initializationProgressEvent,
 } from "../discovery/liveDiscoveryEvent.js";
 
 
@@ -995,7 +997,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       : 0;
     let streetCount = initialStreetCount;
     fallbackReason = "none";
-
+    let terminalReason: RequestTerminalReason | undefined;
     // FIX 1 — If no fresh street inventory exists, invoke the existing
     // ensureStreetInventory() builder before deciding mode.
     if (sourceId === "google_maps" && streetCount === 0) {
@@ -1003,11 +1005,47 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         const country = COUNTRIES.find((c) => c.code === task.country_code);
         const cityContext = getCityGeographicContext(task.country_code, task.city);
         const resolvedRegion = task.region ?? cityContext?.subdivision ?? payload.request.region;
-        const inventoryOutcome = await ensureStreetInventory(db, task.country_code, task.city, {
-          countryName: country?.name,
-          region: resolvedRegion,
-          osmRelationId: cityContext?.osmRelationId,
-        });
+        publishDiscoveryLiveEvent(
+          initializationProgressEvent(
+            payload.planId,
+            `Initializing street network for ${task.city}...`,
+            "initializing",
+          ),
+        );
+
+        const heartbeatInterval = setInterval(() => {
+          if (requestAbort.signal.aborted) return;
+          publishDiscoveryLiveEvent(
+            initializationProgressEvent(
+              payload.planId,
+              `Building street inventory for ${task.city}...`,
+              "initializing",
+            ),
+          );
+        }, 10_000);
+
+        let inventoryOutcome: StreetInventoryOutcome;
+        try {
+          inventoryOutcome = await ensureStreetInventory(db, task.country_code, task.city, {
+            countryName: country?.name,
+            region: resolvedRegion,
+            osmRelationId: cityContext?.osmRelationId,
+            signal: requestAbort.signal,
+          });
+        } finally {
+          clearInterval(heartbeatInterval);
+        }
+
+        publishDiscoveryLiveEvent(
+          initializationProgressEvent(
+            payload.planId,
+            inventoryOutcome.mode === "street"
+              ? `Street inventory ready (${inventoryOutcome.count} streets)`
+              : `Street inventory unavailable (${inventoryOutcome.fallbackReason}) — switching to area mode`,
+            inventoryOutcome.mode === "street" ? "completed" : "fallback",
+          ),
+        );
+
         if (inventoryOutcome.mode === "street") {
           streetCount = inventoryOutcome.count;
           fallbackReason = "none";
@@ -1020,6 +1058,22 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       }
     } else if (sourceId !== "google_maps") {
       fallbackReason = "unsupported_source";
+    }
+
+    if (requestAbort.signal.aborted) {
+      terminalReason = (await observeTerminalPlan()) ?? "USER_CANCELLED";
+      await recordTaskOutcome(task, {
+        discovered: 0,
+        accepted: 0,
+        rejected: 0,
+        duplicates: 0,
+        exhausted: false,
+        status: terminalReason === "USER_CANCELLED" ? "cancelled" : "completed",
+        startedAt,
+        completionReason: terminalReason,
+        terminationReason: terminalReason,
+      });
+      return;
     }
 
     useStreetPool = discoveryModeForStreetInventory(sourceId, streetCount) === "street";
@@ -1044,7 +1098,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
     const attemptCtx = { db, task, payload, profiler, provider, generator, requestAbort, observeTerminalPlan, startedAt };
 
-    let terminalReason: RequestTerminalReason | undefined;
+    // terminalReason declared above
     // Initialized (not just declared) so TS's definite-assignment analysis
     // doesn't complain about the pool branch's assignment happening inside
     // an async callback closure — always overwritten before use either way.

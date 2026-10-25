@@ -164,13 +164,16 @@ export async function ensureStreetInventory(
   db: any,
   countryCode: string,
   city: string,
-  opts?: { countryName?: string; region?: string; osmRelationId?: number },
+  opts?: { countryName?: string; region?: string; osmRelationId?: number; signal?: AbortSignal },
   // Test-only injection point (mirrors build.py's own `repository`
   // constructor-injection convention for the same reason): defaults to the
   // real subprocess bridge for both production call sites, which never
   // pass this argument.
   buildFn: typeof runEngineStreetInventory = runEngineStreetInventory,
 ): Promise<StreetInventoryOutcome> {
+  if (opts?.signal?.aborted) {
+    return { mode: "area", count: 0, fallbackReason: "cancelled" };
+  }
   // CRITMODE — contaminated New York street inventory follow-up: a bare
   // "does this scope have ANY rows" check (the old `existing > 0` below)
   // cannot distinguish real, boundary-verified inventory from inventory
@@ -209,6 +212,16 @@ export async function ensureStreetInventory(
       () => timeoutController.abort(),
       STREET_INVENTORY_BUILD_TIMEOUT_MS,
     );
+    const onCallerAbort = () => {
+      timeoutController.abort();
+    };
+    if (opts?.signal) {
+      if (opts.signal.aborted) {
+        timeoutController.abort();
+      } else {
+        opts.signal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+    }
     const buildStartedAt = Date.now();
     buildPromise = buildFn(
       {
@@ -221,7 +234,8 @@ export async function ensureStreetInventory(
       timeoutController.signal,
     )
       .catch((err) => {
-        const timedOut = timeoutController.signal.aborted;
+        const callerAborted = Boolean(opts?.signal?.aborted);
+        const timedOut = timeoutController.signal.aborted && !callerAborted;
         const elapsedMs = Date.now() - buildStartedAt;
         if (timedOut) {
           console.warn(
@@ -236,7 +250,12 @@ export async function ensureStreetInventory(
         }
         return undefined;
       })
-      .finally(() => clearTimeout(timeoutHandle));
+      .finally(() => {
+        clearTimeout(timeoutHandle);
+        if (opts?.signal) {
+          opts.signal.removeEventListener("abort", onCallerAbort);
+        }
+      });
     inFlightInventoryBuilds.set(key, buildPromise);
     // Removed once settled (success, unavailable, or error) so a later,
     // independent call for the same city — e.g. after a transient Overpass
@@ -246,6 +265,10 @@ export async function ensureStreetInventory(
   }
 
   const result = await buildPromise;
+
+  if (opts?.signal?.aborted) {
+    return { mode: "area", count: 0, fallbackReason: "cancelled" };
+  }
 
   if (!result) {
     return { mode: "area", count: 0, fallbackReason: "build_error" };

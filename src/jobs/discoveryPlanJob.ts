@@ -21,6 +21,7 @@ import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult }
 import {
   claimDiscoveryStreet,
   completeDiscoveryStreetClaim,
+  releaseDiscoveryStreetClaim,
   heartbeatDiscoveryStreetClaim,
   discoveryModeForStreetInventory,
   streetInventoryFreshCount,
@@ -939,6 +940,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       ? await streetInventoryFreshCount(db, task.country_code, task.city)
       : 0;
     const useStreetPool = discoveryModeForStreetInventory(sourceId, streetCount) === "street";
+    const fallbackReason = useStreetPool
+      ? "none"
+      : sourceId !== "google_maps"
+        ? "unsupported_source"
+        : "zero_inventory";
+    console.info(
+      `[discoveryPlanJob] taskId=${payload.taskId} mode=${useStreetPool ? "street" : "area"} inventory=${streetCount} fallback_reason=${fallbackReason}`,
+    );
 
     // Worker Pools B — Google Maps area worker pool. Street inventory takes
     // precedence only when it actually exists. No inventory means this exact
@@ -1022,6 +1031,17 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           const heartbeatTimer = setInterval(renew, STREET_HEARTBEAT_INTERVAL_MS);
           heartbeatTimer.unref?.();
 
+          let released = false;
+          const releaseClaimBestEffort = async () => {
+            if (released) return;
+            released = true;
+            try {
+              await releaseDiscoveryStreetClaim(db, claim, streetScope.userId, slotWorkerLabel);
+            } catch (releaseErr) {
+              console.warn(`[street-discovery] best-effort claim release failed street=${claim.streetKey}`, releaseErr);
+            }
+          };
+
           try {
             const attempt = await runOneAreaAttempt(attemptCtx, undefined, claim.streetName, slotIndex + 1);
             pythonPerfData = attempt.pythonPerfData ?? pythonPerfData;
@@ -1044,6 +1064,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
                 `[street-discovery] claim left recoverable task=${payload.taskId} street=${claim.streetKey} ` +
                   `termination=${attempt.engineTerminationReason ?? "unknown"} terminal=${attempt.terminalReason ?? "none"}`,
               );
+              await releaseClaimBestEffort();
+            } else {
+              released = true;
             }
 
             return {
@@ -1054,6 +1077,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
               exhausted: attempt.exhausted,
               failed: !completed,
             };
+          } catch (err) {
+            await releaseClaimBestEffort();
+            throw err;
           } finally {
             clearInterval(heartbeatTimer);
           }

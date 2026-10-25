@@ -34,6 +34,7 @@ import { runAreaWorkerPool, computeDynamicDiscoveryCapacity, type AreaRunOutcome
 import {
   claimDiscoveryStreet,
   completeDiscoveryStreetClaim,
+  releaseDiscoveryStreetClaim,
   heartbeatDiscoveryStreetClaim,
   ensureStreetInventory,
   type StreetClaim,
@@ -1597,6 +1598,11 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                   `[poolExpandJob][street-discovery] claim left recoverable city=${city} street=${streetClaim.streetKey} ` +
                     `termination=${effectiveTerminationReason ?? "unknown"}`,
                 );
+                try {
+                  await releaseDiscoveryStreetClaim(supabaseAdmin, streetClaim, streetScope.userId, slotWorkerId);
+                } catch (releaseErr) {
+                  console.warn(`[poolExpandJob][street-discovery] best-effort claim release failed street=${streetClaim.streetKey}`, releaseErr);
+                }
               }
               // CRITMODE — diagnostics only: emit this street's full
               // lifecycle summary line exactly once, at the same point its

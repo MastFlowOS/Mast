@@ -362,6 +362,22 @@ export async function completeDiscoveryStreetClaim(
   return data === true;
 }
 
+export async function releaseDiscoveryStreetClaim(
+  db: any,
+  claim: StreetClaim,
+  userId: string,
+  workerId: string,
+): Promise<boolean> {
+  const { data, error } = await db.rpc("release_discovery_street_claim", {
+    p_state_id: claim.stateId,
+    p_user_id: userId,
+    p_claim_token: claim.claimToken,
+    p_worker_id: workerId,
+  });
+  if (error) throw error;
+  return data === true;
+}
+
 export async function heartbeatDiscoveryStreetClaim(
   db: any,
   claim: StreetClaim,

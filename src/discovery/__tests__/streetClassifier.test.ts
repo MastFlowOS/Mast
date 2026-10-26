@@ -42,5 +42,7 @@ test("Priority 2: Low-value streets, route refs, and ramps are flagged", () => {
   assert.equal(isLowValueStreet("315, 379").isLowValue, true);
   assert.equal(isLowValueStreet("41st Street Pedestrian Bridge").isLowValue, true);
   assert.equal(isLowValueStreet("35th Street Access Path").isLowValue, true);
+  assert.equal(isLowValueStreet("Argyle Street Access").isLowValue, true);
+  assert.equal(isLowValueStreet("Wabansia Avenue Cycleway").isLowValue, true);
   assert.equal(isLowValueStreet("North State Street").isLowValue, false);
 });

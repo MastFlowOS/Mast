@@ -10,9 +10,19 @@ const FEATURE_TOKENS = [
   "pedestrian walkway",
   "access path",
   "access road",
+  "access ramp",
+  "access",
   "bikeway",
   "bike path",
+  "cycleway",
+  "footpath",
   "footway",
+  "pathway",
+  "walkway",
+  "steps",
+  "bridleway",
+  "busway",
+  "trail",
   "on ramp",
   "off ramp",
   "ramp",
@@ -98,9 +108,9 @@ export function isLowValueStreet(name: string): { isLowValue: boolean; reason?: 
     }
   }
 
-  // Feature tokens: Access Path, Bikeway, Pedestrian Bridge, Ramp
+  // Feature tokens: Access Path, Bikeway, Pedestrian Bridge, Ramp, Cycleway, etc.
   for (const token of FEATURE_TOKENS) {
-    if (lowered.includes(token)) {
+    if (new RegExp(`\\b${token}\\b`, "i").test(lowered)) {
       return { isLowValue: true, reason: `feature_${token.replace(/\s+/g, "_")}` };
     }
   }

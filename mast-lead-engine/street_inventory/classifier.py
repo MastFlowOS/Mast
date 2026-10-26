@@ -19,9 +19,19 @@ _FEATURE_TOKENS = [
     "pedestrian walkway",
     "access path",
     "access road",
+    "access ramp",
+    "access",
     "bikeway",
     "bike path",
+    "cycleway",
+    "footpath",
     "footway",
+    "pathway",
+    "walkway",
+    "steps",
+    "bridleway",
+    "busway",
+    "trail",
     "on ramp",
     "off ramp",
     "ramp",
@@ -87,9 +97,9 @@ def is_low_value_street(name: str) -> tuple[bool, Optional[str]]:
         if re.search(rf"\b(?:i|us|state route|route|rt|sr|hwy|highway)[\s-]*\d+\s*{sfx}\b", lowered):
             return True, "route_ref"
 
-    # Feature tokens: Access Path, Bikeway, Pedestrian Bridge, Ramp
+    # Feature tokens: Access Path, Bikeway, Pedestrian Bridge, Ramp, Cycleway, etc.
     for token in _FEATURE_TOKENS:
-        if token in lowered:
+        if re.search(rf"\b{re.escape(token)}\b", lowered):
             return True, f"feature_{token.replace(' ', '_')}"
 
     return False, None

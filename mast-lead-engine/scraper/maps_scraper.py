@@ -839,7 +839,12 @@ _PLACE_GID_RE = re.compile(r"/g/([A-Za-z0-9_-]+)")
 # Maps' markup for this isn't stable, so several are tried in order.
 _BACK_BUTTON_SELECTORS = [
     "button[aria-label='Back']",
-    "button[jsaction*='pane.backButton.click']",
+    "button[aria-label='Back to results']",
+    "button[aria-label*='Back' i]",
+    "button[aria-label*='back to results' i]",
+    "button[jsaction*='pane.backButton']",
+    "button[jsaction*='searchbox.back']",
+    "button[data-tooltip*='Back' i]",
     "button.hYBOP",
     "span.google-symbols.mL3xi",
 ]
@@ -1000,17 +1005,31 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
     for sel in _PLACE_NAME_SELECTORS:
         try:
             el = await page.query_selector(sel)
-            if el is not None and el is not feed_el and hasattr(el, "inner_text"):
-                txt = (await el.inner_text() or "").strip()
-                if txt and txt.lower() not in {"results", "search results", "النتائج"}:
-                    return True
+            if el is not None and el is not feed_el:
+                if hasattr(el, "is_visible"):
+                    try:
+                        if not await el.is_visible():
+                            continue
+                    except Exception:
+                        pass
+                if hasattr(el, "inner_text"):
+                    txt = (await el.inner_text() or "").strip()
+                    if txt and txt.lower() not in {"results", "search results", "النتائج"}:
+                        return True
         except Exception:
             continue
     for sel in _BACK_BUTTON_SELECTORS:
         try:
             el = await page.query_selector(sel)
-            if el is not None and el is not feed_el and hasattr(el, "click"):
-                return True
+            if el is not None and el is not feed_el:
+                if hasattr(el, "is_visible"):
+                    try:
+                        if not await el.is_visible():
+                            continue
+                    except Exception:
+                        pass
+                if hasattr(el, "click"):
+                    return True
         except Exception:
             continue
     return False
@@ -1169,7 +1188,6 @@ async def _return_to_results(
     timeout_ms = getattr(config, "return_to_results_timeout_ms", None) or getattr(
         config, "scroll_settle_timeout_ms", 2500
     )
-    deadline = asyncio.get_event_loop().time() + max(0.05, timeout_ms / 1000.0)
 
     with prof.timer("return_to_results"):
         feed_el = await page.query_selector(panel_selector)
@@ -1181,7 +1199,17 @@ async def _return_to_results(
                 btn = await page.query_selector(sel)
                 if not btn or btn is feed_el:
                     continue
-                await btn.click(timeout=min(3000, timeout_ms))
+                if hasattr(btn, "is_visible"):
+                    try:
+                        if not await btn.is_visible():
+                            continue
+                    except Exception:
+                        pass
+                try:
+                    await btn.click(timeout=min(2000, timeout_ms))
+                except Exception:
+                    if hasattr(btn, "evaluate"):
+                        await btn.evaluate("el => el.click()")
             except Exception:
                 continue
 
@@ -1190,20 +1218,56 @@ async def _return_to_results(
             except Exception:
                 pass
 
-            # Poll UI state until detail pane closes or bounded deadline expires
-            while asyncio.get_event_loop().time() < deadline:
+            # Poll UI state until detail pane closes or bounded settle expires
+            settle_deadline = asyncio.get_event_loop().time() + min(1.0, max(0.2, timeout_ms / 2000.0))
+            while asyncio.get_event_loop().time() < settle_deadline:
                 feed_el = await page.query_selector(panel_selector)
                 if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
                     return True
                 await asyncio.sleep(0.03)
 
-        # Last resort: browser-level back navigation.
+        # Fallback: keyboard Escape to dismiss the detail pane
+        if hasattr(page, "keyboard") and hasattr(page.keyboard, "press"):
+            try:
+                await page.keyboard.press("Escape")
+                esc_deadline = asyncio.get_event_loop().time() + 0.4
+                while asyncio.get_event_loop().time() < esc_deadline:
+                    feed_el = await page.query_selector(panel_selector)
+                    if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
+                        return True
+                    await asyncio.sleep(0.03)
+            except Exception:
+                pass
+
+        # Last resort: browser-level back navigation, ONLY if safe and won't pop to about:blank
         try:
-            await page.go_back(timeout=min(config.scroll_settle_timeout_ms, timeout_ms))
-            await page.wait_for_selector(panel_selector, timeout=min(config.scroll_settle_timeout_ms, timeout_ms))
-            feed_el = await page.query_selector(panel_selector)
-            if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
-                return True
+            can_go_back = True
+            if hasattr(page, "evaluate"):
+                try:
+                    hist_len = await page.evaluate("() => window.history ? window.history.length : 1")
+                    if isinstance(hist_len, int) and hist_len <= 1:
+                        can_go_back = False
+                except Exception:
+                    pass
+
+            if can_go_back and hasattr(page, "go_back"):
+                await page.go_back(timeout=min(config.scroll_settle_timeout_ms, timeout_ms))
+                curr_url = getattr(page, "url", "") or ""
+                if "about:blank" in curr_url or not curr_url.startswith("https://www.google.com/maps"):
+                    log.warning(f"[maps] go_back popped to {curr_url!r}; restoring via go_forward")
+                    if hasattr(page, "go_forward"):
+                        try:
+                            await page.go_forward(timeout=2000)
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        await page.wait_for_selector(panel_selector, timeout=min(config.scroll_settle_timeout_ms, timeout_ms))
+                    except Exception:
+                        pass
+                    feed_el = await page.query_selector(panel_selector)
+                    if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
+                        return True
         except Exception:
             pass
 
@@ -2617,12 +2681,12 @@ class MapsScraper:
                             f"consecutive_failures={consecutive_return_failures}/{max_consecutive_return_failures}"
                         )
 
-                        if consecutive_return_failures >= max_consecutive_return_failures:
+                        if consecutive_return_failures >= max_consecutive_return_failures or "about:blank" in curr_url:
                             if not search_nav_recovery_used:
                                 search_nav_recovery_used = True
                                 self._profiler.incr("stale_panel_search_nav_recovery")
                                 log.info(
-                                    f"[maps][return-recovery] consecutive return failures hit bound ({consecutive_return_failures}) "
+                                    f"[maps][return-recovery] consecutive return failures ({consecutive_return_failures}) or url={curr_url!r} "
                                     f"— performing bounded search-navigation recovery for {full_query!r}"
                                 )
                                 try:

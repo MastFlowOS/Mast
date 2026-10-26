@@ -386,6 +386,9 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
       }
 
       perArea.push({ area, outcome });
+      // Cooperative hand-off: yield event loop tick so waiting tasks in other
+      // cities/pools have an immediate opportunity to acquire the browser slot.
+      await new Promise((resolve) => setTimeout(resolve, 50));
       // TASK 2 (live scout state) — additive: `slot` was already this
       // loop's own parameter (identical value `worker_started` above
       // already reports), just not previously copied onto this event too.

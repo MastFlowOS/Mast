@@ -15,6 +15,7 @@ import type { PlanId } from "../config/plans.js";
 import type { EngineLead, EngineDoneInfo } from "../scraperBridge/pythonBridge.js";
 import { registerRequestAbortController, terminateRequest, type RequestTerminalReason } from "../discovery/requestLifecycle.js";
 import { cityTransitionFor, resolveZeroSlotCityScheduling, reconcileDiscoveryCounters } from "../discovery/cityScheduling.js";
+import { isAddressOnStreet, isLowValueStreet, collapseStreetName } from "../discovery/streetClassifier.js";
 import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { COUNTRIES } from "../lib/geo/countries.js";
@@ -402,6 +403,9 @@ async function runOneAreaAttempt(
     const { data: midCheck } = await db.from("discovery_plans")
       .select("status, delivered_count, requested_count").eq("id", payload.planId).maybeSingle();
     tMid.end();
+    if (midCheck) {
+      console.info(`[discovery-plan] progress delivered=${midCheck.delivered_count}/${midCheck.requested_count} (plan-level target denominator)`);
+    }
     if (terminalReasonForPlan(midCheck)) {
       await observeTerminalPlan();
       break outer;
@@ -417,6 +421,12 @@ async function runOneAreaAttempt(
     traceLog(`DISCOVERED name=${JSON.stringify(lead.name)}`);
     publishDiscoveryLiveEvent(candidateDiscoveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
 
+    if (street && lead.address && !isAddressOnStreet(lead.address, street)) {
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=outside_street_scope:street=${street},address=${lead.address}`);
+      continue;
+    }
     const validation = validateDiscoveryCandidate(lead);
     if (!validation.valid) {
       rejected += 1;
@@ -586,7 +596,7 @@ async function runOneAreaAttempt(
     const leadsPerMin = elapsedSec > 0 ? ((accepted / elapsedSec) * 60).toFixed(1) : "0.0";
     const rawPerMin = elapsedSec > 0 ? ((discovered / elapsedSec) * 60).toFixed(1) : "0.0";
     console.info(
-      `[discovery-sla] plan=${payload.planId} task=${payload.taskId} accepted=${accepted} ` +
+      `[discovery-sla] scope=${street ? "per_street" : "per_area"} plan=${payload.planId} task=${payload.taskId} accepted=${accepted} ` +
         `target=${payload.request?.quantity ?? "n/a"} discovered=${discovered} rejected=${rejected} duplicates=${duplicates} ` +
         `elapsed_ms=${elapsedMs} leads_per_min=${leadsPerMin} raw_per_min=${rawPerMin}`,
     );
@@ -1155,6 +1165,13 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
             return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: false, failed: true, error: "missing street claim" };
           }
           const slotWorkerLabel = `${workerLabel}-w${slotIndex + 1}`;
+          const collapsedStreet = collapseStreetName(claim.streetName);
+          const lowValue = isLowValueStreet(collapsedStreet || claim.streetName);
+          if (lowValue.isLowValue) {
+            console.info(`[street-discovery] skipping low-value street claim "${claim.streetName}" (${lowValue.reason ?? "low_value"}) task=${payload.taskId}`);
+            await completeDiscoveryStreetClaim(db, claim, streetScope.userId, slotWorkerLabel);
+            return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: true, failed: false };
+          }
 
           let heartbeatStopped = false;
           const renew = () => {
@@ -1182,7 +1199,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           };
 
           try {
-            const attempt = await runOneAreaAttempt(attemptCtx, undefined, claim.streetName, slotIndex + 1);
+            const searchStreet = (!lowValue.isLowValue && collapsedStreet) ? collapsedStreet : claim.streetName;
+            const attempt = await runOneAreaAttempt(attemptCtx, undefined, searchStreet, slotIndex + 1);
             pythonPerfData = attempt.pythonPerfData ?? pythonPerfData;
             bridgeTimings = attempt.bridgeTimings ?? bridgeTimings;
             progressMarks = attempt.progressMarks ?? progressMarks;
@@ -1200,7 +1218,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
               && await completeDiscoveryStreetClaim(db, claim, streetScope.userId, slotWorkerLabel);
             if (!completed) {
               console.info(
-                `[street-discovery] claim left recoverable task=${payload.taskId} street=${claim.streetKey} ` +
+                `[street-discovery] claim ${attempt.engineTerminationReason === "SUCCESS_TARGET_REACHED" || attempt.terminalReason === "TARGET_REACHED" ? "released" : "left recoverable"} task=${payload.taskId} street=${claim.streetKey} ` +
                   `termination=${attempt.engineTerminationReason ?? "unknown"} terminal=${attempt.terminalReason ?? "none"}`,
               );
               await releaseClaimBestEffort();
@@ -1214,7 +1232,10 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
               rejected: attempt.rejected,
               duplicates: attempt.duplicates,
               exhausted: attempt.exhausted,
-              failed: !completed,
+              failed: Boolean(
+                attempt.shouldRetryTask ||
+                (attempt.terminalReason && attempt.terminalReason !== "TARGET_REACHED" && attempt.terminalReason !== "USER_CANCELLED")
+              ),
             };
           } catch (err) {
             await releaseClaimBestEffort();
@@ -1506,6 +1527,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         hasRemainingWork: (useStreetPool ? streetCount : curatedAreas.length) > 0,
         deferredNoSlot: true,
         priorDeferrals,
+        isPlanTerminal: Boolean(await observeTerminalPlan()),
       });
 
       if (decision.action === "defer") {
@@ -1527,7 +1549,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         await boss.send(
           QUEUES.discoveryTask,
           { taskId: payload.taskId, planId: payload.planId, request: payload.request },
-          { ...DISCOVERY_TASK_RETRY_OPTIONS, startAfter: CONCURRENCY_RECHECK_DELAY_SECONDS },
+          { ...DISCOVERY_TASK_RETRY_OPTIONS, startAfter: Math.min(30, CONCURRENCY_RECHECK_DELAY_SECONDS + decision.nextDeferrals * 2) },
         );
         return;
       }
@@ -1544,7 +1566,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           rejected: 0,
           duplicates: 0,
           exhausted: false,
-          status: "failed",
+          status: decision.reason === "CANCELLED" ? "cancelled" : "failed",
           error: decision.reason,
           startedAt,
           completionReason: decision.reason,
@@ -1587,7 +1609,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         // the engine's own "candidate_queued" mark (survived Maps-side
         // dedup, before Node's gates) is a fallback for a run that never
         // reached an accepted lead, so the row still shows how far it got.
-        `first_candidate_accepted_ms=${profiler.getMarkMs("first_lead_delivered")?.toFixed(0) ?? marks["discovery:candidate_queued"]?.toFixed(0) ?? "n/a"} ` +
+        `first_candidate_accepted_ms=${(() => { const r = profiler.getMarkMs("first_lead_delivered"); return r !== undefined ? Math.min(Date.now() - startedAt, r).toFixed(0) : (marks["discovery:candidate_queued"]?.toFixed(0) ?? "n/a"); })()} ` +
         `task_end_ms=${Date.now() - startedAt}`,
     );
 

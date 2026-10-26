@@ -34,6 +34,8 @@ export type DedupWasteLogFields = {
   mapsPlaceId: string | null;
   fingerprints: string[];
   existingBusiness: boolean;
+  isGlobalBusinessMatch: boolean;
+  rejectionReason?: string | null;
   websiteEnrichmentCompleted: boolean;
   instagramEnrichmentCompleted: boolean;
   contactEnrichmentCompleted: boolean;
@@ -57,6 +59,8 @@ export function buildDedupWasteLogFields(args: {
   pipelineId?: string | null;
   fingerprints: string[];
   existingBusiness: boolean;
+  isGlobalBusinessMatch?: boolean;
+  rejectionReason?: string | null;
   website?: string | null;
   instagram?: string | null;
   email?: string | null;
@@ -70,6 +74,8 @@ export function buildDedupWasteLogFields(args: {
     mapsPlaceId: extractMapsPlaceId(args.fingerprints),
     fingerprints: args.fingerprints,
     existingBusiness: args.existingBusiness,
+    isGlobalBusinessMatch: args.isGlobalBusinessMatch ?? args.existingBusiness,
+    rejectionReason: args.rejectionReason ?? null,
     websiteEnrichmentCompleted: Boolean(args.website),
     instagramEnrichmentCompleted: Boolean(args.instagram),
     contactEnrichmentCompleted:

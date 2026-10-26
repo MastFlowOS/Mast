@@ -83,8 +83,13 @@ export class JobProfiler {
     sortedInsert(entry.sorted, elapsedMs);
   }
 
-  /** Record a single-point timestamp event (no duration). */
+  /** Record a single-point timestamp event (no duration).
+   * For "first_lead_delivered", preserve the first occurrence so it reflects
+   * the true first accepted candidate. */
   mark(event: string): void {
+    if (event === "first_lead_delivered" && this.marks.has(event)) {
+      return;
+    }
     this.marks.set(event, Date.now() - this.startMs);
   }
 

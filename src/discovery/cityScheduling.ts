@@ -14,6 +14,7 @@ export type CityTransitionReason =
   | "CITY_EXHAUSTED"
   | "CITY_ROTATION"
   | "USER_CANCELLED"
+  | "CANCELLED"
   | "TARGET_REACHED"
   | "WATCHDOG_TIMEOUT"
   | "SCRAPER_FAILURE"
@@ -36,6 +37,7 @@ export type EngineTerminationReason =
   | "SUCCESS_CONSUMER_STOPPED"
   | "WATCHDOG_TIMEOUT"
   | "CANCELLED"
+  | "RETURN_TO_RESULTS_FAILED"
   | "FAILURE";
 
 /**
@@ -67,6 +69,7 @@ export function cityTransitionFor(
 ): CityTransitionReason {
   if (attempt.acceptedLeads > 0) return "CITY_PRODUCTIVE";
   if (terminationReason === "WATCHDOG_TIMEOUT") return "WATCHDOG_TIMEOUT";
+  if (terminationReason === "RETURN_TO_RESULTS_FAILED") return "CITY_NO_PROGRESS";
   // "FAILURE" is the bridge's catch-all for "!success, not CANCELLED" —
   // i.e. a genuine scraper failure (unrecoverable DiscoveryFailure /
   // unclassified error after every crash-retry attempt was exhausted).
@@ -123,8 +126,8 @@ export function resolveZeroSlotCityScheduling(input: {
   deferredNoSlot: boolean;
   priorDeferrals: number;
   maxDeferrals?: number;
+  isPlanTerminal?: boolean;
 }): ZeroSlotCityDecision {
-  const maxDeferrals = input.maxDeferrals ?? MAX_NO_SLOT_DEFERRALS;
   const prior = Math.max(0, input.priorDeferrals);
 
   if (!input.hasRemainingWork || !input.deferredNoSlot) {
@@ -136,16 +139,16 @@ export function resolveZeroSlotCityScheduling(input: {
     };
   }
 
-  const nextDeferrals = prior + 1;
-  if (prior >= maxDeferrals) {
+  if (input.isPlanTerminal) {
     return {
       action: "terminal_no_slot",
-      reason: "CITY_NO_SLOT_CAPACITY_EXHAUSTED",
-      nextDeferrals,
-      consumeAttempt: true,
+      reason: "CANCELLED",
+      nextDeferrals: prior,
+      consumeAttempt: false,
     };
   }
 
+  const nextDeferrals = prior + 1;
   return {
     action: "defer",
     reason: "CITY_DEFERRED_NO_SLOT",

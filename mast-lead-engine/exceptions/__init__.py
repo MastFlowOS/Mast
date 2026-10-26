@@ -111,6 +111,9 @@ class DiscoveryFailureReason(str, Enum):
     # `_main_cli` (`except asyncio.CancelledError`) for where this is
     # raised.
     CANCELLED = "CANCELLED"
+    # Repeated failure returning from detail pane to results feed that persisted
+    # after bounded search-navigation recovery.
+    RETURN_TO_RESULTS_FAILED = "RETURN_TO_RESULTS_FAILED"
 
 
 class DiscoveryFailure(Exception):

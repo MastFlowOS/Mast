@@ -32,6 +32,8 @@ test("buildDedupWasteLogFields marks all three enrichment stages complete when t
     pipelineId: "#42",
     fingerprints: ["place:chij123abc", "web:thecoffeespot.com"],
     existingBusiness: true,
+    isGlobalBusinessMatch: true,
+    rejectionReason: "existing_business_match",
     website: "https://thecoffeespot.com",
     instagram: "thecoffeespot",
     email: "hello@thecoffeespot.com",
@@ -42,6 +44,8 @@ test("buildDedupWasteLogFields marks all three enrichment stages complete when t
   assert.equal(fields.pipelineId, "#42");
   assert.equal(fields.mapsPlaceId, "chij123abc");
   assert.equal(fields.existingBusiness, true);
+  assert.equal(fields.isGlobalBusinessMatch, true);
+  assert.equal(fields.rejectionReason, "existing_business_match");
   assert.equal(fields.websiteEnrichmentCompleted, true);
   assert.equal(fields.instagramEnrichmentCompleted, true);
   assert.equal(fields.contactEnrichmentCompleted, true);

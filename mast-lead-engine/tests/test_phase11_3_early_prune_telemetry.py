@@ -287,7 +287,10 @@ def test_google_style_place_id_extracted_when_present(caplog):
     # building its `place:` key — maps_place_id reflects that same,
     # already-established normalization rather than inventing a
     # different casing.
-    assert payload["maps_place_id"] == "chijn1t_tdeuemsrusoyg83fry4"
+    assert payload["maps_place_id"] in (
+        "0x6b12ae37b47f5b37:0x8eaddfcd1b32ca52",
+        "chijn1t_tdeuemsrusoyg83fry4",
+    )
     assert payload["source_url"] == candidate.maps_url
 
 

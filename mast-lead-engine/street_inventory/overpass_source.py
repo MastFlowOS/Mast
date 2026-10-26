@@ -302,6 +302,7 @@ from providers.provider_request_translation import normalize_osm_area
 from providers.overpass_provider import _DEFAULT_MIRRORS, _RETRYABLE_STATUS_CODES
 from street_inventory._deadline import call_with_hard_deadline
 from street_inventory.models import StreetInventoryResult, StreetRecord
+from street_inventory.classifier import collapse_street_name, is_low_value_street
 from street_inventory.normalization import build_street_key, normalize_street_name
 
 log = logging.getLogger(__name__)
@@ -1125,6 +1126,16 @@ def _resolve_area_scope(
     other city whose name happens to collide nationwide but not within
     its own state/province.
     """
+    if osm_relation_id is not None:
+        target_area_id = _OVERPASS_RELATION_AREA_ID_OFFSET + osm_relation_id
+        iso3166_2 = _resolve_iso3166_2(country_code, region, city=city)
+        log.info(
+            "[street-inventory] verified boundary relation_id=%d supplied for city=%r — "
+            "bypassing boundary name search; using area_id=%d",
+            osm_relation_id, city, target_area_id,
+        )
+        return None, iso3166_2, target_area_id
+
     elements, failure = _run_boundary_check_query(
         poster, endpoint_url, build_boundary_check_ql(resolved_area, timeout_seconds=timeout_seconds),
         timeout_seconds, hard_deadline, city, resolved_area,
@@ -1505,20 +1516,35 @@ def fetch_city_street_inventory(
         raw_name = tags.get("name")
         if not raw_name or not raw_name.strip():
             continue
+
+        collapsed = collapse_street_name(raw_name)
+        if not collapsed:
+            continue
+        is_low, _ = is_low_value_street(collapsed)
+        if is_low:
+            continue
+
         try:
-            normalized = normalize_street_name(raw_name)
+            normalized = normalize_street_name(collapsed)
         except ValueError:
             continue
 
         way_id = element.get("id")
         entry = by_normalized.get(normalized)
         if entry is None:
+            is_raw_low, _ = is_low_value_street(raw_name)
+            display_name = raw_name.strip() if not is_raw_low else collapsed.title()
             by_normalized[normalized] = {
-                "raw_name": raw_name.strip(),
+                "raw_name": display_name,
                 "way_ids": [way_id] if way_id is not None else [],
             }
-        elif way_id is not None:
-            entry["way_ids"].append(way_id)
+        else:
+            if way_id is not None:
+                entry["way_ids"].append(way_id)
+            is_curr_low, _ = is_low_value_street(entry["raw_name"])
+            is_raw_low, _ = is_low_value_street(raw_name)
+            if is_curr_low and not is_raw_low:
+                entry["raw_name"] = raw_name.strip()
 
     streets: list[StreetRecord] = []
     for normalized, entry in sorted(by_normalized.items()):
@@ -1535,7 +1561,12 @@ def fetch_city_street_inventory(
                 city=city,
                 source="overpass",
                 source_id=(f"way/{way_ids[0]}" if way_ids else None),
-                metadata={"osm_way_ids": way_ids, "osm_area_name": resolved_area},
+                metadata={
+                    "osm_way_ids": way_ids,
+                    "osm_area_name": resolved_area,
+                    "osm_relation_id": (resolved_area_id - _OVERPASS_RELATION_AREA_ID_OFFSET) if resolved_area_id and resolved_area_id >= _OVERPASS_RELATION_AREA_ID_OFFSET else (osm_relation_id or None),
+                    "osm_area_id": resolved_area_id,
+                },
                 boundary_version=BOUNDARY_VERSION,
             )
         )

@@ -1537,7 +1537,8 @@ export type EngineDiscoveryFailureReason =
    * distinguished from SCRAPER_ERROR so callers can tell "we asked it to
    * stop" apart from "it broke".
    */
-  | "CANCELLED";
+  | "CANCELLED"
+  | "RETURN_TO_RESULTS_FAILED";
 
 export type EngineDoneInfo = {
   delivered: number;
@@ -1618,6 +1619,7 @@ export type EngineDoneInfo = {
     | "SUCCESS_CONSUMER_STOPPED"
     | "WATCHDOG_TIMEOUT"
     | "CANCELLED"
+    | "RETURN_TO_RESULTS_FAILED"
     | "FAILURE";
   /** Phase 2: structured performance report from the Python profiler */
   perf?: Record<string, unknown>;
@@ -2074,10 +2076,14 @@ export async function* runEngineQuery(
               ? "SUCCESS_TARGET_REACHED"
               : rawTerminationReason === "SUCCESS_CONSUMER_STOPPED"
                 ? "SUCCESS_CONSUMER_STOPPED"
-                : "SUCCESS_EXHAUSTED")
+                : rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
+                  ? "RETURN_TO_RESULTS_FAILED"
+                  : "SUCCESS_EXHAUSTED")
           : failureReason === "CANCELLED"
             ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
-            : "FAILURE";
+            : failureReason === "RETURN_TO_RESULTS_FAILED" || rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
+              ? "RETURN_TO_RESULTS_FAILED"
+              : "FAILURE";
         console.log(`[scraper-bridge] terminationReason=${terminationReason}`);
         onDone?.({
           delivered: pythonYielded,
@@ -2123,7 +2129,55 @@ export async function* runEngineQuery(
     readError = err;
     throw err;
   } finally {
-    rl.close();
+    if (!sawDone() && child.stdout && !child.stdout.destroyed) {
+      rl.on("line", (line) => {
+        try {
+          if (line.includes("__done__")) {
+            const parsed = JSON.parse(line.trim());
+            if (parsed.__done__) {
+              markDone();
+              const success = Boolean(parsed.success);
+              const targetReached = Boolean(parsed.target_reached);
+              const failureReason = parsed.failure_reason;
+              const failureDetail = parsed.failure_detail;
+              const rawTerminationReason = parsed.termination_reason;
+              const isTargetReachedEarlyStop =
+                !success &&
+                failureReason === "CANCELLED" &&
+                (terminalReasonAtExit === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED");
+              const effectiveSuccess = success || isTargetReachedEarlyStop;
+              const effectiveTargetReached = targetReached || isTargetReachedEarlyStop;
+              const terminationReason: EngineDoneInfo["terminationReason"] = effectiveSuccess
+                ? (effectiveTargetReached
+                    ? "SUCCESS_TARGET_REACHED"
+                    : rawTerminationReason === "SUCCESS_CONSUMER_STOPPED"
+                      ? "SUCCESS_CONSUMER_STOPPED"
+                      : rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
+                        ? "RETURN_TO_RESULTS_FAILED"
+                        : "SUCCESS_EXHAUSTED")
+                : failureReason === "CANCELLED"
+                  ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
+                  : failureReason === "RETURN_TO_RESULTS_FAILED" || rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
+                    ? "RETURN_TO_RESULTS_FAILED"
+                    : "FAILURE";
+              onDone?.({
+                delivered: bridgeForwarded,
+                requested: Number(parsed.requested ?? 0),
+                exhausted: effectiveSuccess ? (isTargetReachedEarlyStop ? false : Boolean(parsed.exhausted)) : false,
+                success: effectiveSuccess,
+                targetReached: effectiveTargetReached,
+                failureReason,
+                failureDetail,
+                terminationReason,
+                perf: (parsed.__perf__ as any),
+                bridgeTimings: { spawnMs, firstLineMs, firstLeadMs },
+                progressMarks,
+              });
+            }
+          }
+        } catch {}
+      });
+    }
     if (inactivityTimer) clearTimeout(inactivityTimer);
     clearTimeout(absoluteTimer);
     signal?.removeEventListener("abort", onAbort);
@@ -2201,6 +2255,7 @@ export async function* runEngineQuery(
     // every case because it was attached before the event could possibly
     // have fired, not after.
     const { code: exitCode, signal: closeSignal } = await childClosed;
+    try { rl.close(); } catch {}
 
     // PHASE 6B — the child has now actually exited (browser/Chromium tree
     // torn down, no longer holding any of its PIDs) — this is the

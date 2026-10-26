@@ -177,6 +177,8 @@ export async function upsertBusinessFromEngineLead(
       pipelineId: lead._pipeline_id ?? null,
       fingerprints: lead.fingerprints,
       existingBusiness: Boolean(existing),
+      isGlobalBusinessMatch: Boolean(existing),
+      rejectionReason: existing ? "existing_business_match" : null,
       website: lead.website,
       instagram: lead.instagram,
       email: lead.email,

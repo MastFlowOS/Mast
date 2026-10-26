@@ -26,6 +26,7 @@ import { registerRequestAbortController, terminateRequest, isRequestActive } fro
 import { getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { runAreaWorkerPool, computeDynamicDiscoveryCapacity, type AreaRunOutcome } from "../discovery/googleAreaPool.js";
+import { isAddressOnStreet } from "../discovery/streetClassifier.js";
 // CRITMODE Phase 4 — PART B: same street-discovery primitives
 // discoveryPlanJob.ts's task-queue path already uses (claim/heartbeat/
 // complete RPC wrappers, unchanged) plus ensureStreetInventory() (PART A —
@@ -1510,6 +1511,12 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             )) {
               streetTrace?.markFirstForwarded(); // CRITMODE — diagnostics only, idempotent
               discovered += 1;
+              if (streetClaim && lead.address) {
+                const targetStreet = streetClaim.streetName || streetClaim.streetKey;
+                if (!isAddressOnStreet(lead.address, targetStreet)) {
+                  continue;
+                }
+              }
               const outcome = await processLead(lead, streamTarget, chunk, areaRecorder, productivity, streetTrace
                 ? { onDelivered: () => { streetDelivered += 1; }, onNewForUser: () => { streetNewForUser += 1; streetTrace.markFirstNewForUser(); } }
                 : undefined,

@@ -203,6 +203,7 @@ class GoogleMapsDiscoveryRequest:
     on_progress: Optional[Callable[[str, str, Optional[str]], None]] = None
     require_website: bool = False
     known_place_ids: Optional[Sequence[str]] = None
+    street: str = ""
 
 
 def _or_none(value: str) -> Optional[str]:
@@ -422,6 +423,7 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
                     on_progress=request.on_progress,
                     require_website=request.require_website,
                     known_place_ids=request.known_place_ids,
+                    street=getattr(request, "street", ""),
                 )
             except TypeError:
                 search_gen = scraper.search(

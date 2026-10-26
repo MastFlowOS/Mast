@@ -196,6 +196,7 @@ def compose_discovery(
     profiler: Any = None,
     require_website: bool = False,
     known_place_ids: Optional[Sequence[str]] = None,
+    street_mode: bool = False,
 ) -> ComposedDiscovery:
     """
     Build the one DiscoveryProviderInterface + request pair
@@ -264,11 +265,15 @@ def compose_discovery(
         on_progress=on_progress,
         require_website=require_website,
         known_place_ids=known_place_ids,
+        street_mode=street_mode,
     )
 
     selected_ids: list[str] = []
     translated_requests: dict[str, Any] = {}
     for provider_id in relevant:
+        if provider_id == "overpass" and street_mode:
+            log.info("[provider] overpass excluded for street mode (evidence-based: google_maps only)")
+            continue
         if provider_id == "overpass" and not is_overpass_enabled():
             # PHASE 11.4 — Overpass A/B test. A pure composition-time
             # gate: OverpassProvider is never constructed and never

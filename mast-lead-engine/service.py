@@ -896,6 +896,8 @@ async def run_query(
     # (library use, tests/validate_service_run_query.py) that doesn't
     # pass one — such a caller simply never requests early shutdown.
     known_place_ids: Optional[list[str]] = None,
+    street_mode: bool = False,
+    street: Optional[str] = None,
     shutdown_event: Optional[threading.Event] = None,
     shutdown_reason: Optional[str] = None,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -1344,6 +1346,7 @@ async def run_query(
                 profiler=profiler,
                 require_website=require_website,
                 known_place_ids=known_place_ids,
+                street_mode=bool(street_mode or street),
             )
             provider, request = composed.provider, composed.request
             log.info(
@@ -1536,6 +1539,7 @@ async def run_query(
                 profiler=profiler,
                 require_website=require_website,
                 known_place_ids=known_place_ids,
+                street_mode=bool(street_mode or street),
             )
             discovery_provider = composed.provider
             discovery_request = composed.request

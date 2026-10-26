@@ -33,6 +33,7 @@ from typing import Iterable
 from urllib.parse import urlparse
 
 from utils.parsing import domain_of, digits_only, norm_text
+from utils.place_id import canonical_place_id
 
 try:  # POSIX (Railway/Linux/macOS) — the primary deployment target.
     import fcntl
@@ -108,16 +109,21 @@ def norm_maps_place_id(value: str | None) -> str:
         return ""
     raw = value.strip()
     # Canonical ChIJ…
+    m = re.search(r"(ChIJ[\w\-]{23})", raw)
+    if m:
+        canonical = canonical_place_id(m.group(1))
+        if canonical:
+            return canonical
     m = re.search(r"(ChIJ[\w\-]+)", raw, re.IGNORECASE)
     if m:
-        return m.group(1)
+        return canonical_place_id(m.group(1))
     # Hex-encoded feature IDs inside data= blocks
     m = re.search(r"!1s(0x[a-f0-9]+:0x[a-f0-9]+)", raw, re.IGNORECASE)
     if m:
-        return m.group(1).lower()
+        return canonical_place_id(m.group(1)).lower()
     m = re.search(r"(0x[a-f0-9]+:0x[a-f0-9]+)", raw, re.IGNORECASE)
     if m:
-        return m.group(1).lower()
+        return canonical_place_id(m.group(1)).lower()
     return ""
 
 

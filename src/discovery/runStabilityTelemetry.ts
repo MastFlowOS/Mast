@@ -89,6 +89,7 @@ export type AreaTerminationReason =
   | "SUCCESS_CONSUMER_STOPPED"
   | "WATCHDOG_TIMEOUT"
   | "CANCELLED"
+  | "RETURN_TO_RESULTS_FAILED"
   | "FAILURE"
   | "area_productivity_timeout_before_first_qualified"
   | "area_productivity_idle_timeout"

@@ -26,6 +26,8 @@ Data extracted per place:
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import random
 import re
 import time
@@ -60,9 +62,11 @@ from utils.runtime import (
     ProxyManager,
     retry,
 )
-from utils.lifecycle_tracker import install_tracker, track_browser_created, log_milestone
+from utils.lifecycle_tracker import install_tracker, track_browser_created, log_milestone, get_memory_usage
 from utils.perf import NullProfiler
 from exceptions import DiscoveryFailure, DiscoveryFailureReason
+from utils.place_id import canonical_place_id, expand_place_id_forms
+from street_inventory.classifier import is_address_on_street
 install_tracker()
 
 log = get_logger("maps")
@@ -2129,6 +2133,7 @@ class MapsScraper:
         on_progress: "Callable[[str, str, str | None], None] | None" = None,
         require_website: bool = False,
         known_place_ids: "Iterable[str] | None" = None,
+        street: str = "",
     ) -> AsyncIterator[RawPlace]:
         """Search Google Maps and yield RawPlace objects.
 
@@ -2234,6 +2239,7 @@ class MapsScraper:
         search_nav_recovery_used = False
         last_verified_panel: dict | None = None
         known_place_ids_norm: set[str] = set()
+        normalization_misses = 0
         if known_place_ids:
             for raw_id in known_place_ids:
                 if not raw_id:
@@ -2244,8 +2250,55 @@ class MapsScraper:
                 elif s.startswith("map:"):
                     s = s[len("map:"):]
                 if s:
-                    known_place_ids_norm.add(s.lower())
-                    known_place_ids_norm.add(s)
+                    forms = expand_place_id_forms(s)
+                    if not forms:
+                        normalization_misses += 1
+                        known_place_ids_norm.add(s)
+                        known_place_ids_norm.add(s.lower())
+                    else:
+                        for form in forms:
+                            known_place_ids_norm.add(form)
+                            known_place_ids_norm.add(form.lower())
+
+        build_id = (
+            os.getenv("GIT_COMMIT_SHA")
+            or os.getenv("VERCEL_GIT_COMMIT_SHA")
+            or os.getenv("RAILWAY_GIT_COMMIT_SHA")
+            or os.getenv("GITHUB_SHA")
+            or "mast-lead-engine-1.0.0"
+        )
+        known_count = len(list(known_place_ids)) if known_place_ids else 0
+        self._profiler.incr("known_ids_received", by=known_count)
+        if normalization_misses > 0:
+            self._profiler.incr("normalization_misses", by=normalization_misses)
+        sample_ids = list(known_place_ids_norm)[:5] if known_place_ids_norm else []
+        log.info(
+            f"[maps][known-ids] received={known_count} "
+            f"normalized_count={len(known_place_ids_norm)} sample={sample_ids} build_id={build_id}"
+        )
+        consecutive_return_failures = 0
+        max_consecutive_return_failures = getattr(self.config, "max_consecutive_return_failures", 2)
+        _search_start_mono = time.monotonic()
+        _last_heartbeat_mono = _search_start_mono
+
+        def _check_periodic_heartbeat():
+            nonlocal _last_heartbeat_mono
+            now = time.monotonic()
+            if now - _last_heartbeat_mono >= 20.0:
+                _last_heartbeat_mono = now
+                mem_mb = round(get_memory_usage(), 1)
+                log.info(
+                    f"[maps][heartbeat] elapsed_s={round(now - _search_start_mono, 1)} "
+                    f"memory_mb={mem_mb} yielded={yielded} attempt={attempt}"
+                )
+
+        def _log_stack_snapshot(context_tag: str):
+            mem_mb = round(get_memory_usage(), 1)
+            frames = sys._current_frames()
+            log.warning(
+                f"[maps][stall-diagnostic] context={context_tag} memory_mb={mem_mb} "
+                f"elapsed_s={round(time.monotonic() - _search_start_mono, 1)} active_threads={len(frames)}"
+            )
         # Rounds actually scrolled so far, summed ACROSS every attempt —
         # this is what a post-crash rebuild fast-forwards through, and it
         # also caps total work across all retries so a search that keeps
@@ -2503,6 +2556,7 @@ class MapsScraper:
                     # below). A round is real, incremented work whether or
                     # not it turns out to contain any unseen anchors.
                     self._profiler.incr("maps_rounds")
+                    _check_periodic_heartbeat()
 
                     # MINIMAL FIX (discovery liveness — forensic audit §9):
                     # reset once per OUTER round so the inner anchor-processing
@@ -2540,6 +2594,64 @@ class MapsScraper:
                     panel_lost = False
                     failed_this_round: set[str] = set()
                     consecutive_mismatches_in_round = 0
+                    clicks_this_round = 0
+
+                    async def handle_return_failure(context_label: str, cards_left: int = 0) -> bool:
+                        nonlocal consecutive_return_failures, search_nav_recovery_used, panel_sel, last_verified_panel
+                        consecutive_return_failures += 1
+                        self._profiler.incr("return_to_results_failures")
+                        self._profiler.incr("return_to_results_failed")
+
+                        feed_present = False
+                        try:
+                            feed_present = (await page.query_selector(panel_sel)) is not None
+                        except Exception:
+                            pass
+                        mem_mb = round(get_memory_usage(), 1)
+                        curr_url = page.url or ""
+                        log.warning(
+                            f"[maps][return-failed] context={context_label} round={rounds_this_attempt} "
+                            f"selector_tried={panel_sel!r} current_url={curr_url!r} "
+                            f"feed_present={feed_present} cards_remaining={cards_left} "
+                            f"skip_reason='return_to_results_failed' memory_mb={mem_mb} "
+                            f"consecutive_failures={consecutive_return_failures}/{max_consecutive_return_failures}"
+                        )
+
+                        if consecutive_return_failures >= max_consecutive_return_failures:
+                            if not search_nav_recovery_used:
+                                search_nav_recovery_used = True
+                                self._profiler.incr("stale_panel_search_nav_recovery")
+                                log.info(
+                                    f"[maps][return-recovery] consecutive return failures hit bound ({consecutive_return_failures}) "
+                                    f"— performing bounded search-navigation recovery for {full_query!r}"
+                                )
+                                try:
+                                    await page.goto(
+                                        search_url,
+                                        wait_until="domcontentloaded",
+                                        timeout=self.config.maps_timeout_ms,
+                                    )
+                                    panel_sel, _ = await _resolve_results_panel(
+                                        page, config=self.config
+                                    )
+                                    last_verified_panel = None
+                                    rec_feed = (await page.query_selector(panel_sel)) is not None
+                                    if rec_feed:
+                                        consecutive_return_failures = 0
+                                        log.info(f"[maps][return-recovery] search-navigation recovery restored feed panel for {full_query!r}")
+                                        return True
+                                except Exception as rec_err:
+                                    log.warning(f"[maps][return-recovery] search-navigation recovery failed for {full_query!r}: {rec_err}")
+
+                            log.warning(
+                                f"[maps][return-recovery] return_to_results failed {consecutive_return_failures} consecutive times "
+                                f"for {full_query!r} — ending search with RETURN_TO_RESULTS_FAILED"
+                            )
+                            raise DiscoveryFailure(
+                                DiscoveryFailureReason.RETURN_TO_RESULTS_FAILED,
+                                f"return_to_results failed {consecutive_return_failures} consecutive times for {full_query!r}",
+                            )
+                        return False
 
                     while not panel_lost:
                         if yielded >= max_results or (should_stop is not None and should_stop()):
@@ -2562,7 +2674,15 @@ class MapsScraper:
                                     "couldn't recover — ending round"
                                 )
                                 panel_lost = True
-                                break
+                                recovered = await handle_return_failure("panel_none_at_round_top", cards_left=0)
+                                if recovered:
+                                    panel = await page.query_selector(panel_sel)
+                                    if panel is not None:
+                                        panel_lost = False
+                                if panel_lost:
+                                    break
+                            else:
+                                consecutive_return_failures = 0
                             panel = await page.query_selector(panel_sel)
                             if panel is None:
                                 panel_lost = True
@@ -2632,18 +2752,22 @@ class MapsScraper:
                             break
 
                         candidate_pid = _stable_place_id_from_url(card_href)
-                        if candidate_pid and (
-                            candidate_pid.lower() in known_place_ids_norm
-                            or candidate_pid in known_place_ids_norm
-                        ):
-                            log.info(
-                                f"[maps][pre-click] skipping known place_id={candidate_pid} "
-                                f"(place_key={place_key!r}, card_href={card_href!r})"
+                        if candidate_pid:
+                            cand_forms = expand_place_id_forms(candidate_pid)
+                            is_known = any(
+                                f in known_place_ids_norm or f.lower() in known_place_ids_norm
+                                for f in (cand_forms or [candidate_pid])
                             )
-                            self._profiler.incr("maps_candidates_known_place_skipped")
-                            _emit_progress("candidate_duplicate_skipped", candidate_pid)
-                            seen_hrefs.add(place_key)
-                            continue
+                            if is_known:
+                                log.info(
+                                    f"[maps][pre-click] skipping known place_id={candidate_pid} "
+                                    f"(place_key={place_key!r}, card_href={card_href!r})"
+                                )
+                                self._profiler.incr("known_place_skipped")
+                                self._profiler.incr("maps_candidates_known_place_skipped")
+                                _emit_progress("candidate_duplicate_skipped", candidate_pid)
+                                seen_hrefs.add(place_key)
+                                continue
 
                         card_signals = await _extract_card_signals(anchor)
                         if card_signals.get("closed"):
@@ -2665,6 +2789,7 @@ class MapsScraper:
                                 except Exception:
                                     pass
                                 await _human_click(page, anchor)
+                                clicks_this_round += 1
                                 self._profiler.incr("maps_candidates_clicked")
                         except Exception as exc:
                             log.info(
@@ -2927,8 +3052,9 @@ class MapsScraper:
                             if verified_pid:
                                 place.extra.setdefault("maps_place_id", verified_pid)
                                 place.extra.setdefault("mapsPlaceId", verified_pid)
-                                known_place_ids_norm.add(verified_pid.lower())
-                                known_place_ids_norm.add(verified_pid)
+                                for f in expand_place_id_forms(verified_pid):
+                                    known_place_ids_norm.add(f)
+                                    known_place_ids_norm.add(f.lower())
 
                             last_verified_panel = {
                                 "place_key": place_key,
@@ -2946,6 +3072,17 @@ class MapsScraper:
                                 )
                                 self._stats.skip("permanently_closed")
                                 continue
+
+                            # Priority 2: Address-vs-street spatial containment check
+                            if street and place.address:
+                                if not is_address_on_street(place.address, street):
+                                    log.info(
+                                        f"[maps] candidate {place.name!r} address {place.address!r} "
+                                        f"outside street scope {street!r} — tagging outside_street_scope"
+                                    )
+                                    self._profiler.incr("outside_street_scope")
+                                    _emit_progress("outside_street_scope", place_key)
+                                    continue
 
                             # Second-layer identity guard, independent of
                             # href formatting entirely (see docstring on
@@ -3001,8 +3138,13 @@ class MapsScraper:
                                 except asyncio.TimeoutError:
                                     self._profiler.incr("card_operation_timeouts")
                                     returned_ok = False
-                                if not returned_ok and (await page.query_selector(panel_sel)) is None:
-                                    panel_lost = True
+                                if returned_ok:
+                                    consecutive_return_failures = 0
+                                else:
+                                    cards_left = max(0, len(listing_anchors) - 1)
+                                    recovered = await handle_return_failure("finally_after_card", cards_left=cards_left)
+                                    if not recovered and (await page.query_selector(panel_sel)) is None:
+                                        panel_lost = True
 
                     # Check for end of results
                     try:
@@ -3026,6 +3168,9 @@ class MapsScraper:
                     await _human_scroll(
                         page, panel_sel, config=self.config, profiler=self._profiler,
                     )
+                    if clicks_this_round == 0:
+                        self._profiler.incr("rounds_without_click")
+                        log.debug(f"[maps] round={rounds_this_attempt} finished with 0 clicks")
 
                 # Finished this attempt's scroll budget without crashing —
                 # max_results reached, the per-attempt or cross-attempt
@@ -3077,10 +3222,14 @@ class MapsScraper:
                 _emit_progress("panel_failure_retry", f"{exc.reason.value}:{attempt}")
                 if proxy:
                     self._proxy_manager.report_failure(proxy)
-                if is_last_attempt:
+                if is_last_attempt or exc.reason == DiscoveryFailureReason.RETURN_TO_RESULTS_FAILED:
                     raise
                 # else: fall through to `finally`, then the `while` loop
                 # retries with a freshly built context/page.
+
+            except asyncio.CancelledError:
+                _log_stack_snapshot("search_cancelled_watchdog_or_abort")
+                raise
 
             except Exception as exc:
                 # LIFECYCLE FIX (fast target cleanup / shutdown noise —

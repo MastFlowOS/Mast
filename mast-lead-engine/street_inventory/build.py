@@ -54,6 +54,14 @@ def build_city_street_inventory(
     test this function without a real Supabase project (see
     `tests/test_street_inventory.py`).
     """
+    if osm_relation_id is None and repository is not None:
+        try:
+            osm_relation_id = repository.get_cached_osm_relation_id(country_code, city)
+            if osm_relation_id is not None:
+                log.info("[street-inventory] reusing verified osm_relation_id=%d for city=%r from existing inventory", osm_relation_id, city)
+        except Exception:
+            pass
+
     result: StreetInventoryResult = fetch_city_street_inventory(
         country_code=country_code,
         city=city,

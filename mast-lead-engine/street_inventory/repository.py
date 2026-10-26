@@ -40,6 +40,7 @@ import logging
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Sequence
 
@@ -199,3 +200,27 @@ class SupabaseStreetInventoryRepository:
             raise StreetInventoryRepositoryError(
                 f"Supabase upsert into discovery_streets returned unexpected status {status}"
             )
+
+    def get_cached_osm_relation_id(self, country_code: str, city: str) -> Optional[int]:
+        """Look up verified osm_relation_id stored in metadata of an existing street row for this city."""
+        url = (
+            f"{self._url}/rest/v1/{self._table}"
+            f"?country_code=eq.{urllib.parse.quote(country_code)}&city=eq.{urllib.parse.quote(city)}"
+            f"&select=metadata&limit=1"
+        )
+        headers = {
+            "apikey": self._key,
+            "Authorization": f"Bearer {self._key}",
+        }
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout_seconds) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data and isinstance(data, list) and len(data) > 0:
+                    meta = data[0].get("metadata") or {}
+                    rel_id = meta.get("osm_relation_id")
+                    if rel_id is not None:
+                        return int(rel_id)
+        except Exception as exc:
+            log.debug(f"[street-inventory] no cached osm_relation_id found for city={city!r}: {exc}")
+        return None

@@ -9,6 +9,7 @@ const FEATURE_TOKENS = [
   "pedestrian bridge",
   "pedestrian walkway",
   "access path",
+  "access road",
   "bikeway",
   "bike path",
   "footway",
@@ -21,6 +22,12 @@ const FEATURE_TOKENS = [
   "bus drop-off",
   "bus lane",
   "service road",
+  "taxiway",
+  "runway",
+  "concourse",
+  "parking",
+  "turnpike",
+  "interchange",
 ];
 
 const ROUTE_SUFFIXES = [
@@ -74,6 +81,11 @@ export function isLowValueStreet(name: string): { isLowValue: boolean; reason?: 
   // Digits only or digits with commas/spaces/refs (e.g. "315", "379", "315, 379")
   if (/^[\d\s,/-]+$/.test(lowered)) {
     return { isLowValue: true, reason: "number_only" };
+  }
+
+  // Alphanumeric gate / concourse / runway codes like 'A', 'A1', 'A10', 'B2' (length <= 4, letter + digits)
+  if (/^[a-z]\d{0,3}$/i.test(lowered)) {
+    return { isLowValue: true, reason: "gate_or_concourse_code" };
   }
 
   // Route refs like "35 EB", "I-90 WB", "US-41 NB", "315, 379"

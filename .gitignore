@@ -46,3 +46,5 @@ spec-worker/
 # Local SQLite databases
 data/
 
+.vercel
+.env*

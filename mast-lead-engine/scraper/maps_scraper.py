@@ -3073,16 +3073,18 @@ class MapsScraper:
                                 self._stats.skip("permanently_closed")
                                 continue
 
-                            # Priority 2: Address-vs-street spatial containment check
+                            # Priority 5: Do not claim exact street-level targeting while street geometry is missing.
+                            # Tag for diagnostic telemetry without discarding legitimate candidates in city scope.
                             if street and place.address:
-                                if not is_address_on_street(place.address, street):
+                                if is_address_on_street(place.address, street):
+                                    self._profiler.incr("on_target_street")
+                                else:
+                                    self._profiler.incr("outside_street_scope")
+                                    self._profiler.incr("street_anchor_proximity")
                                     log.info(
                                         f"[maps] candidate {place.name!r} address {place.address!r} "
-                                        f"outside street scope {street!r} — tagging outside_street_scope"
+                                        f"discovered via anchor {street!r} in city scope"
                                     )
-                                    self._profiler.incr("outside_street_scope")
-                                    _emit_progress("outside_street_scope", place_key)
-                                    continue
 
                             # Second-layer identity guard, independent of
                             # href formatting entirely (see docstring on

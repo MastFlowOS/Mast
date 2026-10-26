@@ -440,13 +440,22 @@ async function runOneAreaAttempt(
     traceLog(`DISCOVERED name=${JSON.stringify(lead.name)}`);
     publishDiscoveryLiveEvent(candidateDiscoveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
 
-    if (street && (!lead.address || !isAddressOnStreet(lead.address, street))) {
-      rejected += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=outside_street_scope:street=${street},address=${lead.address ?? ""}`);
-      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "outside_street_scope", areaLabel));
-      continue;
+    if (street) {
+      const isDirectStreetMatch = lead.address ? isAddressOnStreet(lead.address, street) : false;
+      const addrLower = (lead.address ?? "").toLowerCase();
+      const cityLower = (task.city ?? "").toLowerCase();
+      const regionLower = (payload.request?.region ?? "").toLowerCase();
+      const countryLower = (task.country_code ?? "").toLowerCase();
+      const isCityScopeMatch = !lead.address || (cityLower && addrLower.includes(cityLower)) || (regionLower && addrLower.includes(regionLower)) || (countryLower && (addrLower.includes(countryLower) || (countryLower === "us" && (addrLower.includes("usa") || addrLower.includes("united states")))));
+
+      if (!isDirectStreetMatch && !isCityScopeMatch) {
+        rejected += 1;
+        traceLog(`PIPELINE ${pid}`);
+        traceLog(`EXITED HERE`);
+        traceLog(`reason=outside_geographic_scope:street=${street},city=${task.city},address=${lead.address ?? ""}`);
+        publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "outside_geographic_scope", areaLabel));
+        continue;
+      }
     }
     const validation = validateDiscoveryCandidate(lead);
     if (!validation.valid) {
@@ -554,7 +563,11 @@ async function runOneAreaAttempt(
 
         if (requestedChannels.includes("instagram")) {
           const tIntel = profiler.timer("ensure_intelligence");
-          await ensureIntelligence(businessId);
+          try {
+            await ensureIntelligence(businessId);
+          } catch (intelErr) {
+            console.warn(`[discoveryTask] ensureIntelligence non-fatal error for businessId=${businessId}`, intelErr);
+          }
           tIntel.end();
         }
       } catch (enrichErr) {

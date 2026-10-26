@@ -18,6 +18,7 @@ _FEATURE_TOKENS = [
     "pedestrian bridge",
     "pedestrian walkway",
     "access path",
+    "access road",
     "bikeway",
     "bike path",
     "footway",
@@ -30,6 +31,12 @@ _FEATURE_TOKENS = [
     "bus drop-off",
     "bus lane",
     "service road",
+    "taxiway",
+    "runway",
+    "concourse",
+    "parking",
+    "turnpike",
+    "interchange",
 ]
 
 _ROUTE_SUFFIXES = [
@@ -68,6 +75,10 @@ def is_low_value_street(name: str) -> tuple[bool, Optional[str]]:
     # Digits only or digits with commas/spaces/refs (e.g. "315", "379", "315, 379")
     if re.match(r"^[\d\s,/-]+$", lowered):
         return True, "number_only"
+
+    # Alphanumeric gate / concourse / runway codes like 'A', 'A1', 'A10', 'B2' (length <= 4, letter + digits)
+    if re.match(r"^[a-z]\d{0,3}$", lowered):
+        return True, "gate_or_concourse_code"
 
     # Route refs like "35 EB", "I-90 WB", "US-41 NB", "315, 379"
     for sfx in _ROUTE_SUFFIXES:

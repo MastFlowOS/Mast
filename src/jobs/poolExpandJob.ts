@@ -1528,7 +1528,12 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
               discovered += 1;
               if (streetClaim) {
                 const targetStreet = streetClaim.streetName || streetClaim.streetKey;
-                if (!lead.address || !isAddressOnStreet(lead.address, targetStreet)) {
+                const isDirectStreetMatch = lead.address ? isAddressOnStreet(lead.address, targetStreet) : false;
+                const addrLower = (lead.address ?? "").toLowerCase();
+                const cityLower = (city ?? "").toLowerCase();
+                const isCityScopeMatch = !lead.address || (cityLower && addrLower.includes(cityLower)) || (country?.code && (addrLower.includes(country.code.toLowerCase()) || (country.code.toLowerCase() === "us" && (addrLower.includes("usa") || addrLower.includes("united states")))));
+
+                if (!isDirectStreetMatch && !isCityScopeMatch) {
                   rejected += 1;
                   const pid = lead._pipeline_id ?? `pool:${discovered}`;
                   if (discoveryPlanId) {
@@ -1537,7 +1542,7 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                         discoveryPlanId,
                         areaWorkerNumbers.get(area) ?? (slotIndex + 1),
                         pid,
-                        "outside_street_scope",
+                        "outside_geographic_scope",
                         areaLabel,
                       ),
                     );

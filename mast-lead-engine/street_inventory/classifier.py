@@ -47,6 +47,19 @@ _FEATURE_TOKENS = [
     "parking",
     "turnpike",
     "interchange",
+    "cargo",
+    "terminal",
+    "hangar",
+    "freeway",
+    "expressway",
+    "tollway",
+    "alley",
+    "railway",
+    "tracks",
+    "substation",
+    "depot",
+    "distribution center",
+    "heliport",
 ]
 
 _ROUTE_SUFFIXES = [

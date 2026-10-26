@@ -838,12 +838,12 @@ _PLACE_GID_RE = re.compile(r"/g/([A-Za-z0-9_-]+)")
 # Controls that return from a place's detail pane to the results feed.
 # Maps' markup for this isn't stable, so several are tried in order.
 _BACK_BUTTON_SELECTORS = [
-    "button[aria-label='Back']",
     "button[aria-label='Back to results']",
-    "button[aria-label*='Back' i]",
+    "button[aria-label='Back']",
     "button[aria-label*='back to results' i]",
+    "button[aria-label*='Back' i]",
     "button[jsaction*='pane.backButton']",
-    "button[jsaction*='searchbox.back']",
+    "button[data-tooltip*='Back to results' i]",
     "button[data-tooltip*='Back' i]",
     "button.hYBOP",
     "span.google-symbols.mL3xi",
@@ -1002,6 +1002,11 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
     Checks `el is not feed_el` and element capability so minimal unit-test stubs where
     `page.query_selector(_)` returns the feed panel object for all selectors do not
     falsely report an open detail pane."""
+    curr_url = getattr(page, "url", "") or ""
+    # If the URL is explicitly on search results and not in a place route, detail pane is not open
+    if "/maps/search/" in curr_url and "/maps/place/" not in curr_url:
+        return False
+
     for sel in _PLACE_NAME_SELECTORS:
         try:
             el = await page.query_selector(sel)
@@ -1018,7 +1023,13 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
                         return True
         except Exception:
             continue
-    for sel in _BACK_BUTTON_SELECTORS:
+    # Detail pane back buttons specific to the place pane
+    for sel in [
+        "button[aria-label='Back to results']",
+        "button[aria-label*='back to results' i]",
+        "button[jsaction*='pane.backButton']",
+        "button[data-tooltip*='Back to results' i]",
+    ]:
         try:
             el = await page.query_selector(sel)
             if el is not None and el is not feed_el:
@@ -1193,6 +1204,20 @@ async def _return_to_results(
         feed_el = await page.query_selector(panel_selector)
         if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
             return True
+
+        # Fast in-page history back if we are on a place page URL
+        curr_url = getattr(page, "url", "") or ""
+        if "/maps/place/" in curr_url and hasattr(page, "evaluate"):
+            try:
+                await page.evaluate("() => window.history ? window.history.back() : null")
+                settle_deadline = asyncio.get_event_loop().time() + 0.3
+                while asyncio.get_event_loop().time() < settle_deadline:
+                    feed_el = await page.query_selector(panel_selector)
+                    if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
+                        return True
+                    await asyncio.sleep(0.03)
+            except Exception:
+                pass
 
         for sel in _BACK_BUTTON_SELECTORS:
             try:

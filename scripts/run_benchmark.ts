@@ -108,8 +108,8 @@ async function main() {
 
           if (ev.event_type === "candidate_discovered" && ev.pipeline_id) {
             discoveredPids.add(ev.pipeline_id);
-          } else if (ev.event_type === "candidate_accepted") {
-            acceptedPids.add(ev.pipeline_id ?? String(acceptedPids.size + 1));
+          } else if (ev.event_type === "candidate_accepted" || ev.event_type === "lead_delivered") {
+            acceptedPids.add(ev.business_name || ev.pipeline_id || String(acceptedPids.size + 1));
             if (firstLeadTime === null) firstLeadTime = (new Date(ev.event_timestamp).getTime() - t0) / 1000;
             if (acceptedPids.size >= 10 && tenthLeadTime === null) tenthLeadTime = (new Date(ev.event_timestamp).getTime() - t0) / 1000;
           } else if (ev.event_type === "candidate_rejected") {
@@ -121,10 +121,10 @@ async function main() {
       }
     }
 
-    // 3. Check delivered leads in businesses table associated with this user
+    // 3. Check delivered leads in leads table associated with this user
     const { data: leads, error: leadsErr } = await supabase
-      .from("opportunities")
-      .select("id, business_id, created_at, businesses(id, name, email, phone, website, instagram, address)")
+      .from("leads")
+      .select("id, business_name, email, phone, website, instagram_handle, location, created_at")
       .eq("user_id", USER_ID)
       .gte("created_at", new Date(t0).toISOString())
       .order("created_at", { ascending: true });
@@ -159,19 +159,18 @@ async function main() {
   console.log(`Candidates Accepted: ${acceptedPids.size}`);
   console.log(`Rejections by reason:`, Object.fromEntries(rejectedReasons.entries()));
 
-  // Fetch delivered businesses
+  // Fetch delivered businesses from leads table
   const { data: deliveredLeads } = await supabase
-    .from("opportunities")
-    .select("id, created_at, businesses(id, name, email, phone, website, instagram, address)")
+    .from("leads")
+    .select("id, business_name, email, phone, website, instagram_handle, location, created_at")
     .eq("user_id", USER_ID)
     .gte("created_at", new Date(t0).toISOString())
     .order("created_at", { ascending: true });
 
   console.log(`\nDelivered Leads Count: ${deliveredLeads?.length ?? 0}`);
   if (deliveredLeads) {
-    deliveredLeads.forEach((opp: any, idx: number) => {
-      const b = opp.businesses;
-      console.log(`${idx + 1}. [${b?.name}] Website: ${b?.website} | Email: ${b?.email} | Phone: ${b?.phone} | IG: ${b?.instagram} | Addr: ${b?.address}`);
+    deliveredLeads.forEach((lead: any, idx: number) => {
+      console.log(`${idx + 1}. [${lead.business_name}] Website: ${lead.website} | Email: ${lead.email} | Phone: ${lead.phone} | IG: ${lead.instagram_handle} | Addr: ${lead.location}`);
     });
   }
 

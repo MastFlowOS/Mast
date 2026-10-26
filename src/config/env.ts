@@ -184,11 +184,11 @@ export const EnvSchema = z
     // Chromium browser process with one page open.  Adjust when deploying to
     // a different container size to avoid OOM.  Combined with free memory at
     // startup to derive the effective worker concurrency ceiling.
-    BROWSER_MEMORY_ESTIMATE_MB: z.coerce.number().int().min(50).default(350),
+    BROWSER_MEMORY_ESTIMATE_MB: z.coerce.number().int().min(50).default(160),
 
     // Memory to reserve for the Node process itself plus OS overhead, so the
     // capacity calculator doesn't allocate every last MB to browser slots.
-    WORKER_MEMORY_RESERVE_MB: z.coerce.number().int().min(64).default(256),
+    WORKER_MEMORY_RESERVE_MB: z.coerce.number().int().min(64).default(128),
 
     // GOOGLE MAPS AREA WORKER POOL (Worker Pools B) — how many concurrent
     // Google Maps area workers a SINGLE discovery task may fan out to for a

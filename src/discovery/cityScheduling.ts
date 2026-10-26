@@ -69,7 +69,7 @@ export function cityTransitionFor(
 ): CityTransitionReason {
   if (attempt.acceptedLeads > 0) return "CITY_PRODUCTIVE";
   if (terminationReason === "WATCHDOG_TIMEOUT") return "WATCHDOG_TIMEOUT";
-  if (terminationReason === "RETURN_TO_RESULTS_FAILED") return "CITY_NO_PROGRESS";
+  if (terminationReason === "RETURN_TO_RESULTS_FAILED") return "SCRAPER_FAILURE";
   // "FAILURE" is the bridge's catch-all for "!success, not CANCELLED" —
   // i.e. a genuine scraper failure (unrecoverable DiscoveryFailure /
   // unclassified error after every crash-retry attempt was exhausted).
@@ -177,13 +177,17 @@ export function reconcileDiscoveryCounters(input: {
   duplicates: number;
   rejectedByChannelOrQuality: number;
   unexaminedAtEarlyStop?: number;
+  failed?: number;
+  skipped?: number;
 }): DiscoveryCounterReconciliation {
   const discovered = Math.max(0, input.verifiedCandidatesYielded);
   const accounted =
     Math.max(0, input.accepted) +
     Math.max(0, input.duplicates) +
     Math.max(0, input.rejectedByChannelOrQuality) +
-    Math.max(0, input.unexaminedAtEarlyStop ?? 0);
+    Math.max(0, input.unexaminedAtEarlyStop ?? 0) +
+    Math.max(0, input.failed ?? 0) +
+    Math.max(0, input.skipped ?? 0);
   const discrepancy = discovered - accounted;
   return {
     valid: discrepancy === 0 && input.stalePanelMismatches >= 0,

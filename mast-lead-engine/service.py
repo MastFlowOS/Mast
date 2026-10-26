@@ -1475,6 +1475,17 @@ async def run_query(
                         "abort, or process shutdown) stopped this run before it "
                         "reached its target or genuinely exhausted its search space",
                     )
+            elif not gate.target_reached:
+                prov_errors = composed.provider_errors
+                if not prov_errors and hasattr(composed.provider, "provider_errors"):
+                    prov_errors = composed.provider.provider_errors
+                if prov_errors:
+                    primary_err = prov_errors.get("google_maps") or next(iter(prov_errors.values()))
+                    log.warning(
+                        "[run_query] discovery_only ended with provider error(s): %s; raising primary failure",
+                        {pid: f"{type(err).__name__}: {err}" for pid, err in prov_errors.items()},
+                    )
+                    raise primary_err
         else:
             # NOTE (Phase 1A scope): this session-identity `user_id` is a
             # separate, pre-existing placeholder unrelated to early-dedup
@@ -1882,6 +1893,17 @@ async def run_query(
                             "abort, or process shutdown) stopped this run before it "
                             "reached its target or genuinely exhausted its search space",
                         )
+                elif not gate.target_reached:
+                    prov_errors = composed.provider_errors
+                    if not prov_errors and hasattr(composed.provider, "provider_errors"):
+                        prov_errors = composed.provider.provider_errors
+                    if prov_errors:
+                        primary_err = prov_errors.get("google_maps") or next(iter(prov_errors.values()))
+                        log.warning(
+                            "[run_query] pipeline ended with provider error(s): %s; raising primary failure",
+                            {pid: f"{type(err).__name__}: {err}" for pid, err in prov_errors.items()},
+                        )
+                        raise primary_err
             finally:
                 hb_stop.set()
                 hb_task.cancel()

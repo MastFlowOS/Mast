@@ -4,7 +4,7 @@ import { evaluateEarlyChannelPrune, engineRequiredChannels } from "../discovery/
 import { evaluateLeadQuality } from "../lib/leadQualityPolicy.js";
 import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.js";
 import { validateLead } from "../lib/leadValidation.js";
-import { deliverLead, upsertBusinessFromEngineLead } from "../scraperBridge/deliverLead.js";
+import { deliverLead, upsertBusinessFromEngineLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { materializeDiscoveryPlan, dispatchQueuedDiscoveryTasks, DISCOVERY_TASK_RETRY_OPTIONS, type DiscoveryPlanRequest } from "../discovery/planner.js";
 import { enqueueBusinessProcessing, ensureEnriched, ensureIntelligence } from "./businessProcessingJob.js";
 import { env } from "../config/env.js";
@@ -210,6 +210,8 @@ type AreaAttemptResult = {
   accepted: number;
   rejected: number;
   duplicates: number;
+  failed: number;
+  skipped: number;
   exhausted: boolean;
   cityReason: string;
   terminalReason?: RequestTerminalReason;
@@ -265,23 +267,38 @@ export async function getKnownPlaceIdsForTask(
   try {
     let query = db
       .from("businesses")
-      .select("fingerprints, leads!inner(user_id)")
-      .eq("leads.user_id", userId)
-      .eq("country_code", countryCode);
-    if (city) {
-      query = query.eq("city", city);
+      .select("place_id, fingerprints, address, region, leads!inner(user_id)")
+      .eq("leads.user_id", userId);
+    if (countryCode) {
+      query = query.eq("country_code", countryCode);
     }
     const { data, error } = await query.limit(500);
-    if (error || !data) return [];
+    if (error || !data) {
+      if (error) console.warn("[discoveryPlanJob] businesses lookup error in getKnownPlaceIdsForTask (failing open):", error);
+      return [];
+    }
     const placeIds = new Set<string>();
+    const cityLower = city?.trim().toLowerCase();
     for (const row of data) {
+      if (cityLower) {
+        const addrMatch = typeof row.address === "string" && row.address.toLowerCase().includes(cityLower);
+        const regionMatch = typeof row.region === "string" && row.region.toLowerCase().includes(cityLower);
+        if (row.address && !addrMatch && !regionMatch) {
+          continue;
+        }
+      }
+      if (typeof row.place_id === "string" && row.place_id.trim()) {
+        placeIds.add(row.place_id.trim());
+      }
       const fingerprints = row.fingerprints as string[] | undefined;
       if (Array.isArray(fingerprints)) {
         for (const fp of fingerprints) {
-          if (fp.startsWith("place:")) {
-            placeIds.add(fp.slice("place:".length));
-          } else if (fp.startsWith("map:")) {
-            placeIds.add(fp.slice("map:".length));
+          if (typeof fp === "string") {
+            if (fp.startsWith("place:")) {
+              placeIds.add(fp.slice("place:".length));
+            } else if (fp.startsWith("map:")) {
+              placeIds.add(fp.slice("map:".length));
+            }
           }
         }
       }
@@ -324,6 +341,8 @@ async function runOneAreaAttempt(
   let accepted = 0;
   let rejected = 0;
   let duplicates = 0;
+  let failed = 0;
+  let skipped = 0;
   const earlyPrunedByChannel: Record<string, number> = {};
   let exhausted = false;
   let lastHeartbeat = Date.now();
@@ -421,10 +440,12 @@ async function runOneAreaAttempt(
     traceLog(`DISCOVERED name=${JSON.stringify(lead.name)}`);
     publishDiscoveryLiveEvent(candidateDiscoveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
 
-    if (street && lead.address && !isAddressOnStreet(lead.address, street)) {
+    if (street && (!lead.address || !isAddressOnStreet(lead.address, street))) {
+      rejected += 1;
       traceLog(`PIPELINE ${pid}`);
       traceLog(`EXITED HERE`);
-      traceLog(`reason=outside_street_scope:street=${street},address=${lead.address}`);
+      traceLog(`reason=outside_street_scope:street=${street},address=${lead.address ?? ""}`);
+      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "outside_street_scope", areaLabel));
       continue;
     }
     const validation = validateDiscoveryCandidate(lead);
@@ -437,7 +458,13 @@ async function runOneAreaAttempt(
       continue;
     }
 
-    if (requestAbort.signal.aborted) break outer;
+    if (requestAbort.signal.aborted || await observeTerminalPlan()) {
+      skipped += 1;
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=plan_terminal_or_aborted_skipped`);
+      break outer;
+    }
 
     // ── Internal quality gate (rating / review count) — BEFORE any DB write ──
     // The lead only reaches this loop after the engine opened the business
@@ -478,10 +505,28 @@ async function runOneAreaAttempt(
 
     // Persist and schedule slow work (only for candidates that survived the
     // early prune above).
-    const tUpsert = profiler.timer("business_upsert");
-    const businessId = await upsertBusinessFromEngineLead(lead, payload.request.region, undefined, payload.request.scrapeJobId);
-    tUpsert.end();
-    if (requestAbort.signal.aborted) break outer;
+    let businessId: string;
+    try {
+      const tUpsert = profiler.timer("business_upsert");
+      businessId = await upsertBusinessFromEngineLead(lead, payload.request.region, undefined, payload.request.scrapeJobId);
+      tUpsert.end();
+    } catch (upsertErr) {
+      const message = upsertErr instanceof Error ? upsertErr.message : String(upsertErr);
+      console.error(`[discoveryPlanJob] business upsert failed for pid=${pid} name=${lead.name}`, upsertErr);
+      failed += 1;
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=upsert_failed:error=${JSON.stringify(message)}`);
+      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "system_error_upsert_failed", areaLabel));
+      continue;
+    }
+    if (requestAbort.signal.aborted || await observeTerminalPlan()) {
+      skipped += 1;
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=plan_terminal_or_aborted_skipped`);
+      break outer;
+    }
     traceLog(`BUSINESS_UPSERTED businessId=${businessId}`);
     const tEnqueue = profiler.timer("enqueue_enrich");
     await enqueueBusinessProcessing(businessId, "enrich");
@@ -515,7 +560,7 @@ async function runOneAreaAttempt(
       } catch (enrichErr) {
         const message = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
         console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence failed for businessId=${businessId} — skipping channel gate`, enrichErr);
-        rejected += 1;
+        failed += 1;
         traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms (threw)`);
         traceLog(`PIPELINE ${pid}`);
         traceLog(`EXITED HERE`);
@@ -541,20 +586,38 @@ async function runOneAreaAttempt(
 
     // Cancellation/target may have landed during an expensive enrichment.
     // Preserve work already completed, but never start a new acceptance.
-    if (requestAbort.signal.aborted || await observeTerminalPlan()) break outer;
+    if (requestAbort.signal.aborted || await observeTerminalPlan()) {
+      skipped += 1;
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=plan_terminal_or_aborted_skipped`);
+      break outer;
+    }
 
     traceLog(`DELIVER_LEAD_START`);
-    const tDeliver = profiler.timer("deliver_lead");
-    const delivery = await deliverLead(deliverable, {
-      userId: payload.request.userId,
-      professionSlug: payload.request.professionSlug,
-      discoveryMode: "live",
-      scrapeJobId: payload.request.scrapeJobId,
-      dailyLimit: payload.request.dailyLimit,
-      monthlyLimit: payload.request.monthlyLimit,
-      discoveryPlanId: payload.planId,
-    }, payload.request.region, businessId);
-    tDeliver.end();
+    let delivery: DeliveryResult;
+    try {
+      const tDeliver = profiler.timer("deliver_lead");
+      delivery = await deliverLead(deliverable, {
+        userId: payload.request.userId,
+        professionSlug: payload.request.professionSlug,
+        discoveryMode: "live",
+        scrapeJobId: payload.request.scrapeJobId,
+        dailyLimit: payload.request.dailyLimit,
+        monthlyLimit: payload.request.monthlyLimit,
+        discoveryPlanId: payload.planId,
+      }, payload.request.region, businessId);
+      tDeliver.end();
+    } catch (deliverErr) {
+      const message = deliverErr instanceof Error ? deliverErr.message : String(deliverErr);
+      console.error(`[discoveryPlanJob] deliverLead failed for pid=${pid} businessId=${businessId}`, deliverErr);
+      failed += 1;
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`EXITED HERE`);
+      traceLog(`reason=deliver_lead_failed:error=${JSON.stringify(message)}`);
+      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "system_error_deliver_failed", areaLabel));
+      continue;
+    }
     traceLog(`DELIVER_LEAD_END result=${JSON.stringify(delivery)}`);
 
     // NOTE: insertLeadForUser() runs INSIDE deliverLead() (deliverLead.ts,
@@ -563,6 +626,7 @@ async function runOneAreaAttempt(
     // immediately after DELIVER_LEAD_END resolves, which is the earliest
     // point this file can observe it.
     if (delivery.limitReached) {
+      skipped += 1;
       traceLog(`PIPELINE ${pid}`);
       traceLog(`EXITED HERE`);
       traceLog(`reason=plan_limit_reached:no leads row inserted,delivery=${JSON.stringify(delivery)}`);
@@ -641,7 +705,7 @@ async function runOneAreaAttempt(
         `accepted=${accepted} rejected=${rejected} by_channel=${JSON.stringify(earlyPrunedByChannel)}`,
     );
   }
-  return { discovered, accepted, rejected, duplicates, exhausted, cityReason, terminalReason, shouldRetryTask, pythonPerfData, bridgeTimings, progressMarks, engineTerminationReason };
+  return { discovered, accepted, rejected, duplicates, failed, skipped, exhausted, cityReason, terminalReason, shouldRetryTask, pythonPerfData, bridgeTimings, progressMarks, engineTerminationReason };
 }
 
 /** Atomically reserves the same browser/resource/PID capacity gates used by area workers. */
@@ -953,6 +1017,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   let accepted = 0;
   let rejected = 0;
   let duplicates = 0;
+  let failed = 0;
+  let skipped = 0;
   let exhausted = false;
   const startedAt = Date.now();
   let lastHeartbeat = Date.now();
@@ -1166,11 +1232,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           }
           const slotWorkerLabel = `${workerLabel}-w${slotIndex + 1}`;
           const collapsedStreet = collapseStreetName(claim.streetName);
-          const lowValue = isLowValueStreet(collapsedStreet || claim.streetName);
+          let lowValue = isLowValueStreet(claim.streetName);
+          if (!lowValue.isLowValue && collapsedStreet) {
+            lowValue = isLowValueStreet(collapsedStreet);
+          }
           if (lowValue.isLowValue) {
             console.info(`[street-discovery] skipping low-value street claim "${claim.streetName}" (${lowValue.reason ?? "low_value"}) task=${payload.taskId}`);
             await completeDiscoveryStreetClaim(db, claim, streetScope.userId, slotWorkerLabel);
-            return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: true, failed: false };
+            return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, failedCandidates: 0, skippedCandidates: 0, exhausted: true, failed: false };
           }
 
           let heartbeatStopped = false;
@@ -1231,6 +1300,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
               accepted: attempt.accepted,
               rejected: attempt.rejected,
               duplicates: attempt.duplicates,
+              failedCandidates: attempt.failed,
+              skippedCandidates: attempt.skipped,
               exhausted: attempt.exhausted,
               failed: Boolean(
                 attempt.shouldRetryTask ||
@@ -1253,6 +1324,10 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       accepted = poolResult.totals.accepted;
       rejected = poolResult.totals.rejected;
       duplicates = poolResult.totals.duplicates;
+      failed = poolResult.totals.failed;
+      skipped = poolResult.totals.skipped;
+      failed = poolResult.totals.failed;
+      skipped = poolResult.totals.skipped;
       exhausted = poolResult.perArea.length > 0 && poolResult.perArea.every((p) => p.outcome.exhausted);
 
       if (poolResult.allFailed && poolResult.perArea.length > 0 && !terminalReason) {
@@ -1322,6 +1397,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       accepted = attempt.accepted;
       rejected = attempt.rejected;
       duplicates = attempt.duplicates;
+      failed = attempt.failed;
+      skipped = attempt.skipped;
       exhausted = attempt.exhausted;
       pythonPerfData = attempt.pythonPerfData;
       bridgeTimings = attempt.bridgeTimings;
@@ -1426,6 +1503,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
             accepted: attempt.accepted,
             rejected: attempt.rejected,
             duplicates: attempt.duplicates,
+            failedCandidates: attempt.failed,
+            skippedCandidates: attempt.skipped,
             exhausted: attempt.exhausted,
             failed: attempt.shouldRetryTask,
           };
@@ -1488,6 +1567,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       accepted = poolResult.totals.accepted;
       rejected = poolResult.totals.rejected;
       duplicates = poolResult.totals.duplicates;
+      failed = poolResult.totals.failed;
+      skipped = poolResult.totals.skipped;
       // Best-effort aggregate: "exhausted" is only meaningful per-area;
       // the task-level metrics field below treats the whole pool as
       // exhausted only if every area that ran reported exhaustion.
@@ -1577,7 +1658,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       }
     }
     noSlotDeferralsByTask.delete(String(task.id));
-    console.info(`[discovery-city] CITY_FINISHED city=${task.city} country=${task.country_code} elapsed_ms=${Date.now() - startedAt} candidates_found=${discovered} accepted=${accepted} rejected=${rejected} reason=${cityReason}`);
+    console.info(`[discovery-city] CITY_FINISHED city=${task.city} country=${task.country_code} elapsed_ms=${Date.now() - startedAt} candidates_found=${discovered} accepted=${accepted} rejected=${rejected} failed=${failed} skipped=${skipped} reason=${cityReason}`);
 
     // PHASE 3C-1 STEP 2 — ONE structured timing line per task (not
     // per-anchor — see this phase's own "do NOT spam logs with per-anchor
@@ -1622,11 +1703,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       accepted,
       duplicates,
       rejectedByChannelOrQuality: rejected,
+      failed,
+      skipped,
     });
     console.info(
       `[discovery-summary] plan=${payload.planId} task=${payload.taskId} firstLeadMs=${firstLeadMs} ` +
         `totalDurationMs=${totalDurationMs} newForUser=${accepted} rawCandidates=${discovered} ` +
-        `duplicates=${duplicates} rejected=${rejected} failed=${poolResult?.allFailed ? 1 : 0} ` +
+        `duplicates=${duplicates} rejected=${rejected} failedCandidates=${failed} skippedCandidates=${skipped} failed=${poolResult?.allFailed ? 1 : 0} ` +
+        `discrepancy=${accounting.discrepancy} validAccounting=${accounting.valid} ` +
         `areasUsed=${poolResult?.areasProcessed.length ?? (claimedArea ? 1 : 0)} ` +
         `maxConcurrentAreas=${poolResult?.poolSize ?? 1} maxConcurrentBrowsers=${getBrowserSlotPool().capacity}`,
     );

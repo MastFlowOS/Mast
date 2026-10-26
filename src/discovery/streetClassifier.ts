@@ -15,6 +15,12 @@ const FEATURE_TOKENS = [
   "on ramp",
   "off ramp",
   "ramp",
+  "dropoff lane",
+  "drop-off lane",
+  "bus dropoff",
+  "bus drop-off",
+  "bus lane",
+  "service road",
 ];
 
 const ROUTE_SUFFIXES = [

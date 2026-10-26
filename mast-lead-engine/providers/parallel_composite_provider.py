@@ -432,6 +432,11 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
         self._display_name = display_name
         self._continue_on_provider_error = continue_on_provider_error
         self._on_provider_error = on_provider_error
+        self._provider_errors: dict[str, BaseException] = {}
+
+    @property
+    def provider_errors(self) -> dict[str, BaseException]:
+        return dict(self._provider_errors)
 
     @property
     def provider_id(self) -> str:
@@ -501,6 +506,7 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
                     f"({provider.display_name})."
                 )
 
+        self._provider_errors.clear()
         result_queue: "queue.Queue[Any]" = queue.Queue()
         stop_event = threading.Event()
 
@@ -561,6 +567,7 @@ class ParallelCompositeDiscoveryProvider(DiscoveryProviderInterface):
                     remaining.discard(item.provider_id)
                 elif isinstance(item, _ProviderError):
                     remaining.discard(item.provider_id)
+                    self._provider_errors[item.provider_id] = item.exc
                     if self._on_provider_error is not None:
                         self._on_provider_error(item.provider_id, item.exc)
                     if not self._continue_on_provider_error:

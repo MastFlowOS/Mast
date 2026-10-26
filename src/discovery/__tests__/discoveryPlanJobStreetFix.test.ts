@@ -53,22 +53,21 @@ describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
         return {
           select: (fields: string) => {
             assert.ok(fields.includes("fingerprints"));
+            assert.ok(fields.includes("place_id"));
             return {
               eq: (col1: string, val1: any) => ({
                 eq: (col2: string, val2: any) => ({
-                  eq: (col3: string, val3: any) => ({
-                    limit: async (limitCount: number) => {
-                      assert.equal(limitCount, 500);
-                      return {
-                        data: [
-                          { fingerprints: ["place:ChIJabc123", "map:0x123:0x456", "name:some_business"] },
-                          { fingerprints: ["place:ChIJdef456", "place:ChIJabc123"] },
-                          { fingerprints: null },
-                        ],
-                        error: null,
-                      };
-                    },
-                  }),
+                  limit: async (limitCount: number) => {
+                    assert.equal(limitCount, 500);
+                    return {
+                      data: [
+                        { place_id: "ChIJdirect789", fingerprints: ["place:ChIJabc123", "map:0x123:0x456", "name:some_business"], address: "123 N Michigan Ave, Chicago, IL" },
+                        { fingerprints: ["place:ChIJdef456", "place:ChIJabc123"], address: "456 S State St, Chicago, IL" },
+                        { fingerprints: null },
+                      ],
+                      error: null,
+                    };
+                  },
                 }),
               }),
             };
@@ -78,7 +77,8 @@ describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
     };
 
     const ids = await getKnownPlaceIdsForTask(mockDb, "user-1", "US", "Chicago");
-    assert.equal(ids.length, 3);
+    assert.equal(ids.length, 4);
+    assert.ok(ids.includes("ChIJdirect789"));
     assert.ok(ids.includes("ChIJabc123"));
     assert.ok(ids.includes("0x123:0x456"));
     assert.ok(ids.includes("ChIJdef456"));
@@ -90,11 +90,9 @@ describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
         select: () => ({
           eq: () => ({
             eq: () => ({
-              eq: () => ({
-                limit: async () => ({
-                  data: null,
-                  error: new Error("DB connection timeout"),
-                }),
+              limit: async () => ({
+                data: null,
+                error: new Error("DB connection timeout"),
               }),
             }),
           }),

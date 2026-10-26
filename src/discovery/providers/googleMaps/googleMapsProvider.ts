@@ -52,6 +52,9 @@ export function buildGoogleMapsEngineParams(
     // scoping. Prefer the narrower street when one was atomically
     // claimed; Maps itself receives the street in queryString.
     area: target.street ?? target.area,
+    ...(target.street
+      ? { street: target.street, street_mode: true }
+      : {}),
     max_results: options.maxResults,
     discovery_only: options.discoveryOnly,
     require_viability: false,

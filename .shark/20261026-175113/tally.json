@@ -1,0 +1,59 @@
+{
+  "in": 0,
+  "out": 5,
+  "panel": 5,
+  "investors": [
+    {
+      "investor": "The Tech Billionaire Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "You couldn't tell me who is actually paying for this software or how you survive Meta banning your scrapers, leaving me asking is this a business or a hobby? For that reason, I'm out.",
+      "change": "Twenty paying freelance subscribers who have renewed for at least three consecutive months and closed paying clients without triggering Meta account bans."
+    },
+    {
+      "investor": "The Royalty Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "I want a piece of every sale, but with no pricing, zero paying subscribers, and not a dime in revenue, there is nothing to take a royalty on. For that reason, I'm out.",
+      "change": "Showing at least 50 paying freelance subscribers generating steady monthly recurring revenue with positive gross margins after scrape and compute costs."
+    },
+    {
+      "investor": "The Customer Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "When I ask myself \"Would I actually buy this?\", the answer is no because broke freelancers won't pay a monthly subscription to cold-pitch businesses that have bad logos precisely because they have zero budget, and For that reason, I'm out.",
+      "change": "Proof of 20 paying freelancer subscribers who closed paid client contracts from these leads and kept their subscription for three consecutive months."
+    },
+    {
+      "investor": "The Numbers Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "Show me the numbers: with zero pricing data, unknown scraping costs, and not a single metric on churn, you have an expensive hobby rather than an investable business, and for that reason, I'm out.",
+      "change": "Verified unit economics showing at least 50 paying subscribers with an 80% gross margin over API and scraping costs and a monthly churn rate under 5%."
+    },
+    {
+      "investor": "The Skeptic Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "I've seen this movie before, and selling outreach tools to cash-strapped freelancers targeting businesses that don't care enough about design to pay for it guarantees fatal churn and banned accounts, and For that reason, I'm out.",
+      "change": "Verified data showing at least 20 businesses flagged for poor branding actually hired freelancers and paid for redesign work, proving these leads convert and have real budget."
+    }
+  ],
+  "homework": [
+    "the founder needs to find out pricing, monetization, and why beginner freelancers will buy software over free alternatives.",
+    "the founder needs to find out how to prevent scraper and user account bans under Meta platform policies when scraping Instagram and sending cold DMs.",
+    "the founder needs to find out product roadmap priorities and proof of a viable commercial business versus a personal tool.",
+    "the founder needs to find out the monetization model, pricing tiers, and current paying customer count.",
+    "the founder needs to find out customer acquisition cost (CAC), monthly churn rate, and how to retain freelancers after they land clients.",
+    "the founder needs to find out server and compute costs for scraping and AI visual evaluation, along with gross margins per search.",
+    "the founder needs to find out what existing tools freelancers will replace to buy Mast and what monthly price makes unit economics viable.",
+    "the founder needs to find out empirical data proving businesses with poor branding have budget and convert.",
+    "the founder needs to find out churn rates and retention strategy once freelancers reach client capacity.",
+    "the founder needs to find out customer pricing, scraping and API compute costs, and gross margins.",
+    "the founder needs to find out customer acquisition cost (CAC), lifetime value (LTV), and monthly churn rate.",
+    "the founder needs to find out Mast's verified conversion rate and number of closed deals needed for freelancer ROI.",
+    "the founder needs to find out evidence that businesses with poor branding actually have budget and convert from unsolicited DMs.",
+    "the founder needs to find out technical protections to prevent Meta from banning user accounts when scraping and sending outreach.",
+    "the founder needs to find out unit economics and pricing resilience given price-sensitive freelancers and high churn risks."
+  ]
+}

@@ -107,7 +107,7 @@ composition path is untouched.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Sequence
 
 from engine.interfaces import DiscoveryProviderInterface
@@ -174,6 +174,7 @@ class ComposedDiscovery:
     provider: DiscoveryProviderInterface
     request: Any
     selected_provider_ids: tuple[str, ...]
+    provider_errors: dict[str, BaseException] = field(default_factory=dict)
 
 
 def compose_discovery(
@@ -267,6 +268,12 @@ def compose_discovery(
         known_place_ids=known_place_ids,
         street_mode=street_mode,
     )
+
+    captured_provider_errors: dict[str, BaseException] = {}
+
+    def _on_provider_err(provider_id: str, exc: BaseException) -> None:
+        captured_provider_errors[provider_id] = exc
+        _log_provider_error(provider_id, exc)
 
     selected_ids: list[str] = []
     translated_requests: dict[str, Any] = {}
@@ -371,7 +378,7 @@ def compose_discovery(
             ParallelCompositeDiscoveryProvider(
                 instances,
                 continue_on_provider_error=True,
-                on_provider_error=_log_provider_error,
+                on_provider_error=_on_provider_err,
             )
         )
     composed_provider = TargetAwareDiscoveryProvider(
@@ -391,6 +398,7 @@ def compose_discovery(
         provider=composed_provider,
         request=composed_request,
         selected_provider_ids=tuple(selected_ids),
+        provider_errors=captured_provider_errors,
     )
 
 

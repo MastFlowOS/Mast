@@ -1,0 +1,53 @@
+{
+  "in": 0,
+  "out": 5,
+  "panel": 5,
+  "investors": [
+    {
+      "investor": "The Tech Billionaire Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "You have zero data on your churn rate or customer acquisition cost while trying to sell software to broke freelancers; For that reason, I'm out.",
+      "change": "Three consecutive months of cohort data proving paying freelancers retain at under 5% monthly churn with a CAC under $30."
+    },
+    {
+      "investor": "The Royalty Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "I want a piece of every sale, but you came in here without a single paying customer, zero revenue, and no proof of cash flow to recoup my capital, and For that reason, I'm out.",
+      "change": "Bank-verified proof of at least $5,000 in monthly recurring revenue with stable month-over-month retention from paying freelance subscribers."
+    },
+    {
+      "investor": "The Customer Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "When I ask myself \"Would I actually buy this?\", the answer is no, because you couldn't name a single tool in my current stack this replaces, and the minute I land client work I'll cancel your subscription to deliver the job, and For that reason, I'm out.",
+      "change": "Cohort data proving that paying solo freelancers stay subscribed for at least four consecutive months after closing a client rather than canceling during delivery."
+    },
+    {
+      "investor": "The Numbers Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "I always say \"Show me the numbers,\" but you came in with zero revenue, unknown acquisition costs, and no proof that cash-strapped freelancers won't immediately churn; For that reason, I'm out.",
+      "change": "Six consecutive months of cohort data showing at least 100 paying Pro subscribers with a blended CAC under $150 and monthly logo churn below 5%."
+    },
+    {
+      "investor": "The Skeptic Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "I've seen this movie before: you're selling a subscription to the most churn-heavy demographic on earth with zero 90-day cohort retention data and zero empirical proof these cold pitches close paying clients; For that reason, I'm out.",
+      "change": "Verified 90-day cohort retention data proving paying freelancers retain at 75% or higher, backed by verified client contracts closed through the platform."
+    }
+  ],
+  "homework": [
+    "the founder needs to find out the actual churn rate and customer acquisition cost (CAC).",
+    "the founder needs to find out current paying subscriber count, monthly recurring revenue (MRR), and monthly churn rate.",
+    "the founder needs to find out specifically which tools in a freelancer's current stack Mast replaces.",
+    "the founder needs to find out current MRR, paying subscriber count, and blended CAC.",
+    "the founder needs to find out the empirical free-to-paid conversion rate.",
+    "the founder needs to find out the exact monthly logo churn rate.",
+    "the founder needs to find out actual 90-day cohort retention rates.",
+    "the founder needs to find out the exact rate-limiting and anti-blacklisting safeguards for desktop client IPs.",
+    "the founder needs to find out empirical client close rates from live Mast outreach campaigns."
+  ]
+}

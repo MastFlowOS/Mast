@@ -26,7 +26,7 @@ import { registerRequestAbortController, terminateRequest, isRequestActive } fro
 import { getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
 import { claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { runAreaWorkerPool, computeDynamicDiscoveryCapacity, type AreaRunOutcome } from "../discovery/googleAreaPool.js";
-import { isAddressOnStreet } from "../discovery/streetClassifier.js";
+import { isAddressOnStreet, isLowValueStreet, collapseStreetName } from "../discovery/streetClassifier.js";
 // CRITMODE Phase 4 — PART B: same street-discovery primitives
 // discoveryPlanJob.ts's task-queue path already uses (claim/heartbeat/
 // complete RPC wrappers, unchanged) plus ensureStreetInventory() (PART A —
@@ -1117,6 +1117,21 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
           const streetClaim = useStreetPool ? streetClaims.get(area) : undefined;
           const areaLabel = streetClaim?.streetName ?? area;
           const slotWorkerId = `${streetWorkerId}-w${slotIndex + 1}`;
+
+          if (streetClaim) {
+            let lowValue = isLowValueStreet(streetClaim.streetName);
+            if (!lowValue.isLowValue && streetClaim.streetName) {
+              const collapsed = collapseStreetName(streetClaim.streetName);
+              if (collapsed) lowValue = isLowValueStreet(collapsed);
+            }
+            if (lowValue.isLowValue) {
+              console.info(`[poolExpandJob][street-discovery] skipping low-value street claim "${streetClaim.streetName}" (${lowValue.reason ?? "low_value"})`);
+              if (streetScope) {
+                await completeDiscoveryStreetClaim(supabaseAdmin, streetClaim, streetScope.userId, slotWorkerId);
+              }
+              return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: true, failed: false };
+            }
+          }
           // CRITMODE — diagnostics only. `undefined` in area mode (no
           // street claim, no tracer) — every use below is optional-chained
           // so this is a complete no-op outside the street-pool path.
@@ -1511,9 +1526,22 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
             )) {
               streetTrace?.markFirstForwarded(); // CRITMODE — diagnostics only, idempotent
               discovered += 1;
-              if (streetClaim && lead.address) {
+              if (streetClaim) {
                 const targetStreet = streetClaim.streetName || streetClaim.streetKey;
-                if (!isAddressOnStreet(lead.address, targetStreet)) {
+                if (!lead.address || !isAddressOnStreet(lead.address, targetStreet)) {
+                  rejected += 1;
+                  const pid = lead._pipeline_id ?? `pool:${discovered}`;
+                  if (discoveryPlanId) {
+                    publishDiscoveryLiveEvent(
+                      candidateRejectedEvent(
+                        discoveryPlanId,
+                        areaWorkerNumbers.get(area) ?? (slotIndex + 1),
+                        pid,
+                        "outside_street_scope",
+                        areaLabel,
+                      ),
+                    );
+                  }
                   continue;
                 }
               }

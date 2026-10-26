@@ -175,6 +175,8 @@ export type EngineQueryParams = {
    * used by the Python scraper to skip cards BEFORE clicking detail panels.
    */
   known_place_ids?: string[];
+  street?: string;
+  street_mode?: boolean;
 };
 
 export type EngineRunOptions = {

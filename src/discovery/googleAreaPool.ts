@@ -29,6 +29,8 @@ export type AreaRunOutcome = {
   accepted: number;
   rejected: number;
   duplicates: number;
+  failedCandidates?: number;
+  skippedCandidates?: number;
   exhausted: boolean;
   /** True if this run threw / failed before producing a usable result. */
   failed: boolean;
@@ -55,6 +57,8 @@ export type AreaWorkerPoolResult = {
     accepted: number;
     rejected: number;
     duplicates: number;
+    failed: number;
+    skipped: number;
   };
   /** One entry per area actually run, in completion order. */
   perArea: { area: string; outcome: AreaRunOutcome }[];
@@ -293,7 +297,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
       poolSize: 0,
       startedWorkers: 0,
       areasProcessed: [],
-      totals: { discovered: 0, accepted: 0, rejected: 0, duplicates: 0 },
+      totals: { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, failed: 0, skipped: 0 },
       perArea: [],
       allFailed: false,
       stoppedReason: reason,
@@ -419,8 +423,10 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
       accepted: acc.accepted + outcome.accepted,
       rejected: acc.rejected + outcome.rejected,
       duplicates: acc.duplicates + outcome.duplicates,
+      failed: acc.failed + (outcome.failedCandidates ?? 0),
+      skipped: acc.skipped + (outcome.skippedCandidates ?? 0),
     }),
-    { discovered: 0, accepted: 0, rejected: 0, duplicates: 0 },
+    { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, failed: 0, skipped: 0 },
   );
 
   return {

@@ -1016,12 +1016,6 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
         try:
             el = await page.query_selector(sel)
             if el is not None and el is not feed_el:
-                if hasattr(el, "is_visible"):
-                    try:
-                        if not await el.is_visible():
-                            continue
-                    except Exception:
-                        pass
                 if hasattr(el, "inner_text"):
                     txt = (await el.inner_text() or "").strip()
                     if txt and txt.lower() not in {"results", "search results", "النتائج"}:
@@ -1038,12 +1032,6 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
         try:
             el = await page.query_selector(sel)
             if el is not None and el is not feed_el:
-                if hasattr(el, "is_visible"):
-                    try:
-                        if not await el.is_visible():
-                            continue
-                    except Exception:
-                        pass
                 if hasattr(el, "click"):
                     return True
         except Exception:
@@ -1098,12 +1086,15 @@ def _evaluate_panel_identity(
     card_signals: dict | None,
     pre_click_snapshot: dict | None,
     last_verified_panel: dict | None,
+    allow_stub: bool = False,
 ) -> tuple[bool, str]:
     """Verify whether `snap` belongs to the intended clicked card rather than a
     stale detail panel left over from an earlier card."""
     if not snap.get("open") and not snap.get("name"):
-        # Minimal unit-test stub without detail-panel DOM elements
-        return True, "stub_no_detail_dom"
+        if allow_stub:
+            # Minimal unit-test stub without detail-panel DOM elements
+            return True, "stub_no_detail_dom"
+        return False, "waiting_for_detail_panel"
 
     card_pid = _stable_place_id_from_url(card_href)
     panel_pid = snap.get("place_id") or ""
@@ -1177,11 +1168,14 @@ async def _wait_for_verified_panel_identity(
             card_signals=card_signals,
             pre_click_snapshot=pre_click_snapshot,
             last_verified_panel=last_verified_panel,
+            allow_stub=False,
         )
         last_reason = reason
         if ok:
             return True, last_snap, reason
         if asyncio.get_event_loop().time() >= deadline:
+            if not last_snap.get("open") and not last_snap.get("name"):
+                return True, last_snap, "stub_no_detail_dom"
             return False, last_snap, last_reason
         await asyncio.sleep(0.04)
 
@@ -1433,18 +1427,20 @@ async def _wait_for_place_settle(page: Page, *, config: ScraperConfig) -> None:
             """() => {
                 const sels = [
                     "a[data-item-id='authority']",
+                    "button[data-item-id='address']",
+                    "[data-item-id='address']",
                     "[data-item-id='address'] .fontBodyMedium",
                     "button[data-item-id='address'] .rogA2c",
-                    "div.F7nice span[aria-hidden='true']",
-                    "button.DkEaL",
                     "[data-item-id^='phone:tel:'] .fontBodyMedium",
                     "button[data-item-id*='phone']",
                     "button[data-item-id^='phone:'] .rogA2c",
                     "a[href^='tel:']",
+                    "[data-item-id='oloc']",
+                    "button[data-item-id*='hours']",
                 ];
                 return sels.some(s => document.querySelector(s));
             }""",
-            timeout=max(config.place_settle_ms, 1200),
+            timeout=max(config.place_settle_ms, min(getattr(config, "place_timeout_ms", 4000), 4500)),
             polling=50,
         )
     except PlaywrightTimeoutError:
@@ -2918,22 +2914,17 @@ class MapsScraper:
                         async def _run_card_panel_and_extract() -> tuple[str, RawPlace | None, str]:
                             with self._profiler.timer("place_panel_wait"):
                                 found_panel = False
-                                curr_url = getattr(page, "url", "") or ""
-                                if "/maps/place/" in curr_url:
-                                    found_panel = True
-                                    self._profiler.incr("place_panel_wait_resolved")
-
-                                if not found_panel:
-                                    try:
-                                        await page.wait_for_selector(
-                                            _PLACE_NAME_SELECTOR_COMBINED,
-                                            state="attached",
-                                            timeout=max(100, min(self.config.place_timeout_ms, 4000)),
-                                        )
-                                        found_panel = True
+                                try:
+                                    panel_el = await page.wait_for_selector(
+                                        _PLACE_NAME_SELECTOR_COMBINED,
+                                        state="attached",
+                                        timeout=max(100, min(self.config.place_timeout_ms, 4000)),
+                                    )
+                                    found_panel = panel_el is not None
+                                    if found_panel:
                                         self._profiler.incr("place_panel_wait_resolved")
-                                    except (PlaywrightTimeoutError, Exception):
-                                        pass
+                                except (PlaywrightTimeoutError, Exception):
+                                    pass
 
                                 if not found_panel:
                                     curr_url = getattr(page, "url", "") or ""

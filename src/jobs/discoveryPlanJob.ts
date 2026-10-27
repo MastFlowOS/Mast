@@ -278,15 +278,7 @@ export async function getKnownPlaceIdsForTask(
       return [];
     }
     const placeIds = new Set<string>();
-    const cityLower = city?.trim().toLowerCase();
     for (const row of data) {
-      if (cityLower) {
-        const addrMatch = typeof row.address === "string" && row.address.toLowerCase().includes(cityLower);
-        const regionMatch = typeof row.region === "string" && row.region.toLowerCase().includes(cityLower);
-        if (row.address && !addrMatch && !regionMatch) {
-          continue;
-        }
-      }
       if (typeof row.place_id === "string" && row.place_id.trim()) {
         placeIds.add(row.place_id.trim());
       }

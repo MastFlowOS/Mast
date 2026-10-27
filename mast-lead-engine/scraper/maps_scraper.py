@@ -2171,7 +2171,8 @@ class MapsScraper:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-software-rasterizer",
-            "--js-flags=--max-old-space-size=512",
+            "--blink-settings=imagesEnabled=false",
+            "--js-flags=--max-old-space-size=256",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
@@ -2182,7 +2183,8 @@ class MapsScraper:
             "--disable-popup-blocking",
             "--disable-default-apps",
             "--disable-infobars",
-            "--window-size=1920,1080",
+            "--mute-audio",
+            "--window-size=1280,800",
         ]
         # Phase 2: time browser startup (chromium.launch is the most expensive
         # single synchronous operation in the whole Python subprocess)

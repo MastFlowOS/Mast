@@ -1432,17 +1432,19 @@ async def _wait_for_place_settle(page: Page, *, config: ScraperConfig) -> None:
         await page.wait_for_function(
             """() => {
                 const sels = [
+                    "a[data-item-id='authority']",
                     "[data-item-id='address'] .fontBodyMedium",
                     "button[data-item-id='address'] .rogA2c",
                     "div.F7nice span[aria-hidden='true']",
                     "button.DkEaL",
                     "[data-item-id^='phone:tel:'] .fontBodyMedium",
+                    "button[data-item-id*='phone']",
                     "button[data-item-id^='phone:'] .rogA2c",
                     "a[href^='tel:']",
                 ];
                 return sels.some(s => document.querySelector(s));
             }""",
-            timeout=config.place_settle_ms,
+            timeout=max(config.place_settle_ms, 1200),
             polling=50,
         )
     except PlaywrightTimeoutError:
@@ -2962,6 +2964,13 @@ class MapsScraper:
 
                             fast_aborted = False
                             extracted_place: RawPlace | None = None
+
+                            with self._profiler.timer("rate_limit_wait_place"):
+                                await self._limiter.acquire("maps_place")
+
+                            with self._profiler.timer("place_settle"):
+                                await _wait_for_place_settle(page, config=self.config)
+
                             if require_website:
                                 self._profiler.incr("maps_detail_website_probe_attempts")
                                 with self._profiler.timer("detail_website_probe"):
@@ -2991,12 +3000,6 @@ class MapsScraper:
                                     fast_aborted = True
 
                             if not fast_aborted:
-                                with self._profiler.timer("rate_limit_wait_place"):
-                                    await self._limiter.acquire("maps_place")
-
-                                with self._profiler.timer("place_settle"):
-                                    await _wait_for_place_settle(page, config=self.config)
-
                                 try:
                                     with self._profiler.timer("maps_place_extraction"):
                                         extracted_place = await _extract_place_data(

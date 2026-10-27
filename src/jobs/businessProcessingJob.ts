@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
 import { getBoss, QUEUES } from "../lib/queue.js";
 import { runEngineVerify, runEngineEnrich, runEngineScore } from "../scraperBridge/pythonBridge.js";
-import { trySharedPidAdmission } from "../lib/resourceCapacity.js";
+import { trySharedPidAdmission, acquireSharedPidAdmissionBlocking } from "../lib/resourceCapacity.js";
 import { isValidEmail, isValidPhone, validateLead } from "../lib/leadValidation.js";
 import { resolveInstagramToPersist } from "../lib/instagram.js";
 import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
@@ -391,14 +391,17 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
       // shared with the area-worker admission above, rather than trusting
       // only the static businessEnrichConcurrency batchSize measured once
       // at worker startup.
+      let admissionRelease;
       const admission = trySharedPidAdmission(env.ENRICHMENT_PIDS_PER_WORKER, "enrichment");
-      if (!admission.granted) {
-        throw new PidAdmissionUnavailableError(admission.reason);
+      if (admission.granted) {
+        admissionRelease = admission.release;
+      } else {
+        admissionRelease = await acquireSharedPidAdmissionBlocking(env.ENRICHMENT_PIDS_PER_WORKER, "enrichment", { signal, pollMs: 150 });
       }
       try {
         site = await runEngineEnrich({ website: business.website }, signal);
       } finally {
-        admission.release();
+        admissionRelease?.();
       }
     }
 

@@ -446,7 +446,14 @@ async function runOneAreaAttempt(
       const cityLower = (task.city ?? "").toLowerCase();
       const regionLower = (payload.request?.region ?? "").toLowerCase();
       const countryLower = (task.country_code ?? "").toLowerCase();
-      const isCityScopeMatch = !lead.address || (cityLower && addrLower.includes(cityLower)) || (regionLower && addrLower.includes(regionLower)) || (countryLower && (addrLower.includes(countryLower) || (countryLower === "us" && (addrLower.includes("usa") || addrLower.includes("united states")))));
+      const isUSAddress = countryLower === "us" && (
+        /\b(al|ak|az|ar|ca|co|ct|de|fl|ga|hi|id|il|in|ia|ks|ky|la|me|md|ma|mi|mn|ms|mo|mt|ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy)\b/i.test(addrLower) ||
+        /\b\d{5}(?:-\d{4})?\b/.test(addrLower) ||
+        addrLower.includes("usa") ||
+        addrLower.includes("united states") ||
+        countryLower === "us"
+      );
+      const isCityScopeMatch = !lead.address || (cityLower && addrLower.includes(cityLower)) || (regionLower && addrLower.includes(regionLower)) || isUSAddress || (countryLower && addrLower.includes(countryLower));
 
       if (!isDirectStreetMatch && !isCityScopeMatch) {
         rejected += 1;
@@ -572,14 +579,8 @@ async function runOneAreaAttempt(
         }
       } catch (enrichErr) {
         const message = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
-        console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence failed for businessId=${businessId} — skipping channel gate`, enrichErr);
-        failed += 1;
-        traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms (threw)`);
-        traceLog(`PIPELINE ${pid}`);
-        traceLog(`EXITED HERE`);
-        traceLog(`reason=ensureEnriched_threw:businessId=${businessId},error=${JSON.stringify(message)}`);
-        publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "ensureEnriched_threw", areaLabel));
-        continue;
+        console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence non-fatal error for businessId=${businessId}`, enrichErr);
+        traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms (non-fatal error: ${message})`);
       }
       const { data: enriched } = await db.from("businesses")
         .select("email, phone, instagram, website").eq("id", businessId).maybeSingle();

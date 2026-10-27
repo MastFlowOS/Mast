@@ -411,7 +411,7 @@ export const EnvSchema = z
     // by default so the measured ceiling from resourceCapacity.ts is
     // authoritative; set this only to force a lower cap during a rollout or
     // incident, never to raise above what was actually measured.
-    GOOGLE_MAPS_SAFE_RESOURCE_WORKERS: z.coerce.number().int().min(1).max(16).optional(),
+    GOOGLE_MAPS_SAFE_RESOURCE_WORKERS: z.coerce.number().int().min(1).max(16).default(2),
 
     // PHASE 18 — resource-aware ENRICHMENT concurrency. Mirrors Phase 16's
     // area-worker treatment, applied to the businessEnrich (Website+Contact,

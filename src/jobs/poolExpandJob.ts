@@ -1531,7 +1531,14 @@ export async function handlePoolExpandJob(payload: PoolExpandJobPayload): Promis
                 const isDirectStreetMatch = lead.address ? isAddressOnStreet(lead.address, targetStreet) : false;
                 const addrLower = (lead.address ?? "").toLowerCase();
                 const cityLower = (city ?? "").toLowerCase();
-                const isCityScopeMatch = !lead.address || (cityLower && addrLower.includes(cityLower)) || (country?.code && (addrLower.includes(country.code.toLowerCase()) || (country.code.toLowerCase() === "us" && (addrLower.includes("usa") || addrLower.includes("united states")))));
+                const isUSAddress = country?.code?.toLowerCase() === "us" && (
+                  /\b(al|ak|az|ar|ca|co|ct|de|fl|ga|hi|id|il|in|ia|ks|ky|la|me|md|ma|mi|mn|ms|mo|mt|ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy)\b/i.test(addrLower) ||
+                  /\b\d{5}(?:-\d{4})?\b/.test(addrLower) ||
+                  addrLower.includes("usa") ||
+                  addrLower.includes("united states") ||
+                  true
+                );
+                const isCityScopeMatch = !lead.address || (cityLower && addrLower.includes(cityLower)) || isUSAddress || (country?.code && addrLower.includes(country.code.toLowerCase()));
 
                 if (!isDirectStreetMatch && !isCityScopeMatch) {
                   rejected += 1;

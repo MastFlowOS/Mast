@@ -853,6 +853,8 @@ _BACK_BUTTON_SELECTORS = [
     "button[jsaction*='pane.backButton']",
     "button[data-tooltip*='Back to results' i]",
     "button[data-tooltip*='Back' i]",
+    "button[aria-label='Close']",
+    "button[jsaction*='reveal.card.close']",
     "button.hYBOP",
     "span.google-symbols.mL3xi",
 ]
@@ -1163,7 +1165,7 @@ async def _wait_for_verified_panel_identity(
     timeout_ms: int,
 ) -> tuple[bool, dict, str]:
     """Bounded poll waiting for the detail panel to reflect the clicked card's identity."""
-    deadline = asyncio.get_event_loop().time() + max(0.05, min(timeout_ms, 1500) / 1000.0)
+    deadline = asyncio.get_event_loop().time() + max(0.05, min(timeout_ms, 5000) / 1000.0)
     last_snap: dict = {}
     last_reason = "unverified"
     while True:
@@ -1305,18 +1307,21 @@ async def _return_to_results(
 
 
 async def _human_click(page: Page, element) -> None:
-    """Click with a short hover pause to mimic human behavior."""
+    """Click an element. Tries native DOM click for fast, reliable SPA navigation,
+    falling back to synthetic Playwright click."""
     try:
-        box = await element.bounding_box()
-        if box:
-            # Move to element center with slight offset
-            cx = box["x"] + box["width"] / 2 + random.randint(-3, 3)
-            cy = box["y"] + box["height"] / 2 + random.randint(-2, 2)
-            await page.mouse.move(cx, cy)
-            await asyncio.sleep(random.uniform(0.05, 0.15))
-        await element.click(timeout=5000)
+        if hasattr(element, "evaluate"):
+            await element.evaluate("el => el.click()")
+            return
     except Exception:
-        await element.click(force=True, timeout=5000)
+        pass
+    try:
+        await element.click(force=True, timeout=2000)
+    except Exception:
+        try:
+            await element.click(timeout=2000)
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2911,17 +2916,17 @@ class MapsScraper:
                         async def _run_card_panel_and_extract() -> tuple[str, RawPlace | None, str]:
                             with self._profiler.timer("place_panel_wait"):
                                 found_panel = False
-                                for sel in (_PLACE_NAME_SELECTOR_COMBINED, *_PLACE_NAME_SELECTORS):
-                                    try:
-                                        await page.wait_for_selector(
-                                            sel, timeout=max(100, min(self.config.place_timeout_ms, 2000))
-                                        )
-                                        found_panel = True
-                                        self._profiler.incr("place_panel_wait_resolved")
-                                        break
-                                    except PlaywrightTimeoutError:
-                                        continue
+                                try:
+                                    await page.wait_for_selector(
+                                        _PLACE_NAME_SELECTOR_COMBINED,
+                                        timeout=max(100, min(self.config.place_timeout_ms, 8000)),
+                                    )
+                                    found_panel = True
+                                    self._profiler.incr("place_panel_wait_resolved")
+                                except PlaywrightTimeoutError:
+                                    pass
                                 if not found_panel:
+                                    log.info(f"[maps][diag] place_panel_wait failed: url={getattr(page, 'url', None)!r} card_href={card_href!r}")
                                     if should_stop is not None and should_stop():
                                         self._profiler.incr("place_panel_wait_aborted")
                                     else:
@@ -3051,6 +3056,8 @@ class MapsScraper:
                                 raise CardOperationTimeout(
                                     "card_operation", self.config.card_operation_timeout_ms
                                 ) from None
+
+                            log.info(f"[maps][diag] card_status={card_status} card_reason={card_reason} place={place.name if place else None}")
 
                             if card_status in ("panel_timeout", "extract_error"):
                                 card_attempts = mismatch_retries_by_key.get(place_key, 0) + 1

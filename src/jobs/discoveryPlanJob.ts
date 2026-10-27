@@ -1083,9 +1083,11 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     let streetCount = initialStreetCount;
     fallbackReason = "none";
     let terminalReason: RequestTerminalReason | undefined;
-    // FIX 1 — If no fresh street inventory exists, invoke the existing
-    // ensureStreetInventory() builder before deciding mode.
-    if (sourceId === "google_maps" && streetCount === 0) {
+    const hasCurated = Boolean(getAreasForCity(task.country_code, task.city)?.length);
+    // FIX 1 — If no fresh street inventory exists and the city has no curated areas,
+    // invoke the existing ensureStreetInventory() builder before deciding mode.
+    // If curated areas exist, area mode is prioritized directly with zero initialization lag.
+    if (sourceId === "google_maps" && streetCount === 0 && !hasCurated) {
       if (task.user_id && task.user_id === payload.request.userId) {
         const country = COUNTRIES.find((c) => c.code === task.country_code);
         const cityContext = getCityGeographicContext(task.country_code, task.city);
@@ -1161,7 +1163,6 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       return;
     }
 
-    const hasCurated = Boolean(getAreasForCity(task.country_code, task.city)?.length);
     useStreetPool = discoveryModeForStreetInventory(sourceId, streetCount, hasCurated) === "street";
     if (!useStreetPool && fallbackReason === "none") fallbackReason = hasCurated ? "curated_area_priority" : "zero_inventory";
 

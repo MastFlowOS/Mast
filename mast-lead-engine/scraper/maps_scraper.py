@@ -1134,8 +1134,15 @@ def _evaluate_panel_identity(
             return False, "panel_name_and_address_unchanged_from_prior"
 
     # 3. Name consistency check.
-    if expected_name and panel_name and not _names_consistent(expected_name, panel_name):
-        return False, f"name_conflict(expected={expected_name!r},actual={panel_name!r})"
+    if expected_name:
+        if not panel_name:
+            if allow_stub:
+                return True, "stub_no_panel_name"
+            return False, "waiting_for_panel_name"
+        if not _names_consistent(expected_name, panel_name):
+            return False, f"name_conflict(expected={expected_name!r},actual={panel_name!r})"
+    elif not panel_name and not allow_stub:
+        return False, "waiting_for_panel_name"
 
     # 4. Address hint consistency check (distinguishes same-name branches).
     if card_addr_hint and panel_addr and not _addresses_consistent(card_addr_hint, panel_addr):

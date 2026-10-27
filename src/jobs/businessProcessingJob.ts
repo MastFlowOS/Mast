@@ -499,14 +499,17 @@ async function scoreBusiness(businessId: string): Promise<void> {
       // P0 — SHARED LIVE PID ADMISSION: same gate as enrichBusiness() above
       // — this runEngineEnrich() call is the ONE subprocess
       // env.ENRICHMENT_PIDS_PER_WORKER budgets for the businessScore queue.
+      let admissionRelease;
       const admission = trySharedPidAdmission(env.ENRICHMENT_PIDS_PER_WORKER, "enrichment");
-      if (!admission.granted) {
-        throw new PidAdmissionUnavailableError(admission.reason);
+      if (admission.granted) {
+        admissionRelease = admission.release;
+      } else {
+        admissionRelease = await acquireSharedPidAdmissionBlocking(env.ENRICHMENT_PIDS_PER_WORKER, "enrichment", { pollMs: 150 });
       }
       try {
         social = await runEngineEnrich({ instagram: business.instagram });
       } finally {
-        admission.release();
+        admissionRelease?.();
       }
     }
 

@@ -214,6 +214,13 @@ _EOL_TEXTS = (
     "end of the results",
     "no more results",
     "That's all there is",
+    "can't find",
+    "couldn't find",
+    "no results found",
+    "no results",
+    "make sure your search",
+    "make sure all words are spelled correctly",
+    "try different keywords",
 )
 
 
@@ -2164,7 +2171,7 @@ class MapsScraper:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-software-rasterizer",
-            "--js-flags=--max-old-space-size=256",
+            "--js-flags=--max-old-space-size=512",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
@@ -3241,8 +3248,12 @@ class MapsScraper:
                         body_text = await page.evaluate(
                             "() => document.body?.innerText || ''"
                         )
-                        if any(eol in body_text for eol in _EOL_TEXTS):
+                        body_lower = body_text.lower()
+                        if any(eol.lower() in body_lower for eol in _EOL_TEXTS):
                             log.debug(f"[maps] reached end of results after {yielded} places")
+                            return
+                        if len(listing_anchors) == 0 and yielded == 0 and rounds_this_attempt >= 1:
+                            log.info(f"[maps] 0 places found on initial scan for {full_query!r} — ending area search")
                             return
                     except Exception:
                         pass

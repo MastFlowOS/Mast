@@ -2916,15 +2916,29 @@ class MapsScraper:
                         async def _run_card_panel_and_extract() -> tuple[str, RawPlace | None, str]:
                             with self._profiler.timer("place_panel_wait"):
                                 found_panel = False
-                                try:
-                                    await page.wait_for_selector(
-                                        _PLACE_NAME_SELECTOR_COMBINED,
-                                        timeout=max(100, min(self.config.place_timeout_ms, 8000)),
-                                    )
+                                curr_url = getattr(page, "url", "") or ""
+                                if "/maps/place/" in curr_url:
                                     found_panel = True
                                     self._profiler.incr("place_panel_wait_resolved")
-                                except PlaywrightTimeoutError:
-                                    pass
+
+                                if not found_panel:
+                                    try:
+                                        await page.wait_for_selector(
+                                            _PLACE_NAME_SELECTOR_COMBINED,
+                                            state="attached",
+                                            timeout=max(100, min(self.config.place_timeout_ms, 4000)),
+                                        )
+                                        found_panel = True
+                                        self._profiler.incr("place_panel_wait_resolved")
+                                    except (PlaywrightTimeoutError, Exception):
+                                        pass
+
+                                if not found_panel:
+                                    curr_url = getattr(page, "url", "") or ""
+                                    if "/maps/place/" in curr_url or await _is_detail_pane_open(page, panel):
+                                        found_panel = True
+                                        self._profiler.incr("place_panel_wait_resolved")
+
                                 if not found_panel:
                                     log.info(f"[maps][diag] place_panel_wait failed: url={getattr(page, 'url', None)!r} card_href={card_href!r}")
                                     if should_stop is not None and should_stop():
@@ -2995,6 +3009,8 @@ class MapsScraper:
                                             country=country,
                                             profiler=self._profiler,
                                         )
+                                        if extracted_place and not extracted_place.name:
+                                            extracted_place.name = (card_signals or {}).get("name") or _place_name_from_href(card_href)
                                 except PlaceExtractionTimeout as exc:
                                     seen_hrefs.add(place_key)
                                     self._profiler.incr("place_extraction_timeouts")

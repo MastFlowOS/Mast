@@ -82,7 +82,7 @@ export interface CountryInfo {
 
 export const COUNTRIES: CountryInfo[] = [
   // ─── North America (incl. Central America + Caribbean) ─────────────────
-  { code: "US", name: "United States", region: "North America", incomeTier: "high", majorCities: ["New York", "Los Angeles", "Chicago"] },
+  { code: "US", name: "United States", region: "North America", incomeTier: "high", majorCities: ["Seattle", "Austin", "Miami", "San Francisco", "Denver", "Boston", "New York", "Los Angeles", "Chicago"] },
   { code: "CA", name: "Canada", region: "North America", incomeTier: "high", majorCities: ["Toronto", "Montreal", "Vancouver"] },
   { code: "MX", name: "Mexico", region: "North America", incomeTier: "upper_middle", majorCities: ["Mexico City", "Guadalajara", "Monterrey"] },
   { code: "BZ", name: "Belize", region: "North America", incomeTier: "upper_middle", majorCities: ["Belize City", "San Ignacio", "Belmopan"] },

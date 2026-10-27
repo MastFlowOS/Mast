@@ -93,6 +93,8 @@ def is_configured(provider_id: str) -> bool:
     right now — either it needs no credential, or its required
     credential environment variable is set to a non-empty value.
     """
+    if provider_id == "overpass" and os.environ.get("DISABLE_OVERPASS", "").lower() in ("1", "true", "yes"):
+        return False
     env_var = credential_env_var(provider_id)
     if env_var is None:
         return True

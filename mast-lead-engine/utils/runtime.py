@@ -382,7 +382,7 @@ class ScraperConfig:
     # _human_scroll. This replaces the old fixed ~5.6s blind sleep per round
     # with "wait only until new cards appear, capped at this timeout" — so
     # it's a ceiling, not a target duration like scroll_delay_ms was.
-    scroll_settle_timeout_ms: int = int(os.environ.get("SCROLL_SETTLE_TIMEOUT_MS", "2500"))
+    scroll_settle_timeout_ms: int = int(os.environ.get("SCROLL_SETTLE_TIMEOUT_MS", "1200"))
 
     # Crash recovery — ROOT CAUSE FIX: a renderer crash ("Target crashed",
     # typically an OOM kill on memory-constrained hosts like Railway) used
@@ -424,7 +424,7 @@ class ScraperConfig:
 
     # Site crawl
     site_contact_page_budget: int = 4   # reduced to 2 in fast mode
-    place_settle_ms: int = 1000
+    place_settle_ms: int = 300
 
     def __post_init__(self) -> None:
         if self.fast:

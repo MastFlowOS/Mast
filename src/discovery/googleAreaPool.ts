@@ -193,8 +193,8 @@ export type RunAreaWorkerPoolParams = {
    * second argument is simply ignored by callers that don't need it.
    */
   runArea: (area: string, slotIndex: number) => Promise<AreaRunOutcome>;
-  /** Non-blocking: attempts to reserve one browser slot. Returns a release fn, or undefined if none free right now. */
-  tryAcquireSlot?: () => (() => void) | undefined;
+  /** Attempts to reserve one browser slot. Returns a release fn, or undefined if none free right now. Supports sync or async. */
+  tryAcquireSlot?: () => Promise<(() => void) | undefined> | (() => void) | undefined;
   /** Polled before starting each new area claim; true once the plan is cancelled/target-reached. */
   isTerminal?: () => Promise<boolean> | boolean;
   /**
@@ -344,7 +344,15 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
         }
       }
 
-      const release = tryAcquireSlot();
+      const slotOrPromise = tryAcquireSlot();
+      let release = slotOrPromise instanceof Promise ? await slotOrPromise : slotOrPromise;
+      if (!release && slotOrPromise instanceof Promise) {
+        for (let retry = 0; retry < 3 && !release; retry++) {
+          await new Promise((r) => setTimeout(r, 400));
+          if (await isTerminal()) return;
+          release = await tryAcquireSlot();
+        }
+      }
       if (!release) {
         sawSlotSkip = true;
         onEvent?.({ type: "worker_skipped_no_slot", slot: slotIndex });
@@ -392,7 +400,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
       perArea.push({ area, outcome });
       // Cooperative hand-off: yield event loop tick so waiting tasks in other
       // cities/pools have an immediate opportunity to acquire the browser slot.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setImmediate(resolve));
       // TASK 2 (live scout state) — additive: `slot` was already this
       // loop's own parameter (identical value `worker_started` above
       // already reports), just not previously copied onto this event too.

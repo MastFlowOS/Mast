@@ -568,15 +568,9 @@ async function runOneAreaAttempt(
         tEnsure.end();
         traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms`);
 
-        if (requestedChannels.includes("instagram")) {
-          const tIntel = profiler.timer("ensure_intelligence");
-          try {
-            await ensureIntelligence(businessId);
-          } catch (intelErr) {
-            console.warn(`[discoveryTask] ensureIntelligence non-fatal error for businessId=${businessId}`, intelErr);
-          }
-          tIntel.end();
-        }
+        // NOTE: ensureEnriched already populated businesses.instagram from website social links.
+        // Background pg-boss job "business.score" handles follower/intelligence scores asynchronously,
+        // leaving the hot live discovery loop unblocked.
       } catch (enrichErr) {
         const message = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
         console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence non-fatal error for businessId=${businessId}`, enrichErr);
@@ -723,28 +717,37 @@ async function runOneAreaAttempt(
 }
 
 /** Atomically reserves the same browser/resource/PID capacity gates used by area workers. */
-function acquireDiscoveryWorkerSlots(browserSlotPool: ReturnType<typeof getBrowserSlotPool>): (() => void) | undefined {
-  const releaseBrowser = browserSlotPool.tryAcquire();
-  if (!releaseBrowser) return undefined;
-  const releaseResource = getResourceWorkerSlotPool().tryAcquire();
-  if (!releaseResource) {
-    releaseBrowser();
-    return undefined;
+async function acquireDiscoveryWorkerSlots(browserSlotPool: ReturnType<typeof getBrowserSlotPool>): Promise<(() => void) | undefined> {
+  const deadline = Date.now() + 2500;
+  while (Date.now() < deadline) {
+    const releaseBrowser = browserSlotPool.tryAcquire();
+    if (!releaseBrowser) {
+      await new Promise((r) => setTimeout(r, 100));
+      continue;
+    }
+    const releaseResource = getResourceWorkerSlotPool().tryAcquire();
+    if (!releaseResource) {
+      releaseBrowser();
+      await new Promise((r) => setTimeout(r, 100));
+      continue;
+    }
+    const sharedPidAdmission = trySharedPidAdmission(env.PIDS_PER_AREA_WORKER, "area_worker");
+    if (!sharedPidAdmission.granted) {
+      releaseResource();
+      releaseBrowser();
+      await new Promise((r) => setTimeout(r, 100));
+      continue;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      sharedPidAdmission.release();
+      releaseResource();
+      releaseBrowser();
+    };
   }
-  const sharedPidAdmission = trySharedPidAdmission(env.PIDS_PER_AREA_WORKER, "area_worker");
-  if (!sharedPidAdmission.granted) {
-    releaseResource();
-    releaseBrowser();
-    return undefined;
-  }
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    sharedPidAdmission.release();
-    releaseResource();
-    releaseBrowser();
-  };
+  return undefined;
 }
 
 /**

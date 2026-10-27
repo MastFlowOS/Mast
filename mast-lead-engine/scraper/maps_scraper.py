@@ -2463,8 +2463,15 @@ class MapsScraper:
                 _emit_progress("maps_navigation_start", str(attempt))
                 try:
                     with self._profiler.timer("maps_initial_load"):
-                        await page.goto(search_url, wait_until="domcontentloaded",
-                                        timeout=self.config.maps_timeout_ms)
+                        try:
+                            await page.goto(search_url, wait_until="domcontentloaded",
+                                            timeout=min(self.config.maps_timeout_ms, 12000))
+                        except PlaywrightTimeoutError as pto:
+                            curr = getattr(page, "url", "") or ""
+                            if "google.com/maps" in curr:
+                                log.info(f"[maps] navigation domcontentloaded timed out after 12s but page landed on {curr!r} — proceeding")
+                            else:
+                                raise pto
                     _emit_progress("maps_navigation_complete", str(attempt))
                 except PlaywrightTimeoutError as exc:
                     raise DiscoveryFailure(
@@ -2898,32 +2905,21 @@ class MapsScraper:
 
                         async def _run_card_panel_and_extract() -> tuple[str, RawPlace | None, str]:
                             with self._profiler.timer("place_panel_wait"):
-                                try:
-                                    await page.wait_for_selector(
-                                        _PLACE_NAME_SELECTORS[0],
-                                        timeout=self.config.place_timeout_ms,
-                                    )
-                                    self._profiler.incr("place_panel_wait_resolved")
-                                except PlaywrightTimeoutError:
-                                    found_panel = False
-                                    for sel in _PLACE_NAME_SELECTORS[1:]:
-                                        try:
-                                            await page.wait_for_selector(sel, timeout=2000)
-                                            found_panel = True
-                                            self._profiler.incr("place_panel_wait_resolved")
-                                            break
-                                        except PlaywrightTimeoutError:
-                                            continue
-                                    if not found_panel:
-                                        if should_stop is not None and should_stop():
-                                            self._profiler.incr("place_panel_wait_aborted")
-                                        else:
-                                            self._profiler.incr("place_panel_wait_timeout")
-                                        return "panel_timeout", None, "panel_wait_timeout"
-                                except Exception:
+                                found_panel = False
+                                for sel in _PLACE_NAME_SELECTORS:
+                                    try:
+                                        await page.wait_for_selector(sel, timeout=1500)
+                                        found_panel = True
+                                        self._profiler.incr("place_panel_wait_resolved")
+                                        break
+                                    except PlaywrightTimeoutError:
+                                        continue
+                                if not found_panel:
                                     if should_stop is not None and should_stop():
                                         self._profiler.incr("place_panel_wait_aborted")
-                                    raise
+                                    else:
+                                        self._profiler.incr("place_panel_wait_timeout")
+                                    return "panel_timeout", None, "panel_wait_timeout"
 
                             identity_ok, panel_snap, mismatch_reason = await _wait_for_verified_panel_identity(
                                 page,

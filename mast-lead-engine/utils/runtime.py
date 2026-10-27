@@ -349,7 +349,7 @@ class ScraperConfig:
 
     # Timeouts (milliseconds)
     maps_timeout_ms: int = int(os.environ.get("MAPS_TIMEOUT_MS", "30000"))
-    place_timeout_ms: int = int(os.environ.get("PLACE_TIMEOUT_MS", "25000"))
+    place_timeout_ms: int = int(os.environ.get("PLACE_TIMEOUT_MS", "5000"))
     # Hard bound on the single page.evaluate() that extracts a place's detail
     # panel (scraper/maps_scraper.py::_extract_place_data). Playwright's
     # evaluate() has no timeout of its own, so an unresponsive renderer

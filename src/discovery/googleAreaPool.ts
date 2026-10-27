@@ -347,10 +347,11 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
       const slotOrPromise = tryAcquireSlot();
       let release = slotOrPromise instanceof Promise ? await slotOrPromise : slotOrPromise;
       if (!release && slotOrPromise instanceof Promise) {
-        for (let retry = 0; retry < 3 && !release; retry++) {
+        for (let retry = 0; retry < 25 && !release; retry++) {
           await new Promise((r) => setTimeout(r, 400));
           if (await isTerminal()) return;
-          release = await tryAcquireSlot();
+          const retryRes = tryAcquireSlot();
+          release = retryRes instanceof Promise ? await retryRes : retryRes;
         }
       }
       if (!release) {

@@ -51,6 +51,14 @@ const FEATURE_TOKENS = [
   "depot",
   "distribution center",
   "heliport",
+  "court",
+  "loop",
+  "cul-de-sac",
+  "dead end",
+  "path",
+  "crescent",
+  "close",
+  "mews",
 ];
 
 const ROUTE_SUFFIXES = [

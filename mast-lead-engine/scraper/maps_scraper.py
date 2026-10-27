@@ -2142,10 +2142,10 @@ class MapsScraper:
         self._stats = stats or RunStats()
         self._profiler = profiler or NullProfiler()
         self._limiter = RateLimiter(
-            requests_per_minute=config.maps_rpm,
-            burst=3,
-            jitter_pct=20,
-            min_delay_ms=800,
+            requests_per_minute=max(config.maps_rpm, 120),
+            burst=10,
+            jitter_pct=10,
+            min_delay_ms=150,
         )
         self._playwright = None
         self._browser: Browser | None = None

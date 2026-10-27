@@ -342,7 +342,7 @@ class ScraperConfig:
     """Central configuration for the Mast Lead Engine."""
 
     # Rate limits (requests/minute)
-    maps_rpm: float = float(os.environ.get("MAPS_RPM", "20"))
+    maps_rpm: float = float(os.environ.get("MAPS_RPM", "120"))
     ig_rpm: float = float(os.environ.get("IG_RPM", "10"))
     site_rpm: float = float(os.environ.get("SITE_RPM", "30"))
     ddg_rpm: float = float(os.environ.get("DDG_RPM", "5"))
@@ -382,7 +382,7 @@ class ScraperConfig:
     # _human_scroll. This replaces the old fixed ~5.6s blind sleep per round
     # with "wait only until new cards appear, capped at this timeout" — so
     # it's a ceiling, not a target duration like scroll_delay_ms was.
-    scroll_settle_timeout_ms: int = int(os.environ.get("SCROLL_SETTLE_TIMEOUT_MS", "1200"))
+    scroll_settle_timeout_ms: int = int(os.environ.get("SCROLL_SETTLE_TIMEOUT_MS", "800"))
 
     # Crash recovery — ROOT CAUSE FIX: a renderer crash ("Target crashed",
     # typically an OOM kill on memory-constrained hosts like Railway) used

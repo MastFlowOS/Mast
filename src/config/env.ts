@@ -390,7 +390,7 @@ export const EnvSchema = z
     // and after a single isolated area run (GOOGLE_MAPS_AREA_WORKERS=1) and
     // set this env var to the observed delta plus headroom. Do not change
     // this default in code without that measurement.
-    PIDS_PER_AREA_WORKER: z.coerce.number().int().min(1).default(220),
+    PIDS_PER_AREA_WORKER: z.coerce.number().int().min(1).default(75),
 
     // PIDs to reserve for the Node worker process itself, pg-boss, other
     // in-flight non-Google-Maps tasks in this same process, and OS baseline

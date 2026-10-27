@@ -56,7 +56,8 @@ export const CURRENT_STREET_BOUNDARY_VERSION = "admin-level-verified-v4-relation
 export const STREET_INVENTORY_BUILD_TIMEOUT_MS = 180_000;
 
 /** The hybrid-mode decision is deliberately tiny and independently testable. */
-export function discoveryModeForStreetInventory(source: string, inventoryCount: number): "street" | "area" {
+export function discoveryModeForStreetInventory(source: string, inventoryCount: number, hasCuratedAreas = false): "street" | "area" {
+  if (hasCuratedAreas) return "area";
   return source === "google_maps" && inventoryCount > 0 ? "street" : "area";
 }
 

@@ -1169,8 +1169,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       return;
     }
 
-    useStreetPool = discoveryModeForStreetInventory(sourceId, streetCount) === "street";
-    if (!useStreetPool && fallbackReason === "none") fallbackReason = "zero_inventory";
+    const hasCurated = Boolean(getAreasForCity(task.country_code, task.city)?.length);
+    useStreetPool = discoveryModeForStreetInventory(sourceId, streetCount, hasCurated) === "street";
+    if (!useStreetPool && fallbackReason === "none") fallbackReason = hasCurated ? "curated_area_priority" : "zero_inventory";
 
 
 

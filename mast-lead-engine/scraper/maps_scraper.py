@@ -1009,11 +1009,6 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
     Checks `el is not feed_el` and element capability so minimal unit-test stubs where
     `page.query_selector(_)` returns the feed panel object for all selectors do not
     falsely report an open detail pane."""
-    curr_url = getattr(page, "url", "") or ""
-    # If the URL is explicitly on search results and not in a place route, detail pane is not open
-    if "/maps/search/" in curr_url and "/maps/place/" not in curr_url:
-        return False
-
     for sel in _PLACE_NAME_SELECTORS:
         try:
             el = await page.query_selector(sel)
@@ -1212,13 +1207,12 @@ async def _return_to_results(
         if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
             return True
 
-        # Fast in-page history back if we are on a place page URL
-        curr_url = getattr(page, "url", "") or ""
-        if "/maps/place/" in curr_url and hasattr(page, "evaluate"):
+        # 1. Keyboard Escape to dismiss the detail pane without DOM manipulation or history navigation
+        if hasattr(page, "keyboard") and hasattr(page.keyboard, "press"):
             try:
-                await page.evaluate("() => window.history ? window.history.back() : null")
-                settle_deadline = asyncio.get_event_loop().time() + 0.3
-                while asyncio.get_event_loop().time() < settle_deadline:
+                await page.keyboard.press("Escape")
+                esc_deadline = asyncio.get_event_loop().time() + 0.3
+                while asyncio.get_event_loop().time() < esc_deadline:
                     feed_el = await page.query_selector(panel_selector)
                     if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
                         return True
@@ -1226,6 +1220,7 @@ async def _return_to_results(
             except Exception:
                 pass
 
+        # 2. In-DOM back button click
         for sel in _BACK_BUTTON_SELECTORS:
             try:
                 btn = await page.query_selector(sel)
@@ -1258,12 +1253,13 @@ async def _return_to_results(
                     return True
                 await asyncio.sleep(0.03)
 
-        # Fallback: keyboard Escape to dismiss the detail pane
-        if hasattr(page, "keyboard") and hasattr(page.keyboard, "press"):
+        # 3. In-page history back if still open on place URL
+        curr_url = getattr(page, "url", "") or ""
+        if "/maps/place/" in curr_url and hasattr(page, "evaluate"):
             try:
-                await page.keyboard.press("Escape")
-                esc_deadline = asyncio.get_event_loop().time() + 0.4
-                while asyncio.get_event_loop().time() < esc_deadline:
+                await page.evaluate("() => window.history ? window.history.back() : null")
+                settle_deadline = asyncio.get_event_loop().time() + 0.3
+                while asyncio.get_event_loop().time() < settle_deadline:
                     feed_el = await page.query_selector(panel_selector)
                     if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
                         return True
@@ -2917,7 +2913,9 @@ class MapsScraper:
                                 found_panel = False
                                 for sel in _PLACE_NAME_SELECTORS:
                                     try:
-                                        await page.wait_for_selector(sel, timeout=1500)
+                                        await page.wait_for_selector(
+                                            sel, timeout=max(100, min(self.config.place_timeout_ms, 2000))
+                                        )
                                         found_panel = True
                                         self._profiler.incr("place_panel_wait_resolved")
                                         break
@@ -3055,6 +3053,12 @@ class MapsScraper:
                                 ) from None
 
                             if card_status in ("panel_timeout", "extract_error"):
+                                card_attempts = mismatch_retries_by_key.get(place_key, 0) + 1
+                                mismatch_retries_by_key[place_key] = card_attempts
+                                if card_attempts >= 2:
+                                    seen_hrefs.add(place_key)
+                                else:
+                                    failed_this_round.add(place_key)
                                 continue
 
                             if card_status == "mismatch":
@@ -3123,6 +3127,7 @@ class MapsScraper:
                                     "name — business dropped (card_key="
                                     f"{place_key!r})"
                                 )
+                                seen_hrefs.add(place_key)
                                 continue
 
                             log.info(
@@ -3137,6 +3142,7 @@ class MapsScraper:
                                     f"panel-header exclusion list "
                                     f"({place.name!r}) — dropped, not a real listing"
                                 )
+                                seen_hrefs.add(place_key)
                                 continue
 
                             # Identity and extraction validated: resolve verified maps_link & place_id,

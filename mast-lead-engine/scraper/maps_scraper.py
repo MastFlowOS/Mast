@@ -161,6 +161,7 @@ _PLACE_NAME_SELECTORS = [
     "h1.fontHeadlineLarge",
     "h1[data-item-id]",
 ]
+_PLACE_NAME_SELECTOR_COMBINED = ", ".join(_PLACE_NAME_SELECTORS)
 
 _PHONE_SELECTORS = [
     "[data-item-id^='phone:tel:'] .fontBodyMedium",
@@ -2168,7 +2169,6 @@ class MapsScraper:
             "--disable-gpu",
             "--disable-software-rasterizer",
             "--blink-settings=imagesEnabled=false",
-            "--js-flags=--max-old-space-size=256",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
@@ -2911,7 +2911,7 @@ class MapsScraper:
                         async def _run_card_panel_and_extract() -> tuple[str, RawPlace | None, str]:
                             with self._profiler.timer("place_panel_wait"):
                                 found_panel = False
-                                for sel in _PLACE_NAME_SELECTORS:
+                                for sel in (_PLACE_NAME_SELECTOR_COMBINED, *_PLACE_NAME_SELECTORS):
                                     try:
                                         await page.wait_for_selector(
                                             sel, timeout=max(100, min(self.config.place_timeout_ms, 2000))

@@ -23,6 +23,25 @@ async function main() {
     { algorithm: "HS256", expiresIn: "2h" }
   );
 
+  // Ensure no stale jobs/tasks from prior benchmark runs are running
+  console.log("Cancelling any prior active jobs/tasks for test user...");
+  await supabase
+    .from("discovery_tasks")
+    .update({ status: "cancelled", termination_reason: "USER_CANCELLED", completed_at: new Date().toISOString() })
+    .eq("user_id", USER_ID)
+    .in("status", ["queued", "running"]);
+  await supabase
+    .from("discovery_plans")
+    .update({ status: "cancelled", terminal_reason: "USER_CANCELLED", completed_at: new Date().toISOString() })
+    .eq("user_id", USER_ID)
+    .in("status", ["queued", "running"]);
+  await supabase
+    .from("scrape_jobs")
+    .update({ status: "cancelled", completed_at: new Date().toISOString() })
+    .eq("user_id", USER_ID)
+    .in("status", ["queued", "running", "streaming"]);
+  await new Promise((r) => setTimeout(r, 2000));
+
   const t0 = Date.now();
   console.log(`[${new Date().toISOString()}] Submitting discovery request to ${API_URL}/v1/discover...`);
 

@@ -278,8 +278,8 @@ def compose_discovery(
     selected_ids: list[str] = []
     translated_requests: dict[str, Any] = {}
     for provider_id in relevant:
-        if provider_id == "overpass" and street_mode:
-            log.info("[provider] overpass excluded for street mode (evidence-based: google_maps only)")
+        if provider_id == "overpass" and (street_mode or bool(context.area)):
+            log.info("[provider] overpass excluded for street/area mode (evidence-based: google_maps only)")
             continue
         if provider_id == "overpass" and not is_overpass_enabled():
             # PHASE 11.4 — Overpass A/B test. A pure composition-time

@@ -48,6 +48,36 @@ def test_street_mode_excludes_overpass(monkeypatch):
     assert isinstance(composed.request, GoogleMapsDiscoveryRequest)
 
 
+def test_named_area_excludes_overpass(monkeypatch):
+    """When a specific commercial area is targeted, Overpass must be excluded (Google Maps only)."""
+    monkeypatch.setenv("DISCOVERY_ENABLE_OVERPASS", "true")
+
+    overpass_instantiated = False
+
+    def fake_overpass_factory():
+        nonlocal overpass_instantiated
+        overpass_instantiated = True
+        raise AssertionError("Overpass factory should not be called when area is specified")
+
+    fake_maps_provider = object()
+
+    def fake_maps_factory():
+        return fake_maps_provider
+
+    composed = compose_discovery(
+        session_id="test-session-named-area",
+        query="Coffee Shop in Ballard, Seattle",
+        city="Seattle",
+        area="Ballard",
+        street_mode=False,
+        google_maps_factory=fake_maps_factory,
+        overpass_factory=fake_overpass_factory,
+    )
+
+    assert not overpass_instantiated
+    assert composed.selected_provider_ids == ("google_maps",)
+
+
 def test_area_mode_includes_overpass(monkeypatch):
     """In area mode, Overpass should be composed when enabled and relevant."""
     monkeypatch.setenv("DISCOVERY_ENABLE_OVERPASS", "true")

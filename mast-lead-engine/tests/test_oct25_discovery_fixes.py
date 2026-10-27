@@ -87,7 +87,7 @@ class _FakeSplitLayoutPage:
     async def query_selector(self, selector: str):
         if selector in ("div[role='feed']", "div.m6QErb[aria-label]", "div.m6QErb"):
             return self.feed_el
-        if selector in ms._PLACE_NAME_SELECTORS:
+        if selector in ms._PLACE_NAME_SELECTORS or selector == ms._PLACE_NAME_SELECTOR_COMBINED:
             return self.h1_el if self.detail_open else None
         if selector in ms._BACK_BUTTON_SELECTORS:
             return self.back_btn if self.detail_open else None
@@ -212,7 +212,7 @@ class _ScenarioMapsPage:
     async def query_selector(self, selector: str):
         if selector in ms._PANEL_SELECTORS:
             return self.feed_panel
-        if selector in ms._PLACE_NAME_SELECTORS:
+        if selector in ms._PLACE_NAME_SELECTORS or selector == ms._PLACE_NAME_SELECTOR_COMBINED:
             if self.detail_open and self.current_panel:
                 return _FakeElement(text=self.current_panel.get("name", ""))
             return None

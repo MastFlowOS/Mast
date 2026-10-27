@@ -1161,6 +1161,7 @@ async def _wait_for_verified_panel_identity(
     pre_click_snapshot: dict | None,
     last_verified_panel: dict | None,
     timeout_ms: int,
+    allow_stub: bool = False,
 ) -> tuple[bool, dict, str]:
     """Bounded poll waiting for the detail panel to reflect the clicked card's identity."""
     deadline = asyncio.get_event_loop().time() + max(0.05, min(timeout_ms, 5000) / 1000.0)
@@ -1175,13 +1176,13 @@ async def _wait_for_verified_panel_identity(
             card_signals=card_signals,
             pre_click_snapshot=pre_click_snapshot,
             last_verified_panel=last_verified_panel,
-            allow_stub=False,
+            allow_stub=allow_stub,
         )
         last_reason = reason
         if ok:
             return True, last_snap, reason
         if asyncio.get_event_loop().time() >= deadline:
-            if not last_snap.get("open") and not last_snap.get("name"):
+            if allow_stub and not last_snap.get("open") and not last_snap.get("name"):
                 return True, last_snap, "stub_no_detail_dom"
             return False, last_snap, last_reason
         await asyncio.sleep(0.04)
@@ -1308,21 +1309,22 @@ async def _return_to_results(
 
 
 async def _human_click(page: Page, element) -> None:
-    """Click an element. Tries native DOM click for fast, reliable SPA navigation,
-    falling back to synthetic Playwright click."""
+    """Click an element using real Playwright mouse/pointer events, falling back to DOM click."""
     try:
-        if hasattr(element, "evaluate"):
-            await element.evaluate("el => el.click()")
-            return
+        await element.click(force=True, timeout=2000)
+        return
     except Exception:
         pass
     try:
-        await element.click(force=True, timeout=2000)
+        await element.click(timeout=2000)
+        return
     except Exception:
-        try:
-            await element.click(timeout=2000)
-        except Exception:
-            pass
+        pass
+    try:
+        if hasattr(element, "evaluate"):
+            await element.evaluate("el => el.click()")
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────

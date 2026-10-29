@@ -399,5 +399,26 @@ describe("Phase 2 Service-Need Gate Telemetry Integration", () => {
       assert.equal(capturedTelemetry[1].signalStates.website_is_weak, "present");
       assert.deepEqual(capturedTelemetry[1].matchedGaps, ["confirmed_weak_or_free_website"]);
     });
+
+    it("observes real enriched signals (reachable, ssl, seo) when attached to lead", () => {
+      const enrichedLead = buildMockEngineLead({
+        website: "https://artisan-roasters.com",
+        website_reachable: true,
+        ssl_valid: true,
+        website_is_weak: false,
+        seo: {
+          has_title: true,
+          has_meta_description: true,
+          title: "Artisan Roasters - Fresh Daily",
+          meta_description: "Finest roasted coffee beans and cafe specialties.",
+        },
+      });
+      recordServiceNeedGateObservation(enrichedLead, defaultCtx, "biz_enriched_real");
+      assert.equal(capturedTelemetry[0].signalStates.website, "present");
+      assert.equal(capturedTelemetry[0].signalStates.website_reachable, "present");
+      assert.equal(capturedTelemetry[0].signalStates.ssl_valid, "present");
+      assert.equal(capturedTelemetry[0].signalStates.website_is_weak, "absent");
+      assert.equal(capturedTelemetry[0].signalStates.seo_meta, "present");
+    });
   });
 });

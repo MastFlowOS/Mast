@@ -582,7 +582,8 @@ async function runOneAreaAttempt(
             }
 
             const { data: enriched } = await db.from("businesses")
-              .select("email, phone, instagram, website").eq("id", businessId).maybeSingle();
+              .select("email, phone, instagram, website, website_reachable, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
+              .eq("id", businessId).maybeSingle();
             const satisfied = Boolean(enriched) && channelsSatisfied(enriched, requestedChannels);
             traceLog(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
             traceLog(`CHANNELS_SATISFIED=${satisfied}`);
@@ -594,7 +595,15 @@ async function runOneAreaAttempt(
               publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
               return;
             }
-            deliverable = mergeEnrichedChannels(lead, enriched);
+            deliverable = {
+              ...mergeEnrichedChannels(lead, enriched),
+              ...(enriched?.website_reachable !== undefined ? { website_reachable: enriched.website_reachable } : {}),
+              ...(enriched?.website_is_weak !== undefined ? { website_is_weak: enriched.website_is_weak } : {}),
+              ...(enriched?.ssl_valid !== undefined ? { ssl_valid: enriched.ssl_valid } : {}),
+              ...(enriched?.load_time_ms !== undefined ? { load_time_ms: enriched.load_time_ms } : {}),
+              ...(enriched?.seo !== undefined ? { seo: enriched.seo as Record<string, unknown> } : {}),
+              ...(enriched?.blog !== undefined ? { blog: enriched.blog as Record<string, unknown> } : {}),
+            };
           }
 
           if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
@@ -723,9 +732,10 @@ async function runOneAreaAttempt(
   // (it `continue`s before upsert/enqueue/deliver, so no later stage can
   // count it again).
   if (Object.keys(earlyPrunedByChannel).length > 0) {
+    const earlyPrunedTotal = Object.values(earlyPrunedByChannel).reduce((a, b) => a + b, 0);
     console.info(
       `[discoveryPlanJob] early_prune task=${payload.taskId} discovered=${discovered} ` +
-        `accepted=${accepted} rejected=${rejected} by_channel=${JSON.stringify(earlyPrunedByChannel)}`,
+        `accepted=${accepted} early_pruned=${earlyPrunedTotal} rejected=${rejected} by_channel=${JSON.stringify(earlyPrunedByChannel)}`,
     );
   }
   return { discovered, accepted, rejected, duplicates, failed, skipped, exhausted, cityReason, terminalReason, shouldRetryTask, pythonPerfData, bridgeTimings, progressMarks, engineTerminationReason };

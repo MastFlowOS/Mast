@@ -769,6 +769,14 @@ async def _validate_panel_candidate(
     except Exception:
         anchor_count = 0
 
+    if anchor_count == 0 and hasattr(panel, "wait_for_selector"):
+        try:
+            cand = await panel.wait_for_selector("a[href*='/maps/place/']", timeout=2000)
+            if cand is not None:
+                anchor_count = len(await panel.query_selector_all("a[href*='/maps/place/']"))
+        except Exception:
+            pass
+
     if anchor_count > 0:
         return True, f"contains {anchor_count} place anchor(s)"
 
@@ -1380,6 +1388,12 @@ async def _return_to_results(
                     if hasattr(page, "go_forward"):
                         try:
                             await page.go_forward(timeout=2000)
+                        except Exception:
+                            pass
+                    curr_url = getattr(page, "url", "") or ""
+                    if "about:blank" in curr_url and hasattr(page, "wait_for_selector"):
+                        try:
+                            await page.wait_for_selector(panel_selector, timeout=min(config.scroll_settle_timeout_ms, timeout_ms))
                         except Exception:
                             pass
                 else:
@@ -3598,7 +3612,6 @@ class MapsScraper:
                                 can_skip_return = False
                                 if (
                                     card_completed_cleanly
-                                    and consecutive_mismatches_in_round == 0
                                     and getattr(self.config, "skip_redundant_return_to_results", True)
                                     and _return_to_results is _DEFAULT_RETURN_TO_RESULTS
                                 ):
@@ -3615,7 +3628,7 @@ class MapsScraper:
                                 else:
                                     self._profiler.incr("return_to_results_executed")
                                     elapsed_card_s = asyncio.get_event_loop().time() - card_started_monotonic
-                                    remaining_card_s = max(0.05, card_timeout_s - elapsed_card_s)
+                                    remaining_card_s = max(2.0, card_timeout_s - elapsed_card_s)
                                     try:
                                         returned_ok = await asyncio.wait_for(
                                             _return_to_results(
@@ -3717,7 +3730,7 @@ class MapsScraper:
                 _emit_progress("panel_failure_retry", f"{exc.reason.value}:{attempt}")
                 if proxy:
                     self._proxy_manager.report_failure(proxy)
-                if is_last_attempt or exc.reason == DiscoveryFailureReason.RETURN_TO_RESULTS_FAILED:
+                if is_last_attempt:
                     raise
                 # else: fall through to `finally`, then the `while` loop
                 # retries with a freshly built context/page.

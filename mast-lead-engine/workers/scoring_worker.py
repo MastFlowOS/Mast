@@ -173,7 +173,7 @@ engine.coordinator, or runtime import anywhere in this file.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 from typing import Optional
 
@@ -184,6 +184,8 @@ from utils.parsing import (
     CHAIN_KEYWORDS as _CHAIN_KEYWORDS,
     domain_of as _domain_of,
     is_weak_site as _is_weak_site,
+    clean_ig_url as _clean_ig_url,
+    is_real_ig_handle as _is_real_ig_handle,
 )
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
@@ -322,7 +324,7 @@ class ScoringWorker(BaseWorker[EnrichedBusiness, OpportunityScore]):
             "reviews_rating": business.rating if business is not None else None,
             "is_disqualified": _is_cannabis(name, category) or _is_chain(name),
             "website_is_weak": _is_weak_site(business.website if business is not None else None),
-            "ssl_valid": website_intel.https if website_intel is not None else None,
+            "ssl_valid": website_intel.https if (website_intel is not None and website_intel.website_reachable) else None,
             "load_time_ms": None,
             "signals": {
                 "ig_last_post_days": _days_since(instagram_intel.last_post_date) if instagram_intel is not None else None,
@@ -330,6 +332,16 @@ class ScoringWorker(BaseWorker[EnrichedBusiness, OpportunityScore]):
                 "growth_signals": {},
             },
         }
+
+        biz_payload, business_health_score = self._build_profession_scoring_context(
+            item=item,
+            business=business,
+            website_intel=website_intel,
+            instagram_intel=instagram_intel,
+            contact_intel=contact_intel,
+            name=name,
+            category=category,
+        )
 
         prof_service = OpportunityScoringService()
         prof_res = prof_service.evaluate_business_professions(biz_payload, business_id=item.pipeline_id)
@@ -346,6 +358,153 @@ class ScoringWorker(BaseWorker[EnrichedBusiness, OpportunityScore]):
             score_breakdown=prof_res.universal_breakdown.to_dict(),
         )
 
+
+    def _build_profession_scoring_context(
+        self,
+        *,
+        item: EnrichedBusiness,
+        business,
+        website_intel,
+        instagram_intel,
+        contact_intel,
+        name: Optional[str],
+        category: Optional[str],
+    ) -> tuple[dict, int]:
+        resolved_instagram = None
+        if business is not None and getattr(business, "instagram_url", None):
+            cleaned_b = _clean_ig_url(business.instagram_url)
+            resolved_instagram = (
+                cleaned_b
+                if (cleaned_b and _is_real_ig_handle(cleaned_b))
+                else business.instagram_url
+            )
+        if (
+            not resolved_instagram
+            and instagram_intel is not None
+            and instagram_intel.profile_reachable
+            and instagram_intel.profile_url
+        ):
+            resolved_instagram = instagram_intel.profile_url
+        if (
+            not resolved_instagram
+            and contact_intel is not None
+            and getattr(contact_intel, "instagram_url", None)
+        ):
+            cleaned_c = _clean_ig_url(contact_intel.instagram_url)
+            if cleaned_c and _is_real_ig_handle(cleaned_c):
+                resolved_instagram = cleaned_c
+
+        cand_signals = (
+            getattr(business, "signals", None)
+            if (business is not None and isinstance(getattr(business, "signals", None), dict))
+            else {}
+        )
+        ig_last_post_days = (
+            _days_since(instagram_intel.last_post_date)
+            if (instagram_intel is not None and instagram_intel.last_post_date)
+            else cand_signals.get("ig_last_post_days")
+        )
+
+        health_ig_intel = instagram_intel
+        if health_ig_intel is None and resolved_instagram:
+            synth_last_post = (
+                (datetime.now(timezone.utc) - timedelta(days=int(ig_last_post_days))).isoformat()
+                if isinstance(ig_last_post_days, (int, float))
+                else None
+            )
+            health_ig_intel = type(
+                "ResolvedIG",
+                (),
+                {"profile_reachable": True, "last_post_date": synth_last_post},
+            )()
+
+        business_health_score = self._business_health_component(
+            business, website_intel, health_ig_intel
+        )
+
+        if website_intel is not None and isinstance(getattr(website_intel, "tech_stack", None), dict):
+            tech_stack = dict(website_intel.tech_stack)
+            if website_intel.detected_platform and not tech_stack.get("cms"):
+                tech_stack["cms"] = website_intel.detected_platform
+        elif isinstance(cand_signals.get("tech_stack"), dict):
+            tech_stack = dict(cand_signals["tech_stack"])
+        elif website_intel is not None and website_intel.detected_platform:
+            tech_stack = {
+                "cms": website_intel.detected_platform,
+                "detected_platform": website_intel.detected_platform,
+            }
+        else:
+            tech_stack = {}
+
+        if website_intel is not None and isinstance(getattr(website_intel, "growth_signals", None), dict):
+            growth_signals = dict(website_intel.growth_signals)
+        elif isinstance(cand_signals.get("growth_signals"), dict):
+            growth_signals = dict(cand_signals["growth_signals"])
+        else:
+            growth_signals = {}
+
+        seo = (
+            website_intel.seo
+            if (website_intel is not None and getattr(website_intel, "seo", None) is not None)
+            else (getattr(business, "seo", None) if business is not None else None)
+        )
+        blog = (
+            website_intel.blog
+            if (website_intel is not None and getattr(website_intel, "blog", None) is not None)
+            else (getattr(business, "blog", None) if business is not None else None)
+        )
+
+        website_url = business.website if business is not None else None
+        website_is_weak = (
+            website_intel.website_is_weak
+            if (website_intel is not None and getattr(website_intel, "website_is_weak", None) is not None)
+            else (_is_weak_site(website_url) if website_url else None)
+        )
+        load_time_ms = (
+            round(website_intel.response_time * 1000)
+            if (website_intel is not None and website_intel.response_time is not None)
+            else None
+        )
+        linkedin = (
+            contact_intel.linkedin_url
+            if (contact_intel is not None and contact_intel.linkedin_url)
+            else (getattr(business, "linkedin_url", None) if business is not None else None)
+        )
+        facebook = getattr(business, "facebook_url", None) if business is not None else None
+        has_photos = bool(getattr(business, "has_photos", False)) if business is not None else False
+        reviews_count = (
+            business.review_count
+            if (business is not None and business.review_count is not None)
+            else 0
+        )
+        is_disqualified = bool(
+            _is_cannabis(name, category)
+            or _is_chain(name)
+            or (business is not None and getattr(business, "is_disqualified", False))
+        )
+
+        biz_payload = {
+            "business_id": item.pipeline_id,
+            "website": website_url,
+            "instagram": resolved_instagram,
+            "facebook": facebook,
+            "linkedin": linkedin,
+            "has_photos": has_photos,
+            "reviews_count": reviews_count,
+            "reviews_rating": business.rating if business is not None else None,
+            "is_disqualified": is_disqualified,
+            "website_is_weak": website_is_weak,
+            "ssl_valid": website_intel.https if (website_intel is not None and website_intel.website_reachable) else None,
+            "load_time_ms": load_time_ms,
+            "seo": seo,
+            "blog": blog,
+            "signals": {
+                "ig_last_post_days": ig_last_post_days,
+                "tech_stack": tech_stack,
+                "growth_signals": growth_signals,
+            },
+        }
+        return biz_payload, business_health_score
 
     def timeout_seconds(self) -> float:
         return self._timeout

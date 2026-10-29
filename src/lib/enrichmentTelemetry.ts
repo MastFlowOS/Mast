@@ -136,4 +136,150 @@ export function formatEnrichmentTelemetryLog(
 export function resetEnrichmentTelemetry(): void {
   websiteContactActive = 0;
   instagramActive = 0;
+  resetPhase0SubprocessMetrics();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 0 — Subprocess execution timing & non-production score-parity counters
+// ---------------------------------------------------------------------------
+
+export type SubprocessStageKind = "website_enrich" | "instagram_enrich" | "opportunity_score";
+
+export type Phase0SubprocessMetrics = {
+  website_enrich_count: number;
+  website_enrich_total_ms: number;
+  instagram_enrich_count: number;
+  instagram_enrich_total_ms: number;
+  opportunity_score_count: number;
+  opportunity_score_total_ms: number;
+  score_parity_checks_total: number;
+  score_parity_matched: number;
+  score_parity_diverged: number;
+  score_parity_divergences: Array<{
+    businessId: string;
+    professionSlug: string;
+    enrichScore: number;
+    scoreSubprocessScore: number;
+  }>;
+};
+
+const phase0Metrics: Phase0SubprocessMetrics = {
+  website_enrich_count: 0,
+  website_enrich_total_ms: 0,
+  instagram_enrich_count: 0,
+  instagram_enrich_total_ms: 0,
+  opportunity_score_count: 0,
+  opportunity_score_total_ms: 0,
+  score_parity_checks_total: 0,
+  score_parity_matched: 0,
+  score_parity_diverged: 0,
+  score_parity_divergences: [],
+};
+
+/** Records a single subprocess execution count and duration (ms). */
+export function recordSubprocessExecution(kind: SubprocessStageKind, durationMs: number): void {
+  const safeMs = Math.max(0, Math.round(durationMs));
+  if (kind === "website_enrich") {
+    phase0Metrics.website_enrich_count += 1;
+    phase0Metrics.website_enrich_total_ms += safeMs;
+  } else if (kind === "instagram_enrich") {
+    phase0Metrics.instagram_enrich_count += 1;
+    phase0Metrics.instagram_enrich_total_ms += safeMs;
+  } else if (kind === "opportunity_score") {
+    phase0Metrics.opportunity_score_count += 1;
+    phase0Metrics.opportunity_score_total_ms += safeMs;
+  }
+}
+
+/**
+ * Records a non-production/test-mode score parity comparison between the
+ * `service.py enrich` (`ScoringWorker`) profession_scores list and the
+ * `service.py score` (`score_business_v2`) profession_scores map.
+ * Never mutates persisted scores or qualification behavior.
+ */
+export function recordScoreParityCheck(
+  businessId: string,
+  enrichProfessionScores: unknown,
+  scoreSubprocessProfessionScores: Record<string, { score: number }> | undefined,
+): { matched: boolean; divergedSlugs: string[] } {
+  if (!enrichProfessionScores || typeof enrichProfessionScores !== "object" || !scoreSubprocessProfessionScores) {
+    return { matched: false, divergedSlugs: [] };
+  }
+
+  const normalizedEntries: Array<{ slug: string; enrichScore: number }> = [];
+  if (Array.isArray(enrichProfessionScores)) {
+    for (const item of enrichProfessionScores) {
+      if (!item || typeof item !== "object") continue;
+      const slug = (item as Record<string, unknown>).profession_slug;
+      const rawScore =
+        (item as Record<string, unknown>).score ??
+        (item as Record<string, unknown>).opportunity_score;
+      if (typeof slug === "string" && typeof rawScore === "number") {
+        normalizedEntries.push({ slug, enrichScore: rawScore });
+      }
+    }
+  } else {
+    for (const [slug, val] of Object.entries(enrichProfessionScores as Record<string, unknown>)) {
+      if (!val || typeof val !== "object") continue;
+      const rawScore =
+        (val as Record<string, unknown>).score ??
+        (val as Record<string, unknown>).opportunity_score;
+      if (typeof rawScore === "number") {
+        normalizedEntries.push({ slug, enrichScore: rawScore });
+      }
+    }
+  }
+
+  if (normalizedEntries.length === 0) {
+    return { matched: false, divergedSlugs: [] };
+  }
+
+  phase0Metrics.score_parity_checks_total += 1;
+  const divergedSlugs: string[] = [];
+
+  for (const { slug, enrichScore } of normalizedEntries) {
+    const subEntry = scoreSubprocessProfessionScores[slug];
+    const subScore = subEntry?.score;
+    if (typeof subScore !== "number" || Math.abs(enrichScore - subScore) > 1e-6) {
+      divergedSlugs.push(slug);
+      if (phase0Metrics.score_parity_divergences.length < 100) {
+        phase0Metrics.score_parity_divergences.push({
+          businessId,
+          professionSlug: slug,
+          enrichScore,
+          scoreSubprocessScore: typeof subScore === "number" ? subScore : NaN,
+        });
+      }
+    }
+  }
+
+  if (divergedSlugs.length === 0) {
+    phase0Metrics.score_parity_matched += 1;
+    return { matched: true, divergedSlugs: [] };
+  }
+
+  phase0Metrics.score_parity_diverged += 1;
+  return { matched: false, divergedSlugs };
+}
+
+/** Returns a defensive copy of the Phase 0 subprocess & parity metrics. */
+export function getPhase0SubprocessMetrics(): Phase0SubprocessMetrics {
+  return {
+    ...phase0Metrics,
+    score_parity_divergences: [...phase0Metrics.score_parity_divergences],
+  };
+}
+
+/** Resets Phase 0 subprocess & parity metrics (called by resetEnrichmentTelemetry). */
+export function resetPhase0SubprocessMetrics(): void {
+  phase0Metrics.website_enrich_count = 0;
+  phase0Metrics.website_enrich_total_ms = 0;
+  phase0Metrics.instagram_enrich_count = 0;
+  phase0Metrics.instagram_enrich_total_ms = 0;
+  phase0Metrics.opportunity_score_count = 0;
+  phase0Metrics.opportunity_score_total_ms = 0;
+  phase0Metrics.score_parity_checks_total = 0;
+  phase0Metrics.score_parity_matched = 0;
+  phase0Metrics.score_parity_diverged = 0;
+  phase0Metrics.score_parity_divergences = [];
 }

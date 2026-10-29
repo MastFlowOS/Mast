@@ -642,6 +642,9 @@ def _candidate_dict(candidate) -> dict:
         "phone": candidate.phone,
         "rating": candidate.rating,
         "review_count": candidate.review_count,
+        "reviews": candidate.review_count,
+        "has_photos": getattr(candidate, "has_photos", None),
+        "is_google_verified": getattr(candidate, "is_google_verified", None),
         "discovered_at": candidate.discovered_at,
     }
 
@@ -817,6 +820,9 @@ def _opportunity_to_lead_dict(
         "maps_link": candidate.maps_url if candidate else None,
         "rating": candidate.rating if candidate else None,
         "review_count": candidate.review_count if candidate else None,
+        "reviews": candidate.review_count if candidate else None,
+        "has_photos": getattr(candidate, "has_photos", None) if candidate else None,
+        "is_google_verified": getattr(candidate, "is_google_verified", None) if candidate else None,
         "phone": phones[0] if phones else (candidate.phone if candidate else None),
         "phones": phones,
         "email": emails[0] if emails else None,
@@ -2676,25 +2682,63 @@ async def score_business_v2(payload: dict) -> dict:
     Evaluates Engine 2.0 Opportunity Scoring for a business payload, including universal breakdown,
     profession scores for all canonical professions, and business health score.
     """
+    from datetime import datetime, timedelta, timezone
+
     biz_id = str(payload.get("id") or payload.get("business_id") or "biz_unknown")
     biz_data = payload.get("business") if isinstance(payload.get("business"), dict) else payload
 
     scoring_service = OpportunityScoringService()
     res = scoring_service.evaluate_business_professions(biz_data, business_id=biz_id)
 
+    raw_reviews = biz_data.get("reviews_count")
+    if raw_reviews is None:
+        raw_reviews = biz_data.get("review_count")
+    if raw_reviews is None:
+        raw_reviews = biz_data.get("reviews")
+
+    raw_rating = biz_data.get("reviews_rating")
+    if raw_rating is None:
+        raw_rating = biz_data.get("rating")
+
+    website = biz_data.get("website")
+    website_reachable = (
+        bool(biz_data["website_reachable"])
+        if biz_data.get("website_reachable") is not None
+        else bool(website)
+    )
+    https_val = (
+        bool(biz_data["ssl_valid"])
+        if biz_data.get("ssl_valid") is not None
+        else str(website or "").startswith("https://")
+    )
+
+    signals = biz_data.get("signals") if isinstance(biz_data.get("signals"), dict) else {}
+    ig_days = signals.get("ig_last_post_days") if signals else None
+    if ig_days is None:
+        ig_days = biz_data.get("ig_last_post_days")
+    last_post_date = biz_data.get("instagram_last_post_date") or biz_data.get("last_post_date")
+    if not last_post_date and isinstance(ig_days, (int, float)):
+        last_post_date = (datetime.now(timezone.utc) - timedelta(days=int(ig_days))).isoformat()
+
+    ig_reachable = (
+        bool(biz_data["instagram_reachable"])
+        if biz_data.get("instagram_reachable") is not None
+        else bool(biz_data.get("instagram"))
+    )
+
     health_score = ScoringWorker._business_health_component(
         type("TempBiz", (), {
-            "rating": biz_data.get("reviews_rating") or biz_data.get("rating"),
-            "review_count": biz_data.get("reviews_count") or biz_data.get("reviews"),
-            "website": biz_data.get("website"),
+            "rating": raw_rating,
+            "review_count": raw_reviews,
+            "website": website,
         })(),
         type("TempWebsite", (), {
-            "website_reachable": bool(biz_data.get("website")),
-            "https": str(biz_data.get("website") or "").startswith("https://"),
+            "website_reachable": website_reachable,
+            "https": https_val,
         })(),
         type("TempIG", (), {
-            "profile_reachable": bool(biz_data.get("instagram")),
-            "last_post_date": None,
+            "profile_reachable": ig_reachable,
+            "last_post_date": last_post_date,
         })()
     )
 

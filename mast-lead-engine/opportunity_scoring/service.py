@@ -48,17 +48,6 @@ def compute_website_opportunity(biz: dict[str, Any]) -> float:
     if website_is_weak is True:
         return 70.0
 
-    if website_is_weak is False:
-        score = 40.0
-        if site.startswith("https://"):
-            score -= 10.0
-        if biz.get("ssl_valid") is False:
-            score += 20.0
-        load_ms = biz.get("load_time_ms")
-        if isinstance(load_ms, (int, float)) and load_ms > 4000:
-            score += 10.0
-        return _clamp(score)
-
     weak_patterns = (
         "linktr.ee",
         "wixsite.com",
@@ -70,12 +59,17 @@ def compute_website_opportunity(biz: dict[str, Any]) -> float:
         "instagram.com/",
         "square.site",
     )
-    if any(p in site for p in weak_patterns):
+    if website_is_weak is None and any(p in site for p in weak_patterns):
         return 70.0
 
     score = 40.0
     if site.startswith("https://"):
         score -= 10.0
+    if biz.get("ssl_valid") is False:
+        score += 20.0
+    load_ms = biz.get("load_time_ms")
+    if isinstance(load_ms, (int, float)) and load_ms > 4000:
+        score += 10.0
     cheap_tlds = (".tk", ".ml", ".ga", ".cf", ".gq", ".info")
     if any(t in site for t in cheap_tlds):
         score += 25.0

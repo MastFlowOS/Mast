@@ -7,6 +7,7 @@ import { buildFieldTrust } from "../scoring/fieldTrust.js";
 import { buildContactUpdate } from "./contactMerge.js";
 import type { Json } from "../types/database.types.js";
 import { buildDedupWasteLogFields, logDedupWasteDecision } from "../lib/dedupWasteAudit.js";
+import { recordServiceNeedGateObservation } from "../discovery/serviceNeedGate.js";
 
 export type DeliveryContext = {
   /** null for background pool.expand jobs that aren't attached to a user */
@@ -269,7 +270,7 @@ export async function upsertBusinessFromEngineLead(
       load_time_ms: lead.load_time_ms ?? null,
       seo: lead.seo ?? {},
       blog: lead.blog ?? {},
-      reviews_count: lead.reviews ?? 0,
+      reviews_count: lead.reviews ?? (typeof lead.review_count === "number" ? lead.review_count : 0),
       reviews_rating: lead.rating,
       has_photos: lead.has_photos,
       is_disqualified: Boolean(lead.is_disqualified),
@@ -519,6 +520,12 @@ export async function deliverLead(
   onStage?: (stage: DeliveryStage) => void,
 ): Promise<DeliveryResult> {
   const resolvedBusinessId = businessId ?? (await upsertBusinessFromEngineLead(lead, region, onStage, ctx.scrapeJobId));
+
+  try {
+    recordServiceNeedGateObservation(lead, ctx, resolvedBusinessId);
+  } catch {
+    // Non-fatal — telemetry failure must never interrupt delivery
+  }
 
   return insertLeadForUser(
     {

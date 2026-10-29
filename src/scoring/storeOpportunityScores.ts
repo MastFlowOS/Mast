@@ -19,23 +19,40 @@ import { PROFESSION_SLUGS } from "./professionWeights.js";
 export async function computeAndStoreOpportunityScores(
   businessId: string,
   scoreRunner = runEngineScore,
+  precomputed?: EngineScoreResult,
 ): Promise<EngineScoreResult> {
-  const { data: business, error } = await supabaseAdmin
-    .from("businesses")
-    .select(
-      "id, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
-    )
-    .eq("id", businessId)
-    .single();
-  if (error) throw error;
+  let engineResult: EngineScoreResult;
+  const isCompletePrecomputed = Boolean(
+    precomputed &&
+      precomputed.profession_scores &&
+      !Array.isArray(precomputed.profession_scores) &&
+      typeof precomputed.profession_scores === "object" &&
+      PROFESSION_SLUGS.every((slug) => {
+        const ps = precomputed.profession_scores?.[slug];
+        return ps != null && typeof ps.score === "number" && Number.isFinite(ps.score);
+      }),
+  );
 
-  // Engine 2.0 computes all profession scores.
-  const engineResult = await scoreRunner({
-    ...business,
-    id: businessId,
-    // Flatten signals for the engine's flat-dict intake format
-    ...(business.signals != null && typeof business.signals === "object" ? business.signals : {}),
-  });
+  if (isCompletePrecomputed && precomputed) {
+    engineResult = precomputed;
+  } else {
+    const { data: business, error } = await supabaseAdmin
+      .from("businesses")
+      .select(
+        "id, website, instagram, facebook, linkedin, has_photos, reviews_count, reviews_rating, is_disqualified, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals",
+      )
+      .eq("id", businessId)
+      .single();
+    if (error) throw error;
+
+    // Engine 2.0 computes all profession scores.
+    engineResult = await scoreRunner({
+      ...business,
+      id: businessId,
+      // Flatten signals for the engine's flat-dict intake format
+      ...(business.signals != null && typeof business.signals === "object" ? business.signals : {}),
+    });
+  }
 
   // Map Engine 2.0's profession_scores map to DB rows for all canonical slugs.
   // Engine 2.0 produces scores for all PROFESSION_SLUGS; any missing slug

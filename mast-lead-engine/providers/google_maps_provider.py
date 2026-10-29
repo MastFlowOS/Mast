@@ -526,4 +526,6 @@ class GoogleMapsProvider(DiscoveryProviderInterface):
             # same default rather than changing behavior for them.
             closed=bool(getattr(place, "closed", False)),
             requested_niche=_or_none(requested_niche),
+            has_photos=getattr(place, "has_photos", None),
+            is_google_verified=getattr(place, "is_google_verified", None),
         )

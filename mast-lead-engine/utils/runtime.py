@@ -425,6 +425,12 @@ class ScraperConfig:
     # Site crawl
     site_contact_page_budget: int = 4   # reduced to 2 in fast mode
     place_settle_ms: int = 300
+    # Phase 3 (Google Maps Fast Path): skip redundant back-navigation when the
+    # split-pane results feed remains mounted with unseen candidate cards.
+    skip_redundant_return_to_results: bool = (
+        os.environ.get("MAPS_SKIP_REDUNDANT_RETURN_TO_RESULTS", "true").strip().lower()
+        not in ("0", "false", "no")
+    )
 
     def __post_init__(self) -> None:
         if self.fast:

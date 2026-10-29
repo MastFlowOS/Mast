@@ -74,15 +74,23 @@ degrading or fabricating data.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from typing import Any, Optional
 
 from engine.contracts import BusinessCandidate
-from utils.parsing import clean_ig_url, is_real_ig_handle
+from utils.parsing import (
+    clean_ig_url,
+    is_real_ig_handle,
+    is_valid_email,
+    is_valid_phone,
+    is_weak_site,
+    resolve_region,
+)
 from workers.contact_worker import ContactWorker
 from workers.instagram_worker import InstagramWorker
 from workers.merge_worker import MergeInput, MergeWorker
-from workers.scoring_worker import ScoringWorker
+from workers.scoring_worker import ScoringWorker, _is_cannabis, _is_chain
 from workers.website_worker import WebsiteWorker
 
 
@@ -94,24 +102,51 @@ def _candidate_from_payload(payload: dict) -> BusinessCandidate:
         except (ValueError, TypeError):
             coords = None
 
+    raw_reviews = payload.get("review_count")
+    if raw_reviews is None:
+        raw_reviews = payload.get("reviews")
+    if raw_reviews is None:
+        raw_reviews = payload.get("reviews_count")
+
+    raw_rating = payload.get("rating")
+    if raw_rating is None:
+        raw_rating = payload.get("reviews_rating")
+
     return BusinessCandidate(
-        pipeline_id=str(payload.get("pipeline_id") or uuid.uuid4()),
+        pipeline_id=str(
+            payload.get("pipeline_id")
+            or payload.get("id")
+            or payload.get("business_id")
+            or uuid.uuid4()
+        ),
         session_id=str(payload.get("session_id") or uuid.uuid4()),
         provider="business_processing_bridge",
         name=payload.get("name") or "",
         category=payload.get("category"),
         address=payload.get("address"),
         city=payload.get("city"),
-        country=payload.get("country"),
+        country=payload.get("country") or payload.get("country_code") or payload.get("region"),
         phone=payload.get("phone"),
         website=payload.get("website"),
-        rating=payload.get("rating"),
-        review_count=payload.get("review_count") or payload.get("reviews"),
+        rating=raw_rating,
+        review_count=raw_reviews,
         coordinates=coords,
         maps_url=payload.get("maps_url") or payload.get("maps_link"),
-        instagram_url=payload.get("instagram") or payload.get("instagram_url"),
+        instagram_url=(
+            payload.get("instagram")
+            or payload.get("instagram_url")
+            or payload.get("existing_instagram")
+        ),
+        provider_email=payload.get("email") or payload.get("provider_email"),
+        has_photos=payload.get("has_photos"),
+        is_google_verified=payload.get("is_google_verified"),
+        facebook_url=payload.get("facebook") or payload.get("facebook_url"),
+        linkedin_url=payload.get("linkedin") or payload.get("linkedin_url"),
+        is_disqualified=payload.get("is_disqualified"),
+        seo=payload.get("seo") if isinstance(payload.get("seo"), dict) else None,
+        blog=payload.get("blog") if isinstance(payload.get("blog"), dict) else None,
+        signals=payload.get("signals") if isinstance(payload.get("signals"), dict) else None,
     )
-
 
 
 def enrich_business_with_engine_v2(payload: dict) -> dict[str, Any]:
@@ -123,15 +158,54 @@ def enrich_business_with_engine_v2(payload: dict) -> dict[str, Any]:
     """
     candidate = _candidate_from_payload(payload)
 
-
     website_intel = None
     contact_intel = None
     if candidate.website:
         website_intel = WebsiteWorker().process(candidate)
-        contact_intel = ContactWorker().process(website_intel)
+        website_intel_for_contact = website_intel
+        if website_intel is not None:
+            known: list[str] = []
+            raw_known = payload.get("known_channels")
+            if isinstance(raw_known, dict):
+                for ch, present in raw_known.items():
+                    if present and isinstance(ch, str) and ch and ch not in known:
+                        known.append(ch)
+            elif isinstance(raw_known, (list, tuple, set, frozenset)):
+                for ch in raw_known:
+                    if isinstance(ch, str) and ch and ch not in known:
+                        known.append(ch)
+            if candidate.phone and is_valid_phone(candidate.phone) and "phone" not in known:
+                known.append("phone")
+            if candidate.instagram_url and "instagram" not in known:
+                known.append("instagram")
+            if (
+                candidate.provider_email
+                and is_valid_email(candidate.provider_email)
+                and "email" not in known
+            ):
+                known.append("email")
+            region = resolve_region(candidate.country)
+            if known or region is not None:
+                try:
+                    website_intel_for_contact = dataclasses.replace(
+                        website_intel,
+                        known_channels=tuple(known) or None,
+                        region_hint=region,
+                    )
+                except Exception:
+                    website_intel_for_contact = website_intel
+
+        req_channels = payload.get("required_channels")
+        contact_worker = (
+            ContactWorker(required_channels=req_channels)
+            if req_channels is not None
+            else ContactWorker()
+        )
+        contact_intel = contact_worker.process(website_intel_for_contact)
 
     instagram_intel = None
-    if candidate.instagram_url:
+    has_explicit_ig_request = bool(payload.get("instagram") or payload.get("instagram_url"))
+    if candidate.instagram_url and has_explicit_ig_request and not payload.get("skip_instagram_worker"):
         instagram_intel = InstagramWorker().process(candidate)
 
     enriched = MergeWorker().process(
@@ -171,9 +245,35 @@ def _enriched_to_dict(enriched, score_obj=None) -> dict[str, Any]:
     w = enriched.website_intel
     c = enriched.contact_intel
     i = enriched.instagram_intel
+    b = enriched.business
+
+    website_url = b.website if b else None
+    website_is_weak = (
+        w.website_is_weak
+        if (w and getattr(w, "website_is_weak", None) is not None)
+        else (is_weak_site(website_url) if website_url else None)
+    )
+    seo = w.seo if (w and getattr(w, "seo", None) is not None) else None
+    blog = w.blog if (w and getattr(w, "blog", None) is not None) else None
+    if w and isinstance(getattr(w, "tech_stack", None), dict):
+        tech_stack = dict(w.tech_stack)
+        if w.detected_platform and not tech_stack.get("cms"):
+            tech_stack["cms"] = w.detected_platform
+        if w.detected_platform:
+            tech_stack["detected_platform"] = w.detected_platform
+    elif w and w.detected_platform:
+        tech_stack = {"cms": w.detected_platform, "detected_platform": w.detected_platform}
+    else:
+        tech_stack = None
+    growth_signals = (
+        dict(w.growth_signals)
+        if (w and isinstance(getattr(w, "growth_signals", None), dict))
+        else None
+    )
 
     result: dict[str, Any] = {
         "website_reachable": w.website_reachable if w else None,
+        "website_is_weak": website_is_weak,
         "ssl_valid": (w.https if w else None),
         "load_time_ms": (
             round(w.response_time * 1000)
@@ -186,6 +286,10 @@ def _enriched_to_dict(enriched, score_obj=None) -> dict[str, Any]:
         "meta_description": (w.description if w else None),
         "detected_platform": (w.detected_platform if w else None),
         "contact_page": (w.contact_page if w else None),
+        "seo": seo,
+        "blog": blog,
+        "tech_stack": tech_stack,
+        "growth_signals": growth_signals,
         "email": (c.emails[0] if c and c.emails else None),
         "emails": (list(c.emails) if c and c.emails else []),
         "phone": (c.phones[0] if c and c.phones else None),
@@ -213,18 +317,27 @@ def _enriched_to_dict(enriched, score_obj=None) -> dict[str, Any]:
     }
 
     if score_obj is not None:
+        b_name = b.name if b else None
+        b_cat = b.category if b else None
+        result["business_id"] = score_obj.pipeline_id
+        result["is_disqualified"] = bool(
+            _is_cannabis(b_name, b_cat)
+            or _is_chain(b_name)
+            or (b and getattr(b, "is_disqualified", False))
+        )
         result["opportunity_score"] = score_obj.opportunity_score
+        result["health_score"] = score_obj.business_health_score
         result["score_tier"] = score_obj.tier
         result["score_breakdown"] = score_obj.score_breakdown
-        result["profession_scores"] = [
-            {
-                "profession_slug": s.profession_slug,
-                "opportunity_score": s.score,
-                "score_breakdown": s.breakdown.to_dict(),
+        result["universal_breakdown"] = score_obj.score_breakdown
+        result["profession_scores"] = {
+            s.profession_slug: {
+                "score": s.score,
+                "breakdown": s.breakdown.to_dict(),
                 "summary": s.summary,
                 "reasons": list(s.reasons),
             }
             for s in score_obj.profession_scores
-        ]
+        }
 
     return result

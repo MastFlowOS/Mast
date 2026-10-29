@@ -254,6 +254,18 @@ class BusinessCandidate:
     # — not used for gating, filtering, or scoring.
     requested_niche: Optional[str] = None
 
+    # Phase 1 contract alignment additions: optional observable discovery and
+    # stored-business context fields carried into enrichment/scoring without
+    # adding a `.email` attribute (provider_email remains the email field).
+    has_photos: Optional[bool] = None
+    is_google_verified: Optional[bool] = None
+    facebook_url: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    is_disqualified: Optional[bool] = None
+    seo: Optional[dict[str, Any]] = None
+    blog: Optional[dict[str, Any]] = None
+    signals: Optional[dict[str, Any]] = None
+
 
 # ---------------------------------------------------------------------------
 # 2. WebsiteIntel
@@ -350,6 +362,16 @@ class WebsiteIntel:
     # phone normalization. Both default to None (no hint).
     known_channels: Optional[tuple[str, ...]] = None
     region_hint: Optional[str] = None
+
+    # Phase 1 observable HTML signals extracted by WebsiteWorker from the
+    # already-fetched homepage HTML when website_reachable is True (left None
+    # when website_reachable is False so unreachable sites never fabricate
+    # missing-signal defects).
+    seo: Optional[dict[str, Any]] = None
+    blog: Optional[dict[str, Any]] = None
+    tech_stack: Optional[dict[str, Any]] = None
+    growth_signals: Optional[dict[str, Any]] = None
+    website_is_weak: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------

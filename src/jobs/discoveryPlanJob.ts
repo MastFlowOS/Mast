@@ -204,8 +204,15 @@ function validateDiscoveryCandidate(lead: EngineLead): { valid: true } | { valid
   return validateLead(lead);
 }
 
+/**
+ * PHASE 4B: Bounded candidate-processing concurrency per area attempt.
+ * Decouples the Playwright Google Maps search stream from downstream
+ * website/intelligence enrichment crawls and delivery operations.
+ */
+export const MAX_CANDIDATE_CONCURRENCY = 3;
+
 /** One area/city search attempt's full outcome — see runOneAreaAttempt(). */
-type AreaAttemptResult = {
+export type AreaAttemptResult = {
   discovered: number;
   accepted: number;
   rejected: number;
@@ -358,7 +365,7 @@ async function runOneAreaAttempt(
   // Outer loop: one iteration per SearchQuery (most providers produce one;
   // multi-query providers like future Yelp may produce several per niche).
   outer: for (const searchQuery of searchQueries) {
-    for await (const lead of provider.search(
+    const searchIterable = provider.search(
       searchQuery,
       searchTarget,
       {
@@ -400,278 +407,294 @@ async function runOneAreaAttempt(
         progressMarks = done.progressMarks;
         pythonTimer.end();
       },
-    )) {
-    if (requestAbort.signal.aborted) break outer;
-
-    // ── Heartbeat pulse ──────────────────────────────────────────────────
-    if (Date.now() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
-      heartbeat(payload.taskId);
-      lastHeartbeat = Date.now();
-    }
-
-    // ── Mid-loop cancellation check ─────────────────────────────────────
-    const tMid = profiler.timer("mid_loop_cancel_check");
-    const { data: midCheck } = await db.from("discovery_plans")
-      .select("status, delivered_count, requested_count").eq("id", payload.planId).maybeSingle();
-    tMid.end();
-    if (midCheck) {
-      console.info(`[discovery-plan] progress delivered=${midCheck.delivered_count}/${midCheck.requested_count} (plan-level target denominator)`);
-    }
-    if (terminalReasonForPlan(midCheck)) {
-      await observeTerminalPlan();
-      break outer;
-    }
-
-    discovered += 1;
-    for (const fp of lead.fingerprints ?? []) {
-      if (fp.startsWith("place:")) knownPlaceIds.push(fp.slice("place:".length));
-      else if (fp.startsWith("map:")) knownPlaceIds.push(fp.slice("map:".length));
-    }
-    const pid = lead._pipeline_id ?? `local:${discovered}`;
-    traceLog(`PIPELINE ${pid}`);
-    traceLog(`DISCOVERED name=${JSON.stringify(lead.name)}`);
-    publishDiscoveryLiveEvent(candidateDiscoveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
-
-    if (street) {
-      const isDirectStreetMatch = lead.address ? isAddressOnStreet(lead.address, street) : false;
-      const addrLower = (lead.address ?? "").toLowerCase();
-      const cityLower = (task.city ?? "").toLowerCase();
-      const regionLower = (payload.request?.region ?? "").toLowerCase();
-      const countryLower = (task.country_code ?? "").toLowerCase();
-      const isUSAddress = countryLower === "us" && (
-        /\b(al|ak|az|ar|ca|co|ct|de|fl|ga|hi|id|il|in|ia|ks|ky|la|me|md|ma|mi|mn|ms|mo|mt|ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy)\b/i.test(addrLower) ||
-        /\b\d{5}(?:-\d{4})?\b/.test(addrLower) ||
-        addrLower.includes("usa") ||
-        addrLower.includes("united states") ||
-        countryLower === "us"
-      );
-      const isCityScopeMatch = !lead.address || (cityLower && addrLower.includes(cityLower)) || (regionLower && addrLower.includes(regionLower)) || isUSAddress || (countryLower && addrLower.includes(countryLower));
-
-      if (!isDirectStreetMatch && !isCityScopeMatch) {
-        rejected += 1;
-        traceLog(`PIPELINE ${pid}`);
-        traceLog(`EXITED HERE`);
-        traceLog(`reason=outside_geographic_scope:street=${street},city=${task.city},address=${lead.address ?? ""}`);
-        publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "outside_geographic_scope", areaLabel));
-        continue;
-      }
-    }
-    const validation = validateDiscoveryCandidate(lead);
-    if (!validation.valid) {
-      rejected += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=validateDiscoveryCandidate:${validation.reason}`);
-      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `validateDiscoveryCandidate:${validation.reason}`, areaLabel));
-      continue;
-    }
-
-    if (requestAbort.signal.aborted || await observeTerminalPlan()) {
-      skipped += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=plan_terminal_or_aborted_skipped`);
-      break outer;
-    }
-
-    // ── Internal quality gate (rating / review count) — BEFORE any DB write ──
-    // The lead only reaches this loop after the engine opened the business
-    // detail panel, so `lead.rating` / `lead.reviews` are the authoritative
-    // panel values (not the best-effort results-card text). Unknown values
-    // (rating null, reviews 0 — indistinguishable from an extraction miss)
-    // never reject; see src/lib/leadQualityPolicy.ts. This runs before the
-    // upsert, enrichment scheduling and deliverLead, and is independent of the
-    // pool SQL filter. Thresholds are server-side only.
-    const quality = evaluateLeadQuality({ rating: lead.rating, reviews: lead.reviews });
-    if (quality.reject) {
-      rejected += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=${quality.reason}`);
-      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, quality.reason, areaLabel));
-      continue;
-    }
-
-    // ── Early channel prune — BEFORE any DB write or enrichment scheduling ──
-    // Uses only data already on the Maps lead (website / phone). Same
-    // predicate and same reason string as the post-upsert gate this replaced
-    // (see src/discovery/earlyPrune.ts), so verdicts are unchanged; only the
-    // position moved. email/instagram are NOT decided here: enrichment (or an
-    // existing business row found during upsert) can still supply them.
-    const requestedChannels = payload.request.channels;
-    const needsEnrichmentToDecide = requestedChannels.some((c) => c === "email" || c === "instagram");
-    const earlyPrune = evaluateEarlyChannelPrune(lead, requestedChannels);
-    if (earlyPrune.prune) {
-      rejected += 1;
-      for (const ch of earlyPrune.missing) earlyPrunedByChannel[ch] = (earlyPrunedByChannel[ch] ?? 0) + 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=${earlyPrune.reason},phone=${JSON.stringify(lead.phone)},website=${JSON.stringify(lead.website)}`);
-      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, earlyPrune.reason, areaLabel));
-      continue;
-    }
-
-    // Persist and schedule slow work (only for candidates that survived the
-    // early prune above).
-    let businessId: string;
-    try {
-      const tUpsert = profiler.timer("business_upsert");
-      businessId = await upsertBusinessFromEngineLead(lead, payload.request.region, undefined, payload.request.scrapeJobId);
-      tUpsert.end();
-    } catch (upsertErr) {
-      const message = upsertErr instanceof Error ? upsertErr.message : String(upsertErr);
-      console.error(`[discoveryPlanJob] business upsert failed for pid=${pid} name=${lead.name}`, upsertErr);
-      failed += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=upsert_failed:error=${JSON.stringify(message)}`);
-      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "system_error_upsert_failed", areaLabel));
-      continue;
-    }
-    if (requestAbort.signal.aborted || await observeTerminalPlan()) {
-      skipped += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=plan_terminal_or_aborted_skipped`);
-      break outer;
-    }
-    traceLog(`BUSINESS_UPSERTED businessId=${businessId}`);
-    const tEnqueue = profiler.timer("enqueue_enrich");
-    await enqueueBusinessProcessing(businessId, "enrich");
-    tEnqueue.end();
-    // NOTE: "score" is deliberately NOT enqueued here — enrichBusiness()
-    // enqueues it once enrichment finishes (see businessProcessingJob.ts).
-
-    // The row that is SAVED must carry the same contact channels the gate
-    // evaluated. Email/Instagram only exist on the enriched business row, so
-    // after a passing gate the lead is merged with it (see mergeEnrichedChannels).
-    let deliverable = lead;
-
-    if (needsEnrichmentToDecide) {
-      // Guard ensureEnriched so a single slow/failing website crawl does
-      // NOT crash the entire city/niche task — the business is not lost
-      // (the async worker still finishes enriching it), we just skip
-      // this lead's channel gate for now and move on.
-      const tEnsureStart = Date.now();
-      traceLog(`ENSURE_ENRICHED_START`);
-      try {
-        const tEnsure = profiler.timer("ensure_enriched");
-        await ensureEnriched(businessId);
-        tEnsure.end();
-        traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms`);
-
-        // NOTE: ensureEnriched already populated businesses.instagram from website social links.
-        // Background pg-boss job "business.score" handles follower/intelligence scores asynchronously,
-        // leaving the hot live discovery loop unblocked.
-      } catch (enrichErr) {
-        const message = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
-        console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence non-fatal error for businessId=${businessId}`, enrichErr);
-        traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms (non-fatal error: ${message})`);
-      }
-      const { data: enriched } = await db.from("businesses")
-        .select("email, phone, instagram, website").eq("id", businessId).maybeSingle();
-      const satisfied = Boolean(enriched) && channelsSatisfied(enriched, requestedChannels);
-      traceLog(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
-      traceLog(`CHANNELS_SATISFIED=${satisfied}`);
-      if (!satisfied) {
-        rejected += 1;
-        traceLog(`PIPELINE ${pid}`);
-        traceLog(`EXITED HERE`);
-        traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},row=${JSON.stringify(enriched)}`);
-        publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
-        continue;
-      }
-      deliverable = mergeEnrichedChannels(lead, enriched);
-    }
-
-    // Cancellation/target may have landed during an expensive enrichment.
-    // Preserve work already completed, but never start a new acceptance.
-    if (requestAbort.signal.aborted || await observeTerminalPlan()) {
-      skipped += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=plan_terminal_or_aborted_skipped`);
-      break outer;
-    }
-
-    traceLog(`DELIVER_LEAD_START`);
-    let delivery: DeliveryResult;
-    try {
-      const tDeliver = profiler.timer("deliver_lead");
-      delivery = await deliverLead(deliverable, {
-        userId: payload.request.userId,
-        professionSlug: payload.request.professionSlug,
-        discoveryMode: "live",
-        scrapeJobId: payload.request.scrapeJobId,
-        dailyLimit: payload.request.dailyLimit,
-        monthlyLimit: payload.request.monthlyLimit,
-        discoveryPlanId: payload.planId,
-      }, payload.request.region, businessId);
-      tDeliver.end();
-    } catch (deliverErr) {
-      const message = deliverErr instanceof Error ? deliverErr.message : String(deliverErr);
-      console.error(`[discoveryPlanJob] deliverLead failed for pid=${pid} businessId=${businessId}`, deliverErr);
-      failed += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=deliver_lead_failed:error=${JSON.stringify(message)}`);
-      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "system_error_deliver_failed", areaLabel));
-      continue;
-    }
-    traceLog(`DELIVER_LEAD_END result=${JSON.stringify(delivery)}`);
-
-    // NOTE: insertLeadForUser() runs INSIDE deliverLead() (deliverLead.ts,
-    // not instrumented per scope) — there is no separate timestamp
-    // available from this file alone. INSERT_LEAD_START is logged
-    // immediately after DELIVER_LEAD_END resolves, which is the earliest
-    // point this file can observe it.
-    if (delivery.limitReached) {
-      skipped += 1;
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=plan_limit_reached:no leads row inserted,delivery=${JSON.stringify(delivery)}`);
-      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "plan_limit_reached", areaLabel));
-      await observeTerminalPlan();
-      break outer;
-    }
-    if (!delivery.wasNewForUser) {
-      traceLog(`PIPELINE ${pid}`);
-      traceLog(`EXITED HERE`);
-      traceLog(`reason=duplicate_already_owned_by_user:businessId=${businessId},no new leads row inserted`);
-      publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "duplicate_already_owned_by_user", areaLabel));
-      duplicates += 1;
-      continue;
-    }
-
-    traceLog(`INSERT_LEAD_START`);
-    // insertLeadForUser() (deliverLead.ts) already ran by this point as
-    // part of the deliverLead() call above; DeliveryResult does not
-    // expose leads.id, so it cannot be printed here without modifying
-    // deliverLead.ts, which is out of scope for this instrumentation pass.
-    traceLog(`INSERT_LEAD_END leadId=<unavailable from discoveryPlanJob.ts — DeliveryResult has no leads.id field>`);
-
-    profiler.mark("first_lead_delivered");
-    // Phase 7: record time-to-first-lead (idempotent — COALESCE guard in DB).
-    const elapsedMs = Date.now() - startedAt;
-    recordTimeToFirstLead(payload.planId, elapsedMs);
-    accepted += 1;
-    publishDiscoveryLiveEvent(leadDeliveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
-    const elapsedSec = elapsedMs / 1000;
-    const leadsPerMin = elapsedSec > 0 ? ((accepted / elapsedSec) * 60).toFixed(1) : "0.0";
-    const rawPerMin = elapsedSec > 0 ? ((discovered / elapsedSec) * 60).toFixed(1) : "0.0";
-    console.info(
-      `[discovery-sla] scope=${street ? "per_street" : "per_area"} plan=${payload.planId} task=${payload.taskId} accepted=${accepted} ` +
-        `target=${payload.request?.quantity ?? "n/a"} discovered=${discovered} rejected=${rejected} duplicates=${duplicates} ` +
-        `elapsed_ms=${elapsedMs} leads_per_min=${leadsPerMin} raw_per_min=${rawPerMin}`,
     );
-    console.log(`FINISHED`);
-    if (await observeTerminalPlan()) break outer;
-    } // end inner lead loop
+
+    const searchIterator = searchIterable[Symbol.asyncIterator]();
+    const inFlight = new Set<Promise<void>>();
+
+    while (true) {
+      if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
+        break;
+      }
+
+      // Backpressure: pause pulling from provider until an in-flight slot opens up
+      if (inFlight.size >= MAX_CANDIDATE_CONCURRENCY) {
+        await Promise.race(inFlight);
+      }
+
+      if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
+        break;
+      }
+
+      let next: IteratorResult<EngineLead>;
+      try {
+        next = await searchIterator.next();
+      } catch (iterErr) {
+        console.warn(`[discoveryPlanJob] search iterator read error for task=${payload.taskId}:`, iterErr);
+        break;
+      }
+
+      if (next.done) {
+        break;
+      }
+
+      const lead = next.value;
+
+      // ── Heartbeat pulse ──────────────────────────────────────────────────
+      if (Date.now() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+        heartbeat(payload.taskId);
+        lastHeartbeat = Date.now();
+      }
+
+      // ── Mid-loop cancellation check ─────────────────────────────────────
+      const tMid = profiler.timer("mid_loop_cancel_check");
+      const { data: midCheck } = await db.from("discovery_plans")
+        .select("status, delivered_count, requested_count").eq("id", payload.planId).maybeSingle();
+      tMid.end();
+      if (midCheck) {
+        console.info(`[discovery-plan] progress delivered=${midCheck.delivered_count}/${midCheck.requested_count} (plan-level target denominator)`);
+      }
+      if (terminalReasonForPlan(midCheck)) {
+        await observeTerminalPlan();
+        break;
+      }
+
+      discovered += 1;
+      for (const fp of lead.fingerprints ?? []) {
+        if (fp.startsWith("place:")) knownPlaceIds.push(fp.slice("place:".length));
+        else if (fp.startsWith("map:")) knownPlaceIds.push(fp.slice("map:".length));
+      }
+      const pid = lead._pipeline_id ?? `local:${discovered}`;
+      traceLog(`PIPELINE ${pid}`);
+      traceLog(`DISCOVERED name=${JSON.stringify(lead.name)}`);
+      publishDiscoveryLiveEvent(candidateDiscoveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
+
+      if (street) {
+        const isDirectStreetMatch = lead.address ? isAddressOnStreet(lead.address, street) : false;
+        const addrLower = (lead.address ?? "").toLowerCase();
+        const cityLower = (task.city ?? "").toLowerCase();
+        const regionLower = (payload.request?.region ?? "").toLowerCase();
+        const countryLower = (task.country_code ?? "").toLowerCase();
+        const isUSAddress = countryLower === "us" && (
+          /\b(al|ak|az|ar|ca|co|ct|de|fl|ga|hi|id|il|in|ia|ks|ky|la|me|md|ma|mi|mn|ms|mo|mt|ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy)\b/i.test(addrLower) ||
+          /\b\d{5}(?:-\d{4})?\b/.test(addrLower) ||
+          addrLower.includes("usa") ||
+          addrLower.includes("united states") ||
+          countryLower === "us"
+        );
+        const isCityScopeMatch = !lead.address || (cityLower && addrLower.includes(cityLower)) || (regionLower && addrLower.includes(regionLower)) || isUSAddress || (countryLower && addrLower.includes(countryLower));
+
+        if (!isDirectStreetMatch && !isCityScopeMatch) {
+          rejected += 1;
+          traceLog(`PIPELINE ${pid}`);
+          traceLog(`EXITED HERE`);
+          traceLog(`reason=outside_geographic_scope:street=${street},city=${task.city},address=${lead.address ?? ""}`);
+          publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "outside_geographic_scope", areaLabel));
+          continue;
+        }
+      }
+      const validation = validateDiscoveryCandidate(lead);
+      if (!validation.valid) {
+        rejected += 1;
+        traceLog(`PIPELINE ${pid}`);
+        traceLog(`EXITED HERE`);
+        traceLog(`reason=validateDiscoveryCandidate:${validation.reason}`);
+        publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `validateDiscoveryCandidate:${validation.reason}`, areaLabel));
+        continue;
+      }
+
+      const quality = evaluateLeadQuality({ rating: lead.rating, reviews: lead.reviews });
+      if (quality.reject) {
+        rejected += 1;
+        traceLog(`PIPELINE ${pid}`);
+        traceLog(`EXITED HERE`);
+        traceLog(`reason=${quality.reason}`);
+        publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, quality.reason, areaLabel));
+        continue;
+      }
+
+      const requestedChannels = payload.request.channels;
+      const needsEnrichmentToDecide = requestedChannels.some((c) => c === "email" || c === "instagram");
+      const earlyPrune = evaluateEarlyChannelPrune(lead, requestedChannels);
+      if (earlyPrune.prune) {
+        rejected += 1;
+        for (const ch of earlyPrune.missing) earlyPrunedByChannel[ch] = (earlyPrunedByChannel[ch] ?? 0) + 1;
+        traceLog(`PIPELINE ${pid}`);
+        traceLog(`EXITED HERE`);
+        traceLog(`reason=${earlyPrune.reason},phone=${JSON.stringify(lead.phone)},website=${JSON.stringify(lead.website)}`);
+        publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, earlyPrune.reason, areaLabel));
+        continue;
+      }
+
+      if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
+        skipped += 1;
+        traceLog(`PIPELINE ${pid}`);
+        traceLog(`EXITED HERE`);
+        traceLog(`reason=plan_terminal_or_aborted_skipped`);
+        break;
+      }
+
+      // Dispatch candidate ingestion to bounded pool
+      const candidateTask = (async () => {
+        try {
+          let businessId: string;
+          try {
+            const tUpsert = profiler.timer("business_upsert");
+            businessId = await upsertBusinessFromEngineLead(lead, payload.request.region, undefined, payload.request.scrapeJobId);
+            tUpsert.end();
+          } catch (upsertErr) {
+            const message = upsertErr instanceof Error ? upsertErr.message : String(upsertErr);
+            console.error(`[discoveryPlanJob] business upsert failed for pid=${pid} name=${lead.name}`, upsertErr);
+            failed += 1;
+            traceLog(`PIPELINE ${pid}`);
+            traceLog(`EXITED HERE`);
+            traceLog(`reason=upsert_failed:error=${JSON.stringify(message)}`);
+            publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "system_error_upsert_failed", areaLabel));
+            return;
+          }
+
+          if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
+            skipped += 1;
+            traceLog(`PIPELINE ${pid}`);
+            traceLog(`EXITED HERE`);
+            traceLog(`reason=plan_terminal_or_aborted_skipped`);
+            return;
+          }
+
+          traceLog(`BUSINESS_UPSERTED businessId=${businessId}`);
+          const tEnqueue = profiler.timer("enqueue_enrich");
+          await enqueueBusinessProcessing(businessId, "enrich");
+          tEnqueue.end();
+
+          let deliverable = lead;
+          if (needsEnrichmentToDecide) {
+            const tEnsureStart = Date.now();
+            traceLog(`ENSURE_ENRICHED_START`);
+            try {
+              const tEnsure = profiler.timer("ensure_enriched");
+              await ensureEnriched(businessId);
+              tEnsure.end();
+              traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms`);
+            } catch (enrichErr) {
+              const message = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
+              console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence non-fatal error for businessId=${businessId}`, enrichErr);
+              traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms (non-fatal error: ${message})`);
+            }
+
+            const { data: enriched } = await db.from("businesses")
+              .select("email, phone, instagram, website").eq("id", businessId).maybeSingle();
+            const satisfied = Boolean(enriched) && channelsSatisfied(enriched, requestedChannels);
+            traceLog(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
+            traceLog(`CHANNELS_SATISFIED=${satisfied}`);
+            if (!satisfied) {
+              rejected += 1;
+              traceLog(`PIPELINE ${pid}`);
+              traceLog(`EXITED HERE`);
+              traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},row=${JSON.stringify(enriched)}`);
+              publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
+              return;
+            }
+            deliverable = mergeEnrichedChannels(lead, enriched);
+          }
+
+          if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
+            skipped += 1;
+            traceLog(`PIPELINE ${pid}`);
+            traceLog(`EXITED HERE`);
+            traceLog(`reason=plan_terminal_or_aborted_skipped`);
+            return;
+          }
+
+          traceLog(`DELIVER_LEAD_START`);
+          let delivery: DeliveryResult;
+          try {
+            const tDeliver = profiler.timer("deliver_lead");
+            delivery = await deliverLead(deliverable, {
+              userId: payload.request.userId,
+              professionSlug: payload.request.professionSlug,
+              discoveryMode: "live",
+              scrapeJobId: payload.request.scrapeJobId,
+              dailyLimit: payload.request.dailyLimit,
+              monthlyLimit: payload.request.monthlyLimit,
+              discoveryPlanId: payload.planId,
+            }, payload.request.region, businessId);
+            tDeliver.end();
+          } catch (deliverErr) {
+            const message = deliverErr instanceof Error ? deliverErr.message : String(deliverErr);
+            console.error(`[discoveryPlanJob] deliverLead failed for pid=${pid} businessId=${businessId}`, deliverErr);
+            failed += 1;
+            traceLog(`PIPELINE ${pid}`);
+            traceLog(`EXITED HERE`);
+            traceLog(`reason=deliver_lead_failed:error=${JSON.stringify(message)}`);
+            publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "system_error_deliver_failed", areaLabel));
+            return;
+          }
+          traceLog(`DELIVER_LEAD_END result=${JSON.stringify(delivery)}`);
+
+          if (delivery.limitReached) {
+            skipped += 1;
+            traceLog(`PIPELINE ${pid}`);
+            traceLog(`EXITED HERE`);
+            traceLog(`reason=plan_limit_reached:no leads row inserted,delivery=${JSON.stringify(delivery)}`);
+            publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "plan_limit_reached", areaLabel));
+            await observeTerminalPlan();
+            return;
+          }
+          if (!delivery.wasNewForUser) {
+            traceLog(`PIPELINE ${pid}`);
+            traceLog(`EXITED HERE`);
+            traceLog(`reason=duplicate_already_owned_by_user:businessId=${businessId},no new leads row inserted`);
+            publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "duplicate_already_owned_by_user", areaLabel));
+            duplicates += 1;
+            return;
+          }
+
+          traceLog(`INSERT_LEAD_START`);
+          traceLog(`INSERT_LEAD_END leadId=<unavailable from discoveryPlanJob.ts — DeliveryResult has no leads.id field>`);
+
+          profiler.mark("first_lead_delivered");
+          const elapsedMs = Date.now() - startedAt;
+          recordTimeToFirstLead(payload.planId, elapsedMs);
+          accepted += 1;
+          publishDiscoveryLiveEvent(leadDeliveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
+          const elapsedSec = elapsedMs / 1000;
+          const leadsPerMin = elapsedSec > 0 ? ((accepted / elapsedSec) * 60).toFixed(1) : "0.0";
+          const rawPerMin = elapsedSec > 0 ? ((discovered / elapsedSec) * 60).toFixed(1) : "0.0";
+          console.info(
+            `[discovery-sla] scope=${street ? "per_street" : "per_area"} plan=${payload.planId} task=${payload.taskId} accepted=${accepted} ` +
+              `target=${payload.request?.quantity ?? "n/a"} discovered=${discovered} rejected=${rejected} duplicates=${duplicates} ` +
+              `elapsed_ms=${elapsedMs} leads_per_min=${leadsPerMin} raw_per_min=${rawPerMin}`,
+          );
+          console.log(`FINISHED`);
+          await observeTerminalPlan();
+        } catch (taskErr) {
+          const message = taskErr instanceof Error ? taskErr.message : String(taskErr);
+          console.error(`[discoveryPlanJob] unhandled candidate task failure for pid=${pid}:`, taskErr);
+          failed += 1;
+          publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "system_error_task_failed", areaLabel));
+        }
+      })();
+
+      const wrapped = candidateTask.finally(() => {
+        inFlight.delete(wrapped);
+      });
+      inFlight.add(wrapped);
+    } // end while (true)
+
+    // Safely dispose iterator if aborted / broken out
+    try {
+      await searchIterator.return?.(undefined);
+    } catch {
+      // Iterator return error ignored on cleanup
+    }
+
+    // Drain all in-flight candidate tasks before query transition
+    await Promise.all(inFlight);
 
     // Break outer search-query loop if plan is satisfied or cancelled
     const { data: afterQuery } = await db.from("discovery_plans")
       .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
-    if (terminalReasonForPlan(afterQuery)) {
+    if (requestAbort.signal.aborted || terminalReasonForPlan(afterQuery)) {
       await observeTerminalPlan();
       break;
     }
@@ -2024,3 +2047,9 @@ function buildJobSummary(plan: any, completionReason: string) {
     runtime_ms: Date.now() - startedAt,
   };
 }
+
+export const __testing = {
+  runOneAreaAttempt,
+  MAX_CANDIDATE_CONCURRENCY,
+};
+

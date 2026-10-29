@@ -44,6 +44,8 @@ from playwright.async_api import (
 )
 
 from utils.parsing import (
+    CANNABIS_KEYWORDS,
+    CHAIN_KEYWORDS,
     parse_review_count,
     extract_phones,
     extract_ig_urls,
@@ -503,6 +505,8 @@ async def _human_scroll(
 # confirmed healthy again — this does not change selection or scroll
 # behavior, it only reports on it.
 async def _diag_dump_panel_dom(page: Page, panel_sel: str) -> None:
+    if os.environ.get("MAPS_DIAG_DUMP_DOM", "").strip().lower() not in ("1", "true", "yes"):
+        return
     try:
         panel = await page.query_selector(panel_sel)
         if panel is None:
@@ -1007,6 +1011,29 @@ def _addresses_consistent(hint_norm: str, actual_norm: str) -> bool:
     return overlap >= max(1, len(hint_tokens) // 2)
 
 
+_DETAIL_BACK_BUTTON_SELECTORS = (
+    "button[aria-label='Back to results']",
+    "button[aria-label*='back to results' i]",
+    "button[jsaction*='pane.backButton']",
+    "button[data-tooltip*='Back to results' i]",
+)
+
+_PANEL_HEADER_EXCLUSIONS = frozenset({"results", "search results", "النتائج"})
+
+
+def _is_conclusively_disqualified_by_name(name: str | None) -> bool:
+    """Return True if and only if `name` alone conclusively matches the
+    canonical CHAIN_KEYWORDS or CANNABIS_KEYWORDS disqualification rules
+    shared by ScoringWorker, ExecutionDriver._on_candidate, and scorer.py.
+    """
+    if not name:
+        return False
+    low = name.strip().lower()
+    if not low:
+        return False
+    return any(kw in low for kw in CHAIN_KEYWORDS) or any(kw in low for kw in CANNABIS_KEYWORDS)
+
+
 async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
     """Return True if a place detail pane (heading or back button) is currently open.
     Checks `el is not feed_el` and element capability so minimal unit-test stubs where
@@ -1018,17 +1045,12 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
             if el is not None and el is not feed_el:
                 if hasattr(el, "inner_text"):
                     txt = (await el.inner_text() or "").strip()
-                    if txt and txt.lower() not in {"results", "search results", "النتائج"}:
+                    if txt and txt.lower() not in _PANEL_HEADER_EXCLUSIONS:
                         return True
         except Exception:
             continue
     # Detail pane back buttons specific to the place pane
-    for sel in [
-        "button[aria-label='Back to results']",
-        "button[aria-label*='back to results' i]",
-        "button[jsaction*='pane.backButton']",
-        "button[data-tooltip*='Back to results' i]",
-    ]:
+    for sel in _DETAIL_BACK_BUTTON_SELECTORS:
         try:
             el = await page.query_selector(sel)
             if el is not None and el is not feed_el:
@@ -1039,12 +1061,33 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
     return False
 
 
+_DEFAULT_IS_DETAIL_PANE_OPEN = _is_detail_pane_open
+
+
 async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> dict:
-    """Capture the currently rendered detail-pane identity signals."""
-    detail_open = await _is_detail_pane_open(page, feed_el)
+    """Capture the currently rendered detail-pane identity signals.
+
+    Phase 3 optimization: when `_is_detail_pane_open` has not been monkeypatched,
+    reads `raw_name` in a single pass over `_PLACE_NAME_SELECTORS` instead of
+    querying and reading the heading selectors twice per snapshot poll.
+    """
     raw_name = ""
     raw_address = ""
-    if detail_open:
+    if _is_detail_pane_open is not _DEFAULT_IS_DETAIL_PANE_OPEN:
+        detail_open = await _is_detail_pane_open(page, feed_el)
+        if detail_open:
+            for sel in _PLACE_NAME_SELECTORS:
+                try:
+                    el = await page.query_selector(sel)
+                    if el is not None and el is not feed_el and hasattr(el, "inner_text"):
+                        t = (await el.inner_text() or "").strip()
+                        if t:
+                            raw_name = t
+                            break
+                except Exception:
+                    continue
+    else:
+        detail_open = False
         for sel in _PLACE_NAME_SELECTORS:
             try:
                 el = await page.query_selector(sel)
@@ -1052,9 +1095,22 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                     t = (await el.inner_text() or "").strip()
                     if t:
                         raw_name = t
+                        if t.lower() not in _PANEL_HEADER_EXCLUSIONS:
+                            detail_open = True
                         break
             except Exception:
                 continue
+        if not detail_open:
+            for sel in _DETAIL_BACK_BUTTON_SELECTORS:
+                try:
+                    el = await page.query_selector(sel)
+                    if el is not None and el is not feed_el and hasattr(el, "click"):
+                        detail_open = True
+                        break
+                except Exception:
+                    continue
+
+    if detail_open:
         for sel in _ADDRESS_SELECTORS:
             try:
                 el = await page.query_selector(sel)
@@ -1308,6 +1364,53 @@ async def _return_to_results(
         return False
 
 
+_DEFAULT_RETURN_TO_RESULTS = _return_to_results
+
+
+async def _can_continue_from_split_results_feed(
+    page: Page,
+    panel_selector: str,
+    *,
+    seen_hrefs: set[str],
+    failed_this_round: set[str],
+    exhausted_mismatch_keys: set[str],
+) -> bool:
+    """Return True if the results feed container is still mounted alongside the
+    open detail pane and has at least one unseen, clickable candidate card in
+    the current scroll round — allowing the scraper to click the next card
+    directly without executing a redundant back-navigation cycle.
+    """
+    try:
+        live_panel = await page.query_selector(panel_selector)
+        if live_panel is None:
+            return False
+        if not await _is_detail_pane_open(page, live_panel):
+            return True
+        if not hasattr(live_panel, "query_selector_all"):
+            return False
+        anchors = await live_panel.query_selector_all("a[href*='/maps/place/']")
+        if not anchors or len(anchors) < 2:
+            return False
+        for a in anchors:
+            try:
+                href = await a.get_attribute("href") or ""
+                if "/maps/place/" not in href:
+                    continue
+                cand_key = _place_identity_from_href(href)
+                if (
+                    cand_key
+                    and cand_key not in seen_hrefs
+                    and cand_key not in failed_this_round
+                    and cand_key not in exhausted_mismatch_keys
+                ):
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+
 async def _human_click(page: Page, element) -> None:
     """Click an element using real Playwright mouse/pointer events, falling back to DOM click."""
     try:
@@ -1412,7 +1515,12 @@ async def _extract_card_signals(anchor) -> dict:
 # Place data extractor
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _wait_for_place_settle(page: Page, *, config: ScraperConfig) -> None:
+async def _wait_for_place_settle(
+    page: Page,
+    *,
+    config: ScraperConfig,
+    already_settled: bool = False,
+) -> None:
     """Event-driven place-panel settle wait (Phase 2A opt, audit §3.2).
 
     The previous version did an unconditional `asyncio.sleep(place_settle_ms
@@ -1431,36 +1539,40 @@ async def _wait_for_place_settle(page: Page, *, config: ScraperConfig) -> None:
     — while the common case (second field already rendered by the time we
     get here) now resolves in well under 1000ms.
     """
-    try:
-        await page.wait_for_function(
-            """() => {
-                const sels = [
-                    "a[data-item-id='authority']",
-                    "button[data-item-id='address']",
-                    "[data-item-id='address']",
-                    "[data-item-id='address'] .fontBodyMedium",
-                    "button[data-item-id='address'] .rogA2c",
-                    "[data-item-id^='phone:tel:'] .fontBodyMedium",
-                    "button[data-item-id*='phone']",
-                    "button[data-item-id^='phone:'] .rogA2c",
-                    "a[href^='tel:']",
-                    "[data-item-id='oloc']",
-                    "button[data-item-id*='hours']",
-                ];
-                return sels.some(s => document.querySelector(s));
-            }""",
-            timeout=max(config.place_settle_ms, min(getattr(config, "place_timeout_ms", 4000), 4500)),
-            polling=50,
-        )
-    except PlaywrightTimeoutError:
-        pass  # ceiling reached — proceed anyway, same as the old fixed sleep would have
-    except Exception:
-        pass
+    if not already_settled:
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const sels = [
+                        "a[data-item-id='authority']",
+                        "button[data-item-id='address']",
+                        "[data-item-id='address']",
+                        "[data-item-id='address'] .fontBodyMedium",
+                        "button[data-item-id='address'] .rogA2c",
+                        "[data-item-id^='phone:tel:'] .fontBodyMedium",
+                        "button[data-item-id*='phone']",
+                        "button[data-item-id^='phone:'] .rogA2c",
+                        "a[href^='tel:']",
+                        "[data-item-id='oloc']",
+                        "button[data-item-id*='hours']",
+                    ];
+                    return sels.some(s => document.querySelector(s));
+                }""",
+                timeout=max(config.place_settle_ms, min(getattr(config, "place_timeout_ms", 4000), 4500)),
+                polling=50,
+            )
+        except PlaywrightTimeoutError:
+            pass  # ceiling reached — proceed anyway, same as the old fixed sleep would have
+        except Exception:
+            pass
     # Short fixed pacing after the settle signal: lets freshly-rendered
     # fields finish in-flight layout/paint and keeps click-to-extract
     # cadence irregular (anti-detection) rather than metronomic — same
     # intent as the old fixed sleep, just far shorter than its 1000ms.
     await asyncio.sleep(random.uniform(0.1, 0.25))
+
+
+_DEFAULT_WAIT_FOR_PLACE_SETTLE = _wait_for_place_settle
 
 
 async def _try_selectors(page: Page, selectors: list[str]) -> str:
@@ -1983,6 +2095,7 @@ async def _extract_place_data(
     city: str = "",
     country: str = "",
     profiler=None,
+    probed_website: str | None = None,
 ) -> RawPlace | None:
     """Extract all structured data from the currently open place panel.
 
@@ -2000,9 +2113,15 @@ async def _extract_place_data(
     """
     place = RawPlace(query=query, niche=niche, region=region, city=city, country=country)
 
+    extract_selectors = (
+        {**_PLACE_EXTRACT_SELECTORS, "website": []}
+        if probed_website
+        else _PLACE_EXTRACT_SELECTORS
+    )
+
     try:
         data = await asyncio.wait_for(
-            page.evaluate(_PLACE_EXTRACT_JS, _PLACE_EXTRACT_SELECTORS),
+            page.evaluate(_PLACE_EXTRACT_JS, extract_selectors),
             timeout=config.place_extract_timeout_ms / 1000.0,
         )
     except asyncio.TimeoutError:
@@ -2067,7 +2186,12 @@ async def _extract_place_data(
                 f"has_tel_href={'tel:' in html.lower()} html_len={len(html)}"
             )
 
-    place.website = _website_from_candidates(data.get("websiteCandidates") or [])
+    if probed_website:
+        place.website = probed_website
+        if profiler is not None:
+            profiler.incr("maps_website_probe_reused")
+    else:
+        place.website = _website_from_candidates(data.get("websiteCandidates") or [])
 
     place.rating = _rating_from_raw((data.get("ratingRaw") or "").strip())
     place.reviews = _reviews_from_raw_or_fallback(
@@ -2131,6 +2255,9 @@ async def _extract_place_data(
         pass
 
     return place
+
+
+_DEFAULT_EXTRACT_PLACE_DATA = _extract_place_data
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2808,38 +2935,25 @@ class MapsScraper:
                             "a[href*='/maps/place/']"
                         )
 
-                        # --- TEMPORARY DIAGNOSTIC (discovery-pipeline audit) ---
-                        try:
-                            _page_anchors_place = await page.eval_on_selector_all(
-                                "a[href*='/maps/place/']", "els => els.length"
-                            )
-                        except Exception:
-                            _page_anchors_place = "error"
-                        log.info(
-                            f"[maps][diag] round={rounds_this_attempt} "
-                            f"cards_in_dom={len(listing_anchors)} "
-                            f"page_anchors_place={_page_anchors_place} "
-                            f"seen_so_far={len(seen_hrefs)} yielded_so_far={yielded}"
-                        )
-                        # --- end temporary diagnostic ---
-
                         if not _round_scan_emitted and len(listing_anchors) > 0:
                             _emit_progress("round_scanned", str(len(listing_anchors)))
                             self._profiler.incr("maps_candidates_seen", by=len(listing_anchors))
                             _round_scan_emitted = True
 
-                        if (
-                            rounds_this_attempt == 1
-                            and len(listing_anchors) == 0
-                            and isinstance(_page_anchors_place, int)
-                            and _page_anchors_place > 0
-                        ):
-                            raise DiscoveryFailure(
-                                DiscoveryFailureReason.PANEL_NOT_FOUND,
-                                f"panel_sel={panel_sel!r} validated but contains "
-                                f"0 place anchors while {_page_anchors_place} exist "
-                                f"page-wide — wrong container resolved for {full_query!r}",
-                            )
+                        if rounds_this_attempt == 1 and len(listing_anchors) == 0:
+                            try:
+                                _page_anchors_place = await page.eval_on_selector_all(
+                                    "a[href*='/maps/place/']", "els => els.length"
+                                )
+                            except Exception:
+                                _page_anchors_place = "error"
+                            if isinstance(_page_anchors_place, int) and _page_anchors_place > 0:
+                                raise DiscoveryFailure(
+                                    DiscoveryFailureReason.PANEL_NOT_FOUND,
+                                    f"panel_sel={panel_sel!r} validated but contains "
+                                    f"0 place anchors while {_page_anchors_place} exist "
+                                    f"page-wide — wrong container resolved for {full_query!r}",
+                                )
 
                         place_key = None
                         anchor = None
@@ -2917,19 +3031,32 @@ class MapsScraper:
                             continue
 
                         handled_return_to_results = False
+                        card_completed_cleanly = False
+                        generator_closing = False
+                        verified_panel_snap: dict = {}
                         card_timeout_s = max(0.05, self.config.card_operation_timeout_ms / 1000.0)
                         card_started_monotonic = asyncio.get_event_loop().time()
 
                         async def _run_card_panel_and_extract() -> tuple[str, RawPlace | None, str]:
+                            nonlocal verified_panel_snap
+                            is_minimal_stub = _is_detail_pane_open is not _DEFAULT_IS_DETAIL_PANE_OPEN
                             with self._profiler.timer("place_panel_wait"):
                                 found_panel = False
                                 try:
-                                    panel_el = await page.wait_for_selector(
-                                        _PLACE_NAME_SELECTOR_COMBINED,
-                                        state="attached",
-                                        timeout=max(100, min(self.config.place_timeout_ms, 4000)),
-                                    )
-                                    found_panel = panel_el is not None
+                                    try:
+                                        panel_el = await page.wait_for_selector(
+                                            _PLACE_NAME_SELECTOR_COMBINED,
+                                            state="attached",
+                                            timeout=max(100, min(self.config.place_timeout_ms, 4000)),
+                                        )
+                                        found_panel = panel_el is not None
+                                    except TypeError:
+                                        await page.wait_for_selector(
+                                            _PLACE_NAME_SELECTOR_COMBINED,
+                                            timeout=max(100, min(self.config.place_timeout_ms, 4000)),
+                                        )
+                                        found_panel = True
+                                        is_minimal_stub = True
                                     if found_panel:
                                         self._profiler.incr("place_panel_wait_resolved")
                                 except (PlaywrightTimeoutError, Exception):
@@ -2949,6 +3076,14 @@ class MapsScraper:
                                         self._profiler.incr("place_panel_wait_timeout")
                                     return "panel_timeout", None, "panel_wait_timeout"
 
+                            if not is_minimal_stub:
+                                try:
+                                    probe_h1 = await page.query_selector(_PLACE_NAME_SELECTORS[0])
+                                    if probe_h1 is panel and panel is not None:
+                                        is_minimal_stub = True
+                                except Exception:
+                                    pass
+
                             identity_ok, panel_snap, mismatch_reason = await _wait_for_verified_panel_identity(
                                 page,
                                 feed_el=panel,
@@ -2958,18 +3093,73 @@ class MapsScraper:
                                 pre_click_snapshot=pre_click_snapshot,
                                 last_verified_panel=last_verified_panel,
                                 timeout_ms=self.config.place_timeout_ms,
+                                allow_stub=is_minimal_stub,
                             )
                             if not identity_ok:
                                 return "mismatch", None, mismatch_reason
 
+                            verified_panel_snap = panel_snap
+                            verified_raw_name = (panel_snap.get("raw_name") or "").strip()
+                            verified_raw_addr = (panel_snap.get("raw_address") or "").strip()
+                            verified_snap_pid = (panel_snap.get("place_id") or "").strip()
+
+                            # Phase 3 fast paths: short-circuit before rate-limit wait, place settle,
+                            # website probe, and full DOM extraction when panel identity snapshot
+                            # already proves this listing is a header, known place, seen duplicate,
+                            # or conclusively disqualified by canonical chain/cannabis rules.
+                            if verified_raw_name and verified_raw_name.lower() in _PANEL_HEADER_EXCLUSIONS:
+                                self._profiler.incr("maps_detail_early_header_skipped")
+                                return "early_skip", None, "panel_header"
+
+                            if verified_snap_pid:
+                                snap_forms = expand_place_id_forms(verified_snap_pid)
+                                if any(
+                                    f in known_place_ids_norm or f.lower() in known_place_ids_norm
+                                    for f in (snap_forms or [verified_snap_pid])
+                                ):
+                                    self._profiler.incr("known_place_skipped")
+                                    self._profiler.incr("maps_candidates_known_place_skipped")
+                                    self._profiler.incr("maps_detail_early_known_place_skipped")
+                                    _emit_progress("candidate_duplicate_skipped", verified_snap_pid)
+                                    return "early_skip", None, "known_place_id"
+
+                            if verified_raw_name and verified_raw_addr:
+                                early_key_data = f"{verified_raw_name.lower()}|{verified_raw_addr.lower()}"
+                                if early_key_data in seen_place_keys:
+                                    self._profiler.incr("maps_detail_early_duplicate_skipped")
+                                    return "early_skip", None, "duplicate_place_key"
+
+                            if verified_raw_name and _is_conclusively_disqualified_by_name(verified_raw_name):
+                                self._profiler.incr("maps_detail_fast_abort_disqualified")
+                                extracted_place = RawPlace(
+                                    name=verified_raw_name,
+                                    address=verified_raw_addr,
+                                    website="",
+                                    maps_link=_verified_maps_link_from_href(card_href, getattr(page, "url", "")),
+                                    city=city,
+                                    country=country,
+                                    niche=niche,
+                                    region=region,
+                                    query=full_query,
+                                )
+                                return "ok", extracted_place, "fast_abort_disqualified"
+
                             fast_aborted = False
                             extracted_place: RawPlace | None = None
+                            site_url = ""
 
                             with self._profiler.timer("rate_limit_wait_place"):
                                 await self._limiter.acquire("maps_place")
 
                             with self._profiler.timer("place_settle"):
-                                await _wait_for_place_settle(page, config=self.config)
+                                if _wait_for_place_settle is _DEFAULT_WAIT_FOR_PLACE_SETTLE:
+                                    await _wait_for_place_settle(
+                                        page,
+                                        config=self.config,
+                                        already_settled=bool(verified_raw_addr),
+                                    )
+                                else:
+                                    await _wait_for_place_settle(page, config=self.config)
 
                             if require_website:
                                 self._profiler.incr("maps_detail_website_probe_attempts")
@@ -2983,12 +3173,16 @@ class MapsScraper:
                                     self._profiler.incr("maps_detail_fast_abort_no_website")
                                     self._profiler.record_stage_duration("detail_fast_abort_saved", 500.0)
 
-                                    candidate_name = card_signals.get("name") if card_signals else ""
+                                    candidate_name = (
+                                        (card_signals.get("name") if card_signals else "")
+                                        or verified_raw_name
+                                    )
                                     if not candidate_name:
                                         candidate_name = await _try_selectors(page, _PLACE_NAME_SELECTORS) or ""
 
                                     extracted_place = RawPlace(
                                         name=candidate_name or "Unknown Place",
+                                        address=verified_raw_addr,
                                         website="",
                                         maps_link=_verified_maps_link_from_href(card_href, getattr(page, "url", "")),
                                         city=city,
@@ -3002,18 +3196,37 @@ class MapsScraper:
                             if not fast_aborted:
                                 try:
                                     with self._profiler.timer("maps_place_extraction"):
-                                        extracted_place = await _extract_place_data(
-                                            page,
-                                            config=self.config,
-                                            query=full_query,
-                                            niche=niche,
-                                            region=region,
-                                            city=city,
-                                            country=country,
-                                            profiler=self._profiler,
-                                        )
+                                        if _extract_place_data is _DEFAULT_EXTRACT_PLACE_DATA:
+                                            extracted_place = await _extract_place_data(
+                                                page,
+                                                config=self.config,
+                                                query=full_query,
+                                                niche=niche,
+                                                region=region,
+                                                city=city,
+                                                country=country,
+                                                profiler=self._profiler,
+                                                probed_website=site_url or None,
+                                            )
+                                        else:
+                                            extracted_place = await _extract_place_data(
+                                                page,
+                                                config=self.config,
+                                                query=full_query,
+                                                niche=niche,
+                                                region=region,
+                                                city=city,
+                                                country=country,
+                                                profiler=self._profiler,
+                                            )
+                                            if site_url and extracted_place and not extracted_place.website:
+                                                extracted_place.website = site_url
                                         if extracted_place and not extracted_place.name:
-                                            extracted_place.name = (card_signals or {}).get("name") or _place_name_from_href(card_href)
+                                            extracted_place.name = (
+                                                (card_signals or {}).get("name")
+                                                or verified_raw_name
+                                                or _place_name_from_href(card_href)
+                                            )
                                 except PlaceExtractionTimeout as exc:
                                     seen_hrefs.add(place_key)
                                     self._profiler.incr("place_extraction_timeouts")
@@ -3060,6 +3273,7 @@ class MapsScraper:
                                 )
                             except PlaceExtractionTimeout:
                                 if should_stop is not None and should_stop():
+                                    generator_closing = True
                                     return
                                 raise
                             except asyncio.TimeoutError:
@@ -3071,12 +3285,31 @@ class MapsScraper:
                                     f"attempt={attempt}/{max_attempts} yielded={yielded}"
                                 )
                                 if should_stop is not None and should_stop():
+                                    generator_closing = True
                                     return
                                 raise CardOperationTimeout(
                                     "card_operation", self.config.card_operation_timeout_ms
                                 ) from None
 
                             log.info(f"[maps][diag] card_status={card_status} card_reason={card_reason} place={place.name if place else None}")
+
+                            if card_status == "early_skip":
+                                consecutive_mismatches_in_round = 0
+                                seen_hrefs.add(place_key)
+                                snap_link = _verified_maps_link_from_href(card_href, getattr(page, "url", ""))
+                                snap_pid = (
+                                    (verified_panel_snap.get("place_id") or "").strip()
+                                    or _stable_place_id_from_url(snap_link)
+                                    or _stable_place_id_from_url(card_href)
+                                )
+                                last_verified_panel = {
+                                    "place_key": place_key,
+                                    "place_id": snap_pid,
+                                    "name": verified_panel_snap.get("name") or "",
+                                    "address": verified_panel_snap.get("address") or "",
+                                }
+                                card_completed_cleanly = True
+                                continue
 
                             if card_status in ("panel_timeout", "extract_error"):
                                 card_attempts = mismatch_retries_by_key.get(place_key, 0) + 1
@@ -3136,6 +3369,7 @@ class MapsScraper:
                                         f"[maps][stale-panel] mismatch persisted after search-navigation "
                                         f"recovery for {full_query!r} — terminating area safely"
                                     )
+                                    generator_closing = True
                                     return
 
                                 if total_mismatch_recoveries >= max_area_recoveries:
@@ -3143,6 +3377,7 @@ class MapsScraper:
                                         f"[maps][stale-panel] reached max_stale_panel_recoveries_per_area="
                                         f"{max_area_recoveries} for {full_query!r} — terminating area safely"
                                     )
+                                    generator_closing = True
                                     return
 
                                 continue
@@ -3154,6 +3389,7 @@ class MapsScraper:
                                     f"{place_key!r})"
                                 )
                                 seen_hrefs.add(place_key)
+                                card_completed_cleanly = True
                                 continue
 
                             log.info(
@@ -3162,13 +3398,14 @@ class MapsScraper:
                                 f"reviews={place.reviews}"
                             )
 
-                            if place.name.lower() in {"results", "search results", "النتائج"}:
+                            if place.name.lower() in _PANEL_HEADER_EXCLUSIONS:
                                 log.info(
                                     f"[maps][diag] parsed name matched the "
                                     f"panel-header exclusion list "
                                     f"({place.name!r}) — dropped, not a real listing"
                                 )
                                 seen_hrefs.add(place_key)
+                                card_completed_cleanly = True
                                 continue
 
                             # Identity and extraction validated: resolve verified maps_link & place_id,
@@ -3192,6 +3429,7 @@ class MapsScraper:
                                 "address": _norm_identity_text(place.address),
                             }
                             seen_hrefs.add(place_key)
+                            card_completed_cleanly = True
 
                             # Skip permanently closed
                             if place.closed:
@@ -3249,33 +3487,58 @@ class MapsScraper:
                             )
                             self._profiler.mark_first_yielded_business()
                             _emit_progress("candidate_queued", place_key)
-                            yield place
+                            try:
+                                yield place
+                            except (GeneratorExit, asyncio.CancelledError):
+                                generator_closing = True
+                                raise
                             yielded += 1
                             self._profiler.incr("maps_candidates_yielded")
+                            if yielded >= max_results or (should_stop is not None and should_stop()):
+                                generator_closing = True
                         finally:
-                            if not handled_return_to_results:
-                                elapsed_card_s = asyncio.get_event_loop().time() - card_started_monotonic
-                                remaining_card_s = max(0.05, card_timeout_s - elapsed_card_s)
-                                try:
-                                    returned_ok = await asyncio.wait_for(
-                                        _return_to_results(
-                                            page,
-                                            panel_sel,
-                                            config=self.config,
-                                            profiler=self._profiler,
-                                        ),
-                                        timeout=remaining_card_s,
+                            if not handled_return_to_results and not generator_closing:
+                                can_skip_return = False
+                                if (
+                                    card_completed_cleanly
+                                    and consecutive_mismatches_in_round == 0
+                                    and getattr(self.config, "skip_redundant_return_to_results", True)
+                                    and _return_to_results is _DEFAULT_RETURN_TO_RESULTS
+                                ):
+                                    can_skip_return = await _can_continue_from_split_results_feed(
+                                        page,
+                                        panel_sel,
+                                        seen_hrefs=seen_hrefs,
+                                        failed_this_round=failed_this_round,
+                                        exhausted_mismatch_keys=exhausted_mismatch_keys,
                                     )
-                                except asyncio.TimeoutError:
-                                    self._profiler.incr("card_operation_timeouts")
-                                    returned_ok = False
-                                if returned_ok:
+                                if can_skip_return:
+                                    self._profiler.incr("return_to_results_skipped")
                                     consecutive_return_failures = 0
                                 else:
-                                    cards_left = max(0, len(listing_anchors) - 1)
-                                    recovered = await handle_return_failure("finally_after_card", cards_left=cards_left)
-                                    if not recovered and (await page.query_selector(panel_sel)) is None:
-                                        panel_lost = True
+                                    self._profiler.incr("return_to_results_executed")
+                                    elapsed_card_s = asyncio.get_event_loop().time() - card_started_monotonic
+                                    remaining_card_s = max(0.05, card_timeout_s - elapsed_card_s)
+                                    try:
+                                        returned_ok = await asyncio.wait_for(
+                                            _return_to_results(
+                                                page,
+                                                panel_sel,
+                                                config=self.config,
+                                                profiler=self._profiler,
+                                            ),
+                                            timeout=remaining_card_s,
+                                        )
+                                    except asyncio.TimeoutError:
+                                        self._profiler.incr("card_operation_timeouts")
+                                        returned_ok = False
+                                    if returned_ok:
+                                        consecutive_return_failures = 0
+                                    else:
+                                        cards_left = max(0, len(listing_anchors) - 1)
+                                        recovered = await handle_return_failure("finally_after_card", cards_left=cards_left)
+                                        if not recovered and (await page.query_selector(panel_sel)) is None:
+                                            panel_lost = True
 
                     # Check for end of results
                     try:

@@ -12,7 +12,12 @@ import { env } from "../config/env.js";
 import { aiEnabled, generateJSON, AI_MODEL, getAiModel } from "../lib/ai.js";
 import { singleFlight } from "../lib/singleFlight.js";
 import { PROFESSION_SLUGS } from "../scoring/professionWeights.js";
-import { trackActiveEnrichment, trackActiveIntelligence } from "../lib/enrichmentTelemetry.js";
+import {
+  trackActiveEnrichment,
+  trackActiveIntelligence,
+  recordSubprocessExecution,
+  recordScoreParityCheck,
+} from "../lib/enrichmentTelemetry.js";
 import {
   ADMISSION_BLOCKED_TASK_ERROR_PREFIX,
   isRecoverableAdmissionBlockedTask,
@@ -374,14 +379,19 @@ export async function ensureIntelligence(businessId: string): Promise<void> {
 async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise<void> {
   return trackActiveEnrichment(async () => {
     const { data: business, error } = await supabaseAdmin.from("businesses")
-      .select("name, email, phone, website, instagram, emails, phones, field_provenance")
+      .select(
+        "name, category, email, phone, website, instagram, facebook, linkedin, emails, phones, field_provenance, has_photos, reviews_count, reviews_rating, is_disqualified, country_code, address, seo, blog, signals",
+      )
       .eq("id", businessId).single();
     if (error) throw error;
 
-    // Milestone 2: Engine 2.0's WebsiteWorker/ContactWorker/MergeWorker
+    const knownChannels: string[] = [];
+    if (isValidPhone(business.phone)) knownChannels.push("phone");
+    if (isValidEmail(business.email)) knownChannels.push("email");
+    if (resolveInstagramToPersist(null, business.instagram)) knownChannels.push("instagram");
+
+    // Milestone 2: Engine 2.0's WebsiteWorker/ContactWorker/MergeWorker/ScoringWorker
     // replace the V1 SiteCrawler path runEngineVerify() used to drive here.
-    // See engine_enrichment_bridge.py's module docstring for exactly which
-    // `businesses` columns this can and cannot populate.
     let site: any = {};
     if (business.website) {
       // P0 — SHARED LIVE PID ADMISSION: one runEngineEnrich() call here is
@@ -398,9 +408,36 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
       } else {
         admissionRelease = await acquireSharedPidAdmissionBlocking(env.ENRICHMENT_PIDS_PER_WORKER, "enrichment", { signal, pollMs: 150 });
       }
+      const enrichT0 = Date.now();
       try {
-        site = await runEngineEnrich({ website: business.website }, signal);
+        site = await runEngineEnrich(
+          {
+            id: businessId,
+            pipeline_id: businessId,
+            name: business.name,
+            category: business.category ?? undefined,
+            website: business.website,
+            phone: business.phone ?? undefined,
+            email: business.email ?? undefined,
+            existing_instagram: business.instagram ?? undefined,
+            facebook: business.facebook ?? undefined,
+            linkedin: business.linkedin ?? undefined,
+            has_photos: business.has_photos ?? undefined,
+            reviews_count: business.reviews_count ?? undefined,
+            reviews_rating: business.reviews_rating ?? undefined,
+            is_disqualified: business.is_disqualified ?? undefined,
+            country: business.country_code ?? undefined,
+            address: business.address ?? undefined,
+            seo: isJsonObject(business.seo) ? (business.seo as Record<string, unknown>) : undefined,
+            blog: isJsonObject(business.blog) ? (business.blog as Record<string, unknown>) : undefined,
+            signals: isJsonObject(business.signals) ? (business.signals as Record<string, unknown>) : undefined,
+            known_channels: knownChannels.length > 0 ? knownChannels : undefined,
+            skip_instagram_worker: true,
+          },
+          signal,
+        );
       } finally {
+        recordSubprocessExecution("website_enrich", Date.now() - enrichT0);
         admissionRelease?.();
       }
     }
@@ -435,18 +472,27 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
     // unchanged rather than guessed at.
     const provenance: Record<string, Json | undefined> = isJsonObject(business.field_provenance) ? { ...business.field_provenance } : {};
 
+    const currentSignals = isJsonObject(business.signals) ? { ...business.signals } : {};
+    const nextTechStack =
+      site.tech_stack && typeof site.tech_stack === "object"
+        ? { ...site.tech_stack, ...(site.detected_platform ? { detected_platform: site.detected_platform } : {}) }
+        : site.detected_platform
+          ? { detected_platform: site.detected_platform, cms: site.detected_platform }
+          : currentSignals.tech_stack;
+    const nextGrowthSignals =
+      site.growth_signals && typeof site.growth_signals === "object" && Object.keys(site.growth_signals).length > 0
+        ? site.growth_signals
+        : currentSignals.growth_signals;
+    const nextSignals =
+      nextTechStack !== undefined || nextGrowthSignals !== undefined || Object.keys(currentSignals).length > 0
+        ? toJson({
+            ...currentSignals,
+            ...(nextTechStack !== undefined ? { tech_stack: nextTechStack } : {}),
+            ...(nextGrowthSignals !== undefined ? { growth_signals: nextGrowthSignals } : {}),
+          })
+        : undefined;
+
     // Update business with website data.
-    // NOTE on fields intentionally left `undefined` (not overwritten) below:
-    // `instagram`/`facebook` here mean "a social link found ON the
-    // business's own website" — no Engine 2.0 contract field covers on-page
-    // social-link discovery (InstagramIntel describes a profile you already
-    // know the URL of; ContactIntel only carries linkedin_url among social
-    // links). `seo`/`blog` and `signals.tech_stack`'s prior shape likewise
-    // have no Engine 2.0 source yet. All are flagged gaps, not silent data
-    // loss — see engine_enrichment_bridge.py's module docstring — and
-    // leaving them `undefined` means Supabase leaves whatever was last
-    // stored untouched, same as it already does for any other field a given
-    // enrichment pass doesn't return.
     const { error: updateError } = await supabaseAdmin.from("businesses").update({
       email: siteEmail || undefined,
       phone: sitePhone || undefined,
@@ -455,9 +501,12 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
       emails,
       phones,
       field_provenance: provenance,
+      website_is_weak: site.website_is_weak ?? undefined,
       ssl_valid: site.ssl_valid ?? undefined,
       load_time_ms: site.load_time_ms ?? undefined,
-      signals: site.detected_platform ? toJson({ tech_stack: { detected_platform: site.detected_platform } }) : undefined,
+      seo: site.seo && typeof site.seo === "object" ? toJson(site.seo) : undefined,
+      blog: site.blog && typeof site.blog === "object" ? toJson(site.blog) : undefined,
+      signals: nextSignals,
       last_verified_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }).eq("id", businessId);
@@ -476,8 +525,27 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
       return;
     }
 
-    // Scoring
-    const scoreResult = await computeAndStoreOpportunityScores(businessId);
+    // Scoring: reuse precomputed scores from runEngineEnrich when available
+    // (100% parity across all 12 canonical professions), falling back to
+    // standalone computeAndStoreOpportunityScores(businessId) when absent.
+    const hasPrecomputedScores =
+      site?.profession_scores != null &&
+      typeof site.profession_scores === "object" &&
+      !Array.isArray(site.profession_scores) &&
+      typeof site.health_score === "number" &&
+      site.universal_breakdown != null;
+
+    let scoreResult;
+    if (hasPrecomputedScores) {
+      scoreResult = await computeAndStoreOpportunityScores(businessId, undefined, site);
+    } else {
+      const scoreT0 = Date.now();
+      scoreResult = await computeAndStoreOpportunityScores(businessId);
+      recordSubprocessExecution("opportunity_score", Date.now() - scoreT0);
+    }
+    if (process.env.NODE_ENV !== "production" && site?.profession_scores) {
+      recordScoreParityCheck(businessId, site.profession_scores, scoreResult.profession_scores);
+    }
     await computeAndStoreBusinessHealth(businessId, scoreResult);
 
     // Push to intelligence queue
@@ -506,9 +574,11 @@ async function scoreBusiness(businessId: string): Promise<void> {
       } else {
         admissionRelease = await acquireSharedPidAdmissionBlocking(env.ENRICHMENT_PIDS_PER_WORKER, "enrichment", { pollMs: 150 });
       }
+      const igT0 = Date.now();
       try {
         social = await runEngineEnrich({ instagram: business.instagram });
       } finally {
+        recordSubprocessExecution("instagram_enrich", Date.now() - igT0);
         admissionRelease?.();
       }
     }
@@ -542,7 +612,9 @@ async function scoreBusiness(businessId: string): Promise<void> {
     if (updateError) throw updateError;
 
     // Final scoring & health
+    const score2T0 = Date.now();
     const scoreResult = await computeAndStoreOpportunityScores(businessId);
+    recordSubprocessExecution("opportunity_score", Date.now() - score2T0);
     await computeAndStoreBusinessHealth(businessId, scoreResult);
 
     // AI intelligence: pre-generate opportunity insights only if both AI and background precomputation are explicitly enabled

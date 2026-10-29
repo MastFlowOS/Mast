@@ -240,26 +240,44 @@ export type EngineVerifyParams = {
  * are independently optional; whichever is present gets processed.
  */
 export type EngineEnrichParams = {
+  id?: string;
+  pipeline_id?: string;
   name?: string;
   website?: string;
   instagram?: string;
+  existing_instagram?: string;
+  facebook?: string;
+  linkedin?: string;
   address?: string;
   city?: string;
   country?: string;
   category?: string;
   phone?: string;
+  email?: string;
+  has_photos?: boolean | null;
+  reviews_count?: number | null;
+  reviews_rating?: number | null;
+  rating?: number | null;
+  review_count?: number | null;
+  reviews?: number | null;
+  is_disqualified?: boolean | null;
+  seo?: Record<string, unknown> | null;
+  blog?: Record<string, unknown> | null;
+  signals?: Record<string, unknown> | null;
+  known_channels?: string[];
+  required_channels?: string[];
+  skip_instagram_worker?: boolean;
 };
 
 /**
  * Mirrors engine_enrichment_bridge.py's `_enriched_to_dict()` return shape
- * field-for-field. Fields Engine 2.0 does not produce yet (seo, blog,
- * signals.tech_stack, on-page social-link discovery — see that module's
- * own docstring) are deliberately absent from this type, not typed as
- * `| null`, so a caller can't accidentally treat "not covered by Engine
- * 2.0 yet" the same as "checked, found nothing".
+ * field-for-field, including observable HTML signals (seo, blog, tech_stack,
+ * growth_signals, website_is_weak) and normalized scoring outputs
+ * (health_score, universal_breakdown, profession_scores map keyed by slug).
  */
 export type EngineEnrichResult = {
   website_reachable: boolean | null;
+  website_is_weak?: boolean | null;
   ssl_valid: boolean | null;
   load_time_ms: number | null;
   final_url: string | null;
@@ -268,6 +286,10 @@ export type EngineEnrichResult = {
   meta_description: string | null;
   detected_platform: string | null;
   contact_page: string | null;
+  seo?: Record<string, unknown> | null;
+  blog?: Record<string, unknown> | null;
+  tech_stack?: Record<string, unknown> | null;
+  growth_signals?: { hiring?: boolean; new_location?: boolean } | null;
   email: string | null;
   emails: string[];
   phone: string | null;
@@ -289,6 +311,17 @@ export type EngineEnrichResult = {
   instagram_bio: string | null;
   instagram_external_website: string | null;
   instagram_last_post_date: string | null;
+  business_id?: string;
+  is_disqualified?: boolean;
+  opportunity_score?: number;
+  health_score?: number;
+  score_tier?: string;
+  score_breakdown?: Record<string, number>;
+  universal_breakdown?: Record<string, number>;
+  profession_scores?: Record<
+    string,
+    { score: number; breakdown: Record<string, number>; summary: string; reasons: string[] }
+  >;
 };
 
 /**
@@ -2115,6 +2148,9 @@ export async function* runEngineQuery(
       }
 
       bridgeReceived += 1;
+      if (parsed.reviews === undefined && typeof parsed.review_count === "number") {
+        parsed.reviews = parsed.review_count;
+      }
       // The engine never emits `niche` on its lead dicts (see EngineLead.niche),
       // so the request's niche is the source of truth. Every caller passes one
       // niche per engine call (multi-niche requests are split upstream).

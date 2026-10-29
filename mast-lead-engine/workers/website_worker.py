@@ -129,7 +129,7 @@ from engine.contracts import BusinessCandidate, WebsiteIntel
 from utils.egress_guard import assert_loopback_url, is_local_isolation_enforced, is_loopback_host
 from utils.http_limits import fetch_slot, read_capped
 from utils.single_flight import SingleFlight
-from utils.parsing import is_ordering_platform, is_social_platform, strip_control_characters
+from utils.parsing import is_ordering_platform, is_social_platform, is_weak_site, strip_control_characters
 from workers.base_worker import BaseWorker
 from workers.worker_capability import WorkerCapability
 
@@ -183,6 +183,66 @@ _PLATFORM_SIGNATURES = (
     ("static.wixstatic.com", "Wix"),
     ("squarespace.com", "Squarespace"),
     ("webflow.io", "Webflow"),
+)
+
+_BLOG_LINK_RE = re.compile(
+    r'href=["\']([^"\']*?/(?:blog|news|articles|insights)[^"\']*)["\']',
+    re.IGNORECASE,
+)
+_DATE_RE = re.compile(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})")
+_HIRING_LINK_HINTS = ("/careers", "/jobs", "/join-us", "/join-our-team", "/work-with-us")
+_HIRING_PHRASE_RE = re.compile(
+    r"we(?:'|’)re hiring|now hiring|join our team|open positions|current openings|careers page",
+    re.IGNORECASE,
+)
+_NEW_LOCATION_PHRASE_RE = re.compile(
+    r"new location|opening soon|coming soon|now open in|second location|our new (?:shop|store|studio|location)",
+    re.IGNORECASE,
+)
+_TECH_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    # CMS
+    ("wordpress", "cms", r"wp-content|wp-includes|wordpress"),
+    ("squarespace", "cms", r"squarespace\.com|static1\.squarespace\.com|sqsp"),
+    ("wix", "cms", r"wix\.com|wixstatic\.com|wix-thunder"),
+    ("webflow", "cms", r"webflow\.com|\.webflow\."),
+    ("ghost", "cms", r"ghost\.org|ghost\.io"),
+    ("shopify", "cms", r"cdn\.shopify\.com|myshopify\.com|shopify\.com/s/"),
+    ("framer", "cms", r"framer\.com|framer\.website"),
+    ("cargo", "cms", r"cargocollective\.com|cargo\.site"),
+    ("format", "cms", r"format\.com"),
+    # E-commerce
+    ("woocommerce", "ecom", r"woocommerce|wc-ajax"),
+    ("bigcommerce", "ecom", r"bigcommerce\.com"),
+    ("magento", "ecom", r"mage|magento"),
+    ("prestashop", "ecom", r"prestashop"),
+    # Analytics
+    ("ga4", "analytics", r"gtag\('config'|google-analytics\.com/g/"),
+    ("ga_ua", "analytics", r"google-analytics\.com/analytics\.js|UA-\d{6,}"),
+    ("gtm", "analytics", r"googletagmanager\.com/gtm\.js"),
+    ("hotjar", "analytics", r"hotjar\.com"),
+    ("mixpanel", "analytics", r"mixpanel\.com"),
+    ("segment", "analytics", r"cdn\.segment\.com"),
+    ("clarity", "analytics", r"clarity\.ms"),
+    ("heap", "analytics", r"heapanalytics\.com"),
+    # Chat/CRM
+    ("intercom", "chat", r"widget\.intercom\.io"),
+    ("drift", "chat", r"js\.driftt\.com|drift\.com"),
+    ("zendesk", "chat", r"zdassets\.com|zendesk\.com"),
+    ("tawk", "chat", r"tawk\.to"),
+    ("hubspot", "crm", r"js\.hs-scripts\.com|hubspot\.com"),
+    # Ad pixels
+    ("facebook_pixel", "ads", r"connect\.facebook\.net|fbq\("),
+    ("tiktok_pixel", "ads", r"analytics\.tiktok\.com"),
+    ("pinterest_tag", "ads", r"pintrk\(|pinimg\.com"),
+    ("snap_pixel", "ads", r"tr\.snapchat\.com"),
+    # Booking / scheduling
+    ("calendly", "booking", r"calendly\.com"),
+    ("acuity", "booking", r"acuityscheduling\.com"),
+    ("booksy", "booking", r"booksy\.com"),
+    ("mindbody", "booking", r"mindbodyonline\.com"),
+    ("vagaro", "booking", r"vagaro\.com"),
+    ("timely", "booking", r"gettimely\.com"),
+    ("fresha", "booking", r"fresha\.com"),
 )
 
 
@@ -463,6 +523,9 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
 
         html = raw.decode(charset, errors="replace")
         contact_page, contact_page_hint = self._extract_contact_page(html, final_url)
+        title = self._extract_title(html)
+        description = self._extract_meta_description(html)
+        detected_platform = self._detect_platform(html)
 
         return _commit_cache(
             WebsiteIntel(
@@ -472,15 +535,20 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
                 final_url=final_url,
                 http_status=status,
                 redirect_chain=tuple(redirect_tracker.chain) or None,
-                title=self._extract_title(html),
-                description=self._extract_meta_description(html),
+                title=title,
+                description=description,
                 contact_page=contact_page,
                 contact_page_hint=contact_page_hint,
-                detected_platform=self._detect_platform(html),
+                detected_platform=detected_platform,
                 page_language=self._extract_language(html),
                 response_time=elapsed,
                 crawl_duration=elapsed,
                 homepage_html=html,
+                seo=self._extract_seo_signals(title, description),
+                blog=self._extract_blog_signal(html),
+                tech_stack=self._extract_tech_stack(html, detected_platform),
+                growth_signals=self._extract_growth_signals(html),
+                website_is_weak=is_weak_site(final_url or raw_website),
             )
         )
 
@@ -513,6 +581,69 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
             if signature in html:
                 return platform
         return None
+
+    @staticmethod
+    def _extract_seo_signals(title: Optional[str], description: Optional[str]) -> dict:
+        t = (title or "").strip()
+        d = (description or "").strip()
+        return {
+            "has_title": bool(t),
+            "title_length": len(t),
+            "has_meta_description": bool(d),
+            "meta_description_length": len(d),
+        }
+
+    @staticmethod
+    def _extract_blog_signal(html: str) -> dict:
+        if not html:
+            return {"has_blog": False}
+        m = _BLOG_LINK_RE.search(html)
+        if not m:
+            return {"has_blog": False}
+        result: dict = {"has_blog": True, "blog_url": m.group(1)}
+        dates = _DATE_RE.findall(html)
+        if dates:
+            try:
+                from datetime import date
+                y, mo, d = (int(x) for x in dates[0])
+                days = (date.today() - date(y, mo, d)).days
+                if 0 <= days < 3650:
+                    result["last_post_days"] = days
+            except Exception:
+                pass
+        return result
+
+    @staticmethod
+    def _extract_tech_stack(html: str, detected_platform: Optional[str] = None) -> dict:
+        found: dict[str, list[str]] = {}
+        for tech, category, pattern in _TECH_PATTERNS:
+            if re.search(pattern, html, re.IGNORECASE):
+                if tech not in found.setdefault(category, []):
+                    found[category].append(tech)
+        result: dict = {"raw": {k: True for techs in found.values() for k in techs}}
+        result["cms"] = detected_platform or found.get("cms", [None])[0]
+        result["ecom"] = found.get("ecom", [None])[0]
+        result["booking"] = found.get("booking", [None])[0]
+        result["chat"] = found.get("chat", [None])[0]
+        result["analytics"] = found.get("analytics", [])
+        result["ads"] = found.get("ads", [])
+        if detected_platform:
+            result["detected_platform"] = detected_platform
+        return result
+
+    @staticmethod
+    def _extract_growth_signals(html: str) -> dict:
+        if not html:
+            return {}
+        signals: dict = {}
+        low = html.lower()
+        anchors = [href for href, _ in _ANCHOR_RE.findall(html)]
+        hiring_link = any(any(h in (a or "").lower() for h in _HIRING_LINK_HINTS) for a in anchors)
+        if hiring_link or _HIRING_PHRASE_RE.search(low):
+            signals["hiring"] = True
+        if _NEW_LOCATION_PHRASE_RE.search(low):
+            signals["new_location"] = True
+        return signals
 
     @staticmethod
     def _extract_contact_page(

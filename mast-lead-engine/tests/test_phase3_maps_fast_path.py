@@ -155,8 +155,18 @@ class _SplitViewScenarioPage:
                     self.click_counts[h] = idx + 1
                     outcomes = c["outcomes"]
                     outcome = outcomes[min(idx, len(outcomes) - 1)]
-                    self.detail_open = True
                     self.ever_clicked = True
+                    if outcome is None or outcome.get("open") is False:
+                        self.detail_open = False
+                        self.current_panel = None
+                        self.url = (outcome or {}).get("url", h)
+                        return
+                    if outcome.get("require_results_url") and "/maps/place/" in self.url:
+                        self.detail_open = False
+                        self.current_panel = None
+                        self.url = h
+                        return
+                    self.detail_open = True
                     self.current_panel = dict(outcome)
                     self.url = outcome.get("url", h)
 
@@ -807,3 +817,139 @@ async def test_read_panel_identity_snapshot_queries_heading_once_when_open():
     assert snap["raw_address"] == "42 Baker St, Chicago, IL"
     assert snap["place_id"] == "0x880fd2:0x555555"
     assert heading_queries == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8. Oct 29 Production Incident Reproduction: `waiting_for_detail_panel` recovery
+# ──────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skip_redundant_return", [True, False])
+async def test_waiting_for_detail_panel_recovers_or_abandons_and_continues_to_next_cards(
+    monkeypatch, skip_redundant_return: bool
+):
+    """Models the exact Oct 29, 2026 failure sequence across both the Phase 3
+    direct-card transition path (`skip_redundant_return_to_results=True`) and the
+    conservative return-to-results path (`skip_redundant_return_to_results=False`):
+    1. Search result feed loads.
+    2. Known-place cards are safely skipped pre-click (`known_place_ids`).
+    3. Next unseen card (Card 1) is clicked; detail panel does not resolve on the
+       first bounded wait (`waiting_for_detail_panel` while URL is on `/maps/place/...`),
+       then resolves on bounded recovery once `_return_to_results` resets the route.
+    4. Next unseen card (Card 2) never resolves a detail panel on any click
+       (`waiting_for_detail_panel`); recovery safely abandons Card 2 after bounded
+       retry without triggering search-navigation reload or terminating the area.
+    5. Next unseen card (Card 3) never resolves a detail panel either; recovery
+       safely abandons Card 3 as well and continues to Card 4, which resolves and
+       yields its verified candidate data.
+    """
+    known_cid = "0x880fd2:0xaaaa00"
+    href_known = f"https://www.google.com/maps/place/Known+Roasters/data=!4m2!3m1!1s{known_cid}"
+    href_recover = "https://www.google.com/maps/place/Recover+Cafe/data=!4m2!3m1!1s0x880fd2:0xbbbb01"
+    href_dead_1 = "https://www.google.com/maps/place/Broken+Bean+1/data=!4m2!3m1!1s0x880fd2:0xcccc02"
+    href_dead_2 = "https://www.google.com/maps/place/Broken+Bean+2/data=!4m2!3m1!1s0x880fd2:0xdddd03"
+    href_valid = "https://www.google.com/maps/place/Steady+Espresso/data=!4m2!3m1!1s0x880fd2:0xeeee04"
+
+    cards = [
+        {
+            "href": href_known,
+            "aria": "Known Roasters · 10 State St",
+            "outcomes": [
+                {
+                    "name": "Known Roasters",
+                    "address": "10 State St, Chicago, IL",
+                    "url": href_known,
+                }
+            ],
+        },
+        {
+            "href": href_recover,
+            "aria": "Recover Cafe · 20 State St",
+            "outcomes": [
+                # First click updates URL to /maps/place/... but panel fails to mount
+                None,
+                # Second click only succeeds if recovery reset the stuck /maps/place/ URL
+                {
+                    "name": "Recover Cafe",
+                    "category": "Coffee shop",
+                    "address": "20 State St, Chicago, IL",
+                    "phone": "+1 312-555-0201",
+                    "website": "https://recovercafe.example.com",
+                    "url": href_recover,
+                    "require_results_url": True,
+                },
+            ],
+        },
+        {
+            "href": href_dead_1,
+            "aria": "Broken Bean 1 · 30 State St",
+            "outcomes": [None],
+        },
+        {
+            "href": href_dead_2,
+            "aria": "Broken Bean 2 · 40 State St",
+            "outcomes": [None],
+        },
+        {
+            "href": href_valid,
+            "aria": "Steady Espresso · 50 State St",
+            "outcomes": [
+                {
+                    "name": "Steady Espresso",
+                    "category": "Coffee shop",
+                    "address": "50 State St, Chicago, IL",
+                    "phone": "+1 312-555-0500",
+                    "website": "https://steadyespresso.example.com",
+                    "url": href_valid,
+                }
+            ],
+        },
+    ]
+
+    page = _SplitViewScenarioPage(cards=cards, close_detail_on_back=True)
+    _wire_page(monkeypatch, page)
+
+    config = ScraperConfig(
+        scroll_max_rounds=2,
+        max_crash_retries=0,
+        place_timeout_ms=100,
+        place_settle_ms=15,
+        scroll_settle_timeout_ms=40,
+        maps_rpm=6000,
+        skip_redundant_return_to_results=skip_redundant_return,
+    )
+    profiler = PerfProfiler()
+    scraper = MapsScraper(config, stats=RunStats(), profiler=profiler)
+    scraper._browser = object()
+    scraper._limiter.acquire = lambda *_a, **_kw: asyncio.sleep(0)
+
+    yielded: list[RawPlace] = []
+    async for place in scraper.search(
+        "Coffee Shop",
+        "Chicago",
+        country="US",
+        max_results=10,
+        known_place_ids={known_cid},
+    ):
+        yielded.append(place)
+
+    # 1. Known-place card was skipped pre-click without clicking
+    assert page.click_counts.get(href_known, 0) == 0
+    snap = profiler.summary()
+    assert snap["counters"].get("known_place_skipped", 0) == 1
+
+    # 2. Both recoverable and subsequent valid cards were yielded with full fields
+    assert [p.name for p in yielded] == ["Recover Cafe", "Steady Espresso"]
+    assert yielded[0].address == "20 State St, Chicago, IL"
+    assert yielded[0].website == "https://recovercafe.example.com"
+    assert yielded[1].address == "50 State St, Chicago, IL"
+    assert yielded[1].website == "https://steadyespresso.example.com"
+
+    # 3. Persistently unresolvable cards were bounded to at most 2 clicks each
+    # and did NOT trigger a full search-navigation reload or premature area abort
+    assert page.click_counts.get(href_recover, 0) == 2
+    assert page.click_counts.get(href_dead_1, 0) == 2
+    assert page.click_counts.get(href_dead_2, 0) == 2
+    assert snap["counters"].get("stale_panel_search_nav_recovery", 0) == 0
+    assert len(page.goto_urls) == 1
+

@@ -1016,6 +1016,8 @@ _DETAIL_BACK_BUTTON_SELECTORS = (
     "button[aria-label*='back to results' i]",
     "button[jsaction*='pane.backButton']",
     "button[data-tooltip*='Back to results' i]",
+    "button[aria-label='Close']",
+    "button[jsaction*='reveal.card.close']",
 )
 
 _PANEL_HEADER_EXCLUSIONS = frozenset({"results", "search results", "النتائج"})
@@ -1047,6 +1049,12 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
                     txt = (await el.inner_text() or "").strip()
                     if txt and txt.lower() not in _PANEL_HEADER_EXCLUSIONS:
                         return True
+                    if hasattr(page, "query_selector_all"):
+                        for cand in await page.query_selector_all(sel):
+                            if cand is not None and cand is not feed_el and hasattr(cand, "inner_text"):
+                                ctxt = (await cand.inner_text() or "").strip()
+                                if ctxt and ctxt.lower() not in _PANEL_HEADER_EXCLUSIONS:
+                                    return True
         except Exception:
             continue
     # Detail pane back buttons specific to the place pane
@@ -1073,6 +1081,7 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
     """
     raw_name = ""
     raw_address = ""
+    fallback_header_name = ""
     if _is_detail_pane_open is not _DEFAULT_IS_DETAIL_PANE_OPEN:
         detail_open = await _is_detail_pane_open(page, feed_el)
         if detail_open:
@@ -1081,11 +1090,15 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                     el = await page.query_selector(sel)
                     if el is not None and el is not feed_el and hasattr(el, "inner_text"):
                         t = (await el.inner_text() or "").strip()
-                        if t:
+                        if t and t.lower() not in _PANEL_HEADER_EXCLUSIONS:
                             raw_name = t
                             break
+                        if t and not fallback_header_name:
+                            fallback_header_name = t
                 except Exception:
                     continue
+            if not raw_name and fallback_header_name:
+                raw_name = fallback_header_name
     else:
         detail_open = False
         for sel in _PLACE_NAME_SELECTORS:
@@ -1093,13 +1106,28 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                 el = await page.query_selector(sel)
                 if el is not None and el is not feed_el and hasattr(el, "inner_text"):
                     t = (await el.inner_text() or "").strip()
-                    if t:
+                    if t and t.lower() not in _PANEL_HEADER_EXCLUSIONS:
                         raw_name = t
-                        if t.lower() not in _PANEL_HEADER_EXCLUSIONS:
-                            detail_open = True
+                        detail_open = True
                         break
+                    if t and not fallback_header_name:
+                        fallback_header_name = t
+                    if hasattr(page, "query_selector_all"):
+                        for cand in await page.query_selector_all(sel):
+                            if cand is not None and cand is not feed_el and hasattr(cand, "inner_text"):
+                                ct = (await cand.inner_text() or "").strip()
+                                if ct and ct.lower() not in _PANEL_HEADER_EXCLUSIONS:
+                                    raw_name = ct
+                                    detail_open = True
+                                    break
+                                if ct and not fallback_header_name:
+                                    fallback_header_name = ct
+                        if detail_open:
+                            break
             except Exception:
                 continue
+        if not raw_name and fallback_header_name:
+            raw_name = fallback_header_name
         if not detail_open:
             for sel in _DETAIL_BACK_BUTTON_SELECTORS:
                 try:
@@ -1250,6 +1278,7 @@ async def _return_to_results(
     *,
     config: ScraperConfig,
     profiler=None,
+    force_reset: bool = False,
 ) -> bool:
     """Navigate from a place's detail pane back to the results feed and verify
     that the detail pane has closed (or results-only state holds).
@@ -1265,8 +1294,10 @@ async def _return_to_results(
 
     with prof.timer("return_to_results"):
         feed_el = await page.query_selector(panel_selector)
+        curr_url = getattr(page, "url", "") or ""
         if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
-            return True
+            if not (force_reset and "/maps/place/" in curr_url):
+                return True
 
         # 1. Keyboard Escape to dismiss the detail pane without DOM manipulation or history navigation
         if hasattr(page, "keyboard") and hasattr(page.keyboard, "press"):
@@ -1276,7 +1307,8 @@ async def _return_to_results(
                 while asyncio.get_event_loop().time() < esc_deadline:
                     feed_el = await page.query_selector(panel_selector)
                     if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
-                        return True
+                        if not (force_reset and "/maps/place/" in (getattr(page, "url", "") or "")):
+                            return True
                     await asyncio.sleep(0.03)
             except Exception:
                 pass
@@ -1323,7 +1355,8 @@ async def _return_to_results(
                 while asyncio.get_event_loop().time() < settle_deadline:
                     feed_el = await page.query_selector(panel_selector)
                     if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
-                        return True
+                        if not (force_reset and "/maps/place/" in (getattr(page, "url", "") or "")):
+                            return True
                     await asyncio.sleep(0.03)
             except Exception:
                 pass
@@ -1359,6 +1392,11 @@ async def _return_to_results(
                         return True
         except Exception:
             pass
+
+        if force_reset:
+            feed_el = await page.query_selector(panel_selector)
+            if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
+                return True
 
         prof.incr("return_to_results_failed")
         return False
@@ -1412,14 +1450,22 @@ async def _can_continue_from_split_results_feed(
 
 
 async def _human_click(page: Page, element) -> None:
-    """Click an element using real Playwright mouse/pointer events, falling back to DOM click."""
+    """Click an element using real Playwright mouse hover + actionability-checked click,
+    falling back to force-click and DOM click if needed."""
     try:
-        await element.click(force=True, timeout=2000)
+        if hasattr(element, "bounding_box") and hasattr(page, "mouse"):
+            box = await element.bounding_box()
+            if box:
+                cx = box["x"] + box["width"] / 2 + random.randint(-3, 3)
+                cy = box["y"] + box["height"] / 2 + random.randint(-2, 2)
+                await page.mouse.move(cx, cy)
+                await asyncio.sleep(random.uniform(0.04, 0.10))
+        await element.click(timeout=3000)
         return
     except Exception:
         pass
     try:
-        await element.click(timeout=2000)
+        await element.click(force=True, timeout=2000)
         return
     except Exception:
         pass
@@ -3063,18 +3109,19 @@ class MapsScraper:
                                     pass
 
                                 if not found_panel:
-                                    curr_url = getattr(page, "url", "") or ""
-                                    if "/maps/place/" in curr_url or await _is_detail_pane_open(page, panel):
+                                    if await _is_detail_pane_open(page, panel):
                                         found_panel = True
                                         self._profiler.incr("place_panel_wait_resolved")
 
                                 if not found_panel:
-                                    log.info(f"[maps][diag] place_panel_wait failed: url={getattr(page, 'url', None)!r} card_href={card_href!r}")
+                                    curr_url = getattr(page, "url", "") or ""
+                                    log.info(f"[maps][diag] place_panel_wait failed: url={curr_url!r} card_href={card_href!r}")
                                     if should_stop is not None and should_stop():
                                         self._profiler.incr("place_panel_wait_aborted")
-                                    else:
-                                        self._profiler.incr("place_panel_wait_timeout")
-                                    return "panel_timeout", None, "panel_wait_timeout"
+                                        return "panel_timeout", None, "panel_wait_timeout"
+                                    self._profiler.incr("place_panel_wait_timeout")
+                                    if "/maps/place/" not in curr_url and not is_minimal_stub:
+                                        return "mismatch", None, "waiting_for_detail_panel"
 
                             if not is_minimal_stub:
                                 try:
@@ -3084,6 +3131,11 @@ class MapsScraper:
                                 except Exception:
                                     pass
 
+                            identity_wait_ms = (
+                                self.config.place_timeout_ms
+                                if found_panel
+                                else min(self.config.place_timeout_ms, 250)
+                            )
                             identity_ok, panel_snap, mismatch_reason = await _wait_for_verified_panel_identity(
                                 page,
                                 feed_el=panel,
@@ -3092,7 +3144,7 @@ class MapsScraper:
                                 card_signals=card_signals,
                                 pre_click_snapshot=pre_click_snapshot,
                                 last_verified_panel=last_verified_panel,
-                                timeout_ms=self.config.place_timeout_ms,
+                                timeout_ms=identity_wait_ms,
                                 allow_stub=is_minimal_stub,
                             )
                             if not identity_ok:
@@ -3323,10 +3375,55 @@ class MapsScraper:
                             if card_status == "mismatch":
                                 handled_return_to_results = True
                                 self._profiler.incr("stale_panel_mismatch")
-                                consecutive_mismatches_in_round += 1
-                                total_mismatch_recoveries += 1
                                 retries_for_key = mismatch_retries_by_key.get(place_key, 0) + 1
                                 mismatch_retries_by_key[place_key] = retries_for_key
+
+                                if card_reason in ("waiting_for_detail_panel", "waiting_for_panel_name"):
+                                    max_unopened_retries = getattr(
+                                        self.config, "max_unopened_panel_retries_per_card", 1
+                                    )
+                                    log.info(
+                                        f"[maps][stale-panel] detail panel did not resolve for "
+                                        f"place_key={place_key!r} reason={card_reason} "
+                                        f"retry={retries_for_key}/{max_unopened_retries + 1}"
+                                    )
+                                    self._profiler.incr("return_to_results_executed")
+                                    if _return_to_results is _DEFAULT_RETURN_TO_RESULTS:
+                                        returned = await _return_to_results(
+                                            page,
+                                            panel_sel,
+                                            config=self.config,
+                                            profiler=self._profiler,
+                                            force_reset=True,
+                                        )
+                                    else:
+                                        returned = await _return_to_results(
+                                            page,
+                                            panel_sel,
+                                            config=self.config,
+                                            profiler=self._profiler,
+                                        )
+                                    feed_still_present = (await page.query_selector(panel_sel)) is not None
+                                    if not returned and not feed_still_present:
+                                        cards_left = max(0, len(listing_anchors) - 1)
+                                        recovered = await handle_return_failure(
+                                            "waiting_for_detail_panel", cards_left=cards_left
+                                        )
+                                        if not recovered and (await page.query_selector(panel_sel)) is None:
+                                            panel_lost = True
+                                            break
+                                    if retries_for_key > max_unopened_retries:
+                                        exhausted_mismatch_keys.add(place_key)
+                                        seen_hrefs.add(place_key)
+                                        consecutive_mismatches_in_round = 0
+                                        log.info(
+                                            f"[maps][stale-panel] abandoning card after bounded panel wait "
+                                            f"for place_key={place_key!r} reason={card_reason}"
+                                        )
+                                    continue
+
+                                consecutive_mismatches_in_round += 1
+                                total_mismatch_recoveries += 1
                                 max_card_retries = getattr(self.config, "max_stale_panel_retries_per_card", 2)
                                 if retries_for_key > max_card_retries:
                                     exhausted_mismatch_keys.add(place_key)

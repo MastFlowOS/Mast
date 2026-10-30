@@ -249,9 +249,10 @@ class InstagramWorker(BaseWorker[BusinessCandidate, InstagramIntel]):
             if is_local_isolation_enforced():
                 assert_loopback_url(item.instagram_url)
                 opener = urllib.request.build_opener(LocalIsolationRedirectHandler())
+                fetch_ctx = opener.open(request, timeout=self._timeout)
             else:
-                opener = urllib.request.build_opener()
-            with fetch_slot(), opener.open(request, timeout=self._timeout) as response:
+                fetch_ctx = urllib.request.urlopen(request, timeout=self._timeout)
+            with fetch_slot(), fetch_ctx as response:
                 elapsed = time.monotonic() - start
                 final_url = response.geturl() or ""
                 raw = read_capped(response)

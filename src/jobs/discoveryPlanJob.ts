@@ -3,7 +3,9 @@ import { getBoss, QUEUES } from "../lib/queue.js";
 import { evaluateEarlyChannelPrune, engineRequiredChannels } from "../discovery/earlyPrune.js";
 import { evaluateLeadQuality } from "../lib/leadQualityPolicy.js";
 import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.js";
-import { validateLead } from "../lib/leadValidation.js";
+import { validateLead, isValidPhone, isValidEmail } from "../lib/leadValidation.js";
+import { expandPlaceIdForms } from "../lib/placeId.js";
+import { getCandidateFunnelTracker, type ContactSource } from "../discovery/candidateFunnelTelemetry.js";
 import { deliverLead, upsertBusinessFromEngineLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { materializeDiscoveryPlan, dispatchQueuedDiscoveryTasks, DISCOVERY_TASK_RETRY_OPTIONS, type DiscoveryPlanRequest } from "../discovery/planner.js";
 import { enqueueBusinessProcessing, ensureEnriched, ensureIntelligence } from "./businessProcessingJob.js";
@@ -272,35 +274,43 @@ export async function getKnownPlaceIdsForTask(
 ): Promise<string[]> {
   if (!userId) return [];
   try {
-    let query = db
-      .from("businesses")
-      .select("place_id, fingerprints, address, region, leads!inner(user_id)")
-      .eq("leads.user_id", userId);
-    if (countryCode) {
-      query = query.eq("country_code", countryCode);
-    }
-    const { data, error } = await query.limit(500);
-    if (error || !data) {
-      if (error) console.warn("[discoveryPlanJob] businesses lookup error in getKnownPlaceIdsForTask (failing open):", error);
-      return [];
-    }
     const placeIds = new Set<string>();
-    for (const row of data) {
-      if (typeof row.place_id === "string" && row.place_id.trim()) {
-        placeIds.add(row.place_id.trim());
+    const pageSize = 1000;
+    let from = 0;
+    while (true) {
+      const { data, error } = await db
+        .from("businesses")
+        .select("place_id, fingerprints, leads!inner(user_id)")
+        .eq("leads.user_id", userId)
+        .range(from, from + pageSize - 1);
+      if (error || !data || data.length === 0) {
+        if (error) console.warn("[discoveryPlanJob] businesses lookup error in getKnownPlaceIdsForTask (failing open):", error);
+        break;
       }
-      const fingerprints = row.fingerprints as string[] | undefined;
-      if (Array.isArray(fingerprints)) {
-        for (const fp of fingerprints) {
-          if (typeof fp === "string") {
-            if (fp.startsWith("place:")) {
-              placeIds.add(fp.slice("place:".length));
-            } else if (fp.startsWith("map:")) {
-              placeIds.add(fp.slice("map:".length));
+      for (const row of data) {
+        if (typeof row.place_id === "string" && row.place_id.trim()) {
+          for (const form of expandPlaceIdForms(row.place_id.trim())) {
+            placeIds.add(form);
+          }
+        }
+        const fingerprints = row.fingerprints as string[] | undefined;
+        if (Array.isArray(fingerprints)) {
+          for (const fp of fingerprints) {
+            if (typeof fp === "string") {
+              if (fp.startsWith("place:")) {
+                for (const form of expandPlaceIdForms(fp.slice("place:".length))) {
+                  placeIds.add(form);
+                }
+              } else if (fp.startsWith("map:")) {
+                placeIds.add(fp.slice("map:".length).toLowerCase());
+              }
             }
           }
         }
       }
+      if (data.length < pageSize) break;
+      from += pageSize;
+      if (from >= 10000) break; // Bounded safety cap
     }
     return Array.from(placeIds);
   } catch (err) {
@@ -465,6 +475,8 @@ async function runOneAreaAttempt(
         else if (fp.startsWith("map:")) knownPlaceIds.push(fp.slice("map:".length));
       }
       const pid = lead._pipeline_id ?? `local:${discovered}`;
+      const funnel = getCandidateFunnelTracker(payload.planId);
+      funnel.recordDiscovered(pid);
       traceLog(`PIPELINE ${pid}`);
       traceLog(`DISCOVERED name=${JSON.stringify(lead.name)}`);
       publishDiscoveryLiveEvent(candidateDiscoveredEvent(payload.planId, effectiveScoutId, pid, lead.name, areaLabel));
@@ -486,6 +498,7 @@ async function runOneAreaAttempt(
 
         if (!isDirectStreetMatch && !isCityScopeMatch) {
           rejected += 1;
+          funnel.recordQualityRejection("outside_geographic_scope", pid);
           traceLog(`PIPELINE ${pid}`);
           traceLog(`EXITED HERE`);
           traceLog(`reason=outside_geographic_scope:street=${street},city=${task.city},address=${lead.address ?? ""}`);
@@ -496,6 +509,7 @@ async function runOneAreaAttempt(
       const validation = validateDiscoveryCandidate(lead);
       if (!validation.valid) {
         rejected += 1;
+        funnel.recordQualityRejection(`validateDiscoveryCandidate:${validation.reason}`, pid);
         traceLog(`PIPELINE ${pid}`);
         traceLog(`EXITED HERE`);
         traceLog(`reason=validateDiscoveryCandidate:${validation.reason}`);
@@ -506,6 +520,7 @@ async function runOneAreaAttempt(
       const quality = evaluateLeadQuality({ rating: lead.rating, reviews: lead.reviews });
       if (quality.reject) {
         rejected += 1;
+        funnel.recordQualityRejection(quality.reason, pid);
         traceLog(`PIPELINE ${pid}`);
         traceLog(`EXITED HERE`);
         traceLog(`reason=${quality.reason}`);
@@ -514,10 +529,10 @@ async function runOneAreaAttempt(
       }
 
       const requestedChannels = payload.request.channels;
-      const needsEnrichmentToDecide = requestedChannels.some((c) => c === "email" || c === "instagram");
       const earlyPrune = evaluateEarlyChannelPrune(lead, requestedChannels);
       if (earlyPrune.prune) {
         rejected += 1;
+        funnel.recordMissingChannelRejection(earlyPrune.missing, pid);
         for (const ch of earlyPrune.missing) earlyPrunedByChannel[ch] = (earlyPrunedByChannel[ch] ?? 0) + 1;
         traceLog(`PIPELINE ${pid}`);
         traceLog(`EXITED HERE`);
@@ -562,11 +577,47 @@ async function runOneAreaAttempt(
           }
 
           traceLog(`BUSINESS_UPSERTED businessId=${businessId}`);
+
+          // ── Early user duplicate check: skip before expensive enrichment ──
+          if (payload.request.userId) {
+            const { data: existingUserLead } = await db
+              .from("leads")
+              .select("id")
+              .eq("user_id", payload.request.userId)
+              .eq("business_id", businessId)
+              .maybeSingle();
+
+            if (existingUserLead) {
+              duplicates += 1;
+              funnel.recordDuplicateSkipped("post_upsert_owned_lead", pid);
+              traceLog(`PIPELINE ${pid}`);
+              traceLog(`EXITED HERE`);
+              traceLog(`reason=duplicate_already_owned_by_user:businessId=${businessId},already owned by user`);
+              publishDiscoveryLiveEvent(
+                candidateRejectedEvent(
+                  payload.planId,
+                  effectiveScoutId,
+                  pid,
+                  "duplicate_already_owned_by_user",
+                  areaLabel,
+                  lead.name,
+                  "duplicate",
+                ),
+              );
+              return;
+            }
+          }
+
+          funnel.recordEligibleForEnrichment(pid);
           const tEnqueue = profiler.timer("enqueue_enrich");
           await enqueueBusinessProcessing(businessId, "enrich");
           tEnqueue.end();
 
           let deliverable = lead;
+          const needsEnrichmentToDecide =
+            requestedChannels.some((c) => c === "email" || c === "instagram") ||
+            (!channelsSatisfied(lead, requestedChannels) && Boolean(lead.website));
+
           if (needsEnrichmentToDecide) {
             const tEnsureStart = Date.now();
             traceLog(`ENSURE_ENRICHED_START`);
@@ -578,23 +629,13 @@ async function runOneAreaAttempt(
             } catch (enrichErr) {
               const message = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
               console.warn(`[discoveryTask] ensureEnriched/ensureIntelligence non-fatal error for businessId=${businessId}`, enrichErr);
+              funnel.recordEnrichmentFailure("ensureEnriched_threw", pid);
               traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms (non-fatal error: ${message})`);
             }
 
             const { data: enriched } = await db.from("businesses")
               .select("email, phone, instagram, website, website_reachable, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
               .eq("id", businessId).maybeSingle();
-            const satisfied = Boolean(enriched) && channelsSatisfied(enriched, requestedChannels);
-            traceLog(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
-            traceLog(`CHANNELS_SATISFIED=${satisfied}`);
-            if (!satisfied) {
-              rejected += 1;
-              traceLog(`PIPELINE ${pid}`);
-              traceLog(`EXITED HERE`);
-              traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},row=${JSON.stringify(enriched)}`);
-              publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
-              return;
-            }
             deliverable = {
               ...mergeEnrichedChannels(lead, enriched),
               ...(enriched?.website_reachable !== undefined ? { website_reachable: enriched.website_reachable } : {}),
@@ -604,6 +645,26 @@ async function runOneAreaAttempt(
               ...(enriched?.seo !== undefined ? { seo: enriched.seo as Record<string, unknown> } : {}),
               ...(enriched?.blog !== undefined ? { blog: enriched.blog as Record<string, unknown> } : {}),
             };
+            const satisfied = Boolean(enriched) && channelsSatisfied(deliverable, requestedChannels);
+            traceLog(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
+            traceLog(`CHANNELS_SATISFIED=${satisfied}`);
+            if (!satisfied) {
+              rejected += 1;
+              const missingNow = requestedChannels.filter((c) => !channelsSatisfied(deliverable, [c]));
+              funnel.recordMissingChannelRejection(missingNow, pid);
+              traceLog(`PIPELINE ${pid}`);
+              traceLog(`EXITED HERE`);
+              traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},row=${JSON.stringify(enriched)}`);
+              publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
+              return;
+            }
+
+            const sources: ContactSource[] = [];
+            if (lead.phone && isValidPhone(lead.phone)) sources.push("google_maps");
+            if (enriched?.phone && isValidPhone(enriched.phone) && enriched.phone !== lead.phone) sources.push("website_homepage");
+            if (enriched?.email && isValidEmail(enriched.email)) sources.push("website_homepage");
+            if (sources.length === 0) sources.push(lead.maps_link ? "google_maps" : "website_homepage");
+            funnel.recordContactExtracted(sources, pid);
           }
 
           if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
@@ -615,6 +676,7 @@ async function runOneAreaAttempt(
           }
 
           traceLog(`DELIVER_LEAD_START`);
+          funnel.recordReachingDelivery(pid);
           let delivery: DeliveryResult;
           try {
             const tDeliver = profiler.timer("deliver_lead");
@@ -653,10 +715,13 @@ async function runOneAreaAttempt(
             traceLog(`PIPELINE ${pid}`);
             traceLog(`EXITED HERE`);
             traceLog(`reason=duplicate_already_owned_by_user:businessId=${businessId},no new leads row inserted`);
+            funnel.recordDuplicateSkipped("authoritative_delivery_dedup", pid);
             publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "duplicate_already_owned_by_user", areaLabel));
             duplicates += 1;
             return;
           }
+
+          funnel.recordDelivered(pid);
 
           traceLog(`INSERT_LEAD_START`);
           traceLog(`INSERT_LEAD_END leadId=<unavailable from discoveryPlanJob.ts — DeliveryResult has no leads.id field>`);

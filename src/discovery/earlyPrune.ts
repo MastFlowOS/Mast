@@ -3,60 +3,39 @@
  *
  * WHY THIS EXISTS
  * ---------------
- * `handleDiscoveryTask` used to run the Maps-checkable channel gate (phone /
- * website) only AFTER `upsertBusinessFromEngineLead()` and
- * `enqueueBusinessProcessing(..., "enrich")` — so a lead that could never
- * satisfy the user's request was still written to `businesses` and had an
- * enrichment job queued before being thrown away.
+ * `handleDiscoveryTask` runs the early channel gate to prune candidates that
+ * definitely cannot satisfy the user's requested channels BEFORE
+ * `upsertBusinessFromEngineLead()` and `enqueueBusinessProcessing(..., "enrich")`
+ * — so candidates with unrecoverable missing channels are not needlessly persisted
+ * or crawled.
  *
- * This module holds the SAME decision, evaluated on data already present on
- * the engine lead, so it can run before either of those. It deliberately
- * reuses `channelsSatisfied` (src/lib/channelFilter.ts) rather than
- * re-implementing the predicate, so the verdict is identical to the gate it
- * replaces — only the position in the pipeline changes.
+ * RECOVERABLE CHANNELS (Phase 1 Fix):
+ * If a requested channel (e.g. phone, email, instagram) is missing from the
+ * initial Google Maps candidate but can still be discovered from an available,
+ * usable website, we do NOT reject the candidate at this stage. Instead, the
+ * candidate proceeds to enrichment (ContactWorker/WebsiteWorker) to attempt
+ * extraction.
  *
- * WHAT IS (AND IS NOT) DECIDED HERE
- * ---------------------------------
- * Only channels whose Live Discovery verdict depends SOLELY on the lead:
+ * UNRECOVERABLE CHANNELS:
+ * - Missing website when website is requested: permanently unsatisfiable -> prune.
+ * - Missing phone when phone is requested AND no usable website is present:
+ *   cannot be discovered downstream -> prune.
+ * - Missing email/instagram when requested AND no usable website is present:
+ *   cannot be discovered downstream -> prune.
  *
- *   website, phone  -> the post-upsert gate this replaces was strict on the
- *                      lead (no enrichment stage is consulted for them), so
- *                      rejecting earlier cannot change any delivered result.
- *
- * email and instagram are intentionally NOT decided here. They can be
- * satisfied later by the enrichment workflow (website crawl) or by an
- * existing `businesses` row found during upsert, neither of which is visible
- * on the lead. A missing email/instagram on the lead is therefore never a
- * reason to reject at this stage.
- *
- * RATING / REVIEW COUNT (decided elsewhere)
- * -----------------------------------------
- * `lead.rating` / `lead.reviews` are populated only AFTER the engine has
- * opened the business detail panel (the expensive step). Pre-click, the only
- * source is the results-card text, which maps_scraper.py documents as
- * best-effort/informational ("NOTHING below may branch discovery behavior on
- * them"), so it is deliberately NOT used for rejection. The internal
- * rating/review gate therefore runs in handleDiscoveryTask right after the
- * panel-derived lead arrives and before the upsert, via `evaluateLeadQuality`
- * (src/lib/leadQualityPolicy.ts; thresholds are server-side defaults, absent
- * or unparsed values never reject). It saves the upsert/enrichment, not the
- * panel click.
- *
- * TRADE-OFF (deliberate, per the "reject before database writes" goal):
- * a lead rejected here is no longer persisted to the shared `businesses`
- * pool as a side effect. Previously such leads were upserted first, which
- * incidentally seeded the pool for other users with different channel
- * needs.
+ * Final strict channel validation occurs post-enrichment before delivery,
+ * preserving full AND semantics across all user-selected channels.
  */
 
 import { channelsSatisfied, type ChannelCandidate } from "../lib/channelFilter.js";
+import { isValidWebsite } from "../lib/leadValidation.js";
 
-/** Channels decidable from the Maps lead alone. Order is irrelevant. */
+/** Channels decidable from the Maps lead alone or requiring Maps presence. */
 const LEAD_ONLY_CHANNELS: readonly string[] = ["phone", "website"];
 
 /**
- * The subset of `requested` whose verdict depends only on data already on
- * the lead. Preserves request order and drops duplicates.
+ * The subset of `requested` whose verdict depends on data on the lead.
+ * Preserves request order and drops duplicates.
  */
 export function leadOnlyChannels(requested: readonly string[]): string[] {
   const out: string[] = [];
@@ -67,10 +46,9 @@ export function leadOnlyChannels(requested: readonly string[]): string[] {
 }
 
 /**
- * Channels it is safe to forward to the Python engine as `required_channels`
- * for the discovery_only path. Identical to `leadOnlyChannels` on purpose:
- * the engine must never prune on a channel Node itself would not prune on at
- * this stage (see module doc — email/instagram stay with enrichment).
+ * Channels safe to forward to the Python engine as `required_channels`
+ * for the discovery_only path. Only forwards lead-only channels (website/phone)
+ * so detail-panel fast abort can run where appropriate.
  */
 export function engineRequiredChannels(requested: readonly string[]): string[] {
   return leadOnlyChannels(requested);
@@ -80,33 +58,80 @@ export type EarlyPruneDecision =
   | { prune: false }
   | {
       prune: true;
-      /** Channels (from the lead-only subset) that are absent on the lead. */
+      /** Channels that are definitely unsatisfiable given available data. */
       missing: string[];
       /**
        * Reason string in the SAME format the post-upsert gate emitted, so
        * the existing `candidate_rejected` consumers/dashboards are
-       * unaffected by the reorder.
+       * unaffected.
        */
       reason: string;
-      /** The lead-only channel list that was evaluated. */
+      /** The channel list that was evaluated for early pruning. */
       evaluated: string[];
     };
 
 /**
+ * Checks whether a requested channel is potentially satisfiable for this candidate.
+ * Returns true if:
+ * 1. The channel is already satisfied on the initial lead, OR
+ * 2. The channel is not "website" and the lead has a usable website to enable downstream enrichment.
+ */
+export function isChannelPotentiallySatisfiable(
+  lead: ChannelCandidate,
+  channel: string,
+): boolean {
+  if (channelsSatisfied(lead, [channel])) {
+    return true;
+  }
+  // If the channel is missing on Maps, can it still be discovered from an available website?
+  if (channel !== "website" && isValidWebsite(lead.website)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Decide whether a lead can be rejected before any persistence or
- * enrichment scheduling. Pure: no I/O, no clock, no logging.
+ * enrichment scheduling.
+ *
+ * Crucial rule: If a requested channel is missing from the initial Google Maps
+ * candidate but can still be discovered from an available website, do NOT
+ * reject the candidate before giving the existing enrichment system an
+ * opportunity to find it.
+ *
+ * Pure: no I/O, no clock, no logging.
  */
 export function evaluateEarlyChannelPrune(
   lead: ChannelCandidate,
   requested: readonly string[],
 ): EarlyPruneDecision {
+  if (!requested || requested.length === 0) {
+    return { prune: false };
+  }
+
   const evaluated = leadOnlyChannels(requested);
-  if (channelsSatisfied(lead, evaluated)) return { prune: false };
-  const missing = evaluated.filter((ch) => !channelsSatisfied(lead, [ch]));
+  const unsatisfiable: string[] = [];
+
+  for (const ch of requested) {
+    if (!isChannelPotentiallySatisfiable(lead, ch)) {
+      if (!unsatisfiable.includes(ch)) {
+        unsatisfiable.push(ch);
+      }
+    }
+  }
+
+  if (unsatisfiable.length === 0) {
+    return { prune: false };
+  }
+
+  // To preserve reason format compatibility with dashboards and tests:
+  // evaluated list reflects the lead-only channels that failed or evaluated subset
+  const evaluatedForReason = evaluated.length > 0 ? evaluated : unsatisfiable;
+
   return {
     prune: true,
-    missing,
-    evaluated,
-    reason: `maps_channel_gate:requested=${JSON.stringify(evaluated)}`,
+    missing: unsatisfiable,
+    evaluated: evaluatedForReason,
+    reason: `maps_channel_gate:requested=${JSON.stringify(evaluatedForReason)}`,
   };
 }

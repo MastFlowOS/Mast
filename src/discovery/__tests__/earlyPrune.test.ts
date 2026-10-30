@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import {
   engineRequiredChannels,
   evaluateEarlyChannelPrune,
+  isChannelPotentiallySatisfiable,
   leadOnlyChannels,
 } from "../earlyPrune.js";
-import { channelsSatisfied } from "../../lib/channelFilter.js";
 
 const lead = (over: Record<string, unknown> = {}) => ({
   name: "Acme",
@@ -16,7 +16,7 @@ const lead = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-// ── 1 / 2: required website ─────────────────────────────────────────────────
+// ── 1: required website ─────────────────────────────────────────────────────
 
 test("required website + lead has no website -> pruned before persistence", () => {
   const d = evaluateEarlyChannelPrune(lead({ phone: "+1 555 0100" }), ["website"]);
@@ -32,80 +32,113 @@ test("required website + lead has a website -> NOT pruned", () => {
   assert.deepEqual(d, { prune: false });
 });
 
-// ── 3: email / instagram are never decided at this stage ────────────────────
+// ── 2: email / instagram ────────────────────────────────────────────────────
 
-test("required email + lead has no email and no website -> NOT pruned (enrichment / existing row may supply it)", () => {
-  assert.deepEqual(evaluateEarlyChannelPrune(lead(), ["email"]), { prune: false });
+test("required email + lead has no email BUT has a usable website -> NOT pruned (enrichment may discover email)", () => {
+  assert.deepEqual(
+    evaluateEarlyChannelPrune(lead({ website: "https://acme.example" }), ["email"]),
+    { prune: false },
+  );
 });
 
-test("required instagram + lead has no instagram -> NOT pruned", () => {
-  assert.deepEqual(evaluateEarlyChannelPrune(lead(), ["instagram"]), { prune: false });
-});
-
-test("email+instagram requested together never prune on their own", () => {
-  assert.deepEqual(evaluateEarlyChannelPrune(lead(), ["email", "instagram"]), { prune: false });
-});
-
-test("mixed request: email is ignored, website still decides", () => {
-  const d = evaluateEarlyChannelPrune(lead(), ["email", "website"]);
+test("required email + lead has no email and no website -> pruned early (cannot discover email)", () => {
+  const d = evaluateEarlyChannelPrune(lead(), ["email"]);
   assert.equal(d.prune, true);
   if (d.prune) {
-    assert.deepEqual(d.evaluated, ["website"]);
-    assert.deepEqual(d.missing, ["website"]);
+    assert.deepEqual(d.missing, ["email"]);
   }
+});
+
+test("required instagram + lead has no instagram BUT has website -> NOT pruned", () => {
+  assert.deepEqual(
+    evaluateEarlyChannelPrune(lead({ website: "https://acme.example" }), ["instagram"]),
+    { prune: false },
+  );
+});
+
+test("required instagram + lead has no instagram and no website -> pruned early", () => {
+  const d = evaluateEarlyChannelPrune(lead(), ["instagram"]);
+  assert.equal(d.prune, true);
+  if (d.prune) {
+    assert.deepEqual(d.missing, ["instagram"]);
+  }
+});
+
+test("mixed request: email + website present -> NOT pruned", () => {
   assert.deepEqual(
     evaluateEarlyChannelPrune(lead({ website: "https://acme.example" }), ["email", "website"]),
     { prune: false },
   );
 });
 
-// ── 4: required phone ───────────────────────────────────────────────────────
-
-test("required phone: present passes, absent prunes", () => {
-  assert.deepEqual(evaluateEarlyChannelPrune(lead({ phone: "+1 555 0100" }), ["phone"]), { prune: false });
-  const d = evaluateEarlyChannelPrune(lead(), ["phone"]);
+test("mixed request: email + website missing -> pruned early", () => {
+  const d = evaluateEarlyChannelPrune(lead(), ["email", "website"]);
   assert.equal(d.prune, true);
-  if (d.prune) assert.deepEqual(d.missing, ["phone"]);
-});
-
-test("required phone is strict on the lead even when a website exists (parity with the pre-existing post-upsert gate; enrichment is never consulted for phone in Live Discovery)", () => {
-  const d = evaluateEarlyChannelPrune(lead({ website: "https://acme.example" }), ["phone"]);
-  assert.equal(d.prune, true);
-});
-
-// ── 5 / parity: verdict identical to the gate this replaced ─────────────────
-
-test("verdict is identical to the legacy post-upsert gate across a full matrix", () => {
-  const legacy = (l: ReturnType<typeof lead>, req: string[]) =>
-    !channelsSatisfied(l, req.filter((c) => c === "phone" || c === "website"));
-  const phones = ["", "+1 555 0100"];
-  const sites = ["", "https://acme.example"];
-  const reqs = [
-    [], ["phone"], ["website"], ["email"], ["instagram"],
-    ["phone", "website"], ["email", "website"], ["email", "phone"],
-    ["phone", "website", "email", "instagram"],
-  ];
-  for (const phone of phones) for (const website of sites) for (const req of reqs) {
-    const l = lead({ phone, website });
-    assert.equal(
-      evaluateEarlyChannelPrune(l, req).prune,
-      legacy(l, req),
-      `phone=${JSON.stringify(phone)} website=${JSON.stringify(website)} req=${JSON.stringify(req)}`,
-    );
+  if (d.prune) {
+    assert.ok(d.missing.includes("website"));
   }
 });
 
-test("reason string keeps the legacy `maps_channel_gate:requested=[...]` format so candidate_rejected consumers are unaffected", () => {
+// ── 3: required phone (Phase 1 Fix) ────────────────────────────────────────
+
+test("required phone: phone present on Maps lead -> NOT pruned", () => {
+  assert.deepEqual(
+    evaluateEarlyChannelPrune(lead({ phone: "+1 555 0100" }), ["phone"]),
+    { prune: false },
+  );
+});
+
+test("required phone: phone missing on Maps lead BUT usable website exists -> NOT pruned (attempt enrichment)", () => {
+  const d = evaluateEarlyChannelPrune(lead({ website: "https://acme.example" }), ["phone"]);
+  assert.deepEqual(d, { prune: false });
+});
+
+test("required phone: phone missing on Maps lead AND NO usable website -> pruned early", () => {
+  const d = evaluateEarlyChannelPrune(lead(), ["phone"]);
+  assert.equal(d.prune, true);
+  if (d.prune) {
+    assert.deepEqual(d.missing, ["phone"]);
+    assert.deepEqual(d.evaluated, ["phone"]);
+  }
+});
+
+test("required phone + email: phone missing on Maps, email missing on Maps, BUT usable website exists -> NOT pruned", () => {
+  const d = evaluateEarlyChannelPrune(lead({ website: "https://acme.example" }), ["email", "phone"]);
+  assert.deepEqual(d, { prune: false });
+});
+
+test("required phone + email: phone missing, email missing, AND NO website -> pruned early", () => {
+  const d = evaluateEarlyChannelPrune(lead(), ["email", "phone"]);
+  assert.equal(d.prune, true);
+  if (d.prune) {
+    assert.ok(d.missing.includes("phone"));
+    assert.ok(d.missing.includes("email"));
+  }
+});
+
+// ── 4: reason string and helper surface ─────────────────────────────────────
+
+test("reason string keeps the `maps_channel_gate:requested=[...]` format", () => {
   const d = evaluateEarlyChannelPrune(lead(), ["phone", "email", "website"]);
   assert.equal(d.prune, true);
-  if (d.prune) assert.equal(d.reason, 'maps_channel_gate:requested=["phone","website"]');
+  if (d.prune) {
+    assert.equal(d.reason, 'maps_channel_gate:requested=["phone","website"]');
+  }
 });
 
 test("no requested channels never prunes", () => {
   assert.deepEqual(evaluateEarlyChannelPrune(lead(), []), { prune: false });
 });
 
-// ── helper surface ──────────────────────────────────────────────────────────
+test("isChannelPotentiallySatisfiable helper correctly handles channels and websites", () => {
+  assert.equal(isChannelPotentiallySatisfiable(lead({ phone: "+1 555 0100" }), "phone"), true);
+  assert.equal(isChannelPotentiallySatisfiable(lead({ website: "https://acme.example" }), "phone"), true);
+  assert.equal(isChannelPotentiallySatisfiable(lead(), "phone"), false);
+  assert.equal(isChannelPotentiallySatisfiable(lead({ website: "https://acme.example" }), "website"), true);
+  assert.equal(isChannelPotentiallySatisfiable(lead(), "website"), false);
+  assert.equal(isChannelPotentiallySatisfiable(lead({ website: "https://acme.example" }), "email"), true);
+  assert.equal(isChannelPotentiallySatisfiable(lead(), "email"), false);
+});
 
 test("leadOnlyChannels keeps order, drops duplicates and email/instagram", () => {
   assert.deepEqual(leadOnlyChannels(["website", "email", "phone", "website", "instagram"]), ["website", "phone"]);

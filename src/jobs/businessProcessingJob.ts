@@ -471,6 +471,12 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
     // field_sources to fold in here, so field_provenance is carried forward
     // unchanged rather than guessed at.
     const provenance: Record<string, Json | undefined> = isJsonObject(business.field_provenance) ? { ...business.field_provenance } : {};
+    if (site.email_source && siteEmail) {
+      provenance["email"] = toJson({ value: siteEmail, source: site.email_source, method: "contact_worker" });
+    }
+    if (site.phone_source && sitePhone) {
+      provenance["phone"] = toJson({ value: sitePhone, source: site.phone_source, method: "contact_worker" });
+    }
 
     const currentSignals = isJsonObject(business.signals) ? { ...business.signals } : {};
     const nextTechStack =
@@ -494,8 +500,8 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
 
     // Update business with website data.
     const { error: updateError } = await supabaseAdmin.from("businesses").update({
-      email: siteEmail || undefined,
-      phone: sitePhone || undefined,
+      email: siteEmail || business.email || undefined,
+      phone: sitePhone || business.phone || undefined,
       linkedin: site.linkedin || undefined,
       instagram: siteInstagram || undefined,
       emails,

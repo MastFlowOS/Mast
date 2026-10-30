@@ -1,5 +1,5 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
-import { validateLead } from "../lib/leadValidation.js";
+import { validateLead, isValidPhone, isValidEmail } from "../lib/leadValidation.js";
 import { evaluateLeadQuality } from "../lib/leadQualityPolicy.js";
 import { evaluateEarlyChannelPrune } from "./earlyPrune.js";
 import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.js";
@@ -12,6 +12,7 @@ import {
   candidateRejectedEvent,
   leadDeliveredEvent,
 } from "./liveDiscoveryEvent.js";
+import { getCandidateFunnelTracker, type ContactSource } from "./candidateFunnelTelemetry.js";
 import type { EngineLead } from "../scraperBridge/pythonBridge.js";
 
 /**
@@ -69,13 +70,14 @@ export type ProcessCandidateResult =
  * Canonical candidate processing pipeline shared between Cloud Workers
  * (discoveryPlanJob.ts) and Local Desktop Workers (desktop.ts).
  *
- * Implements the exact authoritative sequence:
- * 1. Publish candidateDiscoveredEvent (Realtime live stream).
+ * Implements the authoritative sequence:
+ * 1. Publish candidateDiscoveredEvent (Realtime live stream & Funnel Telemetry).
  * 2. Validate candidate (provenance, name, address, closed status).
  * 3. Evaluate lead quality (minimum rating, review thresholds).
- * 4. Evaluate early channel prune (website / phone gating).
- * 5. Persist business row (upsert) and enqueue background enrichment.
- * 6. Synchronously ensure enrichment & intelligence if email/instagram requested.
+ * 4. Evaluate early channel prune (do NOT reject if missing channel can be discovered via website).
+ * 5. Persist business row (upsert).
+ * 5a. Early user duplicate check: skip before expensive enrichment if already owned by this user.
+ * 6. Synchronously ensure enrichment & intelligence if needed to decide requested channels.
  * 7. Post-enrichment channel satisfaction check & merge.
  * 8. Authoritative deliverLead (deduplication, limits, credit accounting).
  * 9. Publish live events (candidateRejectedEvent or leadDeliveredEvent).
@@ -86,8 +88,10 @@ export async function processDiscoveredCandidate(
 ): Promise<ProcessCandidateResult> {
   const deps = { ...candidatePipelineDeps, ...customDeps };
   const pid = params.pipelineId ?? params.lead._pipeline_id ?? `lead:${Date.now()}`;
+  const funnel = getCandidateFunnelTracker(params.planId);
 
-  // 1. Emit live discovery event for candidate discovery
+  // 1. Candidate discovery
+  funnel.recordDiscovered(pid);
   deps.publishDiscoveryLiveEvent(
     candidateDiscoveredEvent(params.planId, params.effectiveScoutId, pid, params.lead.name, params.areaLabel),
   );
@@ -96,6 +100,7 @@ export async function processDiscoveredCandidate(
   const validation = validateDiscoveryCandidate(params.lead);
   if (!validation.valid) {
     const reason = `validateDiscoveryCandidate:${validation.reason}`;
+    funnel.recordQualityRejection(reason, pid);
     deps.publishDiscoveryLiveEvent(
       candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, reason, params.areaLabel, params.lead.name, "invalid_business"),
     );
@@ -105,6 +110,7 @@ export async function processDiscoveredCandidate(
   // 3. Lead quality policy gate (rating / reviews)
   const quality = evaluateLeadQuality({ rating: params.lead.rating, reviews: params.lead.reviews });
   if (quality.reject) {
+    funnel.recordQualityRejection(quality.reason, pid);
     deps.publishDiscoveryLiveEvent(
       candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, quality.reason, params.areaLabel, params.lead.name, "low_viability"),
     );
@@ -112,27 +118,62 @@ export async function processDiscoveredCandidate(
   }
 
   // 4. Early channel prune
+  // If a requested channel is missing from Maps but can still be discovered from an available website,
+  // do NOT reject the candidate before giving enrichment an opportunity to find it.
   const requestedChannels = params.requestedChannels;
   const earlyPrune = evaluateEarlyChannelPrune(params.lead, requestedChannels);
   if (earlyPrune.prune) {
     const cat = earlyPrune.reason.includes("website") ? "missing_website" : "missing_contact";
+    funnel.recordMissingChannelRejection(earlyPrune.missing, pid);
     deps.publishDiscoveryLiveEvent(
       candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, earlyPrune.reason, params.areaLabel, params.lead.name, cat),
     );
     return { outcome: "rejected", reason: earlyPrune.reason, missingChannels: earlyPrune.missing };
   }
 
-  // 5. Persist business row & enqueue async enrichment
+  // 5. Persist business row
   const businessId = await deps.upsertBusinessFromEngineLead(
     params.lead,
     params.region,
     undefined,
     params.scrapeJobId,
   );
+
+  // 5a. Early user duplicate check: skip before expensive enrichment if already owned by this user
+  if (params.userId) {
+    const { data: existingUserLead } = await deps.db
+      .from("leads")
+      .select("id")
+      .eq("user_id", params.userId)
+      .eq("business_id", businessId)
+      .maybeSingle();
+
+    if (existingUserLead) {
+      funnel.recordDuplicateSkipped("post_upsert_owned_lead", pid);
+      deps.publishDiscoveryLiveEvent(
+        candidateRejectedEvent(
+          params.planId,
+          params.effectiveScoutId,
+          pid,
+          "duplicate_already_owned_by_user",
+          params.areaLabel,
+          params.lead.name,
+          "duplicate",
+        ),
+      );
+      return { outcome: "duplicate", businessId };
+    }
+  }
+
+  // Candidate is new for this user and eligible for enrichment
+  funnel.recordEligibleForEnrichment(pid);
   await deps.enqueueBusinessProcessing(businessId, "enrich");
 
   let deliverable = params.lead;
-  const needsEnrichmentToDecide = requestedChannels.some((c) => c === "email" || c === "instagram");
+  // Needs enrichment if email/instagram requested, OR if a requested channel is not yet satisfied on Maps lead and website is present
+  const needsEnrichmentToDecide =
+    requestedChannels.some((c) => c === "email" || c === "instagram") ||
+    (!channelsSatisfied(params.lead, requestedChannels) && Boolean(params.lead.website));
 
   // 6. Enrich if required by requested channels
   if (needsEnrichmentToDecide) {
@@ -173,6 +214,7 @@ export async function processDiscoveredCandidate(
           `[candidatePipeline] ensureEnriched/ensureIntelligence failed for businessId=${businessId}:`,
           enrichErr,
         );
+        funnel.recordEnrichmentFailure("ensureEnriched_threw", pid);
         deps.publishDiscoveryLiveEvent(
           candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, "ensureEnriched_threw", params.areaLabel, params.lead.name, "enrichment_failure"),
         );
@@ -185,6 +227,7 @@ export async function processDiscoveredCandidate(
       console.warn(
         `[candidatePipeline] enrichment admission timed out after ${Date.now() - startTime}ms for businessId=${businessId}`,
       );
+      funnel.recordEnrichmentFailure(reason, pid);
       deps.publishDiscoveryLiveEvent(
         candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, reason, params.areaLabel, params.lead.name, "enrichment_failure"),
       );
@@ -193,23 +236,43 @@ export async function processDiscoveredCandidate(
 
     const { data: enriched } = await deps.db
       .from("businesses")
-      .select("email, phone, instagram, website")
+      .select("email, phone, instagram, website, field_provenance")
       .eq("id", businessId)
       .maybeSingle();
 
-    const satisfied = Boolean(enriched) && channelsSatisfied(enriched, requestedChannels);
+    deliverable = mergeEnrichedChannels(params.lead, enriched);
+    const satisfied = channelsSatisfied(deliverable, requestedChannels);
+
     if (!satisfied) {
       const reason = `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`;
       const cat = reason.includes("website") ? "missing_website" : "missing_contact";
+      const missingNow = requestedChannels.filter((c) => !channelsSatisfied(deliverable, [c]));
+      funnel.recordMissingChannelRejection(missingNow, pid);
       deps.publishDiscoveryLiveEvent(
         candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, reason, params.areaLabel, params.lead.name, cat),
       );
       return { outcome: "rejected", reason };
     }
-    deliverable = mergeEnrichedChannels(params.lead, enriched);
+
+    // Record contact extraction attribution
+    const sources: ContactSource[] = [];
+    if (params.lead.phone && isValidPhone(params.lead.phone)) {
+      sources.push("google_maps");
+    }
+    if (enriched?.phone && isValidPhone(enriched.phone) && enriched.phone !== params.lead.phone) {
+      sources.push("website_homepage");
+    }
+    if (enriched?.email && isValidEmail(enriched.email)) {
+      sources.push("website_homepage");
+    }
+    if (sources.length === 0) {
+      sources.push(params.lead.maps_link ? "google_maps" : "website_homepage");
+    }
+    funnel.recordContactExtracted(sources, pid);
   }
 
   // 7. Deliver lead (authoritative deduplication, user limits, and credit accounting)
+  funnel.recordReachingDelivery(pid);
   const delivery: DeliveryResult = await deps.deliverLead(
     deliverable,
     {
@@ -233,6 +296,7 @@ export async function processDiscoveredCandidate(
   }
 
   if (!delivery.wasNewForUser) {
+    funnel.recordDuplicateSkipped("authoritative_delivery_dedup", pid);
     deps.publishDiscoveryLiveEvent(
       candidateRejectedEvent(
         params.planId,
@@ -253,6 +317,7 @@ export async function processDiscoveredCandidate(
     deps.recordTimeToFirstLead(params.planId, elapsedMs);
   }
 
+  funnel.recordDelivered(pid);
   deps.publishDiscoveryLiveEvent(
     leadDeliveredEvent(params.planId, params.effectiveScoutId, pid, params.lead.name, params.areaLabel),
   );

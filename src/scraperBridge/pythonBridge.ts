@@ -294,6 +294,10 @@ export type EngineEnrichResult = {
   emails: string[];
   phone: string | null;
   phones: string[];
+  email_source?: string | null;
+  phone_source?: string | null;
+  email_provenance?: Record<string, string> | null;
+  phone_provenance?: Record<string, string> | null;
   contact_form_url: string | null;
   whatsapp_link: string | null;
   messenger_link: string | null;

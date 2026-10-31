@@ -224,6 +224,9 @@ export type EngineProgressEvent = {
   terminal?: boolean;
   deadLettered?: boolean;
   terminalReason?: string;
+  seq?: number;
+  status?: string;
+  newUniqueIds?: number;
 };
 
 export type EngineVerifyParams = {
@@ -1577,7 +1580,11 @@ export type EngineDiscoveryFailureReason =
    * stop" apart from "it broke".
    */
   | "CANCELLED"
-  | "RETURN_TO_RESULTS_FAILED";
+  | "RETURN_TO_RESULTS_FAILED"
+  | "USER_CANCELLED"
+  | "WATCHDOG_TIMEOUT"
+  | "PROCESS_UNRESPONSIVE"
+  | "DISCOVERY_PROGRESS_TIMEOUT";
 
 export type EngineDoneInfo = {
   delivered: number;
@@ -1656,7 +1663,22 @@ export type EngineDoneInfo = {
     | "SUCCESS_TARGET_REACHED"
     | "SUCCESS_EXHAUSTED"
     | "SUCCESS_CONSUMER_STOPPED"
+    | "USER_CANCELLED"
+    | "PROCESS_UNRESPONSIVE"
+    | "DISCOVERY_PROGRESS_TIMEOUT"
     | "WATCHDOG_TIMEOUT"
+    | "CANCELLED"
+    | "RETURN_TO_RESULTS_FAILED"
+    | "FAILURE";
+  /** Phase 2: specific watchdog reason when watchdog fired */
+  watchdogReason?: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT";
+  /** Phase 2: broad scheduler compatibility classification */
+  schedulerReason?:
+    | "SUCCESS_TARGET_REACHED"
+    | "SUCCESS_EXHAUSTED"
+    | "SUCCESS_CONSUMER_STOPPED"
+    | "WATCHDOG_TIMEOUT"
+    | "USER_CANCELLED"
     | "CANCELLED"
     | "RETURN_TO_RESULTS_FAILED"
     | "FAILURE";
@@ -1698,6 +1720,375 @@ export type EngineBridgeTimings = {
   /** ms from spawn() to first non-__done__ lead line */
   firstLeadMs: number | null;
 };
+
+export type ScraperWatchdogState = "STARTUP" | "SCROLLING" | "CARD_ATTEMPT" | "REBUILDING" | "SEARCH_EXHAUSTED";
+
+export type WatchdogStateMachineOptions = {
+  startupDeadlineMs?: number;
+  livenessTimeoutMs?: number;
+  progressTimeoutMs?: number;
+  cardAttemptDeadlineMs?: number;
+  recoveryDeadlineMs?: number;
+  finalizationDeadlineMs?: number;
+  maxRebuilds?: number;
+  absoluteCeilingMs?: number;
+  onTimeout: (
+    reason: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT",
+    detail: string,
+  ) => void;
+  logPrefix?: string;
+};
+
+export class WatchdogStateMachine {
+  private state: ScraperWatchdogState = "STARTUP";
+  private startupTimer: ReturnType<typeof setTimeout> | null = null;
+  private livenessTimer: ReturnType<typeof setTimeout> | null = null;
+  private operationTimer: ReturnType<typeof setTimeout> | null = null;
+  private absoluteTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private lastHeartbeatSeq = -1;
+  private readonly seenCardAttempts = new Set<string>();
+  private readonly processedCardAttempts = new Set<string>();
+  private rebuildCount = 0;
+  private timedOut = false;
+  private timedOutReason: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT" | null = null;
+
+  readonly startupDeadlineMs: number;
+  readonly livenessTimeoutMs: number;
+  readonly progressTimeoutMs: number;
+  readonly cardAttemptDeadlineMs: number;
+  readonly recoveryDeadlineMs: number;
+  readonly finalizationDeadlineMs: number;
+  readonly maxRebuilds: number;
+  readonly absoluteCeilingMs: number;
+  private readonly onTimeout: WatchdogStateMachineOptions["onTimeout"];
+  private readonly logPrefix: string;
+
+  constructor(options: WatchdogStateMachineOptions) {
+    this.startupDeadlineMs = options.startupDeadlineMs ?? 45_000;
+    this.livenessTimeoutMs = options.livenessTimeoutMs ?? 45_000;
+    this.progressTimeoutMs = options.progressTimeoutMs ?? 90_000;
+    this.cardAttemptDeadlineMs = options.cardAttemptDeadlineMs ?? 60_000;
+    this.recoveryDeadlineMs = options.recoveryDeadlineMs ?? 70_000;
+    this.finalizationDeadlineMs = options.finalizationDeadlineMs ?? 30_000;
+    this.maxRebuilds = options.maxRebuilds ?? 2;
+    this.absoluteCeilingMs = options.absoluteCeilingMs ?? 20 * 60 * 1000;
+    this.onTimeout = options.onTimeout;
+    this.logPrefix = options.logPrefix ?? "";
+
+    // Arm Tier A (Startup Readiness)
+    this.startupTimer = setTimeout(() => {
+      this.fire("PROCESS_UNRESPONSIVE", `startup readiness deadline (${this.startupDeadlineMs}ms) exceeded with no service_ready`);
+    }, this.startupDeadlineMs);
+    this.startupTimer.unref?.();
+
+    // Arm Tier D (Absolute Safety Ceiling)
+    this.absoluteTimer = setTimeout(() => {
+      this.fire("WATCHDOG_TIMEOUT", `absolute safety ceiling (${this.absoluteCeilingMs}ms) reached`);
+    }, this.absoluteCeilingMs);
+    this.absoluteTimer.unref?.();
+  }
+
+  private fire(
+    reason: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT",
+    detail: string,
+  ) {
+    if (this.timedOut) return;
+    this.timedOut = true;
+    this.timedOutReason = reason;
+    this.onTimeout(reason, detail);
+  }
+
+  private cancelOperationTimer() {
+    if (this.operationTimer) {
+      clearTimeout(this.operationTimer);
+      this.operationTimer = null;
+    }
+  }
+
+  private resetLiveness() {
+    if (this.livenessTimer) clearTimeout(this.livenessTimer);
+    this.livenessTimer = setTimeout(() => {
+      this.fire("PROCESS_UNRESPONSIVE", `process unresponsiveness timeout (${this.livenessTimeoutMs}ms) — no heartbeat`);
+    }, this.livenessTimeoutMs);
+    this.livenessTimer.unref?.();
+  }
+
+  getState(): ScraperWatchdogState {
+    return this.state;
+  }
+
+  getRebuildCount(): number {
+    return this.rebuildCount;
+  }
+
+  isTimedOut(): boolean {
+    return this.timedOut;
+  }
+
+  getTimedOutReason(): "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT" | null {
+    return this.timedOutReason;
+  }
+
+  onServiceReady() {
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
+    }
+    this.resetLiveness();
+    this.transitionToScrolling();
+  }
+
+  onHeartbeat(seq: number): boolean {
+    if (seq > this.lastHeartbeatSeq) {
+      this.lastHeartbeatSeq = seq;
+      this.resetLiveness();
+      return true;
+    }
+    return false;
+  }
+
+  onSearchSpaceExpanded(newUniqueIds: number): boolean {
+    if (newUniqueIds > 0 && this.state === "SCROLLING") {
+      this.transitionToScrolling();
+      return true;
+    }
+    return false;
+  }
+
+  onCardAttemptStarted(attemptKey: string): boolean {
+    if (this.seenCardAttempts.has(attemptKey)) {
+      // Deduplicated: redundant start for same attempt does not reset or extend the deadline
+      return false;
+    }
+    this.seenCardAttempts.add(attemptKey);
+    this.state = "CARD_ATTEMPT";
+    // Explicitly cancel active scrolling progress deadline
+    this.cancelOperationTimer();
+    this.operationTimer = setTimeout(() => {
+      this.fire("DISCOVERY_PROGRESS_TIMEOUT", `card attempt deadline (${this.cardAttemptDeadlineMs}ms) exceeded for ${attemptKey}`);
+    }, this.cardAttemptDeadlineMs);
+    this.operationTimer.unref?.();
+    return true;
+  }
+
+  onCardProcessed(processedKey: string): boolean {
+    if (this.processedCardAttempts.has(processedKey)) {
+      return false;
+    }
+    this.processedCardAttempts.add(processedKey);
+    // Returning to scrolling: replaces card / recovery deadline with fresh scrolling deadline
+    this.transitionToScrolling();
+    return true;
+  }
+
+  onAttemptRebuilding(): boolean {
+    if (this.rebuildCount < this.maxRebuilds) {
+      this.rebuildCount += 1;
+      this.state = "REBUILDING";
+      // Explicitly cancel card attempt deadline and replace with recovery deadline
+      this.cancelOperationTimer();
+      this.operationTimer = setTimeout(() => {
+        this.fire("DISCOVERY_PROGRESS_TIMEOUT", `recovery rebuild deadline (${this.recoveryDeadlineMs}ms) exceeded`);
+      }, this.recoveryDeadlineMs);
+      this.operationTimer.unref?.();
+      return true;
+    }
+    console.warn(`[scraper-bridge] ${this.logPrefix} attempt_rebuilding exceeded maxRebuilds (${this.maxRebuilds}) — deadline not extended`);
+    return false;
+  }
+
+  onCandidateDiscovered() {
+    if (this.state === "SCROLLING") {
+      this.transitionToScrolling();
+    }
+  }
+
+  onSearchExhausted() {
+    this.state = "SEARCH_EXHAUSTED";
+    this.cancelOperationTimer();
+    this.operationTimer = setTimeout(() => {
+      this.fire("DISCOVERY_PROGRESS_TIMEOUT", `finalization deadline (${this.finalizationDeadlineMs}ms) exceeded`);
+    }, this.finalizationDeadlineMs);
+    this.operationTimer.unref?.();
+  }
+
+  onLeadYielded() {
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
+    }
+    this.transitionToScrolling();
+  }
+
+  onGenuineProgress() {
+    if (this.state === "SCROLLING") {
+      this.transitionToScrolling();
+    }
+  }
+
+  transitionToScrolling() {
+    this.state = "SCROLLING";
+    this.cancelOperationTimer();
+    this.operationTimer = setTimeout(() => {
+      this.fire("DISCOVERY_PROGRESS_TIMEOUT", `scrolling progress timeout (${this.progressTimeoutMs}ms)`);
+    }, this.progressTimeoutMs);
+    this.operationTimer.unref?.();
+  }
+
+  clearAll() {
+    if (this.startupTimer) { clearTimeout(this.startupTimer); this.startupTimer = null; }
+    if (this.livenessTimer) { clearTimeout(this.livenessTimer); this.livenessTimer = null; }
+    this.cancelOperationTimer();
+    if (this.absoluteTimer) { clearTimeout(this.absoluteTimer); this.absoluteTimer = null; }
+  }
+}
+
+export type ResolutionContext = {
+  success: boolean;
+  targetReached?: boolean;
+  rawFailureReason?: string;
+  rawFailureDetail?: string;
+  rawTerminationReason?: string;
+  timedOut: boolean;
+  timedOutReason: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT" | "inactivity" | "ceiling" | null;
+  isUserCancelled: boolean;
+  isRealAbort: boolean;
+  isTargetReachedEarlyStop: boolean;
+  isPlainConsumerStop?: boolean;
+};
+
+export function resolveEngineOutcome(ctx: ResolutionContext): {
+  success: boolean;
+  targetReached: boolean;
+  failureReason?: EngineDiscoveryFailureReason;
+  failureDetail?: string;
+  terminationReason: NonNullable<EngineDoneInfo["terminationReason"]>;
+  watchdogReason?: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT";
+  schedulerReason: NonNullable<EngineDoneInfo["schedulerReason"]>;
+} {
+  const effectiveSuccess = ctx.success || ctx.isTargetReachedEarlyStop || Boolean(ctx.isPlainConsumerStop);
+  const effectiveTargetReached = Boolean(ctx.targetReached || ctx.isTargetReachedEarlyStop);
+
+  if (effectiveSuccess) {
+    const terminationReason: NonNullable<EngineDoneInfo["terminationReason"]> = effectiveTargetReached
+      ? "SUCCESS_TARGET_REACHED"
+      : ctx.rawTerminationReason === "SUCCESS_CONSUMER_STOPPED" || ctx.isPlainConsumerStop
+        ? "SUCCESS_CONSUMER_STOPPED"
+        : ctx.rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
+          ? "RETURN_TO_RESULTS_FAILED"
+          : "SUCCESS_EXHAUSTED";
+
+    return {
+      success: true,
+      targetReached: effectiveTargetReached,
+      failureReason: undefined,
+      failureDetail: undefined,
+      terminationReason,
+      watchdogReason: undefined,
+      schedulerReason: terminationReason,
+    };
+  }
+
+  // Failure paths:
+  // 1. User Cancellation
+  if (
+    ctx.isUserCancelled ||
+    ctx.rawFailureReason === "USER_CANCELLED" ||
+    ctx.rawTerminationReason === "USER_CANCELLED"
+  ) {
+    return {
+      success: false,
+      targetReached: false,
+      failureReason: "USER_CANCELLED",
+      failureDetail: ctx.rawFailureDetail ?? "User requested cancellation",
+      terminationReason: "USER_CANCELLED",
+      watchdogReason: undefined,
+      schedulerReason: "USER_CANCELLED",
+    };
+  }
+
+  // 2. Watchdog Timeout
+  const isWatchdog =
+    ctx.timedOut ||
+    ctx.rawFailureReason === "WATCHDOG_TIMEOUT" ||
+    ctx.rawFailureReason === "PROCESS_UNRESPONSIVE" ||
+    ctx.rawFailureReason === "DISCOVERY_PROGRESS_TIMEOUT" ||
+    ctx.rawTerminationReason === "WATCHDOG_TIMEOUT" ||
+    ctx.rawTerminationReason === "PROCESS_UNRESPONSIVE" ||
+    ctx.rawTerminationReason === "DISCOVERY_PROGRESS_TIMEOUT";
+
+  if (isWatchdog) {
+    let exactWatchdogReason: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT";
+    if (
+      ctx.timedOutReason === "PROCESS_UNRESPONSIVE" ||
+      (!ctx.timedOut && (ctx.rawFailureReason === "PROCESS_UNRESPONSIVE" || ctx.rawTerminationReason === "PROCESS_UNRESPONSIVE"))
+    ) {
+      exactWatchdogReason = "PROCESS_UNRESPONSIVE";
+    } else if (
+      ctx.timedOutReason === "DISCOVERY_PROGRESS_TIMEOUT" ||
+      (!ctx.timedOut && (ctx.rawFailureReason === "DISCOVERY_PROGRESS_TIMEOUT" || ctx.rawTerminationReason === "DISCOVERY_PROGRESS_TIMEOUT"))
+    ) {
+      exactWatchdogReason = "DISCOVERY_PROGRESS_TIMEOUT";
+    } else {
+      exactWatchdogReason = "WATCHDOG_TIMEOUT";
+    }
+
+    // Preserve raw "CANCELLED" if sent by a legacy child under watchdog SIGTERM, otherwise use exact typed watchdog reason
+    const failureReason: EngineDiscoveryFailureReason =
+      ctx.rawFailureReason === "CANCELLED" ? "CANCELLED" : exactWatchdogReason;
+
+    return {
+      success: false,
+      targetReached: false,
+      failureReason,
+      failureDetail: ctx.rawFailureDetail ?? `Watchdog timeout (${exactWatchdogReason})`,
+      terminationReason: exactWatchdogReason,
+      watchdogReason: exactWatchdogReason,
+      schedulerReason: "WATCHDOG_TIMEOUT",
+    };
+  }
+
+  // 3. Return to results failed
+  if (
+    ctx.rawFailureReason === "RETURN_TO_RESULTS_FAILED" ||
+    ctx.rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
+  ) {
+    return {
+      success: false,
+      targetReached: false,
+      failureReason: "RETURN_TO_RESULTS_FAILED",
+      failureDetail: ctx.rawFailureDetail,
+      terminationReason: "RETURN_TO_RESULTS_FAILED",
+      watchdogReason: undefined,
+      schedulerReason: "RETURN_TO_RESULTS_FAILED",
+    };
+  }
+
+  // 4. Other Caller/Process Abort (not user cancelled)
+  if (ctx.isRealAbort || ctx.rawFailureReason === "CANCELLED" || ctx.rawTerminationReason === "CANCELLED") {
+    return {
+      success: false,
+      targetReached: false,
+      failureReason: "CANCELLED",
+      failureDetail: ctx.rawFailureDetail ?? "Process aborted",
+      terminationReason: "CANCELLED",
+      watchdogReason: undefined,
+      schedulerReason: "CANCELLED",
+    };
+  }
+
+  // 5. Generic Scraper Failure
+  return {
+    success: false,
+    targetReached: false,
+    failureReason: (ctx.rawFailureReason as EngineDiscoveryFailureReason) ?? "SCRAPER_ERROR",
+    failureDetail: ctx.rawFailureDetail,
+    terminationReason: "FAILURE",
+    watchdogReason: undefined,
+    schedulerReason: "FAILURE",
+  };
+}
 
 /**
  * Spawns `python service.py` inside the Part 1 engine directory and streams
@@ -1767,6 +2158,7 @@ export async function* runEngineQuery(
   // listener. See watchChildClose()'s doc comment for the race this closes.
   const childClosed = watchChildClose(child);
   let abortRequested = false;
+  let clearAllTimers: () => void = () => {};
   // Register synchronously with the request runtime.  A terminal request can
   // therefore stop every child it owns, rather than only the generator whose
   // caller happened to observe cancellation first.
@@ -1775,6 +2167,7 @@ export async function* runEngineQuery(
     child,
     () => {
       abortRequested = true;
+      clearAllTimers();
       // LIFECYCLE FIX (Bug 1): terminateRequest() sets the request's
       // terminalReason BEFORE invoking this stop callback (see
       // requestLifecycle.ts), so it's already readable here — thread it
@@ -1794,6 +2187,7 @@ export async function* runEngineQuery(
 
   const onAbort = () => {
     abortRequested = true;
+    clearAllTimers();
     console.log(`[scraper-bridge] Abort signal triggered for PID: ${child.pid}`);
     // LIFECYCLE FIX (Bug 1): prefer the signal's own reason (callers pass
     // e.g. "TARGET_REACHED"/"USER_CANCELLED" to `abortController.abort(...)`
@@ -1824,47 +2218,58 @@ export async function* runEngineQuery(
   //     that keeps reporting *something* forever without ever actually
   //     finishing.
   //
-  // `timedOut`/`timedOutReason` are shared between both so the eventual
-  // error message (if the run never recovers) says which one fired.
-  let timedOut = false;
-  let timedOutReason: "inactivity" | "ceiling" | null = null;
+  const logPrefix = `(PID: ${child.pid}, area: ${options.areaLabel ?? "n/a"}${options.requestId ? `, req: ${options.requestId}` : ""})`;
 
-  const fireWatchdog = (reason: "inactivity" | "ceiling") => {
+  // Phase 2 Watchdog Reliability Architecture:
+  // Decoupled, state-based multi-tier protections managed by WatchdogStateMachine
+  let timedOut = false;
+  let timedOutReason: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT" | null = null;
+
+  const fireWatchdog = (
+    reason: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT",
+    detail?: string,
+  ) => {
     if (timedOut) return; // already firing/fired — don't double-log or double-kill
+    const requestReason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
+    if (abortRequested || requestReason === "USER_CANCELLED" || signal?.reason === "USER_CANCELLED") {
+      return;
+    }
     timedOut = true;
     timedOutReason = reason;
-    const label =
-      reason === "inactivity"
-        ? `no protocol progress for SCRAPER_SUBPROCESS_INACTIVITY_MS=${env.SCRAPER_SUBPROCESS_INACTIVITY_MS}ms`
-        : `absolute safety ceiling SCRAPER_SUBPROCESS_MAX_MS=${env.SCRAPER_SUBPROCESS_MAX_MS}ms reached`;
-    console.warn(`[scraper-bridge] watchdog firing (${label}) (PID: ${child.pid}) — requesting graceful termination`);
-    // LIFECYCLE FIX (Bug 1): the watchdog is always its own authoritative
-    // reason — thread it through explicitly rather than leaving Python to
-    // fall back to reason=None.
-    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, "WATCHDOG_TIMEOUT");
+    const label = detail ?? reason;
+    console.warn(`[scraper-bridge] ${logPrefix} watchdog firing (${label}) — requesting graceful termination`);
+    void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, reason);
   };
 
-  let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-  const resetInactivityTimer = () => {
-    if (inactivityTimer) clearTimeout(inactivityTimer);
-    inactivityTimer = setTimeout(() => fireWatchdog("inactivity"), env.SCRAPER_SUBPROCESS_INACTIVITY_MS);
-    inactivityTimer.unref?.();
-  };
-  resetInactivityTimer(); // starts ticking from spawn — a process that never emits a first line is still caught
+  const watchdog = new WatchdogStateMachine({
+    startupDeadlineMs: (env as any).SCRAPER_SUBPROCESS_STARTUP_MS ?? 45_000,
+    livenessTimeoutMs: 45_000,
+    progressTimeoutMs: env.SCRAPER_SUBPROCESS_INACTIVITY_MS,
+    cardAttemptDeadlineMs: 60_000,
+    recoveryDeadlineMs: 70_000,
+    finalizationDeadlineMs: Math.min(env.SCRAPER_SUBPROCESS_INACTIVITY_MS, 30_000),
+    maxRebuilds: 2,
+    absoluteCeilingMs: env.SCRAPER_SUBPROCESS_MAX_MS,
+    logPrefix,
+    onTimeout: (reason, detail) => {
+      fireWatchdog(reason, detail);
+    },
+  });
 
-  const absoluteTimer = setTimeout(() => fireWatchdog("ceiling"), env.SCRAPER_SUBPROCESS_MAX_MS);
-  absoluteTimer.unref?.();
+  clearAllTimers = () => {
+    watchdog.clearAll();
+  };
 
   try {
     child.stdin.write(JSON.stringify(params), (err) => {
       if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
-        console.warn(`[scraper-bridge] stdin write callback error (PID: ${child.pid})`, err);
+        console.warn(`[scraper-bridge] ${logPrefix} stdin write callback error`, err);
       }
     });
     child.stdin.end();
   } catch (writeErr: any) {
     if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge] stdin write error (PID: ${child.pid})`, writeErr);
+      console.warn(`[scraper-bridge] ${logPrefix} stdin write error`, writeErr);
     }
   }
 
@@ -1876,7 +2281,7 @@ export async function* runEngineQuery(
     // function's watchdog comment above: stderr volume is not evidence of
     // protocol-level forward progress.
     const line = chunk.toString();
-    console.debug(`[scraper-bridge] ${line.trimEnd()}`);
+    console.debug(`[scraper-bridge] ${logPrefix} ${line.trimEnd()}`);
     // Phase 7: detect crash patterns in stderr output (best-effort).
     if (/crash|chromium|oom|killed|sigkill|playwright.*error/i.test(line)) {
       workerMetrics.browserCrashes += 1;
@@ -1967,93 +2372,79 @@ export async function* runEngineQuery(
         continue;
       }
 
-      // LIFECYCLE FIX: only genuine forward progress (verified progress events,
-      // leads, or __done__) resets the inactivity timer. Stale-panel mismatch
-      // diagnostics and non-progress heartbeats must NOT reset the watchdog.
-      if (isGenuineProgressEvent(parsed)) {
-        resetInactivityTimer();
-      }
-
       if (parsed.type === "diagnostic") {
         console.debug(
-          `[scraper-bridge] diagnostic event=${parsed.event ?? "unknown"} item=${parsed.item_id ?? "n/a"}`,
+          `[scraper-bridge] ${logPrefix} diagnostic event=${parsed.event ?? "unknown"} item=${parsed.item_id ?? "n/a"}`,
         );
         continue;
       }
 
-      // PART C (Phase 2B — watchdog progress protocol): a "progress"
-      // line is real protocol-level forward progress too (that's why the
-      // resetInactivityTimer() call above already covers it — nothing
-      // more is needed there), but it is NOT a lead and must never be
-      // yielded to the consumer or counted toward bridgeReceived/
-      // firstLeadMs. This is the smallest possible extension of the
-      // existing JSONL protocol: one more recognized shape on the same
-      // stdout stream, distinguished purely by `type === "progress"`,
-      // stdout/stderr separation unchanged (see service.py's `_on_progress`
-      // for the producing side).
+      // PART C (Phase 2 — watchdog progress, liveness, & milestone protocol):
       if (parsed.type === "progress") {
+        const eventName = typeof parsed.event === "string" ? parsed.event : "";
+
+        // Watchdog state machine transitions:
+        if (eventName === "service_ready") {
+          watchdog.onServiceReady();
+        } else if (eventName === "heartbeat") {
+          const seq = typeof parsed.seq === "number" ? parsed.seq : -1;
+          watchdog.onHeartbeat(seq);
+        } else if (eventName === "search_space_expanded") {
+          const count = Number(parsed.new_unique_ids ?? parsed.item_id ?? 0);
+          watchdog.onSearchSpaceExpanded(count);
+        } else if (eventName === "card_attempt_started") {
+          const attemptKey = String(parsed.item_id ?? "unknown");
+          watchdog.onCardAttemptStarted(attemptKey);
+        } else if (eventName === "card_processed") {
+          const processedKey = String(parsed.item_id ?? "unknown");
+          watchdog.onCardProcessed(processedKey);
+        } else if (eventName === "attempt_rebuilding") {
+          watchdog.onAttemptRebuilding();
+        } else if (eventName === "candidate_discovered" || eventName === "candidate_duplicate_skipped") {
+          watchdog.onCandidateDiscovered();
+        } else if (eventName === "search_exhausted") {
+          watchdog.onSearchExhausted();
+        } else if (isGenuineProgressEvent(parsed)) {
+          watchdog.onGenuineProgress();
+        }
+
         console.debug(
-          `[scraper-bridge] progress stage=${parsed.stage} event=${parsed.event} item=${parsed.item_id ?? "n/a"}`,
+          `[scraper-bridge] ${logPrefix} progress stage=${parsed.stage} event=${parsed.event} item=${parsed.item_id ?? "n/a"}`,
         );
-        // PHASE 3C-1 STEP 2: record first occurrence only — later repeats
-        // of the same stage:event (e.g. "round_scanned" on every scroll
-        // round) must not overwrite the meaningful first timestamp with a
-        // later one. Deliberately not persisted per-anchor/per-round
-        // beyond this single first-seen ms value, so this cannot grow
-        // into per-anchor log spam (Step 2's own explicit constraint).
+
         const key = `${parsed.stage ?? "unknown"}:${parsed.event ?? "unknown"}`;
         if (!(key in progressMarks)) progressMarks[key] = hrElapsedMs();
-        // PHASE 25: unlike progressMarks above (first-occurrence only,
-        // read once at __done__), this fires for every progress line, live,
-        // so a caller's own idle-activity clock always sees the LATEST
-        // occurrence as it happens — not just the first, and not delayed
-        // until the subprocess finishes.
+
         options.onProgress?.({
           stage: typeof parsed.stage === "string" ? parsed.stage : "unknown",
           event: typeof parsed.event === "string" ? parsed.event : "unknown",
           itemId: typeof parsed.item_id === "string" ? parsed.item_id : undefined,
-          // PHASE 5B-2 — additive fields, absent on older engine builds.
           pipelineId: typeof parsed.pipeline_id === "string" ? parsed.pipeline_id : undefined,
           terminal: typeof parsed.terminal === "boolean" ? parsed.terminal : false,
           deadLettered: typeof parsed.dead_lettered === "boolean" ? parsed.dead_lettered : false,
           terminalReason: typeof parsed.terminal_reason === "string" ? parsed.terminal_reason : undefined,
+          seq: typeof parsed.seq === "number" ? parsed.seq : undefined,
+          status: typeof parsed.status === "string" ? parsed.status : undefined,
+          newUniqueIds: typeof parsed.new_unique_ids === "number" ? parsed.new_unique_ids : undefined,
         });
         continue;
       }
 
       if (parsed.__done__) {
         markDone();
+        clearAllTimers();
         const perfPayload = parsed.__perf__ as Record<string, unknown> | undefined;
-        // ROOT CAUSE FIX (Part 8): `success` defaults to true when absent
-        // (an engine build without this field never fails this way, same
-        // as before this fix existed) — but when the engine explicitly
-        // reports `success: false`, `exhausted` is never trusted, matching
-        // what service.py's _main_cli now guarantees on its side
-        // (`exhausted` is always written as `false` alongside a failure).
         const rawSuccess = parsed.success === undefined ? true : Boolean(parsed.success);
         const rawFailureReason = rawSuccess ? undefined : (parsed.failure_reason as EngineDiscoveryFailureReason | undefined);
         const rawFailureDetail = rawSuccess ? undefined : (parsed.failure_detail as string | undefined);
-        // LIFECYCLE FIX: additive field — see EngineDoneInfo.targetReached.
         const rawTargetReached =
           parsed.target_reached === undefined ? undefined : Boolean(parsed.target_reached);
-        // LIFECYCLE FIX (CONSUMER_STOPPED semantics — FINAL SHUTDOWN
-        // LATENCY + CONSUMER_STOPPED FIX): service.py now writes this
-        // explicit string (see its own termination_reason derivation)
-        // rather than leaving Node to re-derive "was this exhaustion or a
-        // requested early stop" purely from success/targetReached, which
-        // cannot tell the two apart on their own — both look like
-        // `success && !targetReached`.
         const rawTerminationReason = parsed.termination_reason as string | undefined;
 
         const requestTerminalReason = options.requestId ? getRequestTerminalReason(options.requestId) : undefined;
         const isParentTargetReached =
           requestTerminalReason === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED";
 
-        // LIFECYCLE FIX (TARGET_REACHED child-engine status semantics):
-        // When the parent discovery request has already reached its authoritative
-        // target and intentionally terminates the child engine via SIGTERM,
-        // the child cancellation is NOT an engine failure. It must be classified
-        // as a successful target-reached early stop.
         const isTargetReachedEarlyStop =
           !timedOut &&
           isParentTargetReached &&
@@ -2065,80 +2456,78 @@ export async function* runEngineQuery(
         const failureDetail = isTargetReachedEarlyStop ? undefined : rawFailureDetail;
 
         console.log(
-          // SAWDONE BUG FIX: PID added here — see this file's `sawDone`
-          // doc comment above for why its absence was the real cause of
-          // "Python __done__ success=true, Node sawDone=false" appearing
-          // to describe one process when they were two different PIDs
-          // interleaved by concurrent area workers.
-          `[scraper-bridge] received __done__ (PID: ${child.pid}) — delivered=${parsed.delivered} ` +
+          `[scraper-bridge] ${logPrefix} received __done__ — delivered=${parsed.delivered} ` +
             `exhausted=${parsed.exhausted} success=${success} targetReached=${targetReached ?? "n/a"} ` +
             `${!success ? `failureReason=${failureReason} ` : ""}` +
             `spawnMs=${spawnMs.toFixed(0)} firstLineMs=${firstLineMs?.toFixed(0) ?? "n/a"} firstLeadMs=${firstLeadMs?.toFixed(0) ?? "n/a"}`,
         );
         if (!success) {
           console.warn(
-            `[scraper-bridge] discovery FAILED (not exhausted) — reason=${failureReason} detail=${failureDetail ?? "n/a"}`,
+            `[scraper-bridge] ${logPrefix} discovery FAILED (not exhausted) — reason=${failureReason} detail=${failureDetail ?? "n/a"}`,
           );
         } else if (isTargetReachedEarlyStop) {
           console.log(
-            `[scraper-bridge] child engine stopped early: TARGET_REACHED (parent target satisfied)`,
+            `[scraper-bridge] ${logPrefix} child engine stopped early: TARGET_REACHED (parent target satisfied)`,
           );
         }
-        // LIFECYCLE FIX: reconciliation at the bridge transport boundary —
-        // pythonYielded is service.py's own count (what it put on the
-        // wire); bridgeReceived/bridgeForwarded are what THIS process
-        // actually saw/handed off. All three should match on a clean run;
-        // any gap here pinpoints whether loss happened in the pipe
-        // (pythonYielded > bridgeReceived — shouldn't be possible short of
-        // a truncated/non-JSON line, already logged above) or in the
-        // consumer (bridgeReceived > bridgeForwarded — the `for await`
-        // stopped resuming this generator, e.g. `break`/an uncaught throw
-        // downstream).
+
         const pythonYielded = Number(parsed.delivered ?? 0);
         console.log(
-          `[scraper-bridge] delivery accounting — pythonYielded=${pythonYielded} ` +
+          `[scraper-bridge] ${logPrefix} delivery accounting — pythonYielded=${pythonYielded} ` +
             `bridgeReceived=${bridgeReceived} bridgeForwarded=${bridgeForwarded}` +
             `${bridgeReceived !== pythonYielded ? " ⚠️ pythonYielded/bridgeReceived MISMATCH" : ""}` +
             `${bridgeForwarded !== bridgeReceived ? " ⚠️ bridgeReceived/bridgeForwarded MISMATCH (consumer stopped early)" : ""}`,
         );
-        // PART D: see EngineDoneInfo.terminationReason's own doc comment
-        // for the full derivation table this mirrors exactly.
-        //
-        // LIFECYCLE FIX (CONSUMER_STOPPED semantics): a plain consumer-
-        // stopped-early success (area rotation / batch quota satisfied)
-        // must be classified as SUCCESS_CONSUMER_STOPPED, not
-        // SUCCESS_EXHAUSTED — service.py's own `rawTerminationReason`
-        // already carries that distinction (see its termination_reason
-        // derivation), so it's trusted here rather than re-derived.
-        const terminationReason: EngineDoneInfo["terminationReason"] = success
-          ? (targetReached
-              ? "SUCCESS_TARGET_REACHED"
-              : rawTerminationReason === "SUCCESS_CONSUMER_STOPPED"
-                ? "SUCCESS_CONSUMER_STOPPED"
-                : rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
-                  ? "RETURN_TO_RESULTS_FAILED"
-                  : "SUCCESS_EXHAUSTED")
-          : failureReason === "CANCELLED"
-            ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
-            : failureReason === "RETURN_TO_RESULTS_FAILED" || rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
-              ? "RETURN_TO_RESULTS_FAILED"
-              : "FAILURE";
-        console.log(`[scraper-bridge] terminationReason=${terminationReason}`);
+
+        const effectiveFailureReason = failureReason ?? rawFailureReason;
+        const isConsumerStopReason =
+          signal?.reason === "CONSUMER_STOPPED" || signal?.reason === "BUDGET_EXHAUSTED";
+        const isRealAbort =
+          !isConsumerStopReason &&
+          (requestTerminalReason === "USER_CANCELLED" || signal?.reason === "USER_CANCELLED" || abortRequested);
+        const isUserCancelled =
+          requestTerminalReason === "USER_CANCELLED" ||
+          signal?.reason === "USER_CANCELLED" ||
+          rawFailureReason === "USER_CANCELLED" ||
+          rawTerminationReason === "USER_CANCELLED";
+        const isPlainConsumerStop =
+          isConsumerStopReason && !timedOut && !isTargetReachedEarlyStop && !isRealAbort;
+
+        const outcome = resolveEngineOutcome({
+          success,
+          targetReached,
+          rawFailureReason: effectiveFailureReason,
+          rawFailureDetail: failureDetail,
+          rawTerminationReason,
+          timedOut,
+          timedOutReason,
+          isUserCancelled,
+          isRealAbort,
+          isTargetReachedEarlyStop,
+          isPlainConsumerStop,
+        });
+
+        console.log(`[scraper-bridge] ${logPrefix} terminationReason=${outcome.terminationReason}${outcome.watchdogReason ? ` watchdogReason=${outcome.watchdogReason}` : ""} schedulerReason=${outcome.schedulerReason}`);
         onDone?.({
           delivered: pythonYielded,
           requested: Number(parsed.requested ?? 0),
-          exhausted: success ? (isTargetReachedEarlyStop ? false : Boolean(parsed.exhausted)) : false,
-          success,
-          targetReached,
-          failureReason,
-          failureDetail,
-          terminationReason,
+          exhausted: outcome.success ? (isTargetReachedEarlyStop ? false : Boolean(parsed.exhausted)) : false,
+          success: outcome.success,
+          targetReached: outcome.targetReached,
+          failureReason: outcome.failureReason,
+          failureDetail: outcome.failureDetail,
+          terminationReason: outcome.terminationReason,
+          watchdogReason: outcome.watchdogReason,
+          schedulerReason: outcome.schedulerReason,
           perf: perfPayload,
           bridgeTimings: { spawnMs, firstLineMs, firstLeadMs },
           progressMarks,
         });
         continue;
       }
+
+      // Genuine lead line received: reset progress timer and disarm startup
+      watchdog.onLeadYielded();
 
       // Phase 2: record first-line and first-lead timestamps
       if (firstLineMs === null) firstLineMs = hrElapsedMs();
@@ -2178,6 +2567,7 @@ export async function* runEngineQuery(
             const parsed = JSON.parse(line.trim());
             if (parsed.__done__) {
               markDone();
+              clearAllTimers();
               const success = Boolean(parsed.success);
               const targetReached = Boolean(parsed.target_reached);
               const failureReason = parsed.failure_reason;
@@ -2187,30 +2577,44 @@ export async function* runEngineQuery(
                 !success &&
                 failureReason === "CANCELLED" &&
                 (terminalReasonAtExit === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED");
-              const effectiveSuccess = success || isTargetReachedEarlyStop;
-              const effectiveTargetReached = targetReached || isTargetReachedEarlyStop;
-              const terminationReason: EngineDoneInfo["terminationReason"] = effectiveSuccess
-                ? (effectiveTargetReached
-                    ? "SUCCESS_TARGET_REACHED"
-                    : rawTerminationReason === "SUCCESS_CONSUMER_STOPPED"
-                      ? "SUCCESS_CONSUMER_STOPPED"
-                      : rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
-                        ? "RETURN_TO_RESULTS_FAILED"
-                        : "SUCCESS_EXHAUSTED")
-                : failureReason === "CANCELLED"
-                  ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
-                  : failureReason === "RETURN_TO_RESULTS_FAILED" || rawTerminationReason === "RETURN_TO_RESULTS_FAILED"
-                    ? "RETURN_TO_RESULTS_FAILED"
-                    : "FAILURE";
+              const isConsumerStopReason =
+                signal?.reason === "CONSUMER_STOPPED" || signal?.reason === "BUDGET_EXHAUSTED";
+              const isRealAbort =
+                !isConsumerStopReason &&
+                (terminalReasonAtExit === "USER_CANCELLED" || signal?.reason === "USER_CANCELLED" || abortRequested);
+              const isUserCancelled =
+                terminalReasonAtExit === "USER_CANCELLED" ||
+                signal?.reason === "USER_CANCELLED" ||
+                failureReason === "USER_CANCELLED" ||
+                rawTerminationReason === "USER_CANCELLED";
+              const isPlainConsumerStop =
+                isConsumerStopReason && !timedOut && !isTargetReachedEarlyStop && !isRealAbort;
+
+              const outcome = resolveEngineOutcome({
+                success,
+                targetReached,
+                rawFailureReason: failureReason,
+                rawFailureDetail: failureDetail,
+                rawTerminationReason,
+                timedOut,
+                timedOutReason,
+                isUserCancelled,
+                isRealAbort,
+                isTargetReachedEarlyStop,
+                isPlainConsumerStop,
+              });
+
               onDone?.({
                 delivered: bridgeForwarded,
                 requested: Number(parsed.requested ?? 0),
-                exhausted: effectiveSuccess ? (isTargetReachedEarlyStop ? false : Boolean(parsed.exhausted)) : false,
-                success: effectiveSuccess,
-                targetReached: effectiveTargetReached,
-                failureReason,
-                failureDetail,
-                terminationReason,
+                exhausted: outcome.success ? (isTargetReachedEarlyStop ? false : Boolean(parsed.exhausted)) : false,
+                success: outcome.success,
+                targetReached: outcome.targetReached,
+                failureReason: outcome.failureReason,
+                failureDetail: outcome.failureDetail,
+                terminationReason: outcome.terminationReason,
+                watchdogReason: outcome.watchdogReason,
+                schedulerReason: outcome.schedulerReason,
                 perf: (parsed.__perf__ as any),
                 bridgeTimings: { spawnMs, firstLineMs, firstLeadMs },
                 progressMarks,
@@ -2220,8 +2624,7 @@ export async function* runEngineQuery(
         } catch {}
       });
     }
-    if (inactivityTimer) clearTimeout(inactivityTimer);
-    clearTimeout(absoluteTimer);
+    clearAllTimers();
     signal?.removeEventListener("abort", onAbort);
     // PROCESS REGISTRY EXPLOSION FIX: captured ONCE, here, BEFORE
     // unregisterRequestProcess() below removes this child from the
@@ -2268,7 +2671,7 @@ export async function* runEngineQuery(
         consumerStoppedEarly = true;
       }
       console.log(
-        `[scraper-bridge] Generator exited or break occurred early. Cleaning up PID: ${child.pid} ` +
+        `[scraper-bridge] ${logPrefix} Generator exited or break occurred early. Cleaning up PID: ${child.pid} ` +
           `(abortRequested=${abortRequested}, consumerStoppedEarly=${consumerStoppedEarly})`,
       );
       // LIFECYCLE FIX (Bug 1): thread the real reason through so Python
@@ -2285,7 +2688,7 @@ export async function* runEngineQuery(
       const stopReason =
         terminalReasonAtExit ??
         (signal?.reason as string | undefined) ??
-        (timedOut ? "WATCHDOG_TIMEOUT" : "CONSUMER_STOPPED");
+        (timedOut ? (timedOutReason ?? "WATCHDOG_TIMEOUT") : "CONSUMER_STOPPED");
       await gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, stopReason);
     }
 
@@ -2314,7 +2717,7 @@ export async function* runEngineQuery(
     }
 
     console.log(
-      `[scraper-bridge] process exited — PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}, ` +
+      `[scraper-bridge] ${logPrefix} process exited — PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}, ` +
         `sawDone=${sawDone()}, timedOut=${timedOut}${timedOutReason ? ` (${timedOutReason})` : ""}`,
     );
     if (!sawDone()) {
@@ -2322,7 +2725,7 @@ export async function* runEngineQuery(
       // ended (for whatever reason) without ever emitting the __done__
       // sentinel — synthesize onDone from bridge/request lifecycle state.
       console.warn(
-        `[scraper-bridge] __done__ was NEVER received before process exit (PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}) — synthesizing onDone from bridge state`,
+        `[scraper-bridge] ${logPrefix} __done__ was NEVER received before process exit (PID: ${child.pid}, exitCode=${exitCode}, closeSignal=${closeSignal ?? "none"}) — synthesizing onDone from bridge state`,
       );
       const isParentTargetReached =
         terminalReasonAtExit === "TARGET_REACHED" || signal?.reason === "TARGET_REACHED";
@@ -2333,45 +2736,54 @@ export async function* runEngineQuery(
       // or the watchdog) — see those call sites above — so it's safe to
       // trust directly again now that the early-break cleanup path no
       // longer reuses this same flag.
+      const isConsumerStopReason =
+        signal?.reason === "CONSUMER_STOPPED" || signal?.reason === "BUDGET_EXHAUSTED";
       const isRealAbort =
-        terminalReasonAtExit === "USER_CANCELLED" || signal?.reason === "USER_CANCELLED" || abortRequested;
+        !isConsumerStopReason &&
+        (terminalReasonAtExit === "USER_CANCELLED" || signal?.reason === "USER_CANCELLED" || abortRequested);
 
       // A plain consumer-stopped-early outcome (area rotation, batch quota
-      // satisfied) is only a genuine SUCCESS when nothing more
+      // satisfied, or city candidate budget reached) is only a genuine SUCCESS when nothing more
       // authoritative explains the stop — a real abort, the watchdog, or
       // the parent's target already being reached always takes priority.
       const isPlainConsumerStop =
-        consumerStoppedEarly && !timedOut && !isParentTargetReached && !isRealAbort;
+        (consumerStoppedEarly || isConsumerStopReason) && !timedOut && !isParentTargetReached && !isRealAbort;
 
-      const success = !timedOut && (isParentTargetReached || isPlainConsumerStop);
-      const targetReached = isParentTargetReached;
-      const failureReason: EngineDiscoveryFailureReason | undefined = success
-        ? undefined
-        : (timedOut || isRealAbort)
-          ? "CANCELLED"
-          : "SCRAPER_ERROR";
-      const failureDetail = success
-        ? undefined
-        : timedOut
-          ? `Process timed out (${timedOutReason}) before reporting __done__`
-          : isRealAbort
-            ? "Process aborted before reporting __done__"
-            : `Process exited with code ${exitCode} before reporting __done__`;
-      const terminationReason: EngineDoneInfo["terminationReason"] = success
-        ? (isParentTargetReached ? "SUCCESS_TARGET_REACHED" : "SUCCESS_CONSUMER_STOPPED")
-        : failureReason === "CANCELLED"
-          ? (timedOut ? "WATCHDOG_TIMEOUT" : "CANCELLED")
-          : "FAILURE";
+      const isUserCancelled =
+        terminalReasonAtExit === "USER_CANCELLED" ||
+        signal?.reason === "USER_CANCELLED";
+
+      const outcome = resolveEngineOutcome({
+        success: false,
+        targetReached: false,
+        rawFailureReason: undefined,
+        rawFailureDetail: undefined,
+        rawTerminationReason: undefined,
+        timedOut,
+        timedOutReason,
+        isUserCancelled,
+        isRealAbort,
+        isTargetReachedEarlyStop: isParentTargetReached,
+        isPlainConsumerStop,
+      });
+
+      console.warn(
+        `[scraper-bridge] ${logPrefix} synthesized onDone outcome: ` +
+          `success=${outcome.success} terminationReason=${outcome.terminationReason} ` +
+          `failureReason=${outcome.failureReason} watchdogReason=${outcome.watchdogReason ?? "none"} schedulerReason=${outcome.schedulerReason}`,
+      );
 
       onDone?.({
         delivered: bridgeForwarded,
         requested: Number(params.deliver_target ?? params.max_results ?? 0),
         exhausted: false,
-        success,
-        targetReached,
-        failureReason,
-        failureDetail,
-        terminationReason,
+        success: outcome.success,
+        targetReached: outcome.targetReached,
+        failureReason: outcome.failureReason,
+        failureDetail: outcome.failureDetail ?? (outcome.success ? undefined : `Process exited with code ${exitCode} before reporting __done__`),
+        terminationReason: outcome.terminationReason,
+        watchdogReason: outcome.watchdogReason,
+        schedulerReason: outcome.schedulerReason,
         bridgeTimings: { spawnMs, firstLineMs, firstLeadMs },
         progressMarks,
       });

@@ -37,7 +37,7 @@ export type AreaRunOutcome = {
   error?: string;
 };
 
-export type PoolStopReason = "cancelled" | "target_reached" | "areas_exhausted" | "pool_size_zero" | "no_slot_available" | "admission_capped";
+export type PoolStopReason = "cancelled" | "target_reached" | "areas_exhausted" | "pool_size_zero" | "no_slot_available" | "admission_capped" | "budget_exhausted";
 
 export type AreaWorkerLogEvent =
   | { type: "pool_start"; configured: number; availableAreas: number; capacity: number; poolSize: number }
@@ -197,6 +197,8 @@ export type RunAreaWorkerPoolParams = {
   tryAcquireSlot?: () => Promise<(() => void) | undefined> | (() => void) | undefined;
   /** Polled before starting each new area claim; true once the plan is cancelled/target-reached. */
   isTerminal?: () => Promise<boolean> | boolean;
+  /** Polled before starting each new area claim; true once the candidate budget is exhausted. */
+  isBudgetExhausted?: () => Promise<boolean> | boolean;
   /**
    * Optional, additional admission gate — polled immediately after
    * `isTerminal()` (which already handles "fully satisfied/cancelled"),
@@ -258,6 +260,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     runArea,
     tryAcquireSlot = () => () => {},
     isTerminal = () => false,
+    isBudgetExhausted = () => false,
     shouldAdmitNextArea,
     onEvent,
   } = params;
@@ -319,6 +322,11 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     for (;;) {
       if (await isTerminal()) {
         stoppedReason = usedAreas.size >= totalCuratedAreas ? "areas_exhausted" : "cancelled";
+        return;
+      }
+
+      if (await isBudgetExhausted()) {
+        stoppedReason = "budget_exhausted";
         return;
       }
 
@@ -418,9 +426,12 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
   await Promise.all(workers);
 
   const terminalNow = await isTerminal();
-  const deferredNoSlot = !terminalNow && startedWorkers === 0 && totalCuratedAreas > 0 && sawSlotSkip && !sawNoAreaSkip;
+  const budgetExhaustedNow = await isBudgetExhausted();
+  const deferredNoSlot = !terminalNow && !budgetExhaustedNow && startedWorkers === 0 && totalCuratedAreas > 0 && sawSlotSkip && !sawNoAreaSkip;
   if (terminalNow) {
     stoppedReason = usedAreas.size >= totalCuratedAreas ? "areas_exhausted" : (stoppedReason === "areas_exhausted" ? "target_reached" : stoppedReason);
+  } else if (budgetExhaustedNow || (stoppedReason as PoolStopReason) === "budget_exhausted") {
+    stoppedReason = "budget_exhausted";
   } else if (deferredNoSlot) {
     stoppedReason = "no_slot_available";
   }

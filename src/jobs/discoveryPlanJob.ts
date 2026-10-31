@@ -23,6 +23,7 @@ import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.
 import { COUNTRIES } from "../lib/geo/countries.js";
 import { getCityGeographicContext } from "../lib/geo/cityMetadata.js";
 import { runAreaWorkerPool, type AreaWorkerLogEvent, type AreaWorkerPoolResult } from "../discovery/googleAreaPool.js";
+import { type CandidateBudgetCoordinator, CityCandidateBudgetCoordinator } from "../discovery/candidateBudget.js";
 import {
   claimDiscoveryStreet,
   completeDiscoveryStreetClaim,
@@ -330,6 +331,7 @@ async function runOneAreaAttempt(
     requestAbort: AbortController;
     observeTerminalPlan: () => Promise<RequestTerminalReason | undefined>;
     startedAt: number;
+    budgetCoordinator?: CandidateBudgetCoordinator;
   },
   area: string | undefined,
   street?: string,
@@ -342,9 +344,55 @@ async function runOneAreaAttempt(
    */
   scoutId?: number,
 ): Promise<AreaAttemptResult> {
-  const { db, task, payload, profiler, provider, generator, requestAbort, observeTerminalPlan, startedAt } = ctx;
+  const {
+    db,
+    task,
+    payload,
+    profiler,
+    provider,
+    generator,
+    requestAbort,
+    observeTerminalPlan,
+    startedAt,
+    budgetCoordinator = new CityCandidateBudgetCoordinator(task.candidate_budget ?? 40),
+  } = ctx;
   const effectiveScoutId = scoutId ?? 1;
   const areaLabel = street ?? area;
+
+  if (budgetCoordinator.isExhausted()) {
+    return {
+      discovered: 0,
+      accepted: 0,
+      rejected: 0,
+      duplicates: 0,
+      failed: 0,
+      skipped: 0,
+      exhausted: false,
+      cityReason: "CITY_NO_PROGRESS",
+      shouldRetryTask: false,
+    };
+  }
+
+  const areaAbort = new AbortController();
+  const forwardAbort = () => {
+    if (!areaAbort.signal.aborted) {
+      areaAbort.abort(requestAbort.signal.reason ?? "REQUEST_ABORTED");
+    }
+  };
+  if (requestAbort.signal.aborted) {
+    forwardAbort();
+  } else {
+    requestAbort.signal.addEventListener("abort", forwardAbort, { once: true });
+  }
+
+  const workerId = `area-${areaLabel ?? "root"}-${effectiveScoutId}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const unregisterWorker = budgetCoordinator.registerActiveWorker(workerId, () => {
+    if (!areaAbort.signal.aborted) {
+      areaAbort.abort("BUDGET_EXHAUSTED");
+    }
+  });
+
+  try {
 
   let discovered = 0;
   let accepted = 0;
@@ -379,7 +427,7 @@ async function runOneAreaAttempt(
       searchQuery,
       searchTarget,
       {
-        maxResults: task.candidate_budget,
+        maxResults: Math.min(task.candidate_budget ?? 40, Math.max(1, budgetCoordinator.getRemainingBudget())),
         candidateBudget: task.candidate_budget,
         discoveryOnly: true,
         // Worker Pools B Step 4: EVERY area belonging to this task shares
@@ -395,7 +443,7 @@ async function runOneAreaAttempt(
         requiredChannels: engineRequiredChannels(payload.request.channels),
         knownPlaceIds,
       },
-      requestAbort.signal,
+      areaAbort.signal,
       (done) => {
         exhausted = done.exhausted;
         engineTerminationReason = done.terminationReason;
@@ -423,7 +471,7 @@ async function runOneAreaAttempt(
     const inFlight = new Set<Promise<void>>();
 
     while (true) {
-      if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
+      if (budgetCoordinator.isExhausted() || areaAbort.signal.aborted || requestAbort.signal.aborted || (await observeTerminalPlan())) {
         break;
       }
 
@@ -432,7 +480,7 @@ async function runOneAreaAttempt(
         await Promise.race(inFlight);
       }
 
-      if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
+      if (budgetCoordinator.isExhausted() || areaAbort.signal.aborted || requestAbort.signal.aborted || (await observeTerminalPlan())) {
         break;
       }
 
@@ -449,6 +497,11 @@ async function runOneAreaAttempt(
       }
 
       const lead = next.value;
+
+      if (!budgetCoordinator.tryAdmitCandidate()) {
+        traceLog(`CANDIDATE_BUDGET_EXHAUSTED city_budget=${budgetCoordinator.initialBudget}`);
+        break;
+      }
 
       // ── Heartbeat pulse ──────────────────────────────────────────────────
       if (Date.now() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
@@ -803,7 +856,11 @@ async function runOneAreaAttempt(
         `accepted=${accepted} early_pruned=${earlyPrunedTotal} rejected=${rejected} by_channel=${JSON.stringify(earlyPrunedByChannel)}`,
     );
   }
-  return { discovered, accepted, rejected, duplicates, failed, skipped, exhausted, cityReason, terminalReason, shouldRetryTask, pythonPerfData, bridgeTimings, progressMarks, engineTerminationReason };
+    return { discovered, accepted, rejected, duplicates, failed, skipped, exhausted, cityReason, terminalReason, shouldRetryTask, pythonPerfData, bridgeTimings, progressMarks, engineTerminationReason };
+  } finally {
+    unregisterWorker();
+    requestAbort.signal.removeEventListener("abort", forwardAbort);
+  }
 }
 
 /** Atomically reserves the same browser/resource/PID capacity gates used by area workers. */
@@ -1281,7 +1338,21 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     // requested quantity with dynamic concurrency (e.g. 2 workers for 10 leads).
     const useGoogleAreaPool = sourceId === "google_maps" && curatedAreas.length > 0;
 
-    const attemptCtx = { db, task, payload, profiler, provider, generator, requestAbort, observeTerminalPlan, startedAt };
+    const cityCandidateBudget = task.candidate_budget ?? 40;
+    const budgetCoordinator = new CityCandidateBudgetCoordinator(cityCandidateBudget);
+
+    const attemptCtx = {
+      db,
+      task,
+      payload,
+      profiler,
+      provider,
+      generator,
+      requestAbort,
+      observeTerminalPlan,
+      startedAt,
+      budgetCoordinator,
+    };
 
     // terminalReason declared above
     // Initialized (not just declared) so TS's definite-assignment analysis
@@ -1320,6 +1391,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         totalCuratedAreas: streetCount,
         availableCapacity: browserSlotPool.available(),
         requestedQuantity: effectiveRequested,
+        isBudgetExhausted: () => budgetCoordinator.isExhausted(),
         // This calls the Phase 2B RPC once per worker iteration. The pool's
         // `usedAreas` guard merely protects this invocation from a malformed
         // duplicate response; it is not coverage state and is never queried
@@ -1448,7 +1520,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       const { data: finalPlanAfterStreetPool } = await db.from("discovery_plans")
         .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
       terminalReason = terminalReasonForPlan(finalPlanAfterStreetPool);
-      cityReason = terminalReason ?? (cityReason || (poolResult.perArea.length === 0 ? "CITY_NO_STREET_WORK" : "CITY_EXHAUSTED"));
+      cityReason = terminalReason ?? (budgetCoordinator.isExhausted() ? "BUDGET_EXHAUSTED" : (cityReason || (poolResult.perArea.length === 0 ? "CITY_NO_STREET_WORK" : "CITY_EXHAUSTED")));
     } else if (!useGoogleAreaPool) {
       // ── Legacy / non-pooled path (non-Google providers or empty areas) ──
       if (hasCuratedAreas(curatedAreas)) {
@@ -1544,6 +1616,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         totalCuratedAreas: curatedAreas.length,
         availableCapacity: browserSlotPool.available(),
         requestedQuantity: effectiveRequested,
+        isBudgetExhausted: () => budgetCoordinator.isExhausted(),
         claimNextArea: async (usedAreas) => {
           // Reuse the EXISTING claim_discovery_area() atomic claim — never
           // a second area-claim mechanism (Step 3). Two concurrent workers
@@ -1701,7 +1774,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
       terminalReason = terminalReasonForPlan(finalPlanAfterPool);
       cityReason = terminalReason
-        ?? (cityReason || (poolResult.perArea.length === 0 ? "CITY_NO_PROGRESS" : "CITY_EXHAUSTED"));
+        ?? (budgetCoordinator.isExhausted() ? "BUDGET_EXHAUSTED" : (cityReason || (poolResult.perArea.length === 0 ? "CITY_NO_PROGRESS" : "CITY_EXHAUSTED")));
     }
 
     const completionReason: string = cityReason;

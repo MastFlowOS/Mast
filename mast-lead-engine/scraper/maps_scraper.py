@@ -1024,8 +1024,6 @@ _DETAIL_BACK_BUTTON_SELECTORS = (
     "button[aria-label*='back to results' i]",
     "button[jsaction*='pane.backButton']",
     "button[data-tooltip*='Back to results' i]",
-    "button[aria-label='Close']",
-    "button[jsaction*='reveal.card.close']",
 )
 
 _PANEL_HEADER_EXCLUSIONS = frozenset({"results", "search results", "النتائج"})
@@ -2410,6 +2408,12 @@ class MapsScraper:
         if playwright:
             await _close_bounded(playwright.stop, "playwright")
 
+    @staticmethod
+    def _extract_canonical_place_id(href: str) -> str | None:
+        if not href or "/maps/place/" not in href:
+            return None
+        return _stable_place_id_from_url(href) or _place_identity_from_href(href)
+
     @property
     def browser(self) -> Browser:
         if not self._browser:
@@ -2505,11 +2509,17 @@ class MapsScraper:
         # (same "never allowed to raise into pipeline code" contract),
         # kept local here rather than imported since this module has no
         # existing dependency on engine/.
-        def _emit_progress(event: str, item_id: str | None = None) -> None:
+        def _emit_progress(event: str, item_id: str | None = None, **kwargs: Any) -> None:
             if on_progress is None:
                 return
             try:
-                on_progress("discovery", event, item_id)
+                if kwargs:
+                    try:
+                        on_progress("discovery", event, item_id, **kwargs)
+                    except TypeError:
+                        on_progress("discovery", event, item_id)
+                else:
+                    on_progress("discovery", event, item_id)
             except Exception:
                 log.debug("on_progress observer raised — ignored", exc_info=True)
 
@@ -2529,6 +2539,8 @@ class MapsScraper:
         yielded = 0
         seen_hrefs: set[str] = set()      # place-identity keys derived from hrefs seen in the feed
         seen_place_keys: set[str] = set() # name+address keys of places already yielded (2nd guard)
+        observed_place_ids: set[str] = set()  # canonical place IDs observed across scroll rounds
+        emitted_card_attempts: set[str] = set()  # place_key:attempt to prevent duplicate card_attempt_started
         exhausted_mismatch_keys: set[str] = set()
         mismatch_retries_by_key: dict[str, int] = {}
         total_mismatch_recoveries = 0
@@ -2623,6 +2635,10 @@ class MapsScraper:
                     f"the retry ({yielded} place(s) already yielded)"
                 )
                 return
+
+            if attempt > 1:
+                # Phase 2 Watchdog: Signal to Node that context rebuild is in progress
+                _emit_progress("attempt_rebuilding", str(attempt))
 
             with self._profiler.timer("context_creation"):
                 ctx = await _new_stealth_context(self.browser, proxy=proxy)
@@ -3000,6 +3016,23 @@ class MapsScraper:
                             self._profiler.incr("maps_candidates_seen", by=len(listing_anchors))
                             _round_scan_emitted = True
 
+                            # Phase 2 Watchdog Architecture:
+                            # search_space_expanded is emitted ONLY when genuinely new canonical
+                            # place IDs are observed in the DOM. Repeated identical rounds do not
+                            # emit this event and therefore do NOT reset the discovery watchdog.
+                            new_canonical_ids: set[str] = set()
+                            for anchor_el in listing_anchors:
+                                try:
+                                    a_href = await anchor_el.get_attribute("href") or ""
+                                    cid = MapsScraper._extract_canonical_place_id(a_href)
+                                    if cid and cid not in observed_place_ids:
+                                        new_canonical_ids.add(cid)
+                                except Exception:
+                                    pass
+                            if new_canonical_ids:
+                                observed_place_ids.update(new_canonical_ids)
+                                _emit_progress("search_space_expanded", str(len(new_canonical_ids)), new_unique_ids=len(new_canonical_ids))
+
                         if rounds_this_attempt == 1 and len(listing_anchors) == 0:
                             try:
                                 _page_anchors_place = await page.eval_on_selector_all(
@@ -3096,6 +3129,19 @@ class MapsScraper:
                         verified_panel_snap: dict = {}
                         card_timeout_s = max(0.05, self.config.card_operation_timeout_ms / 1000.0)
                         card_started_monotonic = asyncio.get_event_loop().time()
+
+                        card_attempt = mismatch_retries_by_key.get(place_key, 0) + 1
+                        card_attempt_id = f"{place_key}:{card_attempt}"
+                        if card_attempt_id not in emitted_card_attempts:
+                            emitted_card_attempts.add(card_attempt_id)
+                            _emit_progress("card_attempt_started", card_attempt_id)
+
+                        card_processed_emitted = False
+                        def _emit_card_processed(status: str) -> None:
+                            nonlocal card_processed_emitted
+                            if not card_processed_emitted:
+                                card_processed_emitted = True
+                                _emit_progress("card_processed", f"{place_key}:{card_attempt}:{status}")
 
                         async def _run_card_panel_and_extract() -> tuple[str, RawPlace | None, str]:
                             nonlocal verified_panel_snap
@@ -3350,6 +3396,8 @@ class MapsScraper:
                                     f"{self.config.card_operation_timeout_ms}ms "
                                     f"attempt={attempt}/{max_attempts} yielded={yielded}"
                                 )
+                                _emit_card_processed("timeout_exhausted")
+                                _emit_progress("attempt_rebuilding", str(attempt))
                                 if should_stop is not None and should_stop():
                                     generator_closing = True
                                     return
@@ -3360,6 +3408,7 @@ class MapsScraper:
                             log.info(f"[maps][diag] card_status={card_status} card_reason={card_reason} place={place.name if place else None}")
 
                             if card_status == "early_skip":
+                                _emit_card_processed("early_skip")
                                 consecutive_mismatches_in_round = 0
                                 seen_hrefs.add(place_key)
                                 snap_link = _verified_maps_link_from_href(card_href, getattr(page, "url", ""))
@@ -3381,8 +3430,10 @@ class MapsScraper:
                                 card_attempts = mismatch_retries_by_key.get(place_key, 0) + 1
                                 mismatch_retries_by_key[place_key] = card_attempts
                                 if card_attempts >= 2:
+                                    _emit_card_processed("timeout_exhausted")
                                     seen_hrefs.add(place_key)
                                 else:
+                                    _emit_card_processed("error")
                                     failed_this_round.add(place_key)
                                 continue
 
@@ -3427,6 +3478,7 @@ class MapsScraper:
                                             panel_lost = True
                                             break
                                     if retries_for_key > max_unopened_retries:
+                                        _emit_card_processed("mismatch_exhausted")
                                         exhausted_mismatch_keys.add(place_key)
                                         seen_hrefs.add(place_key)
                                         consecutive_mismatches_in_round = 0
@@ -3434,13 +3486,18 @@ class MapsScraper:
                                             f"[maps][stale-panel] abandoning card after bounded panel wait "
                                             f"for place_key={place_key!r} reason={card_reason}"
                                         )
+                                    else:
+                                        _emit_card_processed("mismatch")
                                     continue
 
                                 consecutive_mismatches_in_round += 1
                                 total_mismatch_recoveries += 1
                                 max_card_retries = getattr(self.config, "max_stale_panel_retries_per_card", 2)
                                 if retries_for_key > max_card_retries:
+                                    _emit_card_processed("mismatch_exhausted")
                                     exhausted_mismatch_keys.add(place_key)
+                                else:
+                                    _emit_card_processed("mismatch")
 
                                 log.info(
                                     f"[maps][stale-panel] mismatch for place_key={place_key!r} "
@@ -3494,6 +3551,7 @@ class MapsScraper:
                                 continue
 
                             if not place or not place.name:
+                                _emit_card_processed("disqualified")
                                 log.info(
                                     "[maps][diag] extraction returned no "
                                     "name — business dropped (card_key="
@@ -3510,6 +3568,7 @@ class MapsScraper:
                             )
 
                             if place.name.lower() in _PANEL_HEADER_EXCLUSIONS:
+                                _emit_card_processed("disqualified")
                                 log.info(
                                     f"[maps][diag] parsed name matched the "
                                     f"panel-header exclusion list "
@@ -3544,6 +3603,7 @@ class MapsScraper:
 
                             # Skip permanently closed
                             if place.closed:
+                                _emit_card_processed("disqualified")
                                 log.info(
                                     f"[maps][diag] business dropped — "
                                     f"marked permanently closed: {place.name!r}"
@@ -3576,6 +3636,7 @@ class MapsScraper:
                                     seen_place_keys.add(place_key_data)
 
                             if is_dup:
+                                _emit_card_processed("duplicate")
                                 log.debug(
                                     f"[maps] skipping duplicate place "
                                     f"(identity match): {place.name!r}"
@@ -3603,11 +3664,14 @@ class MapsScraper:
                             except (GeneratorExit, asyncio.CancelledError):
                                 generator_closing = True
                                 raise
+                            _emit_card_processed("verified")
                             yielded += 1
                             self._profiler.incr("maps_candidates_yielded")
                             if yielded >= max_results or (should_stop is not None and should_stop()):
                                 generator_closing = True
                         finally:
+                            if not card_processed_emitted:
+                                _emit_card_processed("verified" if card_completed_cleanly else "error")
                             if not handled_return_to_results and not generator_closing:
                                 can_skip_return = False
                                 if (

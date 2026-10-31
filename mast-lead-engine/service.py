@@ -274,11 +274,22 @@ class _ProgressEventWriter:
     def __init__(self, *, maxsize: int = _PROGRESS_WRITER_QUEUE_MAXSIZE) -> None:
         self._queue: "thread_queue.Queue" = thread_queue.Queue(maxsize=maxsize)
         self._dropped_telemetry = 0
-        self._drop_count_lock = threading.Lock()  # guards _dropped_telemetry only
+        self._dropped_heartbeats = 0
+        self._drop_count_lock = threading.Lock()  # guards _dropped_telemetry and _dropped_heartbeats
         self._thread = threading.Thread(
             target=self._run, name="progress-event-writer", daemon=True,
         )
         self._thread.start()
+
+    @property
+    def dropped_telemetry(self) -> int:
+        with self._drop_count_lock:
+            return self._dropped_telemetry
+
+    @property
+    def dropped_heartbeats(self) -> int:
+        with self._drop_count_lock:
+            return self._dropped_heartbeats
 
     @staticmethod
     def _write_now(payload: dict) -> None:
@@ -309,10 +320,20 @@ class _ProgressEventWriter:
         except thread_queue.Full:
             pass
         if not critical:
+            is_heartbeat = payload.get("event") == "heartbeat"
             with self._drop_count_lock:
                 self._dropped_telemetry += 1
+                if is_heartbeat:
+                    self._dropped_heartbeats += 1
                 dropped = self._dropped_telemetry
-            if dropped % _PROGRESS_WRITER_DROP_LOG_INTERVAL == 1:
+                dropped_hb = self._dropped_heartbeats
+            if is_heartbeat:
+                log.warning(
+                    "progress-event-writer: queue full, dropped heartbeat event (seq=%s, dropped_total=%d) "
+                    "-- observable telemetry recorded; liveness monitoring at risk",
+                    payload.get("seq"), dropped_hb,
+                )
+            elif dropped % _PROGRESS_WRITER_DROP_LOG_INTERVAL == 1:
                 log.warning(
                     "progress-event-writer: queue full, dropped %d "
                     "telemetry-only progress event(s) so far this run "
@@ -1105,6 +1126,10 @@ async def run_query(
         dead_lettered: bool = False,
         pipeline_id: str | None = None,
         terminal_reason: str | None = None,
+        seq: int | None = None,
+        status: str | None = None,
+        new_unique_ids: int | None = None,
+        critical: bool = False,
     ) -> None:
         # PART C (Phase 2B — watchdog progress protocol): every one of
         # these events is written to the SAME stdout the lead dicts and
@@ -1129,7 +1154,7 @@ async def run_query(
         # silently drop the one candidate-terminal event per
         # pipeline_id even under queue backpressure -- see that
         # docstring's "Overflow behavior" section.
-        _progress_writer.enqueue({
+        payload = {
             "type": "progress",
             "session_id": session_id,
             "stage": stage,
@@ -1144,7 +1169,14 @@ async def run_query(
             "dead_lettered": dead_lettered,
             "terminal_reason": terminal_reason,
             "timestamp": time.time(),
-        }, critical=terminal)
+        }
+        if seq is not None:
+            payload["seq"] = seq
+        if status is not None:
+            payload["status"] = status
+        if new_unique_ids is not None:
+            payload["new_unique_ids"] = new_unique_ids
+        _progress_writer.enqueue(payload, critical=(critical or terminal))
 
         if stage == "discovery" and event == "candidate_discovered":
             _mark("first_candidate_discovered")
@@ -1310,6 +1342,30 @@ async def run_query(
     session_id: Optional[str] = None
     driver: Optional[ExecutionDriver] = None
     _stopped_by_shutdown: bool = False
+
+    # Phase 2 Watchdog Architecture:
+    # Common periodic heartbeat ticker runs for BOTH discovery_only=True and
+    # enrichment (discovery_only=False). Emits initial service_ready event
+    # immediately so Node transitions from startup grace to liveness monitoring,
+    # then ticks every 15s with monotonic seq and timestamp.
+    hb_stop = asyncio.Event()
+    hb_seq = 0
+
+    _on_progress("engine", "service_ready", None, seq=0, critical=True)
+
+    async def _hb_ticker() -> None:
+        nonlocal hb_seq
+        while not hb_stop.is_set():
+            try:
+                await asyncio.sleep(15.0)
+            except asyncio.CancelledError:
+                break
+            if hb_stop.is_set():
+                break
+            hb_seq += 1
+            _on_progress("engine", "heartbeat", None, seq=hb_seq, critical=True)
+
+    hb_task = asyncio.create_task(_hb_ticker())
     try:
         if discovery_only:
             # PROVIDER PARALLELISM v1: composes every relevant, configured
@@ -1465,6 +1521,16 @@ async def run_query(
                         "[run_query] discovery_only: cooperative shutdown stopped this run due to "
                         "%s — completing as successful early stop (delivered=%d/%d)",
                         effective_reason, gate.accepted, _deliver_target,
+                    )
+                elif effective_reason in ("USER_CANCELLED", "WATCHDOG_TIMEOUT", "PROCESS_UNRESPONSIVE", "DISCOVERY_PROGRESS_TIMEOUT"):
+                    log.warning(
+                        "[run_query] discovery_only: cooperative shutdown stopped this run due to "
+                        "%s — raising typed DiscoveryFailure (delivered=%d/%d)",
+                        effective_reason, gate.accepted, _deliver_target,
+                    )
+                    raise DiscoveryFailure(
+                        effective_reason,
+                        f"cooperative shutdown stopped this run due to {effective_reason}",
                     )
                 else:
                     log.warning(
@@ -1690,18 +1756,6 @@ async def run_query(
             # to fall through and be reported as an ordinary
             # `success=True` completion.
             _stopped_by_shutdown = False
-            hb_stop = asyncio.Event()
-
-            async def _hb_ticker():
-                while not hb_stop.is_set():
-                    try:
-                        await asyncio.sleep(15)
-                    except asyncio.CancelledError:
-                        break
-                    if not hb_stop.is_set():
-                        _on_progress("engine", "heartbeat", None)
-
-            hb_task = asyncio.create_task(_hb_ticker())
             try:
                 idle_passes = 0
                 while not gate.target_reached:
@@ -1884,6 +1938,16 @@ async def run_query(
                             "%s — completing as successful early stop (delivered=%d/%d)",
                             effective_reason, gate.accepted, _deliver_target,
                         )
+                    elif effective_reason in ("USER_CANCELLED", "WATCHDOG_TIMEOUT", "PROCESS_UNRESPONSIVE", "DISCOVERY_PROGRESS_TIMEOUT"):
+                        log.warning(
+                            "[run_query] cooperative shutdown stopped this run due to "
+                            "%s — raising typed DiscoveryFailure (delivered=%d/%d)",
+                            effective_reason, gate.accepted, _deliver_target,
+                        )
+                        raise DiscoveryFailure(
+                            effective_reason,
+                            f"cooperative shutdown stopped this run due to {effective_reason}",
+                        )
                     else:
                         log.warning(
                             "[run_query] cooperative shutdown stopped this run "
@@ -1911,12 +1975,6 @@ async def run_query(
                         )
                         raise primary_err
             finally:
-                hb_stop.set()
-                hb_task.cancel()
-                try:
-                    await hb_task
-                except (asyncio.CancelledError, Exception):
-                    pass
                 if driver is not None:
                     # CRITMODE PART 2 -- POST-USEFUL-WORK instrumentation:
                     # same on_phase wiring as the target-reached path above,
@@ -1933,6 +1991,15 @@ async def run_query(
                 tracer.sweep_incomplete("run_ended_before_business_finished (cancelled/aborted)")
     finally:
         log.info("[run_query] entering outer cleanup (store close, profiler report)")
+        # Phase 2 Watchdog Architecture:
+        # Stop and drain the periodic heartbeat ticker before writer shutdown.
+        hb_stop.set()
+        if hb_task is not None:
+            hb_task.cancel()
+            try:
+                await hb_task
+            except (asyncio.CancelledError, Exception):
+                pass
         # P1-A FIX: flush/stop the dedicated progress-event writer before
         # anything else in this cleanup block. By this point `driver.stop()`
         # (nested finally above, production path) and `hb_task.cancel()`
@@ -2253,6 +2320,16 @@ async def _main_cli() -> None:
                 f"(delivered={delivered}) — completing as successful early stop"
             )
             failure = None
+        elif effective_reason in ("USER_CANCELLED", "WATCHDOG_TIMEOUT", "PROCESS_UNRESPONSIVE", "DISCOVERY_PROGRESS_TIMEOUT"):
+            failure = DiscoveryFailure(
+                effective_reason,
+                f"graceful shutdown requested with reason={effective_reason}",
+            )
+            log.warning(
+                f"[main_cli] run_query cancelled during {effective_reason} shutdown "
+                f"(delivered={delivered} before cancellation) — writing "
+                f"__done__ with success=False, failure_reason={effective_reason}"
+            )
         else:
             failure = DiscoveryFailure(
                 DiscoveryFailureReason.CANCELLED,
@@ -2308,12 +2385,15 @@ async def _main_cli() -> None:
         False if (failure is not None or target_reached or is_consumer_stopped_stop)
         else delivered < requested
     )
-    termination_reason = (
-        "SUCCESS_TARGET_REACHED" if (success and target_reached)
-        else "SUCCESS_CONSUMER_STOPPED" if (success and is_consumer_stopped_stop)
-        else "SUCCESS_EXHAUSTED" if success
-        else failure.reason.value
-    )
+    if effective_reason in ("USER_CANCELLED", "WATCHDOG_TIMEOUT", "PROCESS_UNRESPONSIVE", "DISCOVERY_PROGRESS_TIMEOUT"):
+        termination_reason = effective_reason
+    else:
+        termination_reason = (
+            "SUCCESS_TARGET_REACHED" if (success and target_reached)
+            else "SUCCESS_CONSUMER_STOPPED" if (success and is_consumer_stopped_stop)
+            else "SUCCESS_EXHAUSTED" if success
+            else failure.reason.value
+        )
     try:
         sys.stdout.write(json.dumps({
             "__done__": True,

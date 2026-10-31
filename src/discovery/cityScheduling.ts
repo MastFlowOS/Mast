@@ -36,6 +36,9 @@ export type EngineTerminationReason =
   | "SUCCESS_EXHAUSTED"
   | "SUCCESS_CONSUMER_STOPPED"
   | "WATCHDOG_TIMEOUT"
+  | "USER_CANCELLED"
+  | "PROCESS_UNRESPONSIVE"
+  | "DISCOVERY_PROGRESS_TIMEOUT"
   | "CANCELLED"
   | "RETURN_TO_RESULTS_FAILED"
   | "FAILURE";
@@ -68,7 +71,13 @@ export function cityTransitionFor(
   terminationReason?: EngineTerminationReason,
 ): CityTransitionReason {
   if (attempt.acceptedLeads > 0) return "CITY_PRODUCTIVE";
-  if (terminationReason === "WATCHDOG_TIMEOUT") return "WATCHDOG_TIMEOUT";
+  if (
+    terminationReason === "WATCHDOG_TIMEOUT" ||
+    terminationReason === "PROCESS_UNRESPONSIVE" ||
+    terminationReason === "DISCOVERY_PROGRESS_TIMEOUT"
+  ) {
+    return "WATCHDOG_TIMEOUT";
+  }
   if (terminationReason === "RETURN_TO_RESULTS_FAILED") return "SCRAPER_FAILURE";
   // "FAILURE" is the bridge's catch-all for "!success, not CANCELLED" —
   // i.e. a genuine scraper failure (unrecoverable DiscoveryFailure /

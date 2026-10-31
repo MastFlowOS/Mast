@@ -111,6 +111,11 @@ class DiscoveryFailureReason(str, Enum):
     # `_main_cli` (`except asyncio.CancelledError`) for where this is
     # raised.
     CANCELLED = "CANCELLED"
+    # Specific cooperative and watchdog termination causes preserved end-to-end
+    USER_CANCELLED = "USER_CANCELLED"
+    WATCHDOG_TIMEOUT = "WATCHDOG_TIMEOUT"
+    PROCESS_UNRESPONSIVE = "PROCESS_UNRESPONSIVE"
+    DISCOVERY_PROGRESS_TIMEOUT = "DISCOVERY_PROGRESS_TIMEOUT"
     # Repeated failure returning from detail pane to results feed that persisted
     # after bounded search-navigation recovery.
     RETURN_TO_RESULTS_FAILED = "RETURN_TO_RESULTS_FAILED"

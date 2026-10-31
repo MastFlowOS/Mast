@@ -558,7 +558,7 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
     }
   });
 
-  test("12. real user cancellation preserves CANCELLED failure semantics", async () => {
+  test("12. real user cancellation preserves USER_CANCELLED failure semantics", async () => {
     const { runEngineQuery } = await import("../pythonBridge.js");
     const lifecycle = await import("../../discovery/requestLifecycle.js");
     const originalPath = env.SCRAPER_ENGINE_PATH;
@@ -593,9 +593,18 @@ describe("runEngineQuery() exit-lifecycle integration", () => {
       assert.equal(deliveredCount, 2);
       assert.ok(doneInfo !== null, "onDone must be called");
       assert.equal(doneInfo.success, false, "success must be false for user cancellation");
-      assert.equal(doneInfo.failureReason, "CANCELLED", "failureReason must remain CANCELLED");
-      assert.equal(doneInfo.terminationReason, "CANCELLED", "terminationReason must remain CANCELLED");
+      assert.equal(doneInfo.terminationReason, "USER_CANCELLED", "terminationReason must be USER_CANCELLED");
+      assert.equal(doneInfo.failureReason, "USER_CANCELLED", "failureReason must be USER_CANCELLED");
+      assert.equal(doneInfo.watchdogReason, undefined, "watchdogReason must be undefined for user cancellation");
+      assert.equal(doneInfo.schedulerReason, "USER_CANCELLED", "schedulerReason must be USER_CANCELLED");
+
       assert.equal(lifecycle.getRequestTerminalReason(requestId), "USER_CANCELLED");
+      const { cityTransitionFor } = await import("../../discovery/cityScheduling.js");
+      const cityReason = cityTransitionFor({ candidatesFound: deliveredCount, acceptedLeads: 0 }, doneInfo.exhausted, doneInfo.terminationReason);
+      assert.notEqual(cityReason, "WATCHDOG_TIMEOUT", "user cancellation must never trigger watchdog retry");
+      assert.notEqual(cityReason, "SCRAPER_FAILURE", "user cancellation must never trigger scraper failure retry");
+      const shouldRetry = (cityReason === "WATCHDOG_TIMEOUT" || cityReason === "SCRAPER_FAILURE");
+      assert.equal(shouldRetry, false, "user cancellation must remain strictly terminal and never retried");
     } finally {
       env.SCRAPER_ENGINE_PATH = originalPath;
       lifecycle.__testing.reset();

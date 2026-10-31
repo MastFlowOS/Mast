@@ -43,6 +43,23 @@ def _on_sigterm(signum, frame):
             ),
             flush=True,
         )
+    elif reason == "USER_CANCELLED":
+        print(
+            json.dumps(
+                {
+                    "__done__": True,
+                    "delivered": delivered_count,
+                    "requested": 20,
+                    "exhausted": False,
+                    "success": False,
+                    "target_reached": False,
+                    "termination_reason": "USER_CANCELLED",
+                    "failure_reason": "USER_CANCELLED",
+                    "failure_detail": f"cooperative shutdown (SIGTERM, reason={reason}) stopped this run before requested quantity",
+                }
+            ),
+            flush=True,
+        )
     else:
         print(
             json.dumps(

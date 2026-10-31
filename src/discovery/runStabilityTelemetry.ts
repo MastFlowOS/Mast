@@ -88,6 +88,9 @@ export type AreaTerminationReason =
   | "SUCCESS_EXHAUSTED"
   | "SUCCESS_CONSUMER_STOPPED"
   | "WATCHDOG_TIMEOUT"
+  | "USER_CANCELLED"
+  | "PROCESS_UNRESPONSIVE"
+  | "DISCOVERY_PROGRESS_TIMEOUT"
   | "CANCELLED"
   | "RETURN_TO_RESULTS_FAILED"
   | "FAILURE"
@@ -123,6 +126,9 @@ export function determineAreaWorkSource(evidence: AreaWorkEvidence): AreaWorkSou
 
   const stoppedEarly =
     evidence.terminationReason === "WATCHDOG_TIMEOUT" ||
+    evidence.terminationReason === "USER_CANCELLED" ||
+    evidence.terminationReason === "PROCESS_UNRESPONSIVE" ||
+    evidence.terminationReason === "DISCOVERY_PROGRESS_TIMEOUT" ||
     evidence.terminationReason === "CANCELLED" ||
     evidence.terminationReason === "FAILURE" ||
     // PHASE 12D: an adaptive area-productivity stop is, from a telemetry-

@@ -101,22 +101,22 @@ describe("enrichBusiness / live gate wiring", () => {
   it("persists the extracted Instagram through resolveInstagramToPersist and never writes a raw/null value", () => {
     assert.notEqual(fnStart, -1);
     assert.match(body, /const siteInstagram = resolveInstagramToPersist\(business\.instagram, site\.instagram\);/);
-    assert.match(body, /instagram: siteInstagram \|\| undefined,/);
-    assert.doesNotMatch(body, /instagram: site\.instagram/, "raw extracted value must never be written");
+    assert.match(body, /p_instagram:\s*siteInstagram\s*\|\|\s*null/);
+    assert.doesNotMatch(body, /p_instagram:\s*site\.instagram/, "raw extracted value must never be written");
     assert.match(body, /instagram: siteInstagram \|\| business\.instagram,/, "validation must use the same normalized value");
   });
 
-  it("writes instagram in the same update as the other enriched columns, before validation/scoring", () => {
-    const writeIdx = body.indexOf("instagram: siteInstagram || undefined,");
-    const updateIdx = body.indexOf('from("businesses").update({');
+  it("writes instagram in the same atomic call as the other enriched columns, before validation/scoring", () => {
+    const writeIdx = body.indexOf("p_instagram: siteInstagram || null");
+    const updateIdx = body.indexOf("callSyncBusinessEnrichmentFingerprints(");
     const validateIdx = body.indexOf("validateLead({");
     assert.ok(updateIdx !== -1 && updateIdx < writeIdx && writeIdx < validateIdx);
   });
 
   it("the live gate re-reads businesses.instagram only after ensureEnriched has completed", () => {
-    const ensureIdx = planSrc.indexOf("await ensureEnriched(businessId);");
-    const rereadIdx = planSrc.indexOf('.select("email, phone, instagram, website")');
-    const gateIdx = planSrc.indexOf("channelsSatisfied(enriched, requestedChannels)");
+    const ensureIdx = planSrc.indexOf("await ensureEnriched(businessId");
+    const rereadIdx = planSrc.indexOf('.select("email, phone, instagram, website');
+    const gateIdx = planSrc.indexOf("channelsSatisfied(deliverable, requestedChannels)");
     assert.ok(ensureIdx !== -1 && rereadIdx !== -1 && gateIdx !== -1);
     assert.ok(ensureIdx < rereadIdx && rereadIdx < gateIdx);
   });

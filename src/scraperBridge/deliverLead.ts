@@ -123,6 +123,17 @@ function extractSignals(lead: EngineLead) {
  * country and nothing else — that country. Otherwise null (unknown): a
  * continent-wide request must never fabricate a country.
  */
+/**
+ * Strict fail-closed policy:
+ * Offline/legacy test fallback is permitted ONLY when NODE_ENV is explicitly "development" or "test".
+ * For "production", missing (unset), empty, "staging", or any unexpected environment,
+ * atomic RPC failure must produce a hard failure.
+ */
+export function isLegacyFallbackPermitted(): boolean {
+  const env = process.env.NODE_ENV;
+  return env === "test" || env === "development";
+}
+
 export function resolveBusinessCountryCode(lead: EngineLead, region: string): string | null {
   const direct = countryCodeFrom(lead.country_code) ?? countryCodeFrom(lead.country);
   if (direct) return direct;
@@ -166,6 +177,99 @@ export async function upsertBusinessFromEngineLead(
    */
   scrapeJobId?: string | null,
 ) {
+  // Phase 7.1: Try atomic database-backed identity resolution first
+  const placeId = lead.place_id || (lead.fingerprints?.find((fp: string) => fp.startsWith("place:"))?.slice("place:".length)) || null;
+  const fingerprints = lead.fingerprints ?? [];
+
+  try {
+    const { data: rpcData, error: rpcError } = await (supabaseAdmin as any).rpc("upsert_business_from_fingerprints", {
+      p_name: lead.name || "Unnamed Business",
+      p_category: lead.category || null,
+      p_niche: normalizeDiscoveryNiche(lead.niche),
+      p_query_used: lead.query || null,
+      p_region: region || lead.region || null,
+      p_country_code: resolveBusinessCountryCode(lead, region),
+      p_address: lead.address || null,
+      p_website: lead.website || null,
+      p_email: lead.email || null,
+      p_phone: lead.phone || null,
+      p_instagram: lead.instagram || null,
+      p_facebook: lead.facebook || null,
+      p_linkedin: lead.linkedin || null,
+      p_emails: lead.emails ?? [],
+      p_phones: lead.phones ?? [],
+      p_field_provenance: buildFieldTrust(lead),
+      p_website_is_weak: lead.website_is_weak ?? null,
+      p_ssl_valid: lead.ssl_valid ?? null,
+      p_load_time_ms: lead.load_time_ms ?? null,
+      p_seo: lead.seo ?? {},
+      p_blog: lead.blog ?? {},
+      p_reviews_count: lead.reviews ?? (typeof lead.review_count === "number" ? lead.review_count : 0),
+      p_reviews_rating: lead.rating ?? null,
+      p_has_photos: Boolean(lead.has_photos),
+      p_is_disqualified: Boolean(lead.is_disqualified),
+      p_signals: extractSignals(lead) as Json,
+      p_raw_data: lead as unknown as Json,
+      p_fingerprints: fingerprints,
+      p_place_id: placeId,
+    });
+
+    if (!rpcError && rpcData && rpcData.length > 0) {
+      const outcome = rpcData[0];
+      if (outcome.action === "ambiguous") {
+        const idList = outcome.ambiguous_ids?.join(", ") || "unknown";
+        console.warn(`[deliverLead] ambiguous business match for candidate "${lead.name}" (IDs: ${idList})`);
+        throw new Error(`Ambiguous business match for candidate "${lead.name}": uncertain branch identity or matched multiple business IDs (${idList})`);
+      }
+
+      const isExisting = outcome.action === "updated";
+      logDedupWasteDecision(
+        buildDedupWasteLogFields({
+          scrapeJobId,
+          pipelineId: lead._pipeline_id ?? null,
+          fingerprints: lead.fingerprints,
+          existingBusiness: isExisting,
+          isGlobalBusinessMatch: isExisting,
+          rejectionReason: isExisting ? "existing_business_match" : null,
+          website: lead.website,
+          instagram: lead.instagram,
+          email: lead.email,
+          phone: lead.phone,
+          emails: lead.emails,
+          phones: lead.phones,
+        }),
+      );
+
+      onStage?.("BUSINESS_UPSERTED");
+      return outcome.business_id as string;
+    }
+
+    if (rpcError) {
+      const errMsg = rpcError.message || String(rpcError);
+      // In production, unset, empty, staging, or unexpected environments, never fall back.
+      if (!isLegacyFallbackPermitted()) {
+        throw new Error(`[deliverLead] Fail-closed atomic upsert RPC failed (NODE_ENV=${process.env.NODE_ENV ?? "unset"}): ${errMsg} (code: ${rpcError.code || "unknown"})`);
+      }
+      if (!errMsg.includes("does not exist") && !errMsg.includes("function") && rpcError.code !== "42883") {
+        throw rpcError;
+      }
+    }
+  } catch (rpcErr) {
+    if (!isLegacyFallbackPermitted()) {
+      throw rpcErr instanceof Error ? rpcErr : new Error(String(rpcErr));
+    }
+    const errMsg = rpcErr instanceof Error ? rpcErr.message : String(rpcErr);
+    if (!errMsg.includes("does not exist") && !errMsg.includes("function") && (rpcErr as any)?.code !== "42883") {
+      throw rpcErr;
+    }
+  }
+
+  // Strict fail-closed guard: never proceed to legacy fallback outside of explicit development/test.
+  if (!isLegacyFallbackPermitted()) {
+    throw new Error(`[deliverLead] Atomic upsert failed: empty response from upsert_business_from_fingerprints (NODE_ENV=${process.env.NODE_ENV ?? "unset"})`);
+  }
+
+  // Fallback for environments where migration 047 is not yet active (e.g. offline unit test harnesses):
   const existing = await findExistingBusiness(lead.fingerprints);
 
   // Phase 3C-4A — pure observability: logs the final duplicate decision
@@ -386,6 +490,78 @@ export async function insertLeadForUser(
     throw new Error("insertLeadForUser: dailyLimit/monthlyLimit are required when userId is set");
   }
 
+  // Phase 7.1: Try atomic database delivery & billing RPC first
+  try {
+    const leadRow = toLeadRow(business, ctx, extra);
+    const { data, error } = await (supabaseAdmin as any).rpc("deliver_lead_for_user", {
+      p_user_id: ctx.userId,
+      p_business_id: business.id,
+      p_lead_row: leadRow,
+      p_daily_limit: ctx.dailyLimit,
+      p_monthly_limit: ctx.monthlyLimit,
+      p_discovery_plan_id: ctx.discoveryPlanId ?? null,
+    });
+
+    if (!error && data && data.length > 0) {
+      const res = data[0];
+      if (res.status === "delivered") {
+        const sourceLabel =
+          ctx.discoveryMode === "live"
+            ? "Live Discovery"
+            : ctx.discoveryMode === "instant_pool_ranked"
+              ? "Instant Discovery (Opportunity-ranked)"
+              : "Instant Discovery";
+
+        if (res.lead_id) {
+          const { error: activityError } = await supabaseAdmin.from("lead_activities").insert({
+            lead_id: res.lead_id,
+            user_id: ctx.userId,
+            type: "opportunity_discovered",
+            timestamp: new Date().toISOString(),
+            content: `Opportunity discovered via ${sourceLabel}.`,
+          });
+          if (activityError) {
+            console.error("[deliverLead] failed to seed lead_activities:", activityError.message);
+          }
+        }
+
+        onStage?.("LEAD_INSERTED");
+        return { businessId: business.id, wasNewForUser: true };
+      }
+      if (res.status === "duplicate") {
+        return { businessId: business.id, wasNewForUser: false };
+      }
+      if (res.status === "plan_limit_reached" || res.status === "credit_limit_reached") {
+        return { businessId: business.id, wasNewForUser: false, limitReached: true };
+      }
+    }
+
+    if (error) {
+      const errMsg = error.message || String(error);
+      // In production, unset, empty, staging, or unexpected environments, never fall back.
+      if (!isLegacyFallbackPermitted()) {
+        throw new Error(`[deliverLead] Fail-closed atomic lead delivery RPC failed (NODE_ENV=${process.env.NODE_ENV ?? "unset"}): ${errMsg} (code: ${error.code || "unknown"})`);
+      }
+      if (!errMsg.includes("does not exist") && !errMsg.includes("function") && error.code !== "42883") {
+        throw error;
+      }
+    }
+  } catch (rpcErr) {
+    if (!isLegacyFallbackPermitted()) {
+      throw rpcErr instanceof Error ? rpcErr : new Error(String(rpcErr));
+    }
+    const errMsg = rpcErr instanceof Error ? rpcErr.message : String(rpcErr);
+    if (!errMsg.includes("does not exist") && !errMsg.includes("function") && (rpcErr as any)?.code !== "42883") {
+      throw rpcErr;
+    }
+  }
+
+  // Strict fail-closed guard: never proceed to legacy fallback outside of explicit development/test.
+  if (!isLegacyFallbackPermitted()) {
+    throw new Error(`[deliverLead] Atomic lead delivery failed: empty response from deliver_lead_for_user (NODE_ENV=${process.env.NODE_ENV ?? "unset"})`);
+  }
+
+  // Fallback for environments without migration 047 (e.g. offline unit test harnesses):
   // Skip the reservation entirely for a business this user already has —
   // avoids charging-then-refunding on the common case (re-discovering the
   // same business across requests), not just the rare race.

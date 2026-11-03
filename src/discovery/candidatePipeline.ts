@@ -49,6 +49,7 @@ export interface ProcessCandidateParams {
   effectiveScoutId: number;
   areaLabel?: string;
   pipelineId?: string;
+  attemptId?: string | number;
   requestedChannels: string[];
   userId: string;
   professionSlug?: string | null;
@@ -65,6 +66,37 @@ export type ProcessCandidateResult =
   | { outcome: "rejected"; reason: string; missingChannels?: string[] }
   | { outcome: "duplicate"; businessId: string }
   | { outcome: "limit_reached" };
+
+/**
+ * Builds a deterministic correlation ID for candidate tracing.
+ *
+ * Rules:
+ * 1. If placeId is present, returns `place:${placeId}` (canonical business identity
+ *    shared across all attempts, areas, and retries).
+ * 2. If placeId is absent, returns an attempt-scoped correlation ID:
+ *    `scout_${effectiveScoutId}_att${attemptId}:${rawPid}`
+ *    guaranteeing that different sequential area attempts or retries within
+ *    the same pool worker slot never collide on raw subprocess IDs (e.g. #1).
+ */
+export function buildCandidateCorrelationId(params: {
+  placeId?: string | null;
+  effectiveScoutId?: number;
+  attemptId?: string | number;
+  rawPid?: string | null;
+  discoveredSeq?: number;
+}): string {
+  if (params.placeId) {
+    return `place:${params.placeId}`;
+  }
+  const raw = params.rawPid ?? `local:${params.discoveredSeq ?? 1}`;
+  const scout = params.effectiveScoutId ?? 1;
+  let attemptPart = "";
+  if (params.attemptId != null && params.attemptId !== "") {
+    const rawAtt = String(params.attemptId);
+    attemptPart = rawAtt.startsWith("att") ? `_${rawAtt}` : `_att${rawAtt}`;
+  }
+  return `scout_${scout}${attemptPart}:${raw}`;
+}
 
 /**
  * Canonical candidate processing pipeline shared between Cloud Workers
@@ -87,7 +119,15 @@ export async function processDiscoveredCandidate(
   customDeps?: Partial<typeof candidatePipelineDeps>,
 ): Promise<ProcessCandidateResult> {
   const deps = { ...candidatePipelineDeps, ...customDeps };
-  const pid = params.pipelineId ?? params.lead._pipeline_id ?? `lead:${Date.now()}`;
+  const placeId = (typeof params.lead.place_id === "string" ? params.lead.place_id : undefined) ||
+    params.lead.fingerprints?.find((fp: string) => fp.startsWith("place:"))?.slice("place:".length) || null;
+  const rawPid = params.lead._pipeline_id;
+  const pid = params.pipelineId ?? buildCandidateCorrelationId({
+    placeId,
+    effectiveScoutId: params.effectiveScoutId,
+    attemptId: params.attemptId,
+    rawPid: rawPid || String(Date.now()),
+  });
   const funnel = getCandidateFunnelTracker(params.planId);
 
   // 1. Candidate discovery
@@ -187,7 +227,7 @@ export async function processDiscoveredCandidate(
         return { outcome: "rejected", reason: "pipeline_aborted" };
       }
       try {
-        await deps.ensureEnriched(businessId);
+        await deps.ensureEnriched(businessId, { requiredChannels: params.requestedChannels });
         if (requestedChannels.includes("instagram")) {
           await deps.ensureIntelligence(businessId);
         }
@@ -248,6 +288,7 @@ export async function processDiscoveredCandidate(
       const cat = reason.includes("website") ? "missing_website" : "missing_contact";
       const missingNow = requestedChannels.filter((c) => !channelsSatisfied(deliverable, [c]));
       funnel.recordMissingChannelRejection(missingNow, pid);
+      console.log(`[candidate-audit][${pid}] stage=post_enrichment_channel_gate decision=rejected missing=${JSON.stringify(missingNow)}`);
       deps.publishDiscoveryLiveEvent(
         candidateRejectedEvent(params.planId, params.effectiveScoutId, pid, reason, params.areaLabel, params.lead.name, cat),
       );

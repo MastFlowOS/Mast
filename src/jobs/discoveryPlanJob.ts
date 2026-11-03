@@ -6,6 +6,7 @@ import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.j
 import { validateLead, isValidPhone, isValidEmail } from "../lib/leadValidation.js";
 import { expandPlaceIdForms } from "../lib/placeId.js";
 import { getCandidateFunnelTracker, type ContactSource } from "../discovery/candidateFunnelTelemetry.js";
+import { buildCandidateCorrelationId } from "../discovery/candidatePipeline.js";
 import { deliverLead, upsertBusinessFromEngineLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { materializeDiscoveryPlan, dispatchQueuedDiscoveryTasks, DISCOVERY_TASK_RETRY_OPTIONS, type DiscoveryPlanRequest } from "../discovery/planner.js";
 import { enqueueBusinessProcessing, ensureEnriched, ensureIntelligence } from "./businessProcessingJob.js";
@@ -329,9 +330,11 @@ async function runOneAreaAttempt(
     provider: ReturnType<typeof getProvider>;
     generator: ReturnType<typeof getGenerator>;
     requestAbort: AbortController;
-    observeTerminalPlan: () => Promise<RequestTerminalReason | undefined>;
+    observeTerminalPlan: (forceFresh?: boolean) => Promise<RequestTerminalReason | undefined>;
+    getLastPlanData?: () => any;
     startedAt: number;
     budgetCoordinator?: CandidateBudgetCoordinator;
+    nextAttemptId?: () => string | number;
   },
   area: string | undefined,
   street?: string,
@@ -343,6 +346,7 @@ async function runOneAreaAttempt(
    * construction, the only worker running for this task.
    */
   scoutId?: number,
+  attemptId?: string | number,
 ): Promise<AreaAttemptResult> {
   const {
     db,
@@ -422,7 +426,15 @@ async function runOneAreaAttempt(
 
   // Outer loop: one iteration per SearchQuery (most providers produce one;
   // multi-query providers like future Yelp may produce several per niche).
-  outer: for (const searchQuery of searchQueries) {
+  // Each iteration launches a distinct Python subprocess via provider.search(),
+  // so each query allocates its own attempt ID.
+  outer: for (let qIdx = 0; qIdx < searchQueries.length; qIdx++) {
+    const searchQuery = searchQueries[qIdx];
+    // Guarantee that separate subprocesses never reuse the same attempt ID, even if
+    // an optional static attemptId parameter was supplied by a caller:
+    const currentAttemptId = ctx.nextAttemptId
+      ? ctx.nextAttemptId()
+      : (attemptId != null ? (qIdx === 0 ? String(attemptId) : `${attemptId}_${qIdx + 1}`) : undefined);
     const searchIterable = provider.search(
       searchQuery,
       searchTarget,
@@ -511,14 +523,13 @@ async function runOneAreaAttempt(
 
       // ── Mid-loop cancellation check ─────────────────────────────────────
       const tMid = profiler.timer("mid_loop_cancel_check");
-      const { data: midCheck } = await db.from("discovery_plans")
-        .select("status, delivered_count, requested_count").eq("id", payload.planId).maybeSingle();
+      const terminalCheck = await observeTerminalPlan();
       tMid.end();
+      const midCheck = ctx.getLastPlanData ? ctx.getLastPlanData() : null;
       if (midCheck) {
         console.info(`[discovery-plan] progress delivered=${midCheck.delivered_count}/${midCheck.requested_count} (plan-level target denominator)`);
       }
-      if (terminalReasonForPlan(midCheck)) {
-        await observeTerminalPlan();
+      if (terminalCheck) {
         break;
       }
 
@@ -527,7 +538,16 @@ async function runOneAreaAttempt(
         if (fp.startsWith("place:")) knownPlaceIds.push(fp.slice("place:".length));
         else if (fp.startsWith("map:")) knownPlaceIds.push(fp.slice("map:".length));
       }
-      const pid = lead._pipeline_id ?? `local:${discovered}`;
+      const placeId = (typeof lead.place_id === "string" ? lead.place_id : undefined) ||
+        lead.fingerprints?.find((fp: string) => fp.startsWith("place:"))?.slice("place:".length) || null;
+      const rawPid = lead._pipeline_id ?? `local:${discovered}`;
+      const pid = buildCandidateCorrelationId({
+        placeId,
+        effectiveScoutId,
+        attemptId: currentAttemptId,
+        rawPid,
+        discoveredSeq: discovered,
+      });
       const funnel = getCandidateFunnelTracker(payload.planId);
       funnel.recordDiscovered(pid);
       traceLog(`PIPELINE ${pid}`);
@@ -676,7 +696,7 @@ async function runOneAreaAttempt(
             traceLog(`ENSURE_ENRICHED_START`);
             try {
               const tEnsure = profiler.timer("ensure_enriched");
-              await ensureEnriched(businessId);
+              await ensureEnriched(businessId, { requiredChannels: requestedChannels });
               tEnsure.end();
               traceLog(`ENSURE_ENRICHED_END duration=${Date.now() - tEnsureStart}ms`);
             } catch (enrichErr) {
@@ -707,7 +727,9 @@ async function runOneAreaAttempt(
               funnel.recordMissingChannelRejection(missingNow, pid);
               traceLog(`PIPELINE ${pid}`);
               traceLog(`EXITED HERE`);
-              traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},row=${JSON.stringify(enriched)}`);
+              const contactAudit = (enriched?.signals as Record<string, unknown> | undefined)?.contact_audit as Record<string, unknown> | undefined;
+              traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},missing=${JSON.stringify(missingNow)},reachable=${enriched?.website_reachable},homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false},row=${JSON.stringify(enriched)}`);
+              console.log(`[candidate-audit][${pid}] stage=post_enrichment_channel_gate decision=rejected missing=${JSON.stringify(missingNow)} reachable=${enriched?.website_reachable} homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false}`);
               publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
               return;
             }
@@ -761,7 +783,7 @@ async function runOneAreaAttempt(
             traceLog(`EXITED HERE`);
             traceLog(`reason=plan_limit_reached:no leads row inserted,delivery=${JSON.stringify(delivery)}`);
             publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, "plan_limit_reached", areaLabel));
-            await observeTerminalPlan();
+            await observeTerminalPlan(true);
             return;
           }
           if (!delivery.wasNewForUser) {
@@ -793,7 +815,7 @@ async function runOneAreaAttempt(
               `elapsed_ms=${elapsedMs} leads_per_min=${leadsPerMin} raw_per_min=${rawPerMin}`,
           );
           console.log(`FINISHED`);
-          await observeTerminalPlan();
+          await observeTerminalPlan(true);
         } catch (taskErr) {
           const message = taskErr instanceof Error ? taskErr.message : String(taskErr);
           console.error(`[discoveryPlanJob] unhandled candidate task failure for pid=${pid}:`, taskErr);
@@ -822,7 +844,7 @@ async function runOneAreaAttempt(
     const { data: afterQuery } = await db.from("discovery_plans")
       .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
     if (requestAbort.signal.aborted || terminalReasonForPlan(afterQuery)) {
-      await observeTerminalPlan();
+      await observeTerminalPlan(true);
       break;
     }
   } // end outer search-query loop
@@ -1166,11 +1188,22 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
   // not yielded another lead yet.
   const requestAbort = new AbortController();
   const unregisterRequestAbort = registerRequestAbortController(payload.planId, requestAbort);
-  const observeTerminalPlan = async (): Promise<RequestTerminalReason | undefined> => {
+  let lastPlanCheckAt = 0;
+  let lastPlanData: any = null;
+  let lastTerminalReason: RequestTerminalReason | undefined = undefined;
+
+  const observeTerminalPlan = async (forceFresh = false): Promise<RequestTerminalReason | undefined> => {
+    const now = Date.now();
+    if (!forceFresh && now - lastPlanCheckAt < 250 && lastPlanData !== null) {
+      return lastTerminalReason;
+    }
     const { data } = await db.from("discovery_plans")
       .select("status, delivered_count, requested_count, terminal_reason")
       .eq("id", payload.planId).maybeSingle();
+    lastPlanCheckAt = Date.now();
+    lastPlanData = data;
     const reason = terminalReasonForPlan(data);
+    lastTerminalReason = reason;
     if (reason) terminateRequest(payload.planId, reason);
     return reason;
   };
@@ -1341,6 +1374,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     const cityCandidateBudget = task.candidate_budget ?? 40;
     const budgetCoordinator = new CityCandidateBudgetCoordinator(cityCandidateBudget);
 
+    const funnel = getCandidateFunnelTracker(payload.planId);
+    const taskAttempt = (task.attempts ?? 0) + 1;
     const attemptCtx = {
       db,
       task,
@@ -1350,8 +1385,10 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       generator,
       requestAbort,
       observeTerminalPlan,
+      getLastPlanData: () => lastPlanData,
       startedAt,
       budgetCoordinator,
+      nextAttemptId: () => funnel.nextAttemptId(taskAttempt),
     };
 
     // terminalReason declared above

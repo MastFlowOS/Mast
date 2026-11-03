@@ -23,6 +23,7 @@ from typing import Iterator
 
 _DEFAULT_MAX_RESPONSE_BYTES = 2_000_000
 _DEFAULT_MAX_CONCURRENT_FETCHES = 24
+_DEFAULT_MAX_CONCURRENT_RENDERERS = 2
 
 
 def _env_int(name: str, default: int, *, minimum: int) -> int:
@@ -43,7 +44,12 @@ MAX_CONCURRENT_FETCHES = _env_int(
     "MAST_MAX_CONCURRENT_FETCHES", _DEFAULT_MAX_CONCURRENT_FETCHES, minimum=1
 )
 
+MAX_CONCURRENT_RENDERERS = _env_int(
+    "MAST_MAX_CONCURRENT_RENDERERS", _DEFAULT_MAX_CONCURRENT_RENDERERS, minimum=1
+)
+
 _FETCH_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_FETCHES)
+_RENDER_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_RENDERERS)
 
 #: Statuses that never succeed on retry. 429/5xx are NOT here: they are
 #: transient and keep their bounded retry.
@@ -73,3 +79,16 @@ def fetch_slot() -> Iterator[None]:
         yield
     finally:
         _FETCH_SEMAPHORE.release()
+
+
+@contextlib.contextmanager
+def render_slot(timeout: float = 4.0) -> Iterator[None]:
+    """Hold one of the bounded global browser rendering slots AND a fetch slot."""
+    with fetch_slot():
+        acquired = _RENDER_SEMAPHORE.acquire(timeout=timeout)
+        if not acquired:
+            raise TimeoutError("All browser rendering slots are currently busy")
+        try:
+            yield
+        finally:
+            _RENDER_SEMAPHORE.release()

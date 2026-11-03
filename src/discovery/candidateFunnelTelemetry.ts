@@ -67,10 +67,11 @@ export interface CandidateFunnelSnapshot {
   breakdowns: CandidateFunnelBreakdowns;
 }
 
-class PlanFunnelTracker {
+export class PlanFunnelTracker {
   private readonly planId: string;
   private readonly seenPipelines = new Set<string>();
   private retries = 0;
+  private attemptSeq = 0;
 
   private readonly counts: CandidateFunnelCounts = {
     mapsDiscovered: 0,
@@ -101,6 +102,16 @@ class PlanFunnelTracker {
 
   constructor(planId: string) {
     this.planId = planId;
+  }
+
+  /**
+   * Allocates a monotonic attempt identifier scoped to the lifetime of this tracker (the plan).
+   * Guarantees that separate tasks, sequential area attempts, retries, and concurrent workers
+   * within this plan never receive colliding attempt IDs.
+   */
+  nextAttemptId(taskAttempt?: number): string {
+    const seq = ++this.attemptSeq;
+    return taskAttempt != null ? `${taskAttempt}_${seq}` : `${seq}`;
   }
 
   private registerCandidate(pipelineId?: string): boolean {

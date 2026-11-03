@@ -133,6 +133,7 @@ from typing import Optional
 from engine.contracts import BusinessCandidate, InstagramIntel
 from utils.egress_guard import (
     LocalIsolationRedirectHandler,
+    assert_safe_egress_url,
     assert_loopback_url,
     is_local_isolation_enforced,
 )
@@ -246,12 +247,9 @@ class InstagramWorker(BaseWorker[BusinessCandidate, InstagramIntel]):
         # definitive 404/410 is False.
         start = time.monotonic()
         try:
-            if is_local_isolation_enforced():
-                assert_loopback_url(item.instagram_url)
-                opener = urllib.request.build_opener(LocalIsolationRedirectHandler())
-                fetch_ctx = opener.open(request, timeout=self._timeout)
-            else:
-                fetch_ctx = urllib.request.urlopen(request, timeout=self._timeout)
+            assert_safe_egress_url(item.instagram_url, resolve_dns=False)
+            opener = urllib.request.build_opener(LocalIsolationRedirectHandler())
+            fetch_ctx = opener.open(request, timeout=self._timeout)
             with fetch_slot(), fetch_ctx as response:
                 elapsed = time.monotonic() - start
                 final_url = response.geturl() or ""

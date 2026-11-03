@@ -26,22 +26,36 @@ Data extracted per place:
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
-import sys
 import random
 import re
+import signal
+import subprocess
+import sys
 import time
+
+SIGKILL = getattr(signal, "SIGKILL", 9)
+SIGTERM = getattr(signal, "SIGTERM", 15)
 from dataclasses import dataclass, field
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from urllib.parse import urlencode, urlparse, quote_plus
 
-from playwright.async_api import (
-    async_playwright,
-    Browser,
-    BrowserContext,
-    Page,
-    TimeoutError as PlaywrightTimeoutError,
-)
+try:
+    from playwright.async_api import (
+        async_playwright,
+        Browser,
+        BrowserContext,
+        Page,
+        TimeoutError as PlaywrightTimeoutError,
+    )
+except ImportError:
+    async_playwright = None  # type: ignore
+    Browser = Any  # type: ignore
+    BrowserContext = Any  # type: ignore
+    Page = Any  # type: ignore
+    class PlaywrightTimeoutError(Exception):  # type: ignore
+        pass
 
 from utils.parsing import (
     CANNABIS_KEYWORDS,
@@ -64,12 +78,18 @@ from utils.runtime import (
     ProxyManager,
     retry,
 )
-from utils.lifecycle_tracker import install_tracker, track_browser_created, log_milestone, get_memory_usage
 from utils.perf import NullProfiler
 from exceptions import DiscoveryFailure, DiscoveryFailureReason
 from utils.place_id import canonical_place_id, expand_place_id_forms
 from street_inventory.classifier import is_address_on_street
-install_tracker()
+try:
+    from utils.lifecycle_tracker import install_tracker, track_browser_created, log_milestone, get_memory_usage
+    install_tracker()
+except ImportError:
+    def install_tracker(): pass
+    def track_browser_created(): pass
+    def log_milestone(*a, **k): pass
+    def get_memory_usage(): return 0.0
 
 log = get_logger("maps")
 
@@ -859,16 +879,13 @@ _PLACE_GID_RE = re.compile(r"/g/([A-Za-z0-9_-]+)")
 # Maps' markup for this isn't stable, so several are tried in order.
 _BACK_BUTTON_SELECTORS = [
     "button[aria-label='Back to results']",
-    "button[aria-label='Back']",
     "button[aria-label*='back to results' i]",
-    "button[aria-label*='Back' i]",
     "button[jsaction*='pane.backButton']",
     "button[data-tooltip*='Back to results' i]",
-    "button[data-tooltip*='Back' i]",
+    "button[aria-label='Back']",
+    "button[data-tooltip='Back']",
     "button[aria-label='Close']",
     "button[jsaction*='reveal.card.close']",
-    "button.hYBOP",
-    "span.google-symbols.mL3xi",
 ]
 
 
@@ -1278,6 +1295,180 @@ async def _wait_for_verified_panel_identity(
         await asyncio.sleep(0.04)
 
 
+def _is_target_closed_or_crashed_error(exc: BaseException) -> bool:
+    """Return True if exc represents a closed or crashed browser/page/context target."""
+    msg = str(exc).lower()
+    return any(
+        phrase in msg
+        for phrase in (
+            "target crashed",
+            "page crashed",
+            "target closed",
+            "target page, context or browser has been closed",
+            "browser has been closed",
+            "browser closed",
+            "page has been closed",
+            "connection closed",
+            "session closed",
+            "execution context was destroyed",
+        )
+    )
+
+
+def _mark_page_crashed(page: Page | None) -> None:
+    """Explicitly flag a page target as dead when an unrecoverable renderer/context crash occurs,
+    even if page.is_closed() or context.is_closed() has not yet transitioned."""
+    if page is not None:
+        try:
+            setattr(page, "_mast_target_crashed", True)
+        except Exception:
+            pass
+
+
+def _is_page_alive(page: Page | None) -> bool:
+    """Safely check if the page and its underlying context are alive and not closed."""
+    if page is None:
+        return False
+    if getattr(page, "_mast_target_crashed", False):
+        return False
+    if hasattr(page, "is_closed"):
+        try:
+            if page.is_closed():
+                return False
+        except Exception:
+            return False
+    if hasattr(page, "context"):
+        try:
+            ctx = page.context
+            if hasattr(ctx, "is_closed") and ctx.is_closed():
+                return False
+        except Exception:
+            pass
+    return True
+
+
+async def _is_feed_ready(page: Page, panel_selector: str) -> bool:
+    """Return True if the search results feed container is mounted, visible, contains
+    active result cards, the active search query remains intact, and the place detail
+    pane is conclusively closed."""
+    if not _is_page_alive(page):
+        return False
+    try:
+        feed_el = await page.query_selector(panel_selector)
+        if feed_el is None:
+            return False
+        if await _is_detail_pane_open(page, feed_el):
+            return False
+
+        if hasattr(feed_el, "is_visible"):
+            try:
+                if not await feed_el.is_visible():
+                    return False
+            except Exception as vis_err:
+                if _is_target_closed_or_crashed_error(vis_err):
+                    _mark_page_crashed(page)
+                return False
+
+        card_anchor = None
+        if hasattr(feed_el, "query_selector"):
+            try:
+                card_anchor = await feed_el.query_selector("a[href*='/maps/place/']")
+                if card_anchor is None:
+                    return False
+                if hasattr(card_anchor, "is_visible"):
+                    try:
+                        if not await card_anchor.is_visible():
+                            return False
+                    except Exception as card_vis_err:
+                        if _is_target_closed_or_crashed_error(card_vis_err):
+                            _mark_page_crashed(page)
+                        return False
+            except Exception as card_err:
+                if _is_target_closed_or_crashed_error(card_err):
+                    _mark_page_crashed(page)
+                return False
+
+        # Verify place card is actionable and not obstructed by an unrelated modal or dialog overlay
+        for overlay_sel in ("div[role='dialog']", "div[aria-modal='true']", "div.widget-pane-overlay", "div.modal-open"):
+            try:
+                overlay = await page.query_selector(overlay_sel)
+                if overlay is not None:
+                    if hasattr(overlay, "is_visible"):
+                        try:
+                            if await overlay.is_visible():
+                                return False
+                        except Exception as ov_vis_err:
+                            if _is_target_closed_or_crashed_error(ov_vis_err):
+                                _mark_page_crashed(page)
+                            return False
+                    else:
+                        return False
+            except Exception as ov_err:
+                if _is_target_closed_or_crashed_error(ov_err):
+                    _mark_page_crashed(page)
+                return False
+
+        if card_anchor is not None and hasattr(card_anchor, "evaluate"):
+            try:
+                is_obstructed = await card_anchor.evaluate("""el => {
+                    if (!el) return false;
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) return true;
+                    const cx = rect.left + rect.width / 2;
+                    const cy = rect.top + rect.height / 2;
+                    if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) {
+                        return false;
+                    }
+                    const topEl = document.elementFromPoint(cx, cy);
+                    if (!topEl) return false;
+                    return topEl !== el && !el.contains(topEl) && !topEl.contains(el);
+                }""")
+                if is_obstructed:
+                    return False
+            except Exception as obs_err:
+                if _is_target_closed_or_crashed_error(obs_err):
+                    _mark_page_crashed(page)
+                return False
+
+        curr_url = getattr(page, "url", "") or ""
+        if curr_url in ("https://www.google.com/maps", "https://www.google.com/maps/"):
+            return False
+
+        if hasattr(page, "query_selector"):
+            try:
+                search_input = await page.query_selector("input#searchboxinput, input[name='q'], #searchbox input")
+                if search_input is not None and hasattr(search_input, "get_attribute"):
+                    val = await search_input.get_attribute("value")
+                    if val is not None and val == "":
+                        return False
+            except Exception as inp_err:
+                if _is_target_closed_or_crashed_error(inp_err):
+                    _mark_page_crashed(page)
+                return False
+
+        return True
+    except Exception as exc:
+        if _is_target_closed_or_crashed_error(exc):
+            _mark_page_crashed(page)
+        return False
+
+
+async def _wait_for_feed_restored(page: Page, panel_selector: str, timeout_s: float = 1.5) -> bool:
+    """Bounded poll waiting for results feed readiness and detail pane closure."""
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while asyncio.get_event_loop().time() < deadline:
+        if not _is_page_alive(page):
+            return False
+        try:
+            if await _is_feed_ready(page, panel_selector):
+                return True
+        except Exception as exc:
+            if _is_target_closed_or_crashed_error(exc):
+                return False
+        await asyncio.sleep(0.04)
+    return False
+
+
 async def _return_to_results(
     page: Page,
     panel_selector: str,
@@ -1285,6 +1476,7 @@ async def _return_to_results(
     config: ScraperConfig,
     profiler=None,
     force_reset: bool = False,
+    on_progress: "Callable[[str, str, str | None], None] | None" = None,
 ) -> bool:
     """Navigate from a place's detail pane back to the results feed and verify
     that the detail pane has closed (or results-only state holds).
@@ -1298,79 +1490,140 @@ async def _return_to_results(
         config, "scroll_settle_timeout_ms", 2500
     )
 
-    with prof.timer("return_to_results"):
-        feed_el = await page.query_selector(panel_selector)
-        curr_url = getattr(page, "url", "") or ""
-        if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
-            if not (force_reset and "/maps/place/" in curr_url):
-                return True
-
-        # 1. Keyboard Escape to dismiss the detail pane without DOM manipulation or history navigation
-        if hasattr(page, "keyboard") and hasattr(page.keyboard, "press"):
+    def _emit(event: str, item_id: str | None = None) -> None:
+        if on_progress is not None:
             try:
-                await page.keyboard.press("Escape")
-                esc_deadline = asyncio.get_event_loop().time() + 0.3
-                while asyncio.get_event_loop().time() < esc_deadline:
-                    feed_el = await page.query_selector(panel_selector)
-                    if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
-                        if not (force_reset and "/maps/place/" in (getattr(page, "url", "") or "")):
-                            return True
-                    await asyncio.sleep(0.03)
+                on_progress("discovery", event, item_id)
             except Exception:
                 pass
 
-        # 2. In-DOM back button click
+    def _emit_crash(exc_or_reason: BaseException | str) -> None:
+        _mark_page_crashed(page)
+        msg = str(exc_or_reason).lower()
+        if "context" in msg:
+            _emit("browser_context_closed", str(exc_or_reason)[:60])
+        elif hasattr(page, "context"):
+            try:
+                ctx = page.context
+                if hasattr(ctx, "is_closed") and ctx.is_closed():
+                    _emit("browser_context_closed", str(exc_or_reason)[:60])
+                    return
+            except Exception:
+                pass
+            _emit("browser_page_crashed", str(exc_or_reason)[:60])
+        else:
+            _emit("browser_page_crashed", str(exc_or_reason)[:60])
+
+    if not _is_page_alive(page):
+        prof.incr("return_to_results_crashed_page")
+        _emit_crash("page_closed_before_return")
+        return False
+
+    with prof.timer("return_to_results"):
+        _emit("return_attempt_started")
+        curr_url = getattr(page, "url", "") or ""
+
+        # Step 0: Check if feed is already ready without navigation
+        if await _is_feed_ready(page, panel_selector):
+            if not (force_reset and "/maps/place/" in curr_url):
+                _emit("search_feed_restored", "already_ready")
+                return True
+
+        feed_el = None
+        try:
+            feed_el = await page.query_selector(panel_selector)
+        except Exception as e:
+            if _is_target_closed_or_crashed_error(e):
+                _emit_crash(e)
+                return False
+
+        # Step 1: In-DOM place detail back button click (primary native action)
         for sel in _BACK_BUTTON_SELECTORS:
+            if not _is_page_alive(page):
+                _emit_crash("page_closed_during_back_button_scan")
+                return False
             try:
                 btn = await page.query_selector(sel)
                 if not btn or btn is feed_el:
                     continue
+                # Protect against searchbox clear/close buttons
+                if hasattr(btn, "get_attribute"):
+                    try:
+                        jsaction = await btn.get_attribute("jsaction") or ""
+                        aria_label = await btn.get_attribute("aria-label") or ""
+                        if "searchbox" in jsaction or aria_label.lower() in ("clear search",):
+                            continue
+                    except Exception:
+                        pass
                 if hasattr(btn, "is_visible"):
                     try:
                         if not await btn.is_visible():
                             continue
                     except Exception:
                         pass
+
+                _emit("return_action_selected", "back_button")
                 try:
                     await btn.click(timeout=min(2000, timeout_ms))
-                except Exception:
+                    _emit("return_action_executed", sel)
+                except Exception as click_err:
+                    if _is_target_closed_or_crashed_error(click_err):
+                        _emit_crash(click_err)
+                        return False
                     if hasattr(btn, "evaluate"):
-                        await btn.evaluate("el => el.click()")
-            except Exception:
+                        try:
+                            await btn.evaluate("el => el.click()")
+                            _emit("return_action_executed", f"{sel}:evaluate")
+                        except Exception as eval_err:
+                            if _is_target_closed_or_crashed_error(eval_err):
+                                _emit_crash(eval_err)
+                                return False
+            except Exception as sel_err:
+                if _is_target_closed_or_crashed_error(sel_err):
+                    _emit_crash(sel_err)
+                    return False
                 continue
 
+            settle_s = min(1.5, max(0.4, timeout_ms / 1500.0))
+            if await _wait_for_feed_restored(page, panel_selector, timeout_s=settle_s):
+                _emit("search_feed_restored", "back_button")
+                return True
+
+        # Step 2: Keyboard Escape to dismiss detail pane without DOM manipulation or history navigation
+        if hasattr(page, "keyboard") and hasattr(page.keyboard, "press") and _is_page_alive(page):
             try:
-                await page.wait_for_selector(panel_selector, timeout=min(config.scroll_settle_timeout_ms, timeout_ms))
-            except Exception:
-                pass
+                _emit("return_action_selected", "escape_key")
+                await page.keyboard.press("Escape")
+                _emit("return_action_executed", "escape_key")
+                if await _wait_for_feed_restored(page, panel_selector, timeout_s=0.5):
+                    if not (force_reset and "/maps/place/" in (getattr(page, "url", "") or "")):
+                        _emit("search_feed_restored", "escape_key")
+                        return True
+            except Exception as esc_err:
+                if _is_target_closed_or_crashed_error(esc_err):
+                    _emit_crash(esc_err)
+                    return False
 
-            # Poll UI state until detail pane closes or bounded settle expires
-            settle_deadline = asyncio.get_event_loop().time() + min(1.0, max(0.2, timeout_ms / 2000.0))
-            while asyncio.get_event_loop().time() < settle_deadline:
-                feed_el = await page.query_selector(panel_selector)
-                if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
-                    return True
-                await asyncio.sleep(0.03)
-
-        # 3. In-page history back if still open on place URL
+        # Step 3: In-page history back if still open on place URL
         curr_url = getattr(page, "url", "") or ""
-        if "/maps/place/" in curr_url and hasattr(page, "evaluate"):
+        if "/maps/place/" in curr_url and hasattr(page, "evaluate") and _is_page_alive(page):
             try:
+                _emit("return_action_selected", "history_back")
                 await page.evaluate("() => window.history ? window.history.back() : null")
-                settle_deadline = asyncio.get_event_loop().time() + 0.3
-                while asyncio.get_event_loop().time() < settle_deadline:
-                    feed_el = await page.query_selector(panel_selector)
-                    if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
-                        if not (force_reset and "/maps/place/" in (getattr(page, "url", "") or "")):
-                            return True
-                    await asyncio.sleep(0.03)
-            except Exception:
-                pass
+                _emit("return_action_executed", "history_back")
+                if await _wait_for_feed_restored(page, panel_selector, timeout_s=0.5):
+                    if not (force_reset and "/maps/place/" in (getattr(page, "url", "") or "")):
+                        _emit("search_feed_restored", "history_back")
+                        return True
+            except Exception as hist_err:
+                if _is_target_closed_or_crashed_error(hist_err):
+                    _emit_crash(hist_err)
+                    return False
 
-        # Last resort: browser-level back navigation, ONLY if safe and won't pop to about:blank
+        # Step 4: Last resort: browser-level back navigation, ONLY if safe and won't pop to about:blank
         try:
             can_go_back = True
-            if hasattr(page, "evaluate"):
+            if hasattr(page, "evaluate") and _is_page_alive(page):
                 try:
                     hist_len = await page.evaluate("() => window.history ? window.history.length : 1")
                     if isinstance(hist_len, int) and hist_len <= 1:
@@ -1378,39 +1631,33 @@ async def _return_to_results(
                 except Exception:
                     pass
 
-            if can_go_back and hasattr(page, "go_back"):
+            if can_go_back and hasattr(page, "go_back") and _is_page_alive(page):
+                _emit("return_action_selected", "browser_go_back")
                 await page.go_back(timeout=min(config.scroll_settle_timeout_ms, timeout_ms))
+                _emit("return_action_executed", "browser_go_back")
                 curr_url = getattr(page, "url", "") or ""
                 if "about:blank" in curr_url or not curr_url.startswith("https://www.google.com/maps"):
                     log.warning(f"[maps] go_back popped to {curr_url!r}; restoring via go_forward")
-                    if hasattr(page, "go_forward"):
+                    if hasattr(page, "go_forward") and _is_page_alive(page):
                         try:
                             await page.go_forward(timeout=2000)
                         except Exception:
                             pass
-                    curr_url = getattr(page, "url", "") or ""
-                    if "about:blank" in curr_url and hasattr(page, "wait_for_selector"):
-                        try:
-                            await page.wait_for_selector(panel_selector, timeout=min(config.scroll_settle_timeout_ms, timeout_ms))
-                        except Exception:
-                            pass
                 else:
-                    try:
-                        await page.wait_for_selector(panel_selector, timeout=min(config.scroll_settle_timeout_ms, timeout_ms))
-                    except Exception:
-                        pass
-                    feed_el = await page.query_selector(panel_selector)
-                    if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
+                    if await _wait_for_feed_restored(page, panel_selector, timeout_s=0.8):
+                        _emit("search_feed_restored", "browser_go_back")
                         return True
-        except Exception:
-            pass
+        except Exception as gb_err:
+            if _is_target_closed_or_crashed_error(gb_err):
+                _emit_crash(gb_err)
+                return False
 
-        if force_reset:
-            feed_el = await page.query_selector(panel_selector)
-            if feed_el is not None and not await _is_detail_pane_open(page, feed_el):
-                return True
+        if force_reset and await _is_feed_ready(page, panel_selector):
+            _emit("search_feed_restored", "force_reset")
+            return True
 
         prof.incr("return_to_results_failed")
+        _emit("return_recovery_failed", "return_to_results_exhausted")
         return False
 
 
@@ -1430,6 +1677,8 @@ async def _can_continue_from_split_results_feed(
     the current scroll round — allowing the scraper to click the next card
     directly without executing a redundant back-navigation cycle.
     """
+    if not _is_page_alive(page):
+        return False
     try:
         live_panel = await page.query_selector(panel_selector)
         if live_panel is None:
@@ -2322,8 +2571,152 @@ _DEFAULT_EXTRACT_PLACE_DATA = _extract_place_data
 # Main scraper class
 # ──────────────────────────────────────────────────────────────────────────────
 
+async def _execute_return_failure_recovery(
+    page: Page,
+    panel_sel: str,
+    search_url: str,
+    full_query: str,
+    context_label: str,
+    rounds_this_attempt: int,
+    consecutive_return_failures: int,
+    max_consecutive_return_failures: int,
+    search_nav_recovery_used: bool,
+    config: ScraperConfig,
+    profiler=None,
+    cards_left: int = 0,
+    on_progress: "Callable[[str, str, str | None], None] | None" = None,
+) -> tuple[bool, bool, str]:
+    """Execute return failure diagnostic logging, crash detection, and bounded search-navigation recovery.
+    Returns: (recovered: bool, search_nav_recovery_used: bool, panel_sel: str)"""
+    prof = profiler or NullProfiler()
+    prof.incr("return_to_results_failures")
+    prof.incr("return_to_results_failed")
+
+    def _emit(event: str, item_id: str | None = None) -> None:
+        if on_progress is not None:
+            try:
+                on_progress("discovery", event, item_id)
+            except Exception:
+                pass
+
+    if not _is_page_alive(page):
+        ctx_closed = False
+        if hasattr(page, "context"):
+            try:
+                ctx = page.context
+                if hasattr(ctx, "is_closed") and ctx.is_closed():
+                    ctx_closed = True
+            except Exception:
+                pass
+        if ctx_closed:
+            _emit("browser_context_closed", context_label)
+        else:
+            _emit("browser_page_crashed", context_label)
+        raise DiscoveryFailure(
+            DiscoveryFailureReason.SCRAPER_ERROR,
+            f"browser page or context closed/crashed during return_to_results in {context_label}",
+        )
+
+    feed_present = False
+    try:
+        feed_present = await _is_feed_ready(page, panel_sel)
+    except Exception:
+        pass
+    mem_mb = round(get_memory_usage(), 1)
+    curr_url = getattr(page, "url", "") or ""
+    log.warning(
+        f"[maps][return-failed] context={context_label} round={rounds_this_attempt} "
+        f"selector_tried={panel_sel!r} current_url={curr_url!r} "
+        f"feed_present={feed_present} cards_remaining={cards_left} "
+        f"skip_reason='return_to_results_failed' memory_mb={mem_mb} "
+        f"consecutive_failures={consecutive_return_failures}/{max_consecutive_return_failures}"
+    )
+
+    if consecutive_return_failures >= max_consecutive_return_failures or "about:blank" in curr_url:
+        if not search_nav_recovery_used:
+            search_nav_recovery_used = True
+            prof.incr("stale_panel_search_nav_recovery")
+            _emit("return_recovery_attempted", context_label)
+            log.info(
+                f"[maps][return-recovery] consecutive return failures ({consecutive_return_failures}) or url={curr_url!r} "
+                f"— performing bounded search-navigation recovery for {full_query!r}"
+            )
+            try:
+                await page.goto(
+                    search_url,
+                    wait_until="domcontentloaded",
+                    timeout=config.maps_timeout_ms,
+                )
+                panel_sel, _ = await _resolve_results_panel(
+                    page, config=config
+                )
+                rec_feed = await _is_feed_ready(page, panel_sel)
+                if rec_feed:
+                    _emit("return_recovery_succeeded", context_label)
+                    log.info(f"[maps][return-recovery] search-navigation recovery restored feed panel for {full_query!r}")
+                    return True, search_nav_recovery_used, panel_sel
+                else:
+                    _emit("return_recovery_failed", f"{context_label}_feed_not_ready")
+            except Exception as rec_err:
+                if _is_target_closed_or_crashed_error(rec_err):
+                    _mark_page_crashed(page)
+                    _emit("browser_page_crashed", str(rec_err)[:60])
+                    raise DiscoveryFailure(
+                        DiscoveryFailureReason.SCRAPER_ERROR,
+                        f"browser target crashed during recovery: {rec_err}",
+                    )
+                _emit("return_recovery_failed", f"{context_label}_exception")
+                log.warning(f"[maps][return-recovery] search-navigation recovery failed for {full_query!r}: {rec_err}")
+        else:
+            _emit("return_recovery_failed", f"{context_label}_recovery_already_used")
+
+        log.warning(
+            f"[maps][return-recovery] return_to_results failed {consecutive_return_failures} consecutive times "
+            f"for {full_query!r} — ending search with RETURN_TO_RESULTS_FAILED"
+        )
+        raise DiscoveryFailure(
+            DiscoveryFailureReason.RETURN_TO_RESULTS_FAILED,
+            f"return_to_results failed {consecutive_return_failures} consecutive times for {full_query!r}",
+        )
+    return False, search_nav_recovery_used, panel_sel
+
+
+def _resolve_job_handle() -> Any:
+    """Safely retrieve the owning Windows Job Object handle from service or __main__
+    without triggering duplicate module execution or stale state.
+    """
+    if sys.platform != "win32":
+        return None
+    # 1. Check if 'service' is in sys.modules
+    srv = sys.modules.get("service")
+    if srv:
+        h = getattr(srv, "_MAST_JOB_HANDLE", None)
+        if h:
+            return h
+    # 2. Check sys.modules['__main__'] if service.py was launched directly
+    main_mod = sys.modules.get("__main__")
+    if main_mod:
+        h = getattr(main_mod, "_MAST_JOB_HANDLE", None)
+        if h:
+            return h
+    # 3. Fallback import without re-importing if already registered
+    try:
+        import service as _srv
+        return getattr(_srv, "_MAST_JOB_HANDLE", None)
+    except Exception:
+        return None
+
+
 class MapsScraper:
     """Google Maps scraper with stealth Playwright automation.
+
+    # Class-level process tracking for OS termination verification
+    _last_browser_pgid: int | None = None
+    _last_browser_pid: int | None = None
+    _last_driver_pid: int | None = None
+    _browser_spawn_attempted: bool = False
+    _driver_startup_failed: bool = False
+    _spawn_failed: bool = False
 
     Usage:
         async with MapsScraper(config, proxy_manager) as scraper:
@@ -2337,6 +2730,8 @@ class MapsScraper:
         proxy_manager: ProxyManager | None = None,
         stats: RunStats | None = None,
         profiler=None,
+        scout_id: str | None = None,
+        job_handle: Any = None,
     ) -> None:
         self.config = config
         self._proxy_manager = proxy_manager or ProxyManager()
@@ -2351,14 +2746,77 @@ class MapsScraper:
         self._playwright = None
         self._browser: Browser | None = None
         self._closing: bool = False
+        # Phase 7.3: Process ownership and scout session identity
+        self._scout_id: str | None = scout_id or os.environ.get("MAST_SCOUT_SESSION_ID")
+        self._is_owned: bool = False
+        self._is_launched: bool = False
+        self._is_closed: bool = False
+        self._browser_pid: int | None = None
+        self._browser_pgid: int | None = None
+        self._driver_pid: int | None = None
+        self._driver_assigned_to_job: bool = False
+        self._job_handle: Any = job_handle if job_handle is not None else (_resolve_job_handle() if sys.platform == "win32" else None)
+        self._termination_confirmed: bool = False
+
+    async def handle_return_failure(
+        self,
+        page: Page,
+        panel_sel: str,
+        search_url: str,
+        full_query: str,
+        context_label: str,
+        rounds_this_attempt: int,
+        consecutive_return_failures: int,
+        max_consecutive_return_failures: int,
+        search_nav_recovery_used: bool,
+        config: ScraperConfig | None = None,
+        profiler: Any = None,
+        cards_left: int = 0,
+        on_progress: "Callable[[str, str, str | None], None] | None" = None,
+        **kwargs: Any,
+    ) -> tuple[bool, bool, str]:
+        """Production return-to-results failure handler."""
+        return await _execute_return_failure_recovery(
+            page=page,
+            panel_sel=panel_sel,
+            search_url=search_url,
+            full_query=full_query,
+            context_label=context_label,
+            rounds_this_attempt=rounds_this_attempt,
+            consecutive_return_failures=consecutive_return_failures,
+            max_consecutive_return_failures=max_consecutive_return_failures,
+            search_nav_recovery_used=search_nav_recovery_used,
+            config=config if config is not None else self.config,
+            profiler=profiler if profiler is not None else self._profiler,
+            cards_left=cards_left,
+            on_progress=on_progress,
+        )
 
     async def __aenter__(self) -> "MapsScraper":
+        # Phase 7.3: Reject reuse of an already-owned or closed browser
+        if self._is_launched or self._is_closed or self._browser is not None:
+            raise RuntimeError("Browser instance already owned or closed; reuse is strictly prohibited")
+        MapsScraper._browser_spawn_attempted = True
+        self._is_launched = True
+        self._is_owned = True
+
         # Phase 2A: separate the Playwright driver spawn from the Chromium
         # launch below — these were previously untimed/combined, and the
         # audit's §3.6 recommendation was specifically to measure this
         # split before deciding anything about browser lifecycle reuse.
         with self._profiler.timer("playwright_startup"):
             self._playwright = await async_playwright().start()
+
+        # Phase 7.3: Extract Playwright driver process ID immediately upon starting Playwright
+        try:
+            transport = getattr(getattr(getattr(self._playwright, "_impl_obj", None), "_connection", None), "_transport", None)
+            driver_proc = getattr(transport, "_proc", None)
+            self._driver_pid = getattr(driver_proc, "pid", None)
+            if self._driver_pid and self._driver_pid > 0:
+                MapsScraper._last_driver_pid = self._driver_pid
+        except Exception:
+            self._driver_pid = None
+
         launch_args = [
             "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
@@ -2379,15 +2837,166 @@ class MapsScraper:
             "--mute-audio",
             "--window-size=1280,800",
         ]
-        # Phase 2: time browser startup (chromium.launch is the most expensive
-        # single synchronous operation in the whole Python subprocess)
-        with self._profiler.timer("browser_startup"):
-            self._browser = await self._playwright.chromium.launch(
-                headless=self.config.headless,
-                args=launch_args,
-                ignore_default_args=["--enable-automation"],
+        if self._scout_id:
+            launch_args.append(f"--mast-scout-session={self._scout_id}")
+
+        if sys.platform == "win32":
+            if self._job_handle is None:
+                self._job_handle = _resolve_job_handle()
+
+            is_coordinated = bool(
+                self._scout_id
+                or os.environ.get("MAST_SCOUT_SESSION_ID")
+                or os.environ.get("MAST_JOB_NAME")
+                or (os.environ.get("MAST_COORDINATION_REQUIRED") in ("1", "true", "TRUE"))
             )
-        track_browser_created()
+            # Point 1: Missing coordination configuration cannot silently bypass containment
+            if is_coordinated and not self._job_handle:
+                await _close_bounded(self._playwright.stop, "playwright")
+                self._playwright = None
+                self._is_closed = True
+                self._is_owned = False
+                raise RuntimeError(
+                    "Coordinated scout session on Windows requires an active Job Object handle; "
+                    "containment cannot be bypassed"
+                )
+
+            if self._job_handle:
+                # 1. Driver PID discovery check (abort before Chromium launch)
+                if not self._driver_pid or self._driver_pid <= 0:
+                    MapsScraper._driver_startup_failed = True
+                    await _close_bounded(self._playwright.stop, "playwright")
+                    self._playwright = None
+                    self._is_closed = True
+                    self._is_owned = False
+                    raise RuntimeError("Failed to capture Playwright driver PID for Job Object assignment; aborting browser launch")
+
+                # 2. Assign Playwright driver to Job Object BEFORE Chromium launch
+                from service import (
+                    assign_pid_to_windows_job,
+                    query_job_active_processes,
+                    terminate_and_verify_windows_job,
+                    terminate_and_verify_windows_pid,
+                )
+                assigned = assign_pid_to_windows_job(self._job_handle, self._driver_pid)
+                if not assigned:
+                    MapsScraper._driver_startup_failed = True
+                    # Explicitly terminate the unassigned driver using its retained PID and wait for actual OS-level exit
+                    term_ok = bool(terminate_and_verify_windows_pid(self._driver_pid, timeout_s=3.0))
+                    await _close_bounded(self._playwright.stop, "playwright")
+                    self._playwright = None
+                    self._is_closed = True
+                    self._is_owned = False
+                    self._termination_confirmed = term_ok
+                    if not term_ok:
+                        raise RuntimeError(
+                            f"Failed to assign Playwright driver process {self._driver_pid} to Windows Job Object; "
+                            f"driver termination unconfirmed (timed out or still alive)"
+                        )
+                    raise RuntimeError(f"Failed to assign Playwright driver process {self._driver_pid} to Windows Job Object; aborting browser launch")
+
+                # 3. Verify driver is assigned (ActiveProcesses >= 1)
+                active_procs = query_job_active_processes(self._job_handle)
+                if active_procs < 1:
+                    await _close_bounded(self._playwright.stop, "playwright")
+                    term_ok = bool(terminate_and_verify_windows_job(self._job_handle, timeout_s=3.0))
+                    if not term_ok and self._driver_pid:
+                        term_ok = bool(terminate_and_verify_windows_pid(self._driver_pid, timeout_s=3.0))
+                    self._playwright = None
+                    self._is_closed = True
+                    self._is_owned = False
+                    self._termination_confirmed = term_ok
+                    if not term_ok:
+                        raise RuntimeError(
+                            f"Job Object active processes verification failed after driver assignment (active={active_procs}); "
+                            f"Job Object termination unconfirmed (timed out)"
+                        )
+                    raise RuntimeError(f"Job Object active processes verification failed after driver assignment (active={active_procs}); aborting browser launch")
+
+                self._driver_assigned_to_job = True
+
+        # Phase 2: time browser startup with safe failure cleanup
+        try:
+            with self._profiler.timer("browser_startup"):
+                self._browser = await self._playwright.chromium.launch(
+                    headless=self.config.headless,
+                    args=launch_args,
+                    ignore_default_args=["--enable-automation"],
+                )
+            track_browser_created()
+        except Exception as launch_err:
+            MapsScraper._spawn_failed = True
+            term_ok = False
+            if sys.platform == "win32":
+                if self._job_handle and self._driver_assigned_to_job:
+                    from service import terminate_and_verify_windows_job
+                    term_ok = bool(terminate_and_verify_windows_job(self._job_handle, timeout_s=3.0))
+                elif self._driver_pid and self._driver_pid > 0:
+                    from service import terminate_and_verify_windows_pid
+                    term_ok = bool(terminate_and_verify_windows_pid(self._driver_pid, timeout_s=3.0))
+            else:
+                if self._browser_pgid and self._browser_pgid > 0:
+                    from service import terminate_and_verify_posix_group
+                    term_ok = bool(terminate_and_verify_posix_group(self._browser_pgid, timeout_s=3.0))
+                elif self._driver_pid and self._driver_pid > 0:
+                    from service import terminate_and_verify_posix_pid
+                    term_ok = bool(terminate_and_verify_posix_pid(self._driver_pid, timeout_s=3.0))
+            await _close_bounded(self._playwright.stop, "playwright")
+            self._browser = None
+            self._playwright = None
+            self._is_closed = True
+            self._is_owned = False
+            self._termination_confirmed = term_ok
+            if not term_ok:
+                raise RuntimeError(
+                    f"Chromium launch failed: {launch_err}; process termination unconfirmed (timed out or unverified)"
+                ) from launch_err
+            raise RuntimeError(f"Chromium launch failed: {launch_err}") from launch_err
+
+        if sys.platform == "win32":
+            if self._job_handle:
+                from service import query_job_active_processes, terminate_and_verify_windows_job
+                # Point 4: Bounded poll (up to 2.0s) for Chromium processes to be registered in Job Object
+                deadline = time.monotonic() + 2.0
+                procs_after_launch = query_job_active_processes(self._job_handle)
+                while procs_after_launch <= 1 and time.monotonic() < deadline:
+                    await asyncio.sleep(0.05)
+                    procs_after_launch = query_job_active_processes(self._job_handle)
+
+                # If ActiveProcesses <= 1 persists, Chromium was NOT contained! Fail closed!
+                if procs_after_launch <= 1:
+                    term_ok = bool(terminate_and_verify_windows_job(self._job_handle, timeout_s=3.0))
+                    if self._browser:
+                        await _close_bounded(self._browser.close, "browser")
+                    await _close_bounded(self._playwright.stop, "playwright")
+                    self._browser = None
+                    self._playwright = None
+                    self._is_closed = True
+                    self._is_owned = False
+                    self._termination_confirmed = term_ok
+                    if not term_ok:
+                        raise RuntimeError(
+                            f"Post-launch containment verification failed: ActiveProcesses={procs_after_launch} <= 1 "
+                            f"after Chromium launch; Job Object termination unconfirmed (timed out)"
+                        )
+                    raise RuntimeError(
+                        f"Post-launch containment verification failed: ActiveProcesses={procs_after_launch} <= 1 "
+                        f"after Chromium launch; browser tree terminated"
+                    )
+
+            if self._driver_pid:
+                self._browser_pid = self._driver_pid
+        else:
+            try:
+                pgid = self._discover_posix_browser_pgid(self._driver_pid)
+                if pgid:
+                    self._browser_pgid = pgid
+                    self._browser_pid = pgid
+                    MapsScraper._last_browser_pgid = pgid
+                    MapsScraper._last_browser_pid = pgid
+            except Exception as pg_err:
+                log.debug(f"[maps] POSIX browser PGID discovery: {pg_err}")
+
         return self
 
     async def __aexit__(self, *_) -> None:
@@ -2399,6 +3008,8 @@ class MapsScraper:
         if self._closing:
             return
         self._closing = True
+        self._is_closed = True
+        self._is_owned = False
         browser = self._browser
         self._browser = None
         playwright = self._playwright
@@ -2407,6 +3018,8 @@ class MapsScraper:
             await _close_bounded(browser.close, "browser")
         if playwright:
             await _close_bounded(playwright.stop, "playwright")
+        # Phase 7.3: OS-level process-tree termination and verification
+        self.terminate_browser_process_tree()
 
     @staticmethod
     def _extract_canonical_place_id(href: str) -> str | None:
@@ -2416,9 +3029,170 @@ class MapsScraper:
 
     @property
     def browser(self) -> Browser:
-        if not self._browser:
-            raise RuntimeError("MapsScraper not started — use async with")
+        if not self._browser or self._is_closed:
+            raise RuntimeError("MapsScraper not started or already closed — use async with")
         return self._browser
+
+    @property
+    def scout_id(self) -> str | None:
+        return self._scout_id
+
+    @property
+    def browser_pid(self) -> int | None:
+        return self._browser_pid
+
+    @property
+    def browser_pgid(self) -> int | None:
+        return self._browser_pgid
+
+    @property
+    def driver_pid(self) -> int | None:
+        return self._driver_pid
+
+    @property
+    def driver_assigned_to_job(self) -> bool:
+        return self._driver_assigned_to_job
+
+    @property
+    def is_owned(self) -> bool:
+        return self._is_owned
+
+    @property
+    def is_launched(self) -> bool:
+        return self._is_launched
+
+    @property
+    def is_closed(self) -> bool:
+        return self._is_closed
+
+    @property
+    def is_termination_confirmed(self) -> bool:
+        return self._termination_confirmed
+
+    def set_browser_identity(self, pid: int, pgid: int | None = None) -> None:
+        """Explicitly record or override the browser PID and PGID for this scraper session.
+        Once set, PGID is retained and cannot be overwritten with an invalid or zero value.
+        """
+        if self._browser_pgid is not None and (pgid is None or pgid <= 0):
+            return
+        self._browser_pid = pid
+        self._browser_pgid = pgid if pgid is not None else pid
+        if self._browser_pgid and self._browser_pgid > 0:
+            MapsScraper._last_browser_pgid = self._browser_pgid
+            MapsScraper._last_browser_pid = self._browser_pid
+
+    def _discover_posix_browser_pgid(self, driver_pid: int | None = None) -> int | None:
+        """Discover the detached PGID of the Chromium process group on POSIX."""
+        if sys.platform == "win32":
+            return None
+
+        if self._scout_id:
+            try:
+                cmd = ["ps", "-eo", "pid,pgid,args"]
+                output = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+                marker = f"--mast-scout-session={self._scout_id}"
+                for line in output.splitlines():
+                    if marker in line and "grep" not in line:
+                        parts = line.strip().split(None, 2)
+                        if len(parts) >= 2:
+                            pid = int(parts[0])
+                            pgid = int(parts[1])
+                            if pid == pgid:
+                                return pgid
+                            return pgid
+            except Exception as e:
+                log.debug(f"[maps] ps query for scout marker failed: {e}")
+
+        if driver_pid and driver_pid > 0:
+            try:
+                cmd = ["pgrep", "-P", str(driver_pid)]
+                output = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+                for line in output.splitlines():
+                    child_pid = int(line.strip())
+                    try:
+                        child_pgid = os.getpgid(child_pid)
+                        if child_pgid > 0:
+                            return child_pgid
+                    except OSError:
+                        continue
+            except Exception as e:
+                log.debug(f"[maps] pgrep for driver children failed: {e}")
+
+        return None
+
+    def terminate_browser_process_tree(self, timeout_s: float = 5.0) -> bool:
+        """Terminate the browser process tree and verify OS-level termination.
+
+        On Windows:
+        - If driver was assigned to Job Object, queries Job Object and verifies ActiveProcesses == 0.
+        - If driver was NOT assigned to Job Object, verifies unassigned driver termination by PID.
+        - An empty Job Object is NEVER treated as proof that an unassigned driver has terminated.
+        On POSIX:
+        - Terminates process group and polls until ESRCH confirms exit.
+        - If PGID was not discovered but driver PID is known, verifies driver PID termination until ESRCH.
+        All platforms:
+        - Never reports True merely because a termination request was issued.
+        - No process identity means termination remains unconfirmed (returns False).
+        """
+        if self._termination_confirmed:
+            return True
+
+        confirmed = False
+        if sys.platform == "win32":
+            job_h = self._job_handle
+            if not job_h:
+                try:
+                    import service as _srv
+                    job_h = getattr(_srv, "_MAST_JOB_HANDLE", None)
+                except Exception:
+                    job_h = None
+
+            if job_h and self._driver_assigned_to_job:
+                try:
+                    from service import terminate_and_verify_windows_job
+                    confirmed = terminate_and_verify_windows_job(job_h, timeout_s=timeout_s)
+                except Exception as exc:
+                    log.warning(f"[maps] terminate_and_verify_windows_job exception: {exc}")
+                    confirmed = False
+            elif self._driver_pid and self._driver_pid > 0:
+                if job_h:
+                    try:
+                        from service import terminate_and_verify_windows_job
+                        terminate_and_verify_windows_job(job_h, timeout_s=timeout_s)
+                    except Exception:
+                        pass
+                try:
+                    from service import terminate_and_verify_windows_pid
+                    confirmed = terminate_and_verify_windows_pid(self._driver_pid, timeout_s=timeout_s)
+                except Exception as exc:
+                    log.warning(f"[maps] terminate_and_verify_windows_pid exception: {exc}")
+                    confirmed = False
+            else:
+                confirmed = False
+        else:
+            if self._browser_pgid and self._browser_pgid > 0:
+                try:
+                    from service import terminate_and_verify_posix_group
+                    confirmed = terminate_and_verify_posix_group(self._browser_pgid, timeout_s=timeout_s)
+                except Exception as exc:
+                    log.warning(f"[maps] terminate_and_verify_posix_group exception: {exc}")
+                    confirmed = False
+            elif self._driver_pid and self._driver_pid > 0:
+                try:
+                    from service import terminate_and_verify_posix_pid
+                    confirmed = terminate_and_verify_posix_pid(self._driver_pid, timeout_s=timeout_s)
+                except Exception as exc:
+                    log.warning(f"[maps] terminate_and_verify_posix_pid exception: {exc}")
+                    confirmed = False
+            else:
+                confirmed = False
+
+        self._termination_confirmed = confirmed
+        if confirmed:
+            MapsScraper._last_browser_pgid = None
+            MapsScraper._last_browser_pid = None
+            MapsScraper._last_driver_pid = None
+        return confirmed
 
     async def search(
         self,
@@ -2501,6 +3275,9 @@ class MapsScraper:
         gets double-counted. Only after `config.max_crash_retries`
         consecutive crashes does the search finally give up.
         """
+        # Phase 7.3: Reject reuse of uninitialized, closed, or disowned browser instance
+        if self._is_closed or (self._browser is None and not self._is_launched) or (self._is_launched and not self._is_owned):
+            raise RuntimeError("Browser instance not active or already closed; reuse is strictly prohibited")
         # MINIMAL FIX (discovery liveness — forensic audit §9): a small,
         # local wrapper around `on_progress` so every call site below is a
         # one-liner and — critically — so an observer failure (or absence)
@@ -2918,59 +3695,25 @@ class MapsScraper:
                     async def handle_return_failure(context_label: str, cards_left: int = 0) -> bool:
                         nonlocal consecutive_return_failures, search_nav_recovery_used, panel_sel, last_verified_panel
                         consecutive_return_failures += 1
-                        self._profiler.incr("return_to_results_failures")
-                        self._profiler.incr("return_to_results_failed")
-
-                        feed_present = False
-                        try:
-                            feed_present = (await page.query_selector(panel_sel)) is not None
-                        except Exception:
-                            pass
-                        mem_mb = round(get_memory_usage(), 1)
-                        curr_url = page.url or ""
-                        log.warning(
-                            f"[maps][return-failed] context={context_label} round={rounds_this_attempt} "
-                            f"selector_tried={panel_sel!r} current_url={curr_url!r} "
-                            f"feed_present={feed_present} cards_remaining={cards_left} "
-                            f"skip_reason='return_to_results_failed' memory_mb={mem_mb} "
-                            f"consecutive_failures={consecutive_return_failures}/{max_consecutive_return_failures}"
+                        recovered, search_nav_recovery_used, panel_sel = await self.handle_return_failure(
+                            page=page,
+                            panel_sel=panel_sel,
+                            search_url=search_url,
+                            full_query=full_query,
+                            context_label=context_label,
+                            rounds_this_attempt=rounds_this_attempt,
+                            consecutive_return_failures=consecutive_return_failures,
+                            max_consecutive_return_failures=max_consecutive_return_failures,
+                            search_nav_recovery_used=search_nav_recovery_used,
+                            config=self.config,
+                            profiler=self._profiler,
+                            cards_left=cards_left,
+                            on_progress=_emit_progress,
                         )
-
-                        if consecutive_return_failures >= max_consecutive_return_failures or "about:blank" in curr_url:
-                            if not search_nav_recovery_used:
-                                search_nav_recovery_used = True
-                                self._profiler.incr("stale_panel_search_nav_recovery")
-                                log.info(
-                                    f"[maps][return-recovery] consecutive return failures ({consecutive_return_failures}) or url={curr_url!r} "
-                                    f"— performing bounded search-navigation recovery for {full_query!r}"
-                                )
-                                try:
-                                    await page.goto(
-                                        search_url,
-                                        wait_until="domcontentloaded",
-                                        timeout=self.config.maps_timeout_ms,
-                                    )
-                                    panel_sel, _ = await _resolve_results_panel(
-                                        page, config=self.config
-                                    )
-                                    last_verified_panel = None
-                                    rec_feed = (await page.query_selector(panel_sel)) is not None
-                                    if rec_feed:
-                                        consecutive_return_failures = 0
-                                        log.info(f"[maps][return-recovery] search-navigation recovery restored feed panel for {full_query!r}")
-                                        return True
-                                except Exception as rec_err:
-                                    log.warning(f"[maps][return-recovery] search-navigation recovery failed for {full_query!r}: {rec_err}")
-
-                            log.warning(
-                                f"[maps][return-recovery] return_to_results failed {consecutive_return_failures} consecutive times "
-                                f"for {full_query!r} — ending search with RETURN_TO_RESULTS_FAILED"
-                            )
-                            raise DiscoveryFailure(
-                                DiscoveryFailureReason.RETURN_TO_RESULTS_FAILED,
-                                f"return_to_results failed {consecutive_return_failures} consecutive times for {full_query!r}",
-                            )
-                        return False
+                        if recovered:
+                            consecutive_return_failures = 0
+                            last_verified_panel = None
+                        return recovered
 
                     while not panel_lost:
                         if yielded >= max_results or (should_stop is not None and should_stop()):
@@ -2986,7 +3729,7 @@ class MapsScraper:
                         panel = await page.query_selector(panel_sel)
                         if panel is None:
                             if not await _return_to_results(
-                                page, panel_sel, config=self.config, profiler=self._profiler
+                                page, panel_sel, config=self.config, profiler=self._profiler, on_progress=_emit_progress
                             ):
                                 log.debug(
                                     "[maps] lost the results feed and "
@@ -3438,6 +4181,7 @@ class MapsScraper:
                                 continue
 
                             if card_status == "mismatch":
+                                _emit_progress("detail_panel_stale", place_key)
                                 handled_return_to_results = True
                                 self._profiler.incr("stale_panel_mismatch")
                                 retries_for_key = mismatch_retries_by_key.get(place_key, 0) + 1
@@ -3460,6 +4204,7 @@ class MapsScraper:
                                             config=self.config,
                                             profiler=self._profiler,
                                             force_reset=True,
+                                            on_progress=_emit_progress,
                                         )
                                     else:
                                         returned = await _return_to_results(
@@ -3467,14 +4212,15 @@ class MapsScraper:
                                             panel_sel,
                                             config=self.config,
                                             profiler=self._profiler,
+                                            on_progress=_emit_progress,
                                         )
-                                    feed_still_present = (await page.query_selector(panel_sel)) is not None
-                                    if not returned and not feed_still_present:
+                                    feed_ready = await _is_feed_ready(page, panel_sel)
+                                    if not returned and not feed_ready:
                                         cards_left = max(0, len(listing_anchors) - 1)
                                         recovered = await handle_return_failure(
                                             "waiting_for_detail_panel", cards_left=cards_left
                                         )
-                                        if not recovered and (await page.query_selector(panel_sel)) is None:
+                                        if not recovered and not await _is_feed_ready(page, panel_sel):
                                             panel_lost = True
                                             break
                                     if retries_for_key > max_unopened_retries:
@@ -3507,14 +4253,14 @@ class MapsScraper:
                                 )
 
                                 returned = await _return_to_results(
-                                    page, panel_sel, config=self.config, profiler=self._profiler
+                                    page, panel_sel, config=self.config, profiler=self._profiler, on_progress=_emit_progress
                                 )
-                                feed_still_present = (await page.query_selector(panel_sel)) is not None
+                                feed_ready = await _is_feed_ready(page, panel_sel)
 
                                 max_area_recoveries = getattr(
                                     self.config, "max_stale_panel_recoveries_per_area", 6
                                 )
-                                if consecutive_mismatches_in_round >= 3 or (not returned and not feed_still_present):
+                                if consecutive_mismatches_in_round >= 3 or (not returned and not feed_ready):
                                     if not search_nav_recovery_used:
                                         search_nav_recovery_used = True
                                         self._profiler.incr("stale_panel_search_nav_recovery")
@@ -3522,17 +4268,31 @@ class MapsScraper:
                                             f"[maps][stale-panel] performing bounded search-navigation "
                                             f"recovery for {full_query!r}"
                                         )
-                                        await page.goto(
-                                            search_url,
-                                            wait_until="domcontentloaded",
-                                            timeout=self.config.maps_timeout_ms,
-                                        )
-                                        panel_sel, _ = await _resolve_results_panel(
-                                            page, config=self.config
-                                        )
-                                        last_verified_panel = None
-                                        consecutive_mismatches_in_round = 0
-                                        continue
+                                        _emit_progress("return_recovery_attempted", "stale_panel_mismatch")
+                                        try:
+                                            await page.goto(
+                                                search_url,
+                                                wait_until="domcontentloaded",
+                                                timeout=self.config.maps_timeout_ms,
+                                            )
+                                            panel_sel, _ = await _resolve_results_panel(
+                                                page, config=self.config
+                                            )
+                                            last_verified_panel = None
+                                            consecutive_mismatches_in_round = 0
+                                            if await _is_feed_ready(page, panel_sel):
+                                                _emit_progress("return_recovery_succeeded", "stale_panel_mismatch")
+                                                continue
+                                            else:
+                                                _emit_progress("return_recovery_failed", "stale_panel_feed_not_ready")
+                                        except Exception as nav_err:
+                                            if _is_target_closed_or_crashed_error(nav_err):
+                                                _emit_progress("browser_page_crashed", str(nav_err)[:60])
+                                                raise DiscoveryFailure(
+                                                    DiscoveryFailureReason.SCRAPER_ERROR,
+                                                    f"browser target crashed during recovery: {nav_err}",
+                                                )
+                                            _emit_progress("return_recovery_failed", "stale_panel_exception")
                                     log.warning(
                                         f"[maps][stale-panel] mismatch persisted after search-navigation "
                                         f"recovery for {full_query!r} — terminating area safely"
@@ -3700,6 +4460,7 @@ class MapsScraper:
                                                 panel_sel,
                                                 config=self.config,
                                                 profiler=self._profiler,
+                                                on_progress=_emit_progress,
                                             ),
                                             timeout=remaining_card_s,
                                         )
@@ -3709,10 +4470,12 @@ class MapsScraper:
                                     if returned_ok:
                                         consecutive_return_failures = 0
                                     else:
-                                        cards_left = max(0, len(listing_anchors) - 1)
-                                        recovered = await handle_return_failure("finally_after_card", cards_left=cards_left)
-                                        if not recovered and (await page.query_selector(panel_sel)) is None:
-                                            panel_lost = True
+                                        feed_ready = await _is_feed_ready(page, panel_sel)
+                                        if not feed_ready:
+                                            cards_left = max(0, len(listing_anchors) - 1)
+                                            recovered = await handle_return_failure("finally_after_card", cards_left=cards_left)
+                                            if not recovered and not await _is_feed_ready(page, panel_sel):
+                                                panel_lost = True
 
                     # Check for end of results
                     try:
@@ -3726,8 +4489,13 @@ class MapsScraper:
                         if len(listing_anchors) == 0 and yielded == 0 and rounds_this_attempt >= 1:
                             log.info(f"[maps] 0 places found on initial scan for {full_query!r} — ending area search")
                             return
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        if _is_target_closed_or_crashed_error(exc):
+                            _mark_page_crashed(page)
+                            raise DiscoveryFailure(
+                                DiscoveryFailureReason.SCRAPER_ERROR,
+                                f"browser target crashed during end-of-results check: {exc}",
+                            )
 
                     # Scroll the results panel. Phase 6 opt #1: pacing and
                     # the "wait for new content" logic live inside

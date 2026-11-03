@@ -411,12 +411,19 @@ def extract_phones(
     # data-id / width / height aren't matched.
     cleaned_text = _TAG_RE.sub(" ", strip_scripts_and_styles(text))
 
+    _FAX_LABEL_RE = re.compile(r"\b(?:fax|facsimile|f)\s*[:#.\-]?\s*$", re.IGNORECASE)
+
     for m in _PHONE_PATTERN.finditer(cleaned_text):
         token = m.group(0).strip()
         if len(digits_only(token)) < 7:
             continue
-        if not trusted and not _looks_like_phone_token(token):
-            continue
+        if not trusted:
+            start_idx = max(0, m.start() - 25)
+            prefix = cleaned_text[start_idx:m.start()].strip()
+            if _FAX_LABEL_RE.search(prefix):
+                continue
+            if not _looks_like_phone_token(token):
+                continue
         _add(token, strict=not trusted)
 
     return found
@@ -455,6 +462,10 @@ _PLACEHOLDER_EMAIL_LOCAL_PARTS = frozenset({
     "name",
     "firstname.lastname",
     "email",
+    "placeholder",
+    "sample",
+    "yourname",
+    "username",
 })
 
 _PLACEHOLDER_EMAIL_DOMAINS = frozenset({
@@ -581,24 +592,38 @@ _BRACKET_OBFUSCATED_EMAIL_RE = re.compile(
     r"([A-Za-z]{2,})",
     re.IGNORECASE,
 )
-_DOT_SEP_RE = re.compile(r"\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|\[\.\])\s*", re.IGNORECASE)
+_DOT_SEP_RE = re.compile(r"\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|\[\.\]|\bDOT\b)\s*", re.IGNORECASE)
+
+_OBFUSCATED_PATTERNS = (
+    _BRACKET_OBFUSCATED_EMAIL_RE,
+    # Explicit uppercase AT and DOT without brackets (case-sensitive so ordinary prose 'at ... dot' never matches)
+    re.compile(
+        r"\b([A-Za-z0-9._%+\-]+)\s+AT\s+((?:[A-Za-z0-9\-]+\s+(?:DOT|\.)\s+)+)([A-Za-z]{2,})\b"
+    ),
+    # Semi-obfuscated: literal @ with bracketed/token dot, e.g. info@domain [dot] com
+    re.compile(
+        r"\b([A-Za-z0-9._%+\-]+)@([A-Za-z0-9\-]+)\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|\[\.\]|\bDOT\b)\s*([A-Za-z]{2,})\b",
+        re.IGNORECASE,
+    ),
+)
 
 
 def extract_obfuscated_emails(text: str) -> list[str]:
-    """Decode bracketed obfuscations: ``name [at] shop [dot] com``,
-    ``name(at)shop(dot)co(dot)uk``, ``name[@]shop.com``. Only valid,
+    """Decode bracketed and token obfuscations: ``name [at] shop [dot] com``,
+    ``name(at)shop(dot)co(dot)uk``, ``name[@]shop.com``, ``name AT shop DOT com``. Only valid,
     de-duplicated addresses are returned."""
     if not text:
         return []
     out: list[str] = []
     seen: set[str] = set()
-    for local, dom_head, tld in _BRACKET_OBFUSCATED_EMAIL_RE.findall(text):
-        host = _DOT_SEP_RE.sub(".", dom_head)
-        host = re.sub(r"\s+", "", host).strip(".")
-        e = f"{local}@{host}.{tld}".lower()
-        if e not in seen and is_valid_email(e):
-            seen.add(e)
-            out.append(e)
+    for pat in _OBFUSCATED_PATTERNS:
+        for local, dom_head, tld in pat.findall(text):
+            host = _DOT_SEP_RE.sub(".", dom_head)
+            host = re.sub(r"\s+", "", host).strip(".")
+            e = f"{local}@{host}.{tld}".lower()
+            if e not in seen and is_valid_email(e):
+                seen.add(e)
+                out.append(e)
     return out
 
 
@@ -1317,6 +1342,8 @@ def _find_plain_ig_handles(html: str) -> list[str]:
 
 
 def extract_ig_urls_with_source(text: str) -> list[tuple[str, str]]:
+    if text and r"\/" in text:
+        text = text.replace(r"\/", "/")
     """
     Like `extract_ig_urls()`, but paired with where each canonical
     Instagram URL was found: "anchor_href", "data_attribute", "jsonld",
@@ -1702,8 +1729,10 @@ def extract_contextual_attribute_contacts(html: str) -> dict[str, list[str]]:
 _SECONDARY_PAGE_PRIORITY: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("contact", re.compile(r"\b(?:contact(?:-us|_us|us)?|connect|get-in-touch|reach-us)\b", re.IGNORECASE)),
     ("about", re.compile(r"\b(?:about(?:-us|_us|us)?)\b", re.IGNORECASE)),
+    ("imprint", re.compile(r"\b(?:impressum|imprint)\b", re.IGNORECASE)),
+    ("support", re.compile(r"\b(?:support|help)\b", re.IGNORECASE)),
     ("locations", re.compile(r"\b(?:locations?|find-us|visit-us)\b", re.IGNORECASE)),
-    ("team", re.compile(r"\bteam\b", re.IGNORECASE)),
+    ("team", re.compile(r"\b(?:team|our-team|our_team|staff)\b", re.IGNORECASE)),
     ("staff", re.compile(r"\bstaff\b", re.IGNORECASE)),
     ("catering", re.compile(r"\bcatering\b", re.IGNORECASE)),
     ("wholesale", re.compile(r"\bwholesale\b", re.IGNORECASE)),
@@ -1719,6 +1748,11 @@ _STANDARD_CONTACT_PATHS: tuple[tuple[str, str], ...] = (
     ("locations", "/locations"),
     ("locations", "/find-us"),
     ("contact", "/connect"),
+    ("imprint", "/impressum"),
+    ("imprint", "/imprint"),
+    ("team", "/team"),
+    ("team", "/our-team"),
+    ("support", "/support"),
 )
 
 
@@ -1828,9 +1862,17 @@ def find_secondary_contact_link(
             if any(path_low.endswith(ext) for ext in _IGNORED_LINK_EXTENSIONS):
                 continue
 
-            # Evaluate against priority list
-            # Inspect href path, query, and anchor text
-            haystack = f"{parsed.path} {parsed.query} {text}"
+            # Filter out cart, checkout, login, search, and irrelevant paths
+            _IRRELEVANT_PATH_RE = re.compile(
+                r"/(?:login|signin|sign-in|signup|sign-up|register|cart|checkout|basket|order|search|account|my-account|password|auth|wp-login|wp-admin|privacy|cookie|terms|disclaimer)(?:/|\.|_|$|\?)",
+                re.IGNORECASE,
+            )
+            if _IRRELEVANT_PATH_RE.search(path_low):
+                continue
+
+            # Evaluate against priority list: path and text (exclude query to avoid redirect tricks)
+            haystack = f"{parsed.path} {text}"
+
             matched_priority: int | None = None
             matched_category: str | None = None
 

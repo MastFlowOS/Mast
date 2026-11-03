@@ -122,6 +122,116 @@ def assert_loopback_url(url: Optional[str]) -> None:
         raise DisallowedEgressError(cleaned, f"Prohibited non-loopback host '{hostname}' in local isolation mode")
 
 
+def is_private_or_restricted_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True if IP is loopback, private, link-local, multicast, reserved, unspecified, or carrier NAT."""
+    if ip_obj.is_loopback or ip_obj.is_private or ip_obj.is_link_local:
+        return True
+    if ip_obj.is_multicast or ip_obj.is_reserved or ip_obj.is_unspecified:
+        return True
+    if isinstance(ip_obj, ipaddress.IPv4Address):
+        if ip_obj in ipaddress.IPv4Network("100.64.0.0/10"):
+            return True
+        if (
+            ip_obj in ipaddress.IPv4Network("192.0.2.0/24")
+            or ip_obj in ipaddress.IPv4Network("198.51.100.0/24")
+            or ip_obj in ipaddress.IPv4Network("203.0.113.0/24")
+        ):
+            return True
+    elif isinstance(ip_obj, ipaddress.IPv6Address):
+        if ip_obj.ipv4_mapped:
+            return is_private_or_restricted_ip(ip_obj.ipv4_mapped)
+        if ip_obj in ipaddress.IPv6Network("2001:db8::/32"):
+            return True
+    return False
+
+
+def is_safe_egress_url(url: Optional[str], *, resolve_dns: bool = True) -> tuple[bool, str]:
+    """
+    Validates outbound URLs against SSRF, loopback, private networks, cloud metadata, and internal services.
+    Returns (is_safe, reason).
+    """
+    if not url or not isinstance(url, str) or not url.strip():
+        return False, "Empty URL"
+    cleaned = url.strip()
+    try:
+        parsed = urllib.parse.urlsplit(cleaned)
+    except Exception as exc:
+        return False, f"Malformed URL: {exc}"
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return False, f"Unsupported scheme '{scheme}'"
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        return False, f"Invalid port: {exc}"
+
+    if port is not None and (port < 1 or port > 65535):
+        return False, f"Port {port} out of range"
+
+    is_isolation = is_local_isolation_enforced()
+
+    # Block sensitive internal service ports in production
+    if not is_isolation and port in (22, 25, 465, 587, 2049, 2375, 2376, 3306, 5432, 6379, 11211, 27017):
+        return False, f"Prohibited sensitive internal service port {port}"
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "Missing hostname"
+
+    clean_host = hostname.strip().lower().strip("[]").rstrip(".")
+    if "%" in clean_host:
+        return False, "Percent-encoded hostnames forbidden"
+
+    if is_isolation:
+        if is_loopback_host(clean_host):
+            return True, "Allowed loopback destination in isolation mode"
+        return False, f"Non-loopback host '{clean_host}' blocked in local isolation mode"
+
+    # Production mode: loopback, unspecified, metadata, and internal domains are strictly prohibited
+    if is_loopback_host(clean_host) or clean_host in ("0.0.0.0", "::"):
+        return False, f"Prohibited loopback/unspecified host '{clean_host}'"
+
+    if clean_host.endswith((".local", ".internal", ".lan", ".localhost", ".corp", ".test")):
+        return False, f"Prohibited internal domain '{clean_host}'"
+
+    if clean_host in ("metadata.google.internal", "instance-data"):
+        return False, f"Prohibited cloud metadata host '{clean_host}'"
+
+    # Check for direct IP literal
+    try:
+        ip = ipaddress.ip_address(clean_host)
+        if is_private_or_restricted_ip(ip):
+            return False, f"Prohibited private/restricted IP literal '{ip}'"
+        return True, "Safe public IP literal"
+    except ValueError:
+        pass
+
+    if "." not in clean_host:
+        return False, f"Unqualified single-label internal hostname '{clean_host}'"
+
+    if resolve_dns:
+        try:
+            addr_info = socket.getaddrinfo(clean_host, port or (443 if scheme == "https" else 80), proto=socket.IPPROTO_TCP)
+            for _, _, _, _, sockaddr in addr_info:
+                ip_str = sockaddr[0]
+                ip = ipaddress.ip_address(ip_str)
+                if is_private_or_restricted_ip(ip):
+                    return False, f"DNS for '{clean_host}' resolved to restricted IP '{ip}'"
+        except socket.gaierror as e:
+            return False, f"DNS resolution failed: {e}"
+
+    return True, "Safe public URL"
+
+
+def assert_safe_egress_url(url: Optional[str], *, resolve_dns: bool = True) -> None:
+    """Raises DisallowedEgressError if URL violates SSRF, loopback, private, or metadata egress rules."""
+    safe, reason = is_safe_egress_url(url, resolve_dns=resolve_dns)
+    if not safe:
+        raise DisallowedEgressError(str(url), reason)
+
+
 class LocalIsolationRedirectHandler(urllib.request.HTTPRedirectHandler):
     """
     Redirect handler that validates every redirect hop against loopback destinations.
@@ -129,8 +239,7 @@ class LocalIsolationRedirectHandler(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if is_local_isolation_enforced():
-            assert_loopback_url(newurl)
+        assert_safe_egress_url(newurl, resolve_dns=False)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 

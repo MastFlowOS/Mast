@@ -76,6 +76,10 @@ from __future__ import annotations
 
 import dataclasses
 import uuid
+
+from utils.runtime import get_logger
+
+log = get_logger("engine_enrichment_bridge")
 from typing import Any, Optional
 
 from engine.contracts import BusinessCandidate
@@ -218,8 +222,26 @@ def enrich_business_with_engine_v2(payload: dict) -> dict[str, Any]:
     )
 
     score_obj = ScoringWorker().process(enriched)
+    res = _enriched_to_dict(enriched, score_obj)
 
-    return _enriched_to_dict(enriched, score_obj)
+    pid = payload.get("pipeline_id") or payload.get("id") or "unknown"
+    w = enriched.website_intel
+    c = enriched.contact_intel
+    log.info(
+        f"[candidate-audit][{pid}] stage=python_enrich_complete "
+        f"website_reachable={w.website_reachable if w else None} "
+        f"http_status={w.http_status if w else None} "
+        f"email_count={len(c.emails) if (c and c.emails) else 0} "
+        f"phone_count={len(c.phones) if (c and c.phones) else 0} "
+        f"instagram_found={bool(_website_instagram_url(c))} "
+        f"pages_fetched={getattr(c, 'pages_fetched', 0) if c else 0} "
+        f"rendering_fallback_triggered={bool(getattr(c, 'rendering_fallback_triggered', False)) if c else False} "
+        f"rendering_fallback_yield={bool(getattr(c, 'rendering_fallback_yield', False)) if c else False} "
+        f"homepage_fetch_failed={bool(c.homepage_fetch_failed if c else False)} "
+        f"contact_page_fetch_failed={bool(c.contact_page_fetch_failed if c else False)}"
+    )
+
+    return res
 
 
 enrich_business = enrich_business_with_engine_v2
@@ -318,6 +340,28 @@ def _enriched_to_dict(enriched, score_obj=None) -> dict[str, Any]:
         "instagram_bio": (i.bio if i else None),
         "instagram_external_website": (i.external_website if i else None),
         "instagram_last_post_date": (i.last_post_date if i else None),
+        # Phase 4 Candidate Observability & Diagnostics
+        "homepage_fetch_failed": bool(c.homepage_fetch_failed if c else False),
+        "contact_page_fetch_failed": bool(c.contact_page_fetch_failed if c else False),
+        "secondary_page_fetch_failed": bool(c.secondary_page_fetch_failed if c else False),
+        "secondary_fallback_fetch_failed": bool(c.secondary_fallback_fetch_failed if c else False),
+        "mailto_extracted": bool(c.mailto_extracted if c else False),
+        "tel_extracted": bool(c.tel_extracted if c else False),
+        "instagram_source": (c.instagram_source if c else None),
+        "instagram_invalid_candidate_seen": bool(c.instagram_invalid_candidate_seen if c else False),
+        "contact_page_hint": (w.contact_page_hint if w else None),
+        "fetch_duration": (c.fetch_duration if c else None),
+        "email_count": len(c.emails) if (c and c.emails) else 0,
+        "phone_count": len(c.phones) if (c and c.phones) else 0,
+        "instagram_found": bool(_website_instagram_url(c)),
+        # Phase 6 Candidate Observability
+        "pages_discovered": getattr(c, "pages_discovered", 0) if c else 0,
+        "pages_fetched": getattr(c, "pages_fetched", 0) if c else 0,
+        "static_extraction_attempted": bool(getattr(c, "static_extraction_attempted", False)) if c else False,
+        "static_extraction_yield": bool(getattr(c, "static_extraction_yield", False)) if c else False,
+        "rendering_fallback_triggered": bool(getattr(c, "rendering_fallback_triggered", False)) if c else False,
+        "rendering_fallback_yield": bool(getattr(c, "rendering_fallback_yield", False)) if c else False,
+        "rendering_fallback_error": getattr(c, "rendering_fallback_error", None) if c else None,
     }
 
     if score_obj is not None:

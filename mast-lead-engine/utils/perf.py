@@ -629,8 +629,17 @@ class RunProfiler:
             "time_to_first_yielded_business_ms": (
                 round((first_yield - self._run_start) * 1000, 1) if first_yield else None
             ),
-            "businesses_discovered": self._discovered,
-            "leads_delivered": self._delivered,
+            "businesses_discovered": self._discovered or self.counter("maps_candidates_yielded") or self.counter("raw_candidates"),
+            "leads_delivered": self._delivered or self.counter("delivered"),
+            # Phase 4: Distinct, explicit accounting counters
+            "maps_cards_seen": self.counter("maps_candidates_seen"),
+            "maps_cards_clicked": self.counter("maps_candidates_clicked"),
+            "candidates_emitted": self.counter("maps_candidates_yielded") or self.counter("raw_candidates") or self._discovered,
+            "candidates_admitted_by_node": "handled_by_node",
+            "unique_businesses_discovered": "handled_by_node",
+            "candidates_qualified": self.counter("qualified"),
+            "candidates_rejected": self.counter("early_pruned") + self.counter("contact_failures"),
+            "duplicates": self.counter("early_duplicates"),
             "businesses_per_minute": round(self._businesses_per_minute, 2),
             "leads_per_minute": round(self._leads_per_minute, 2),
             "avg_inter_lead_gap_ms": (
@@ -686,7 +695,11 @@ class RunProfiler:
         self._mem_end_mb = get_memory_usage()
         total_s = self._total_run_ms / 1000.0
         total_ms = self._total_run_ms
-        rejected = self._discovered - self._delivered
+        emitted_count = self._discovered or self.counter("maps_candidates_yielded") or self.counter("raw_candidates")
+        cards_seen = self.counter("maps_candidates_seen")
+        cards_clicked = self.counter("maps_candidates_clicked")
+        delivered_count = delivered if delivered else (self._delivered or self.counter("delivered"))
+        rejected = self.counter("early_pruned") + self.counter("contact_failures")
 
         verbose = bool(os.environ.get("MAST_PERF_VERBOSE", ""))
 
@@ -697,8 +710,8 @@ class RunProfiler:
             "",
             bar,
             f"  MAST PERFORMANCE REPORT  |  {query} / {city}".center(W),
-            f"  Runtime: {total_s:.1f}s   Leads: {delivered}/{requested}"
-            f"   Discovered: {self._discovered}   Rejected: {rejected}",
+            f"  Runtime: {total_s:.1f}s   Leads: {delivered_count}/{requested}"
+            f"   Emitted (to Node): {emitted_count} (Cards Seen: {cards_seen}, Clicked: {cards_clicked})",
         ]
 
         t2fo = self._time_to_first_opportunity_ms

@@ -40,7 +40,7 @@ from utils.runtime import get_logger
 
 log = get_logger("pipeline_trace")
 
-Outcome = Literal["DELIVERED", "REJECTED", "FAILED"]
+Outcome = Literal["DELIVERED", "REJECTED", "FAILED", "YIELDED_TO_NODE"]
 
 # Canonical stage order for THIS process's half of the pipeline (Google
 # Maps -> ... -> handed off across the process boundary to Node). Used only
@@ -128,6 +128,10 @@ class PipelineTracer:
         """Terminal outcome: successfully handed off to the next stage of the pipeline."""
         self._close(pid, "DELIVERED", None)
 
+    def yield_to_node(self, pid: str | None) -> None:
+        """Terminal outcome for discovery_only mode: candidate yielded across process boundary to Node."""
+        self._close(pid, "YIELDED_TO_NODE", None)
+
     def _close(self, pid: str | None, outcome: Outcome, reason: str | None) -> None:
         rec = self._records.get(pid) if pid else None
         if rec is None:
@@ -184,6 +188,7 @@ class PipelineTracer:
         one explicit violation block per missing business."""
         discovered = len(self._records)
         delivered = sum(1 for r in self._records.values() if r.outcome == "DELIVERED")
+        yielded = sum(1 for r in self._records.values() if r.outcome == "YIELDED_TO_NODE")
         rejected = sum(1 for r in self._records.values() if r.outcome == "REJECTED")
         failed = sum(1 for r in self._records.values() if r.outcome == "FAILED")
         missing = [r for r in self._records.values() if r.outcome is None]
@@ -192,6 +197,7 @@ class PipelineTracer:
             "=====================================",
             f"Businesses discovered : {discovered}",
             f"Delivered             : {delivered}",
+            f"Yielded to Node       : {yielded}",
             f"Rejected              : {rejected}",
             f"Failed                : {failed}",
             f"Missing               : {len(missing)}",

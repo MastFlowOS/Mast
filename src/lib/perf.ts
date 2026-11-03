@@ -14,7 +14,8 @@
 interface StageSample {
   totalMs: number;
   count: number;
-  sorted: number[]; // kept sorted for O(1) percentile reads
+  samples: number[];
+  isSorted: boolean;
 }
 
 interface StageStats {
@@ -27,17 +28,6 @@ interface StageStats {
   p90Ms: number | null;
   p99Ms: number | null;
   pctOfRuntime: number;
-}
-
-function sortedInsert(arr: number[], val: number): void {
-  let lo = 0,
-    hi = arr.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (arr[mid]! < val) lo = mid + 1;
-    else hi = mid;
-  }
-  arr.splice(lo, 0, val);
 }
 
 function percentile(sorted: number[], pct: number): number | null {
@@ -61,12 +51,13 @@ export class JobProfiler {
         const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
         let entry = this.stages.get(stage);
         if (!entry) {
-          entry = { totalMs: 0, count: 0, sorted: [] };
+          entry = { totalMs: 0, count: 0, samples: [], isSorted: true };
           this.stages.set(stage, entry);
         }
         entry.totalMs += elapsedMs;
         entry.count += 1;
-        sortedInsert(entry.sorted, elapsedMs);
+        entry.samples.push(elapsedMs);
+        entry.isSorted = false;
       },
     };
   }
@@ -75,12 +66,13 @@ export class JobProfiler {
   recordRaw(stage: string, elapsedMs: number): void {
     let entry = this.stages.get(stage);
     if (!entry) {
-      entry = { totalMs: 0, count: 0, sorted: [] };
+      entry = { totalMs: 0, count: 0, samples: [], isSorted: true };
       this.stages.set(stage, entry);
     }
     entry.totalMs += elapsedMs;
     entry.count += 1;
-    sortedInsert(entry.sorted, elapsedMs);
+    entry.samples.push(elapsedMs);
+    entry.isSorted = false;
   }
 
   /** Record a single-point timestamp event (no duration).
@@ -122,15 +114,20 @@ export class JobProfiler {
         p50Ms: null, p90Ms: null, p99Ms: null, pctOfRuntime: 0,
       };
     }
+    if (!s.isSorted) {
+      s.samples.sort((a, b) => a - b);
+      s.isSorted = true;
+    }
+    const sorted = s.samples;
     return {
       count: s.count,
       totalMs: s.totalMs,
       avgMs: s.totalMs / s.count,
-      minMs: s.sorted[0] ?? null,
-      maxMs: s.sorted[s.sorted.length - 1] ?? null,
-      p50Ms: percentile(s.sorted, 50),
-      p90Ms: percentile(s.sorted, 90),
-      p99Ms: percentile(s.sorted, 99),
+      minMs: sorted[0] ?? null,
+      maxMs: sorted[sorted.length - 1] ?? null,
+      p50Ms: percentile(sorted, 50),
+      p90Ms: percentile(sorted, 90),
+      p99Ms: percentile(sorted, 99),
       pctOfRuntime: totalRuntime > 0 ? (s.totalMs / totalRuntime) * 100 : 0,
     };
   }

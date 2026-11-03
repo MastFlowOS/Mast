@@ -623,6 +623,15 @@ class ContactIntel:
     email_provenance: Optional[tuple[tuple[str, str], ...]] = None
     phone_provenance: Optional[tuple[tuple[str, str], ...]] = None
 
+    # Phase 6: ContactWorker Intelligence & Observability
+    pages_discovered: int = 0
+    pages_fetched: int = 0
+    static_extraction_attempted: bool = False
+    static_extraction_yield: bool = False
+    rendering_fallback_triggered: bool = False
+    rendering_fallback_yield: bool = False
+    rendering_fallback_error: Optional[str] = None
+
 
 
 # ---------------------------------------------------------------------------

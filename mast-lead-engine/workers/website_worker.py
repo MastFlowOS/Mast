@@ -126,7 +126,12 @@ from typing import List, Optional
 from urllib.parse import urljoin, urlparse
 
 from engine.contracts import BusinessCandidate, WebsiteIntel
-from utils.egress_guard import assert_loopback_url, is_local_isolation_enforced, is_loopback_host
+from utils.egress_guard import (
+    assert_safe_egress_url,
+    DisallowedEgressError,
+    is_local_isolation_enforced,
+    is_loopback_host,
+)
 from utils.http_limits import fetch_slot, read_capped
 from utils.single_flight import SingleFlight
 from utils.parsing import is_ordering_platform, is_social_platform, is_weak_site, strip_control_characters
@@ -199,6 +204,10 @@ _NEW_LOCATION_PHRASE_RE = re.compile(
     r"new location|opening soon|coming soon|now open in|second location|our new (?:shop|store|studio|location)",
     re.IGNORECASE,
 )
+_HIRING_HREF_RE = re.compile(
+    r'href=["\'][^"\']*?(?:/careers|/jobs|/join-us|/join-our-team|/work-with-us)',
+    re.IGNORECASE,
+)
 _TECH_PATTERNS: tuple[tuple[str, str, str], ...] = (
     # CMS
     ("wordpress", "cms", r"wp-content|wp-includes|wordpress"),
@@ -245,6 +254,11 @@ _TECH_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("fresha", "booking", r"fresha\.com"),
 )
 
+_COMPILED_TECH_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = tuple(
+    (tech, category, re.compile(pattern, re.IGNORECASE))
+    for tech, category, pattern in _TECH_PATTERNS
+)
+
 
 class _RedirectTracker(urllib.request.HTTPRedirectHandler):
     """Records every URL redirected to, in order, without altering
@@ -255,8 +269,7 @@ class _RedirectTracker(urllib.request.HTTPRedirectHandler):
         self.chain: List[str] = []
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
-        if is_local_isolation_enforced():
-            assert_loopback_url(newurl)
+        assert_safe_egress_url(newurl, resolve_dns=False)
         self.chain.append(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -433,8 +446,7 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
 
         start = time.monotonic()
         try:
-            if is_local_isolation_enforced():
-                assert_loopback_url(target_url)
+            assert_safe_egress_url(target_url, resolve_dns=False)
             with fetch_slot(), opener.open(request, timeout=self._timeout) as response:
                 elapsed = time.monotonic() - start
                 final_url = response.geturl()
@@ -457,6 +469,16 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
                 )
             )
         except (urllib.error.URLError, socket.timeout, ConnectionError, ValueError) as exc:
+            if isinstance(exc, DisallowedEgressError):
+                elapsed = time.monotonic() - start
+                return _commit_cache(
+                    WebsiteIntel(
+                        pipeline_id=item.pipeline_id,
+                        website_reachable=False,
+                        response_time=elapsed,
+                        crawl_duration=elapsed,
+                    )
+                )
             # Check if this failure qualifies for HTTP fallback:
             # 1) If URL had no scheme, fallback_http_url was set unconditionally.
             # 2) If target was an explicit HTTPS URL, fall back to HTTP ONLY for TLS/certificate verification errors.
@@ -476,8 +498,7 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
 
             if effective_fallback_url:
                 try:
-                    if is_local_isolation_enforced():
-                        assert_loopback_url(effective_fallback_url)
+                    assert_safe_egress_url(effective_fallback_url, resolve_dns=False)
                     fallback_req = urllib.request.Request(effective_fallback_url, headers=headers)
                     with fetch_slot(), opener.open(fallback_req, timeout=self._timeout) as response:
                         elapsed = time.monotonic() - start
@@ -616,8 +637,8 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
     @staticmethod
     def _extract_tech_stack(html: str, detected_platform: Optional[str] = None) -> dict:
         found: dict[str, list[str]] = {}
-        for tech, category, pattern in _TECH_PATTERNS:
-            if re.search(pattern, html, re.IGNORECASE):
+        for tech, category, compiled_re in _COMPILED_TECH_PATTERNS:
+            if compiled_re.search(html):
                 if tech not in found.setdefault(category, []):
                     found[category].append(tech)
         result: dict = {"raw": {k: True for techs in found.values() for k in techs}}
@@ -636,12 +657,9 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
         if not html:
             return {}
         signals: dict = {}
-        low = html.lower()
-        anchors = [href for href, _ in _ANCHOR_RE.findall(html)]
-        hiring_link = any(any(h in (a or "").lower() for h in _HIRING_LINK_HINTS) for a in anchors)
-        if hiring_link or _HIRING_PHRASE_RE.search(low):
+        if _HIRING_HREF_RE.search(html) or _HIRING_PHRASE_RE.search(html):
             signals["hiring"] = True
-        if _NEW_LOCATION_PHRASE_RE.search(low):
+        if _NEW_LOCATION_PHRASE_RE.search(html):
             signals["new_location"] = True
         return signals
 

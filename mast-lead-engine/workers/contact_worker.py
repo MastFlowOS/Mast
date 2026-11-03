@@ -267,6 +267,7 @@ Contact-data audit fixes (extraction accuracy + wasted work)
 from __future__ import annotations
 
 import concurrent.futures
+import os
 import re
 import socket
 import time
@@ -277,9 +278,19 @@ from typing import List, Dict, Optional, Sequence, Set, Tuple
 from urllib.parse import urljoin
 
 from engine.contracts import ContactIntel, WebsiteIntel
-from utils.egress_guard import assert_loopback_url, is_local_isolation_enforced, LocalIsolationRedirectHandler
-from utils.http_limits import fetch_slot, is_permanent_http_error, read_capped
+from utils.egress_guard import (
+    assert_loopback_url,
+    assert_safe_egress_url,
+    is_local_isolation_enforced,
+    is_safe_egress_url,
+    LocalIsolationRedirectHandler,
+)
+from utils.http_limits import fetch_slot, is_permanent_http_error, read_capped, render_slot
 from utils.parsing import (
+    _CF_EMAIL_ATTR_RE,
+    _CF_EMAIL_HREF_RE,
+    clean_ig_url,
+    decode_cfemail,
     decode_entities,
     digits_only,
     extract_contextual_attribute_contacts,
@@ -290,6 +301,7 @@ from utils.parsing import (
     find_secondary_contact_link,
     get_standard_contact_candidates,
     has_invalid_ig_candidate,
+    is_real_ig_handle,
     is_valid_email,
     is_valid_phone,
     normalize_phone,
@@ -348,6 +360,54 @@ _LINKEDIN_RE = re.compile(
 )
 
 
+def is_development_or_test_environment() -> bool:
+    """Positively identifies if the current runtime environment is development or test.
+
+    Fail-closed security rule:
+    1. Returns False if ANY environment variable indicates production, staging, or live.
+    2. Returns True ONLY if at least one environment variable positively identifies
+       a development or test environment.
+    3. Returns False for unknown, unconfigured, or ambiguous environments.
+    """
+    prod_markers = {"production", "prod", "staging", "stage", "live"}
+    env_keys = ("NODE_ENV", "MAST_ENV", "APP_ENV", "ENVIRONMENT", "ENV")
+
+    # Step 1: Disqualify immediately if ANY variable indicates production/staging
+    for key in env_keys:
+        val = os.environ.get(key, "").strip().lower()
+        if val in prod_markers:
+            return False
+
+    # Step 2: Positively verify an explicit development/test indicator
+    dev_test_markers = {"development", "dev", "test", "testing", "local"}
+    for key in env_keys:
+        val = os.environ.get(key, "").strip().lower()
+        if val in dev_test_markers:
+            return True
+
+    if os.environ.get("MAST_TEST_ENV", "").strip().lower() in ("1", "true", "yes"):
+        return True
+
+    # Step 3: Unknown environment -> Fail-closed
+    return False
+
+
+def is_dynamic_rendering_enabled() -> bool:
+    """True ONLY when:
+    1. Runtime environment is POSITIVELY identified as development or test, AND
+    2. Explicitly opted in via ENABLE_DYNAMIC_RENDERING or MAST_ENABLE_DYNAMIC_RENDERING.
+
+    Fail-closed production guard: In production or unknown environments, dynamic browser
+    rendering is strictly impossible by configuration and cannot be enabled."""
+    if not is_development_or_test_environment():
+        return False
+
+    return (
+        os.environ.get("ENABLE_DYNAMIC_RENDERING", "").strip().lower() in ("true", "1", "yes")
+        or os.environ.get("MAST_ENABLE_DYNAMIC_RENDERING", "").strip().lower() in ("true", "1", "yes")
+    )
+
+
 class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
     """
     Transforms one WebsiteIntel into one ContactIntel by fetching the
@@ -362,6 +422,8 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         worker_id: Optional[str] = None,
         required_channels: Optional[Sequence[str] | Set[str]] = None,
+        custom_renderer: Optional[Any] = None,
+        enable_dynamic_rendering: Optional[bool] = None,
     ) -> None:
         super().__init__(
             worker_type=WORKER_TYPE,
@@ -372,6 +434,16 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         self._required_channels = (
             tuple(required_channels) if required_channels is not None else None
         )
+        self._custom_renderer = custom_renderer
+        # Fail-closed production guard:
+        # In production or unknown environments, dynamic rendering is strictly disabled
+        # regardless of ENABLE_DYNAMIC_RENDERING, MAST_ENABLE_DYNAMIC_RENDERING, or constructor overrides.
+        if not is_development_or_test_environment():
+            self._dynamic_rendering_enabled = False
+        elif enable_dynamic_rendering is not None:
+            self._dynamic_rendering_enabled = bool(enable_dynamic_rendering)
+        else:
+            self._dynamic_rendering_enabled = is_dynamic_rendering_enabled()
 
     def _is_requirement_unsatisfied(
         self,
@@ -650,6 +722,11 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         secondary_fallback_success = False
         secondary_fallback_fetch_failed = False
 
+        # Phase 6: Selective JavaScript-rendered fallback state
+        rendering_fallback_triggered = False
+        rendering_fallback_yield = False
+        rendering_fallback_error: Optional[str] = None
+
         if _unsatisfied() and total_fetches < _MAX_PAGE_FETCHES and self._may_fetch_secondary():
             base_url = item.final_url or item.contact_page or (fetched_htmls[0][1] if fetched_htmls else "")
             sec_url: Optional[str] = None
@@ -675,6 +752,32 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                     secondary_page_fetch_failed = True
                     if last_exc is None:
                         last_exc = exc
+
+            should_try_render = (
+                self._dynamic_rendering_enabled
+                and _unsatisfied()
+                and total_fetches < _MAX_PAGE_FETCHES
+                and any_page_recovered
+                and any(self._is_client_rendered_shell(h) for h, _ in fetched_htmls)
+            )
+
+            if should_try_render:
+                target_render_url = base_url or (fetched_htmls[0][1] if fetched_htmls else None)
+                if target_render_url:
+                    rendering_fallback_triggered = True
+                    total_fetches += 1
+                    try:
+                        pre_email_len = len(emails)
+                        pre_phone_len = len(phones)
+                        pre_ig = instagram_url
+
+                        r_html, r_page_url, r_elapsed = self._render_dynamic_page(target_render_url)
+                        _process_page_content("rendered_page", r_html, r_page_url, r_elapsed)
+
+                        if (len(emails) > pre_email_len) or (len(phones) > pre_phone_len) or (instagram_url is not None and pre_ig is None):
+                            rendering_fallback_yield = True
+                    except Exception as r_exc:
+                        rendering_fallback_error = self._classify_rendering_error(r_exc)
 
             # Standard-path fallback (no discovered link, or it did not
             # satisfy the need): one candidate at a time, in priority
@@ -708,6 +811,9 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                     secondary_fallback_fetch_failed = True
                     last_exc = alt_exc
 
+        pages_discovered = len(tried_urls)
+        static_extraction_attempted = bool(any_page_recovered)
+        static_extraction_yield = bool(emails or phones or instagram_url)
 
         if not any_page_recovered:
             # Phase 42D-2 correction: every candidate page fetch failed
@@ -753,6 +859,13 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                 secondary_fallback_url=secondary_fallback_url,
                 secondary_fallback_success=secondary_fallback_success,
                 secondary_fallback_fetch_failed=secondary_fallback_fetch_failed,
+                pages_discovered=pages_discovered,
+                pages_fetched=total_fetches,
+                static_extraction_attempted=False,
+                static_extraction_yield=False,
+                rendering_fallback_triggered=False,
+                rendering_fallback_yield=False,
+                rendering_fallback_error=None,
             )
 
         partial_contact_success = bool(
@@ -809,8 +922,173 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
             secondary_fallback_url=secondary_fallback_url,
             secondary_fallback_success=secondary_fallback_success,
             secondary_fallback_fetch_failed=secondary_fallback_fetch_failed,
+            pages_discovered=pages_discovered,
+            pages_fetched=total_fetches,
+            static_extraction_attempted=static_extraction_attempted,
+            static_extraction_yield=static_extraction_yield,
+            rendering_fallback_triggered=rendering_fallback_triggered,
+            rendering_fallback_yield=rendering_fallback_yield,
+            rendering_fallback_error=rendering_fallback_error,
         )
 
+
+    @staticmethod
+    def _is_client_rendered_shell(html: str) -> bool:
+        """True if HTML exhibits clear signals of being an empty SPA or client-rendered shell."""
+        if not html:
+            return False
+        low = html.lower()
+        if len(html) < 1200 and ("<script" in low):
+            return True
+        for shell_tag in (
+            '<div id="root"></div>',
+            '<div id="root" ></div>',
+            '<div id="__next"></div>',
+            '<div id="app"></div>',
+            '<div id="app" ></div>',
+        ):
+            if shell_tag in low:
+                return True
+        if "<noscript>" in low and any(
+            hint in low for hint in (
+                "enable javascript",
+                "javascript is required",
+                "javascript must be enabled",
+                "javascript is disabled",
+                "requires javascript",
+                "need to enable javascript",
+            )
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _classify_rendering_error(exc: BaseException) -> str:
+        """Classifies rendering exceptions into safe, stable categories without leaking raw URLs or payload data."""
+        cls_name = exc.__class__.__name__
+        msg_low = str(exc).lower()
+        if "timeout" in cls_name.lower() or "timeout" in msg_low:
+            category = "timeout"
+        elif "closed" in msg_low or "crashed" in msg_low or "target" in msg_low:
+            category = "target_closed_or_crashed"
+        elif "egress" in msg_low or "isolation" in msg_low or "disallowed" in msg_low or "blocked" in msg_low:
+            category = "disallowed_egress"
+        elif "navigat" in msg_low:
+            category = "navigation_failed"
+        elif "not installed" in msg_low or "import" in msg_low:
+            category = "driver_unavailable"
+        else:
+            category = "rendering_error"
+        return f"{category}:{cls_name}"
+
+    def _render_dynamic_page(self, url: str) -> tuple[str, str, float]:
+        """Selective headless browser rendering for JS-rendered shells.
+        Strictly bounded: 4.0s max timeout, process-wide render_slot, images disabled,
+        SSRF/egress route filtering, clean resource teardown."""
+        if not getattr(self, "_dynamic_rendering_enabled", False) or not is_development_or_test_environment():
+            raise RuntimeError("Dynamic browser rendering is disabled in this environment")
+
+        raw_url = strip_control_characters(url.strip())
+        if not re.match(r"^https?://", raw_url, re.IGNORECASE):
+            raw_url = "https://" + raw_url
+        assert_safe_egress_url(raw_url)
+
+        if hasattr(self, "_custom_renderer") and self._custom_renderer is not None:
+            return self._custom_renderer(raw_url)
+
+        start = time.monotonic()
+        render_budget_s = min(float(self._timeout), 4.0)
+        overall_deadline = start + render_budget_s
+
+        def _check_remaining() -> float:
+            rem = overall_deadline - time.monotonic()
+            if rem <= 0.0:
+                raise TimeoutError("Rendering deadline expired")
+            return rem
+
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            raise RuntimeError("Playwright is not installed for JS rendering fallback")
+
+        slot_timeout = _check_remaining()
+        with render_slot(timeout=slot_timeout):
+            with sync_playwright() as p:
+                no_sandbox_enabled = os.environ.get("MAST_CHROMIUM_NO_SANDBOX", "1").strip().lower() in ("1", "true", "yes")
+                launch_args = [
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--blink-settings=imagesEnabled=false",
+                ]
+                if no_sandbox_enabled:
+                    # Note: --no-sandbox is required in unprivileged root container environments
+                    # (Docker/Kubernetes without user namespaces). In privileged/non-root containers,
+                    # set MAST_CHROMIUM_NO_SANDBOX=0 to retain the OS sandbox jail.
+                    launch_args.append("--no-sandbox")
+
+                rem = _check_remaining()
+                launch_timeout_ms = max(1, int(rem * 1000))
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=launch_args,
+                    timeout=launch_timeout_ms,
+                )
+                try:
+                    ctx = browser.new_context(
+                        user_agent=_USER_AGENT,
+                        viewport={"width": 1280, "height": 800},
+                    )
+
+                    def _route_filter(route):
+                        try:
+                            r_type = route.request.resource_type
+                            if r_type in ("image", "media", "font", "stylesheet", "websocket"):
+                                route.abort("blockedbyclient")
+                                return
+                            req_url = route.request.url
+                            if req_url.lower().startswith(("ws://", "wss://")):
+                                route.abort("blockedbyclient")
+                                return
+                            safe, _ = is_safe_egress_url(req_url, resolve_dns=True)
+                            if not safe:
+                                route.abort("blockedbyclient")
+                                return
+                            route.continue_()
+                        except Exception:
+                            route.abort("blockedbyclient")
+
+                    ctx.route("**/*", _route_filter)
+
+                    page = ctx.new_page()
+                    try:
+                        rem = _check_remaining()
+                        nav_timeout_ms = max(1, int(rem * 1000))
+                        page.goto(raw_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+
+                        rem = overall_deadline - time.monotonic()
+                        post_ms = min(300, max(0, int(rem * 1000)))
+                        if post_ms > 0:
+                            page.wait_for_timeout(post_ms)
+
+                        html = page.content()
+                        resolved_url = page.url
+                        elapsed = time.monotonic() - start
+                        return html, resolved_url, elapsed
+                    finally:
+                        try:
+                            page.close()
+                        except Exception:
+                            pass
+                        try:
+                            ctx.close()
+                        except Exception:
+                            pass
+                finally:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
 
     def timeout_seconds(self) -> float:
         return self._timeout
@@ -850,6 +1128,8 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
 
         if is_local_isolation_enforced():
             assert_loopback_url(raw_url)
+        else:
+            assert_safe_egress_url(raw_url, resolve_dns=False)
 
         headers = {
             "User-Agent": _USER_AGENT,
@@ -861,6 +1141,8 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         def _do_http(target: str) -> Tuple[str, str, float]:
             if is_local_isolation_enforced():
                 assert_loopback_url(target)
+            else:
+                assert_safe_egress_url(target, resolve_dns=False)
             req = urllib.request.Request(target, headers=headers)
             start = time.monotonic()
             with fetch_slot():
@@ -951,6 +1233,16 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
                 number = urllib.parse.unquote(number)
                 _add_phone(number, "tel")
 
+        # 1b. Cloudflare Email Protection decoding
+        for cf_hex in _CF_EMAIL_HREF_RE.findall(html):
+            decoded = decode_cfemail(cf_hex)
+            if decoded:
+                _add_email(decoded, "cloudflare")
+        for cf_hex in _CF_EMAIL_ATTR_RE.findall(html):
+            decoded = decode_cfemail(cf_hex)
+            if decoded:
+                _add_email(decoded, "cloudflare")
+
         # 2. JSON-LD structured data (Organization / LocalBusiness / ContactPoint)
         jsonld_data = extract_jsonld_contact_data(html)
         for e in jsonld_data.get("emails", []):
@@ -965,8 +1257,12 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         for p in attr_data.get("phones", []):
             _add_phone(p, page_role)
 
-        # 4. Text regex emails (entity-decoded so `info&#64;shop.com` is seen)
+        # 4. Text regex emails (entity-decoded so `info&#64;shop.com` is seen, with JS unescape)
         decoded_html = decode_entities(html)
+        if r"\u0040" in decoded_html:
+            decoded_html = decoded_html.replace(r"\u0040", "@")
+        if r"\u002e" in decoded_html:
+            decoded_html = decoded_html.replace(r"\u002e", ".")
         for match in _EMAIL_RE.findall(decoded_html):
             _add_email(match, page_role)
 
@@ -1024,7 +1320,12 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         if not html:
             return None, None
         evidence = extract_ig_urls_with_source(html)
-        if not evidence:
-            return None, None
-        return evidence[0]
+        if evidence:
+            return evidence[0]
+        jsonld_data = extract_jsonld_contact_data(html)
+        for u in jsonld_data.get("urls", []):
+            cleaned = clean_ig_url(u)
+            if is_real_ig_handle(cleaned):
+                return cleaned, "jsonld"
+        return None, None
 

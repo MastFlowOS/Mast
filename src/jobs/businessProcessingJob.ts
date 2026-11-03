@@ -7,7 +7,7 @@ import { resolveInstagramToPersist } from "../lib/instagram.js";
 import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
 import { toJson, isJsonObject } from "../lib/json.js";
-import type { Json } from "../types/database.types.js";
+import type { Json, Database } from "../types/database.types.js";
 import { env } from "../config/env.js";
 import { aiEnabled, generateJSON, AI_MODEL, getAiModel } from "../lib/ai.js";
 import { singleFlight } from "../lib/singleFlight.js";
@@ -22,6 +22,95 @@ import {
   ADMISSION_BLOCKED_TASK_ERROR_PREFIX,
   isRecoverableAdmissionBlockedTask,
 } from "../lib/businessTaskRecovery.js";
+
+const _IG_NON_HANDLES = new Set([
+  "p", "reel", "reels", "tv", "explore", "stories", "accounts",
+  "about", "directory", "legal", "privacy", "press", "help",
+  "api", "oauth", "challenge",
+]);
+
+const _FB_SKIP = new Set([
+  "profile.php", "pages", "groups", "events", "watch", "share",
+  "sharer", "dialog", "plugins", "help", "policies", "login",
+]);
+
+/**
+ * Generates canonical identity fingerprints (email:, tel:, ig:, fb:) for
+ * newly discovered and validated contact points.
+ * Matches existing conventions established by mast-lead-engine/storage/dedup.py.
+ */
+export function generateEnrichmentFingerprints(params: {
+  email?: string | null;
+  emails?: string[] | null;
+  phone?: string | null;
+  phones?: string[] | null;
+  instagram?: string | null;
+  facebook?: string | null;
+}): string[] {
+  const fps = new Set<string>();
+
+  // 1. Emails
+  const rawEmails = [params.email, ...(params.emails ?? [])];
+  for (const raw of rawEmails) {
+    if (typeof raw === "string" && isValidEmail(raw)) {
+      const clean = raw.trim().toLowerCase();
+      if (clean && clean.includes("@")) {
+        fps.add(`email:${clean}`);
+      }
+    }
+  }
+
+  // 2. Phones
+  const rawPhones = [params.phone, ...(params.phones ?? [])];
+  for (const raw of rawPhones) {
+    if (typeof raw === "string" && isValidPhone(raw)) {
+      const digits = raw.replace(/\D/g, "");
+      if (digits.length >= 10) {
+        fps.add(`tel:${digits.slice(-10)}`);
+      } else if (digits.length >= 7) {
+        fps.add(`tel:${digits}`);
+      }
+    }
+  }
+
+  // 3. Instagram
+  if (typeof params.instagram === "string" && params.instagram.trim()) {
+    let s = params.instagram.trim().toLowerCase();
+    const m = s.match(/instagram\.com\/([^/?#]+)/);
+    if (m) s = m[1];
+    s = s.replace(/^@+/, "").replace(/\/+$/, "").trim();
+    if (s && !_IG_NON_HANDLES.has(s) && !/^\d+$/.test(s) && /^[a-zA-Z0-9._]{1,30}$/.test(s)) {
+      fps.add(`ig:${s}`);
+    }
+  }
+
+  // 4. Facebook
+  if (typeof params.facebook === "string" && params.facebook.trim()) {
+    let s = params.facebook.trim().toLowerCase();
+    const m = s.match(/facebook\.com\/([^/?#]+)/);
+    if (m) s = m[1];
+    s = s.replace(/\/+$/, "").trim();
+    if (s && !_FB_SKIP.has(s)) {
+      fps.add(`fb:${s}`);
+    }
+  }
+
+  return Array.from(fps).sort();
+}
+
+export type SyncBusinessEnrichmentParams = Database["public"]["Functions"]["sync_business_enrichment_fingerprints"]["Args"];
+export type SyncBusinessEnrichmentResult = Database["public"]["Functions"]["sync_business_enrichment_fingerprints"]["Returns"];
+
+/**
+ * Narrow typed RPC wrapper for sync_business_enrichment_fingerprints.
+ * Prevents parameter name or type mismatches between TypeScript and PostgreSQL without any `as any` casts.
+ */
+export async function callSyncBusinessEnrichmentFingerprints(
+  client: typeof supabaseAdmin,
+  params: SyncBusinessEnrichmentParams,
+) {
+  return client.rpc("sync_business_enrichment_fingerprints", params);
+}
 
 export type ProcessingKind = "enrich" | "score";
 export type BusinessProcessingPayload = { taskId: string };
@@ -293,7 +382,7 @@ const ENRICH_SELF_CLAIM_TIMEOUT_MS = 30000;
 /**
  * Synchronously ensures a business has been through enrichment (website crawl/email extraction).
  */
-export async function ensureEnriched(businessId: string): Promise<void> {
+export async function ensureEnriched(businessId: string, options?: { requiredChannels?: string[] }): Promise<void> {
   const { data: task, error } = await supabaseAdmin.from("business_processing_tasks")
     .select("id, status, attempts").eq("business_id", businessId).eq("kind", "enrich").maybeSingle();
   if (error) throw error;
@@ -310,7 +399,7 @@ export async function ensureEnriched(businessId: string): Promise<void> {
     const timeoutController = new AbortController();
     const timeoutHandle = setTimeout(() => timeoutController.abort(), ENRICH_SELF_CLAIM_TIMEOUT_MS);
     try {
-      await enrichBusiness(businessId, timeoutController.signal);
+      await enrichBusiness(businessId, timeoutController.signal, options);
       await supabaseAdmin.from("business_processing_tasks").update({ status: "completed", completed_at: new Date().toISOString(), last_heartbeat_at: null }).eq("id", claimed.id);
     } catch (err) {
       const timedOut = timeoutController.signal.aborted;
@@ -335,7 +424,7 @@ export async function ensureEnriched(businessId: string): Promise<void> {
     const { data: current } = await supabaseAdmin.from("business_processing_tasks").select("status").eq("id", task.id).maybeSingle();
     if (!current || current.status === "completed") return;
     if (current.status === "queued") {
-      return ensureEnriched(businessId);
+      return ensureEnriched(businessId, options);
     }
   }
 }
@@ -376,7 +465,7 @@ export async function ensureIntelligence(businessId: string): Promise<void> {
   }
 }
 
-async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise<void> {
+async function enrichBusiness(businessId: string, signal?: AbortSignal, options?: { requiredChannels?: string[] }): Promise<void> {
   return trackActiveEnrichment(async () => {
     const { data: business, error } = await supabaseAdmin.from("businesses")
       .select(
@@ -432,6 +521,7 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
             blog: isJsonObject(business.blog) ? (business.blog as Record<string, unknown>) : undefined,
             signals: isJsonObject(business.signals) ? (business.signals as Record<string, unknown>) : undefined,
             known_channels: knownChannels.length > 0 ? knownChannels : undefined,
+            required_channels: options?.requiredChannels,
             skip_instagram_worker: true,
           },
           signal,
@@ -451,19 +541,6 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
     // ever fills a missing/invalid stored value (see resolveInstagramToPersist);
     // an extraction miss leaves the column untouched.
     const siteInstagram = resolveInstagramToPersist(business.instagram, site.instagram);
-
-    const existingEmails: string[] = Array.isArray(business.emails)
-      ? business.emails.map(extractStoredEmail).filter((email): email is string => typeof email === "string")
-      : [];
-    const existingPhones: string[] = Array.isArray(business.phones)
-      ? business.phones.filter((phone): phone is string => typeof phone === "string")
-      : [];
-    const emails: string[] = Array.from(
-      new Set([...existingEmails, siteEmail, ...siteEmails].filter((email): email is string => typeof email === "string")),
-    );
-    const phones: string[] = Array.from(
-      new Set([...existingPhones, sitePhone, ...sitePhones].filter((phone): phone is string => typeof phone === "string")),
-    );
 
     // Milestone 2: Engine 2.0's ContactWorker/WebsiteWorker report objective
     // extraction facts only (see WebsiteIntel/ContactIntel's own contract
@@ -489,34 +566,90 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal): Promise
       site.growth_signals && typeof site.growth_signals === "object" && Object.keys(site.growth_signals).length > 0
         ? site.growth_signals
         : currentSignals.growth_signals;
+    const contactAudit =
+      site.homepage_fetch_failed !== undefined ||
+      site.contact_page_fetch_failed !== undefined ||
+      site.instagram_invalid_candidate_seen !== undefined
+        ? {
+            homepage_fetch_failed: site.homepage_fetch_failed ?? null,
+            contact_page_fetch_failed: site.contact_page_fetch_failed ?? null,
+            secondary_page_fetch_failed: site.secondary_page_fetch_failed ?? null,
+            secondary_fallback_fetch_failed: site.secondary_fallback_fetch_failed ?? null,
+            mailto_extracted: site.mailto_extracted ?? null,
+            tel_extracted: site.tel_extracted ?? null,
+            instagram_source: site.instagram_source ?? null,
+            instagram_invalid_candidate_seen: site.instagram_invalid_candidate_seen ?? null,
+            contact_page_hint: site.contact_page_hint ?? null,
+            fetch_duration: site.fetch_duration ?? null,
+            email_count: site.email_count ?? 0,
+            phone_count: site.phone_count ?? 0,
+            instagram_found: site.instagram_found ?? false,
+            pages_discovered: site.pages_discovered ?? 0,
+            pages_fetched: site.pages_fetched ?? 0,
+            static_extraction_attempted: site.static_extraction_attempted ?? false,
+            static_extraction_yield: site.static_extraction_yield ?? false,
+            rendering_fallback_triggered: site.rendering_fallback_triggered ?? false,
+            rendering_fallback_yield: site.rendering_fallback_yield ?? false,
+          }
+        : undefined;
     const nextSignals =
-      nextTechStack !== undefined || nextGrowthSignals !== undefined || Object.keys(currentSignals).length > 0
+      nextTechStack !== undefined || nextGrowthSignals !== undefined || contactAudit !== undefined || Object.keys(currentSignals).length > 0
         ? toJson({
             ...currentSignals,
             ...(nextTechStack !== undefined ? { tech_stack: nextTechStack } : {}),
             ...(nextGrowthSignals !== undefined ? { growth_signals: nextGrowthSignals } : {}),
+            ...(contactAudit !== undefined ? { contact_audit: contactAudit } : {}),
           })
         : undefined;
 
-    // Update business with website data.
-    const { error: updateError } = await supabaseAdmin.from("businesses").update({
-      email: siteEmail || business.email || undefined,
-      phone: sitePhone || business.phone || undefined,
-      linkedin: site.linkedin || undefined,
-      instagram: siteInstagram || undefined,
-      emails,
-      phones,
-      field_provenance: provenance,
-      website_is_weak: site.website_is_weak ?? undefined,
-      ssl_valid: site.ssl_valid ?? undefined,
-      load_time_ms: site.load_time_ms ?? undefined,
-      seo: site.seo && typeof site.seo === "object" ? toJson(site.seo) : undefined,
-      blog: site.blog && typeof site.blog === "object" ? toJson(site.blog) : undefined,
-      signals: nextSignals,
-      last_verified_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }).eq("id", businessId);
-    if (updateError) throw updateError;
+    // Phase 7.2: Generate canonical fingerprints from all newly discovered contact points
+    const newFingerprints = generateEnrichmentFingerprints({
+      email: siteEmail,
+      emails: siteEmails,
+      phone: sitePhone,
+      phones: sitePhones,
+      instagram: siteInstagram,
+      facebook: site.facebook,
+    });
+
+    // Phase 7.2: Atomic database synchronization of contact data, arrays, and fingerprints
+    const { data: syncData, error: syncError } = await callSyncBusinessEnrichmentFingerprints(
+      supabaseAdmin,
+      {
+        p_business_id: businessId,
+        p_email: siteEmail || null,
+        p_emails: siteEmails,
+        p_phone: sitePhone || null,
+        p_phones: sitePhones,
+        p_instagram: siteInstagram || null,
+        p_facebook: site.facebook || null,
+        p_linkedin: site.linkedin || null,
+        p_fingerprints: newFingerprints,
+        p_field_provenance: provenance,
+        p_signals: nextSignals,
+        p_website_is_weak: site.website_is_weak ?? null,
+        p_ssl_valid: site.ssl_valid ?? null,
+        p_load_time_ms: site.load_time_ms ?? null,
+        p_seo: site.seo && typeof site.seo === "object" ? toJson(site.seo) : null,
+        p_blog: site.blog && typeof site.blog === "object" ? toJson(site.blog) : null,
+      },
+    );
+
+    if (syncError) {
+      console.error(`[enrichBusiness] sync_business_enrichment_fingerprints failed for ${businessId}:`, syncError);
+      throw new Error(
+        `[enrichBusiness] sync_business_enrichment_fingerprints failed for ${businessId}: ${syncError.message || syncError}`,
+      );
+    }
+
+    console.log(
+      `[candidate-audit][${businessId}] stage=node_enrich_complete ` +
+      `email=${Boolean(siteEmail || business.email)} ` +
+      `phone=${Boolean(sitePhone || business.phone)} ` +
+      `instagram=${Boolean(siteInstagram || business.instagram)} ` +
+      `homepage_fetch_failed=${site.homepage_fetch_failed ?? false} ` +
+      `contact_page_fetch_failed=${site.contact_page_fetch_failed ?? false}`
+    );
 
     // Validation
     const validation = validateLead({

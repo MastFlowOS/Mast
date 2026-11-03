@@ -697,6 +697,37 @@ export type Database = {
           awarded: boolean;
         }[];
       };
+      sync_business_enrichment_fingerprints: {
+        Args: {
+          p_business_id: string;
+          p_email?: string | null;
+          p_emails?: Json | null;
+          p_phone?: string | null;
+          p_phones?: Json | null;
+          p_instagram?: string | null;
+          p_facebook?: string | null;
+          p_linkedin?: string | null;
+          p_fingerprints?: string[] | null;
+          p_field_provenance?: Json | null;
+          p_signals?: Json | null;
+          p_website_is_weak?: boolean | null;
+          p_ssl_valid?: boolean | null;
+          p_load_time_ms?: number | null;
+          p_seo?: Json | null;
+          p_blog?: Json | null;
+        };
+        Returns: {
+          business_id: string;
+          email: string | null;
+          emails: Json;
+          phone: string | null;
+          phones: Json;
+          instagram: string | null;
+          facebook: string | null;
+          linkedin: string | null;
+          fingerprints: string[];
+        }[];
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

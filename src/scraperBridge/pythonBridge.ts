@@ -19,6 +19,14 @@ import {
   recordAfterAreaCleanup,
 } from "../lib/areaWorkerTelemetry.js";
 import { assertLocalEnrichmentUrl, getSanitizedSubprocessEnv } from "./isolationGuard.js";
+import type { PlanPlaceCoordinator } from "../discovery/planPlaceCoordinator.js";
+import {
+  ScoutSession,
+  scoutProcessManager,
+  ScoutHandshakeError,
+  ScoutHandshakeTimeoutError,
+  ScoutHandshakeDuplicateReadyError,
+} from "../discovery/scoutProcessManager.js";
 
 export type EngineLead = {
   name: string;
@@ -200,6 +208,16 @@ export type EngineRunOptions = {
    * changes what gets yielded/delivered.
    */
   onProgress?: (event: EngineProgressEvent) => void;
+  /** PlanPlaceCoordinator from Gate 2 managing canonical Place ID claims across scouts. */
+  coordinator?: PlanPlaceCoordinator;
+  /** Plan ID for discovery plan tracking. */
+  planId?: string;
+  /** Scout session ID for tracking process and claim identity. */
+  scoutId?: string;
+  /** Handshake timeout in milliseconds (default 10,000ms). */
+  handshakeTimeoutMs?: number;
+  /** Force coordination even if coordinator is not provided. */
+  requireCoordination?: boolean;
 };
 
 /** PHASE 25 — one `"type":"progress"` stdout line, as delivered to `EngineRunOptions.onProgress`. */
@@ -318,6 +336,19 @@ export type EngineEnrichResult = {
   instagram_bio: string | null;
   instagram_external_website: string | null;
   instagram_last_post_date: string | null;
+  homepage_fetch_failed?: boolean | null;
+  contact_page_fetch_failed?: boolean | null;
+  secondary_page_fetch_failed?: boolean | null;
+  secondary_fallback_fetch_failed?: boolean | null;
+  mailto_extracted?: boolean | null;
+  tel_extracted?: boolean | null;
+  instagram_source?: string | null;
+  instagram_invalid_candidate_seen?: boolean | null;
+  contact_page_hint?: string | null;
+  fetch_duration?: number | null;
+  email_count?: number;
+  phone_count?: number;
+  instagram_found?: boolean;
   business_id?: string;
   is_disqualified?: boolean;
   opportunity_score?: number;
@@ -717,7 +748,13 @@ export function gracefulKillProcessTree(
  * Not part of the public bridge API — callers outside this module and its
  * tests should not depend on it.
  */
-export const __testing = { watchChildClose, gracefulKillProcessTree, killProcessTree };
+export const __testing = {
+  watchChildClose,
+  gracefulKillProcessTree,
+  killProcessTree,
+  ScoutSession,
+  scoutProcessManager,
+};
 
 /**
  * One-shot (non-streaming) call to `python service.py verify` — re-checks a
@@ -775,9 +812,9 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
       }
     }
 
-    let stdout = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+    const stdoutChunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
     child.stderr.on("data", (chunk) => {
       console.debug(`[scraper-bridge:verify] ${chunk.toString().trimEnd()}`);
@@ -788,12 +825,75 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
       throw new Error(`verify subprocess exited with code ${exitCode}`);
     }
 
+    const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
     return JSON.parse(stdout) as EngineVerifyResult;
   } finally {
     signal?.removeEventListener("abort", onAbort);
     if (child.exitCode === null && child.signalCode === null) {
       killProcessTree(child);
     }
+  }
+}
+
+/**
+ * StderrLineBuffer:
+ * Buffers arbitrary chunks from child process stderr streams, splitting on \n,
+ * and emitting complete lines.
+ *
+ * Guaranteed Behaviors:
+ * 1. Single complete records split across multiple chunks are assembled and emitted once complete.
+ * 2. Multiple records within a single chunk are emitted individually.
+ * 3. On flush (process close), any trailing complete record without a trailing newline is emitted.
+ * 4. Incomplete/truncated candidate-audit JSON fragments at process close are intentionally discarded
+ *    (documenting that truncated crash logs must never be emitted as malformed audit records).
+ */
+export class StderrLineBuffer {
+  private buffer = "";
+  private readonly onLine: (line: string) => void;
+
+  constructor(onLine: (line: string) => void) {
+    this.onLine = onLine;
+  }
+
+  public append(chunk: string | Buffer): void {
+    const str = typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+    this.buffer += str;
+    const lastNewline = this.buffer.lastIndexOf("\n");
+    if (lastNewline === -1) {
+      return;
+    }
+    const toProcess = this.buffer.slice(0, lastNewline);
+    this.buffer = this.buffer.slice(lastNewline + 1);
+    const lines = toProcess.split("\n");
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      if (line) {
+        this.onLine(line);
+      }
+    }
+  }
+
+  public flush(): void {
+    const remaining = this.buffer.trim();
+    this.buffer = "";
+    if (!remaining) return;
+
+    if (remaining.includes("[candidate-audit]")) {
+      const jsonStart = remaining.indexOf("{");
+      if (jsonStart !== -1 && remaining.endsWith("}")) {
+        try {
+          JSON.parse(remaining.slice(jsonStart));
+          this.onLine(remaining);
+          return;
+        } catch {
+          // Truncated / malformed JSON: deliberately discarded
+        }
+      }
+      // Partial audit line discarded to prevent corrupt records
+      return;
+    }
+
+    this.onLine(remaining);
   }
 }
 
@@ -860,19 +960,32 @@ export async function runEngineEnrichOneShot(params: EngineEnrichParams, signal?
       }
     }
 
-    let stdout = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+    const stdoutChunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    const stderrBuf = new StderrLineBuffer((text) => {
+      if (text.includes("[candidate-audit]") || text.includes("[pipeline]")) {
+        console.log(`[scraper-bridge:enrich] ${text}`);
+      } else {
+        console.debug(`[scraper-bridge:enrich] ${text}`);
+      }
     });
     child.stderr.on("data", (chunk) => {
-      console.debug(`[scraper-bridge:enrich] ${chunk.toString().trimEnd()}`);
+      stderrBuf.append(chunk);
     });
 
-    const exitCode: number = await new Promise((resolve) => child.on("close", resolve));
+    const exitCode: number = await new Promise((resolve) =>
+      child.on("close", (code) => {
+        stderrBuf.flush();
+        resolve(code ?? 0);
+      })
+    );
     if (exitCode !== 0) {
       throw new Error(`enrich subprocess exited with code ${exitCode}`);
     }
 
+    const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
     return JSON.parse(stdout) as EngineEnrichResult;
   } finally {
     signal?.removeEventListener("abort", onAbort);
@@ -1139,11 +1252,19 @@ export class PersistentEnrichmentBridge {
         }
       });
 
+      const daemonStderrBuf = new StderrLineBuffer((line) => {
+        if (line.includes("[candidate-audit]") || line.includes("[pipeline]")) {
+          console.log(`[scraper-bridge:enrich-daemon] ${line}`);
+        } else {
+          console.debug(`[scraper-bridge:enrich-daemon] ${line}`);
+        }
+      });
       child.stderr?.on("data", (chunk) => {
-        console.debug(`[scraper-bridge:enrich-daemon] ${chunk.toString().trimEnd()}`);
+        daemonStderrBuf.append(chunk);
       });
 
       child.on("close", (code, signal) => {
+        daemonStderrBuf.flush();
         this.handleProcessClose(child, new Error(`Enrichment daemon exited unexpectedly (code: ${code}, signal: ${signal})`));
       });
 
@@ -1532,9 +1653,9 @@ export async function runEngineStreetInventory(
       }
     }
 
-    let stdout = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+    const stdoutChunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
     child.stderr.on("data", (chunk) => {
       console.debug(`[scraper-bridge:street_inventory] ${chunk.toString().trimEnd()}`);
@@ -1545,6 +1666,7 @@ export async function runEngineStreetInventory(
       throw new Error(`street_inventory subprocess exited with code ${exitCode}`);
     }
 
+    const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
     return JSON.parse(stdout) as EngineStreetInventoryResult;
   } finally {
     signal?.removeEventListener("abort", onAbort);
@@ -2122,10 +2244,40 @@ export async function* runEngineQuery(
   const areaTelemetryRunId = newAreaRunId();
   recordBeforeAreaStart(areaTelemetryRunId, options.areaLabel);
 
+  const isCoordinated = Boolean(
+    options.coordinator ||
+    options.scoutId ||
+    options.requireCoordination ||
+    process.env.MAST_COORDINATION_REQUIRED === "1"
+  );
+
+  const scoutSession = isCoordinated
+    ? new ScoutSession({
+        scoutId: options.scoutId,
+        requestId: options.requestId,
+        planId: options.planId,
+        coordinator: options.coordinator,
+        handshakeTimeoutMs: options.handshakeTimeoutMs,
+      })
+    : null;
+
+  if (scoutSession) {
+    scoutProcessManager.registerSession(scoutSession);
+  }
+
+  const baseEnv = process.env.ENFORCE_LOCAL_ISOLATION === "true"
+    ? getSanitizedSubprocessEnv()
+    : process.env;
+  const spawnEnv = {
+    ...baseEnv,
+    ...(scoutSession ? scoutSession.getEnv() : {}),
+  };
+
   const child = spawn(PYTHON_CMD, ["service.py"], {
     cwd: enginePath,
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
+    env: spawnEnv,
   });
   const spawnMs = hrElapsedMs();
 
@@ -2260,32 +2412,41 @@ export async function* runEngineQuery(
     watchdog.clearAll();
   };
 
-  try {
-    child.stdin.write(JSON.stringify(params), (err) => {
-      if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
-        console.warn(`[scraper-bridge] ${logPrefix} stdin write callback error`, err);
+  if (!scoutSession) {
+    try {
+      child.stdin.write(JSON.stringify(params), (err) => {
+        if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
+          console.warn(`[scraper-bridge] ${logPrefix} stdin write callback error`, err);
+        }
+      });
+      child.stdin.end();
+    } catch (writeErr: any) {
+      if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
+        console.warn(`[scraper-bridge] ${logPrefix} stdin write error`, writeErr);
       }
-    });
-    child.stdin.end();
-  } catch (writeErr: any) {
-    if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge] ${logPrefix} stdin write error`, writeErr);
     }
   }
 
-  child.stderr.on("data", (chunk) => {
+  const searchStderrBuf = new StderrLineBuffer((line) => {
     // The engine logs verbosely to stderr via its own logger (get_logger) —
     // surface it as debug output rather than treating it as failure; only
     // a non-zero exit code is treated as an actual error, below.
     // Deliberately does NOT reset the inactivity timer — see this
     // function's watchdog comment above: stderr volume is not evidence of
     // protocol-level forward progress.
-    const line = chunk.toString();
-    console.debug(`[scraper-bridge] ${logPrefix} ${line.trimEnd()}`);
+    if (line.includes("[candidate-audit]") || line.includes("[pipeline]")) {
+      console.log(`[scraper-bridge] ${logPrefix} ${line}`);
+    } else {
+      console.debug(`[scraper-bridge] ${logPrefix} ${line}`);
+    }
     // Phase 7: detect crash patterns in stderr output (best-effort).
     if (/crash|chromium|oom|killed|sigkill|playwright.*error/i.test(line)) {
       workerMetrics.browserCrashes += 1;
     }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    searchStderrBuf.append(chunk);
   });
 
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -2353,6 +2514,69 @@ export async function* runEngineQuery(
   })();
 
   try {
+    if (scoutSession) {
+      let handshakeTimer: NodeJS.Timeout | null = null;
+      try {
+        const handshakeTimeoutPromise = new Promise<never>((_, reject) => {
+          handshakeTimer = setTimeout(() => {
+            reject(new ScoutHandshakeTimeoutError(scoutSession.scoutId, scoutSession.handshakeTimeoutMs));
+          }, scoutSession.handshakeTimeoutMs);
+        });
+
+        const childExitPromise = childClosed.then(({ code, signal }) => {
+          throw new ScoutHandshakeError(
+            `Scout process exited early during handshake (exitCode=${code}, signal=${signal ?? "none"})`,
+            scoutSession.scoutId
+          );
+        });
+
+        const firstLinePromise = (async () => {
+          const next = await lineIterator.next();
+          if (next.done) {
+            throw new ScoutHandshakeError("Stdout closed before MAST_JOB_READY was received", scoutSession.scoutId);
+          }
+          return next.value;
+        })();
+
+        const abortPromise = signal
+          ? new Promise<never>((_, reject) => {
+              if (signal.aborted) reject(new ScoutHandshakeError("Handshake aborted by signal", scoutSession.scoutId));
+              signal.addEventListener(
+                "abort",
+                () => reject(new ScoutHandshakeError("Handshake aborted by signal", scoutSession.scoutId)),
+                { once: true }
+              );
+            })
+          : null;
+
+        const racePromises: Promise<any>[] = [
+          firstLinePromise,
+          handshakeTimeoutPromise,
+          childExitPromise,
+        ];
+        if (abortPromise) racePromises.push(abortPromise);
+
+        const readyLine = await Promise.race(racePromises);
+
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = null;
+        }
+
+        scoutSession.processReadyLine(readyLine);
+        await scoutSession.sendAck(child);
+        await scoutSession.writeQueryPayload(child, params as Record<string, unknown>);
+      } catch (handshakeErr: any) {
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = null;
+        }
+        console.warn(`[scraper-bridge] ${logPrefix} Handshake failed: ${handshakeErr?.message ?? handshakeErr}`);
+        void gracefulKillProcessTree(child, childClosed, 2000, "HANDSHAKE_FAILED");
+        throw handshakeErr;
+      }
+    }
+
     for await (const line of lineIterator) {
       let parsed: Record<string, unknown>;
       try {
@@ -2369,6 +2593,26 @@ export async function* runEngineQuery(
         console.error(
           `[scraper-bridge] non-JSON line from engine, skipping${idMatch ? ` (pipeline id ${idMatch[1]} — LOST BEFORE REACHING JOB-LEVEL TRACER)` : ""}: ${line.slice(0, 200)}`,
         );
+        continue;
+      }
+
+      if (scoutSession && parsed.type === "MAST_JOB_READY") {
+        scoutSession.confirmTerminationAndReleaseClaims(false, "DUPLICATE_READY");
+        void gracefulKillProcessTree(child, childClosed, 2000, "DUPLICATE_READY");
+        throw new ScoutHandshakeDuplicateReadyError(scoutSession.scoutId);
+      }
+
+      if (scoutSession && parsed.type === "MAST_JOB_TERMINATED") {
+        try {
+          scoutSession.processTerminatedLine(line);
+          console.log(
+            `[scraper-bridge] ${logPrefix} received authenticated MAST_JOB_TERMINATED for scout ${scoutSession.scoutId}`,
+          );
+        } catch (termErr: any) {
+          console.warn(
+            `[scraper-bridge] ${logPrefix} Invalid MAST_JOB_TERMINATED: ${termErr?.message ?? termErr}`,
+          );
+        }
         continue;
       }
 
@@ -2626,6 +2870,7 @@ export async function* runEngineQuery(
     }
     clearAllTimers();
     signal?.removeEventListener("abort", onAbort);
+    searchStderrBuf.flush();
     // PROCESS REGISTRY EXPLOSION FIX: captured ONCE, here, BEFORE
     // unregisterRequestProcess() below removes this child from the
     // request's runtime. Every downstream check in this `finally` block
@@ -2692,6 +2937,24 @@ export async function* runEngineQuery(
       await gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, stopReason);
     }
 
+    if (scoutSession && !scoutSession.isTerminationMessageReceived) {
+      const teardownTermHandler = (line: string) => {
+        try {
+          if (line.includes("MAST_JOB_TERMINATED")) {
+            scoutSession.processTerminatedLine(line);
+            console.log(
+              `[scraper-bridge] ${logPrefix} received authenticated MAST_JOB_TERMINATED during teardown for scout ${scoutSession.scoutId}`,
+            );
+          }
+        } catch (termErr: any) {
+          console.warn(
+            `[scraper-bridge] ${logPrefix} Invalid MAST_JOB_TERMINATED during teardown: ${termErr?.message ?? termErr}`,
+          );
+        }
+      };
+      rl.on("line", teardownTermHandler);
+    }
+
     // LIFECYCLE FIX: read from the single shared exit promise created right
     // after spawn(), rather than registering a fresh `"close"` listener here.
     // By this point the child may already have closed (e.g. it exited well
@@ -2699,8 +2962,31 @@ export async function* runEngineQuery(
     // resolved a moment ago) — `childClosed` still resolves correctly in
     // every case because it was attached before the event could possibly
     // have fired, not after.
-    const { code: exitCode, signal: closeSignal } = await childClosed;
+    let exitCode: number | null = null;
+    let closeSignal: NodeJS.Signals | null = null;
+    let childExitConfirmed = false;
+    try {
+      const closed = await childClosed;
+      exitCode = closed.code;
+      closeSignal = closed.signal;
+      childExitConfirmed = (exitCode !== null || closeSignal !== null);
+    } catch {
+      childExitConfirmed = false;
+    }
     try { rl.close(); } catch {}
+
+    if (scoutSession) {
+      const releaseReason =
+        exitCode === 0
+          ? "PROCESS_EXIT_NORMAL"
+          : (timedOut
+              ? (timedOutReason ?? "WATCHDOG_TIMEOUT")
+              : (abortRequested
+                  ? (terminalReasonAtExit ?? "USER_CANCELLED")
+                  : `PROCESS_EXIT_${exitCode ?? closeSignal ?? "UNKNOWN"}`));
+      scoutSession.confirmTerminationAndReleaseClaims(childExitConfirmed, releaseReason);
+      scoutProcessManager.unregisterSession(scoutSession.scoutId);
+    }
 
     // PHASE 6B — the child has now actually exited (browser/Chromium tree
     // torn down, no longer holding any of its PIDs) — this is the
@@ -2949,15 +3235,16 @@ async function runEngineRPC<T>(mode: string, payload: unknown, signal?: AbortSig
     child.stdin.write(JSON.stringify(payload));
     child.stdin.end();
 
-    let stdout = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+    const stdoutChunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
     child.stderr.on("data", (chunk) => {
       console.debug(`[scraper-bridge:${mode}] ${chunk.toString().trimEnd()}`);
     });
 
     const exitCode: number = await new Promise((resolve) => child.on("close", resolve));
+    const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
     if (exitCode !== 0) {
       throw new Error(`Engine 2.0 '${mode}' subprocess exited with code ${exitCode}. stdout: ${stdout.slice(0, 500)}`);
     }

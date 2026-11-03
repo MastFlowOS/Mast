@@ -66,6 +66,7 @@ _IMPORTS_START_TS = _time.perf_counter()
 
 import asyncio
 import json
+import logging
 import os
 import queue as thread_queue
 import signal
@@ -75,81 +76,1001 @@ import threading
 import time
 from typing import Any, AsyncIterator, Callable, Optional
 
-from exceptions import DiscoveryFailure, DiscoveryFailureReason
-from scraper.maps_scraper import MapsScraper
-from enrichment.site_crawler import SiteCrawler
-from enrichment.ig_intel import IGIntelligence
-from scoring.scorer import is_cannabis, is_chain
-from storage.dedup import LeadStore, fingerprints_for
-from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
-from utils.lifecycle_tracker import log_milestone
-from utils.perf import RunProfiler, NullProfiler
-from utils.pipeline_trace import PipelineTracer
-from utils.parsing import (
-    is_valid_email,
-    is_valid_phone,
-    is_weak_site,
-    normalize_phone,
-    phone_dedup_key,
-    resolve_region,
-    select_primary_email,
-)
+SIGKILL = getattr(signal, "SIGKILL", 9)
+SIGTERM = getattr(signal, "SIGTERM", 15)
+import errno
+import io
+
+# Point 2: Prevent duplicate module loading when service.py is executed as __main__
+if __name__ == "__main__":
+    sys.modules.setdefault("service", sys.modules["__main__"])
+
+# ==============================================================================
+# Phase 7.3: OS-Level Process Ownership, Job Object, & Browser Session Identity
+# ==============================================================================
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
+
+    kernel32.GetLastError.restype = wintypes.DWORD
+    kernel32.GetLastError.argtypes = []
+
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+
+    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+    kernel32.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", wintypes.ULARGE_INTEGER),
+            ("WriteOperationCount", wintypes.ULARGE_INTEGER),
+            ("OtherOperationCount", wintypes.ULARGE_INTEGER),
+            ("ReadTransferCount", wintypes.ULARGE_INTEGER),
+            ("WriteTransferCount", wintypes.ULARGE_INTEGER),
+            ("OtherTransferCount", wintypes.ULARGE_INTEGER),
+        ]
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+            ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryLimit", ctypes.c_size_t),
+            ("PeakJobMemoryLimit", ctypes.c_size_t),
+        ]
+
+    class JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("TotalUserTime", wintypes.LARGE_INTEGER),
+            ("TotalKernelTime", wintypes.LARGE_INTEGER),
+            ("ThisPeriodTotalUserTime", wintypes.LARGE_INTEGER),
+            ("ThisPeriodTotalKernelTime", wintypes.LARGE_INTEGER),
+            ("TotalPageFaultCount", wintypes.DWORD),
+            ("TotalProcesses", wintypes.DWORD),
+            ("ActiveProcesses", wintypes.DWORD),
+            ("TotalTerminatedProcesses", wintypes.DWORD),
+        ]
+
+    class JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
+        _fields_ = [
+            ("NumberOfAssignedProcesses", wintypes.DWORD),
+            ("NumberOfProcessIdsInList", wintypes.DWORD),
+            ("ProcessIdList", ctypes.c_size_t * 64),
+        ]
+
+    PROCESS_SET_QUOTA = 0x0100
+    PROCESS_TERMINATE = 0x0001
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    JobObjectBasicAccountingInformation = 1
+    JobObjectBasicProcessIdList = 3
+    JobObjectExtendedLimitInformation = 9
+    ERROR_ALREADY_EXISTS = 183
+    ERROR_MORE_DATA = 234
+else:
+    # POSIX / fallback dummy classes for non-Windows test execution
+    PROCESS_SET_QUOTA = 0x0100
+    PROCESS_TERMINATE = 0x0001
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    JobObjectBasicAccountingInformation = 1
+    JobObjectBasicProcessIdList = 3
+    JobObjectExtendedLimitInformation = 9
+    ERROR_ALREADY_EXISTS = 183
+    ERROR_MORE_DATA = 234
+
+    class JOBOBJECT_BASIC_PROCESS_ID_LIST:
+        pass
+
+    class DummyKernel32:
+        def GetLastError(self): return 0
+        def QueryInformationJobObject(self, *a, **k): return False
+        def CreateJobObjectW(self, *a, **k): return None
+        def SetInformationJobObject(self, *a, **k): return False
+        def AssignProcessToJobObject(self, *a, **k): return False
+        def OpenProcess(self, *a, **k): return None
+        def TerminateJobObject(self, *a, **k): return False
+        def CloseHandle(self, *a, **k): return False
+
+    kernel32 = DummyKernel32()
+
+_MAST_JOB_HANDLE: Any = None
+_MAST_JOB_NAME: str | None = None
+_MAST_SCOUT_SESSION_ID: str | None = None
+_MAST_STARTUP_NONCE: str | None = None
+_MAST_JOB_BOOTSTRAP_CONFIRMED: bool = False
+_MAST_POSIX_BOOTSTRAP_CONFIRMED: bool = False
+_MAST_TERMINATED_EMITTED: bool = False
+
+
+def query_job_process_id_list(h_job: Any) -> tuple[int, int, list[int]]:
+    """Query JobObjectBasicProcessIdList from the Windows Job Object.
+
+    Returns:
+    - (NumberOfAssignedProcesses, NumberOfProcessIdsInList, list_of_pids)
+    - If the query fails or on non-Windows, returns (-1, -1, []).
+
+    Invariants:
+    - NumberOfAssignedProcesses is the true total count of processes assigned to the Job Object.
+    - If the buffer is smaller than the assigned processes, QueryInformationJobObject fails with
+      ERROR_MORE_DATA (234), but still populates NumberOfAssignedProcesses with the true count.
+    - NumberOfProcessIdsInList is ONLY the count returned in this buffer.
+    - An empty PID list (NumberOfProcessIdsInList == 0) MUST NEVER be treated as proof of 0 processes
+      if NumberOfAssignedProcesses > 0.
+    """
+    if sys.platform != "win32" or not h_job:
+        return -1, -1, []
+
+    pid_list = JOBOBJECT_BASIC_PROCESS_ID_LIST()
+    ret_len = wintypes.DWORD()
+    ok = kernel32.QueryInformationJobObject(
+        h_job,
+        JobObjectBasicProcessIdList,
+        ctypes.byref(pid_list),
+        ctypes.sizeof(pid_list),
+        ctypes.byref(ret_len),
+    )
+    if not ok:
+        err = kernel32.GetLastError()
+        if err == ERROR_MORE_DATA:
+            # Buffer was too small to hold all PIDs, but NumberOfAssignedProcesses
+            # contains the true total number of assigned processes!
+            return int(pid_list.NumberOfAssignedProcesses), 0, []
+        return -1, -1, []
+
+    assigned = int(pid_list.NumberOfAssignedProcesses)
+    in_list = int(pid_list.NumberOfProcessIdsInList)
+    pids = [int(pid_list.ProcessIdList[i]) for i in range(min(in_list, 64))]
+    return assigned, in_list, pids
+
+
+def query_job_active_processes(h_job: Any, pid_list_query_fn: Any = None) -> int:
+    """Return the current number of active processes in the Windows Job Object.
+
+    Invariants:
+    - Queries JobObjectBasicAccountingInformation for ActiveProcesses.
+    - Queries JobObjectBasicProcessIdList for NumberOfAssignedProcesses and NumberOfProcessIdsInList.
+    - Strictly requires NumberOfAssignedProcesses == 0. Never treats NumberOfAssignedProcesses >= 0 as sufficient.
+    - Never treats NumberOfProcessIdsInList == 0 alone as proof if NumberOfAssignedProcesses > 0.
+    - Returns 0 if and only if BOTH ActiveProcesses == 0 AND NumberOfAssignedProcesses == 0.
+    - Returns -1 if any query fails or on non-Windows.
+    """
+    if sys.platform != "win32" or not h_job:
+        return -1
+
+    # 1. Query JobObjectBasicAccountingInformation
+    acct = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+    ret_len = wintypes.DWORD()
+    success = kernel32.QueryInformationJobObject(
+        h_job,
+        JobObjectBasicAccountingInformation,
+        ctypes.byref(acct),
+        ctypes.sizeof(acct),
+        ctypes.byref(ret_len),
+    )
+    if not success:
+        return -1
+    active_acct = int(acct.ActiveProcesses)
+
+    # 2. Query JobObjectBasicProcessIdList
+    _pid_query = pid_list_query_fn or query_job_process_id_list
+    assigned_count, in_list_count, _ = _pid_query(h_job)
+    if assigned_count < 0:
+        return -1
+
+    # Invariant: If NumberOfAssignedProcesses > 0, processes remain assigned.
+    # An empty returned PID list (in_list_count == 0) cannot bypass assigned_count > 0!
+    if assigned_count > 0:
+        return max(active_acct, assigned_count)
+
+    if active_acct > 0:
+        return active_acct
+
+    # Strictly verified: ActiveProcesses == 0 AND NumberOfAssignedProcesses == 0
+    return 0
+
+
+def assign_pid_to_windows_job(h_job: Any, pid: int) -> bool:
+    """Assign an external process (e.g. Playwright driver) to the Windows Job Object.
+    Opens the process with PROCESS_SET_QUOTA | PROCESS_TERMINATE rights, assigns it,
+    and closes the temporary process handle.
+    Returns True if successfully assigned, False otherwise.
+    """
+    if sys.platform != "win32" or not h_job or pid <= 0:
+        return False
+    h_proc = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, wintypes.DWORD(pid))
+    if not h_proc:
+        return False
+    try:
+        ok = kernel32.AssignProcessToJobObject(h_job, h_proc)
+        return bool(ok)
+    finally:
+        kernel32.CloseHandle(h_proc)
+
+
+def close_windows_job_handle(h_job: Any = None) -> bool:
+    """Safely close a Windows Job Object handle and reset the global state."""
+    global _MAST_JOB_HANDLE
+    target = h_job if h_job is not None else _MAST_JOB_HANDLE
+    if sys.platform != "win32" or not target:
+        return False
+    try:
+        res = kernel32.CloseHandle(target)
+        if target == _MAST_JOB_HANDLE:
+            _MAST_JOB_HANDLE = None
+        return bool(res)
+    except Exception:
+        return False
+
+
+def get_current_job_handle() -> Any:
+    """Return the active Windows Job Object handle for this process, or None."""
+    global _MAST_JOB_HANDLE
+    return _MAST_JOB_HANDLE
+
+
+def confirm_and_emit_job_terminated(
+    out_stream: Any = None,
+    err_stream: Any = None,
+    h_job: Any = None,
+    scout_id: str | None = None,
+    nonce: str | None = None,
+    posix_identity_confirmed: bool | None = None,
+) -> bool:
+    """Authoritatively verify that the browser process tree has terminated,
+    and if verified, emit the authenticated MAST_JOB_TERMINATED message.
+
+    Windows Invariant:
+    - Coordinated session requires a valid initialized Job Object handle.
+    - Missing Job Object handle leaves termination unconfirmed (returns False).
+    - Positively verifies the Job Object reports ActiveProcesses == 0.
+    - If ActiveProcesses > 0, attempts TerminateJobObject and verifies ActiveProcesses == 0.
+    - If Job Object verification fails, never emits MAST_JOB_TERMINATED.
+
+    POSIX Invariant:
+    - Coordinated session requires a valid initialized process ownership identity.
+    - If a browser/driver was launched, verifies process group extinction via os.killpg(pgid, 0) -> ESRCH.
+    - EPERM and unexpected OS errors are never treated as successful termination.
+    - If no browser was launched (empty launch), confirms termination ONLY IF process ownership
+      identity was genuinely initialized and browser/driver ownership state is confirmed empty.
+    - Missing process ownership identity leaves termination unconfirmed (returns False).
+
+    Common Invariants:
+    - Preserves uncoordinated legacy behavior without falsely reporting coordinated termination.
+    - Only emits for coordinated sessions (where scoutId and nonce are present).
+    - Includes scoutId and nonce for Node authentication.
+    - Idempotent: emits at most once per process.
+    - Flushes the message immediately to stdout.
+    """
+    global _MAST_TERMINATED_EMITTED, _MAST_JOB_HANDLE, _MAST_SCOUT_SESSION_ID, _MAST_STARTUP_NONCE, _MAST_POSIX_BOOTSTRAP_CONFIRMED
+
+    if _MAST_TERMINATED_EMITTED:
+        return True
+
+    resolved_scout_id = scout_id or _MAST_SCOUT_SESSION_ID or os.environ.get("MAST_SCOUT_SESSION_ID")
+    resolved_nonce = nonce or _MAST_STARTUP_NONCE or os.environ.get("MAST_STARTUP_NONCE")
+    coordination_required = (os.environ.get("MAST_COORDINATION_REQUIRED") in ("1", "true", "TRUE"))
+    is_coordinated = coordination_required or bool(resolved_scout_id and resolved_nonce)
+
+    if not is_coordinated:
+        # Uncoordinated legacy session: do not emit MAST_JOB_TERMINATED
+        return False
+
+    if not resolved_scout_id or not resolved_nonce:
+        if err_stream:
+            err_stream.write("[MAST_FATAL] Coordinated session missing scout ID or nonce at termination\n")
+            err_stream.flush()
+        return False
+
+    verified = False
+    if sys.platform == "win32":
+        target_job = h_job if h_job is not None else _MAST_JOB_HANDLE
+        if target_job is not None:
+            verified = terminate_and_verify_windows_job(target_job, timeout_s=5.0)
+            if target_job == _MAST_JOB_HANDLE:
+                close_windows_job_handle(target_job)
+        else:
+            # Coordinated on Windows requires a valid initialized Job Object handle.
+            # Missing handle means ownership identity is missing -> unconfirmed.
+            verified = False
+    else:
+        # POSIX
+        ms = sys.modules.get("scraper.maps_scraper")
+        if ms is not None and hasattr(ms, "MapsScraper"):
+            ScraperCls = getattr(ms, "MapsScraper")
+        else:
+            try:
+                from scraper.maps_scraper import MapsScraper as ScraperCls
+            except ImportError:
+                ScraperCls = None
+
+        pgid = getattr(ScraperCls, "_last_browser_pgid", None) if ScraperCls else None
+        driver_pid = getattr(ScraperCls, "_last_driver_pid", None) if ScraperCls else None
+        failed_startup = getattr(ScraperCls, "_driver_startup_failed", False) if ScraperCls else False
+        spawn_failed = getattr(ScraperCls, "_spawn_failed", False) if ScraperCls else False
+        spawn_attempted = getattr(ScraperCls, "_browser_spawn_attempted", False) if ScraperCls else False
+
+        posix_init = (
+            posix_identity_confirmed
+            if posix_identity_confirmed is not None
+            else _MAST_POSIX_BOOTSTRAP_CONFIRMED
+        )
+
+        has_invalid_ident = (
+            (pgid is not None and (not isinstance(pgid, int) or pgid <= 0))
+            or (driver_pid is not None and (not isinstance(driver_pid, int) or driver_pid <= 0))
+        )
+        if ScraperCls is None:
+            # Cannot establish scraper process tracking state; fail closed
+            verified = False
+        elif has_invalid_ident:
+            # Corrupted / invalid process identity cannot be verified
+            verified = False
+        elif pgid is not None and pgid > 0:
+            verified = terminate_and_verify_posix_group(pgid, timeout_s=5.0)
+        elif driver_pid is not None and driver_pid > 0:
+            verified = terminate_and_verify_posix_pid(driver_pid, timeout_s=5.0)
+        elif posix_init is True:
+            # Empty-launch ownership state verification:
+            # Explicit evidence required:
+            # 1. POSIX ownership initialization succeeded (posix_init is True).
+            # 2. Both retained process identities are genuinely absent (pgid is None and driver_pid is None).
+            # 3. No driver or browser process was spawned during this lifecycle (not spawn_attempted).
+            # 4. No failed spawn or PID-discovery operation could have left an untracked process
+            #    (not failed_startup and not spawn_failed).
+            if (
+                pgid is None
+                and driver_pid is None
+                and not spawn_attempted
+                and not failed_startup
+                and not spawn_failed
+            ):
+                verified = True
+            else:
+                verified = False
+        else:
+            # Missing process ownership identity; cannot confirm termination
+            verified = False
+
+    if not verified:
+        log.warning(f"[service] Process-tree termination UNCONFIRMED for scout {resolved_scout_id} — suppressing MAST_JOB_TERMINATED")
+        if err_stream:
+            err_stream.write(f"[service] Process-tree termination UNCONFIRMED for scout {resolved_scout_id}\n")
+            err_stream.flush()
+        return False
+
+    target_out = out_stream if out_stream is not None else getattr(sys, "_REAL_STDOUT", sys.stdout)
+    term_msg = {
+        "type": "MAST_JOB_TERMINATED",
+        "scoutId": resolved_scout_id,
+        "nonce": resolved_nonce,
+        "status": "CONFIRMED",
+    }
+    try:
+        target_out.write(json.dumps(term_msg) + "\n")
+        target_out.flush()
+        _MAST_TERMINATED_EMITTED = True
+        return True
+    except Exception as exc:
+        log.warning(f"[service] Failed to write MAST_JOB_TERMINATED: {exc}")
+        return False
+
+
+
+def terminate_and_verify_windows_job(
+    h_job: Any,
+    timeout_s: float = 5.0,
+    poll_interval_s: float = 0.05,
+    query_fn: Any = None,
+) -> bool:
+    """Terminate all processes in the Windows Job Object and poll until ActiveProcesses == 0.
+    Never reports True merely because TerminateJobObject succeeded.
+    Returns True if and only if ActiveProcesses is confirmed to be 0 within timeout_s.
+    """
+    if sys.platform != "win32" or not h_job:
+        return False
+
+    _query = query_fn or query_job_active_processes
+    active = _query(h_job)
+    if active == 0:
+        return True
+
+    kernel32.TerminateJobObject(h_job, 1)
+
+    deadline = time.monotonic() + max(0.05, timeout_s)
+    while time.monotonic() < deadline:
+        active = _query(h_job)
+        if active == 0:
+            return True
+        time.sleep(poll_interval_s)
+
+    active = _query(h_job)
+    return active == 0
+
+
+def _is_process_group_extinct(pgid: int, killpg_fn: Any) -> bool:
+    """Positive POSIX process group absence verification via os.killpg(pgid, 0).
+
+    Returns:
+    - True if and only if errno.ESRCH is raised (process group does not exist).
+    - False if killpg(pgid, 0) succeeds (group exists and is alive).
+    - False if errno.EPERM is raised (group exists, permission denied; NOT terminated).
+    - False on any other OSError or unexpected error.
+    """
+    try:
+        killpg_fn(pgid, 0)
+        return False  # Succeeded: group exists and is alive
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return True  # ESRCH: Process group positively confirmed extinct
+        elif exc.errno == errno.EPERM:
+            return False  # EPERM: Process group exists, not terminated
+        else:
+            return False  # Unexpected OS errors must not be treated as termination
+    except Exception:
+        return False
+
+
+def terminate_and_verify_posix_group(
+    pgid: int,
+    timeout_s: float = 5.0,
+    poll_interval_s: float = 0.05,
+    graceful_signal: int = SIGTERM,
+    grace_period_s: float = 0.1,
+    kill_fn: Any = None,
+) -> bool:
+    """Terminate a detached POSIX process group and poll until ESRCH confirms that
+    zero processes remain in that process group.
+
+    Uses os.killpg(pgid, 0) for existence checks:
+    - ESRCH means the process group no longer exists.
+    - EPERM means the process group exists but permission denied (must NOT count as termination).
+    - Other errors are not interpreted as successful termination.
+    - Preserves bounded waiting and SIGTERM/SIGKILL escalation.
+    - Never reports True merely because a signal was sent.
+    """
+    if pgid <= 0:
+        return False
+
+    if kill_fn is not None:
+        _killpg = kill_fn
+    elif hasattr(os, "killpg"):
+        _killpg = os.killpg
+    else:
+        # Fallback on non-POSIX platforms when unmocked
+        _killpg = lambda p, s: False
+
+    def _try_reap() -> None:
+        if hasattr(os, "waitpid") and hasattr(os, "WNOHANG"):
+            try:
+                os.waitpid(-pgid, os.WNOHANG)
+            except OSError:
+                pass
+
+    _try_reap()
+    # 1. Initial check: Is the process group already extinct?
+    if _is_process_group_extinct(pgid, _killpg):
+        return True
+
+    # 2. Graceful termination stage (SIGTERM)
+    if graceful_signal and grace_period_s > 0:
+        try:
+            _killpg(pgid, graceful_signal)
+        except OSError as exc:
+            if exc.errno == errno.ESRCH:
+                return True
+        except Exception:
+            pass
+
+        grace_deadline = time.monotonic() + grace_period_s
+        while time.monotonic() < grace_deadline:
+            time.sleep(poll_interval_s)
+            _try_reap()
+            if _is_process_group_extinct(pgid, _killpg):
+                return True
+
+    # 3. Forced termination stage (SIGKILL)
+    try:
+        _killpg(pgid, SIGKILL)
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return True
+    except Exception:
+        pass
+
+    # 4. Bounded polling until ESRCH
+    deadline = time.monotonic() + max(0.05, timeout_s)
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval_s)
+        _try_reap()
+        if _is_process_group_extinct(pgid, _killpg):
+            return True
+
+    # Final positive verification
+    _try_reap()
+    return _is_process_group_extinct(pgid, _killpg)
+
+
+def terminate_and_verify_windows_pid(
+    pid: int,
+    timeout_s: float = 5.0,
+    poll_interval_s: float = 0.05,
+    wait_fn: Any = None,
+) -> bool:
+    """Explicitly terminate an unassigned Windows process by PID and verify OS-level exit.
+    Returns True if and only if the process is confirmed to have exited within timeout_s.
+    """
+    if sys.platform != "win32" or pid <= 0:
+        return False
+
+    if wait_fn is not None:
+        return bool(wait_fn(pid, timeout_s))
+
+    SYNCHRONIZE = 0x00100000
+    PROCESS_TERMINATE = 0x0001
+    h_proc = kernel32.OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, False, wintypes.DWORD(pid))
+    if not h_proc:
+        try:
+            os.kill(pid, 0)
+            return False
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 87 or exc.errno == errno.ESRCH:
+                return True
+            return False
+
+    try:
+        kernel32.TerminateProcess(h_proc, 1)
+        timeout_ms = int(max(0.05, timeout_s) * 1000)
+        res = kernel32.WaitForSingleObject(h_proc, wintypes.DWORD(timeout_ms))
+        return res == 0
+    finally:
+        kernel32.CloseHandle(h_proc)
+
+
+def _is_pid_extinct(pid: int, kill_fn: Any) -> bool:
+    """Check if a POSIX process PID no longer exists using kill(pid, 0)."""
+    try:
+        kill_fn(pid, 0)
+        return False
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return True
+        elif exc.errno == errno.EPERM:
+            return False
+        else:
+            return False
+    except Exception:
+        return False
+
+
+def terminate_and_verify_posix_pid(
+    pid: int,
+    timeout_s: float = 5.0,
+    poll_interval_s: float = 0.05,
+    graceful_signal: int = SIGTERM,
+    grace_period_s: float = 0.1,
+    kill_fn: Any = None,
+) -> bool:
+    """Explicitly terminate an individual POSIX process by PID and poll until ESRCH confirms exit.
+    Returns True if and only if ESRCH is observed within timeout_s.
+    """
+    if pid <= 0:
+        return False
+    _kill = kill_fn or os.kill
+
+    if _is_pid_extinct(pid, _kill):
+        return True
+
+    if graceful_signal and grace_period_s > 0:
+        try:
+            _kill(pid, graceful_signal)
+        except OSError as exc:
+            if exc.errno == errno.ESRCH:
+                return True
+        except Exception:
+            pass
+
+        grace_deadline = time.monotonic() + grace_period_s
+        while time.monotonic() < grace_deadline:
+            if _is_pid_extinct(pid, _kill):
+                return True
+            time.sleep(poll_interval_s)
+
+    try:
+        _kill(pid, SIGKILL)
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return True
+    except Exception:
+        pass
+
+    deadline = time.monotonic() + max(0.05, timeout_s)
+    while time.monotonic() < deadline:
+        if _is_pid_extinct(pid, _kill):
+            return True
+        time.sleep(poll_interval_s)
+
+    return _is_pid_extinct(pid, _kill)
+
+
+def bootstrap_windows_job_object(
+    job_name: str | None = None,
+    scout_id: str | None = None,
+    nonce: str | None = None,
+    in_stream: Any = None,
+    out_stream: Any = None,
+    err_stream: Any = None,
+    assign_self: bool = False,
+) -> bool:
+    """Bootstrap a Windows Job Object with KILL_ON_JOB_CLOSE and execute
+    the MAST_JOB_READY / MAST_JOB_ACK handshake with Node.
+
+    CRITICAL Phase 7.3 Ownership Model:
+    Python creates and owns the named Job Object, but Python MUST NOT assign itself
+    to the Job Object. The Job Object is dedicated to the browser process tree
+    (Playwright driver and Chromium child processes). Terminating the Job Object
+    kills the browser processes while Python survives to confirm ActiveProcesses == 0.
+
+    Returns True if Job Object bootstrap was successfully executed and confirmed.
+    Returns False if required environment variables are absent (legacy / uncoordinated mode).
+    Exits with code 78 (EX_CONFIG) on Job Object configuration failure.
+    Exits with code 79 on handshake failure / invalid ACK.
+    """
+    global _MAST_JOB_HANDLE, _MAST_JOB_NAME, _MAST_SCOUT_SESSION_ID, _MAST_STARTUP_NONCE, _MAST_JOB_BOOTSTRAP_CONFIRMED
+
+    if _MAST_JOB_BOOTSTRAP_CONFIRMED:
+        return True
+
+    if in_stream is None:
+        in_stream = sys.stdin
+    if out_stream is None:
+        out_stream = _REAL_STDOUT
+    if err_stream is None:
+        err_stream = sys.stderr
+
+    resolved_job_name = job_name or os.environ.get("MAST_JOB_NAME")
+    resolved_scout_id = scout_id or os.environ.get("MAST_SCOUT_SESSION_ID")
+    resolved_nonce = nonce or os.environ.get("MAST_STARTUP_NONCE")
+
+    # Point 1: Missing coordination configuration cannot silently bypass containment
+    coordination_indicated = (
+        bool(job_name or os.environ.get("MAST_JOB_NAME"))
+        or bool(scout_id or os.environ.get("MAST_SCOUT_SESSION_ID"))
+        or bool(nonce or os.environ.get("MAST_STARTUP_NONCE"))
+        or (os.environ.get("MAST_COORDINATION_REQUIRED") in ("1", "true", "TRUE"))
+    )
+
+    if coordination_indicated:
+        if not (resolved_job_name and resolved_scout_id and resolved_nonce):
+            err_stream.write(
+                f"[MAST_FATAL] Incomplete Job Object coordination parameters: "
+                f"job_name={resolved_job_name!r}, scout_id={resolved_scout_id!r}, nonce={resolved_nonce!r}\n"
+            )
+            err_stream.flush()
+            sys.exit(78)
+    else:
+        return False
+
+    if sys.platform != "win32":
+        err_stream.write("[MAST_FATAL] MAST_JOB_NAME configured on non-Windows platform.\n")
+        err_stream.flush()
+        sys.exit(78)
+
+    # 1. Validate Job Object naming prefix (reject unauthorized namespaces)
+    if not resolved_job_name.startswith("Local\\MAST_JOB_"):
+        err_stream.write(f"[MAST_FATAL] Invalid Job Object prefix: {resolved_job_name}\n")
+        err_stream.flush()
+        sys.exit(78)
+
+    # 2. Create Job Object
+    h_job = kernel32.CreateJobObjectW(None, resolved_job_name)
+    if not h_job:
+        err = kernel32.GetLastError()
+        err_stream.write(f"[MAST_FATAL] CreateJobObjectW failed with error {err}\n")
+        err_stream.flush()
+        sys.exit(78)
+
+    # 3. Reject reuse of already-existing Job Object (prevent name hijacking / process reuse)
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(h_job)
+        err_stream.write(f"[MAST_FATAL] Job Object {resolved_job_name} already exists! Aborting.\n")
+        err_stream.flush()
+        sys.exit(78)
+
+    # 4. Configure JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(
+        h_job,
+        JobObjectExtendedLimitInformation,
+        ctypes.byref(limits),
+        ctypes.sizeof(limits),
+    ):
+        err = kernel32.GetLastError()
+        kernel32.CloseHandle(h_job)
+        err_stream.write(f"[MAST_FATAL] SetInformationJobObject failed: {err}\n")
+        err_stream.flush()
+        sys.exit(78)
+
+    # Note: Python MUST NOT assign itself to the Job Object. Python remains outside the Job Object.
+    # The Job Object starts with ActiveProcesses == 0.
+
+    # Retain handle globally in memory so it remains open for the lifetime of this process
+    _MAST_JOB_HANDLE = h_job
+    _MAST_JOB_NAME = resolved_job_name
+    _MAST_SCOUT_SESSION_ID = resolved_scout_id
+    _MAST_STARTUP_NONCE = resolved_nonce
+
+    # 5. Emit MAST_JOB_READY handshake message to stdout
+    ready_msg = {
+        "type": "MAST_JOB_READY",
+        "scoutId": resolved_scout_id,
+        "jobName": resolved_job_name,
+        "nonce": resolved_nonce,
+        "pid": os.getpid(),
+    }
+    out_stream.write(json.dumps(ready_msg) + "\n")
+    out_stream.flush()
+
+    # 6. Await MAST_JOB_ACK from Node on stdin
+    ack_line = in_stream.readline()
+    if not ack_line:
+        close_windows_job_handle(h_job)
+        err_stream.write("[MAST_FATAL] EOF received while awaiting MAST_JOB_ACK.\n")
+        err_stream.flush()
+        sys.exit(79)
+
+    try:
+        ack_payload = json.loads(ack_line.strip())
+    except Exception as exc:
+        close_windows_job_handle(h_job)
+        err_stream.write(f"[MAST_FATAL] Failed to parse MAST_JOB_ACK JSON: {exc}\n")
+        err_stream.flush()
+        sys.exit(79)
+
+    if (
+        ack_payload.get("type") != "MAST_JOB_ACK"
+        or ack_payload.get("nonce") != resolved_nonce
+        or ack_payload.get("status") != "CONFIRMED"
+    ):
+        close_windows_job_handle(h_job)
+        err_stream.write(f"[MAST_FATAL] Invalid or rejected MAST_JOB_ACK: {ack_payload}\n")
+        err_stream.flush()
+        sys.exit(79)
+
+    _MAST_JOB_BOOTSTRAP_CONFIRMED = True
+    return True
+
+
+def bootstrap_posix_process_identity(
+    scout_id: str | None = None,
+    nonce: str | None = None,
+    in_stream: Any = None,
+    out_stream: Any = None,
+    err_stream: Any = None,
+) -> bool:
+    """Bootstrap POSIX process ownership identity and execute the
+    MAST_JOB_READY / MAST_JOB_ACK handshake with Node.
+    """
+    global _MAST_SCOUT_SESSION_ID, _MAST_STARTUP_NONCE, _MAST_POSIX_BOOTSTRAP_CONFIRMED
+
+    if _MAST_POSIX_BOOTSTRAP_CONFIRMED:
+        return True
+
+    if in_stream is None:
+        in_stream = sys.stdin
+    if out_stream is None:
+        out_stream = _REAL_STDOUT
+    if err_stream is None:
+        err_stream = sys.stderr
+
+    resolved_scout_id = scout_id or os.environ.get("MAST_SCOUT_SESSION_ID")
+    resolved_nonce = nonce or os.environ.get("MAST_STARTUP_NONCE")
+    coordination_indicated = (
+        bool(scout_id or os.environ.get("MAST_SCOUT_SESSION_ID"))
+        or bool(nonce or os.environ.get("MAST_STARTUP_NONCE"))
+        or (os.environ.get("MAST_COORDINATION_REQUIRED") in ("1", "true", "TRUE"))
+    )
+
+    if coordination_indicated:
+        if not (resolved_scout_id and resolved_nonce):
+            err_stream.write(
+                f"[MAST_FATAL] Incomplete POSIX coordination parameters: "
+                f"scout_id={resolved_scout_id!r}, nonce={resolved_nonce!r}\n"
+            )
+            err_stream.flush()
+            sys.exit(78)
+    else:
+        return False
+
+    _MAST_SCOUT_SESSION_ID = resolved_scout_id
+    _MAST_STARTUP_NONCE = resolved_nonce
+
+    # Emit MAST_JOB_READY handshake message to stdout
+    ready_msg = {
+        "type": "MAST_JOB_READY",
+        "scoutId": resolved_scout_id,
+        "jobName": f"POSIX_PID_{os.getpid()}",
+        "nonce": resolved_nonce,
+        "pid": os.getpid(),
+    }
+    out_stream.write(json.dumps(ready_msg) + "\n")
+    out_stream.flush()
+
+    # Await MAST_JOB_ACK from Node on stdin
+    ack_line = in_stream.readline()
+    if not ack_line:
+        err_stream.write("[MAST_FATAL] EOF received while awaiting MAST_JOB_ACK on POSIX.\n")
+        err_stream.flush()
+        sys.exit(79)
+
+    try:
+        ack_payload = json.loads(ack_line.strip())
+    except Exception as exc:
+        err_stream.write(f"[MAST_FATAL] Failed to parse MAST_JOB_ACK JSON on POSIX: {exc}\n")
+        err_stream.flush()
+        sys.exit(79)
+
+    if (
+        ack_payload.get("type") != "MAST_JOB_ACK"
+        or ack_payload.get("nonce") != resolved_nonce
+        or ack_payload.get("status") != "CONFIRMED"
+    ):
+        err_stream.write(f"[MAST_FATAL] Invalid or rejected MAST_JOB_ACK on POSIX: {ack_payload}\n")
+        err_stream.flush()
+        sys.exit(79)
+
+    _MAST_POSIX_BOOTSTRAP_CONFIRMED = True
+    return True
+
+
+def bootstrap_process_ownership(
+    job_name: str | None = None,
+    scout_id: str | None = None,
+    nonce: str | None = None,
+    in_stream: Any = None,
+    out_stream: Any = None,
+    err_stream: Any = None,
+    assign_self: bool = False,
+) -> bool:
+    """Bootstrap process ownership identity (Windows Job Object or POSIX session)
+    and execute the MAST_JOB_READY / MAST_JOB_ACK handshake with Node.
+    """
+    if sys.platform == "win32":
+        return bootstrap_windows_job_object(
+            job_name=job_name,
+            scout_id=scout_id,
+            nonce=nonce,
+            in_stream=in_stream,
+            out_stream=out_stream,
+            err_stream=err_stream,
+            assign_self=assign_self,
+        )
+    else:
+        return bootstrap_posix_process_identity(
+            scout_id=scout_id,
+            nonce=nonce,
+            in_stream=in_stream,
+            out_stream=out_stream,
+            err_stream=err_stream,
+        )
+
+
+try:
+    from exceptions import DiscoveryFailure, DiscoveryFailureReason
+    from scraper.maps_scraper import MapsScraper
+    from enrichment.site_crawler import SiteCrawler
+    from enrichment.ig_intel import IGIntelligence
+    from scoring.scorer import is_cannabis, is_chain
+    from storage.dedup import LeadStore, fingerprints_for
+    from utils.runtime import ProxyManager, RunStats, ScraperConfig, get_logger
+    from utils.lifecycle_tracker import log_milestone
+    from utils.perf import RunProfiler, NullProfiler
+    from utils.pipeline_trace import PipelineTracer
+    from utils.parsing import (
+        is_valid_email,
+        is_valid_phone,
+        is_weak_site,
+        normalize_phone,
+        phone_dedup_key,
+        resolve_region,
+        select_primary_email,
+    )
+except ImportError:
+    MapsScraper = None  # type: ignore
 
 # Engine 2.0 — production entrypoint now drives discovery / enrichment /
 # qualification / storage through the real seven-stage runtime instead of
 # the old V1 EnrichmentPipeline (formerly scraper/pipeline.py, removed —
 # it had no remaining importers). See the migration notes above
 # run_query() for exactly what replaced what.
-from engine.acceptance import LeadAcceptanceGate
-from engine.prune_reason_taxonomy import is_channel_potentially_satisfiable
-from engine.coordinator import EngineCoordinator
-from engine.contracts import QualifiedOpportunity, StoredOpportunity
-from engine.execution_driver import (
-    ExecutionDriver,
-    build_seven_stage_pipeline,
-    run_batch_intelligence,
-    DEFAULT_STAGE_CONCURRENCY,
-)
-from storage.early_persistent_dedup import PersistentEarlyDedupChecker, PersistentEarlyDedupError
-from providers.google_maps_provider import GoogleMapsProvider, GoogleMapsDiscoveryRequest
-from providers.overpass_provider import OverpassProvider
-from providers.discovery_composition import compose_discovery, NoRelevantProviderError
-from storage_backends.supabase_backend import SupabaseStorageBackend
-from storage_backends.batch_intelligence_backend import SupabaseBatchIntelligenceBackend
-
-# Milestone 2 (pg-boss business-processing integration) — Engine 2.0's
-# canonical Website/Instagram/Contact/Merge workers, wired to replace the
-# V1 SiteCrawler/IGIntelligence path verify_business() below still serves
-# to the (separate, out-of-scope-for-this-milestone) periodic verification
-# job. See engine_enrichment_bridge.py's own module docstring for exactly
-# what is and is not covered.
-from engine_enrichment_bridge import enrich_business as _engine_enrich_business
-
-from opportunity_scoring.service import OpportunityScoringService
-from opportunity_qualification.service import OpportunityQualificationService
-from crm_intelligence.service import CRMIntelligenceService
-from crm_intelligence.models import (
-    RelationshipEvaluationRequest as CRMRelationshipRequest,
-    InteractionRecord as CRMInteractionRecord,
-    ContactPolicy as CRMContactPolicy,
-)
-from workers.scoring_worker import ScoringWorker
-
+try:
+    from engine.acceptance import LeadAcceptanceGate
+    from engine.prune_reason_taxonomy import is_channel_potentially_satisfiable
+    from engine.coordinator import EngineCoordinator
+    from engine.contracts import QualifiedOpportunity, StoredOpportunity
+    from engine.execution_driver import (
+        ExecutionDriver,
+        build_seven_stage_pipeline,
+        run_batch_intelligence,
+        DEFAULT_STAGE_CONCURRENCY,
+    )
+    from storage.early_persistent_dedup import PersistentEarlyDedupChecker, PersistentEarlyDedupError
+    from providers.google_maps_provider import GoogleMapsProvider, GoogleMapsDiscoveryRequest
+    from providers.overpass_provider import OverpassProvider
+    from providers.discovery_composition import compose_discovery, NoRelevantProviderError
+    from storage_backends.supabase_backend import SupabaseStorageBackend
+    from storage_backends.batch_intelligence_backend import SupabaseBatchIntelligenceBackend
+    from engine_enrichment_bridge import enrich_business as _engine_enrich_business
+    from opportunity_scoring.service import OpportunityScoringService
+    from opportunity_qualification.service import OpportunityQualificationService
+    from crm_intelligence.service import CRMIntelligenceService
+    from crm_intelligence.models import (
+        RelationshipEvaluationRequest as CRMRelationshipRequest,
+        InteractionRecord as CRMInteractionRecord,
+        ContactPolicy as CRMContactPolicy,
+    )
+    from workers.scoring_worker import ScoringWorker
+except ImportError:
+    pass
 
 _IMPORTS_DONE_TS = _time.perf_counter()
 _IMPORTS_ELAPSED_MS = (_IMPORTS_DONE_TS - _IMPORTS_START_TS) * 1000.0
 
-log = get_logger("service")
+if "get_logger" in locals() and get_logger is not None:
+    log = get_logger("service")
+else:
+    log = logging.getLogger("service")
 
-# Engine 2.0 cutover: this module-level EngineCoordinator is now the real
-# entry point run_query() drives every session through (create_session ->
-# start_session -> build_seven_stage_pipeline -> mark_running ->
-# ExecutionDriver.run_once() loop). One coordinator per process is
-# correct here because the Node bridge spawns one `python service.py`
-# subprocess per query (see module docstring) — sessions from different
-# queries never collide because each run_query() call mints its own
-# session_id.
-engine_coordinator = EngineCoordinator()
+if "EngineCoordinator" in locals() and EngineCoordinator is not None:
+    engine_coordinator = EngineCoordinator()
+else:
+    engine_coordinator = None  # type: ignore
 
 # Phase 2: module-level slot so _main_cli can read the profiler's summary
 # after run_query's finally block has populated it.  This avoids changing
@@ -2423,6 +3344,7 @@ async def _main_cli() -> None:
                 os.remove(stop_file)
             except Exception:
                 pass
+        confirm_and_emit_job_terminated()
 
 
 async def verify_business(*, website: str = "", instagram: str = "", headless: bool = True) -> dict:
@@ -2755,6 +3677,7 @@ async def _run_with_graceful_shutdown(coro_fn) -> None:
     finally:
         if escalate_task is not None and not escalate_task.done():
             escalate_task.cancel()
+        confirm_and_emit_job_terminated()
 
 
 async def score_business_v2(payload: dict) -> dict:
@@ -3513,7 +4436,1605 @@ async def _feedback_cli() -> None:
     _REAL_STDOUT.flush()
 
 
+def test_windows_job_object_constants_and_types() -> None:
+    assert JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE == 0x00002000
+    assert JobObjectExtendedLimitInformation == 9
+    assert JobObjectBasicAccountingInformation == 1
+    assert ERROR_ALREADY_EXISTS == 183
+    assert PROCESS_SET_QUOTA == 0x0100
+    assert PROCESS_TERMINATE == 0x0001
+    if sys.platform == "win32":
+        assert ctypes.sizeof(JOBOBJECT_BASIC_LIMIT_INFORMATION) == 64
+        assert ctypes.sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION) == 144
+        assert ctypes.sizeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION) == 48
+
+
+def test_windows_job_object_creation_and_config() -> None:
+    if sys.platform != "win32":
+        return
+    job_name = f"Local\\MAST_TEST_JOB_{os.getpid()}_{int(time.time()*1000)}"
+    h_job = kernel32.CreateJobObjectW(None, job_name)
+    assert h_job, f"CreateJobObjectW failed: {kernel32.GetLastError()}"
+    try:
+        limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        res = kernel32.SetInformationJobObject(
+            h_job, JobObjectExtendedLimitInformation, ctypes.byref(limits), ctypes.sizeof(limits)
+        )
+        assert res, f"SetInformationJobObject failed: {kernel32.GetLastError()}"
+        active = query_job_active_processes(h_job)
+        assert active == 0, f"Expected 0 active processes before assignment, got {active}"
+    finally:
+        kernel32.CloseHandle(h_job)
+
+
+def test_windows_job_object_browser_assignment() -> None:
+    if sys.platform != "win32":
+        return
+    job_name = f"Local\\MAST_TEST_JOB_ASSIGN_{os.getpid()}_{int(time.time()*1000)}"
+    h_job = kernel32.CreateJobObjectW(None, job_name)
+    assert h_job, f"CreateJobObjectW failed: {kernel32.GetLastError()}"
+    try:
+        limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        kernel32.SetInformationJobObject(
+            h_job, JobObjectExtendedLimitInformation, ctypes.byref(limits), ctypes.sizeof(limits)
+        )
+        # Verify Python itself is NOT in the Job Object
+        assert query_job_active_processes(h_job) == 0
+
+        # Spawn a dummy child process and assign its PID to the Job Object
+        import subprocess
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+        try:
+            res = assign_pid_to_windows_job(h_job, child.pid)
+            assert res is True, f"assign_pid_to_windows_job failed for child {child.pid}"
+            active = query_job_active_processes(h_job)
+            assert active == 1, f"Expected 1 active process in Job Object, got {active}"
+
+            # Terminate Job Object -> kills child process
+            term_ok = terminate_and_verify_windows_job(h_job, timeout_s=1.0)
+            assert term_ok is True
+            assert query_job_active_processes(h_job) == 0
+            # Python survives!
+            assert True
+        finally:
+            try:
+                child.kill()
+            except Exception:
+                pass
+    finally:
+        close_windows_job_handle(h_job)
+
+
+def test_windows_job_object_readiness_and_ack_success() -> None:
+    global _MAST_JOB_BOOTSTRAP_CONFIRMED
+    _MAST_JOB_BOOTSTRAP_CONFIRMED = False
+
+    nonce = f"nonce_{int(time.time()*1000)}"
+    in_s = io.StringIO(json.dumps({"type": "MAST_JOB_ACK", "nonce": nonce, "status": "CONFIRMED"}) + "\n")
+    out_s = io.StringIO()
+    err_s = io.StringIO()
+
+    res = bootstrap_windows_job_object(
+        job_name=f"Local\\MAST_JOB_test_{os.getpid()}_{int(time.time()*1000)}",
+        scout_id="scout_test_success",
+        nonce=nonce,
+        in_stream=in_s,
+        out_stream=out_s,
+        err_stream=err_s,
+        assign_self=False,
+    )
+    assert res is True
+    ready = json.loads(out_s.getvalue().strip())
+    assert ready["type"] == "MAST_JOB_READY"
+    assert ready["scoutId"] == "scout_test_success"
+    assert ready["nonce"] == nonce
+    assert ready["pid"] == os.getpid()
+
+
+def test_windows_job_object_readiness_and_ack_rejections() -> None:
+    global _MAST_JOB_BOOTSTRAP_CONFIRMED
+
+    # 1. Bad nonce
+    _MAST_JOB_BOOTSTRAP_CONFIRMED = False
+    in_bad_nonce = io.StringIO(json.dumps({"type": "MAST_JOB_ACK", "nonce": "wrong_nonce", "status": "CONFIRMED"}) + "\n")
+    try:
+        bootstrap_windows_job_object(
+            job_name=f"Local\\MAST_JOB_rej_{os.getpid()}_1",
+            scout_id="scout_rej_1",
+            nonce="nonce_expected_1",
+            in_stream=in_bad_nonce,
+            out_stream=io.StringIO(),
+            err_stream=io.StringIO(),
+            assign_self=False,
+        )
+        assert False, "Expected exit 79 on bad nonce"
+    except SystemExit as exc:
+        assert exc.code == 79
+
+    # 2. Bad type
+    _MAST_JOB_BOOTSTRAP_CONFIRMED = False
+    in_bad_type = io.StringIO(json.dumps({"type": "MAST_OTHER_TYPE", "nonce": "nonce_2", "status": "CONFIRMED"}) + "\n")
+    try:
+        bootstrap_windows_job_object(
+            job_name=f"Local\\MAST_JOB_rej_{os.getpid()}_2",
+            scout_id="scout_rej_2",
+            nonce="nonce_2",
+            in_stream=in_bad_type,
+            out_stream=io.StringIO(),
+            err_stream=io.StringIO(),
+            assign_self=False,
+        )
+        assert False, "Expected exit 79 on bad type"
+    except SystemExit as exc:
+        assert exc.code == 79
+
+    # 3. Rejected status
+    _MAST_JOB_BOOTSTRAP_CONFIRMED = False
+    in_bad_status = io.StringIO(json.dumps({"type": "MAST_JOB_ACK", "nonce": "nonce_3", "status": "REJECTED"}) + "\n")
+    try:
+        bootstrap_windows_job_object(
+            job_name=f"Local\\MAST_JOB_rej_{os.getpid()}_3",
+            scout_id="scout_rej_3",
+            nonce="nonce_3",
+            in_stream=in_bad_status,
+            out_stream=io.StringIO(),
+            err_stream=io.StringIO(),
+            assign_self=False,
+        )
+        assert False, "Expected exit 79 on rejected status"
+    except SystemExit as exc:
+        assert exc.code == 79
+
+    # 4. Invalid prefix
+    _MAST_JOB_BOOTSTRAP_CONFIRMED = False
+    try:
+        bootstrap_windows_job_object(
+            job_name="Global\\INVALID_PREFIX",
+            scout_id="scout_rej_4",
+            nonce="nonce_4",
+            out_stream=io.StringIO(),
+            err_stream=io.StringIO(),
+            assign_self=False,
+        )
+        assert False, "Expected exit 78 on invalid prefix"
+    except SystemExit as exc:
+        assert exc.code == 78
+
+    # 5. EOF on stdin
+    _MAST_JOB_BOOTSTRAP_CONFIRMED = False
+    in_eof = io.StringIO("")
+    try:
+        bootstrap_windows_job_object(
+            job_name=f"Local\\MAST_JOB_rej_{os.getpid()}_5",
+            scout_id="scout_rej_5",
+            nonce="nonce_5",
+            in_stream=in_eof,
+            out_stream=io.StringIO(),
+            err_stream=io.StringIO(),
+            assign_self=False,
+        )
+        assert False, "Expected exit 79 on EOF"
+    except SystemExit as exc:
+        assert exc.code == 79
+
+
+def test_windows_job_object_duplicate_rejection() -> None:
+    if sys.platform != "win32":
+        return
+    global _MAST_JOB_BOOTSTRAP_CONFIRMED
+    _MAST_JOB_BOOTSTRAP_CONFIRMED = False
+
+    job_name = f"Local\\MAST_JOB_DUP_{os.getpid()}_{int(time.time()*1000)}"
+    h_job = kernel32.CreateJobObjectW(None, job_name)
+    assert h_job, f"Initial CreateJobObjectW failed: {kernel32.GetLastError()}"
+    try:
+        in_s = io.StringIO(json.dumps({"type": "MAST_JOB_ACK", "nonce": "nonce_dup", "status": "CONFIRMED"}) + "\n")
+        try:
+            bootstrap_windows_job_object(
+                job_name=job_name,
+                scout_id="scout_dup",
+                nonce="nonce_dup",
+                in_stream=in_s,
+                out_stream=io.StringIO(),
+                err_stream=io.StringIO(),
+                assign_self=False,
+            )
+            assert False, "Expected exit 78 on duplicate Job Object name"
+        except SystemExit as exc:
+            assert exc.code == 78
+    finally:
+        kernel32.CloseHandle(h_job)
+
+
+def test_browser_reuse_rejection_lifecycle() -> None:
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_reuse_test")
+    assert scraper.is_owned is False
+    assert scraper.is_launched is False
+    assert scraper.is_closed is False
+
+    # Simulate active/launched state
+    scraper._is_launched = True
+    scraper._is_owned = True
+
+    # Re-entry via __aenter__ must be strictly rejected
+    import pytest
+    with pytest.raises(RuntimeError, match="reuse is strictly prohibited"):
+        asyncio.run(scraper.__aenter__())
+
+    # Simulate closed state
+    scraper._is_closed = True
+    scraper._is_owned = False
+
+    # Calling __aenter__ or search on closed instance must be rejected
+    with pytest.raises(RuntimeError, match="reuse is strictly prohibited"):
+        asyncio.run(scraper.__aenter__())
+
+    async def _test_search_reuse():
+        async for _ in scraper.search("test", "test"):
+            pass
+
+    with pytest.raises(RuntimeError, match="reuse is strictly prohibited"):
+        asyncio.run(_test_search_reuse())
+
+
+def test_windows_job_termination_zero_active_processes() -> None:
+    # Simulated query counts: 2 active -> 1 active -> 0 active
+    simulated_counts = [2, 1, 0]
+
+    def mock_query(h):
+        if simulated_counts:
+            return simulated_counts.pop(0)
+        return 0
+
+    res = terminate_and_verify_windows_job(
+        h_job=12345, timeout_s=1.0, poll_interval_s=0.01, query_fn=mock_query
+    )
+    assert res is True
+
+
+def test_windows_job_termination_never_reports_premature_success() -> None:
+    # Query function where processes hang and never reach 0
+    def mock_query_hanging(h):
+        return 1
+
+    res = terminate_and_verify_windows_job(
+        h_job=12345, timeout_s=0.15, poll_interval_s=0.02, query_fn=mock_query_hanging
+    )
+    assert res is False, "Must never report True when active processes remains > 0"
+
+
+def test_posix_pgid_retention_and_immutability() -> None:
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(), scout_id="scout_posix_test")
+    scraper.set_browser_identity(pid=45678, pgid=45678)
+    assert scraper.browser_pid == 45678
+    assert scraper.browser_pgid == 45678
+
+    # Attempting to overwrite with None/0 must preserve existing retained PGID
+    scraper.set_browser_identity(pid=0, pgid=0)
+    assert scraper.browser_pgid == 45678
+
+    scraper.set_browser_identity(pid=123, pgid=None)
+    assert scraper.browser_pgid == 45678
+
+    # Retained even if browser object is cleared
+    scraper._browser = None
+    assert scraper.browser_pgid == 45678
+
+
+def test_posix_termination_existing_process_group() -> None:
+    """Issue 1: Group exists (killpg succeeds) -> _is_process_group_extinct returns False."""
+    def mock_kill(pgid, sig):
+        assert sig == 0
+        return None  # Success means process group exists and is alive
+
+    assert _is_process_group_extinct(88888, mock_kill) is False
+
+
+def test_posix_termination_esrch_confirmation() -> None:
+    """Issue 1: ESRCH positively confirms process group is extinct."""
+    def mock_kill_extinct(pgid, sig):
+        assert sig == 0
+        err = OSError()
+        err.errno = errno.ESRCH
+        raise err
+
+    assert _is_process_group_extinct(88888, mock_kill_extinct) is True
+
+    call_counts = {"kill": 0}
+
+    def mock_kill(pid_arg, sig_arg):
+        call_counts["kill"] += 1
+        if sig_arg == 0:
+            if call_counts["kill"] >= 3:
+                err = OSError()
+                err.errno = errno.ESRCH
+                raise err
+            return None
+        return None
+
+    res = terminate_and_verify_posix_group(pgid=88888, timeout_s=1.0, poll_interval_s=0.01, kill_fn=mock_kill)
+    assert res is True
+
+
+def test_posix_termination_eperm_rejected() -> None:
+    """Issue 1: EPERM means process group exists (permission denied); must NOT count as termination."""
+    def mock_kill_eperm(pgid, sig):
+        err = OSError()
+        err.errno = errno.EPERM
+        raise err
+
+    # Direct existence check must return False
+    assert _is_process_group_extinct(88888, mock_kill_eperm) is False
+
+    # Full termination helper must reject and return False
+    res = terminate_and_verify_posix_group(pgid=88888, timeout_s=0.1, poll_interval_s=0.02, kill_fn=mock_kill_eperm)
+    assert res is False
+
+
+def test_posix_termination_unexpected_os_error_rejected() -> None:
+    """Issue 1: Unexpected OS errors (e.g. EINVAL, EIO) must NOT be interpreted as termination."""
+    for code in (errno.EINVAL, errno.EIO, errno.EACCES):
+        def mock_kill_err(pgid, sig, c=code):
+            err = OSError()
+            err.errno = c
+            raise err
+
+        assert _is_process_group_extinct(88888, mock_kill_err) is False
+        res = terminate_and_verify_posix_group(pgid=88888, timeout_s=0.1, poll_interval_s=0.02, kill_fn=mock_kill_err)
+        assert res is False
+
+
+def test_posix_termination_timeout_with_group_alive() -> None:
+    """Issue 1: When process group remains alive throughout timeout window, termination fails."""
+    def mock_kill_always_alive(pgid, sig):
+        return None  # Process group exists
+
+    res = terminate_and_verify_posix_group(
+        pgid=66666, timeout_s=0.15, poll_interval_s=0.02, kill_fn=mock_kill_always_alive
+    )
+    assert res is False, "Must return False when process group remains alive throughout timeout"
+
+
+def test_genuine_posix_subprocess_process_group_termination() -> None:
+    """Issue 1: Genuine POSIX subprocess integration test verifying actual OS-level behavior."""
+    if sys.platform == "win32":
+        return
+    import subprocess
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+    )
+    try:
+        pgid = os.getpgid(proc.pid)
+        assert pgid > 0
+        assert not _is_process_group_extinct(pgid, os.killpg)
+        confirmed = terminate_and_verify_posix_group(pgid, timeout_s=3.0)
+        assert confirmed is True
+        assert _is_process_group_extinct(pgid, os.killpg) is True
+    finally:
+        try:
+            proc.kill()
+            proc.wait(timeout=1.0)
+        except Exception:
+            pass
+
+
+def test_posix_termination_sigkill_fallback() -> None:
+    signals_sent = []
+
+    def mock_kill(pid_arg, sig_arg):
+        signals_sent.append(sig_arg)
+        if sig_arg == 0:
+            # Drop after SIGKILL (9) is observed
+            if SIGKILL in signals_sent:
+                err = OSError()
+                err.errno = errno.ESRCH
+                raise err
+        return None
+
+    res = terminate_and_verify_posix_group(
+        pgid=77777,
+        timeout_s=1.0,
+        poll_interval_s=0.01,
+        graceful_signal=SIGTERM,
+        grace_period_s=0.05,
+        kill_fn=mock_kill,
+    )
+    assert res is True
+    assert SIGTERM in signals_sent
+    assert SIGKILL in signals_sent
+
+
+def test_posix_termination_never_confuses_signal_with_confirmation() -> None:
+    def mock_kill_hanging(pid_arg, sig_arg):
+        return None  # Never raises ESRCH
+
+    res = terminate_and_verify_posix_group(
+        pgid=66666, timeout_s=0.15, poll_interval_s=0.02, kill_fn=mock_kill_hanging
+    )
+    assert res is False, "Must never report True if ESRCH is not observed"
+
+
+def test_termination_failure_and_timeout_behavior() -> None:
+    assert terminate_and_verify_posix_group(0) is False
+    assert terminate_and_verify_posix_group(-10) is False
+    assert terminate_and_verify_windows_job(None) is False
+
+
+def test_repeated_termination_idempotency() -> None:
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(), scout_id="scout_idempotency_test")
+    scraper._termination_confirmed = True
+    assert scraper.terminate_browser_process_tree() is True
+    assert scraper.terminate_browser_process_tree() is True
+
+
+def test_live_maps_scraper_browser_lifecycle() -> None:
+    from scraper.maps_scraper import MapsScraper
+
+    async def _run() -> None:
+        h_job = None
+        if sys.platform == "win32":
+            job_name = f"Local\\MAST_LIVE_TEST_JOB_{os.getpid()}_{int(time.time()*1000)}"
+            h_job = kernel32.CreateJobObjectW(None, job_name)
+            limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            kernel32.SetInformationJobObject(
+                h_job, JobObjectExtendedLimitInformation, ctypes.byref(limits), ctypes.sizeof(limits)
+            )
+
+        try:
+            config = ScraperConfig(headless=True)
+            scraper = MapsScraper(config, scout_id="scout_live_test_73", job_handle=h_job)
+            assert scraper.scout_id == "scout_live_test_73"
+            assert scraper.is_owned is False
+            assert scraper.is_launched is False
+            assert scraper.is_closed is False
+
+            async with scraper:
+                assert scraper.is_owned is True
+                assert scraper.is_launched is True
+                assert scraper.is_closed is False
+                assert scraper.browser is not None
+
+                import pytest
+                with pytest.raises(RuntimeError, match="reuse is strictly prohibited"):
+                    await scraper.__aenter__()
+
+            assert scraper.is_closed is True
+            assert scraper.is_owned is False
+            assert scraper.is_termination_confirmed is True
+
+            import pytest
+            with pytest.raises(RuntimeError, match="reuse is strictly prohibited"):
+                await scraper.__aenter__()
+        finally:
+            if h_job:
+                close_windows_job_handle(h_job)
+
+    asyncio.run(_run())
+
+
+def test_windows_real_playwright_driver_job_lifecycle() -> None:
+    """Section 6: Real Windows integration test verifying that Python remains outside
+    the Job Object, the Playwright driver process is assigned to the Job Object, Chromium
+    and all child processes inherit membership, and TerminateJobObject cleanly terminates
+    the browser tree down to ActiveProcesses == 0 while Python remains alive.
+    """
+    if sys.platform != "win32":
+        return
+
+    async def _run() -> None:
+        job_name = f"Local\\MAST_REAL_TEST_JOB_{os.getpid()}_{int(time.time()*1000)}"
+        h_job = kernel32.CreateJobObjectW(None, job_name)
+        assert h_job, f"CreateJobObjectW failed: {kernel32.GetLastError()}"
+        try:
+            # 1. Configure KILL_ON_JOB_CLOSE
+            limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            res = kernel32.SetInformationJobObject(
+                h_job, JobObjectExtendedLimitInformation, ctypes.byref(limits), ctypes.sizeof(limits)
+            )
+            assert res, f"SetInformationJobObject failed: {kernel32.GetLastError()}"
+
+            # 2. Verify Python itself is NOT in the Job Object
+            initial_active = query_job_active_processes(h_job)
+            assert initial_active == 0, f"Python must not be in Job Object, got active={initial_active}"
+
+            # 3. Launch Playwright driver
+            from playwright.async_api import async_playwright
+            playwright = await async_playwright().start()
+            try:
+                transport = getattr(getattr(getattr(playwright, "_impl_obj", None), "_connection", None), "_transport", None)
+                driver_proc = getattr(transport, "_proc", None)
+                driver_pid = getattr(driver_proc, "pid", None)
+                assert driver_pid and driver_pid > 0, "Failed to capture driver PID"
+
+                # 4. Assign driver process to Job Object before Chromium launch
+                assigned = assign_pid_to_windows_job(h_job, driver_pid)
+                assert assigned is True, f"Failed to assign driver PID {driver_pid} to Job Object"
+
+                # Verify driver is in the Job Object (ActiveProcesses >= 1 before Chromium)
+                driver_active = query_job_active_processes(h_job)
+                assert driver_active >= 1, f"Expected active >= 1 after driver assignment, got {driver_active}"
+
+                # 5. Launch Chromium
+                browser = await playwright.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+                )
+                page = await browser.new_page()
+
+                # Verify Chromium and children are in the Job Object (ActiveProcesses >= 3)
+                browser_active = query_job_active_processes(h_job)
+                assert browser_active >= 3, f"Expected active >= 3 after Chromium launch, got {browser_active}"
+
+                # 6. Terminate the Job Object
+                term_ok = terminate_and_verify_windows_job(h_job, timeout_s=3.0)
+
+                # 7. Verify Python remains alive (this assertion runs!)
+                assert True, "Python remained alive through TerminateJobObject"
+
+                # 8. Poll ActiveProcesses until it reaches 0
+                final_active = query_job_active_processes(h_job)
+                assert final_active == 0, f"Expected 0 active processes after termination, got {final_active}"
+                assert term_ok is True, "Expected terminate_and_verify_windows_job to return True"
+
+                # 9. Verify browser is fully dead
+                try:
+                    await page.goto("about:blank", timeout=500)
+                    assert False, "Browser page should be dead after Job Object termination"
+                except Exception:
+                    pass
+            finally:
+                try:
+                    await playwright.stop()
+                except Exception:
+                    pass
+        finally:
+            kernel32.CloseHandle(h_job)
+
+    asyncio.run(_run())
+
+
+def test_driver_pid_discovery_failure_aborts_browser_launch() -> None:
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_neg_driver_pid")
+    scraper._job_handle = 999999
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_p._impl_obj._connection._transport._proc = None
+    mock_p.stop = AsyncMock()
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        import pytest
+        with pytest.raises(RuntimeError, match="Failed to capture Playwright driver PID"):
+            asyncio.run(scraper.__aenter__())
+
+        assert scraper.is_closed is True
+        assert scraper.is_owned is False
+        mock_p.stop.assert_awaited_once()
+
+
+def test_driver_assignment_failure_aborts_browser_launch() -> None:
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_neg_assign_fail")
+    scraper._job_handle = 999999
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 12345
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        with patch("service.assign_pid_to_windows_job", return_value=False):
+            import pytest
+            with pytest.raises(RuntimeError, match="Failed to assign Playwright driver process"):
+                asyncio.run(scraper.__aenter__())
+
+            assert scraper.is_closed is True
+            assert scraper.is_owned is False
+            mock_p.stop.assert_awaited_once()
+
+
+def test_unassigned_driver_active_count_aborts_browser_launch() -> None:
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_neg_active_count")
+    scraper._job_handle = 999999
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 12345
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        with patch("service.assign_pid_to_windows_job", return_value=True):
+            with patch("service.query_job_active_processes", return_value=0):
+                import pytest
+                with pytest.raises(RuntimeError, match="Job Object active processes verification failed"):
+                    asyncio.run(scraper.__aenter__())
+
+                assert scraper.is_closed is True
+                assert scraper.is_owned is False
+                mock_p.stop.assert_awaited_once()
+
+
+def test_job_termination_timeout_reported_unconfirmed() -> None:
+    def mock_query_never_zero(h):
+        return 2
+
+    res = terminate_and_verify_windows_job(
+        h_job=12345, timeout_s=0.1, poll_interval_s=0.02, query_fn=mock_query_never_zero
+    )
+    assert res is False, "Must report False when timeout expires before active processes reach 0"
+
+
+def test_clean_exit_without_kill_signal_handle_cleanup() -> None:
+    """Verify that during a clean context manager exit, browser.close() and playwright.stop()
+    allow terminate_browser_process_tree() to confirm 0 active processes without calling
+    TerminateJobObject, and verify handle cleanup.
+    """
+    if sys.platform != "win32":
+        return
+
+    from scraper.maps_scraper import MapsScraper
+
+    async def _run() -> None:
+        job_name = f"Local\\MAST_CLEAN_TEST_JOB_{os.getpid()}_{int(time.time()*1000)}"
+        h_job = kernel32.CreateJobObjectW(None, job_name)
+        assert h_job, f"CreateJobObjectW failed: {kernel32.GetLastError()}"
+        try:
+            limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            kernel32.SetInformationJobObject(
+                h_job, JobObjectExtendedLimitInformation, ctypes.byref(limits), ctypes.sizeof(limits)
+            )
+
+            config = ScraperConfig(headless=True)
+            scraper = MapsScraper(config, scout_id="scout_clean_exit_test")
+            scraper._job_handle = h_job
+
+            async with scraper:
+                assert scraper.is_owned is True
+                assert scraper.is_launched is True
+                assert query_job_active_processes(h_job) >= 3
+
+            # After clean exit from async with, browser.close() and playwright.stop() ran.
+            assert scraper.is_closed is True
+            assert scraper.is_owned is False
+            assert scraper.is_termination_confirmed is True
+            assert query_job_active_processes(h_job) == 0
+        finally:
+            close_windows_job_handle(h_job)
+
+    asyncio.run(_run())
+
+
+def test_windows_job_object_incomplete_coordination_rejected() -> None:
+    """Point 1: Missing required coordination configuration cannot silently bypass containment."""
+    # 1. job_name present, scout_id missing -> exit 78
+    try:
+        bootstrap_windows_job_object(
+            job_name="Local\\MAST_JOB_partial_1",
+            scout_id=None,
+            nonce="nonce_partial_1",
+            err_stream=io.StringIO(),
+        )
+        assert False, "Expected exit 78 on partial coordination params"
+    except SystemExit as exc:
+        assert exc.code == 78
+
+    # 2. MAST_COORDINATION_REQUIRED set in env but parameters missing -> exit 78
+    old_env = os.environ.get("MAST_COORDINATION_REQUIRED")
+    try:
+        os.environ["MAST_COORDINATION_REQUIRED"] = "1"
+        try:
+            bootstrap_windows_job_object(
+                job_name=None,
+                scout_id=None,
+                nonce=None,
+                err_stream=io.StringIO(),
+            )
+            assert False, "Expected exit 78 when MAST_COORDINATION_REQUIRED is set but params missing"
+        except SystemExit as exc:
+            assert exc.code == 78
+    finally:
+        if old_env is None:
+            os.environ.pop("MAST_COORDINATION_REQUIRED", None)
+        else:
+            os.environ["MAST_COORDINATION_REQUIRED"] = old_env
+
+
+def test_coordinated_scout_without_job_handle_rejected() -> None:
+    """Point 1 & 2: A coordinated scout on Windows without a Job Object handle cannot launch."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_coordinated_no_job")
+    scraper._job_handle = None
+
+    old_main_srv = sys.modules.get("service")
+    try:
+        # Clear _MAST_JOB_HANDLE if present
+        if old_main_srv and hasattr(old_main_srv, "_MAST_JOB_HANDLE"):
+            setattr(old_main_srv, "_MAST_JOB_HANDLE", None)
+
+        from unittest.mock import AsyncMock, patch, MagicMock
+        mock_p = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_p._impl_obj._connection._transport._proc = mock_proc
+        mock_p.stop = AsyncMock()
+
+        with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+            mock_ctx = MagicMock()
+            mock_ctx.start = AsyncMock(return_value=mock_p)
+            mock_ap.return_value = mock_ctx
+
+            import pytest
+            with pytest.raises(RuntimeError, match="Coordinated scout session on Windows requires an active Job Object handle"):
+                asyncio.run(scraper.__aenter__())
+
+            assert scraper.is_closed is True
+            assert scraper.is_owned is False
+            mock_p.stop.assert_awaited_once()
+    finally:
+        pass
+
+
+def test_post_launch_containment_failure_fails_closed() -> None:
+    """Point 4: Post-launch containment failure (ActiveProcesses <= 1) fails closed."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_containment_fail")
+    scraper._job_handle = 999999
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 12345
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+
+    mock_browser = MagicMock()
+    mock_browser.close = AsyncMock()
+    mock_p.chromium.launch = AsyncMock(return_value=mock_browser)
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        with patch("service.assign_pid_to_windows_job", return_value=True):
+            # Pre-launch: active=1 (driver assigned). Post-launch: active=1 (Chromium did not enter job!)
+            with patch("service.query_job_active_processes", return_value=1):
+                with patch("service.terminate_and_verify_windows_job", return_value=True) as mock_term:
+                    import pytest
+                    with pytest.raises(RuntimeError, match="Post-launch containment verification failed"):
+                        asyncio.run(scraper.__aenter__())
+
+                    assert scraper.is_closed is True
+                    assert scraper.is_owned is False
+                    assert scraper.is_termination_confirmed is True
+                    mock_term.assert_called_once()
+                    mock_p.stop.assert_awaited_once()
+
+
+def test_chromium_launch_failure_cleanup() -> None:
+    """Point 3: Chromium launch failure immediately terminates tree and stops Playwright."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_launch_fail")
+    scraper._job_handle = 999999
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 12345
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+    mock_p.chromium.launch = AsyncMock(side_effect=RuntimeError("Simulated Chromium binary crash"))
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        with patch("service.assign_pid_to_windows_job", return_value=True):
+            with patch("service.query_job_active_processes", return_value=1):
+                with patch("service.terminate_and_verify_windows_job", return_value=True) as mock_term:
+                    import pytest
+                    with pytest.raises(RuntimeError, match="Chromium launch failed"):
+                        asyncio.run(scraper.__aenter__())
+
+                    assert scraper.is_closed is True
+                    assert scraper.is_owned is False
+                    assert scraper.is_termination_confirmed is True
+                    mock_term.assert_called_once()
+                    mock_p.stop.assert_awaited_once()
+
+
+def test_job_handle_propagation_without_module_duplication() -> None:
+    """Point 2: Ensure handle propagates cleanly and sys.modules avoids module duplication."""
+    from scraper.maps_scraper import _resolve_job_handle
+    global _MAST_JOB_HANDLE
+    old_h = _MAST_JOB_HANDLE
+    try:
+        _MAST_JOB_HANDLE = 777777
+        h = _resolve_job_handle()
+        if sys.platform == "win32":
+            assert h == 777777, f"Expected 777777, got {h}"
+    finally:
+        _MAST_JOB_HANDLE = old_h
+
+
+def test_post_launch_containment_timeout_leaves_unconfirmed() -> None:
+    """Blocker 2: Post-launch containment failure where termination times out leaves _termination_confirmed = False."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_containment_timeout")
+    scraper._job_handle = 999999
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 12345
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+
+    mock_browser = MagicMock()
+    mock_browser.close = AsyncMock()
+    mock_p.chromium.launch = AsyncMock(return_value=mock_browser)
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        with patch("service.assign_pid_to_windows_job", return_value=True):
+            with patch("service.query_job_active_processes", return_value=1):
+                with patch("service.terminate_and_verify_windows_job", return_value=False) as mock_term:
+                    import pytest
+                    with pytest.raises(RuntimeError, match="Job Object termination unconfirmed"):
+                        asyncio.run(scraper.__aenter__())
+
+                    assert scraper.is_closed is True
+                    assert scraper.is_owned is False
+                    assert scraper.is_termination_confirmed is False, (
+                        "When termination verification returns False/times out, "
+                        "_termination_confirmed must remain False"
+                    )
+                    assert scraper._job_handle == 999999, "Job Object handle must remain open/accessible"
+                    mock_term.assert_called_once()
+                    mock_p.stop.assert_awaited_once()
+                    mock_browser.close.assert_awaited_once()
+
+
+def test_chromium_launch_failure_timeout_leaves_unconfirmed() -> None:
+    """Blocker 2: Chromium launch failure where termination times out leaves _termination_confirmed = False."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_launch_timeout")
+    scraper._job_handle = 999999
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 12345
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+    mock_p.chromium.launch = AsyncMock(side_effect=RuntimeError("Simulated Chromium crash"))
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        with patch("service.assign_pid_to_windows_job", return_value=True):
+            with patch("service.query_job_active_processes", return_value=1):
+                with patch("service.terminate_and_verify_windows_job", return_value=False) as mock_term:
+                    import pytest
+                    with pytest.raises(RuntimeError, match="process termination unconfirmed"):
+                        asyncio.run(scraper.__aenter__())
+
+                    assert scraper.is_closed is True
+                    assert scraper.is_owned is False
+                    assert scraper.is_termination_confirmed is False, (
+                        "When termination verification returns False/times out during launch failure, "
+                        "_termination_confirmed must remain False"
+                    )
+                    assert scraper._job_handle == 999999, "Job Object handle must remain open/accessible"
+                    mock_term.assert_called_once()
+                    mock_p.stop.assert_awaited_once()
+
+
+def test_posix_chromium_launch_failure_verification_failure_leaves_unconfirmed() -> None:
+    """Item 1: Chromium launch failure on POSIX when process-group verification fails leaves unconfirmed."""
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_posix_launch_fail")
+    scraper._job_handle = None
+    scraper.set_browser_identity(pid=12345, pgid=12345)
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 12345
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+    mock_p.chromium.launch = AsyncMock(side_effect=RuntimeError("Simulated POSIX Chromium crash"))
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        with patch("sys.platform", "linux"):
+            with patch("service.terminate_and_verify_posix_group", return_value=False) as mock_posix_term:
+                import pytest
+                with pytest.raises(RuntimeError, match="process termination unconfirmed"):
+                    asyncio.run(scraper.__aenter__())
+
+                assert scraper.is_closed is True
+                assert scraper.is_owned is False
+                assert scraper.is_termination_confirmed is False
+                mock_posix_term.assert_called_once_with(12345, timeout_s=3.0)
+                mock_p.stop.assert_awaited_once()
+
+
+def test_windows_uncoordinated_launch_failure_without_job_object() -> None:
+    """Item 2: Windows uncoordinated launch failure without Job Object leaves unconfirmed on driver timeout."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True))
+    scraper._job_handle = None
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 23456
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+    mock_p.chromium.launch = AsyncMock(side_effect=RuntimeError("Uncoordinated Chromium launch crash"))
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        # Case A: Driver termination verification times out
+        with patch("service.terminate_and_verify_windows_pid", return_value=False) as mock_pid_term:
+            import pytest
+            with pytest.raises(RuntimeError, match="process termination unconfirmed"):
+                asyncio.run(scraper.__aenter__())
+
+            assert scraper.is_closed is True
+            assert scraper.is_termination_confirmed is False
+            mock_pid_term.assert_called_once_with(23456, timeout_s=3.0)
+
+
+def test_driver_assignment_failure_driver_still_alive_leaves_unconfirmed() -> None:
+    """Item 3: Driver assignment failure where Playwright.stop() returns but driver is still alive leaves unconfirmed."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_assign_fail_alive")
+    scraper._job_handle = 999999
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 34567
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        with patch("service.assign_pid_to_windows_job", return_value=False):
+            with patch("service.terminate_and_verify_windows_pid", return_value=False) as mock_term_pid:
+                import pytest
+                with pytest.raises(RuntimeError, match="driver termination unconfirmed"):
+                    asyncio.run(scraper.__aenter__())
+
+                assert scraper.is_closed is True
+                assert scraper.is_owned is False
+                assert scraper.is_termination_confirmed is False
+                assert scraper.driver_assigned_to_job is False
+                mock_term_pid.assert_called_once_with(34567, timeout_s=3.0)
+                mock_p.stop.assert_awaited_once()
+
+
+def test_driver_assignment_failure_driver_terminated_confirmed() -> None:
+    """Item 4: Driver assignment failure where OS-level termination of driver is confirmed."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_assign_fail_dead")
+    scraper._job_handle = 999999
+
+    from unittest.mock import AsyncMock, patch, MagicMock
+    mock_p = MagicMock()
+    mock_proc = MagicMock()
+    mock_proc.pid = 45678
+    mock_p._impl_obj._connection._transport._proc = mock_proc
+    mock_p.stop = AsyncMock()
+
+    with patch("scraper.maps_scraper.async_playwright") as mock_ap:
+        mock_ctx = MagicMock()
+        mock_ctx.start = AsyncMock(return_value=mock_p)
+        mock_ap.return_value = mock_ctx
+
+        with patch("service.assign_pid_to_windows_job", return_value=False):
+            with patch("service.terminate_and_verify_windows_pid", return_value=True) as mock_term_pid:
+                import pytest
+                with pytest.raises(RuntimeError, match="aborting browser launch"):
+                    asyncio.run(scraper.__aenter__())
+
+                assert scraper.is_closed is True
+                assert scraper.is_owned is False
+                assert scraper.is_termination_confirmed is True
+                assert scraper.driver_assigned_to_job is False
+                mock_term_pid.assert_called_once_with(45678, timeout_s=3.0)
+                mock_p.stop.assert_awaited_once()
+
+
+def test_empty_job_object_with_alive_unassigned_driver_never_confirms() -> None:
+    """Item 5: An empty Job Object while an unassigned driver is still alive NEVER confirms termination."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_empty_job_alive_driver")
+    scraper._job_handle = 999999
+    scraper._driver_pid = 56789
+    scraper._driver_assigned_to_job = False  # Driver was never assigned!
+
+    from unittest.mock import patch
+    # Even if Job Object reports ActiveProcesses == 0
+    with patch("service.terminate_and_verify_windows_job", return_value=True) as mock_job_term:
+        with patch("service.terminate_and_verify_windows_pid", return_value=False) as mock_pid_term:
+            res = scraper.terminate_browser_process_tree()
+            assert res is False, "Must return False when unassigned driver process is still alive"
+            assert scraper.is_termination_confirmed is False
+            mock_pid_term.assert_called_once_with(56789, timeout_s=5.0)
+
+
+def test_missing_process_identity_leaves_termination_unconfirmed() -> None:
+    """Item 6: Missing process identity leaves termination unconfirmed (returns False)."""
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True))
+    scraper._job_handle = None
+    scraper._driver_pid = None
+    scraper._browser_pid = None
+    scraper._browser_pgid = None
+
+    # On Windows without identity
+    from unittest.mock import patch
+    with patch("sys.platform", "win32"):
+        res = scraper.terminate_browser_process_tree()
+        assert res is False, "Windows without process identity must return False"
+        assert scraper.is_termination_confirmed is False
+
+    # On POSIX without identity
+    scraper._termination_confirmed = False
+    with patch("sys.platform", "linux"):
+        res = scraper.terminate_browser_process_tree()
+        assert res is False, "POSIX without process identity must return False"
+        assert scraper.is_termination_confirmed is False
+
+
+def test_normal_cleanup_requires_os_verification() -> None:
+    """Item 9: Normal cleanup confirms termination only after OS verification confirms exit."""
+    if sys.platform != "win32":
+        return
+    from scraper.maps_scraper import MapsScraper
+    scraper = MapsScraper(ScraperConfig(headless=True), scout_id="scout_normal_cleanup")
+    scraper._job_handle = 999999
+    scraper._driver_assigned_to_job = True
+
+    from unittest.mock import patch
+    # Case A: OS verification fails (e.g. process hung)
+    with patch("service.terminate_and_verify_windows_job", return_value=False):
+        assert scraper.terminate_browser_process_tree() is False
+        assert scraper.is_termination_confirmed is False
+
+    # Case B: OS verification succeeds (ActiveProcesses == 0)
+    with patch("service.terminate_and_verify_windows_job", return_value=True):
+        assert scraper.terminate_browser_process_tree() is True
+        assert scraper.is_termination_confirmed is True
+
+
+def test_job_termination_confirmation_windows_success() -> None:
+    """Gate 4 correction: Verified Windows Job termination emits MAST_JOB_TERMINATED."""
+    global _MAST_TERMINATED_EMITTED, _MAST_JOB_HANDLE, _MAST_SCOUT_SESSION_ID, _MAST_STARTUP_NONCE
+    _MAST_TERMINATED_EMITTED = False
+    _MAST_SCOUT_SESSION_ID = "scout_term_win_ok"
+    _MAST_STARTUP_NONCE = "nonce_term_win_ok"
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    with patch("service.terminate_and_verify_windows_job", return_value=True):
+        with patch("service.close_windows_job_handle", return_value=True):
+            res = confirm_and_emit_job_terminated(
+                out_stream=out_s,
+                h_job=999999,
+                scout_id="scout_term_win_ok",
+                nonce="nonce_term_win_ok"
+            )
+            assert res is True
+            msg = json.loads(out_s.getvalue().strip())
+            assert msg["type"] == "MAST_JOB_TERMINATED"
+            assert msg["scoutId"] == "scout_term_win_ok"
+            assert msg["nonce"] == "nonce_term_win_ok"
+            assert msg["status"] == "CONFIRMED"
+
+
+def test_job_termination_confirmation_windows_failure_suppresses_message() -> None:
+    """Gate 4 correction: Failed Windows Job verification must NEVER emit MAST_JOB_TERMINATED."""
+    global _MAST_TERMINATED_EMITTED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    with patch("service.terminate_and_verify_windows_job", return_value=False):
+        res = confirm_and_emit_job_terminated(
+            out_stream=out_s,
+            h_job=999999,
+            scout_id="scout_term_win_fail",
+            nonce="nonce_term_win_fail"
+        )
+        assert res is False
+        assert out_s.getvalue() == "", "Must not emit anything when verification fails"
+
+
+def test_job_termination_confirmation_posix_success() -> None:
+    """Gate 4 correction: Verified POSIX process group termination emits MAST_JOB_TERMINATED."""
+    global _MAST_TERMINATED_EMITTED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    from scraper.maps_scraper import MapsScraper
+    MapsScraper._last_browser_pgid = 54321
+
+    with patch("sys.platform", "linux"):
+        with patch("service.terminate_and_verify_posix_group", return_value=True):
+            res = confirm_and_emit_job_terminated(
+                out_stream=out_s,
+                scout_id="scout_term_posix_ok",
+                nonce="nonce_term_posix_ok"
+            )
+            assert res is True
+            msg = json.loads(out_s.getvalue().strip())
+            assert msg["type"] == "MAST_JOB_TERMINATED"
+            assert msg["scoutId"] == "scout_term_posix_ok"
+            assert msg["nonce"] == "nonce_term_posix_ok"
+            assert msg["status"] == "CONFIRMED"
+    MapsScraper._last_browser_pgid = None
+
+
+def test_job_termination_confirmation_posix_failure_suppresses_message() -> None:
+    """Gate 4 correction: Failed POSIX verification must NEVER emit MAST_JOB_TERMINATED."""
+    global _MAST_TERMINATED_EMITTED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    from scraper.maps_scraper import MapsScraper
+    MapsScraper._last_browser_pgid = 54321
+
+    with patch("sys.platform", "linux"):
+        with patch("service.terminate_and_verify_posix_group", return_value=False):
+            res = confirm_and_emit_job_terminated(
+                out_stream=out_s,
+                scout_id="scout_term_posix_fail",
+                nonce="nonce_term_posix_fail"
+            )
+            assert res is False
+            assert out_s.getvalue() == "", "Must not emit when POSIX verification fails"
+    MapsScraper._last_browser_pgid = None
+
+
+def test_job_termination_confirmation_empty_ownership_success() -> None:
+    """Gate 4 correction: Coordinated session where no browser was launched verifies empty ownership."""
+    global _MAST_TERMINATED_EMITTED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    from scraper.maps_scraper import MapsScraper
+    MapsScraper._last_browser_pgid = None
+    MapsScraper._last_driver_pid = None
+    MapsScraper._browser_spawn_attempted = False
+    MapsScraper._driver_startup_failed = False
+    MapsScraper._spawn_failed = False
+
+    with patch("sys.platform", "linux"):
+        res = confirm_and_emit_job_terminated(
+            out_stream=out_s,
+            scout_id="scout_no_browser",
+            nonce="nonce_no_browser",
+            posix_identity_confirmed=True,
+        )
+        assert res is True
+        msg = json.loads(out_s.getvalue().strip())
+        assert msg["type"] == "MAST_JOB_TERMINATED"
+        assert msg["scoutId"] == "scout_no_browser"
+        assert msg["nonce"] == "nonce_no_browser"
+
+
+def test_missing_ownership_identity_cannot_produce_confirmation() -> None:
+    """Issue 2: Missing ownership identity cannot produce successful confirmation."""
+    global _MAST_TERMINATED_EMITTED, _MAST_JOB_HANDLE, _MAST_POSIX_BOOTSTRAP_CONFIRMED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    from scraper.maps_scraper import MapsScraper
+
+    # Case A: Windows with missing Job Object handle
+    with patch("sys.platform", "win32"):
+        res = confirm_and_emit_job_terminated(
+            out_stream=out_s,
+            h_job=None,
+            scout_id="scout_no_ident_win",
+            nonce="nonce_no_ident_win",
+        )
+        assert res is False
+        assert out_s.getvalue() == ""
+
+    # Case B: POSIX with uninitialized identity and empty browser state
+    MapsScraper._last_browser_pgid = None
+    MapsScraper._last_driver_pid = None
+    MapsScraper._browser_spawn_attempted = False
+    MapsScraper._driver_startup_failed = False
+    MapsScraper._spawn_failed = False
+    _MAST_POSIX_BOOTSTRAP_CONFIRMED = False
+
+    with patch("sys.platform", "linux"):
+        res = confirm_and_emit_job_terminated(
+            out_stream=out_s,
+            scout_id="scout_no_ident_posix",
+            nonce="nonce_no_ident_posix",
+            posix_identity_confirmed=False,
+        )
+        assert res is False
+        assert out_s.getvalue() == ""
+
+
+def test_initialized_empty_ownership_context_confirms_termination() -> None:
+    """Issue 2: Genuinely initialized but empty ownership context can produce confirmation."""
+    global _MAST_TERMINATED_EMITTED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    from scraper.maps_scraper import MapsScraper
+
+    # Case A: Windows with initialized Job Object where ActiveProcesses == 0
+    with patch("sys.platform", "win32"):
+        with patch("service.terminate_and_verify_windows_job", return_value=True):
+            with patch("service.close_windows_job_handle", return_value=True):
+                res = confirm_and_emit_job_terminated(
+                    out_stream=out_s,
+                    h_job=123456,
+                    scout_id="scout_empty_win",
+                    nonce="nonce_empty_win",
+                )
+                assert res is True
+                msg = json.loads(out_s.getvalue().strip())
+                assert msg["type"] == "MAST_JOB_TERMINATED"
+                assert msg["scoutId"] == "scout_empty_win"
+                assert msg["nonce"] == "nonce_empty_win"
+                assert msg["status"] == "CONFIRMED"
+
+    # Case B: POSIX with confirmed bootstrap identity and empty browser state
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+    MapsScraper._last_browser_pgid = None
+    MapsScraper._last_driver_pid = None
+    MapsScraper._browser_spawn_attempted = False
+    MapsScraper._driver_startup_failed = False
+    MapsScraper._spawn_failed = False
+
+    with patch("sys.platform", "linux"):
+        res = confirm_and_emit_job_terminated(
+            out_stream=out_s,
+            scout_id="scout_empty_posix",
+            nonce="nonce_empty_posix",
+            posix_identity_confirmed=True,
+        )
+        assert res is True
+        msg = json.loads(out_s.getvalue().strip())
+        assert msg["type"] == "MAST_JOB_TERMINATED"
+        assert msg["scoutId"] == "scout_empty_posix"
+        assert msg["nonce"] == "nonce_empty_posix"
+        assert msg["status"] == "CONFIRMED"
+
+
+def test_uncoordinated_legacy_does_not_falsely_report_termination() -> None:
+    """Issue 2: Uncoordinated legacy session does not falsely report coordinated termination."""
+    global _MAST_TERMINATED_EMITTED, _MAST_SCOUT_SESSION_ID, _MAST_STARTUP_NONCE
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    old_scout = _MAST_SCOUT_SESSION_ID
+    old_nonce = _MAST_STARTUP_NONCE
+    _MAST_SCOUT_SESSION_ID = None
+    _MAST_STARTUP_NONCE = None
+
+    old_env_scout = os.environ.pop("MAST_SCOUT_SESSION_ID", None)
+    old_env_nonce = os.environ.pop("MAST_STARTUP_NONCE", None)
+    old_env_req = os.environ.pop("MAST_COORDINATION_REQUIRED", None)
+
+    try:
+        res = confirm_and_emit_job_terminated(
+            out_stream=out_s,
+            scout_id=None,
+            nonce=None,
+        )
+        assert res is False
+        assert out_s.getvalue() == "", "Uncoordinated legacy must never emit MAST_JOB_TERMINATED"
+    finally:
+        _MAST_SCOUT_SESSION_ID = old_scout
+        _MAST_STARTUP_NONCE = old_nonce
+        if old_env_scout:
+            os.environ["MAST_SCOUT_SESSION_ID"] = old_env_scout
+        if old_env_nonce:
+            os.environ["MAST_STARTUP_NONCE"] = old_env_nonce
+        if old_env_req:
+            os.environ["MAST_COORDINATION_REQUIRED"] = old_env_req
+
+
+def test_windows_job_empty_pid_list_with_assigned_processes_fails_confirmation() -> None:
+    """Item 1: NumberOfProcessIdsInList == 0 but NumberOfAssignedProcesses > 0 must fail verification."""
+    global _MAST_TERMINATED_EMITTED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    with patch("sys.platform", "win32"):
+        with patch("service.query_job_process_id_list", return_value=(2, 0, [])):
+            with patch("service.kernel32.QueryInformationJobObject", return_value=True):
+                # query_job_active_processes must report >= 2, never 0
+                active = query_job_active_processes(123456)
+                assert active == 2, "Must report NumberOfAssignedProcesses count, not 0"
+
+                res = confirm_and_emit_job_terminated(
+                    out_stream=out_s,
+                    h_job=123456,
+                    scout_id="scout_assigned_non_zero",
+                    nonce="nonce_assigned_non_zero",
+                )
+                assert res is False, "Confirmation must fail when NumberOfAssignedProcesses > 0"
+                assert out_s.getvalue() == "", "Must suppress MAST_JOB_TERMINATED"
+
+
+def test_posix_empty_ownership_failed_driver_startup_fails_confirmation() -> None:
+    """Item 3: Failed driver startup must leave empty ownership unconfirmed."""
+    global _MAST_TERMINATED_EMITTED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    from scraper.maps_scraper import MapsScraper
+
+    MapsScraper._last_browser_pgid = None
+    MapsScraper._last_driver_pid = None
+    MapsScraper._browser_spawn_attempted = False
+    MapsScraper._driver_startup_failed = True
+    MapsScraper._spawn_failed = False
+
+    with patch("sys.platform", "linux"):
+        res = confirm_and_emit_job_terminated(
+            out_stream=out_s,
+            scout_id="scout_failed_startup",
+            nonce="nonce_failed_startup",
+            posix_identity_confirmed=True,
+        )
+        assert res is False, "Must fail confirmation when driver startup failed"
+        assert out_s.getvalue() == "", "Must suppress MAST_JOB_TERMINATED"
+
+    MapsScraper._driver_startup_failed = False
+
+
+def test_posix_empty_ownership_spawn_attempted_fails_confirmation() -> None:
+    """Item 3: If browser spawn was attempted, empty ownership branch cannot be used."""
+    global _MAST_TERMINATED_EMITTED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    from scraper.maps_scraper import MapsScraper
+
+    MapsScraper._last_browser_pgid = None
+    MapsScraper._last_driver_pid = None
+    MapsScraper._browser_spawn_attempted = True
+    MapsScraper._driver_startup_failed = False
+    MapsScraper._spawn_failed = False
+
+    with patch("sys.platform", "linux"):
+        res = confirm_and_emit_job_terminated(
+            out_stream=out_s,
+            scout_id="scout_spawn_attempted",
+            nonce="nonce_spawn_attempted",
+            posix_identity_confirmed=True,
+        )
+        assert res is False, "Must fail confirmation when spawn was attempted"
+        assert out_s.getvalue() == "", "Must suppress MAST_JOB_TERMINATED"
+
+    MapsScraper._browser_spawn_attempted = False
+
+
+def test_posix_invalid_identity_values_fails_confirmation() -> None:
+    """Item 3: Invalid / corrupted identity values (e.g. <= 0 or non-int) must fail confirmation."""
+    global _MAST_TERMINATED_EMITTED
+    from unittest.mock import patch
+    from scraper.maps_scraper import MapsScraper
+
+    for invalid_val in [0, -1, -999, "invalid", False]:
+        _MAST_TERMINATED_EMITTED = False
+        out_s = io.StringIO()
+
+        MapsScraper._last_browser_pgid = invalid_val
+        MapsScraper._last_driver_pid = None
+        MapsScraper._browser_spawn_attempted = False
+        MapsScraper._driver_startup_failed = False
+        MapsScraper._spawn_failed = False
+
+        with patch("sys.platform", "linux"):
+            res = confirm_and_emit_job_terminated(
+                out_stream=out_s,
+                scout_id=f"scout_invalid_{invalid_val}",
+                nonce="nonce_invalid",
+                posix_identity_confirmed=True,
+            )
+            assert res is False, f"Must reject invalid identity value {invalid_val!r}"
+            assert out_s.getvalue() == ""
+
+    MapsScraper._last_browser_pgid = None
+
+
+def test_job_termination_confirmation_idempotency() -> None:
+    """Gate 4 correction: Calling confirm_and_emit_job_terminated multiple times emits at most once."""
+    global _MAST_TERMINATED_EMITTED
+    _MAST_TERMINATED_EMITTED = False
+    out_s = io.StringIO()
+
+    from unittest.mock import patch
+    with patch("service.terminate_and_verify_windows_job", return_value=True):
+        with patch("service.close_windows_job_handle", return_value=True):
+            res1 = confirm_and_emit_job_terminated(
+                out_stream=out_s,
+                h_job=999999,
+                scout_id="scout_idem",
+                nonce="nonce_idem"
+            )
+            assert res1 is True
+            first_output = out_s.getvalue()
+            assert "MAST_JOB_TERMINATED" in first_output
+
+            # Second invocation
+            res2 = confirm_and_emit_job_terminated(
+                out_stream=out_s,
+                h_job=999999,
+                scout_id="scout_idem",
+                nonce="nonce_idem"
+            )
+            assert res2 is True
+            assert out_s.getvalue() == first_output, "Must not emit duplicate message"
+
+
+def run_all_process_ownership_tests() -> int:
+    """Run all Phase 7.3 Gate 3 process ownership and browser identity tests."""
+    tests = [
+        test_windows_job_object_constants_and_types,
+        test_windows_job_object_creation_and_config,
+        test_windows_job_object_browser_assignment,
+        test_windows_job_object_readiness_and_ack_success,
+        test_windows_job_object_readiness_and_ack_rejections,
+        test_windows_job_object_duplicate_rejection,
+        test_browser_reuse_rejection_lifecycle,
+        test_windows_job_termination_zero_active_processes,
+        test_windows_job_termination_never_reports_premature_success,
+        test_posix_pgid_retention_and_immutability,
+        test_posix_termination_existing_process_group,
+        test_posix_termination_esrch_confirmation,
+        test_posix_termination_eperm_rejected,
+        test_posix_termination_unexpected_os_error_rejected,
+        test_posix_termination_timeout_with_group_alive,
+        test_genuine_posix_subprocess_process_group_termination,
+        test_posix_termination_sigkill_fallback,
+        test_posix_termination_never_confuses_signal_with_confirmation,
+        test_termination_failure_and_timeout_behavior,
+        test_repeated_termination_idempotency,
+        test_live_maps_scraper_browser_lifecycle,
+        test_windows_real_playwright_driver_job_lifecycle,
+        test_driver_pid_discovery_failure_aborts_browser_launch,
+        test_driver_assignment_failure_aborts_browser_launch,
+        test_unassigned_driver_active_count_aborts_browser_launch,
+        test_job_termination_timeout_reported_unconfirmed,
+        test_clean_exit_without_kill_signal_handle_cleanup,
+        test_windows_job_object_incomplete_coordination_rejected,
+        test_coordinated_scout_without_job_handle_rejected,
+        test_post_launch_containment_failure_fails_closed,
+        test_chromium_launch_failure_cleanup,
+        test_job_handle_propagation_without_module_duplication,
+        test_post_launch_containment_timeout_leaves_unconfirmed,
+        test_chromium_launch_failure_timeout_leaves_unconfirmed,
+        test_posix_chromium_launch_failure_verification_failure_leaves_unconfirmed,
+        test_windows_uncoordinated_launch_failure_without_job_object,
+        test_driver_assignment_failure_driver_still_alive_leaves_unconfirmed,
+        test_driver_assignment_failure_driver_terminated_confirmed,
+        test_empty_job_object_with_alive_unassigned_driver_never_confirms,
+        test_missing_process_identity_leaves_termination_unconfirmed,
+        test_normal_cleanup_requires_os_verification,
+        test_job_termination_confirmation_windows_success,
+        test_job_termination_confirmation_windows_failure_suppresses_message,
+        test_job_termination_confirmation_posix_success,
+        test_job_termination_confirmation_posix_failure_suppresses_message,
+        test_job_termination_confirmation_empty_ownership_success,
+        test_missing_ownership_identity_cannot_produce_confirmation,
+        test_initialized_empty_ownership_context_confirms_termination,
+        test_windows_job_empty_pid_list_with_assigned_processes_fails_confirmation,
+        test_posix_empty_ownership_failed_driver_startup_fails_confirmation,
+        test_posix_empty_ownership_spawn_attempted_fails_confirmation,
+        test_posix_invalid_identity_values_fails_confirmation,
+        test_uncoordinated_legacy_does_not_falsely_report_termination,
+        test_job_termination_confirmation_idempotency,
+    ]
+    passed = 0
+    failed = 0
+    sys.stderr.write(f"[test-process-ownership] Running {len(tests)} focused tests...\n")
+    for t in tests:
+        try:
+            t()
+            passed += 1
+            sys.stderr.write(f"  OK: {t.__name__}\n")
+        except Exception as exc:
+            failed += 1
+            sys.stderr.write(f"  FAIL: {t.__name__} -> {exc}\n")
+    sys.stderr.write(f"[test-process-ownership] Results: {passed} passed, {failed} failed out of {len(tests)}\n")
+    return 0 if failed == 0 else 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) <= 1 or sys.argv[1] != "test-process-ownership":
+        bootstrap_process_ownership()
+
     if len(sys.argv) > 1 and sys.argv[1] == "verify":
         asyncio.run(_run_with_graceful_shutdown(_verify_cli))
     elif len(sys.argv) > 1 and sys.argv[1] == "enrich":
@@ -3540,6 +6061,9 @@ if __name__ == "__main__":
         asyncio.run(_run_with_graceful_shutdown(_feedback_cli))
     elif len(sys.argv) > 1 and sys.argv[1] == "street_inventory":
         asyncio.run(_run_with_graceful_shutdown(_street_inventory_cli))
+    elif len(sys.argv) > 1 and sys.argv[1] == "test-process-ownership":
+        exit_code = run_all_process_ownership_tests()
+        sys.exit(exit_code)
     else:
         asyncio.run(_run_with_graceful_shutdown(_main_cli))
 

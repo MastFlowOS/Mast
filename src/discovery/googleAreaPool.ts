@@ -632,7 +632,7 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     failedAreaCount: perArea.filter((p) => p.outcome.failed).length,
     partialAreaCount: perArea.filter((p) => p.outcome.failed && (p.outcome.accepted ?? 0) > 0).length,
     crashCount: perArea.filter((p) => /crash|target closed|oom/i.test(p.outcome.error ?? "")).length,
-    yieldedSlotsForFairness: stoppedReason === "zero_yield_limit",
+    yieldedSlotsForFairness: (stoppedReason as PoolStopReason) === "zero_yield_limit",
     consecutiveZeroYieldCount,
   };
 }

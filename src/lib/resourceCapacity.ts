@@ -814,9 +814,9 @@ let sharedReservedPidUnits = 0;
  * `__testing_sharedPidAdmission.setPidCapacity(...)`.
  */
 let pidCapacityOverrideForTesting: PidCapacitySnapshot | undefined;
-let memoryCapacityOverrideForTesting: { limitMb: number | null; currentMb: number | null } | undefined;
+let memoryCapacityOverrideForTesting: { limitMb: number | null; currentMb: number | null; reserveMb?: number; perBrowserMb?: number } | undefined;
 
-export function setMemoryCapacityForTesting(override: { limitMb: number | null; currentMb: number | null } | undefined): void {
+export function setMemoryCapacityForTesting(override: { limitMb: number | null; currentMb: number | null; reserveMb?: number; perBrowserMb?: number } | undefined): void {
   memoryCapacityOverrideForTesting = override;
 }
 

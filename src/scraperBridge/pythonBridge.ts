@@ -2427,7 +2427,7 @@ export async function* runEngineQuery(
       watchdogReason: "WATCHDOG_TIMEOUT",
       schedulerReason: "WATCHDOG_TIMEOUT",
       delivered: 0,
-      requested: params.limit ?? 0,
+      requested: params.deliver_target ?? params.max_results ?? 0,
       exhausted: false,
     });
     return;

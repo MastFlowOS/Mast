@@ -58,6 +58,47 @@ def get_memory_usage() -> float:
         pass
     return 0.0
 
+def get_process_tree_memory_usage() -> float:
+    """Get resident set size (RSS) memory of the current process and its children in MB.
+    On Linux cgroups, reads /sys/fs/cgroup/memory.current directly if available.
+    """
+    try:
+        if os.path.exists("/sys/fs/cgroup/memory.current"):
+            with open("/sys/fs/cgroup/memory.current", "r") as f:
+                val = f.read().strip()
+                if val.isdigit():
+                    return int(val) / 1024.0 / 1024.0
+    except Exception:
+        pass
+
+    try:
+        import psutil
+        proc = psutil.Process(os.getpid())
+        total_rss = proc.memory_info().rss
+        for child in proc.children(recursive=True):
+            try:
+                total_rss += child.memory_info().rss
+            except Exception:
+                pass
+        return total_rss / 1024.0 / 1024.0
+    except Exception:
+        pass
+
+    return get_memory_usage()
+
+def get_cgroup_memory_max_str() -> str:
+    """Read container memory limit (/sys/fs/cgroup/memory.max) as string, or 'unlimited/unknown'."""
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    v = f.read().strip()
+                    if v:
+                        return v
+        except Exception:
+            pass
+    return "unlimited/unknown"
+
 def track_browser_created():
     global active_browsers
     active_browsers += 1

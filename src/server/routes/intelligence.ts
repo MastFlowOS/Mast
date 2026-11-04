@@ -825,17 +825,8 @@ intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (re
 
     const { overview, generatedAt } = await singleFlight(`discover_overview:${userId}:${periodKey}`, async () => {
 
-      const nextOverview = await generateJSON<{
-        label: string;
-        headline: string;
-        body: string;
-        confidence: "High Confidence" | "Recommended" | "Worth Testing" | "Watch Closely";
-        tone: "brand" | "warning" | "success" | "neutral";
-        patterns: string[];
-        promisingOpportunities: string[];
-        nextSteps: string[];
-        action?: { label: string; href: string };
-      }>({
+      let nextOverview: any;
+      const generateOptions = {
         system:
           "You are MAST's Opportunity Intelligence assistant, generating an executive overview of a freelancer's " +
           "discovered leads and opportunities. You are provided with real, already-aggregated lead statistics and top " +
@@ -852,12 +843,19 @@ intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (re
           '"nextSteps": string[] (1-3 practical next actions grounded in the data), ' +
           '"action": {"label": string, "href": string} (optional action link, default label "View Saved Leads", href "#leads-table")}',
         user: JSON.stringify(boundedPayload),
-        feature: "discover_overview",
+        feature: "discover_overview" as const,
         contextPrepMs: Date.now() - routeStart,
         maxTokens: 1200,
         timeoutMs: 28000,
-        tier: "pro",
-      });
+        tier: "pro" as const,
+      };
+
+      try {
+        nextOverview = await generateJSON<any>(generateOptions);
+      } catch (firstErr) {
+        console.warn("[intelligence] discover-overview first attempt failed, retrying once", firstErr);
+        nextOverview = await generateJSON<any>(generateOptions);
+      }
 
       nextOverview.label = asString(nextOverview.label, "AI Overview").replace(/[—–]/g, " - ");
       nextOverview.headline = asString(nextOverview.headline, "Here is an executive overview of your discovered opportunities.").replace(/[—–]/g, " - ");
@@ -893,7 +891,50 @@ intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (re
 
     res.json({ ...overview, generatedAt, cached: false });
   } catch (err) {
-    next(err);
+    // Phase 7: On provider failure / abort, return cached or degraded response instead of 500
+    try {
+      console.warn("[intelligence] discover-overview generation failed, falling back to cached/degraded response", err);
+      const userId = req.user?.id;
+      if (userId) {
+        const { data: cached } = await supabaseAdmin
+          .from("ai_intelligence")
+          .select("content, generated_at")
+          .eq("user_id", userId)
+          .eq("kind", "discover_overview")
+          .order("generated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (cached?.content) {
+          return res.json({
+            ...(cached.content as object),
+            generatedAt: cached.generated_at,
+            cached: true,
+            degraded: true,
+            fallbackReason: "provider_failure",
+          });
+        }
+      }
+
+      const degradedOverview = {
+        label: "Discovery Overview",
+        headline: "Here is an executive overview of your discovered opportunities.",
+        body: "Review your top leads and begin outreach with verified high-opportunity prospects.",
+        confidence: "Recommended",
+        tone: "neutral",
+        patterns: ["Pipeline active"],
+        promisingOpportunities: [],
+        nextSteps: ["Review discovered leads in your pipeline", "Initiate outreach to verified contacts"],
+        action: { label: "View Leads", href: "#leads-table" },
+        generatedAt: new Date().toISOString(),
+        cached: false,
+        degraded: true,
+        fallbackReason: "provider_failure",
+      };
+      return res.json(degradedOverview);
+    } catch (fallbackErr) {
+      console.error("[intelligence] discover-overview fallback failed", fallbackErr);
+      next(err);
+    }
   }
 });
 

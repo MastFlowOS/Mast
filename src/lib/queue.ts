@@ -121,6 +121,7 @@ export async function getBoss(): Promise<PgBoss> {
 
   const boss = new PgBoss({
     connectionString: env.DATABASE_URL,
+    max: Math.max(1, Number(process.env.PG_BOSS_MAX_CONNECTIONS || 4) || 4),
     // Retention/retry defaults are conservative; tune per queue in Phase 2
     // once real job durations from the scraper are known.
     retryLimit: 3,

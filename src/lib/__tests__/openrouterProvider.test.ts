@@ -876,3 +876,67 @@ test("generateJSON passes reasoning: { effort: 'low' } only for reasoning models
   }
 });
 
+test("generateJSON boosts max_tokens on retry after reasoning token exhaustion and enables low reasoning effort for nemotron", async () => {
+  const capturedPayloads: any[] = [];
+  let callIndex = 0;
+  const mockClient = {
+    chat: {
+      completions: {
+        create: async (params: any) => {
+          capturedPayloads.push(params);
+          callIndex += 1;
+          if (callIndex === 1) {
+            return {
+              model: "nvidia/nemotron-3-super-120b-a12b:free",
+              choices: [
+                {
+                  finish_reason: "length",
+                  message: {
+                    role: "assistant",
+                    content: null,
+                    reasoning: "Spent all 1200 tokens thinking about the market...",
+                  },
+                },
+              ],
+              usage: { prompt_tokens: 450, completion_tokens: 1200, total_tokens: 1650 },
+            };
+          }
+          return {
+            model: "google/gemma-4-26b-a4b-it:free",
+            choices: [
+              {
+                finish_reason: "stop",
+                message: {
+                  role: "assistant",
+                  content: '{"headline": "Recovered overview"}',
+                },
+              },
+            ],
+            usage: { prompt_tokens: 450, completion_tokens: 80, total_tokens: 530 },
+          };
+        },
+      },
+    },
+  } as any;
+
+  setAiClient(mockClient);
+  const origKey = env.OPENROUTER_API_KEY;
+  try {
+    (env as any).OPENROUTER_API_KEY = "sk-or-v1-test-key";
+    const result = await generateJSON<{ headline: string }>({
+      system: "system prompt",
+      user: "user prompt",
+      model: "nvidia/nemotron-3-super-120b-a12b:free",
+      maxTokens: 1200,
+      retryDelayMs: 1,
+    });
+    assert.equal(result.headline, "Recovered overview");
+    assert.equal(capturedPayloads.length, 2);
+    assert.equal(capturedPayloads[0].reasoning?.effort, "low");
+    assert.equal(capturedPayloads[0].max_tokens, 1200);
+    assert.equal(capturedPayloads[1].max_tokens, 2400);
+  } finally {
+    (env as any).OPENROUTER_API_KEY = origKey;
+    resetAiClient();
+  }
+});

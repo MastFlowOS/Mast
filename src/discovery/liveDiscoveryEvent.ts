@@ -141,6 +141,10 @@ export type DiscoveryLiveEvent = {
   /** Only on initialization_progress — preflight / inventory progress description. */
   message?: string;
   phase?: "initializing" | "completed" | "fallback" | "failed";
+
+  /** Phase 4: Honest failure accounting — carries degraded status and infra failure reason. */
+  degraded?: boolean;
+  degradedReason?: string;
 };
 
 let _seq = 0;
@@ -204,6 +208,7 @@ export function areaCompletedEvent(
   areaLabel: string | undefined,
   areaOutcome: DiscoveryLiveEvent["areaOutcome"],
   totals?: { deliveredCount: number; target: number },
+  degraded?: { isDegraded: boolean; reason?: string },
 ): DiscoveryLiveEvent {
   return {
     ...baseEvent(planId, "area_completed"),
@@ -212,6 +217,8 @@ export function areaCompletedEvent(
     areaOutcome,
     deliveredCount: totals?.deliveredCount,
     target: totals?.target,
+    degraded: degraded?.isDegraded,
+    degradedReason: degraded?.reason,
   };
 }
 

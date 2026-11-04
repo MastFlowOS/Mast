@@ -265,10 +265,36 @@ export type AreaAttemptResult = {
  * area from the pool wrapper (recordAreaOutcome) / once in aggregate
  * (recordTaskOutcome), per Worker Pools B Step 10.
  */
+function extractPlaceIdsFromRow(row: any, placeIds: Set<string>): void {
+  if (typeof row.place_id === "string" && row.place_id.trim()) {
+    for (const form of expandPlaceIdForms(row.place_id.trim())) {
+      placeIds.add(form);
+    }
+  }
+  const fingerprints = row.fingerprints as string[] | undefined;
+  if (Array.isArray(fingerprints)) {
+    for (const fp of fingerprints) {
+      if (typeof fp === "string") {
+        if (fp.startsWith("place:")) {
+          for (const form of expandPlaceIdForms(fp.slice("place:".length))) {
+            placeIds.add(form);
+          }
+        } else if (fp.startsWith("map:")) {
+          placeIds.add(fp.slice("map:".length).toLowerCase());
+        }
+      }
+    }
+  }
+}
+
 /**
  * Scoped lookup of existing Google Maps place IDs already owned/discovered
- * for this user in this city / country, allowing the scraper to skip known
+ * for this user and globally in this country, allowing the scraper to skip known
  * cards before clicking into them.
+ *
+ * NOTE: 'city' is not a dedicated column on the businesses table (which stores
+ * 'country_code' and 'region'), so country_code is honored on businesses while
+ * city filtering is omitted from the SQL query to safely prevent column errors.
  */
 export async function getKnownPlaceIdsForTask(
   db: any,
@@ -280,42 +306,86 @@ export async function getKnownPlaceIdsForTask(
   try {
     const placeIds = new Set<string>();
     const pageSize = 1000;
-    let from = 0;
-    while (true) {
-      const { data, error } = await db
-        .from("businesses")
-        .select("place_id, fingerprints, leads!inner(user_id)")
-        .eq("leads.user_id", userId)
-        .range(from, from + pageSize - 1);
-      if (error || !data || data.length === 0) {
-        if (error) console.warn("[discoveryPlanJob] businesses lookup error in getKnownPlaceIdsForTask (failing open):", error);
-        break;
-      }
-      for (const row of data) {
-        if (typeof row.place_id === "string" && row.place_id.trim()) {
-          for (const form of expandPlaceIdForms(row.place_id.trim())) {
-            placeIds.add(form);
-          }
+    const MAX_IDS = 10000;
+
+    // 1. User-scoped place IDs
+    try {
+      let from = 0;
+      while (placeIds.size < MAX_IDS) {
+        let query = db
+          .from("businesses")
+          .select("place_id, fingerprints, leads!inner(user_id)")
+          .eq("leads.user_id", userId);
+
+        if (countryCode && typeof query.eq === "function") {
+          query = query.eq("country_code", countryCode);
         }
-        const fingerprints = row.fingerprints as string[] | undefined;
-        if (Array.isArray(fingerprints)) {
-          for (const fp of fingerprints) {
-            if (typeof fp === "string") {
-              if (fp.startsWith("place:")) {
-                for (const form of expandPlaceIdForms(fp.slice("place:".length))) {
-                  placeIds.add(form);
-                }
-              } else if (fp.startsWith("map:")) {
-                placeIds.add(fp.slice("map:".length).toLowerCase());
-              }
-            }
-          }
+
+        let data: any;
+        let error: any;
+        if (typeof query.range === "function") {
+          const res = await query.range(from, from + pageSize - 1);
+          data = res.data;
+          error = res.error;
+        } else {
+          break;
         }
+
+        if (error || !data || data.length === 0) {
+          if (error) console.warn("[discoveryPlanJob] businesses user lookup error in getKnownPlaceIdsForTask (failing open):", error);
+          break;
+        }
+
+        for (const row of data) {
+          extractPlaceIdsFromRow(row, placeIds);
+          if (placeIds.size >= MAX_IDS) break;
+        }
+
+        if (data.length < pageSize) break;
+        from += pageSize;
       }
-      if (data.length < pageSize) break;
-      from += pageSize;
-      if (from >= 10000) break; // Bounded safety cap
+    } catch (userErr) {
+      console.warn("[discoveryPlanJob] error in user known place IDs lookup (failing open):", userErr);
     }
+
+    // 2. Global business place IDs (cross-user dedup before click)
+    try {
+      let globalFrom = 0;
+      while (placeIds.size < MAX_IDS) {
+        let query = db
+          .from("businesses")
+          .select("place_id, fingerprints");
+        if (countryCode && typeof query.eq === "function") {
+          query = query.eq("country_code", countryCode);
+        }
+
+        let data: any;
+        let error: any;
+        if (typeof query.range === "function") {
+          const res = await query.range(globalFrom, globalFrom + pageSize - 1);
+          data = res.data;
+          error = res.error;
+        } else {
+          break;
+        }
+
+        if (error || !data || data.length === 0) {
+          if (error) console.warn("[discoveryPlanJob] businesses global lookup error in getKnownPlaceIdsForTask (failing open):", error);
+          break;
+        }
+
+        for (const row of data) {
+          extractPlaceIdsFromRow(row, placeIds);
+          if (placeIds.size >= MAX_IDS) break;
+        }
+
+        if (data.length < pageSize) break;
+        globalFrom += pageSize;
+      }
+    } catch (globalErr) {
+      console.warn("[discoveryPlanJob] error in global known place IDs lookup (failing open):", globalErr);
+    }
+
     return Array.from(placeIds);
   } catch (err) {
     console.warn("[discoveryPlanJob] failed to load known place IDs for pre-click skip (failing open)", err);
@@ -337,6 +407,7 @@ async function runOneAreaAttempt(
     startedAt: number;
     budgetCoordinator?: CandidateBudgetCoordinator;
     nextAttemptId?: () => string | number;
+    cachedKnownPlaceIds?: string[];
   },
   area: string | undefined,
   street?: string,
@@ -349,6 +420,7 @@ async function runOneAreaAttempt(
    */
   scoutId?: number,
   attemptId?: string | number,
+  remainingAreaBudgetMs?: number,
 ): Promise<AreaAttemptResult> {
   const {
     db,
@@ -423,7 +495,9 @@ async function runOneAreaAttempt(
     street,
   };
   const searchQueries = generator.generate(searchTarget);
-  const knownPlaceIds = await getKnownPlaceIdsForTask(db, task.user_id, task.country_code, task.city);
+  const knownPlaceIds = ctx.cachedKnownPlaceIds
+    ? [...ctx.cachedKnownPlaceIds]
+    : await getKnownPlaceIdsForTask(db, task.user_id, task.country_code, task.city);
   const pythonTimer = profiler.timer("python_subprocess_total");
 
   // Outer loop: one iteration per SearchQuery (most providers produce one;
@@ -456,6 +530,7 @@ async function runOneAreaAttempt(
         // enrichment can still satisfy them. Omitted when empty.
         requiredChannels: engineRequiredChannels(payload.request.channels),
         knownPlaceIds,
+        remainingAreaBudgetMs,
       },
       areaAbort.signal,
       (done) => {
@@ -684,9 +759,6 @@ async function runOneAreaAttempt(
           }
 
           funnel.recordEligibleForEnrichment(pid);
-          const tEnqueue = profiler.timer("enqueue_enrich");
-          await enqueueBusinessProcessing(businessId, "enrich");
-          tEnqueue.end();
 
           let deliverable = lead;
           const needsEnrichmentToDecide =
@@ -722,7 +794,8 @@ async function runOneAreaAttempt(
               ...(enriched?.seo !== undefined ? { seo: enriched.seo as Record<string, unknown> } : {}),
               ...(enriched?.blog !== undefined ? { blog: enriched.blog as Record<string, unknown> } : {}),
             };
-            const satisfied = Boolean(enriched) && channelsSatisfied(deliverable, requestedChannels);
+            const channelMatchMode = (payload.request?.channelMatch as "all" | "any_of_priority") ?? "all";
+            const satisfied = Boolean(enriched) && channelsSatisfied(deliverable, requestedChannels, channelMatchMode);
             traceLog(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
             traceLog(`CHANNELS_SATISFIED=${satisfied}`);
             if (!satisfied) {
@@ -732,9 +805,14 @@ async function runOneAreaAttempt(
               traceLog(`PIPELINE ${pid}`);
               traceLog(`EXITED HERE`);
               traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},missing=${JSON.stringify(missingNow)},reachable=${websiteReachable},homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false},row=${JSON.stringify(enriched)}`);
-              console.log(`[candidate-audit][${pid}] stage=post_enrichment_channel_gate decision=rejected missing=${JSON.stringify(missingNow)} reachable=${websiteReachable} homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false}`);
+              console.log(`[candidate-audit][${pid}] stage=post_enrichment_channel_gate decision=rejected requested=${JSON.stringify(requestedChannels)} missing=${JSON.stringify(missingNow)} reachable=${websiteReachable} homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false}`);
               publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
               return;
+            }
+
+            if (channelMatchMode === "any_of_priority") {
+              const missingNow = requestedChannels.filter((c) => !channelsSatisfied(deliverable, [c]));
+              (deliverable as any).missing_channels = missingNow;
             }
 
             const sources: ContactSource[] = [];
@@ -744,6 +822,11 @@ async function runOneAreaAttempt(
             if (sources.length === 0) sources.push(lead.maps_link ? "google_maps" : "website_homepage");
             funnel.recordContactExtracted(sources, pid);
           }
+
+          // Phase 7: Candidate passed channel gate — enqueue background processing for scoring and full enrichment
+          const tEnqueue = profiler.timer("enqueue_enrich");
+          await enqueueBusinessProcessing(businessId, "enrich");
+          tEnqueue.end();
 
           if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
             skipped += 1;
@@ -958,6 +1041,8 @@ export function publishAreaPoolLifecycleEvent(
     }
     publishDiscoveryLiveEvent(areaStartedEvent(planId, scoutId ?? 0, label(event.area)));
   } else if (event.type === "worker_finished") {
+    const isDegraded = Boolean(event.outcome.failed);
+    const degradedReason = event.outcome.error;
     publishDiscoveryLiveEvent(
       areaCompletedEvent(planId, scoutId ?? 0, label(event.area), {
         discovered: event.outcome.discovered,
@@ -967,6 +1052,9 @@ export function publishAreaPoolLifecycleEvent(
         exhausted: event.outcome.exhausted,
         failed: event.outcome.failed,
         error: event.outcome.error,
+      }, undefined, {
+        isDegraded,
+        reason: degradedReason,
       }),
     );
   }
@@ -1379,6 +1467,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
     const funnel = getCandidateFunnelTracker(payload.planId);
     const taskAttempt = (task.attempts ?? 0) + 1;
+    const cachedKnownPlaceIds = await getKnownPlaceIdsForTask(db, task.user_id, task.country_code, task.city);
     const attemptCtx = {
       db,
       task,
@@ -1392,6 +1481,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       startedAt,
       budgetCoordinator,
       nextAttemptId: () => funnel.nextAttemptId(taskAttempt),
+      cachedKnownPlaceIds,
     };
 
     // terminalReason declared above
@@ -1431,6 +1521,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         totalCuratedAreas: streetCount,
         availableCapacity: browserSlotPool.available(),
         requestedQuantity: effectiveRequested,
+        maxCitySlotHoldingMs: 180_000,
+        maxConsecutiveZeroYieldAreas: 3,
         isBudgetExhausted: () => budgetCoordinator.isExhausted(),
         // This calls the Phase 2B RPC once per worker iteration. The pool's
         // `usedAreas` guard merely protects this invocation from a malformed
@@ -1446,7 +1538,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           streetClaims.set(claim.stateId, claim);
           return claim.stateId;
         },
-        runArea: async (claimId, slotIndex) => {
+        runArea: async (claimId, slotIndex, retryCount = 0, remainingAreaBudgetMs) => {
           const claim = streetClaims.get(claimId);
           if (!claim) {
             return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, exhausted: false, failed: true, error: "missing street claim" };
@@ -1490,7 +1582,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
           try {
             const searchStreet = (!lowValue.isLowValue && collapsedStreet) ? collapsedStreet : claim.streetName;
-            const attempt = await runOneAreaAttempt(attemptCtx, undefined, searchStreet, slotIndex + 1);
+            const attempt = await runOneAreaAttempt(attemptCtx, undefined, searchStreet, slotIndex + 1, undefined, remainingAreaBudgetMs);
             pythonPerfData = attempt.pythonPerfData ?? pythonPerfData;
             bridgeTimings = attempt.bridgeTimings ?? bridgeTimings;
             progressMarks = attempt.progressMarks ?? progressMarks;
@@ -1656,6 +1748,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         totalCuratedAreas: curatedAreas.length,
         availableCapacity: browserSlotPool.available(),
         requestedQuantity: effectiveRequested,
+        maxCitySlotHoldingMs: 180_000,
+        maxConsecutiveZeroYieldAreas: 3,
         isBudgetExhausted: () => budgetCoordinator.isExhausted(),
         claimNextArea: async (usedAreas) => {
           // Reuse the EXISTING claim_discovery_area() atomic claim — never
@@ -1675,25 +1769,26 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           if (!claimed || usedAreas.has(claimed)) return undefined;
           return claimed;
         },
-        runArea: async (area, slotIndex) => {
+        runArea: async (area, slotIndex, retryCount = 0, remainingAreaBudgetMs) => {
           // Step 5: a brand-new runOneAreaAttempt() call per area means a
           // brand-new provider.search() stream — a fresh service.py /
           // MapsScraper / Playwright / Chromium process per area, never a
           // shared or reused browser.
-          const attempt = await runOneAreaAttempt(attemptCtx, area, undefined, slotIndex + 1);
+          const attempt = await runOneAreaAttempt(attemptCtx, area, undefined, slotIndex + 1, undefined, remainingAreaBudgetMs);
 
           // Step 10: exactly one terminal accounting update per claimed
-          // area, recorded immediately here (independent of any sibling
-          // area worker's outcome or of the task-level aggregate below).
-          await recordAreaOutcome(db, {
-            niche: task.niche,
-            countryCode: task.country_code,
-            city: task.city,
-            area,
-            source: sourceId,
-            discovered: attempt.discovered,
-            accepted: attempt.accepted,
-          });
+          // area, recorded when terminal (successful or retries exhausted).
+          if (!attempt.shouldRetryTask || retryCount >= 2) {
+            await recordAreaOutcome(db, {
+              niche: task.niche,
+              countryCode: task.country_code,
+              city: task.city,
+              area,
+              source: sourceId,
+              discovered: attempt.discovered,
+              accepted: attempt.accepted,
+            });
+          }
 
           // Last-writer-wins for the single structured per-task timing log
           // line below — combining multiple Python subprocesses' perf
@@ -1715,7 +1810,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           // rather than inventing a second retry mechanism).
           if (attempt.shouldRetryTask) {
             console.warn(
-              `[google-area-worker] task=${payload.taskId} area=${area} terminal_reason=${attempt.cityReason} ` +
+              `[google-area-worker] task=${payload.taskId} area=${area} retry=${retryCount} terminal_reason=${attempt.cityReason} ` +
                 `— treated as a failed area for pool bookkeeping (siblings unaffected)`,
             );
           }
@@ -1729,6 +1824,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
             skippedCandidates: attempt.skipped,
             exhausted: attempt.exhausted,
             failed: attempt.shouldRetryTask,
+            error: attempt.terminalReason ?? attempt.cityReason,
+            failureReason: attempt.cityReason,
           };
         },
         // PHASE 42A — ROOT-CAUSE FIX: see poolExpandJob.ts's matching
@@ -1813,15 +1910,32 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       const { data: finalPlanAfterPool } = await db.from("discovery_plans")
         .select("delivered_count, requested_count, status").eq("id", payload.planId).maybeSingle();
       terminalReason = terminalReasonForPlan(finalPlanAfterPool);
+      const poolFailedAreas = poolResult.failedAreaCount ?? poolResult.perArea.filter((p) => p.outcome.failed).length;
+      const poolPartialAreas = poolResult.partialAreaCount ?? poolResult.perArea.filter((p) => p.outcome.failed && (p.outcome.accepted ?? 0) > 0).length;
+      const poolCrashes = poolResult.crashCount ?? poolResult.perArea.filter((p) => /crash|target closed|oom/i.test(p.outcome.error ?? "")).length;
       cityReason = terminalReason
-        ?? (budgetCoordinator.isExhausted() ? "BUDGET_EXHAUSTED" : (cityReason || (poolResult.perArea.length === 0 ? "CITY_NO_PROGRESS" : "CITY_EXHAUSTED")));
+        ?? (budgetCoordinator.isExhausted()
+          ? "BUDGET_EXHAUSTED"
+          : (poolResult.perArea.length === 0
+            ? "CITY_NO_PROGRESS"
+            : cityTransitionFor(
+                { candidatesFound: discovered, acceptedLeads: accepted },
+                poolResult.perArea.every((p) => p.outcome.exhausted),
+                engineTerminationReason,
+                {
+                  failedAreaCount: poolFailedAreas,
+                  totalAreas: poolResult.perArea.length,
+                  crashCount: poolCrashes,
+                },
+              )));
     }
 
     const completionReason: string = cityReason;
+    const isDeferredForFairness = Boolean(poolResult?.yieldedSlotsForFairness);
+    const isDeferredNoSlot = Boolean(poolResult?.deferredNoSlot && poolResult.perArea.length === 0);
     if (
       !terminalReason &&
-      poolResult?.deferredNoSlot &&
-      poolResult.perArea.length === 0 &&
+      (isDeferredNoSlot || isDeferredForFairness) &&
       discovered === 0 &&
       accepted === 0
     ) {
@@ -1837,14 +1951,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         noSlotDeferralsByTask.set(String(task.id), decision.nextDeferrals);
         const preservedAttempts = Math.max(0, currentAttempt - 1);
         console.info(
-          `[discovery-city] CITY_DEFERRED_NO_SLOT plan=${payload.planId} task=${payload.taskId} ` +
+          `[discovery-city] ${isDeferredForFairness ? "CITY_YIELDED_SLOTS_FAIRNESS" : "CITY_DEFERRED_NO_SLOT"} plan=${payload.planId} task=${payload.taskId} ` +
             `city=${task.city} deferral=${decision.nextDeferrals} attempts_preserved=${preservedAttempts}`,
         );
         await db.from("discovery_tasks").update({
           status: "queued",
           attempts: preservedAttempts,
-          error: `${decision.reason}:${decision.nextDeferrals}`,
-          termination_reason: decision.reason,
+          error: `${isDeferredForFairness ? "CITY_YIELDED_SLOTS_FAIRNESS" : decision.reason}:${decision.nextDeferrals}`,
+          termination_reason: isDeferredForFairness ? "CITY_DEFERRED_NO_SLOT" : decision.reason,
           last_heartbeat_at: null,
         }).eq("id", task.id);
 
@@ -1879,8 +1993,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         return;
       }
     }
+    const poolFailedAreas = poolResult?.failedAreaCount ?? (poolResult?.perArea ? poolResult.perArea.filter((p) => p.outcome.failed).length : 0);
+    const poolPartialAreas = poolResult?.partialAreaCount ?? (poolResult?.perArea ? poolResult.perArea.filter((p) => p.outcome.failed && (p.outcome.accepted ?? 0) > 0).length : 0);
+    const poolCrashes = poolResult?.crashCount ?? (poolResult?.perArea ? poolResult.perArea.filter((p) => /crash|target closed|oom/i.test(p.outcome.error ?? "")).length : 0);
+    const poolRetries = poolResult?.retryCount ?? (currentAttempt - 1);
+    const isDegraded = poolFailedAreas > 0 || poolCrashes > 0;
+
     noSlotDeferralsByTask.delete(String(task.id));
-    console.info(`[discovery-city] CITY_FINISHED city=${task.city} country=${task.country_code} elapsed_ms=${Date.now() - startedAt} candidates_found=${discovered} accepted=${accepted} rejected=${rejected} failed=${failed} skipped=${skipped} reason=${cityReason}`);
+    console.info(`[discovery-city] CITY_FINISHED city=${task.city} country=${task.country_code} elapsed_ms=${Date.now() - startedAt} candidates_found=${discovered} accepted=${accepted} rejected=${rejected} failed=${failed} skipped=${skipped} degraded=${isDegraded} failed_area_count=${poolFailedAreas} partial_area_count=${poolPartialAreas} crash_count=${poolCrashes} retry_count=${poolRetries} reason=${cityReason}`);
 
     // PHASE 3C-1 STEP 2 — ONE structured timing line per task (not
     // per-anchor — see this phase's own "do NOT spam logs with per-anchor
@@ -1898,8 +2018,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     console.info(
       `[discovery-timing] plan=${payload.planId} task=${payload.taskId} city=${task.city} ` +
         `country=${task.country_code} niche=${task.niche} provider=${task.source ?? "google_maps"} ` +
-        `attempt=${currentAttempt} retry_count=${currentAttempt - 1} candidates_seen=${discovered} ` +
+        `attempt=${currentAttempt} retry_count=${poolRetries} candidates_seen=${discovered} ` +
         `candidates_yielded=${discovered - rejected} accepted=${accepted} terminal_reason=${cityReason} ` +
+        `failed_area_count=${poolFailedAreas} crash_count=${poolCrashes} ` +
         `task_start_ms=0 python_spawn_ms=${bridgeTimings?.spawnMs?.toFixed(0) ?? "n/a"} ` +
         `first_engine_output_ms=${bridgeTimings?.firstLineMs?.toFixed(0) ?? "n/a"} ` +
         `maps_navigation_start_ms=${marks["discovery:maps_navigation_start"]?.toFixed(0) ?? "n/a"} ` +
@@ -1927,11 +2048,13 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       rejectedByChannelOrQuality: rejected,
       failed,
       skipped,
+      failedAreaCount: poolFailedAreas,
     });
     console.info(
       `[discovery-summary] plan=${payload.planId} task=${payload.taskId} firstLeadMs=${firstLeadMs} ` +
         `totalDurationMs=${totalDurationMs} newForUser=${accepted} rawCandidates=${discovered} ` +
         `duplicates=${duplicates} rejected=${rejected} failedCandidates=${failed} skippedCandidates=${skipped} failed=${poolResult?.allFailed ? 1 : 0} ` +
+        `degraded=${isDegraded} failed_area_count=${poolFailedAreas} partial_area_count=${poolPartialAreas} crash_count=${poolCrashes} retry_count=${poolRetries} ` +
         `discrepancy=${accounting.discrepancy} validAccounting=${accounting.valid} ` +
         `areasUsed=${poolResult?.areasProcessed.length ?? (claimedArea ? 1 : 0)} ` +
         `maxConcurrentAreas=${poolResult?.poolSize ?? 1} maxConcurrentBrowsers=${getBrowserSlotPool().capacity}`,

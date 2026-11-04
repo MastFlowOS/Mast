@@ -83,7 +83,7 @@ export class GoogleMapsProvider implements DiscoveryProvider {
       buildGoogleMapsEngineParams(query, target, options),
       signal,
       onDone,
-      { requestId: options.requestId, areaLabel: target.street ?? target.area },
+      { requestId: options.requestId, areaLabel: target.street ?? target.area, remainingAreaBudgetMs: options.remainingAreaBudgetMs },
     );
   }
 }

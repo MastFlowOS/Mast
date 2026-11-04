@@ -61,6 +61,21 @@ class _MockElement:
             await self.click()
         return None
 
+    async def query_selector(self, selector: str):
+        if hasattr(self, "_card_anchors"):
+            if "a[href*='/maps/place/']" in selector:
+                return self._card_anchors[0] if self._card_anchors else None
+            return None
+        if "a[href*='/maps/place/']" in selector:
+            return self
+        return None
+
+    async def query_selector_all(self, selector: str):
+        cards = getattr(self, "_card_anchors", [])
+        if "a[href*='/maps/place/']" in selector:
+            return list(cards)
+        return []
+
 
 class _MockPage:
     """Configurable mock Playwright Page for panel detection scenarios."""
@@ -536,3 +551,328 @@ async def test_unrelated_headings_and_non_scrollable_containers_rejected():
     valid, evidence = await ms._validate_panel_candidate(_MockPage(), cand, selector="div.m6QErb", strict=True)
     assert valid is False
     assert "not scrollable" in evidence
+
+
+# ==============================================================================
+# NOVEMBER 4 FAILURE REGRESSION TESTS (RESULTS HEADER & SPLIT-PANE EXTRACTION)
+# ==============================================================================
+
+
+@pytest.mark.asyncio
+async def test_excluded_results_heading_never_causes_name_conflict():
+    """When only an excluded search-sidebar heading ('Results', 'Search results', 'النتائج')
+    is present in the DOM:
+    1. _is_detail_pane_open returns False.
+    2. _read_panel_identity_snapshot returns open=False and name='' (never 'results').
+    3. _evaluate_panel_identity returns waiting_for_detail_panel (or waiting_for_panel_name
+       when on a /maps/place/ URL), NEVER name_conflict(..., actual='results').
+    """
+    feed = _MockElement(attrs={"role": "feed"})
+    for excluded_label in ("Results", "Search results", "النتائج", "Results for Coffee Shop in Silver Lake"):
+        results_h1 = _MockElement(text=excluded_label)
+        page_search = _MockPage(
+            url="https://www.google.com/maps/search/Coffee+Shop+in+Silver+Lake",
+            feed=feed,
+            headings=[results_h1],
+            back_buttons={},
+        )
+        assert await _is_detail_pane_open(page_search, feed) is False
+
+        snap_search = await _read_panel_identity_snapshot(page_search, feed)
+        assert snap_search["open"] is False
+        assert snap_search["name"] == "", f"Excluded header {excluded_label!r} must not populate snap['name']"
+        assert snap_search["raw_name"] == "", f"Excluded header {excluded_label!r} must not populate snap['raw_name']"
+
+        ok_search, reason_search = _evaluate_panel_identity(
+            snap_search,
+            card_href="https://www.google.com/maps/place/Couplet+Coffee/@34.08,-118.27,17z/data=!3m1!4b1!4m6!3m5!1s0x80c2c7095be7f62b:0x883b3662ca2168e0",
+            place_key="0x80c2c7095be7f62b:0x883b3662ca2168e0",
+            card_signals={"name": "Couplet Coffee"},
+            pre_click_snapshot=None,
+            last_verified_panel=None,
+        )
+        assert ok_search is False
+        assert reason_search == "waiting_for_detail_panel"
+        assert "name_conflict" not in reason_search
+
+        # Even if a synthetic snapshot passes name='results', _evaluate_panel_identity must not emit name_conflict
+        ok_synth, reason_synth = _evaluate_panel_identity(
+            {"open": False, "name": "results", "raw_name": "Results", "address": "", "place_id": "", "url": page_search.url},
+            card_href="https://www.google.com/maps/place/Couplet+Coffee/@34.08,-118.27,17z/data=!3m1!4b1!4m6!3m5!1s0x80c2c7095be7f62b:0x883b3662ca2168e0",
+            place_key="0x80c2c7095be7f62b:0x883b3662ca2168e0",
+            card_signals={"name": "Couplet Coffee"},
+            pre_click_snapshot=None,
+            last_verified_panel=None,
+        )
+        assert ok_synth is False
+        assert reason_synth == "waiting_for_detail_panel"
+
+
+@pytest.mark.asyncio
+async def test_dual_h1_split_pane_results_and_business_name():
+    """When both the search sidebar '<h1>Results</h1>' and the detail panel
+    '<h1 class=\"DUwDvf\">Couplet Coffee</h1>' exist simultaneously in split-pane DOM:
+    1. _read_panel_identity_snapshot skips 'Results' and captures 'Couplet Coffee'.
+    2. _evaluate_panel_identity returns (True, 'verified').
+    3. _try_selectors(page, _PLACE_NAME_SELECTORS) skips 'Results' and returns 'Couplet Coffee'.
+    4. _PLACE_EXTRACT_JS uses document.querySelectorAll and firstNonExcludedName to skip 'Results'.
+    """
+    feed = _MockElement(attrs={"role": "feed"})
+    results_h1 = _MockElement(text="Results")
+    place_h1 = _MockElement(text="Couplet Coffee")
+
+    page = _MockPage(
+        url="https://www.google.com/maps/place/Couplet+Coffee/@34.08,-118.27,17z/data=!3m1!4b1!4m6!3m5!1s0x80c2c7095be7f62b:0x883b3662ca2168e0",
+        feed=feed,
+        headings=[results_h1, place_h1],
+    )
+
+    assert await _is_detail_pane_open(page, feed) is True
+    snap = await _read_panel_identity_snapshot(page, feed)
+    assert snap["open"] is True
+    assert snap["raw_name"] == "Couplet Coffee"
+    assert snap["name"] == "couplet coffee"
+
+    ok, reason = _evaluate_panel_identity(
+        snap,
+        card_href=page.url,
+        place_key="0x80c2c7095be7f62b:0x883b3662ca2168e0",
+        card_signals={"name": "Couplet Coffee"},
+        pre_click_snapshot=None,
+        last_verified_panel=None,
+    )
+    assert ok is True
+    assert reason == "verified"
+
+    extracted_name = await ms._try_selectors(page, ms._PLACE_NAME_SELECTORS)
+    assert extracted_name == "Couplet Coffee"
+
+    # Verify _PLACE_EXTRACT_JS uses document.querySelectorAll and firstNonExcludedName for sel.name
+    assert "firstNonExcludedName(sel.name)" in ms._PLACE_EXTRACT_JS
+    assert "document.querySelectorAll(s)" in ms._PLACE_EXTRACT_JS
+    assert 'EXCLUDED_HEADERS = new Set(["results", "search results", "النتائج"])' in ms._PLACE_EXTRACT_JS
+
+
+@pytest.mark.asyncio
+async def test_place_panel_wait_polls_past_excluded_results_header_and_verifies_delayed_panel():
+    """When wait_for_selector(_PLACE_NAME_SELECTOR_COMBINED, state='attached') initially
+    returns the pre-existing '<h1>Results</h1>' sidebar header, place_panel_wait must not
+    short-circuit as resolved; it must poll until the real detail heading mounts (or trigger
+    the fallback DOM click) and verify the business."""
+    feed = _MockElement(attrs={"role": "feed"})
+    results_h1 = _MockElement(text="Results")
+    place_h1 = _MockElement(text="Couplet Coffee")
+    place_url = "https://www.google.com/maps/place/Couplet+Coffee/@34.08,-118.27,17z/data=!3m1!4b1!4m6!3m5!1s0x80c2c7095be7f62b:0x883b3662ca2168e0"
+
+    dom_click_count = 0
+
+    class _SplitPaneDelayedPage(_MockPage):
+        def __init__(self):
+            super().__init__(
+                url="https://www.google.com/maps/search/Coffee+Shop+in+Silver+Lake",
+                feed=feed,
+                headings=[results_h1],
+                back_buttons={},
+            )
+
+        async def wait_for_selector(self, selector: str, **_kwargs):
+            # Immediately returns the attached `<h1>Results</h1>` sidebar header
+            return results_h1
+
+        async def goto(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def title(self) -> str:
+            return "Coffee Shop in Silver Lake - Google Maps"
+
+        async def eval_on_selector_all(self, _selector: str, _script: str) -> int:
+            return 1
+
+        async def close(self) -> None:
+            pass
+
+    page = _SplitPaneDelayedPage()
+
+    class _CardAnchor(_MockElement):
+        async def scroll_into_view_if_needed(self, timeout: int = 2000) -> None:
+            pass
+
+        async def evaluate(self, script: str, *_args):
+            nonlocal dom_click_count
+            if "el.click()" in script:
+                dom_click_count += 1
+                # Fallback DOM click opens the split-pane detail panel
+                page.headings = [results_h1, place_h1]
+                page.url = place_url
+                return None
+            return await super().evaluate(script, *_args)
+
+    card_anchor = _CardAnchor(
+        text="Couplet Coffee",
+        attrs={"href": place_url, "aria-label": "Couplet Coffee"},
+    )
+    feed._card_anchors = [card_anchor]
+
+    # Simulate _human_click where coordinate click fails to open the detail panel
+    async def _noop_human_click(_page, _el):
+        pass
+
+    from utils.runtime import ProxyManager, RunStats
+
+    orig_new_ctx = ms._new_stealth_context
+    orig_resolve_panel = ms._resolve_results_panel
+    orig_human_click = ms._human_click
+    orig_wait_settle = ms._wait_for_place_settle
+    orig_extract = ms._extract_place_data
+    orig_return = ms._return_to_results
+    orig_scroll = ms._human_scroll
+
+    class _Ctx:
+        async def new_page(self):
+            return page
+        async def close(self):
+            pass
+
+    try:
+        ms._new_stealth_context = lambda *_a, **_k: asyncio.sleep(0, result=_Ctx())
+        ms._resolve_results_panel = lambda *_a, **_k: asyncio.sleep(0, result=("div[role='feed']", feed))
+        ms._human_click = _noop_human_click
+        ms._wait_for_place_settle = lambda *_a, **_k: asyncio.sleep(0)
+        ms._extract_place_data = lambda *_a, **_k: asyncio.sleep(
+            0,
+            result=ms.RawPlace(name="Couplet Coffee", address="4168 Beverly Blvd, Los Angeles, CA"),
+        )
+        ms._return_to_results = lambda *_a, **_k: asyncio.sleep(0, result=True)
+        ms._human_scroll = lambda *_a, **_k: asyncio.sleep(0)
+
+        profiler = PerfProfiler()
+        scraper = ms.MapsScraper(
+            ScraperConfig(headless=True, place_timeout_ms=1000, max_crash_retries=0, scroll_max_rounds=1),
+            ProxyManager(),
+            RunStats(),
+            profiler=profiler,
+        )
+        scraper._browser = object()
+        scraper._limiter.acquire = lambda *_a, **_k: asyncio.sleep(0)
+
+        yielded = [p async for p in scraper.search(query="Coffee Shop", city="Los Angeles", max_results=1)]
+        assert len(yielded) == 1
+        assert yielded[0].name == "Couplet Coffee"
+        assert dom_click_count >= 1, "Fallback DOM click must fire when coordinate click leaves only 'Results' header"
+        assert profiler.counter("place_panel_wait_resolved") == 1
+    finally:
+        ms._new_stealth_context = orig_new_ctx
+        ms._resolve_results_panel = orig_resolve_panel
+        ms._human_click = orig_human_click
+        ms._wait_for_place_settle = orig_wait_settle
+        ms._extract_place_data = orig_extract
+        ms._return_to_results = orig_return
+        ms._human_scroll = orig_scroll
+
+@pytest.mark.asyncio
+async def test_unopened_detail_panel_with_results_header_routes_to_waiting_for_detail_panel():
+    """When only '<h1>Results</h1>' is present and a card genuinely fails to open a detail
+    panel, it must be classified as 'waiting_for_detail_panel' (not 'name_conflict'),
+    abandoned after max_unopened_panel_retries_per_card without triggering area-wide
+    stale_panel_search_nav_recovery, and allow the next card to succeed."""
+    feed = _MockElement(attrs={"role": "feed"})
+    results_h1 = _MockElement(text="Results")
+    good_h1 = _MockElement(text="Good Neighbor Coffee")
+    bad_url = "https://www.google.com/maps/place/Broken+Card/@34.08,-118.27,17z/data=!3m1!4b1!4m6!3m5!1s0x80c2c7:0xbad1"
+    good_url = "https://www.google.com/maps/place/Good+Neighbor+Coffee/@34.08,-118.27,17z/data=!3m1!4b1!4m6!3m5!1s0x80c2c7:0xgood2"
+
+    class _UnopenedThenGoodPage(_MockPage):
+        def __init__(self):
+            super().__init__(
+                url="https://www.google.com/maps/search/Coffee+Shop",
+                feed=feed,
+                headings=[results_h1],
+                back_buttons={},
+            )
+
+        async def wait_for_selector(self, selector: str, **_kwargs):
+            return results_h1
+
+        async def goto(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def title(self) -> str:
+            return "Coffee Shop - Google Maps"
+
+        async def eval_on_selector_all(self, _selector: str, _script: str) -> int:
+            return 2
+
+        async def close(self) -> None:
+            pass
+
+    page = _UnopenedThenGoodPage()
+
+    class _CardAnchor(_MockElement):
+        async def scroll_into_view_if_needed(self, timeout: int = 2000) -> None:
+            pass
+
+    bad_card = _CardAnchor(text="Broken Card", attrs={"href": bad_url, "aria-label": "Broken Card"})
+    good_card = _CardAnchor(text="Good Neighbor Coffee", attrs={"href": good_url, "aria-label": "Good Neighbor Coffee"})
+    feed._card_anchors = [bad_card, good_card]
+
+    async def _selective_click(_page, el):
+        href = await el.get_attribute("href") or ""
+        if "Good+Neighbor+Coffee" in href:
+            page.headings = [results_h1, good_h1]
+            page.url = good_url
+        else:
+            page.headings = [results_h1]
+            page.url = "https://www.google.com/maps/search/Coffee+Shop"
+
+    from utils.runtime import ProxyManager, RunStats
+
+    orig_new_ctx = ms._new_stealth_context
+    orig_resolve_panel = ms._resolve_results_panel
+    orig_human_click = ms._human_click
+    orig_wait_settle = ms._wait_for_place_settle
+    orig_extract = ms._extract_place_data
+    orig_return = ms._return_to_results
+    orig_scroll = ms._human_scroll
+
+    class _Ctx:
+        async def new_page(self):
+            return page
+        async def close(self):
+            pass
+
+    try:
+        ms._new_stealth_context = lambda *_a, **_k: asyncio.sleep(0, result=_Ctx())
+        ms._resolve_results_panel = lambda *_a, **_k: asyncio.sleep(0, result=("div[role='feed']", feed))
+        ms._human_click = _selective_click
+        ms._wait_for_place_settle = lambda *_a, **_k: asyncio.sleep(0)
+        ms._extract_place_data = lambda *_a, **_k: asyncio.sleep(
+            0,
+            result=ms.RawPlace(name="Good Neighbor Coffee", address="100 Main St, Los Angeles, CA"),
+        )
+        ms._return_to_results = lambda *_a, **_k: asyncio.sleep(0, result=True)
+        ms._human_scroll = lambda *_a, **_k: asyncio.sleep(0)
+
+        profiler = PerfProfiler()
+        scraper = ms.MapsScraper(
+            ScraperConfig(headless=True, place_timeout_ms=100, max_crash_retries=0, scroll_max_rounds=1),
+            ProxyManager(),
+            RunStats(),
+            profiler=profiler,
+        )
+        scraper._browser = object()
+        scraper._limiter.acquire = lambda *_a, **_k: asyncio.sleep(0)
+
+        yielded = [p async for p in scraper.search(query="Coffee Shop", city="Los Angeles", max_results=1)]
+        assert len(yielded) == 1
+        assert yielded[0].name == "Good Neighbor Coffee"
+        assert profiler.counter("stale_panel_search_nav_recovery") == 0, (
+            "Unopened card with 'Results' header must not trigger stale_panel_search_nav_recovery"
+        )
+    finally:
+        ms._new_stealth_context = orig_new_ctx
+        ms._resolve_results_panel = orig_resolve_panel
+        ms._human_click = orig_human_click
+        ms._wait_for_place_settle = orig_wait_settle
+        ms._extract_place_data = orig_extract
+        ms._return_to_results = orig_return
+        ms._human_scroll = orig_scroll

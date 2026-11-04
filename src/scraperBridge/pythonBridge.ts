@@ -218,6 +218,8 @@ export type EngineRunOptions = {
   handshakeTimeoutMs?: number;
   /** Force coordination even if coordinator is not provided. */
   requireCoordination?: boolean;
+  /** Optional remaining area budget in ms to bound watchdog absolute ceiling. */
+  remainingAreaBudgetMs?: number;
 };
 
 /** PHASE 25 — one `"type":"progress"` stdout line, as delivered to `EngineRunOptions.onProgress`. */
@@ -905,6 +907,21 @@ export class StderrLineBuffer {
  * argument and result type differ.
  */
 export async function runEngineEnrichOneShot(params: EngineEnrichParams, signal?: AbortSignal): Promise<EngineEnrichResult> {
+  const hasInput = Boolean(
+    (params?.website && params.website.trim()) ||
+    (params?.instagram && params.instagram.trim()) ||
+    (params?.name && params.name.trim()) ||
+    (params?.phone && params.phone.trim()) ||
+    (params?.id && params.id.trim())
+  );
+  if (!hasInput) {
+    console.warn("[scraper-bridge:enrich] skipped empty enrich call (no input provided)");
+    return {
+      status: "empty_input",
+      enriched: false,
+      confidence: "none",
+    } as any;
+  }
   if (process.env.ENFORCE_LOCAL_ISOLATION === "true") {
     assertLocalEnrichmentUrl(params.website);
     if (params.instagram) {
@@ -1556,6 +1573,21 @@ process.once("exit", () => {
 });
 
 export async function runEngineEnrich(params: EngineEnrichParams, signal?: AbortSignal): Promise<EngineEnrichResult> {
+  const hasInput = Boolean(
+    (params?.website && params.website.trim()) ||
+    (params?.instagram && params.instagram.trim()) ||
+    (params?.name && params.name.trim()) ||
+    (params?.phone && params.phone.trim()) ||
+    (params?.id && params.id.trim())
+  );
+  if (!hasInput) {
+    console.warn("[scraper-bridge:enrich] skipped empty enrich call (no input provided)");
+    return {
+      status: "empty_input",
+      enriched: false,
+      confidence: "none",
+    } as any;
+  }
   if (process.env.ENFORCE_LOCAL_ISOLATION === "true") {
     assertLocalEnrichmentUrl(params.website);
     if (params.instagram) {
@@ -1845,6 +1877,93 @@ export type EngineBridgeTimings = {
 
 export type ScraperWatchdogState = "STARTUP" | "SCROLLING" | "CARD_ATTEMPT" | "REBUILDING" | "SEARCH_EXHAUSTED";
 
+export interface ScraperRetryBudget {
+  cardOperationTimeoutMs: number;
+  maxCardAttempts: number;
+  cardMarginMs: number;
+  returnToResultsTimeoutMs: number;
+  maxReturnToResultsRounds: number;
+  mapsTimeoutMs: number;
+  recoveryMarginMs: number;
+}
+
+export const DEFAULT_SCRAPER_RETRY_BUDGET: ScraperRetryBudget = {
+  cardOperationTimeoutMs: 45_000,
+  maxCardAttempts: 3,
+  cardMarginMs: 15_000,
+  returnToResultsTimeoutMs: 4_000,
+  maxReturnToResultsRounds: 3,
+  mapsTimeoutMs: 30_000,
+  recoveryMarginMs: 10_000,
+};
+
+export interface WatchdogBudgets {
+  startupDeadlineMs: number;
+  livenessTimeoutMs: number;
+  progressTimeoutMs: number;
+  cardAttemptDeadlineMs: number;
+  recoveryDeadlineMs: number;
+  finalizationDeadlineMs: number;
+  maxRebuilds: number;
+  absoluteCeilingMs: number;
+}
+
+export function resolveAreaAttemptCeilingMs(
+  remainingAreaBudgetMs?: number,
+  maxMs: number = env.SCRAPER_SUBPROCESS_MAX_MS,
+): number {
+  if (remainingAreaBudgetMs !== undefined) {
+    return Math.min(maxMs, Math.max(0, remainingAreaBudgetMs));
+  }
+  return maxMs;
+}
+
+export function computeWatchdogBudgets(
+  overrides?: Partial<WatchdogStateMachineOptions>,
+  budget: ScraperRetryBudget = DEFAULT_SCRAPER_RETRY_BUDGET,
+): WatchdogBudgets {
+  const minCardDeadline = budget.cardOperationTimeoutMs * budget.maxCardAttempts + budget.cardMarginMs;
+  const minRecoveryDeadline = budget.maxReturnToResultsRounds * budget.mapsTimeoutMs + budget.recoveryMarginMs;
+
+  const cardAttemptDeadlineMs = overrides?.cardAttemptDeadlineMs ?? minCardDeadline;
+  const recoveryDeadlineMs = overrides?.recoveryDeadlineMs ?? minRecoveryDeadline;
+  const progressTimeoutMs = overrides?.progressTimeoutMs ?? Math.max(90_000, cardAttemptDeadlineMs);
+
+  return {
+    startupDeadlineMs: overrides?.startupDeadlineMs ?? 45_000,
+    livenessTimeoutMs: overrides?.livenessTimeoutMs ?? 45_000,
+    progressTimeoutMs,
+    cardAttemptDeadlineMs,
+    recoveryDeadlineMs,
+    finalizationDeadlineMs: overrides?.finalizationDeadlineMs ?? 30_000,
+    maxRebuilds: overrides?.maxRebuilds ?? 2,
+    absoluteCeilingMs: overrides?.absoluteCeilingMs ?? 20 * 60 * 1000,
+  };
+}
+
+export function assertWatchdogBudgetsValid(
+  budgets: { cardAttemptDeadlineMs: number; recoveryDeadlineMs: number; progressTimeoutMs?: number },
+  budget: ScraperRetryBudget = DEFAULT_SCRAPER_RETRY_BUDGET,
+): void {
+  const minCardDeadline = budget.cardOperationTimeoutMs * budget.maxCardAttempts + budget.cardMarginMs;
+  if (budgets.cardAttemptDeadlineMs < minCardDeadline) {
+    throw new Error(
+      `Watchdog cardAttemptDeadlineMs (${budgets.cardAttemptDeadlineMs}ms) must be >= card timeout x attempts + margin (${budget.cardOperationTimeoutMs}ms x ${budget.maxCardAttempts} + ${budget.cardMarginMs}ms = ${minCardDeadline}ms)`,
+    );
+  }
+  const minRecoveryDeadline = budget.maxReturnToResultsRounds * budget.mapsTimeoutMs + budget.recoveryMarginMs;
+  if (budgets.recoveryDeadlineMs < minRecoveryDeadline) {
+    throw new Error(
+      `Watchdog recoveryDeadlineMs (${budgets.recoveryDeadlineMs}ms) must cover return-to-results rounds (${budget.maxReturnToResultsRounds} x ${budget.mapsTimeoutMs}ms + ${budget.recoveryMarginMs}ms = ${minRecoveryDeadline}ms)`,
+    );
+  }
+  if (budgets.progressTimeoutMs !== undefined && budgets.progressTimeoutMs < minCardDeadline) {
+    throw new Error(
+      `Watchdog progressTimeoutMs (${budgets.progressTimeoutMs}ms) must be >= card timeout x attempts + margin (${minCardDeadline}ms)`,
+    );
+  }
+}
+
 export type WatchdogStateMachineOptions = {
   startupDeadlineMs?: number;
   livenessTimeoutMs?: number;
@@ -1872,6 +1991,7 @@ export class WatchdogStateMachine {
   private readonly seenCardAttempts = new Set<string>();
   private readonly processedCardAttempts = new Set<string>();
   private rebuildCount = 0;
+  private activeRebuildAttempt: number | null = null;
   private timedOut = false;
   private timedOutReason: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT" | null = null;
 
@@ -1887,14 +2007,15 @@ export class WatchdogStateMachine {
   private readonly logPrefix: string;
 
   constructor(options: WatchdogStateMachineOptions) {
-    this.startupDeadlineMs = options.startupDeadlineMs ?? 45_000;
-    this.livenessTimeoutMs = options.livenessTimeoutMs ?? 45_000;
-    this.progressTimeoutMs = options.progressTimeoutMs ?? 90_000;
-    this.cardAttemptDeadlineMs = options.cardAttemptDeadlineMs ?? 60_000;
-    this.recoveryDeadlineMs = options.recoveryDeadlineMs ?? 70_000;
-    this.finalizationDeadlineMs = options.finalizationDeadlineMs ?? 30_000;
-    this.maxRebuilds = options.maxRebuilds ?? 2;
-    this.absoluteCeilingMs = options.absoluteCeilingMs ?? 20 * 60 * 1000;
+    const computed = computeWatchdogBudgets(options);
+    this.startupDeadlineMs = options.startupDeadlineMs ?? computed.startupDeadlineMs;
+    this.livenessTimeoutMs = options.livenessTimeoutMs ?? computed.livenessTimeoutMs;
+    this.progressTimeoutMs = options.progressTimeoutMs ?? computed.progressTimeoutMs;
+    this.cardAttemptDeadlineMs = options.cardAttemptDeadlineMs ?? computed.cardAttemptDeadlineMs;
+    this.recoveryDeadlineMs = options.recoveryDeadlineMs ?? computed.recoveryDeadlineMs;
+    this.finalizationDeadlineMs = options.finalizationDeadlineMs ?? computed.finalizationDeadlineMs;
+    this.maxRebuilds = options.maxRebuilds ?? computed.maxRebuilds;
+    this.absoluteCeilingMs = options.absoluteCeilingMs ?? computed.absoluteCeilingMs;
     this.onTimeout = options.onTimeout;
     this.logPrefix = options.logPrefix ?? "";
 
@@ -1985,6 +2106,7 @@ export class WatchdogStateMachine {
     }
     this.seenCardAttempts.add(attemptKey);
     this.state = "CARD_ATTEMPT";
+    this.activeRebuildAttempt = null;
     // Explicitly cancel active scrolling progress deadline
     this.cancelOperationTimer();
     this.operationTimer = setTimeout(() => {
@@ -2004,10 +2126,26 @@ export class WatchdogStateMachine {
     return true;
   }
 
-  onAttemptRebuilding(): boolean {
+  onAttemptRebuilding(targetAttempt?: number): boolean {
+    if (
+      this.state === "REBUILDING" &&
+      targetAttempt !== undefined &&
+      this.activeRebuildAttempt === targetAttempt
+    ) {
+      // Deduplicated: multiple events for the same crash/rebuild cycle (e.g.
+      // attempt_rebuilding + panel_failure_retry + retry attempt start) must not
+      // consume multiple rebuild slots from maxRebuilds.
+      this.cancelOperationTimer();
+      this.operationTimer = setTimeout(() => {
+        this.fire("DISCOVERY_PROGRESS_TIMEOUT", `recovery rebuild deadline (${this.recoveryDeadlineMs}ms) exceeded`);
+      }, this.recoveryDeadlineMs);
+      this.operationTimer.unref?.();
+      return true;
+    }
     if (this.rebuildCount < this.maxRebuilds) {
       this.rebuildCount += 1;
       this.state = "REBUILDING";
+      this.activeRebuildAttempt = targetAttempt ?? null;
       // Explicitly cancel card attempt deadline and replace with recovery deadline
       this.cancelOperationTimer();
       this.operationTimer = setTimeout(() => {
@@ -2028,6 +2166,7 @@ export class WatchdogStateMachine {
 
   onSearchExhausted() {
     this.state = "SEARCH_EXHAUSTED";
+    this.activeRebuildAttempt = null;
     this.cancelOperationTimer();
     this.operationTimer = setTimeout(() => {
       this.fire("DISCOVERY_PROGRESS_TIMEOUT", `finalization deadline (${this.finalizationDeadlineMs}ms) exceeded`);
@@ -2051,6 +2190,7 @@ export class WatchdogStateMachine {
 
   transitionToScrolling() {
     this.state = "SCROLLING";
+    this.activeRebuildAttempt = null;
     this.cancelOperationTimer();
     this.operationTimer = setTimeout(() => {
       this.fire("DISCOVERY_PROGRESS_TIMEOUT", `scrolling progress timeout (${this.progressTimeoutMs}ms)`);
@@ -2087,7 +2227,21 @@ export function dispatchWatchdogProgressEvent(
     const processedKey = String(parsed.item_id ?? "unknown");
     watchdog.onCardProcessed(processedKey);
   } else if (eventName === "attempt_rebuilding" || eventName === "panel_failure_retry") {
-    watchdog.onAttemptRebuilding();
+    const rawItem = String(parsed.item_id ?? "").trim();
+    let targetAttempt: number | undefined;
+    if (eventName === "panel_failure_retry") {
+      const colonIdx = rawItem.lastIndexOf(":");
+      const failedAttempt = colonIdx >= 0 ? Number(rawItem.slice(colonIdx + 1)) : Number(rawItem);
+      if (Number.isFinite(failedAttempt) && failedAttempt >= 1) {
+        targetAttempt = failedAttempt + 1;
+      }
+    } else if (rawItem.length > 0) {
+      const parsedAttempt = Number(rawItem);
+      if (Number.isFinite(parsedAttempt) && parsedAttempt >= 1) {
+        targetAttempt = Math.max(2, parsedAttempt);
+      }
+    }
+    watchdog.onAttemptRebuilding(targetAttempt);
   } else if (eventName === "candidate_discovered" || eventName === "candidate_duplicate_skipped") {
     watchdog.onCandidateDiscovered();
   } else if (eventName === "search_exhausted") {
@@ -2262,6 +2416,23 @@ export async function* runEngineQuery(
   onDone?: (info: EngineDoneInfo) => void,
   options: EngineRunOptions = {},
 ): AsyncGenerator<EngineLead> {
+  // Fail closed immediately if remainingAreaBudgetMs is 0 or negative
+  if (options.remainingAreaBudgetMs !== undefined && options.remainingAreaBudgetMs <= 0) {
+    onDone?.({
+      success: false,
+      targetReached: false,
+      failureReason: "WATCHDOG_TIMEOUT",
+      failureDetail: `remainingAreaBudgetMs is non-positive (${options.remainingAreaBudgetMs}ms)`,
+      terminationReason: "WATCHDOG_TIMEOUT",
+      watchdogReason: "WATCHDOG_TIMEOUT",
+      schedulerReason: "WATCHDOG_TIMEOUT",
+      delivered: 0,
+      requested: params.limit ?? 0,
+      exhausted: false,
+    });
+    return;
+  }
+
   const enginePath = resolveEnginePath();
 
   // Phase 2: spawn timing
@@ -2424,15 +2595,18 @@ export async function* runEngineQuery(
     void gracefulKillProcessTree(child, childClosed, env.SCRAPER_GRACEFUL_SHUTDOWN_MS, reason);
   };
 
-  const watchdog = new WatchdogStateMachine({
+  const watchdogBudgets = computeWatchdogBudgets({
     startupDeadlineMs: (env as any).SCRAPER_SUBPROCESS_STARTUP_MS ?? 45_000,
     livenessTimeoutMs: 45_000,
-    progressTimeoutMs: env.SCRAPER_SUBPROCESS_INACTIVITY_MS,
-    cardAttemptDeadlineMs: 60_000,
-    recoveryDeadlineMs: 70_000,
+    progressTimeoutMs: Math.max(env.SCRAPER_SUBPROCESS_INACTIVITY_MS, 150_000),
     finalizationDeadlineMs: Math.min(env.SCRAPER_SUBPROCESS_INACTIVITY_MS, 30_000),
     maxRebuilds: 2,
-    absoluteCeilingMs: env.SCRAPER_SUBPROCESS_MAX_MS,
+    absoluteCeilingMs: resolveAreaAttemptCeilingMs(options.remainingAreaBudgetMs, env.SCRAPER_SUBPROCESS_MAX_MS),
+  });
+  assertWatchdogBudgetsValid(watchdogBudgets);
+
+  const watchdog = new WatchdogStateMachine({
+    ...watchdogBudgets,
     logPrefix,
     onTimeout: (reason, detail) => {
       fireWatchdog(reason, detail);

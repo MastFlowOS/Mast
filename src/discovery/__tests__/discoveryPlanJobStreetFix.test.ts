@@ -47,6 +47,18 @@ describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
   });
 
   test("getKnownPlaceIdsForTask parses place: and map: fingerprints and deduplicates them", async () => {
+    const mockRows = [
+      { place_id: "ChIJdirect789", fingerprints: ["place:ChIJabc123", "map:0x123:0x456", "name:some_business"], address: "123 N Michigan Ave, Chicago, IL" },
+      { fingerprints: ["place:ChIJdef456", "place:ChIJabc123"], address: "456 S State St, Chicago, IL" },
+      { fingerprints: null },
+    ];
+    const makeQueryObj = () => ({
+      eq: (_col: string, _val: any) => makeQueryObj(),
+      range: async (from: number, _to: number) => ({
+        data: from === 0 ? mockRows : [],
+        error: null,
+      }),
+    });
     const mockDb = {
       from: (table: string) => {
         assert.equal(table, "businesses");
@@ -54,49 +66,36 @@ describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
           select: (fields: string) => {
             assert.ok(fields.includes("fingerprints"));
             assert.ok(fields.includes("place_id"));
-            return {
-              eq: (col1: string, val1: any) => ({
-                eq: (col2: string, val2: any) => ({
-                  limit: async (limitCount: number) => {
-                    assert.equal(limitCount, 500);
-                    return {
-                      data: [
-                        { place_id: "ChIJdirect789", fingerprints: ["place:ChIJabc123", "map:0x123:0x456", "name:some_business"], address: "123 N Michigan Ave, Chicago, IL" },
-                        { fingerprints: ["place:ChIJdef456", "place:ChIJabc123"], address: "456 S State St, Chicago, IL" },
-                        { fingerprints: null },
-                      ],
-                      error: null,
-                    };
-                  },
-                }),
-              }),
-            };
+            return makeQueryObj();
           },
         };
       },
     };
 
     const ids = await getKnownPlaceIdsForTask(mockDb, "user-1", "US", "Chicago");
-    assert.equal(ids.length, 4);
-    assert.ok(ids.includes("ChIJdirect789"));
-    assert.ok(ids.includes("ChIJabc123"));
-    assert.ok(ids.includes("0x123:0x456"));
-    assert.ok(ids.includes("ChIJdef456"));
+    const expected = [
+      "0x123:0x456",
+      "ChIJabc123",
+      "ChIJdef456",
+      "ChIJdirect789",
+      "chijabc123",
+      "chijdef456",
+      "chijdirect789",
+    ];
+    assert.deepStrictEqual(ids.slice().sort(), expected.slice().sort());
   });
 
   test("getKnownPlaceIdsForTask fails open on DB error", async () => {
+    const makeErrorQueryObj = () => ({
+      eq: () => makeErrorQueryObj(),
+      range: async () => ({
+        data: null,
+        error: new Error("DB connection timeout"),
+      }),
+    });
     const mockDb = {
       from: () => ({
-        select: () => ({
-          eq: () => ({
-            eq: () => ({
-              limit: async () => ({
-                data: null,
-                error: new Error("DB connection timeout"),
-              }),
-            }),
-          }),
-        }),
+        select: () => makeErrorQueryObj(),
       }),
     };
 

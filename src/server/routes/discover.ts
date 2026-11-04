@@ -38,7 +38,7 @@ const discoverLimiter = createRateLimiter({ windowMs: 60_000, max: 5 });
 // 20/min comfortably covers normal UI interaction.
 const cancelLimiter = createRateLimiter({ windowMs: 60_000, max: 20 });
 
-const DiscoverRequestSchema = z.object({
+export const DiscoverRequestSchema = z.object({
   quantity: z.number().int().positive(),
   region: z.string().min(1),
   // At least one niche is required — the engine must never fall back to a
@@ -51,6 +51,7 @@ const DiscoverRequestSchema = z.object({
       message: "At least one niche must be selected",
     }),
   channels: z.array(z.string()).default([]),
+  channelMatch: z.enum(["all", "any_of_priority"]).default("all"),
   /** Target currencies, if any — narrows which countries get searched per
    * region to ones where discovered businesses can realistically pay in
    * that currency. See src/lib/geo/regions.ts. */
@@ -261,6 +262,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
           region: region,
           niche: body.niche,
           channels: body.channels,
+          channelMatch: body.channelMatch,
           currencies: body.currencies,
           profession_slug: professionSlug,
           quantity,
@@ -303,6 +305,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
           region: region,
           niche: body.niche,
           channels: body.channels,
+          channelMatch: body.channelMatch,
           currencies: body.currencies,
           professionSlug,
           quantity,

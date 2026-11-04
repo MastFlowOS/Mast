@@ -52,6 +52,8 @@ export type DiscoverySearchOptions = {
    * for this user/scope, enabling pre-click skipping in Maps scraper.
    */
   knownPlaceIds?: string[];
+  /** Optional remaining area budget in ms to bound watchdog absolute ceiling. */
+  remainingAreaBudgetMs?: number;
 };
 
 export interface DiscoveryProvider {

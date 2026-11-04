@@ -102,6 +102,16 @@ function readIntFile(path: string): number | null {
   }
 }
 
+export function readRawCgroupFile(path: string): string | null {
+  try {
+    if (!fs.existsSync(path)) return null;
+    const content = fs.readFileSync(path, "utf8").trim();
+    return content.length > 0 ? content : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * TASK 1 — reads the real cgroup PID accounting for this container.
  * Tries cgroup v2's unified hierarchy first, falls back to cgroup v1's
@@ -294,6 +304,7 @@ export function computeSafeResourceCapacity(params: ComputeSafeResourceCapacityP
 
 export type ResourceCapacity = {
   pidCapacity: PidCapacitySnapshot;
+  cgroupMemoryMax?: string | null;
   cgroupMemoryLimitMb: number | null;
   /** PHASE 6B — cgroup memory.current at the moment this was measured (startup). */
   cgroupMemoryCurrentMb: number | null;
@@ -345,9 +356,15 @@ export function measureResourceCapacity(configuredCeiling: number): ResourceCapa
     manualCap: env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS,
   });
 
+  const cgroupMemoryMax =
+    readRawCgroupFile("/sys/fs/cgroup/memory.max") ??
+    readRawCgroupFile("/sys/fs/cgroup/memory/memory.limit_in_bytes") ??
+    (cgroupMemoryLimitMb !== null ? `${Math.round(cgroupMemoryLimitMb * 1024 * 1024)}` : null);
+
   console.log(
     `[resourceCapacity] cgroup=${pidCapacity.cgroupVersion} nodePid=${nodePid} nodeThreads=${nodeThreadCount ?? "unknown"} ` +
       `pidsMax=${pidCapacity.pidsMax ?? "unlimited/unknown"} pidsCurrent=${pidCapacity.pidsCurrent ?? "unknown"} ` +
+      `cgroupMemoryMax=${cgroupMemoryMax ?? "unknown"} ` +
       `cgroupMemLimitMb=${cgroupMemoryLimitMb ?? "unknown"} cgroupMemCurrentMb=${cgroupMemoryCurrentMb?.toFixed(1) ?? "unknown"} ` +
       `cgroupMemWorkerCeiling=${computed.cgroupMemoryWorkerCeiling ?? "unconstrained"} ` +
       `pidsPerAreaWorker=${env.PIDS_PER_AREA_WORKER} reservePids=${env.PIDS_RESERVE_BUDGET} ` +
@@ -358,6 +375,7 @@ export function measureResourceCapacity(configuredCeiling: number): ResourceCapa
 
   return {
     pidCapacity,
+    cgroupMemoryMax,
     cgroupMemoryLimitMb,
     cgroupMemoryCurrentMb,
     cgroupMemoryWorkerCeiling: computed.cgroupMemoryWorkerCeiling,
@@ -386,7 +404,7 @@ export function logStartupResourceTelemetry(capacity: ResourceCapacity, browserS
   console.log(
     `[resourceCapacity][startup] nodePid=${capacity.nodePid} nodeThreads=${capacity.nodeThreadCount ?? "unknown"} ` +
       `pidsMax=${capacity.pidCapacity.pidsMax ?? "unlimited/unknown"} pidsCurrent=${capacity.pidCapacity.pidsCurrent ?? "unknown"} ` +
-      `memoryMaxMb=${capacity.cgroupMemoryLimitMb?.toFixed(1) ?? "unknown"} memoryCurrentMb=${capacity.cgroupMemoryCurrentMb?.toFixed(1) ?? "unknown"} ` +
+      `cgroupMemoryMax=${capacity.cgroupMemoryMax ?? "unknown"} memoryMaxMb=${capacity.cgroupMemoryLimitMb?.toFixed(1) ?? "unknown"} memoryCurrentMb=${capacity.cgroupMemoryCurrentMb?.toFixed(1) ?? "unknown"} ` +
       `memoryWorkerCeiling=${capacity.cgroupMemoryWorkerCeiling ?? "unconstrained"} ` +
       `configuredAreaWorkerCeiling=${configuredAreaWorkers} browserSlots=${browserSlots} ` +
       `computedSafeResourceWorkers=${capacity.safeAreaWorkers} (basis=${capacity.pidCeilingBasis})`,
@@ -578,9 +596,15 @@ export function measureEnrichmentCapacity(configuredCeiling: number): Enrichment
     manualCap: env.ENRICHMENT_SAFE_RESOURCE_WORKERS,
   });
 
+  const cgroupMemoryMax =
+    readRawCgroupFile("/sys/fs/cgroup/memory.max") ??
+    readRawCgroupFile("/sys/fs/cgroup/memory/memory.limit_in_bytes") ??
+    (cgroupMemoryLimitMb !== null ? `${Math.round(cgroupMemoryLimitMb * 1024 * 1024)}` : null);
+
   console.log(
     `[resourceCapacity][enrichment] cgroup=${pidCapacity.cgroupVersion} ` +
       `pidsMax=${pidCapacity.pidsMax ?? "unlimited/unknown"} pidsCurrent=${pidCapacity.pidsCurrent ?? "unknown"} ` +
+      `cgroupMemoryMax=${cgroupMemoryMax ?? "unknown"} ` +
       `memoryMaxMb=${cgroupMemoryLimitMb ?? "unconstrained"} memoryCurrentMb=${cgroupMemoryCurrentMb?.toFixed(1) ?? "unconstrained"} ` +
       `memoryWorkerCeiling=${computed.cgroupMemoryWorkerCeiling ?? "unconstrained"} ` +
       `enrichmentPidsPerWorker=${env.ENRICHMENT_PIDS_PER_WORKER} reservePids=${env.PIDS_RESERVE_BUDGET} ` +
@@ -790,6 +814,11 @@ let sharedReservedPidUnits = 0;
  * `__testing_sharedPidAdmission.setPidCapacity(...)`.
  */
 let pidCapacityOverrideForTesting: PidCapacitySnapshot | undefined;
+let memoryCapacityOverrideForTesting: { limitMb: number | null; currentMb: number | null } | undefined;
+
+export function setMemoryCapacityForTesting(override: { limitMb: number | null; currentMb: number | null } | undefined): void {
+  memoryCapacityOverrideForTesting = override;
+}
 
 export function trySharedPidAdmission(pidsPerUnit: number, source: SharedPidAdmissionSource): SharedPidAdmissionOutcome {
   const requestedPids = Math.max(1, Math.floor(pidsPerUnit));
@@ -801,6 +830,36 @@ export function trySharedPidAdmission(pidsPerUnit: number, source: SharedPidAdmi
       `pidsMax=${pidCapacity.pidsMax ?? "unlimited/unknown"} pidsCurrent=${pidCapacity.pidsCurrent ?? "unknown"} ` +
       `reservePids=${reservePids} reservedSharedPidUnits=${sharedReservedPidUnits}`,
   );
+
+  const memLimitMb = memoryCapacityOverrideForTesting != null
+    ? memoryCapacityOverrideForTesting.limitMb
+    : readCgroupMemoryLimitMb();
+  const memCurrentMb = memoryCapacityOverrideForTesting != null
+    ? memoryCapacityOverrideForTesting.currentMb
+    : readCgroupMemoryCurrentMb();
+  const reserveMemMb = memoryCapacityOverrideForTesting?.reserveMb ?? env.WORKER_MEMORY_RESERVE_MB ?? 256;
+  const perBrowserMb = memoryCapacityOverrideForTesting?.perBrowserMb ?? env.BROWSER_MEMORY_ESTIMATE_MB ?? 350;
+
+  if (memLimitMb !== null) {
+    const liveMemCurrent = memCurrentMb ?? 0;
+    const memHeadroom = memLimitMb - reserveMemMb - liveMemCurrent;
+    if (memHeadroom < perBrowserMb) {
+      console.warn(
+        `[resourceCapacity][sharedPidAdmission] memory_admission_denied source=${source} ` +
+          `cgroupMemLimitMb=${memLimitMb} cgroupMemCurrentMb=${liveMemCurrent} reserveMemMb=${reserveMemMb} ` +
+          `memHeadroom=${memHeadroom.toFixed(1)} perBrowserMb=${perBrowserMb}`,
+      );
+      return {
+        granted: false,
+        reason: `insufficient cgroup memory headroom (headroom=${memHeadroom.toFixed(1)}MB, requested=${perBrowserMb}MB)`,
+        pidsCurrent: pidCapacity.pidsCurrent ?? 0,
+        pidsMax: pidCapacity.pidsMax ?? 0,
+        reservePids,
+        reservedSharedPidUnits: sharedReservedPidUnits,
+        requestedPids,
+      };
+    }
+  }
 
   if (pidCapacity.pidsMax === null) {
     // Genuinely unmeasurable — see this function's own doc comment above

@@ -57,14 +57,27 @@ function isUsableChannelValue(channel: ChannelField, value: unknown): boolean {
   }
 }
 
+export type ChannelMatchMode = "all" | "any_of_priority";
+
 /**
- * True only if `candidate` has EVERY channel in `requestedChannels`. An
- * empty `requestedChannels` array means "no channel filter" — everything
- * passes, matching the pre-existing (unfiltered) behavior when the user
- * didn't select any channel.
+ * Evaluates whether a candidate satisfies requested channels.
+ * - In "all" mode (default): candidate must have EVERY channel in `requestedChannels`.
+ * - In "any_of_priority" mode: candidate must have AT LEAST ONE reachable channel
+ *   (phone, email, or instagram) from the requested channels (or priority set).
+ *
+ * An empty `requestedChannels` array means "no channel filter" — everything passes.
  */
-export function channelsSatisfied(candidate: ChannelCandidate, requestedChannels: string[]): boolean {
+export function channelsSatisfied(
+  candidate: ChannelCandidate,
+  requestedChannels: string[],
+  mode: ChannelMatchMode = "all",
+): boolean {
   if (requestedChannels.length === 0) return true;
+  if (mode === "any_of_priority") {
+    const priorityRequested = requestedChannels.filter((ch) => ["phone", "email", "instagram"].includes(ch));
+    const targetChannels = priorityRequested.length > 0 ? priorityRequested : requestedChannels;
+    return targetChannels.some((ch) => hasChannel(candidate, ch));
+  }
   return requestedChannels.every((ch) => hasChannel(candidate, ch));
 }
 

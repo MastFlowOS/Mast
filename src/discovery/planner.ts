@@ -34,6 +34,7 @@ export type DiscoveryPlanRequest = {
   region: string;
   niche: string;
   channels: string[];
+  channelMatch?: "all" | "any_of_priority";
   currencies?: string[];
   professionSlug: string | null;
   quantity: number;

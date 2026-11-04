@@ -16,6 +16,9 @@ lxml==5.2.2
 # ── Data / serialization ──────────────────────────────────────────────────────
 python-dotenv==1.0.1
 
+# ── System / resource monitoring ──────────────────────────────────────────────
+psutil>=5.9.0
+
 # ── Google Sheets (optional output target) ────────────────────────────────────
 google-auth==2.29.0
 google-auth-oauthlib==1.2.0

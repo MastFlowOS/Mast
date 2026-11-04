@@ -35,9 +35,12 @@ export type AreaRunOutcome = {
   /** True if this run threw / failed before producing a usable result. */
   failed: boolean;
   error?: string;
+  failureReason?: string;
+  retryCount?: number;
+  wallTimeCapExceeded?: boolean;
 };
 
-export type PoolStopReason = "cancelled" | "target_reached" | "areas_exhausted" | "pool_size_zero" | "no_slot_available" | "admission_capped" | "budget_exhausted";
+export type PoolStopReason = "cancelled" | "target_reached" | "areas_exhausted" | "pool_size_zero" | "no_slot_available" | "admission_capped" | "budget_exhausted" | "zero_yield_limit";
 
 export type AreaWorkerLogEvent =
   | { type: "pool_start"; configured: number; availableAreas: number; capacity: number; poolSize: number }
@@ -45,6 +48,7 @@ export type AreaWorkerLogEvent =
   | { type: "worker_finished"; area: string; outcome: AreaRunOutcome; slot: number }
   | { type: "worker_skipped_no_slot"; slot: number }
   | { type: "worker_skipped_no_area" }
+  | { type: "area_requeued"; area: string; retryCount: number; maxRetries: number; reason?: string }
   | { type: "pool_stopped"; reason: PoolStopReason };
 
 export type AreaWorkerPoolResult = {
@@ -68,6 +72,18 @@ export type AreaWorkerPoolResult = {
   stoppedReason?: PoolStopReason;
   /** True when curated areas remain (> 0) but no worker could run solely because browser slot capacity was 0. */
   deferredNoSlot?: boolean;
+  /** Total retries performed across all areas in the pool pass. */
+  retryCount?: number;
+  /** Number of areas that reached terminal failure. */
+  failedAreaCount?: number;
+  /** Number of failed areas that nonetheless delivered leads (partial yield). */
+  partialAreaCount?: number;
+  /** Total crashes observed across areas in the pass. */
+  crashCount?: number;
+  /** True when the pool intentionally yielded browser slots to prevent city starvation. */
+  yieldedSlotsForFairness?: boolean;
+  /** Consecutive areas that yielded 0 candidates before the pass stopped. */
+  consecutiveZeroYieldCount?: number;
 };
 
 /**
@@ -166,6 +182,16 @@ export type RunAreaWorkerPoolParams = {
   availableCapacity: number;
   /** Optional requested quantity from the parent plan to dynamically size the pool. */
   requestedQuantity?: number;
+  /** Maximum retry attempts for a failed area worker before treating as terminal failure (default 2). */
+  maxAreaRetries?: number;
+  /** Base backoff in ms between area retry attempts (default 500). */
+  areaBackoffBaseMs?: number;
+  /** Max time in ms a city pool may hold slots while yielding 0 leads before yielding to other cities. */
+  maxCitySlotHoldingMs?: number;
+  /** Max cumulative wall-time in ms across all attempts/retries of one area before marking terminal WATCHDOG_TIMEOUT (default 10 min). */
+  maxAreaWallTimeMs?: number;
+  /** Max consecutive zero-yield or failed areas before yielding slots for city fairness. */
+  maxConsecutiveZeroYieldAreas?: number;
   /**
    * Attempts to claim one area not yet used by THIS task instance.
    * Returns `undefined` when no distinct new area remains — i.e. every
@@ -192,7 +218,7 @@ export type RunAreaWorkerPoolParams = {
    * closure in this codebase's test suite takes 0 or 1 params, so this
    * second argument is simply ignored by callers that don't need it.
    */
-  runArea: (area: string, slotIndex: number) => Promise<AreaRunOutcome>;
+  runArea: (area: string, slotIndex: number, retryCount?: number, remainingAreaBudgetMs?: number) => Promise<AreaRunOutcome>;
   /** Attempts to reserve one browser slot. Returns a release fn, or undefined if none free right now. Supports sync or async. */
   tryAcquireSlot?: () => Promise<(() => void) | undefined> | (() => void) | undefined;
   /** Polled before starting each new area claim; true once the plan is cancelled/target-reached. */
@@ -246,8 +272,8 @@ export type RunAreaWorkerPoolParams = {
  *
  * One worker's `runArea` failure never stops its siblings (Step 8) — the
  * pool only reports `allFailed: true` if literally every area that ran
- * failed, which discoveryPlanJob.ts uses to decide whether the task itself
- * should still get its existing bounded pg-boss retry.
+ * failed AND zero leads were accepted across the pool, which discoveryPlanJob.ts
+ * uses to decide whether the task itself should still get its existing bounded pg-boss retry.
  */
 export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promise<AreaWorkerPoolResult> {
   const {
@@ -256,6 +282,11 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     totalCuratedAreas,
     availableCapacity,
     requestedQuantity,
+    maxAreaRetries = 2,
+    areaBackoffBaseMs = 500,
+    maxCitySlotHoldingMs,
+    maxAreaWallTimeMs = 10 * 60 * 1000,
+    maxConsecutiveZeroYieldAreas,
     claimNextArea,
     runArea,
     tryAcquireSlot = () => () => {},
@@ -264,6 +295,9 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     shouldAdmitNextArea,
     onEvent,
   } = params;
+
+  const poolStartTime = Date.now();
+  let consecutiveZeroYieldCount = 0;
 
   const computedWorkers = requestedQuantity !== undefined
     ? desiredWorkersForQuantity(requestedQuantity)
@@ -280,6 +314,13 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
   onEvent?.({ type: "pool_start", configured: configuredWorkers, availableAreas: totalCuratedAreas, capacity: availableCapacity, poolSize });
 
   const usedAreas = new Set<string>();
+  const inFlightAreas = new Set<string>();
+  const areaRetryCounts = new Map<string, number>();
+  const areaStartTimes = new Map<string, number>();
+  type QueuedAreaRetry = { area: string; retryCount: number; readyAt: number };
+  const retryQueue: QueuedAreaRetry[] = [];
+  let totalRetriesPerformed = 0;
+
   // STARVATION FIX: live count of areas THIS run has claimed but not yet
   // finished. Unlike `usedAreas.size` (monotonic — never decreases), this
   // shrinks as areas complete, so it is the correct value to compare
@@ -330,6 +371,19 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
         return;
       }
 
+      const holdingTimeMs = Date.now() - poolStartTime;
+      const isOverHoldingCap = maxCitySlotHoldingMs !== undefined && maxCitySlotHoldingMs > 0 && holdingTimeMs >= maxCitySlotHoldingMs && perArea.length > 0;
+      const isOverZeroYieldCap = maxConsecutiveZeroYieldAreas !== undefined && maxConsecutiveZeroYieldAreas > 0 && consecutiveZeroYieldCount >= maxConsecutiveZeroYieldAreas && perArea.length >= maxConsecutiveZeroYieldAreas;
+
+      if (isOverHoldingCap || isOverZeroYieldCap) {
+        console.warn(
+          `[discovery-pool] yielding browser slots for city fairness: holdingTimeMs=${holdingTimeMs} ` +
+            `consecutiveZeroYieldCount=${consecutiveZeroYieldCount} — yielding to prevent city starvation`,
+        );
+        stoppedReason = "zero_yield_limit";
+        return;
+      }
+
       // Admission gate for the NEXT area only — never affects an area
       // already claimed/running (see shouldAdmitNextArea's doc comment).
       if (shouldAdmitNextArea && !(await shouldAdmitNextArea(usedAreas.size, inFlightAreaCount))) {
@@ -368,30 +422,91 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
         return; // no capacity right now — do not queue; another worker's release() will let a fresh claim happen next loop tick elsewhere
       }
 
+      // Back off and reduce concurrency if crashes/failures repeat in the pool
+      const concurrencyReduction = Math.min(poolSize - 1, totalRetriesPerformed);
+      const effectiveConcurrency = Math.max(1, poolSize - concurrencyReduction);
+      if (inFlightAreas.size >= effectiveConcurrency) {
+        release();
+        await new Promise((r) => setTimeout(r, 50));
+        continue;
+      }
+
       let area: string | undefined;
-      try {
-        area = await claimNextArea(usedAreas, slotIndex);
-      } catch (err) {
-        release();
-        throw err; // a claim-mechanism error (e.g. DB unreachable) is not area-local — propagate
+      let isRetry = false;
+      let currentRetryCount = 0;
+
+      // 1. Check if any queued retry is ready and not already in flight
+      const readyRetryIndex = retryQueue.findIndex(
+        (r) => !inFlightAreas.has(r.area) && r.readyAt <= Date.now()
+      );
+      if (readyRetryIndex >= 0) {
+        const item = retryQueue.splice(readyRetryIndex, 1)[0];
+        area = item.area;
+        isRetry = true;
+        currentRetryCount = item.retryCount;
+      } else {
+        // 2. Try claiming fresh distinct area
+        try {
+          area = await claimNextArea(usedAreas, slotIndex);
+        } catch (err) {
+          release();
+          throw err; // a claim-mechanism error (e.g. DB unreachable) is not area-local — propagate
+        }
+
+        if (!area || usedAreas.has(area)) {
+          // No fresh distinct area. Check if any retries exist in retryQueue
+          const pendingRetryIndex = retryQueue.findIndex((r) => !inFlightAreas.has(r.area));
+          if (pendingRetryIndex >= 0) {
+            const item = retryQueue[pendingRetryIndex];
+            const waitMs = Math.max(0, item.readyAt - Date.now());
+            if (waitMs > 0) {
+              await new Promise((r) => setTimeout(r, Math.min(waitMs, 2000)));
+            }
+            if (await isTerminal()) {
+              release();
+              return;
+            }
+            retryQueue.splice(pendingRetryIndex, 1);
+            area = item.area;
+            isRetry = true;
+            currentRetryCount = item.retryCount;
+          } else if (inFlightAreas.size > 0) {
+            // Sibling workers are still running an area that might fail and be re-queued.
+            release();
+            await new Promise((r) => setTimeout(r, 50));
+            continue;
+          } else {
+            // Truly exhausted: no retries pending and no in-flight workers
+            release();
+            sawNoAreaSkip = true;
+            onEvent?.({ type: "worker_skipped_no_area" });
+            return; // no distinct new area left for this task's pool this run
+          }
+        } else {
+          usedAreas.add(area);
+          startedWorkers += 1;
+        }
       }
 
-      if (!area || usedAreas.has(area)) {
-        release();
-        sawNoAreaSkip = true;
-        onEvent?.({ type: "worker_skipped_no_area" });
-        return; // no distinct new area left for this task's pool this run
-      }
-
-      usedAreas.add(area);
-      startedWorkers += 1;
-      inFlightAreaCount += 1;
-      console.info(`[area-worker-start] worker=${slotIndex + 1} area=${area}`);
+      inFlightAreas.add(area);
+      if (!areaStartTimes.has(area)) areaStartTimes.set(area, Date.now());
+      const areaStart = areaStartTimes.get(area)!;
+      const elapsedSoFarMs = Date.now() - areaStart;
+      const remainingAreaBudgetMs =
+        maxAreaWallTimeMs !== undefined && maxAreaWallTimeMs > 0
+          ? Math.max(0, maxAreaWallTimeMs - elapsedSoFarMs)
+          : undefined;
+      inFlightAreaCount = inFlightAreas.size;
+      console.info(
+        `[area-worker-start] worker=${slotIndex + 1} area=${area}${
+          isRetry ? ` (retry ${currentRetryCount}/${maxAreaRetries})` : ""
+        }`,
+      );
       onEvent?.({ type: "worker_started", area, slot: slotIndex });
 
       let outcome: AreaRunOutcome;
       try {
-        outcome = await runArea(area, slotIndex);
+        outcome = await runArea(area, slotIndex, currentRetryCount, remainingAreaBudgetMs);
       } catch (err) {
         // Defensive only — runArea's own contract is to never throw for
         // area-local failures (Step 8). If it does anyway, isolate it here
@@ -402,22 +517,76 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
         // task was cancelled mid-flight — inFlightAreaCount can never leak
         // a stale claim (Requirement: decrement here, not after any
         // conditional return).
-        inFlightAreaCount -= 1;
+        inFlightAreas.delete(area);
+        inFlightAreaCount = inFlightAreas.size;
         release();
       }
 
-      perArea.push({ area, outcome });
-      // Cooperative hand-off: yield event loop tick so waiting tasks in other
-      // cities/pools have an immediate opportunity to acquire the browser slot.
-      await new Promise((resolve) => setImmediate(resolve));
-      // TASK 2 (live scout state) — additive: `slot` was already this
-      // loop's own parameter (identical value `worker_started` above
-      // already reports), just not previously copied onto this event too.
-      // No behavior changes; this only lets a `worker_finished` listener
-      // (see discoveryPlanJob.ts's publishAreaPoolLifecycleEvent) attribute
-      // area completion to the correct scout, the same way it already can
-      // for `worker_started`.
-      onEvent?.({ type: "worker_finished", area, outcome, slot: slotIndex });
+      const terminalNow = await isTerminal();
+      const isUserCancelled =
+        outcome.error === "USER_CANCELLED" ||
+        outcome.failureReason === "USER_CANCELLED" ||
+        terminalNow;
+
+      const areaElapsedMs = Date.now() - areaStart;
+      const isOverWallTimeCap = maxAreaWallTimeMs !== undefined && maxAreaWallTimeMs > 0 && areaElapsedMs >= maxAreaWallTimeMs;
+
+      if (outcome.failed && !isUserCancelled && currentRetryCount < maxAreaRetries && !isOverWallTimeCap) {
+        totalRetriesPerformed += 1;
+        const nextRetry = currentRetryCount + 1;
+        areaRetryCounts.set(area, nextRetry);
+        const backoffMs = areaBackoffBaseMs * Math.pow(2, currentRetryCount);
+        console.warn(
+          `[google-area-worker] area=${area} failed (attempt ${currentRetryCount + 1}/${
+            maxAreaRetries + 1
+          }) — re-queuing with ${backoffMs}ms backoff (siblings unaffected)`,
+        );
+        retryQueue.push({
+          area,
+          retryCount: nextRetry,
+          readyAt: Date.now() + backoffMs,
+        });
+        onEvent?.({
+          type: "area_requeued",
+          area,
+          retryCount: nextRetry,
+          maxRetries: maxAreaRetries,
+          reason: outcome.error ?? outcome.failureReason,
+        });
+      } else {
+        // Area terminal: succeeded, cancelled, or exhausted retries
+        if (isOverWallTimeCap) {
+          outcome.wallTimeCapExceeded = true;
+          if (outcome.failed && !isUserCancelled) {
+            outcome.failureReason = outcome.failureReason ?? "WATCHDOG_TIMEOUT";
+            outcome.error = outcome.error
+              ? `${outcome.error} (area wall-time cap exceeded: ${areaElapsedMs}ms >= ${maxAreaWallTimeMs}ms)`
+              : `area wall-time cap exceeded (${areaElapsedMs}ms >= ${maxAreaWallTimeMs}ms)`;
+            console.warn(`[google-area-worker] area=${area} total wall-time (${areaElapsedMs}ms) exceeded cap (${maxAreaWallTimeMs}ms) — halting retries (wallTimeCapExceeded=true, reason=${outcome.failureReason})`);
+          }
+        }
+        outcome.retryCount = currentRetryCount;
+        usedAreas.add(area);
+        perArea.push({ area, outcome });
+
+        if (outcome.failed || outcome.discovered === 0) {
+          consecutiveZeroYieldCount += 1;
+        } else {
+          consecutiveZeroYieldCount = 0;
+        }
+
+        // Cooperative hand-off: yield event loop tick so waiting tasks in other
+        // cities/pools have an immediate opportunity to acquire the browser slot.
+        await new Promise((resolve) => setImmediate(resolve));
+        // TASK 2 (live scout state) — additive: `slot` was already this
+        // loop's own parameter (identical value `worker_started` above
+        // already reports), just not previously copied onto this event too.
+        // No behavior changes; this only lets a `worker_finished` listener
+        // (see discoveryPlanJob.ts's publishAreaPoolLifecycleEvent) attribute
+        // area completion to the correct scout, the same way it already can
+        // for `worker_started`.
+        onEvent?.({ type: "worker_finished", area, outcome, slot: slotIndex });
+      }
     }
   }
 
@@ -456,8 +625,14 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     areasProcessed: perArea.map((p) => p.area),
     totals,
     perArea,
-    allFailed: perArea.length > 0 && perArea.every((p) => p.outcome.failed),
+    allFailed: perArea.length > 0 && perArea.every((p) => p.outcome.failed) && totals.accepted === 0,
     stoppedReason,
     deferredNoSlot,
+    retryCount: totalRetriesPerformed,
+    failedAreaCount: perArea.filter((p) => p.outcome.failed).length,
+    partialAreaCount: perArea.filter((p) => p.outcome.failed && (p.outcome.accepted ?? 0) > 0).length,
+    crashCount: perArea.filter((p) => /crash|target closed|oom/i.test(p.outcome.error ?? "")).length,
+    yieldedSlotsForFairness: stoppedReason === "zero_yield_limit",
+    consecutiveZeroYieldCount,
   };
 }

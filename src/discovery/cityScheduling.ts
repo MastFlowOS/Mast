@@ -19,7 +19,9 @@ export type CityTransitionReason =
   | "WATCHDOG_TIMEOUT"
   | "SCRAPER_FAILURE"
   | "CITY_DEFERRED_NO_SLOT"
-  | "CITY_NO_SLOT_CAPACITY_EXHAUSTED";
+  | "CITY_NO_SLOT_CAPACITY_EXHAUSTED"
+  | "CITY_FAILED"
+  | "CITY_DEGRADED";
 
 /**
  * Mirrors `EngineDoneInfo["terminationReason"]` (src/scraperBridge/pythonBridge.ts)
@@ -69,6 +71,7 @@ export function cityTransitionFor(
   attempt: Pick<CityAttempt, "candidatesFound" | "acceptedLeads">,
   exhausted: boolean,
   terminationReason?: EngineTerminationReason,
+  metrics?: { failedAreaCount?: number; totalAreas?: number; crashCount?: number },
 ): CityTransitionReason {
   if (attempt.acceptedLeads > 0) return "CITY_PRODUCTIVE";
   if (
@@ -85,6 +88,19 @@ export function cityTransitionFor(
   // Not exhaustion: the search never got far enough to genuinely run out
   // of results, it broke.
   if (terminationReason === "FAILURE") return "SCRAPER_FAILURE";
+
+  if (metrics) {
+    const failedAreas = metrics.failedAreaCount ?? 0;
+    const totalAreas = metrics.totalAreas ?? 0;
+    const crashes = metrics.crashCount ?? 0;
+    if (totalAreas > 0 && failedAreas >= totalAreas) {
+      return "CITY_FAILED";
+    }
+    if (failedAreas > 0 || crashes > 0) {
+      return "CITY_DEGRADED";
+    }
+  }
+
   return exhausted ? "CITY_EXHAUSTED" : "CITY_NO_PROGRESS";
 }
 
@@ -188,6 +204,7 @@ export function reconcileDiscoveryCounters(input: {
   unexaminedAtEarlyStop?: number;
   failed?: number;
   skipped?: number;
+  failedAreaCount?: number;
 }): DiscoveryCounterReconciliation {
   const discovered = Math.max(0, input.verifiedCandidatesYielded);
   const accounted =
@@ -198,8 +215,9 @@ export function reconcileDiscoveryCounters(input: {
     Math.max(0, input.failed ?? 0) +
     Math.max(0, input.skipped ?? 0);
   const discrepancy = discovered - accounted;
+  const hasFailedAreas = (input.failedAreaCount ?? 0) > 0;
   return {
-    valid: discrepancy === 0 && input.stalePanelMismatches >= 0,
+    valid: discrepancy === 0 && input.stalePanelMismatches >= 0 && !hasFailedAreas,
     discovered,
     accounted,
     discrepancy,

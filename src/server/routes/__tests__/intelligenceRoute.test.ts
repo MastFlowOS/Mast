@@ -242,16 +242,34 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
                 builder._eq[col] = val;
                 return builder;
               },
+              order: (_col: string, _opts?: any) => builder,
+              limit: (_count: number) => builder,
               maybeSingle: async () => {
-                const key = `${builder._eq?.user_id}:${builder._eq?.kind}:${builder._eq?.period_key}`;
-                return { data: dbAiIntelligence[key] ?? null, error: null };
+                if (builder._eq?.period_key) {
+                  const key = `${builder._eq?.user_id}:${builder._eq?.kind}:${builder._eq?.period_key}`;
+                  return { data: dbAiIntelligence[key] ?? null, error: null };
+                }
+                const shortKey = `${builder._eq?.user_id}:${builder._eq?.kind}`;
+                if (dbAiIntelligence[shortKey]) {
+                  return { data: dbAiIntelligence[shortKey], error: null };
+                }
+                const prefix = `${shortKey}:`;
+                for (const [k, v] of Object.entries(dbAiIntelligence)) {
+                  if (k.startsWith(prefix)) {
+                    return { data: v, error: null };
+                  }
+                }
+                return { data: null, error: null };
               },
             };
             return builder;
           },
           upsert: async (row: any) => {
-            const key = `${row.user_id}:${row.kind}:${row.period_key}`;
+            const key = row.period_key
+              ? `${row.user_id}:${row.kind}:${row.period_key}`
+              : `${row.user_id}:${row.kind}`;
             dbAiIntelligence[key] = { ...row };
+            dbAiIntelligence[`${row.user_id}:${row.kind}`] = { ...row };
             return { error: null };
           },
         };
@@ -1028,7 +1046,7 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
       assert.equal(capturedAiCalls.length, 2);
     });
 
-    test("Honest 500 error when AI provider fails on entitled request (never masquerades deterministic fallback as AI)", async () => {
+    test("Phase 7: On AI provider failure, returns degraded fallback response instead of 500", async () => {
       userPlan = "pro";
       // Invalidate cache by changing status
       dbLeads[0].status = "replied";
@@ -1037,7 +1055,10 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
       const res = await fetch(`${baseUrl}/discover-overview`, {
         headers: { Authorization: `Bearer ${validToken}` },
       });
-      assert.equal(res.status, 500);
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.degraded, true);
+      assert.equal(data.fallbackReason, "provider_failure");
     });
   });
 
@@ -1657,7 +1678,9 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
       const resOverview = await fetch(`${baseUrl}/discover-overview`, {
         headers: { Authorization: `Bearer ${validToken}` },
       });
-      assert.equal(resOverview.status, 500);
+      assert.equal(resOverview.status, 200);
+      const dataOverview = await resOverview.json();
+      assert.equal(dataOverview.degraded, true);
 
       const resCoach = await fetch(`${baseUrl}/mission-coach`, {
         headers: { Authorization: `Bearer ${validToken}` },
@@ -1932,6 +1955,88 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
         assert.equal(data.headline, "Dentists show strong signals");
         assert.deepEqual(data.patterns, ["Dental growth"]);
         // Missing fields filled by normalizer
+        assert.ok(Array.isArray(data.promisingOpportunities));
+        assert.ok(Array.isArray(data.nextSteps));
+      } finally {
+        resetAiClient();
+      }
+    });
+
+    test("discover-overview returns cached overview with degraded: true on provider failure when cache exists", async () => {
+      userPlan = "pro";
+      const cachedContent = {
+        label: "Cached Discover Overview",
+        headline: "Previously discovered coffee leads in NY",
+        body: "Review your top leads and begin outreach.",
+        confidence: "Recommended",
+        tone: "neutral",
+        patterns: ["Coffee shop expansion"],
+        promisingOpportunities: [{ name: "Artisan Cafe", score: 95 }],
+        nextSteps: ["Reach out to Artisan Cafe"],
+        action: { label: "View Leads", href: "#leads-table" },
+      };
+      dbAiIntelligence[`${validUserId}:discover_overview`] = {
+        user_id: validUserId,
+        kind: "discover_overview",
+        content: cachedContent,
+        generated_at: "2026-11-01T10:00:00.000Z",
+      };
+
+      const failingAiClient: any = {
+        chat: {
+          completions: {
+            create: async () => {
+              throw new Error("Provider 503 Service Unavailable / Aborted");
+            },
+          },
+        },
+      };
+      setAiClient(failingAiClient);
+
+      try {
+        const res = await fetch(`${baseUrl}/discover-overview`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.equal(data.degraded, true);
+        assert.equal(data.cached, true);
+        assert.equal(data.fallbackReason, "provider_failure");
+        assert.equal(data.label, "Cached Discover Overview");
+        assert.equal(data.headline, "Previously discovered coffee leads in NY");
+        assert.deepEqual(data.patterns, ["Coffee shop expansion"]);
+        assert.equal(data.generatedAt, "2026-11-01T10:00:00.000Z");
+      } finally {
+        resetAiClient();
+      }
+    });
+
+    test("discover-overview returns static degraded overview on provider failure when no cache exists", async () => {
+      userPlan = "pro";
+      dbAiIntelligence = {};
+
+      const failingAiClient: any = {
+        chat: {
+          completions: {
+            create: async () => {
+              throw new Error("Provider connection refused");
+            },
+          },
+        },
+      };
+      setAiClient(failingAiClient);
+
+      try {
+        const res = await fetch(`${baseUrl}/discover-overview`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.equal(data.degraded, true);
+        assert.equal(data.cached, false);
+        assert.equal(data.fallbackReason, "provider_failure");
+        assert.equal(data.label, "Discovery Overview");
+        assert.ok(data.headline);
         assert.ok(Array.isArray(data.promisingOpportunities));
         assert.ok(Array.isArray(data.nextSteps));
       } finally {

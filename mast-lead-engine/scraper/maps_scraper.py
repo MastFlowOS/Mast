@@ -182,6 +182,10 @@ _PLACE_NAME_SELECTORS = [
     "h1.DUwDvf",
     "h1.fontHeadlineLarge",
     "h1[data-item-id]",
+    "div[role='main'] h1",
+    "div[role='region'] h1",
+    "h1",
+    "div.DUwDvf",
 ]
 _PLACE_NAME_SELECTOR_COMBINED = ", ".join(_PLACE_NAME_SELECTORS)
 
@@ -863,6 +867,18 @@ async def _resolve_results_panel(page: Page, *, config: ScraperConfig) -> tuple[
             log.info(f"[maps][diag] result panel validated — selector={sel!r} evidence={evidence}")
             return sel, panel
 
+        # If primary element was rejected (e.g. generic container matched non-feed first), check other candidates
+        if hasattr(page, "query_selector_all"):
+            try:
+                candidates = await page.query_selector_all(sel)
+                for cand in candidates[1:6]:
+                    c_valid, c_evidence = await _validate_panel_candidate(page, cand, selector=sel, strict=strict)
+                    if c_valid:
+                        log.info(f"[maps][diag] result panel validated (alternate) — selector={sel!r} evidence={c_evidence}")
+                        return sel, cand
+            except Exception:
+                pass
+
         attempted.append(f"{sel!r}: rejected ({evidence})")
         log.info(f"[maps][diag] panel candidate rejected — selector={sel!r} evidence={evidence}")
 
@@ -1174,6 +1190,8 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                 continue
     url = getattr(page, "url", "") or ""
     place_id = _stable_place_id_from_url(url) if "/maps/place/" in url else ""
+    if not detail_open and "/maps/place/" in url and "/maps/search/" not in url:
+        detail_open = True
     return {
         "open": detail_open,
         "name": _norm_identity_text(raw_name),
@@ -1258,6 +1276,20 @@ def _evaluate_panel_identity(
     return True, "verified"
 
 
+def _resolve_identity_wait_ms(page: Page, found_panel: bool, config: ScraperConfig) -> int:
+    """Compute the verified panel identity wait timeout in ms.
+    Uses full config.place_timeout_ms whenever found_panel is True OR the page URL
+    has transitioned to a place URL (/maps/place/...), falling back to a 250ms
+    probe only when still on a non-place URL without a panel."""
+    curr_url = getattr(page, "url", "") or ""
+    is_on_place_url = "/maps/place/" in curr_url and "/maps/search/" not in curr_url
+    return (
+        config.place_timeout_ms
+        if found_panel or is_on_place_url
+        else min(config.place_timeout_ms, 250)
+    )
+
+
 async def _wait_for_verified_panel_identity(
     page: Page,
     *,
@@ -1310,7 +1342,6 @@ def _is_target_closed_or_crashed_error(exc: BaseException) -> bool:
             "page has been closed",
             "connection closed",
             "session closed",
-            "execution context was destroyed",
         )
     )
 
@@ -1469,6 +1500,69 @@ async def _wait_for_feed_restored(page: Page, panel_selector: str, timeout_s: fl
     return False
 
 
+def _dispatch_progress(
+    on_progress: "Callable[..., None] | None",
+    stage_or_event: str,
+    event_or_item: str | None = None,
+    item_id: str | None = None,
+    **kwargs: Any,
+) -> None:
+    """Dispatch progress events supporting 2-arg (event, item_id),
+    3-arg (stage, event, item_id), and keyword payload forms without raising."""
+    if on_progress is None:
+        return
+    try:
+        if item_id is not None or stage_or_event == "discovery":
+            stg = stage_or_event
+            ev = event_or_item or ""
+            it = item_id
+        else:
+            stg = "discovery"
+            ev = stage_or_event
+            it = event_or_item
+        if kwargs:
+            try:
+                on_progress(stg, ev, it, **kwargs)
+            except TypeError:
+                try:
+                    on_progress(stg, ev, it)
+                except TypeError:
+                    on_progress(ev, it)
+        else:
+            try:
+                on_progress(stg, ev, it)
+            except TypeError:
+                on_progress(ev, it)
+    except Exception:
+        log.debug("on_progress observer raised — ignored", exc_info=True)
+
+
+async def _run_page_load_diagnostics(
+    page: Page,
+    search_url: str,
+    timeout_s: float = 2.0,
+) -> tuple[str, int] | None:
+    """Bounded post-navigation diagnostic check for page.title() and body length.
+    Never blocks or aborts search execution on timeout or error."""
+    try:
+        _landed_url = getattr(page, "url", "") or ""
+        _title = await asyncio.wait_for(page.title(), timeout=timeout_s)
+        _raw_body = await asyncio.wait_for(
+            page.evaluate("() => document.body?.innerText?.length || 0"),
+            timeout=timeout_s,
+        )
+        _body_len = _raw_body if isinstance(_raw_body, int) else len(str(_raw_body or ""))
+        log.info(
+            f"[maps][diag] search page loaded — "
+            f"requested={search_url!r} landed_on={_landed_url!r} "
+            f"title={_title!r} body_chars={_body_len}"
+        )
+        return _title, _body_len
+    except Exception as _diag_exc:
+        log.debug(f"[maps][diag] page-load diagnostic failed: {_diag_exc}")
+        return None
+
+
 async def _return_to_results(
     page: Page,
     panel_selector: str,
@@ -1491,11 +1585,7 @@ async def _return_to_results(
     )
 
     def _emit(event: str, item_id: str | None = None) -> None:
-        if on_progress is not None:
-            try:
-                on_progress("discovery", event, item_id)
-            except Exception:
-                pass
+        _dispatch_progress(on_progress, "discovery", event, item_id)
 
     def _emit_crash(exc_or_reason: BaseException | str) -> None:
         _mark_page_crashed(page)
@@ -2593,13 +2683,15 @@ async def _execute_return_failure_recovery(
     prof.incr("return_to_results_failed")
 
     def _emit(event: str, item_id: str | None = None) -> None:
-        if on_progress is not None:
-            try:
-                on_progress("discovery", event, item_id)
-            except Exception:
-                pass
+        _dispatch_progress(on_progress, "discovery", event, item_id)
 
     if not _is_page_alive(page):
+        page_really_closed = False
+        if hasattr(page, "is_closed"):
+            try:
+                page_really_closed = page.is_closed()
+            except Exception:
+                page_really_closed = True
         ctx_closed = False
         if hasattr(page, "context"):
             try:
@@ -2608,10 +2700,30 @@ async def _execute_return_failure_recovery(
                     ctx_closed = True
             except Exception:
                 pass
-        if ctx_closed:
-            _emit("browser_context_closed", context_label)
-        else:
-            _emit("browser_page_crashed", context_label)
+        if page_really_closed or ctx_closed:
+            if ctx_closed:
+                _emit("browser_context_closed", context_label)
+            else:
+                _emit("browser_page_crashed", context_label)
+            raise DiscoveryFailure(
+                DiscoveryFailureReason.SCRAPER_ERROR,
+                f"browser page or context closed/crashed during return_to_results in {context_label}",
+            )
+        # Target not closed at browser level — attempt navigation recovery if available
+        if search_url and not search_nav_recovery_used:
+            try:
+                search_nav_recovery_used = True
+                setattr(page, "_mast_target_crashed", False)
+                rec_timeout = config.maps_timeout_ms if config else 10000
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=rec_timeout)
+                panel_sel, _ = await _resolve_results_panel(page, config=config if config else ScraperConfig())
+                if await _is_feed_ready(page, panel_sel):
+                    _emit("return_recovery_succeeded", context_label)
+                    log.info(f"[maps][return-recovery] search-navigation recovered alive target for {full_query!r}")
+                    return True, search_nav_recovery_used, panel_sel
+            except Exception as rec_err:
+                log.warning(f"[maps][return-recovery] recovery attempt failed: {rec_err}")
+        _emit("browser_page_crashed", context_label)
         raise DiscoveryFailure(
             DiscoveryFailureReason.SCRAPER_ERROR,
             f"browser page or context closed/crashed during return_to_results in {context_label}",
@@ -3286,19 +3398,8 @@ class MapsScraper:
         # (same "never allowed to raise into pipeline code" contract),
         # kept local here rather than imported since this module has no
         # existing dependency on engine/.
-        def _emit_progress(event: str, item_id: str | None = None, **kwargs: Any) -> None:
-            if on_progress is None:
-                return
-            try:
-                if kwargs:
-                    try:
-                        on_progress("discovery", event, item_id, **kwargs)
-                    except TypeError:
-                        on_progress("discovery", event, item_id)
-                else:
-                    on_progress("discovery", event, item_id)
-            except Exception:
-                log.debug("on_progress observer raised — ignored", exc_info=True)
+        def _emit_progress(stage_or_event: str, event_or_item: str | None = None, item_id: str | None = None, **kwargs: Any) -> None:
+            _dispatch_progress(on_progress, stage_or_event, event_or_item, item_id, **kwargs)
 
         if city and city.lower() not in query.lower():
             full_query = f"{query} in {city}"
@@ -3481,17 +3582,11 @@ class MapsScraper:
                 # on before any panel/collection logic runs. Kept — bounded,
                 # structured, and this is exactly the evidence PART 14 asks
                 # diagnostics to keep providing. ---
-                try:
-                    _landed_url = page.url
-                    _title = await page.title()
-                    _body_len = len(await page.evaluate("() => document.body?.innerText?.length || 0"))
-                    log.info(
-                        f"[maps][diag] search page loaded — "
-                        f"requested={search_url!r} landed_on={_landed_url!r} "
-                        f"title={_title!r} body_chars={_body_len}"
-                    )
-                except Exception as _diag_exc:
-                    log.debug(f"[maps][diag] page-load diagnostic failed: {_diag_exc}")
+                await _run_page_load_diagnostics(
+                    page,
+                    search_url,
+                    timeout_s=getattr(self.config, "diagnostic_timeout_s", 2.0),
+                )
 
                 # ROOT CAUSE FIX (Part 7 — consent/interstitial handling):
                 # a page.goto() that "succeeds" (HTTP 200, no
@@ -3918,13 +4013,17 @@ class MapsScraper:
 
                                 if not found_panel:
                                     curr_url = getattr(page, "url", "") or ""
-                                    log.info(f"[maps][diag] place_panel_wait failed: url={curr_url!r} card_href={card_href!r}")
-                                    if should_stop is not None and should_stop():
-                                        self._profiler.incr("place_panel_wait_aborted")
-                                        return "panel_timeout", None, "panel_wait_timeout"
-                                    self._profiler.incr("place_panel_wait_timeout")
-                                    if "/maps/place/" not in curr_url and not is_minimal_stub:
-                                        return "mismatch", None, "waiting_for_detail_panel"
+                                    if "/maps/place/" in curr_url and "/maps/search/" not in curr_url:
+                                        found_panel = True
+                                        self._profiler.incr("place_panel_wait_resolved")
+                                    else:
+                                        log.info(f"[maps][diag] place_panel_wait failed: url={curr_url!r} card_href={card_href!r}")
+                                        if should_stop is not None and should_stop():
+                                            self._profiler.incr("place_panel_wait_aborted")
+                                            return "panel_timeout", None, "panel_wait_timeout"
+                                        self._profiler.incr("place_panel_wait_timeout")
+                                        if "/maps/place/" not in curr_url and not is_minimal_stub:
+                                            return "mismatch", None, "waiting_for_detail_panel"
 
                             if not is_minimal_stub:
                                 try:
@@ -3934,11 +4033,7 @@ class MapsScraper:
                                 except Exception:
                                     pass
 
-                            identity_wait_ms = (
-                                self.config.place_timeout_ms
-                                if found_panel
-                                else min(self.config.place_timeout_ms, 250)
-                            )
+                            identity_wait_ms = _resolve_identity_wait_ms(page, found_panel, self.config)
                             identity_ok, panel_snap, mismatch_reason = await _wait_for_verified_panel_identity(
                                 page,
                                 feed_el=panel,

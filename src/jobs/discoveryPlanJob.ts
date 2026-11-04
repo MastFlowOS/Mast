@@ -38,6 +38,8 @@ import {
   type StreetScope,
 } from "../discovery/streetDiscovery.js";
 import { getBrowserSlotPool, acquireBrowserSlotBlocking } from "../lib/workerCapacity.js";
+import { deriveWebsiteReachable } from "../lib/reachability.js";
+export { deriveWebsiteReachable };
 import { getResourceCapacity, getResourceWorkerSlotPool, trySharedPidAdmission, acquireSharedPidAdmissionBlocking } from "../lib/resourceCapacity.js";
 import {
   initJobMetrics,
@@ -707,11 +709,13 @@ async function runOneAreaAttempt(
             }
 
             const { data: enriched } = await db.from("businesses")
-              .select("email, phone, instagram, website, website_reachable, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
+              .select("email, phone, instagram, website, website_is_weak, ssl_valid, load_time_ms, seo, blog, signals")
               .eq("id", businessId).maybeSingle();
+            const contactAudit = (enriched?.signals as Record<string, unknown> | undefined)?.contact_audit as Record<string, unknown> | undefined;
+            const websiteReachable = deriveWebsiteReachable(enriched?.signals as Record<string, unknown> | undefined);
             deliverable = {
               ...mergeEnrichedChannels(lead, enriched),
-              ...(enriched?.website_reachable !== undefined ? { website_reachable: enriched.website_reachable } : {}),
+              ...(websiteReachable !== undefined ? { website_reachable: websiteReachable } : {}),
               ...(enriched?.website_is_weak !== undefined ? { website_is_weak: enriched.website_is_weak } : {}),
               ...(enriched?.ssl_valid !== undefined ? { ssl_valid: enriched.ssl_valid } : {}),
               ...(enriched?.load_time_ms !== undefined ? { load_time_ms: enriched.load_time_ms } : {}),
@@ -727,9 +731,8 @@ async function runOneAreaAttempt(
               funnel.recordMissingChannelRejection(missingNow, pid);
               traceLog(`PIPELINE ${pid}`);
               traceLog(`EXITED HERE`);
-              const contactAudit = (enriched?.signals as Record<string, unknown> | undefined)?.contact_audit as Record<string, unknown> | undefined;
-              traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},missing=${JSON.stringify(missingNow)},reachable=${enriched?.website_reachable},homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false},row=${JSON.stringify(enriched)}`);
-              console.log(`[candidate-audit][${pid}] stage=post_enrichment_channel_gate decision=rejected missing=${JSON.stringify(missingNow)} reachable=${enriched?.website_reachable} homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false}`);
+              traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},missing=${JSON.stringify(missingNow)},reachable=${websiteReachable},homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false},row=${JSON.stringify(enriched)}`);
+              console.log(`[candidate-audit][${pid}] stage=post_enrichment_channel_gate decision=rejected missing=${JSON.stringify(missingNow)} reachable=${websiteReachable} homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false}`);
               publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
               return;
             }

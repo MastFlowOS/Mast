@@ -48,6 +48,7 @@ const {
   NON_PROGRESS_EVENTS,
   runEngineQuery,
   WatchdogStateMachine,
+  dispatchWatchdogProgressEvent,
   resolveEngineOutcome,
 } = await import("../pythonBridge.js");
 const { cityTransitionFor } = await import("../../discovery/cityScheduling.js");
@@ -74,6 +75,7 @@ describe("Watchdog Reliability Architecture", () => {
       assert.equal(isGenuineProgressEvent({ type: "progress", event: "card_processed", item_id: "place1:1:verified" }), true);
       assert.equal(isGenuineProgressEvent({ type: "progress", event: "candidate_discovered", item_id: "cand1" }), true);
       assert.equal(isGenuineProgressEvent({ type: "progress", event: "attempt_rebuilding", item_id: "2" }), true);
+      assert.equal(isGenuineProgressEvent({ type: "progress", event: "panel_failure_retry", item_id: "3" }), true);
       assert.equal(isGenuineProgressEvent({ name: "Acme Cafe", phone: "+15551234" }), true);
     });
   });
@@ -290,6 +292,113 @@ describe("Watchdog Reliability Architecture", () => {
 
       // Advance 31 seconds (total 71s since Rebuild 2): must timeout
       t.mock.timers.tick(31_000);
+      assert.equal(watchdog.isTimedOut(), true);
+      assert.equal(timedOutReason, "DISCOVERY_PROGRESS_TIMEOUT");
+
+      watchdog.clearAll();
+    });
+
+    test("panel_failure_retry event transitions watchdog into REBUILDING state with 70s recovery deadline", (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+      let timedOutReason: string | null = null;
+
+      const watchdog = new WatchdogStateMachine({
+        startupDeadlineMs: 45_000,
+        livenessTimeoutMs: 300_000,
+        progressTimeoutMs: 90_000,
+        cardAttemptDeadlineMs: 60_000,
+        recoveryDeadlineMs: 70_000,
+        maxRebuilds: 2,
+        onTimeout: (reason) => {
+          timedOutReason = reason;
+        },
+      });
+
+      dispatchWatchdogProgressEvent(watchdog, { type: "progress", stage: "startup", event: "service_ready" });
+      assert.equal(watchdog.getState(), "SCROLLING");
+
+      // Advance 50s into SCROLLING (which has a 90s deadline)
+      t.mock.timers.tick(50_000);
+
+      // panel_failure_retry emitted by Python scraper when search results fail initial validation
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "panel_failure_retry",
+        item_id: "PANEL_NOT_FOUND:1",
+      });
+      assert.equal(watchdog.getState(), "REBUILDING");
+      assert.equal(watchdog.getRebuildCount(), 1);
+
+      // Advance 69s (under 70s recovery deadline, total 119s > old 90s scrolling deadline): must not time out
+      t.mock.timers.tick(69_000);
+      assert.equal(watchdog.isTimedOut(), false);
+
+      // Advance 2s (total 71s in REBUILDING): must time out with DISCOVERY_PROGRESS_TIMEOUT
+      t.mock.timers.tick(2_000);
+      assert.equal(watchdog.isTimedOut(), true);
+      assert.equal(timedOutReason, "DISCOVERY_PROGRESS_TIMEOUT");
+
+      watchdog.clearAll();
+    });
+
+    test("repeated panel_failure_retry cannot bypass maxRebuilds or absolute ceiling", (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+      let timedOutReason: string | null = null;
+
+      const watchdog = new WatchdogStateMachine({
+        startupDeadlineMs: 45_000,
+        livenessTimeoutMs: 300_000,
+        progressTimeoutMs: 90_000,
+        cardAttemptDeadlineMs: 60_000,
+        recoveryDeadlineMs: 70_000,
+        maxRebuilds: 2,
+        onTimeout: (reason) => {
+          timedOutReason = reason;
+        },
+      });
+
+      dispatchWatchdogProgressEvent(watchdog, { type: "progress", stage: "startup", event: "service_ready" });
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "card_attempt_started",
+        item_id: "place:1",
+      });
+
+      // Rebuild 1 via panel_failure_retry: accepted
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "panel_failure_retry",
+        item_id: "PANEL_NOT_FOUND:1",
+      });
+      assert.equal(watchdog.getState(), "REBUILDING");
+      assert.equal(watchdog.getRebuildCount(), 1);
+
+      t.mock.timers.tick(30_000);
+      // Rebuild 2 via panel_failure_retry: accepted
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "panel_failure_retry",
+        item_id: "PANEL_NOT_FOUND:2",
+      });
+      assert.equal(watchdog.getState(), "REBUILDING");
+      assert.equal(watchdog.getRebuildCount(), 2);
+
+      t.mock.timers.tick(30_000);
+      // Rebuild 3 via panel_failure_retry: rejected because maxRebuilds=2
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "panel_failure_retry",
+        item_id: "PANEL_NOT_FOUND:3",
+      });
+      assert.equal(watchdog.getRebuildCount(), 2);
+
+      // 41s later (71s since rebuild 2): fires timeout
+      t.mock.timers.tick(41_000);
       assert.equal(watchdog.isTimedOut(), true);
       assert.equal(timedOutReason, "DISCOVERY_PROGRESS_TIMEOUT");
 

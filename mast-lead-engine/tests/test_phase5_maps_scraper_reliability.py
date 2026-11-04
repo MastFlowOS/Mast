@@ -1056,3 +1056,225 @@ async def test_scenario_24_production_handle_return_failure_lifecycle():
             search_nav_recovery_used=False,
         )
     assert exc_exhausted.value.reason == DiscoveryFailureReason.RETURN_TO_RESULTS_FAILED
+
+
+# ==============================================================================
+# REMEDIATION REVIEW REGRESSION TESTS (BROWSER LIFECYCLE & DIAGNOSTIC TIMEOUTS)
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_execution_context_destroyed_does_not_mark_live_page_crashed():
+    """'Execution context was destroyed' during in-page navigation must not mark a live
+    page as crashed, and _execute_return_failure_recovery must recover via page.goto."""
+    err_nav = Exception("Execution context was destroyed, most likely because of a navigation.")
+    assert ms._is_target_closed_or_crashed_error(err_nav) is False
+
+    err_closed = Exception("Target page, context or browser has been closed")
+    assert ms._is_target_closed_or_crashed_error(err_closed) is True
+
+    # Simulate a live page where a back-button query throws 'Execution context was destroyed'
+    feed = _MockElement(attrs={"role": "feed"})
+    bad_btn = _MockElement(
+        attrs={"aria-label": "Back to results", "jsaction": "pane.backButton"},
+        throw_on_click=err_nav,
+    )
+    heading = _MockElement(text="Transient Nav Place")
+    page = _MockPage(
+        url="https://www.google.com/maps/place/Transient+Nav+Place",
+        feed=feed,
+        headings=[heading],
+        back_buttons={"Back to results": bad_btn},
+        is_closed=False,
+        history_length=1,
+    )
+
+    ok = await _return_to_results(
+        page,
+        "div[role='feed']",
+        config=ScraperConfig(return_to_results_timeout_ms=100, scroll_settle_timeout_ms=100),
+    )
+    assert ok is False
+    # Page must remain alive (not flagged _mast_target_crashed)
+    assert _is_page_alive(page) is True
+
+    # Now clear headings and detail back buttons on goto and prove _execute_return_failure_recovery recovers via page.goto
+    orig_goto = page.goto
+    async def goto_and_clear_heading(target_url: str, **kwargs):
+        page.headings.clear()
+        page.back_buttons.clear()
+        return await orig_goto(target_url, **kwargs)
+    page.goto = goto_and_clear_heading
+
+    recovered, nav_used, new_sel = await _execute_return_failure_recovery(
+        page=page,
+        panel_sel="div[role='feed']",
+        search_url="https://www.google.com/maps/search/Coffee+Shop",
+        full_query="Coffee Shop",
+        context_label="transient_exec_ctx_nav",
+        rounds_this_attempt=1,
+        consecutive_return_failures=2,
+        max_consecutive_return_failures=2,
+        search_nav_recovery_used=False,
+        config=ScraperConfig(),
+    )
+    assert recovered is True
+    assert nav_used is True
+    assert page.goto_called is True
+
+
+@pytest.mark.asyncio
+async def test_genuinely_closed_page_fails_without_navigation_recovery():
+    """When page.is_closed() is True, _execute_return_failure_recovery raises SCRAPER_ERROR without attempting goto."""
+    page = _MockPage(is_closed=True)
+    with pytest.raises(ms.DiscoveryFailure) as exc:
+        await ms._execute_return_failure_recovery(
+            page=page,
+            panel_sel="div[role='feed']",
+            search_url="https://www.google.com/maps/search/Coffee",
+            full_query="Coffee",
+            context_label="test_closed_page",
+            rounds_this_attempt=1,
+            consecutive_return_failures=2,
+            max_consecutive_return_failures=2,
+            search_nav_recovery_used=False,
+            config=ms.ScraperConfig(),
+        )
+    assert exc.value.reason == ms.DiscoveryFailureReason.SCRAPER_ERROR
+    assert "closed/crashed" in str(exc.value)
+    assert page.goto_called is False
+
+
+@pytest.mark.asyncio
+async def test_genuinely_closed_context_fails_without_navigation_recovery():
+    """When context.is_closed() is True, _execute_return_failure_recovery raises SCRAPER_ERROR without calling goto."""
+    class _MockClosedCtx:
+        def is_closed(self):
+            return True
+    page = _MockPage(is_closed=False, context=_MockClosedCtx())
+    with pytest.raises(ms.DiscoveryFailure) as exc:
+        await ms._execute_return_failure_recovery(
+            page=page,
+            panel_sel="div[role='feed']",
+            search_url="https://www.google.com/maps/search/Coffee",
+            full_query="Coffee",
+            context_label="test_closed_context",
+            rounds_this_attempt=1,
+            consecutive_return_failures=2,
+            max_consecutive_return_failures=2,
+            search_nav_recovery_used=False,
+            config=ms.ScraperConfig(),
+        )
+    assert exc.value.reason == ms.DiscoveryFailureReason.SCRAPER_ERROR
+    assert page.goto_called is False
+
+
+@pytest.mark.asyncio
+async def test_emit_progress_calling_conventions():
+    """Production _dispatch_progress, _return_to_results, and _execute_return_failure_recovery
+    support 2-arg, 3-arg, and kwargs progress callbacks without raising TypeError."""
+    received_3arg: list[dict[str, Any]] = []
+
+    def observer_3arg_kwargs(stage: str, event: str, item_id: str | None = None, **kwargs: Any) -> None:
+        received_3arg.append({"stage": stage, "event": event, "item_id": item_id, "kwargs": kwargs})
+
+    # 1. Calling convention: 2-arg (event, item_id) + kwargs
+    ms._dispatch_progress(observer_3arg_kwargs, "panel_failure_retry", "PANEL_NOT_FOUND:1", attempt=2)
+    assert received_3arg[-1] == {
+        "stage": "discovery",
+        "event": "panel_failure_retry",
+        "item_id": "PANEL_NOT_FOUND:1",
+        "kwargs": {"attempt": 2},
+    }
+
+    # 2. Calling convention: 3-arg ("discovery", event, item_id)
+    ms._dispatch_progress(observer_3arg_kwargs, "discovery", "card_processed", "item_42")
+    assert received_3arg[-1] == {
+        "stage": "discovery",
+        "event": "card_processed",
+        "item_id": "item_42",
+        "kwargs": {},
+    }
+
+    # 3. Observer that does NOT accept **kwargs (strict 3-arg) must not fail when kwargs are passed
+    received_strict_3arg: list[tuple[str, str, str | None]] = []
+    def observer_strict_3arg(stage: str, event: str, item_id: str | None = None) -> None:
+        received_strict_3arg.append((stage, event, item_id))
+
+    ms._dispatch_progress(observer_strict_3arg, "search_space_expanded", "10", new_unique_ids=10)
+    assert received_strict_3arg[-1] == ("discovery", "search_space_expanded", "10")
+
+    # 4. Observer that only accepts 2 args (event, item_id) works with _return_to_results and _execute_return_failure_recovery
+    received_2arg: list[tuple[str, str | None]] = []
+    def observer_2arg(event: str, item_id: str | None = None) -> None:
+        received_2arg.append((event, item_id))
+
+    feed = _MockElement(attrs={"role": "feed"})
+    page = _MockPage(url="https://www.google.com/maps/place/Test+Cafe", feed=feed, headings=[])
+    await _execute_return_failure_recovery(
+        page=page,
+        panel_sel="div[role='feed']",
+        search_url="https://www.google.com/maps/search/Coffee+Shop",
+        full_query="Coffee Shop",
+        context_label="cb_test",
+        rounds_this_attempt=1,
+        consecutive_return_failures=2,
+        max_consecutive_return_failures=2,
+        search_nav_recovery_used=False,
+        config=ScraperConfig(),
+        on_progress=observer_2arg,  # type: ignore[arg-type]
+    )
+    assert ("return_recovery_attempted", "cb_test") in received_2arg
+    assert ("return_recovery_succeeded", "cb_test") in received_2arg
+
+
+@pytest.mark.asyncio
+async def test_hanging_page_title_bounded_by_timeout():
+    """Production _run_page_load_diagnostics bounds a hanging page.title() call and returns None promptly."""
+    class _HangingTitlePage:
+        url = "https://www.google.com/maps/search/Coffee"
+        async def title(self):
+            await asyncio.sleep(10.0)
+            return "Hanging Title"
+        async def evaluate(self, script):
+            return 123
+
+    page = _HangingTitlePage()
+    t0 = asyncio.get_event_loop().time()
+    res = await ms._run_page_load_diagnostics(page, page.url, timeout_s=0.05)
+    elapsed = asyncio.get_event_loop().time() - t0
+    assert res is None
+    assert elapsed < 0.5, f"Hanging page.title() must time out promptly, took {elapsed:.2f}s"
+
+
+@pytest.mark.asyncio
+async def test_hanging_page_evaluate_bounded_by_timeout():
+    """Production _run_page_load_diagnostics bounds a hanging page.evaluate() call and returns None promptly."""
+    class _HangingEvalPage:
+        url = "https://www.google.com/maps/search/Coffee"
+        async def title(self):
+            return "Coffee - Google Maps"
+        async def evaluate(self, script):
+            await asyncio.sleep(10.0)
+            return 123
+
+    page = _HangingEvalPage()
+    t0 = asyncio.get_event_loop().time()
+    res = await ms._run_page_load_diagnostics(page, page.url, timeout_s=0.05)
+    elapsed = asyncio.get_event_loop().time() - t0
+    assert res is None
+    assert elapsed < 0.5, f"Hanging page.evaluate() must time out promptly, took {elapsed:.2f}s"
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_timeout_does_not_halt_scraper():
+    """Production _run_page_load_diagnostics handles both healthy int body lengths and timeouts without raising."""
+    class _HealthyDiagPage:
+        url = "https://www.google.com/maps/search/Coffee"
+        async def title(self):
+            return "Coffee - Google Maps"
+        async def evaluate(self, script):
+            return 4280  # int returned by document.body?.innerText?.length || 0
+
+    healthy = _HealthyDiagPage()
+    res = await ms._run_page_load_diagnostics(healthy, healthy.url, timeout_s=0.2)
+    assert res == ("Coffee - Google Maps", 4280)

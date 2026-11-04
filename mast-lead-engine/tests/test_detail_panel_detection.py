@@ -346,3 +346,193 @@ async def test_bounded_retry_behavior_remains_unchanged():
 
     assert place_key in exhausted_mismatch_keys
     assert place_key in seen_hrefs, "Card must be abandoned after 2nd failure (1 retry allowed)"
+
+
+# ==============================================================================
+# REMEDIATION REVIEW REGRESSION TESTS (PANEL DETECTION)
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_modern_div_role_main_h1_heading_detected():
+    """Prove modern 'div[role="main"] h1' selector extracts the place name when older selectors are absent."""
+    feed = _MockElement(attrs={"role": "feed"})
+    heading = _MockElement(text="Modern Artisan Coffee")
+
+    class _ModernHeadingPage(_MockPage):
+        async def query_selector(self, selector: str):
+            if selector == "div[role='main'] h1":
+                return heading
+            if selector in ("h1.DUwDvf", "h1.fontHeadlineLarge", "h1[data-item-id]"):
+                return None
+            return await super().query_selector(selector)
+
+    page = _ModernHeadingPage(
+        url="https://www.google.com/maps/place/Modern+Artisan+Coffee/@40.7,-74.0,15z/data=!4m2!3m1!1s0x89c259:0x123",
+        feed=feed,
+    )
+    assert "div[role='main'] h1" in ms._PLACE_NAME_SELECTORS
+    snap = await _read_panel_identity_snapshot(page, feed)
+    assert snap["open"] is True
+    assert snap["name"] == "modern artisan coffee"
+
+
+@pytest.mark.asyncio
+async def test_url_backed_detail_open_detection_when_back_button_absent():
+    """When both back button and heading are absent on a /maps/place/ URL,
+    _read_panel_identity_snapshot still establishes open=True via URL fallback (line 1193)
+    and _evaluate_panel_identity returns waiting_for_panel_name (not waiting_for_detail_panel)."""
+    feed = _MockElement(attrs={"role": "feed"})
+    place_url = "https://www.google.com/maps/place/Solo+Cafe/@40.7,-74.0,15z/data=!4m2!3m1!1s0x89c259:0x456"
+
+    # Case 1: Back button absent AND heading not yet mounted on /maps/place/ URL
+    page_loading = _MockPage(
+        url=place_url,
+        feed=feed,
+        headings=[],       # Heading not mounted yet
+        back_buttons={},   # Back button absent
+    )
+    snap_loading = await _read_panel_identity_snapshot(page_loading, feed)
+    assert snap_loading["open"] is True, "URL fallback (/maps/place/) must set open=True when back button and heading are absent"
+    assert snap_loading["name"] == ""
+    assert snap_loading["place_id"] == "0x89c259:0x456"
+
+    ok_loading, reason_loading = _evaluate_panel_identity(
+        snap_loading,
+        card_href=place_url,
+        place_key="0x89c259:0x456",
+        card_signals={"name": "Solo Cafe"},
+        pre_click_snapshot=None,
+        last_verified_panel=None,
+    )
+    assert ok_loading is False
+    assert reason_loading == "waiting_for_panel_name"
+
+    # Case 2: Heading mounts while back button remains absent -> verified
+    heading = _MockElement(text="Solo Cafe")
+    page_mounted = _MockPage(
+        url=place_url,
+        feed=feed,
+        headings=[heading],
+        back_buttons={},
+    )
+    snap_mounted = await _read_panel_identity_snapshot(page_mounted, feed)
+    assert snap_mounted["open"] is True
+    assert snap_mounted["name"] == "solo cafe"
+    ok_mounted, reason_mounted = _evaluate_panel_identity(
+        snap_mounted,
+        card_href=place_url,
+        place_key="0x89c259:0x456",
+        card_signals={"name": "Solo Cafe"},
+        pre_click_snapshot=None,
+        last_verified_panel=None,
+    )
+    assert ok_mounted is True
+    assert reason_mounted == "verified"
+
+    # Case 3: Search URL (/maps/search/) without back button or heading -> open=False
+    page_search = _MockPage(
+        url="https://www.google.com/maps/search/Coffee+in+Manhattan",
+        feed=feed,
+        headings=[],
+        back_buttons={},
+    )
+    snap_search = await _read_panel_identity_snapshot(page_search, feed)
+    assert snap_search["open"] is False
+
+
+@pytest.mark.asyncio
+async def test_full_identity_timeout_used_when_url_is_place_url():
+    """Prove _resolve_identity_wait_ms and _wait_for_verified_panel_identity use full
+    place_timeout_ms (not the 250ms cap) when page is on a /maps/place/ URL even if
+    found_panel is False, allowing headings that mount after 250ms to verify."""
+    config = ScraperConfig(place_timeout_ms=1200)
+    feed = _MockElement(attrs={"role": "feed"})
+    place_url = "https://www.google.com/maps/place/Slow+Cafe/@40.7,-74.0,15z/data=!4m2!3m1!1s0x89c259:0x789"
+
+    class _DelayedHeadingPage(_MockPage):
+        def __init__(self):
+            super().__init__(url=place_url, feed=feed, headings=[], back_buttons={})
+            self._t0 = asyncio.get_event_loop().time()
+
+        async def query_selector(self, selector: str):
+            # Heading only mounts after 320ms (past the 250ms non-place cap)
+            if selector in ms._PLACE_NAME_SELECTORS:
+                if asyncio.get_event_loop().time() - self._t0 >= 0.32:
+                    return _MockElement(text="Slow Cafe")
+                return None
+            return await super().query_selector(selector)
+
+    page = _DelayedHeadingPage()
+    # Even when found_panel is False, place URL selects full place_timeout_ms (1200ms)
+    identity_wait_ms = ms._resolve_identity_wait_ms(page, found_panel=False, config=config)
+    assert identity_wait_ms == 1200
+
+    # Verify non-place URL with found_panel=False still caps at 250ms
+    search_page = _MockPage(url="https://www.google.com/maps/search/Coffee+Shop", feed=feed)
+    assert ms._resolve_identity_wait_ms(search_page, found_panel=False, config=config) == 250
+
+    # End-to-end poll with _wait_for_verified_panel_identity succeeds after 320ms
+    ok, snap, reason = await ms._wait_for_verified_panel_identity(
+        page,
+        feed_el=feed,
+        card_href=place_url,
+        place_key="0x89c259:0x789",
+        card_signals={"name": "Slow Cafe"},
+        pre_click_snapshot=None,
+        last_verified_panel=None,
+        timeout_ms=identity_wait_ms,
+    )
+    assert ok is True
+    assert reason == "verified"
+    assert snap["name"] == "slow cafe"
+
+
+@pytest.mark.asyncio
+async def test_multiple_m6qerb_candidates_finds_scrollable_feed():
+    """When candidate 0 of div.m6QErb is not scrollable, _resolve_results_panel checks alternate candidates."""
+    cand0 = _MockElement(attrs={"class": "m6QErb"})
+    async def eval_cand0(script, *_args):
+        if "scrollHeight" in script:
+            return {"scrollHeight": 500, "clientHeight": 500, "childCount": 1}
+        return None
+    cand0.evaluate = eval_cand0
+
+    cand1 = _MockElement(attrs={"class": "m6QErb", "role": "feed"})
+    async def eval_cand1(script, *_args):
+        if "scrollHeight" in script:
+            return {"scrollHeight": 2000, "clientHeight": 600, "childCount": 10}
+        return None
+    cand1.evaluate = eval_cand1
+
+    class _MultiFeedPage(_MockPage):
+        async def query_selector(self, selector: str):
+            if selector in ("div[role='feed']", "div.m6QErb[aria-label]"):
+                return None
+            if selector == "div.m6QErb":
+                return cand0
+            return None
+
+        async def query_selector_all(self, selector: str):
+            if selector == "div.m6QErb":
+                return [cand0, cand1]
+            return []
+
+    page = _MultiFeedPage()
+    config = ScraperConfig()
+    sel, panel = await ms._resolve_results_panel(page, config=config)
+    assert sel == "div.m6QErb"
+    assert panel is cand1
+
+
+@pytest.mark.asyncio
+async def test_unrelated_headings_and_non_scrollable_containers_rejected():
+    """Unrelated modal headings or non-scrollable containers are rejected."""
+    cand = _MockElement()
+    async def eval_cand(script, *_args):
+        if "scrollHeight" in script:
+            return {"scrollHeight": 100, "clientHeight": 100, "childCount": 0}
+        return None
+    cand.evaluate = eval_cand
+    valid, evidence = await ms._validate_panel_candidate(_MockPage(), cand, selector="div.m6QErb", strict=True)
+    assert valid is False
+    assert "not scrollable" in evidence

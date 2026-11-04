@@ -7,6 +7,7 @@ import { resolveInstagramToPersist } from "../lib/instagram.js";
 import { computeAndStoreBusinessHealth } from "../scoring/storeBusinessHealth.js";
 import { computeAndStoreOpportunityScores } from "../scoring/storeOpportunityScores.js";
 import { toJson, isJsonObject } from "../lib/json.js";
+import { deriveWebsiteReachable } from "../lib/reachability.js";
 import type { Json, Database } from "../types/database.types.js";
 import { env } from "../config/env.js";
 import { aiEnabled, generateJSON, AI_MODEL, getAiModel } from "../lib/ai.js";
@@ -592,10 +593,12 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal, options?
             rendering_fallback_yield: site.rendering_fallback_yield ?? false,
           }
         : undefined;
+    const nextWebsiteReachable = deriveWebsiteReachable(contactAudit ? { contact_audit: contactAudit } : undefined, site.website_reachable);
     const nextSignals =
-      nextTechStack !== undefined || nextGrowthSignals !== undefined || contactAudit !== undefined || Object.keys(currentSignals).length > 0
+      nextTechStack !== undefined || nextGrowthSignals !== undefined || contactAudit !== undefined || nextWebsiteReachable !== undefined || Object.keys(currentSignals).length > 0
         ? toJson({
             ...currentSignals,
+            ...(nextWebsiteReachable !== undefined ? { website_reachable: nextWebsiteReachable } : {}),
             ...(nextTechStack !== undefined ? { tech_stack: nextTechStack } : {}),
             ...(nextGrowthSignals !== undefined ? { growth_signals: nextGrowthSignals } : {}),
             ...(contactAudit !== undefined ? { contact_audit: contactAudit } : {}),

@@ -2066,6 +2066,37 @@ export class WatchdogStateMachine {
   }
 }
 
+export function dispatchWatchdogProgressEvent(
+  watchdog: WatchdogStateMachine,
+  parsed: Record<string, unknown>,
+): void {
+  const eventName = typeof parsed.event === "string" ? parsed.event : "";
+
+  if (eventName === "service_ready") {
+    watchdog.onServiceReady();
+  } else if (eventName === "heartbeat") {
+    const seq = typeof parsed.seq === "number" ? parsed.seq : -1;
+    watchdog.onHeartbeat(seq);
+  } else if (eventName === "search_space_expanded") {
+    const count = Number(parsed.new_unique_ids ?? parsed.item_id ?? 0);
+    watchdog.onSearchSpaceExpanded(count);
+  } else if (eventName === "card_attempt_started") {
+    const attemptKey = String(parsed.item_id ?? "unknown");
+    watchdog.onCardAttemptStarted(attemptKey);
+  } else if (eventName === "card_processed") {
+    const processedKey = String(parsed.item_id ?? "unknown");
+    watchdog.onCardProcessed(processedKey);
+  } else if (eventName === "attempt_rebuilding" || eventName === "panel_failure_retry") {
+    watchdog.onAttemptRebuilding();
+  } else if (eventName === "candidate_discovered" || eventName === "candidate_duplicate_skipped") {
+    watchdog.onCandidateDiscovered();
+  } else if (eventName === "search_exhausted") {
+    watchdog.onSearchExhausted();
+  } else if (isGenuineProgressEvent(parsed)) {
+    watchdog.onGenuineProgress();
+  }
+}
+
 export type ResolutionContext = {
   success: boolean;
   targetReached?: boolean;
@@ -2625,32 +2656,7 @@ export async function* runEngineQuery(
 
       // PART C (Phase 2 — watchdog progress, liveness, & milestone protocol):
       if (parsed.type === "progress") {
-        const eventName = typeof parsed.event === "string" ? parsed.event : "";
-
-        // Watchdog state machine transitions:
-        if (eventName === "service_ready") {
-          watchdog.onServiceReady();
-        } else if (eventName === "heartbeat") {
-          const seq = typeof parsed.seq === "number" ? parsed.seq : -1;
-          watchdog.onHeartbeat(seq);
-        } else if (eventName === "search_space_expanded") {
-          const count = Number(parsed.new_unique_ids ?? parsed.item_id ?? 0);
-          watchdog.onSearchSpaceExpanded(count);
-        } else if (eventName === "card_attempt_started") {
-          const attemptKey = String(parsed.item_id ?? "unknown");
-          watchdog.onCardAttemptStarted(attemptKey);
-        } else if (eventName === "card_processed") {
-          const processedKey = String(parsed.item_id ?? "unknown");
-          watchdog.onCardProcessed(processedKey);
-        } else if (eventName === "attempt_rebuilding") {
-          watchdog.onAttemptRebuilding();
-        } else if (eventName === "candidate_discovered" || eventName === "candidate_duplicate_skipped") {
-          watchdog.onCandidateDiscovered();
-        } else if (eventName === "search_exhausted") {
-          watchdog.onSearchExhausted();
-        } else if (isGenuineProgressEvent(parsed)) {
-          watchdog.onGenuineProgress();
-        }
+        dispatchWatchdogProgressEvent(watchdog, parsed);
 
         console.debug(
           `[scraper-bridge] ${logPrefix} progress stage=${parsed.stage} event=${parsed.event} item=${parsed.item_id ?? "n/a"}`,

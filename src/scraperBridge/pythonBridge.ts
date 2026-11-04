@@ -1872,6 +1872,7 @@ export class WatchdogStateMachine {
   private readonly seenCardAttempts = new Set<string>();
   private readonly processedCardAttempts = new Set<string>();
   private rebuildCount = 0;
+  private activeRebuildAttempt: number | null = null;
   private timedOut = false;
   private timedOutReason: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT" | null = null;
 
@@ -1985,6 +1986,7 @@ export class WatchdogStateMachine {
     }
     this.seenCardAttempts.add(attemptKey);
     this.state = "CARD_ATTEMPT";
+    this.activeRebuildAttempt = null;
     // Explicitly cancel active scrolling progress deadline
     this.cancelOperationTimer();
     this.operationTimer = setTimeout(() => {
@@ -2004,10 +2006,26 @@ export class WatchdogStateMachine {
     return true;
   }
 
-  onAttemptRebuilding(): boolean {
+  onAttemptRebuilding(targetAttempt?: number): boolean {
+    if (
+      this.state === "REBUILDING" &&
+      targetAttempt !== undefined &&
+      this.activeRebuildAttempt === targetAttempt
+    ) {
+      // Deduplicated: multiple events for the same crash/rebuild cycle (e.g.
+      // attempt_rebuilding + panel_failure_retry + retry attempt start) must not
+      // consume multiple rebuild slots from maxRebuilds.
+      this.cancelOperationTimer();
+      this.operationTimer = setTimeout(() => {
+        this.fire("DISCOVERY_PROGRESS_TIMEOUT", `recovery rebuild deadline (${this.recoveryDeadlineMs}ms) exceeded`);
+      }, this.recoveryDeadlineMs);
+      this.operationTimer.unref?.();
+      return true;
+    }
     if (this.rebuildCount < this.maxRebuilds) {
       this.rebuildCount += 1;
       this.state = "REBUILDING";
+      this.activeRebuildAttempt = targetAttempt ?? null;
       // Explicitly cancel card attempt deadline and replace with recovery deadline
       this.cancelOperationTimer();
       this.operationTimer = setTimeout(() => {
@@ -2028,6 +2046,7 @@ export class WatchdogStateMachine {
 
   onSearchExhausted() {
     this.state = "SEARCH_EXHAUSTED";
+    this.activeRebuildAttempt = null;
     this.cancelOperationTimer();
     this.operationTimer = setTimeout(() => {
       this.fire("DISCOVERY_PROGRESS_TIMEOUT", `finalization deadline (${this.finalizationDeadlineMs}ms) exceeded`);
@@ -2051,6 +2070,7 @@ export class WatchdogStateMachine {
 
   transitionToScrolling() {
     this.state = "SCROLLING";
+    this.activeRebuildAttempt = null;
     this.cancelOperationTimer();
     this.operationTimer = setTimeout(() => {
       this.fire("DISCOVERY_PROGRESS_TIMEOUT", `scrolling progress timeout (${this.progressTimeoutMs}ms)`);
@@ -2087,7 +2107,21 @@ export function dispatchWatchdogProgressEvent(
     const processedKey = String(parsed.item_id ?? "unknown");
     watchdog.onCardProcessed(processedKey);
   } else if (eventName === "attempt_rebuilding" || eventName === "panel_failure_retry") {
-    watchdog.onAttemptRebuilding();
+    const rawItem = String(parsed.item_id ?? "").trim();
+    let targetAttempt: number | undefined;
+    if (eventName === "panel_failure_retry") {
+      const colonIdx = rawItem.lastIndexOf(":");
+      const failedAttempt = colonIdx >= 0 ? Number(rawItem.slice(colonIdx + 1)) : Number(rawItem);
+      if (Number.isFinite(failedAttempt) && failedAttempt >= 1) {
+        targetAttempt = failedAttempt + 1;
+      }
+    } else if (rawItem.length > 0) {
+      const parsedAttempt = Number(rawItem);
+      if (Number.isFinite(parsedAttempt) && parsedAttempt >= 1) {
+        targetAttempt = Math.max(2, parsedAttempt);
+      }
+    }
+    watchdog.onAttemptRebuilding(targetAttempt);
   } else if (eventName === "candidate_discovered" || eventName === "candidate_duplicate_skipped") {
     watchdog.onCandidateDiscovered();
   } else if (eventName === "search_exhausted") {

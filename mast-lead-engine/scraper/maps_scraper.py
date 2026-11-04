@@ -1062,6 +1062,21 @@ _DETAIL_BACK_BUTTON_SELECTORS = (
 _PANEL_HEADER_EXCLUSIONS = frozenset({"results", "search results", "النتائج"})
 
 
+def _is_excluded_panel_header(text: str | None) -> bool:
+    """Return True if `text` is empty or matches a generic search-results header
+    rather than an individual place name."""
+    if not text:
+        return True
+    low = text.strip().lower()
+    if not low:
+        return True
+    if low in _PANEL_HEADER_EXCLUSIONS:
+        return True
+    if low.startswith("results for ") or low.startswith("search results"):
+        return True
+    return False
+
+
 def _is_conclusively_disqualified_by_name(name: str | None) -> bool:
     """Return True if and only if `name` alone conclusively matches the
     canonical CHAIN_KEYWORDS or CANNABIS_KEYWORDS disqualification rules
@@ -1086,13 +1101,13 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
             if el is not None and el is not feed_el:
                 if hasattr(el, "inner_text"):
                     txt = (await el.inner_text() or "").strip()
-                    if txt and txt.lower() not in _PANEL_HEADER_EXCLUSIONS:
+                    if not _is_excluded_panel_header(txt):
                         return True
                     if hasattr(page, "query_selector_all"):
                         for cand in await page.query_selector_all(sel):
                             if cand is not None and cand is not feed_el and hasattr(cand, "inner_text"):
                                 ctxt = (await cand.inner_text() or "").strip()
-                                if ctxt and ctxt.lower() not in _PANEL_HEADER_EXCLUSIONS:
+                                if not _is_excluded_panel_header(ctxt):
                                     return True
         except Exception:
             continue
@@ -1117,10 +1132,10 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
     Phase 3 optimization: when `_is_detail_pane_open` has not been monkeypatched,
     reads `raw_name` in a single pass over `_PLACE_NAME_SELECTORS` instead of
     querying and reading the heading selectors twice per snapshot poll.
+    Excluded search-feed headers (e.g. 'Results') are never promoted into `raw_name`.
     """
     raw_name = ""
     raw_address = ""
-    fallback_header_name = ""
     if _is_detail_pane_open is not _DEFAULT_IS_DETAIL_PANE_OPEN:
         detail_open = await _is_detail_pane_open(page, feed_el)
         if detail_open:
@@ -1129,15 +1144,20 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                     el = await page.query_selector(sel)
                     if el is not None and el is not feed_el and hasattr(el, "inner_text"):
                         t = (await el.inner_text() or "").strip()
-                        if t and t.lower() not in _PANEL_HEADER_EXCLUSIONS:
+                        if not _is_excluded_panel_header(t):
                             raw_name = t
                             break
-                        if t and not fallback_header_name:
-                            fallback_header_name = t
+                    if hasattr(page, "query_selector_all"):
+                        for cand in await page.query_selector_all(sel):
+                            if cand is not None and cand is not feed_el and hasattr(cand, "inner_text"):
+                                ct = (await cand.inner_text() or "").strip()
+                                if not _is_excluded_panel_header(ct):
+                                    raw_name = ct
+                                    break
+                        if raw_name:
+                            break
                 except Exception:
                     continue
-            if not raw_name and fallback_header_name:
-                raw_name = fallback_header_name
     else:
         detail_open = False
         for sel in _PLACE_NAME_SELECTORS:
@@ -1145,28 +1165,22 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                 el = await page.query_selector(sel)
                 if el is not None and el is not feed_el and hasattr(el, "inner_text"):
                     t = (await el.inner_text() or "").strip()
-                    if t and t.lower() not in _PANEL_HEADER_EXCLUSIONS:
+                    if not _is_excluded_panel_header(t):
                         raw_name = t
                         detail_open = True
                         break
-                    if t and not fallback_header_name:
-                        fallback_header_name = t
                     if hasattr(page, "query_selector_all"):
                         for cand in await page.query_selector_all(sel):
                             if cand is not None and cand is not feed_el and hasattr(cand, "inner_text"):
                                 ct = (await cand.inner_text() or "").strip()
-                                if ct and ct.lower() not in _PANEL_HEADER_EXCLUSIONS:
+                                if not _is_excluded_panel_header(ct):
                                     raw_name = ct
                                     detail_open = True
                                     break
-                                if ct and not fallback_header_name:
-                                    fallback_header_name = ct
                         if detail_open:
                             break
             except Exception:
                 continue
-        if not raw_name and fallback_header_name:
-            raw_name = fallback_header_name
         if not detail_open:
             for sel in _DETAIL_BACK_BUTTON_SELECTORS:
                 try:
@@ -1215,7 +1229,10 @@ def _evaluate_panel_identity(
 ) -> tuple[bool, str]:
     """Verify whether `snap` belongs to the intended clicked card rather than a
     stale detail panel left over from an earlier card."""
-    if not snap.get("open") and not snap.get("name"):
+    raw_snap_name = snap.get("raw_name") or snap.get("name") or ""
+    panel_name = "" if _is_excluded_panel_header(raw_snap_name) else (snap.get("name") or "")
+
+    if not snap.get("open") and not panel_name:
         if allow_stub:
             # Minimal unit-test stub without detail-panel DOM elements
             return True, "stub_no_detail_dom"
@@ -1227,7 +1244,6 @@ def _evaluate_panel_identity(
     card_slug_name = _place_name_from_href(card_href)
     expected_name = card_name or card_slug_name
     card_addr_hint = _extract_card_address_hint(card_signals, expected_name)
-    panel_name = snap.get("name") or ""
     panel_addr = snap.get("address") or ""
 
     # 1. Strongest check: stable place-ID comparison when both card and panel URL expose one.
@@ -1802,7 +1818,8 @@ async def _can_continue_from_split_results_feed(
 
 async def _human_click(page: Page, element) -> None:
     """Click an element using real Playwright mouse hover + actionability-checked click,
-    falling back to force-click and DOM click if needed."""
+    falling back to direct DOM click (`el.click()`) and force-click if needed."""
+    last_exc: Exception | None = None
     try:
         if hasattr(element, "bounding_box") and hasattr(page, "mouse"):
             box = await element.bounding_box()
@@ -1813,18 +1830,21 @@ async def _human_click(page: Page, element) -> None:
                 await asyncio.sleep(random.uniform(0.04, 0.10))
         await element.click(timeout=3000)
         return
-    except Exception:
-        pass
-    try:
-        await element.click(force=True, timeout=2000)
-        return
-    except Exception:
-        pass
+    except Exception as exc:
+        last_exc = exc
     try:
         if hasattr(element, "evaluate"):
             await element.evaluate("el => el.click()")
-    except Exception:
-        pass
+            return
+    except Exception as exc:
+        last_exc = exc
+    try:
+        await element.click(force=True, timeout=2000)
+        return
+    except Exception as exc:
+        last_exc = exc
+    if last_exc is not None:
+        raise last_exc
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1973,14 +1993,22 @@ _DEFAULT_WAIT_FOR_PLACE_SETTLE = _wait_for_place_settle
 
 
 async def _try_selectors(page: Page, selectors: list[str]) -> str:
-    """Try each selector in order, returning first non-empty text."""
+    """Try each selector in order, returning first non-empty text (skipping excluded
+    search-results headers when querying place name selectors)."""
+    check_exclusions = selectors is _PLACE_NAME_SELECTORS
     for sel in selectors:
         try:
             el = await page.query_selector(sel)
             if el:
                 text = (await el.inner_text()).strip()
-                if text:
+                if text and not (check_exclusions and _is_excluded_panel_header(text)):
                     return text
+            if check_exclusions and hasattr(page, "query_selector_all"):
+                for cand in await page.query_selector_all(sel):
+                    if cand is not None and hasattr(cand, "inner_text"):
+                        ct = (await cand.inner_text() or "").strip()
+                        if ct and not _is_excluded_panel_header(ct):
+                            return ct
         except Exception:
             continue
     return ""
@@ -2261,6 +2289,28 @@ _PLACE_EXTRACT_SELECTORS: dict[str, list[str]] = {
 # not blank out the others, exactly as today.
 _PLACE_EXTRACT_JS = """
 (sel) => {
+    const EXCLUDED_HEADERS = new Set(["results", "search results", "النتائج"]);
+    function isExcludedHeader(t) {
+        const low = (t || "").trim().toLowerCase();
+        if (!low) return true;
+        if (EXCLUDED_HEADERS.has(low)) return true;
+        if (low.startsWith("results for ") || low.startsWith("search results")) return true;
+        return false;
+    }
+
+    function firstNonExcludedName(selectors) {
+        for (const s of selectors) {
+            try {
+                const els = document.querySelectorAll(s);
+                for (const el of els) {
+                    const t = (el.innerText || "").trim();
+                    if (t && !isExcludedHeader(t)) return t;
+                }
+            } catch (e) {}
+        }
+        return "";
+    }
+
     function firstNonEmptyText(selectors) {
         for (const s of selectors) {
             try {
@@ -2274,7 +2324,7 @@ _PLACE_EXTRACT_JS = """
         return "";
     }
 
-    const name = firstNonEmptyText(sel.name);
+    const name = firstNonExcludedName(sel.name);
     const category = firstNonEmptyText(sel.category);
     const address = firstNonEmptyText(sel.address);
     const ratingRaw = firstNonEmptyText(sel.rating);
@@ -3986,6 +4036,7 @@ class MapsScraper:
                             is_minimal_stub = _is_detail_pane_open is not _DEFAULT_IS_DETAIL_PANE_OPEN
                             with self._profiler.timer("place_panel_wait"):
                                 found_panel = False
+                                panel_el = None
                                 try:
                                     try:
                                         panel_el = await page.wait_for_selector(
@@ -3995,16 +4046,57 @@ class MapsScraper:
                                         )
                                         found_panel = panel_el is not None
                                     except TypeError:
+                                        is_minimal_stub = True
                                         await page.wait_for_selector(
                                             _PLACE_NAME_SELECTOR_COMBINED,
                                             timeout=max(100, min(self.config.place_timeout_ms, 4000)),
                                         )
                                         found_panel = True
-                                        is_minimal_stub = True
-                                    if found_panel:
-                                        self._profiler.incr("place_panel_wait_resolved")
                                 except (PlaywrightTimeoutError, Exception):
                                     pass
+
+                                if found_panel and not is_minimal_stub and panel_el is not None:
+                                    if panel_el is panel or not hasattr(panel_el, "inner_text"):
+                                        is_minimal_stub = True
+                                    else:
+                                        try:
+                                            panel_el_txt = (await panel_el.inner_text() or "").strip()
+                                        except Exception:
+                                            panel_el_txt = ""
+                                        if _is_excluded_panel_header(panel_el_txt):
+                                            # `wait_for_selector` matched the persistent search-sidebar
+                                            # header (e.g. `<h1>Results</h1>`) rather than an opened
+                                            # detail panel. Poll for actual detail-pane opening.
+                                            if not await _is_detail_pane_open(page, panel):
+                                                found_panel = False
+                                                poll_budget_s = max(
+                                                    0.08,
+                                                    min(self.config.place_timeout_ms, 2500) / 1000.0,
+                                                )
+                                                poll_start = asyncio.get_event_loop().time()
+                                                poll_deadline = poll_start + poll_budget_s
+                                                retried_dom_click = False
+                                                while asyncio.get_event_loop().time() < poll_deadline:
+                                                    curr_u = getattr(page, "url", "") or ""
+                                                    if await _is_detail_pane_open(page, panel) or (
+                                                        "/maps/place/" in curr_u and "/maps/search/" not in curr_u
+                                                    ):
+                                                        found_panel = True
+                                                        break
+                                                    if (
+                                                        not retried_dom_click
+                                                        and (asyncio.get_event_loop().time() - poll_start) >= 0.35
+                                                        and hasattr(anchor, "evaluate")
+                                                    ):
+                                                        retried_dom_click = True
+                                                        try:
+                                                            await anchor.evaluate("el => el.click()")
+                                                        except Exception:
+                                                            pass
+                                                    await asyncio.sleep(0.04)
+
+                                if found_panel:
+                                    self._profiler.incr("place_panel_wait_resolved")
 
                                 if not found_panel:
                                     if await _is_detail_pane_open(page, panel):
@@ -4235,7 +4327,7 @@ class MapsScraper:
                                     f"attempt={attempt}/{max_attempts} yielded={yielded}"
                                 )
                                 _emit_card_processed("timeout_exhausted")
-                                _emit_progress("attempt_rebuilding", str(attempt))
+                                _emit_progress("attempt_rebuilding", str(attempt + 1))
                                 if should_stop is not None and should_stop():
                                     generator_closing = True
                                     return
@@ -4375,7 +4467,7 @@ class MapsScraper:
                                             )
                                             last_verified_panel = None
                                             consecutive_mismatches_in_round = 0
-                                            if await _is_feed_ready(page, panel_sel):
+                                            if await _wait_for_feed_restored(page, panel_sel, timeout_s=1.5):
                                                 _emit_progress("return_recovery_succeeded", "stale_panel_mismatch")
                                                 continue
                                             else:

@@ -501,6 +501,7 @@ export async function generateJSON<T>(params: {
   let responseModel: string | undefined;
   let modelDurationMs = 0;
   let rawText = "";
+  let boostTokensForReasoningRetry = false;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     const remainingMs = deadline - Date.now();
@@ -532,8 +533,8 @@ export async function generateJSON<T>(params: {
     const attemptBudget =
       attempt === 1
         ? Math.min(
-            remainingMs - (process.env.NODE_ENV === "test" ? 2000 : 4000),
-            22_000,
+            remainingMs - (process.env.NODE_ENV === "test" ? 2000 : 6000),
+            16_000,
           )
         : remainingMs;
     const attemptTimeout = Math.max(1000, Math.min(remainingMs, attemptBudget));
@@ -544,6 +545,9 @@ export async function generateJSON<T>(params: {
 
     let lastAnalysis: ResponseAnalysis | null = null;
     const modelStart = Date.now();
+    const effectiveMaxTokens = boostTokensForReasoningRetry
+      ? Math.max(maxTokens * 2, 2400)
+      : maxTokens;
 
     try {
       if (typeof ai.chat?.completions?.create === "function") {
@@ -553,15 +557,15 @@ export async function generateJSON<T>(params: {
             { role: "system", content: params.system },
             { role: "user", content: params.user },
           ],
-          max_tokens: maxTokens,
+          max_tokens: effectiveMaxTokens,
           temperature: 0.3,
         };
 
         // OpenRouter optimizations
         if (env.OPENROUTER_API_KEY) {
-          // OpenRouter only accepts 'reasoning' for models with reasoning capabilities (e.g. DeepSeek R1, OpenAI o1/o3).
+          // OpenRouter only accepts 'reasoning' for models with reasoning capabilities (e.g. DeepSeek R1, OpenAI o1/o3, QwQ, Nemotron).
           // Non-reasoning models reject this parameter with a 400 or downstream 502/503 error.
-          if (/(?:reasoning|thinking|\br1\b|\bo1\b|\bo3\b)/i.test(model)) {
+          if (/(?:reasoning|thinking|\br1\b|\bo1\b|\bo3\b|\bqwq\b|nemotron)/i.test(model)) {
             completionParams.reasoning = { effort: "low" };
           }
           // If a specific free model is requested, supply a fallback to openrouter/free (max 3 items strictly enforced).
@@ -717,6 +721,9 @@ export async function generateJSON<T>(params: {
       const timeRemaining = deadline - Date.now();
       if (attempt === 1 && timeRemaining >= 4000) {
         retryCount++;
+        if (lastAnalysis?.hasReasoning || lastAnalysis?.finishReason === "length") {
+          boostTokensForReasoningRetry = true;
+        }
         const reason =
           lastAnalysis?.finishReason === "length"
             ? "length_truncation_empty"
@@ -787,6 +794,7 @@ export async function generateJSON<T>(params: {
       const timeRemaining = deadline - Date.now();
       if (attempt === 1 && timeRemaining >= 4000) {
         retryCount++;
+        boostTokensForReasoningRetry = true;
         const reason = "thinking_tags_only_without_content";
         retryReasons.push(reason);
         logAiDiagnostic("ai:retry", {

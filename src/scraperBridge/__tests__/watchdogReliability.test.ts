@@ -405,6 +405,96 @@ describe("Watchdog Reliability Architecture", () => {
       watchdog.clearAll();
     });
 
+    test("Single crash sequence (attempt_rebuilding + panel_failure_retry + attempt_rebuilding) increments rebuildCount only once", (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+      let timedOutReason: string | null = null;
+
+      const watchdog = new WatchdogStateMachine({
+        startupDeadlineMs: 45_000,
+        livenessTimeoutMs: 300_000,
+        progressTimeoutMs: 90_000,
+        cardAttemptDeadlineMs: 60_000,
+        recoveryDeadlineMs: 70_000,
+        maxRebuilds: 2,
+        onTimeout: (reason) => {
+          timedOutReason = reason;
+        },
+      });
+
+      dispatchWatchdogProgressEvent(watchdog, { type: "progress", stage: "startup", event: "service_ready" });
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "card_attempt_started",
+        item_id: "0x80c2c6:0x123:1",
+      });
+      assert.equal(watchdog.getState(), "CARD_ATTEMPT");
+
+      // Crash #1 (Attempt 1 -> Attempt 2): Python emits attempt_rebuilding on card timeout,
+      // panel_failure_retry on DiscoveryFailure(SCRAPER_ERROR:1), and attempt_rebuilding("2")
+      // when retry attempt 2 starts. All three belong to rebuild cycle -> attempt 2.
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "attempt_rebuilding",
+        item_id: "2",
+      });
+      assert.equal(watchdog.getState(), "REBUILDING");
+      assert.equal(watchdog.getRebuildCount(), 1);
+
+      t.mock.timers.tick(2_000);
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "panel_failure_retry",
+        item_id: "SCRAPER_ERROR:1",
+      });
+      assert.equal(watchdog.getState(), "REBUILDING");
+      assert.equal(watchdog.getRebuildCount(), 1, "panel_failure_retry for attempt 1 must not double-count rebuild #1");
+
+      t.mock.timers.tick(100);
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "attempt_rebuilding",
+        item_id: "2",
+      });
+      assert.equal(watchdog.getState(), "REBUILDING");
+      assert.equal(watchdog.getRebuildCount(), 1, "attempt_rebuilding('2') at retry start must not triple-count rebuild #1");
+
+      // Advance 65s (still within refreshed 70s recovery deadline for Rebuild #1)
+      t.mock.timers.tick(65_000);
+      assert.equal(watchdog.isTimedOut(), false);
+
+      // Attempt 2 recovers and begins card attempt
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "card_attempt_started",
+        item_id: "0x80c2c6:0x456:1",
+      });
+      assert.equal(watchdog.getState(), "CARD_ATTEMPT");
+
+      // Crash #2 (Attempt 2 -> Attempt 3): must still be accepted within maxRebuilds=2!
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "panel_failure_retry",
+        item_id: "SCRAPER_ERROR:2",
+      });
+      dispatchWatchdogProgressEvent(watchdog, {
+        type: "progress",
+        stage: "discovery",
+        event: "attempt_rebuilding",
+        item_id: "3",
+      });
+      assert.equal(watchdog.getState(), "REBUILDING");
+      assert.equal(watchdog.getRebuildCount(), 2, "Second distinct crash cycle must increment rebuildCount to 2");
+      assert.equal(timedOutReason, null);
+
+      watchdog.clearAll();
+    });
+
     test("Non-scrolling progress events during CARD_ATTEMPT do NOT overwrite card deadline", (t) => {
       t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
       let timedOutReason: string | null = null;

@@ -93,6 +93,7 @@ export type AreaTerminationReason =
   | "DISCOVERY_PROGRESS_TIMEOUT"
   | "CANCELLED"
   | "RETURN_TO_RESULTS_FAILED"
+  | "PANEL_VERIFICATION_FAILED"
   | "FAILURE"
   | "area_productivity_timeout_before_first_qualified"
   | "area_productivity_idle_timeout"
@@ -130,6 +131,8 @@ export function determineAreaWorkSource(evidence: AreaWorkEvidence): AreaWorkSou
     evidence.terminationReason === "PROCESS_UNRESPONSIVE" ||
     evidence.terminationReason === "DISCOVERY_PROGRESS_TIMEOUT" ||
     evidence.terminationReason === "CANCELLED" ||
+    evidence.terminationReason === "RETURN_TO_RESULTS_FAILED" ||
+    evidence.terminationReason === "PANEL_VERIFICATION_FAILED" ||
     evidence.terminationReason === "FAILURE" ||
     // PHASE 12D: an adaptive area-productivity stop is, from a telemetry-
     // honesty standpoint, the exact same shape as any other early stop —

@@ -1,5 +1,5 @@
 import { supabaseAdmin } from "../lib/supabaseAdmin.js";
-import { validateLead, isValidPhone, isValidEmail } from "../lib/leadValidation.js";
+import { validateLead, isValidPhone, isValidEmail, sanitizeLeadContacts } from "../lib/leadValidation.js";
 import { evaluateLeadQuality } from "../lib/leadQualityPolicy.js";
 import { evaluateEarlyChannelPrune } from "./earlyPrune.js";
 import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.js";
@@ -38,8 +38,44 @@ export const candidatePipelineDeps = {
 export function validateDiscoveryCandidate(lead: EngineLead): { valid: true } | { valid: false; reason: string } {
   if (!lead.name?.trim()) return { valid: false, reason: "missing_name" };
   if (!lead.address?.trim()) return { valid: false, reason: "missing_address" };
-  if (!lead.maps_link?.includes("google.")) return { valid: false, reason: "missing_maps_provenance" };
+
+  const rawMapsLink = lead.maps_link || (lead as any).maps_url || (lead as any).url || "";
+  const hasMapsProvenance =
+    Boolean(rawMapsLink && (rawMapsLink.includes("google.") || rawMapsLink.includes("goo.gl") || rawMapsLink.includes("/maps/"))) ||
+    Boolean((lead as any).place_id || (lead as any).maps_place_id);
+
+  if (!hasMapsProvenance) {
+    return { valid: false, reason: "missing_maps_provenance" };
+  }
+
+  // Ensure normalized maps_link is populated on lead for downstream consumers
+  if (!lead.maps_link) {
+    if (rawMapsLink) {
+      lead.maps_link = rawMapsLink.startsWith("/") ? `https://www.google.com${rawMapsLink}` : rawMapsLink;
+    } else if ((lead as any).place_id) {
+      lead.maps_link = `https://www.google.com/maps/place/?q=place_id:${(lead as any).place_id}`;
+    }
+  }
+
   if (lead.closed || lead.is_disqualified) return { valid: false, reason: "disqualified" };
+
+  // Normalize website: if website is missing protocol (e.g. "example.com" or "instagram.com/biz"), prepend https://
+  if (lead.website && typeof lead.website === "string") {
+    const trimmedWeb = lead.website.trim();
+    if (trimmedWeb && !/^https?:\/\//i.test(trimmedWeb) && trimmedWeb.includes(".")) {
+      lead.website = `https://${trimmedWeb}`;
+    }
+  }
+
+  // If lead.website is an Instagram URL and lead.instagram is not set, set it!
+  if (lead.website && !lead.instagram && /instagram\.com/i.test(lead.website)) {
+    lead.instagram = lead.website;
+  }
+
+  // Sanitize optional contact fields so malformed optional channels don't kill
+  // an otherwise valid business that has other valid channels
+  sanitizeLeadContacts(lead);
+
   return validateLead(lead);
 }
 

@@ -1971,6 +1971,55 @@ _CONTENT_MARKER_ADDRESS_SELECTORS = (
     "div[data-item-id='address']",
     "button[data-item-id*='address']",
 )
+_CONTENT_MARKER_BUTTON_SELECTORS = (
+    "button[aria-label='Back to results']",
+    "button[aria-label*='back to results' i]",
+    "button[jsaction*='pane.backButton']",
+    "button[data-tooltip*='Back to results' i]",
+    "button[aria-label='Close']",
+    "button[aria-label*='Close' i]",
+    "button[data-value='Directions']",
+    "button[data-value='Save']",
+    "button[data-value='Share']",
+)
+_CONTENT_MARKER_RATING_SELECTORS = (
+    "div.F7nice",
+    "span.ceNzKf",
+    "span[aria-label*='stars' i]",
+    "span[aria-label*='star' i]",
+    "button[aria-label*='reviews' i]",
+)
+
+_PANEL_CONTENT_MARKER_JS = """
+() => {
+    const EXCLUDED = new Set(["results", "search results", "النتائج"]);
+    // 1. Check all h1 elements for a real place name
+    const h1s = document.querySelectorAll("h1.DUwDvf, h1.fontHeadlineLarge, div[role='main'] h1, h1[data-item-id], div[role='region'] h1, h1");
+    for (const el of h1s) {
+        const t = (el.innerText || "").trim().toLowerCase();
+        if (t && !EXCLUDED.has(t) && !t.startsWith("results for ") && !t.startsWith("search results")) {
+            return true;
+        }
+    }
+    // 2. Check main/region aria-label
+    const mains = document.querySelectorAll("div[role='main'][aria-label], div[role='region'][aria-label]");
+    for (const el of mains) {
+        const t = (el.getAttribute("aria-label") || "").trim().toLowerCase();
+        if (t && !EXCLUDED.has(t) && !t.startsWith("results for ") && !t.startsWith("search results")) {
+            return true;
+        }
+    }
+    // 3. Check back buttons and close buttons
+    if (document.querySelector("button[aria-label*='Back' i], button[aria-label*='back to results' i], button[jsaction*='pane.backButton'], button[data-tooltip*='Back' i], button[aria-label='Close'], button[aria-label*='Close' i], button[data-value='Directions'], button[data-value='Save'], button[data-value='Share']")) {
+        return true;
+    }
+    // 4. Check contact markers: phone, authority, address, rating
+    if (document.querySelector("[data-item-id^='phone:'], button[data-item-id^='phone:'], [data-tooltip='Copy phone number'], a[data-item-id='authority'], a[data-item-id*='authority'], a[aria-label*='Website' i], [data-item-id='address'], button[data-item-id='address'], div[data-item-id='address'], button[data-item-id*='address'], div.F7nice, span.ceNzKf, button[data-item-id*='hours'], [data-item-id='oloc']")) {
+        return true;
+    }
+    return false;
+}
+"""
 
 
 async def _has_panel_content_marker(
@@ -1981,9 +2030,11 @@ async def _has_panel_content_marker(
     """Check if at least one panel content marker is mounted in the DOM.
     Markers checked:
     - h1 or aria-label name (non-empty and not an excluded header like 'Results')
+    - back button or close button
     - [data-item-id^='phone:']
     - a[data-item-id='authority']
     - [data-item-id='address']
+    - rating / review container
     """
     if snap:
         h1_name = snap.get("h1_name") or ""
@@ -1995,15 +2046,30 @@ async def _has_panel_content_marker(
         if snap.get("raw_address") or snap.get("address"):
             return True
 
+    # Fast DOM evaluation inside the browser
+    if hasattr(page, "evaluate"):
+        try:
+            has_marker = await page.evaluate(_PANEL_CONTENT_MARKER_JS)
+            if has_marker:
+                return True
+        except Exception:
+            pass
+
     if not hasattr(page, "query_selector"):
         return False
 
-    # 1. h1 name
+    # 1. h1 name - check all matching elements so the first 'Results' header doesn't hide the place header
     for sel in _CONTENT_MARKER_H1_SELECTORS:
         try:
-            el = await page.query_selector(sel)
-            if el is not None and el is not feed_el:
-                if hasattr(el, "inner_text"):
+            if hasattr(page, "query_selector_all"):
+                for el in await page.query_selector_all(sel):
+                    if el is not None and el is not feed_el and hasattr(el, "inner_text"):
+                        t = (await el.inner_text() or "").strip()
+                        if t and not _is_excluded_panel_header(t):
+                            return True
+            else:
+                el = await page.query_selector(sel)
+                if el is not None and el is not feed_el and hasattr(el, "inner_text"):
                     t = (await el.inner_text() or "").strip()
                     if t and not _is_excluded_panel_header(t):
                         return True
@@ -2022,7 +2088,16 @@ async def _has_panel_content_marker(
         except Exception:
             pass
 
-    # 3. phone
+    # 3. detail panel back button or close button
+    for sel in _CONTENT_MARKER_BUTTON_SELECTORS:
+        try:
+            el = await page.query_selector(sel)
+            if el is not None and el is not feed_el:
+                return True
+        except Exception:
+            pass
+
+    # 4. phone
     for sel in _CONTENT_MARKER_PHONE_SELECTORS:
         try:
             el = await page.query_selector(sel)
@@ -2031,7 +2106,7 @@ async def _has_panel_content_marker(
         except Exception:
             pass
 
-    # 4. authority / website
+    # 5. authority / website
     for sel in _CONTENT_MARKER_AUTHORITY_SELECTORS:
         try:
             el = await page.query_selector(sel)
@@ -2040,8 +2115,17 @@ async def _has_panel_content_marker(
         except Exception:
             pass
 
-    # 5. address
+    # 6. address
     for sel in _CONTENT_MARKER_ADDRESS_SELECTORS:
+        try:
+            el = await page.query_selector(sel)
+            if el is not None and el is not feed_el:
+                return True
+        except Exception:
+            pass
+
+    # 7. rating
+    for sel in _CONTENT_MARKER_RATING_SELECTORS:
         try:
             el = await page.query_selector(sel)
             if el is not None and el is not feed_el:
@@ -4997,14 +5081,19 @@ class MapsScraper:
                                     poll_interval_s=marker_poll_s,
                                 )
                                 if not markers_mounted:
-                                    c_name = (card_signals or {}).get("name") or ""
-                                    c_pid = (card_signals or {}).get("card_place_id") or ""
-                                    log.warning(
-                                        f"[maps][verified-but-empty] card verified via {verdict_source} "
-                                        f"but no panel content markers mounted for {card_href!r} "
-                                        f"(card_name={c_name!r}, place_id={c_pid!r})"
-                                    )
-                                    return "mismatch", None, "verified_but_empty"
+                                    refreshed_snap = await _read_panel_identity_snapshot(page, panel)
+                                    if refreshed_snap.get("open") and (refreshed_snap.get("raw_name") or refreshed_snap.get("address")):
+                                        panel_snap = refreshed_snap
+                                        markers_mounted = True
+                                    else:
+                                        c_name = (card_signals or {}).get("name") or ""
+                                        c_pid = (card_signals or {}).get("card_place_id") or ""
+                                        log.warning(
+                                            f"[maps][verified-but-empty] card verified via {verdict_source} "
+                                            f"but no panel content markers mounted for {card_href!r} "
+                                            f"(card_name={c_name!r}, place_id={c_pid!r})"
+                                        )
+                                        return "mismatch", None, "verified_but_empty"
 
                                 refreshed_snap = await _read_panel_identity_snapshot(page, panel)
                                 if refreshed_snap.get("open"):

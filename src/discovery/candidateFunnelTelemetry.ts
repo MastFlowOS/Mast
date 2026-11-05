@@ -174,7 +174,13 @@ export class PlanFunnelTracker {
 
   recordQualityRejection(reason: string, pipelineId?: string): void {
     this.counts.rejectedQualityRelevance++;
-    const safeReason = reason.replace(/[:=].*$/, "");
+    let safeReason = (reason || "").trim();
+    if (safeReason.startsWith("validateDiscoveryCandidate:")) {
+      const sub = safeReason.slice("validateDiscoveryCandidate:".length).replace(/[:=].*$/, "").trim();
+      safeReason = sub ? `validateDiscoveryCandidate:${sub}` : "validateDiscoveryCandidate";
+    } else {
+      safeReason = safeReason.replace(/[:=].*$/, "");
+    }
     this.breakdowns.qualityRejectionsByReason[safeReason] =
       (this.breakdowns.qualityRejectionsByReason[safeReason] ?? 0) + 1;
     this.safeLog("rejected_quality_relevance", { reason: safeReason, pipelineId });

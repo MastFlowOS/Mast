@@ -6,7 +6,7 @@ import { channelsSatisfied, mergeEnrichedChannels } from "../lib/channelFilter.j
 import { validateLead, isValidPhone, isValidEmail } from "../lib/leadValidation.js";
 import { expandPlaceIdForms } from "../lib/placeId.js";
 import { getCandidateFunnelTracker, type ContactSource } from "../discovery/candidateFunnelTelemetry.js";
-import { buildCandidateCorrelationId } from "../discovery/candidatePipeline.js";
+import { buildCandidateCorrelationId, validateDiscoveryCandidate } from "../discovery/candidatePipeline.js";
 import { deliverLead, upsertBusinessFromEngineLead, type DeliveryResult } from "../scraperBridge/deliverLead.js";
 import { materializeDiscoveryPlan, dispatchQueuedDiscoveryTasks, DISCOVERY_TASK_RETRY_OPTIONS, type DiscoveryPlanRequest } from "../discovery/planner.js";
 import { enqueueBusinessProcessing, ensureEnriched, ensureIntelligence } from "./businessProcessingJob.js";
@@ -200,16 +200,6 @@ export async function handleDiscoveryPlanJob(payload: DiscoveryPlanPayload): Pro
   }
 }
 
-/** Baseline gate used before a lead is visible.  It intentionally relies only
- * on independently observed Maps data: identity, location and a usable Maps
- * contact/presence field.  Rich fields are validated later by dedicated jobs. */
-function validateDiscoveryCandidate(lead: EngineLead): { valid: true } | { valid: false; reason: string } {
-  if (!lead.name?.trim()) return { valid: false, reason: "missing_name" };
-  if (!lead.address?.trim()) return { valid: false, reason: "missing_address" };
-  if (!lead.maps_link?.includes("google.")) return { valid: false, reason: "missing_maps_provenance" };
-  if (lead.closed || lead.is_disqualified) return { valid: false, reason: "disqualified" };
-  return validateLead(lead);
-}
 
 /**
  * PHASE 4B: Bounded candidate-processing concurrency per area attempt.

@@ -2043,5 +2043,120 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
         resetAiClient();
       }
     });
+
+    test("discover-overview retries with boosted tokens when first attempt hits token budget", async () => {
+      userPlan = "pro";
+      dbAiIntelligence = {};
+
+      let callCount = 0;
+      const tokenBudgetClients: any = {
+        chat: {
+          completions: {
+            create: async (params: any, options?: any) => {
+              callCount++;
+              if (callCount === 1) {
+                // First call: length truncation with empty content
+                return {
+                  choices: [
+                    {
+                      finish_reason: "length",
+                      message: {
+                        role: "assistant",
+                        content: "",
+                      },
+                    },
+                  ],
+                };
+              }
+              // Second call: retry succeeds with boosted max_tokens
+              return {
+                choices: [
+                  {
+                    finish_reason: "stop",
+                    message: {
+                      role: "assistant",
+                      content: JSON.stringify({
+                        label: "Recovered Discover Overview",
+                        headline: "Generated after token boost retry",
+                        marketContext: "Growing demand",
+                        targetAudience: "Coffee lovers",
+                        topOpportunitySectors: ["Specialty Coffee"],
+                        challengesAndRoadblocks: ["Competition"],
+                        patterns: ["Direct trade"],
+                        highConversionAngle: "Locally roasted",
+                        promisingOpportunities: [
+                          { title: "Specialty Cafe", description: "Boutique espresso bar" },
+                        ],
+                        nextSteps: ["Visit location", "Contact owner"],
+                      }),
+                    },
+                  },
+                ],
+              };
+            },
+          },
+        },
+      };
+      setAiClient(tokenBudgetClients);
+
+      try {
+        const res = await fetch(`${baseUrl}/discover-overview`, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        });
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.ok(!data.degraded);
+        assert.equal(data.label, "Recovered Discover Overview");
+        assert.equal(data.headline, "Generated after token boost retry");
+        assert.equal(callCount, 2, "must have retried once with boosted token budget");
+      } finally {
+        resetAiClient();
+      }
+    });
+
+    test("ai.ts: reasoningEffort is only sent for verified reasoning models, avoiding provider 400 on standard models", async () => {
+      const { generateJSON } = await import("../../../lib/ai.js");
+      let capturedParams: any = null;
+      const mockClient: any = {
+        chat: {
+          completions: {
+            create: async (params: any) => {
+              capturedParams = params;
+              return {
+                choices: [
+                  {
+                    finish_reason: "stop",
+                    message: { role: "assistant", content: JSON.stringify({ ok: true }) },
+                  },
+                ],
+              };
+            },
+          },
+        },
+      };
+      setAiClient(mockClient);
+      try {
+        // Non-reasoning model: must NOT have reasoning or reasoning_effort in payload
+        await generateJSON({
+          system: "sys",
+          user: "user",
+          model: "google/gemma-4-26b-a4b-it:free",
+          reasoningEffort: "low",
+        });
+        assert.equal(capturedParams.reasoning, undefined);
+        assert.equal(capturedParams.reasoning_effort, undefined);
+
+        // Reasoning model: MUST have reasoning payload
+        await generateJSON({
+          system: "sys",
+          user: "user",
+          model: "deepseek/deepseek-r1:free",
+          reasoningEffort: "low",
+        });
+        assert.deepEqual(capturedParams.reasoning, { effort: "low" });
+      } finally {
+        resetAiClient();
+      }
+    });
   });
 });

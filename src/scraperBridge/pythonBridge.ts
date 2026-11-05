@@ -743,6 +743,57 @@ export function gracefulKillProcessTree(
   return run;
 }
 
+export function attachSafeChildStreamHandlers(
+  child: Pick<ChildProcess, "pid" | "stdin" | "stdout" | "stderr">,
+  mode: string = "query",
+): void {
+  const prefix = mode === "query" ? "[scraper-bridge]" : `[scraper-bridge:${mode}]`;
+  const makeStreamErrorHandler = (streamName: "stdin" | "stdout" | "stderr") => (err: any) => {
+    if (err?.code === "EPIPE" || err?.code === "ERR_STREAM_DESTROYED" || err?.code === "EOF") {
+      console.debug(`${prefix} ${streamName} closed (${err.code}) after child exit (PID: ${child.pid})`);
+      return;
+    }
+    console.warn(`${prefix} ${streamName} error (PID: ${child.pid})`, err);
+  };
+  child.stdin?.on("error", makeStreamErrorHandler("stdin"));
+  child.stdout?.on("error", makeStreamErrorHandler("stdout"));
+  child.stderr?.on("error", makeStreamErrorHandler("stderr"));
+}
+
+export function safeWriteChildStdin(
+  child: Pick<ChildProcess, "pid" | "stdin" | "exitCode" | "signalCode" | "killed">,
+  payload: string,
+  mode: string = "query",
+  endAfterWrite: boolean = true,
+): void {
+  const prefix = mode === "query" ? "[scraper-bridge]" : `[scraper-bridge:${mode}]`;
+  const stdin = child.stdin;
+  if (!stdin || stdin.destroyed || !stdin.writable || child.exitCode !== null || child.signalCode !== null) {
+    console.debug(`${prefix} skipping stdin write because child/stream already closed (PID: ${child.pid})`);
+    return;
+  }
+  try {
+    stdin.write(payload, (err: any) => {
+      if (err) {
+        if (err?.code === "EPIPE" || err?.code === "ERR_STREAM_DESTROYED" || err?.code === "EOF") {
+          console.debug(`${prefix} stdin write callback ignored ${err.code} (PID: ${child.pid})`);
+        } else {
+          console.warn(`${prefix} stdin write callback error (PID: ${child.pid})`, err);
+        }
+      }
+    });
+    if (endAfterWrite && !stdin.destroyed && stdin.writable) {
+      stdin.end();
+    }
+  } catch (writeErr: any) {
+    if (writeErr?.code === "EPIPE" || writeErr?.code === "ERR_STREAM_DESTROYED" || writeErr?.code === "EOF") {
+      console.debug(`${prefix} stdin write ignored ${writeErr.code} (PID: ${child.pid})`);
+    } else {
+      console.warn(`${prefix} stdin write error (PID: ${child.pid})`, writeErr);
+    }
+  }
+}
+
 /**
  * Exposed ONLY so the regression tests in `__tests__/pythonBridge.lifecycle.test.ts`
  * can exercise the exit-lifecycle primitives directly (spawning small,
@@ -754,6 +805,8 @@ export const __testing = {
   watchChildClose,
   gracefulKillProcessTree,
   killProcessTree,
+  attachSafeChildStreamHandlers,
+  safeWriteChildStdin,
   ScoutSession,
   scoutProcessManager,
 };
@@ -777,21 +830,7 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
     console.warn(describeSpawnError("verify", enginePath, err));
     console.warn(`[scraper-bridge:verify] child process error (PID: ${child.pid})`, err);
   });
-  child.stdin.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge:verify] stdin error (PID: ${child.pid})`, err);
-    }
-  });
-  child.stdout.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge:verify] stdout error (PID: ${child.pid})`, err);
-    }
-  });
-  child.stderr.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge:verify] stderr error (PID: ${child.pid})`, err);
-    }
-  });
+  attachSafeChildStreamHandlers(child, "verify");
 
   const onAbort = () => {
     console.log(`[scraper-bridge:verify] Abort signal triggered for PID: ${child.pid}`);
@@ -801,18 +840,7 @@ export async function runEngineVerify(params: EngineVerifyParams, signal?: Abort
   if (signal?.aborted) onAbort();
 
   try {
-    try {
-      child.stdin.write(JSON.stringify(params), (err) => {
-        if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
-          console.warn(`[scraper-bridge:verify] stdin write callback error (PID: ${child.pid})`, err);
-        }
-      });
-      child.stdin.end();
-    } catch (writeErr: any) {
-      if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
-        console.warn(`[scraper-bridge:verify] stdin write error (PID: ${child.pid})`, writeErr);
-      }
-    }
+    safeWriteChildStdin(child, JSON.stringify(params), "verify", true);
 
     const stdoutChunks: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer | string) => {
@@ -941,21 +969,7 @@ export async function runEngineEnrichOneShot(params: EngineEnrichParams, signal?
     console.warn(describeSpawnError("enrich", enginePath, err));
     console.warn(`[scraper-bridge:enrich] child process error (PID: ${child.pid})`, err);
   });
-  child.stdin.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge:enrich] stdin error (PID: ${child.pid})`, err);
-    }
-  });
-  child.stdout.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge:enrich] stdout error (PID: ${child.pid})`, err);
-    }
-  });
-  child.stderr.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge:enrich] stderr error (PID: ${child.pid})`, err);
-    }
-  });
+  attachSafeChildStreamHandlers(child, "enrich");
 
   const onAbort = () => {
     console.log(`[scraper-bridge:enrich] Abort signal triggered for PID: ${child.pid}`);
@@ -964,18 +978,7 @@ export async function runEngineEnrichOneShot(params: EngineEnrichParams, signal?
   signal?.addEventListener("abort", onAbort);
 
   try {
-    try {
-      child.stdin.write(JSON.stringify(params), (err) => {
-        if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
-          console.warn(`[scraper-bridge:enrich] stdin write callback error (PID: ${child.pid})`, err);
-        }
-      });
-      child.stdin.end();
-    } catch (writeErr: any) {
-      if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
-        console.warn(`[scraper-bridge:enrich] stdin write error (PID: ${child.pid})`, writeErr);
-      }
-    }
+    safeWriteChildStdin(child, JSON.stringify(params), "enrich", true);
 
     const stdoutChunks: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer | string) => {
@@ -1263,11 +1266,7 @@ export class PersistentEnrichmentBridge {
         this.handleProcessClose(child, new Error(`Enrichment daemon error: ${err.message}`));
       });
 
-      child.stdin?.on("error", (err: any) => {
-        if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-          console.warn(`[scraper-bridge:enrich-daemon] stdin error (PID: ${child.pid})`, err);
-        }
-      });
+      attachSafeChildStreamHandlers(child, "enrich-daemon");
 
       const daemonStderrBuf = new StderrLineBuffer((line) => {
         if (line.includes("[candidate-audit]") || line.includes("[pipeline]")) {
@@ -1649,21 +1648,7 @@ export async function runEngineStreetInventory(
     console.warn(describeSpawnError("street_inventory", enginePath, err));
     console.warn(`[scraper-bridge:street_inventory] child process error (PID: ${child.pid})`, err);
   });
-  child.stdin.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge:street_inventory] stdin error (PID: ${child.pid})`, err);
-    }
-  });
-  child.stdout.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge:street_inventory] stdout error (PID: ${child.pid})`, err);
-    }
-  });
-  child.stderr.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge:street_inventory] stderr error (PID: ${child.pid})`, err);
-    }
-  });
+  attachSafeChildStreamHandlers(child, "street_inventory");
 
   const onAbort = () => {
     console.log(`[scraper-bridge:street_inventory] Abort signal triggered for PID: ${child.pid}`);
@@ -1672,18 +1657,7 @@ export async function runEngineStreetInventory(
   signal?.addEventListener("abort", onAbort);
 
   try {
-    try {
-      child.stdin.write(JSON.stringify(params), (err) => {
-        if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
-          console.warn(`[scraper-bridge:street_inventory] stdin write callback error (PID: ${child.pid})`, err);
-        }
-      });
-      child.stdin.end();
-    } catch (writeErr: any) {
-      if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
-        console.warn(`[scraper-bridge:street_inventory] stdin write error (PID: ${child.pid})`, writeErr);
-      }
-    }
+    safeWriteChildStdin(child, JSON.stringify(params), "street_inventory", true);
 
     const stdoutChunks: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer | string) => {
@@ -1735,6 +1709,7 @@ export type EngineDiscoveryFailureReason =
    */
   | "CANCELLED"
   | "RETURN_TO_RESULTS_FAILED"
+  | "PANEL_VERIFICATION_FAILED"
   | "USER_CANCELLED"
   | "WATCHDOG_TIMEOUT"
   | "PROCESS_UNRESPONSIVE"
@@ -1823,6 +1798,7 @@ export type EngineDoneInfo = {
     | "WATCHDOG_TIMEOUT"
     | "CANCELLED"
     | "RETURN_TO_RESULTS_FAILED"
+    | "PANEL_VERIFICATION_FAILED"
     | "FAILURE";
   /** Phase 2: specific watchdog reason when watchdog fired */
   watchdogReason?: "PROCESS_UNRESPONSIVE" | "DISCOVERY_PROGRESS_TIMEOUT" | "WATCHDOG_TIMEOUT";
@@ -1835,6 +1811,7 @@ export type EngineDoneInfo = {
     | "USER_CANCELLED"
     | "CANCELLED"
     | "RETURN_TO_RESULTS_FAILED"
+    | "PANEL_VERIFICATION_FAILED"
     | "FAILURE";
   /** Phase 2: structured performance report from the Python profiler */
   perf?: Record<string, unknown>;
@@ -2372,7 +2349,23 @@ export function resolveEngineOutcome(ctx: ResolutionContext): {
     };
   }
 
-  // 4. Other Caller/Process Abort (not user cancelled)
+  // 4. Panel verification failed (Phase 4)
+  if (
+    ctx.rawFailureReason === "PANEL_VERIFICATION_FAILED" ||
+    ctx.rawTerminationReason === "PANEL_VERIFICATION_FAILED"
+  ) {
+    return {
+      success: false,
+      targetReached: false,
+      failureReason: "PANEL_VERIFICATION_FAILED",
+      failureDetail: ctx.rawFailureDetail ?? "Panel verification failed (all attempted cards failed verification)",
+      terminationReason: "PANEL_VERIFICATION_FAILED",
+      watchdogReason: undefined,
+      schedulerReason: "PANEL_VERIFICATION_FAILED",
+    };
+  }
+
+  // 5. Other Caller/Process Abort (not user cancelled)
   if (ctx.isRealAbort || ctx.rawFailureReason === "CANCELLED" || ctx.rawTerminationReason === "CANCELLED") {
     return {
       success: false,
@@ -2385,7 +2378,7 @@ export function resolveEngineOutcome(ctx: ResolutionContext): {
     };
   }
 
-  // 5. Generic Scraper Failure
+  // 6. Generic Scraper Failure
   return {
     success: false,
     targetReached: false,
@@ -2487,21 +2480,7 @@ export async function* runEngineQuery(
     console.warn(describeSpawnError("query", enginePath, err));
     console.warn(`[scraper-bridge] child process error (PID: ${child.pid})`, err);
   });
-  child.stdin.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge] stdin error (PID: ${child.pid})`, err);
-    }
-  });
-  child.stdout.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge] stdout error (PID: ${child.pid})`, err);
-    }
-  });
-  child.stderr.on("error", (err: any) => {
-    if (err?.code !== "EPIPE" && err?.code !== "ERR_STREAM_DESTROYED") {
-      console.warn(`[scraper-bridge] stderr error (PID: ${child.pid})`, err);
-    }
-  });
+  attachSafeChildStreamHandlers(child, "query");
 
   // LIFECYCLE FIX: the ONE authoritative listener for this child's exit —
   // established synchronously, in the same tick as spawn(), before any
@@ -2618,18 +2597,7 @@ export async function* runEngineQuery(
   };
 
   if (!scoutSession) {
-    try {
-      child.stdin.write(JSON.stringify(params), (err) => {
-        if (err && (err as any).code !== "EPIPE" && (err as any).code !== "ERR_STREAM_DESTROYED") {
-          console.warn(`[scraper-bridge] ${logPrefix} stdin write callback error`, err);
-        }
-      });
-      child.stdin.end();
-    } catch (writeErr: any) {
-      if (writeErr?.code !== "EPIPE" && writeErr?.code !== "ERR_STREAM_DESTROYED") {
-        console.warn(`[scraper-bridge] ${logPrefix} stdin write error`, writeErr);
-      }
-    }
+    safeWriteChildStdin(child, JSON.stringify(params), "query", true);
   }
 
   const searchStderrBuf = new StderrLineBuffer((line) => {
@@ -3405,6 +3373,12 @@ async function runEngineRPC<T>(mode: string, payload: unknown, signal?: AbortSig
     detached: process.platform !== "win32",
   });
 
+  child.on("error", (err) => {
+    console.warn(describeSpawnError(mode, enginePath, err));
+    console.warn(`[scraper-bridge:${mode}] child process error (PID: ${child.pid})`, err);
+  });
+  attachSafeChildStreamHandlers(child, mode);
+
   const onAbort = () => {
     console.log(`[scraper-bridge:${mode}] Abort signal triggered for PID: ${child.pid}`);
     killProcessTree(child);
@@ -3412,8 +3386,7 @@ async function runEngineRPC<T>(mode: string, payload: unknown, signal?: AbortSig
   signal?.addEventListener("abort", onAbort);
 
   try {
-    child.stdin.write(JSON.stringify(payload));
-    child.stdin.end();
+    safeWriteChildStdin(child, JSON.stringify(payload), mode, true);
 
     const stdoutChunks: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer | string) => {

@@ -853,8 +853,12 @@ intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (re
       try {
         nextOverview = await generateJSON<any>(generateOptions);
       } catch (firstErr) {
-        console.warn("[intelligence] discover-overview first attempt failed, retrying once", firstErr);
-        nextOverview = await generateJSON<any>(generateOptions);
+        console.warn("[intelligence] discover-overview first attempt failed, retrying once with boosted token budget", firstErr);
+        const retryOptions = {
+          ...generateOptions,
+          maxTokens: Math.min(4000, (generateOptions.maxTokens ?? 1200) * 2),
+        };
+        nextOverview = await generateJSON<any>(retryOptions);
       }
 
       nextOverview.label = asString(nextOverview.label, "AI Overview").replace(/[—–]/g, " - ");

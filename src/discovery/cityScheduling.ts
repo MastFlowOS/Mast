@@ -43,6 +43,7 @@ export type EngineTerminationReason =
   | "DISCOVERY_PROGRESS_TIMEOUT"
   | "CANCELLED"
   | "RETURN_TO_RESULTS_FAILED"
+  | "PANEL_VERIFICATION_FAILED"
   | "FAILURE";
 
 /**
@@ -81,7 +82,10 @@ export function cityTransitionFor(
   ) {
     return "WATCHDOG_TIMEOUT";
   }
-  if (terminationReason === "RETURN_TO_RESULTS_FAILED") return "SCRAPER_FAILURE";
+  if (
+    terminationReason === "RETURN_TO_RESULTS_FAILED" ||
+    terminationReason === "PANEL_VERIFICATION_FAILED"
+  ) return "SCRAPER_FAILURE";
   // "FAILURE" is the bridge's catch-all for "!success, not CANCELLED" —
   // i.e. a genuine scraper failure (unrecoverable DiscoveryFailure /
   // unclassified error after every crash-retry attempt was exhausted).
@@ -130,6 +134,16 @@ export function shouldScheduleCity(attempt: Pick<CityAttempt, "attempted">): boo
 export function computeDispatchSlots(concurrencyCap: number, runningCount: number, queuedCount: number): number {
   const available = Math.max(0, concurrencyCap - Math.max(0, runningCount));
   return Math.max(0, Math.min(available, Math.max(0, queuedCount)));
+}
+
+/**
+ * Phase 6: Computes the fair slot cap for a city when multiple cities share
+ * browser capacity in the same plan:
+ * cap = max(1, floor(totalSlots / pendingCities))
+ */
+export function computeCitySlotCap(totalSlots: number, pendingCities: number): number {
+  const cities = Math.max(1, pendingCities);
+  return Math.max(1, Math.floor(Math.max(1, totalSlots) / cities));
 }
 
 export const MAX_NO_SLOT_DEFERRALS = 5;

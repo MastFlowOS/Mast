@@ -76,8 +76,16 @@ export function measureBrowserCapacity(configuredConcurrency: number): WorkerCap
 
   const perBrowserMb = env.BROWSER_MEMORY_ESTIMATE_MB;
   const reserveMb = env.WORKER_MEMORY_RESERVE_MB;
-  const availableForBrowsers = Math.max(0, freeMb - reserveMb);
-  const measuredSlots = Math.floor(availableForBrowsers / perBrowserMb);
+  const baseMb = env.WORKER_BASE_MEMORY_MB;
+
+  let measuredSlots: number;
+  if (cgroupLimitMb !== null) {
+    const memBudget = Math.max(0, cgroupLimitMb - baseMb - reserveMb);
+    measuredSlots = Math.max(1, Math.floor(memBudget / perBrowserMb));
+  } else {
+    const availableForBrowsers = Math.max(0, freeMb - reserveMb);
+    measuredSlots = Math.max(1, Math.floor(availableForBrowsers / perBrowserMb));
+  }
   const effectiveConcurrency = Math.max(1, Math.min(configuredConcurrency, measuredSlots));
 
   const workerId = `${os.hostname()}:${process.pid}`;

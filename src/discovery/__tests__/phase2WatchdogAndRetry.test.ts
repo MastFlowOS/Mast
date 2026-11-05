@@ -237,6 +237,44 @@ describe("Phase 2: Watchdog and Retry Alignment", () => {
       assert.equal(result.perArea[0].outcome.failed, false);
     });
 
+    test("simulate PANEL_VERIFICATION_FAILED: retryable failure bounded by maxAreaRetries and marks failed on exhaustion", async () => {
+      const attemptsByArea: Record<string, number> = {};
+      const requeuedEvents: any[] = [];
+
+      const result = await runAreaWorkerPool({
+        configuredWorkers: 2,
+        totalCuratedAreas: 1,
+        availableCapacity: 2,
+        maxAreaRetries: 2,
+        areaBackoffBaseMs: 10,
+        claimNextArea: async (usedAreas) => (usedAreas.has("Downtown") ? undefined : "Downtown"),
+        runArea: async (area, _slot, retryCount = 0) => {
+          attemptsByArea[area] = (attemptsByArea[area] ?? 0) + 1;
+          return {
+            discovered: 0,
+            accepted: 0,
+            rejected: 0,
+            duplicates: 0,
+            exhausted: false,
+            failed: true,
+            error: "PANEL_VERIFICATION_FAILED",
+            failureReason: "PANEL_VERIFICATION_FAILED",
+          };
+        },
+        onEvent: (event) => {
+          if (event.type === "area_requeued") {
+            requeuedEvents.push(event);
+          }
+        },
+      });
+
+      assert.equal(attemptsByArea["Downtown"], 3, "must run initial + 2 retries = 3 attempts total");
+      assert.equal(requeuedEvents.length, 2, "must emit 2 area_requeued events");
+      assert.equal(result.allFailed, true);
+      assert.equal(result.failedAreaCount, 1);
+      assert.equal(result.perArea[0].outcome.failureReason, "PANEL_VERIFICATION_FAILED");
+    });
+
     test("USER_CANCELLED must NEVER retry", async () => {
       const attemptsByArea: Record<string, number> = {};
       const requeuedEvents: any[] = [];

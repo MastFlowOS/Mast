@@ -1336,6 +1336,19 @@ _shutdown_event = threading.Event()
 _shutdown_reason: Optional[str] = None
 
 
+def _cleanup_stop_sentinel_file(pid: Optional[int] = None) -> bool:
+    """Delete any stale or completed `mast_stop_<pid>.txt` sentinel file at startup or exit."""
+    target_pid = pid if pid is not None else os.getpid()
+    stop_file = os.path.join(tempfile.gettempdir(), f"mast_stop_{target_pid}.txt")
+    if os.path.exists(stop_file):
+        try:
+            os.remove(stop_file)
+            return True
+        except Exception:
+            return False
+    return False
+
+
 def _get_shutdown_reason() -> Optional[str]:
     """
     Returns the cooperative shutdown reason if one was signaled by the parent
@@ -2660,6 +2673,10 @@ async def run_query(
                 # discovery is still actively running.
                 if driver is not None and not driver.producers_finished():
                     return False
+                if driver is not None:
+                    with getattr(driver, "_telemetry_lock", threading.Lock()):
+                        if any(getattr(driver, "_stage_active", {}).values()):
+                            return False
                 if fan_in.pending_count() != 0:
                     return False
                 return all(queue_manager.get_queue(qid).is_empty() for qid in all_input_queue_ids)
@@ -2679,6 +2696,7 @@ async def run_query(
             _stopped_by_shutdown = False
             try:
                 idle_passes = 0
+                quiescent_passes = 0
                 while not gate.target_reached:
                     # LIFECYCLE FIX (graceful shutdown ordering): checked
                     # *before* starting another driver.run_once() pass, not
@@ -2816,22 +2834,27 @@ async def run_query(
                     if not any_ran and not drained_any:
                         idle_passes += 1
                         if _fully_drained():
-                            if driver is not None and driver.last_error is not None:
-                                raise driver.last_error
-                            if shutdown_event is not None and shutdown_event.is_set():
-                                _stopped_by_shutdown = True
+                            quiescent_passes += 1
+                            if quiescent_passes >= 3:
+                                if driver is not None and driver.last_error is not None:
+                                    raise driver.last_error
+                                if shutdown_event is not None and shutdown_event.is_set():
+                                    _stopped_by_shutdown = True
+                                    break
+                                log.info(
+                                    "[run_query] pipeline fully drained — exhausted before "
+                                    "reaching deliver_target (delivered=%d/%d)",
+                                    gate.accepted, _deliver_target,
+                                )
                                 break
-                            log.info(
-                                "[run_query] pipeline fully drained — exhausted before "
-                                "reaching deliver_target (delivered=%d/%d)",
-                                gate.accepted, _deliver_target,
-                            )
-                            break
+                        else:
+                            quiescent_passes = 0
                         # Paced idle backoff: avoid CPU spin during async I/O or worker wait
                         backoff = min(0.01 * (1.5 ** min(idle_passes, 6)), 0.10)
                         await asyncio.sleep(backoff)
                     else:
                         idle_passes = 0
+                        quiescent_passes = 0
 
                 # PART D (Phase 2B — watchdog shutdown semantics): a
                 # cooperative-shutdown break (watchdog inactivity/ceiling,
@@ -3169,6 +3192,7 @@ async def run_query(
 
 
 async def _main_cli() -> None:
+    _cleanup_stop_sentinel_file()
     raw_args = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
     params = json.loads(raw_args)
     # deliver_target is the user-facing qualified-lead count (what the user
@@ -3338,12 +3362,7 @@ async def _main_cli() -> None:
     except (BrokenPipeError, IOError, OSError):
         log.info("[main_cli] stdout pipe closed before __done__ could be flushed")
     finally:
-        stop_file = os.path.join(tempfile.gettempdir(), f"mast_stop_{os.getpid()}.txt")
-        if os.path.exists(stop_file):
-            try:
-                os.remove(stop_file)
-            except Exception:
-                pass
+        _cleanup_stop_sentinel_file()
         confirm_and_emit_job_terminated()
 
 
@@ -3631,6 +3650,7 @@ async def _run_with_graceful_shutdown(coro_fn) -> None:
     fire) so `__done__` is still written either way — see `_main_cli`'s
     own comment for that half of the fix.
     """
+    _cleanup_stop_sentinel_file()
     task = asyncio.ensure_future(coro_fn())
     _shutdown_event.clear()
     _set_shutdown_reason(None)

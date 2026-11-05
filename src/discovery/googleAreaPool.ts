@@ -84,6 +84,8 @@ export type AreaWorkerPoolResult = {
   yieldedSlotsForFairness?: boolean;
   /** Consecutive areas that yielded 0 candidates before the pass stopped. */
   consecutiveZeroYieldCount?: number;
+  /** Areas that were re-queued for retry but not completed before the pool stopped. */
+  requeuedAreas?: string[];
 };
 
 /**
@@ -192,6 +194,10 @@ export type RunAreaWorkerPoolParams = {
   maxAreaWallTimeMs?: number;
   /** Max consecutive zero-yield or failed areas before yielding slots for city fairness. */
   maxConsecutiveZeroYieldAreas?: number;
+  /** Optional fair slot cap for this city when multiple cities share slots in the same plan. */
+  citySlotCap?: number;
+  /** Carryover areas from a prior pass of this city to be retried first. */
+  carryoverAreas?: string[];
   /**
    * Attempts to claim one area not yet used by THIS task instance.
    * Returns `undefined` when no distinct new area remains — i.e. every
@@ -287,6 +293,8 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     maxCitySlotHoldingMs,
     maxAreaWallTimeMs = 10 * 60 * 1000,
     maxConsecutiveZeroYieldAreas,
+    citySlotCap,
+    carryoverAreas,
     claimNextArea,
     runArea,
     tryAcquireSlot = () => () => {},
@@ -299,17 +307,25 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
   const poolStartTime = Date.now();
   let consecutiveZeroYieldCount = 0;
 
+  const effectiveConfigured = citySlotCap !== undefined && citySlotCap > 0
+    ? Math.min(configuredWorkers, citySlotCap)
+    : configuredWorkers;
+
   const computedWorkers = requestedQuantity !== undefined
     ? desiredWorkersForQuantity(requestedQuantity)
-    : configuredWorkers;
-  const poolSize = requestedQuantity !== undefined
-    ? computeDynamicDiscoveryCapacity(requestedQuantity, totalCuratedAreas, availableCapacity, configuredWorkers, safeResourceWorkers)
-    : computeAreaPoolSize(configuredWorkers, totalCuratedAreas, availableCapacity, safeResourceWorkers);
+    : effectiveConfigured;
+  let poolSize = requestedQuantity !== undefined
+    ? computeDynamicDiscoveryCapacity(requestedQuantity, totalCuratedAreas, availableCapacity, effectiveConfigured, safeResourceWorkers)
+    : computeAreaPoolSize(effectiveConfigured, totalCuratedAreas, availableCapacity, safeResourceWorkers);
+
+  if (citySlotCap !== undefined && citySlotCap > 0) {
+    poolSize = Math.min(poolSize, citySlotCap);
+  }
 
   console.info(
     `[discovery-capacity] requested=${requestedQuantity ?? "n/a"} computedWorkers=${computedWorkers} ` +
       `areas=${totalCuratedAreas} browserSlots=${availableCapacity} configuredWorkers=${configuredWorkers} ` +
-      `safeResourceWorkers=${safeResourceWorkers} finalWorkers=${poolSize}`,
+      `citySlotCap=${citySlotCap ?? "none"} safeResourceWorkers=${safeResourceWorkers} finalWorkers=${poolSize}`,
   );
   onEvent?.({ type: "pool_start", configured: configuredWorkers, availableAreas: totalCuratedAreas, capacity: availableCapacity, poolSize });
 
@@ -320,6 +336,14 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
   type QueuedAreaRetry = { area: string; retryCount: number; readyAt: number };
   const retryQueue: QueuedAreaRetry[] = [];
   let totalRetriesPerformed = 0;
+
+  if (carryoverAreas && carryoverAreas.length > 0) {
+    for (const a of carryoverAreas) {
+      if (a && !usedAreas.has(a)) {
+        retryQueue.push({ area: a, retryCount: 1, readyAt: Date.now() });
+      }
+    }
+  }
 
   // STARVATION FIX: live count of areas THIS run has claimed but not yet
   // finished. Unlike `usedAreas.size` (monotonic — never decreases), this
@@ -569,9 +593,22 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
         usedAreas.add(area);
         perArea.push({ area, outcome });
 
-        if (outcome.failed || outcome.discovered === 0) {
+        // Phase 6: Do NOT count areas that failed for infra reasons
+        // (PANEL_VERIFICATION_FAILED, WATCHDOG_TIMEOUT, SCRAPER_FAILURE, SCRAPER_ERROR, crashes)
+        // as "zero-yield" toward maxConsecutiveZeroYieldAreas; only genuinely empty-but-healthy
+        // areas (!outcome.failed && outcome.discovered === 0 && (outcome.accepted ?? 0) === 0)
+        // count toward zero_yield_limit.
+        const isInfraFailure =
+          outcome.failed &&
+          (outcome.failureReason === "PANEL_VERIFICATION_FAILED" ||
+            outcome.failureReason === "WATCHDOG_TIMEOUT" ||
+            outcome.failureReason === "SCRAPER_FAILURE" ||
+            outcome.failureReason === "SCRAPER_ERROR" ||
+            /crash|target closed|oom|playwright/i.test(outcome.error ?? ""));
+
+        if (!outcome.failed && outcome.discovered === 0 && (outcome.accepted ?? 0) === 0) {
           consecutiveZeroYieldCount += 1;
-        } else {
+        } else if (!outcome.failed && (outcome.discovered > 0 || (outcome.accepted ?? 0) > 0)) {
           consecutiveZeroYieldCount = 0;
         }
 
@@ -634,5 +671,6 @@ export async function runAreaWorkerPool(params: RunAreaWorkerPoolParams): Promis
     crashCount: perArea.filter((p) => /crash|target closed|oom/i.test(p.outcome.error ?? "")).length,
     yieldedSlotsForFairness: (stoppedReason as PoolStopReason) === "zero_yield_limit",
     consecutiveZeroYieldCount,
+    requeuedAreas: retryQueue.map((r) => r.area),
   };
 }

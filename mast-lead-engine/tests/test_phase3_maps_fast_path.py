@@ -216,6 +216,8 @@ class _SplitViewScenarioPage:
             "button[data-item-id='address'] .fontBodyMedium",
             "[data-item-id='address'] .fontBodyMedium",
             "button[data-item-id*='address']",
+            "[data-item-id='address']",
+            "button[data-item-id='address']",
         ):
             addr = self.current_panel.get("address", "")
             return _FakeElement(text=addr) if addr else None
@@ -227,6 +229,13 @@ class _SplitViewScenarioPage:
         ):
             site = self.current_panel.get("website", "")
             return _FakeElement(text=site, attrs={"href": site}) if site else None
+        if selector in (
+            "[data-item-id^='phone:']",
+            "button[data-item-id^='phone:']",
+            "[data-tooltip='Copy phone number']",
+        ):
+            phone = self.current_panel.get("phone", "")
+            return _FakeElement(text=phone) if phone else None
         if (
             "Back to results" in selector
             or "back to results" in selector
@@ -266,7 +275,21 @@ class _SplitViewScenarioPage:
         if isinstance(arg, dict) and "name" in arg and "address" in arg:
             self.extract_evaluate_calls += 1
             self.last_extract_selectors = dict(arg)
-            panel = self.current_panel or {}
+            if not self.detail_open or not self.current_panel:
+                return {
+                    "name": "",
+                    "category": "",
+                    "address": "",
+                    "ratingRaw": "",
+                    "reviewRaw": "",
+                    "reviewFallbackAria": [],
+                    "phoneCandidates": [],
+                    "websiteCandidates": [],
+                    "html": "",
+                    "photosTabText": "",
+                    "hoursSummary": "",
+                }
+            panel = self.current_panel
             phone = panel.get("phone", "+1 312-555-0100")
             website = panel.get("website", "https://example.com")
             website_selectors = arg.get("website") or []

@@ -119,6 +119,8 @@ class DiscoveryFailureReason(str, Enum):
     # Repeated failure returning from detail pane to results feed that persisted
     # after bounded search-navigation recovery.
     RETURN_TO_RESULTS_FAILED = "RETURN_TO_RESULTS_FAILED"
+    # Area attempted >= 3 card clicks and verified 0 panels (0 yielded places).
+    PANEL_VERIFICATION_FAILED = "PANEL_VERIFICATION_FAILED"
 
 
 class DiscoveryFailure(Exception):

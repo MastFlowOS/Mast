@@ -17,7 +17,7 @@ import { getPlan, getPlanConcurrency } from "../config/plans.js";
 import type { PlanId } from "../config/plans.js";
 import type { EngineLead, EngineDoneInfo } from "../scraperBridge/pythonBridge.js";
 import { registerRequestAbortController, terminateRequest, type RequestTerminalReason } from "../discovery/requestLifecycle.js";
-import { cityTransitionFor, resolveZeroSlotCityScheduling, reconcileDiscoveryCounters } from "../discovery/cityScheduling.js";
+import { cityTransitionFor, resolveZeroSlotCityScheduling, reconcileDiscoveryCounters, computeCitySlotCap } from "../discovery/cityScheduling.js";
 import { isAddressOnStreet, isLowValueStreet, collapseStreetName } from "../discovery/streetClassifier.js";
 import { hasCuratedAreas, claimAreaForCity, recordAreaOutcome } from "../discovery/areaRotation.js";
 import { getAreasForCity, getAreasForCityOrDefault } from "../lib/geo/cityAreas.js";
@@ -94,11 +94,12 @@ const DISCOVERY_TASK_MAX_ATTEMPTS = 9;
 const CONCURRENCY_RECHECK_DELAY_SECONDS = 5;
 
 const noSlotDeferralsByTask = new Map<string, number>();
+const taskCarryoverAreas = new Map<string, string[]>();
 
 function getPriorNoSlotDeferrals(task: any): number {
   const inMemory = noSlotDeferralsByTask.get(String(task.id)) ?? 0;
   const errStr = typeof task?.error === "string" ? task.error : "";
-  const match = errStr.match(/^CITY_DEFERRED_NO_SLOT:(\d+)$/);
+  const match = errStr.match(/^(?:CITY_DEFERRED_NO_SLOT|CITY_YIELDED_SLOTS_FAIRNESS):(\d+)$/);
   const persisted = match ? Number.parseInt(match[1], 10) : 0;
   return Math.max(inMemory, Number.isFinite(persisted) ? persisted : 0);
 }
@@ -1739,15 +1740,21 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       // ── Worker Pools B: Google Maps area worker pool ────────────────────
       const browserSlotPool = getBrowserSlotPool();
 
+      const { count: pendingCitiesCount } = await db
+        .from("discovery_tasks")
+        .select("id", { count: "exact", head: true })
+        .eq("plan_id", payload.planId)
+        .in("status", ["queued", "running"]);
+      const citySlotCap = computeCitySlotCap(browserSlotPool.capacity, pendingCitiesCount ?? 1);
+
       poolResult = await runAreaWorkerPool({
         configuredWorkers: env.GOOGLE_MAPS_AREA_WORKERS,
-        // Phase 6: resource-aware (cgroup PID/thread) ceiling, measured
-        // once at worker startup — see resourceCapacity.ts — instead of
-        // the old hardcoded safeResourceWorkers=2 constant.
         safeResourceWorkers: getResourceCapacity().safeAreaWorkers,
         totalCuratedAreas: curatedAreas.length,
         availableCapacity: browserSlotPool.available(),
         requestedQuantity: effectiveRequested,
+        citySlotCap,
+        carryoverAreas: taskCarryoverAreas.get(String(task.id)),
         maxCitySlotHoldingMs: 180_000,
         maxConsecutiveZeroYieldAreas: 3,
         isBudgetExhausted: () => budgetCoordinator.isExhausted(),
@@ -1949,14 +1956,26 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
       if (decision.action === "defer") {
         noSlotDeferralsByTask.set(String(task.id), decision.nextDeferrals);
-        const preservedAttempts = Math.max(0, currentAttempt - 1);
+        if (poolResult?.requeuedAreas && poolResult.requeuedAreas.length > 0) {
+          taskCarryoverAreas.set(String(task.id), poolResult.requeuedAreas);
+        }
+        const preservedAttempts = isDeferredForFairness ? Math.max(1, currentAttempt) : Math.max(0, currentAttempt - 1);
+        const poolFailedAreas = poolResult?.failedAreaCount ?? (poolResult?.perArea ? poolResult.perArea.filter((p) => p.outcome.failed).length : 0);
+        const poolPartialAreas = poolResult?.partialAreaCount ?? (poolResult?.perArea ? poolResult.perArea.filter((p) => p.outcome.failed && (p.outcome.accepted ?? 0) > 0).length : 0);
+        const poolCrashes = poolResult?.crashCount ?? (poolResult?.perArea ? poolResult.perArea.filter((p) => /crash|target closed|oom/i.test(p.outcome.error ?? "")).length : 0);
+        const poolRetries = poolResult?.retryCount ?? (currentAttempt - 1);
+        const isDegraded = poolFailedAreas > 0 || poolCrashes > 0;
+
         console.info(
           `[discovery-city] ${isDeferredForFairness ? "CITY_YIELDED_SLOTS_FAIRNESS" : "CITY_DEFERRED_NO_SLOT"} plan=${payload.planId} task=${payload.taskId} ` +
-            `city=${task.city} deferral=${decision.nextDeferrals} attempts_preserved=${preservedAttempts}`,
+            `city=${task.city} deferral=${decision.nextDeferrals} attempts_preserved=${preservedAttempts} ` +
+            `degraded=${isDegraded} failed_area_count=${poolFailedAreas} partial_area_count=${poolPartialAreas} crash_count=${poolCrashes} retry_count=${poolRetries}`,
         );
+        const boostedPriority = (task.priority ?? 0) + 100 * decision.nextDeferrals;
         await db.from("discovery_tasks").update({
           status: "queued",
           attempts: preservedAttempts,
+          priority: boostedPriority,
           error: `${isDeferredForFairness ? "CITY_YIELDED_SLOTS_FAIRNESS" : decision.reason}:${decision.nextDeferrals}`,
           termination_reason: isDeferredForFairness ? "CITY_DEFERRED_NO_SLOT" : decision.reason,
           last_heartbeat_at: null,
@@ -1966,16 +1985,24 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         await boss.send(
           QUEUES.discoveryTask,
           { taskId: payload.taskId, planId: payload.planId, request: payload.request },
-          { ...DISCOVERY_TASK_RETRY_OPTIONS, startAfter: Math.min(30, CONCURRENCY_RECHECK_DELAY_SECONDS + decision.nextDeferrals * 2) },
+          { ...DISCOVERY_TASK_RETRY_OPTIONS, priority: 10 + decision.nextDeferrals, startAfter: isDeferredForFairness ? 1 : Math.min(30, CONCURRENCY_RECHECK_DELAY_SECONDS + decision.nextDeferrals * 2) },
         );
         return;
       }
 
       if (decision.action === "terminal_no_slot") {
         noSlotDeferralsByTask.delete(String(task.id));
+        taskCarryoverAreas.delete(String(task.id));
+        const poolFailedAreas = poolResult?.failedAreaCount ?? (poolResult?.perArea ? poolResult.perArea.filter((p) => p.outcome.failed).length : 0);
+        const poolPartialAreas = poolResult?.partialAreaCount ?? (poolResult?.perArea ? poolResult.perArea.filter((p) => p.outcome.failed && (p.outcome.accepted ?? 0) > 0).length : 0);
+        const poolCrashes = poolResult?.crashCount ?? (poolResult?.perArea ? poolResult.perArea.filter((p) => /crash|target closed|oom/i.test(p.outcome.error ?? "")).length : 0);
+        const poolRetries = poolResult?.retryCount ?? (currentAttempt - 1);
+        const isDegraded = poolFailedAreas > 0 || poolCrashes > 0;
+
         console.warn(
           `[discovery-city] CITY_NO_SLOT_CAPACITY_EXHAUSTED plan=${payload.planId} task=${payload.taskId} ` +
-            `city=${task.city} deferrals=${decision.nextDeferrals}`,
+            `city=${task.city} deferrals=${decision.nextDeferrals} ` +
+            `degraded=${isDegraded} failed_area_count=${poolFailedAreas} partial_area_count=${poolPartialAreas} crash_count=${poolCrashes} retry_count=${poolRetries}`,
         );
         await recordTaskOutcome(task, {
           discovered: 0,
@@ -2000,6 +2027,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     const isDegraded = poolFailedAreas > 0 || poolCrashes > 0;
 
     noSlotDeferralsByTask.delete(String(task.id));
+    taskCarryoverAreas.delete(String(task.id));
     console.info(`[discovery-city] CITY_FINISHED city=${task.city} country=${task.country_code} elapsed_ms=${Date.now() - startedAt} candidates_found=${discovered} accepted=${accepted} rejected=${rejected} failed=${failed} skipped=${skipped} degraded=${isDegraded} failed_area_count=${poolFailedAreas} partial_area_count=${poolPartialAreas} crash_count=${poolCrashes} retry_count=${poolRetries} reason=${cityReason}`);
 
     // PHASE 3C-1 STEP 2 — ONE structured timing line per task (not
@@ -2020,7 +2048,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         `country=${task.country_code} niche=${task.niche} provider=${task.source ?? "google_maps"} ` +
         `attempt=${currentAttempt} retry_count=${poolRetries} candidates_seen=${discovered} ` +
         `candidates_yielded=${discovered - rejected} accepted=${accepted} terminal_reason=${cityReason} ` +
-        `failed_area_count=${poolFailedAreas} crash_count=${poolCrashes} ` +
+        `failed_area_count=${poolFailedAreas} partial_area_count=${poolPartialAreas} crash_count=${poolCrashes} degraded=${isDegraded} ` +
         `task_start_ms=0 python_spawn_ms=${bridgeTimings?.spawnMs?.toFixed(0) ?? "n/a"} ` +
         `first_engine_output_ms=${bridgeTimings?.firstLineMs?.toFixed(0) ?? "n/a"} ` +
         `maps_navigation_start_ms=${marks["discovery:maps_navigation_start"]?.toFixed(0) ?? "n/a"} ` +

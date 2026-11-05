@@ -84,17 +84,22 @@ class _MockPage:
         self,
         *,
         url: str = "https://www.google.com/maps/search/coffee+shop",
+        title: str = "",
         feed: _MockElement | None = None,
         headings: list[_MockElement] | None = None,
         back_buttons: dict[str, _MockElement] | None = None,
         other_elements: dict[str, _MockElement] | None = None,
     ):
         self.url = url
+        self._title = title
         self.feed_el = feed or _MockElement(attrs={"role": "feed"})
         self.headings = list(headings or [])
         self.back_buttons = dict(back_buttons or {})
         self.other_elements = dict(other_elements or {})
         self.keyboard = _MockKeyboard()
+
+    async def title(self) -> str:
+        return self._title
 
     async def query_selector(self, selector: str):
         # 1. Feed selectors
@@ -289,8 +294,8 @@ async def test_genuine_detail_panel_temporarily_missing_heading_handled_correctl
     assert snap["open"] is True
     assert snap["name"] == ""
 
-    # 3. Because detail is open but heading is missing, evaluate must return waiting_for_panel_name
-    # giving the poll loop time to wait for the h1 to mount
+    # 3. Phase 2: When URL !1s id matches card_href's !1s id, verification passes via url_id
+    # even before h1 mounts; waiting_for_panel_name is returned only when title, URL id, and h1/aria are all unavailable.
     ok, reason = _evaluate_panel_identity(
         snap,
         card_href=place_url,
@@ -299,8 +304,22 @@ async def test_genuine_detail_panel_temporarily_missing_heading_handled_correctl
         pre_click_snapshot=None,
         last_verified_panel=None,
     )
-    assert ok is False
-    assert reason == "waiting_for_panel_name", f"Expected 'waiting_for_panel_name', got '{reason}'"
+    assert ok is True
+    assert reason == "verified"
+    assert snap["verdict_source"] == "url_id"
+
+    # When URL !1s id is also not yet available (along with title and h1), returns waiting_for_panel_name
+    snap_no_id = dict(snap, place_id="", url_place_id="", url="https://www.google.com/maps/place/Verve+Coffee+Roasters/@34.04,-118.25,15z", name="", raw_name="")
+    ok_wait, reason_wait = _evaluate_panel_identity(
+        snap_no_id,
+        card_href=place_url,
+        place_key="0x80c2c7:0xabc",
+        card_signals={"name": "Verve Coffee Roasters"},
+        pre_click_snapshot=None,
+        last_verified_panel=None,
+    )
+    assert ok_wait is False
+    assert reason_wait == "waiting_for_panel_name", f"Expected 'waiting_for_panel_name', got '{reason_wait}'"
 
 
 @pytest.mark.asyncio
@@ -419,8 +438,22 @@ async def test_url_backed_detail_open_detection_when_back_button_absent():
         pre_click_snapshot=None,
         last_verified_panel=None,
     )
-    assert ok_loading is False
-    assert reason_loading == "waiting_for_panel_name"
+    assert ok_loading is True
+    assert reason_loading == "verified"
+    assert snap_loading["verdict_source"] == "url_id"
+
+    # Case 1b: When URL has /maps/place/ but no !1s id, no title, and no h1 -> waiting_for_panel_name
+    snap_no_id = dict(snap_loading, place_id="", url_place_id="", url="https://www.google.com/maps/place/Solo+Cafe/@40.7,-74.0,15z", name="", raw_name="")
+    ok_no_id, reason_no_id = _evaluate_panel_identity(
+        snap_no_id,
+        card_href=place_url,
+        place_key="0x89c259:0x456",
+        card_signals={"name": "Solo Cafe"},
+        pre_click_snapshot=None,
+        last_verified_panel=None,
+    )
+    assert ok_no_id is False
+    assert reason_no_id == "waiting_for_panel_name"
 
     # Case 2: Heading mounts while back button remains absent -> verified
     heading = _MockElement(text="Solo Cafe")

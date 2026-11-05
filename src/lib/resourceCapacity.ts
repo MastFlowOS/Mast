@@ -233,6 +233,7 @@ export type ComputeSafeResourceCapacityParams = {
   fallbackCeiling: number;
   cgroupMemoryLimitMb?: number | null;
   cgroupMemoryCurrentMb?: number | null;
+  baseMemoryMb?: number;
   perBrowserMb?: number;
   reserveMemoryMb?: number;
   configuredCeiling?: number;
@@ -261,8 +262,9 @@ export function computeSafeResourceCapacity(params: ComputeSafeResourceCapacityP
     fallbackCeiling,
     cgroupMemoryLimitMb = null,
     cgroupMemoryCurrentMb = null,
-    perBrowserMb = 350,
-    reserveMemoryMb = 256,
+    baseMemoryMb = env.WORKER_BASE_MEMORY_MB ?? 60,
+    perBrowserMb = env.BROWSER_MEMORY_ESTIMATE_MB ?? 260,
+    reserveMemoryMb = env.WORKER_MEMORY_RESERVE_MB ?? 128,
     configuredCeiling = Number.MAX_SAFE_INTEGER,
     manualCap,
   } = params;
@@ -277,9 +279,8 @@ export function computeSafeResourceCapacity(params: ComputeSafeResourceCapacityP
 
   let cgroupMemoryWorkerCeiling: number | null = null;
   if (cgroupMemoryLimitMb !== null && cgroupMemoryLimitMb !== undefined) {
-    const baselineMem = cgroupMemoryCurrentMb ?? 0;
-    const memBudget = Math.max(0, cgroupMemoryLimitMb - baselineMem - reserveMemoryMb);
-    cgroupMemoryWorkerCeiling = Math.max(0, Math.floor(memBudget / Math.max(1, perBrowserMb)));
+    const memBudget = Math.max(0, cgroupMemoryLimitMb - baseMemoryMb - reserveMemoryMb);
+    cgroupMemoryWorkerCeiling = Math.max(1, Math.floor(memBudget / Math.max(1, perBrowserMb)));
   }
 
   const rawResourceCeiling =
@@ -401,6 +402,10 @@ export function measureResourceCapacity(configuredCeiling: number): ResourceCapa
  * logging convenience over `ResourceCapacity` — computes nothing new.
  */
 export function logStartupResourceTelemetry(capacity: ResourceCapacity, browserSlots: number, configuredAreaWorkers: number): void {
+  console.info(
+    `[discovery-capacity] memory_cap=${capacity.cgroupMemoryWorkerCeiling ?? "unconstrained"} ` +
+      `safeResourceWorkers=${capacity.safeAreaWorkers} basis=${capacity.pidCeilingBasis}`,
+  );
   console.log(
     `[resourceCapacity][startup] nodePid=${capacity.nodePid} nodeThreads=${capacity.nodeThreadCount ?? "unknown"} ` +
       `pidsMax=${capacity.pidCapacity.pidsMax ?? "unlimited/unknown"} pidsCurrent=${capacity.pidCapacity.pidsCurrent ?? "unknown"} ` +
@@ -837,8 +842,8 @@ export function trySharedPidAdmission(pidsPerUnit: number, source: SharedPidAdmi
   const memCurrentMb = memoryCapacityOverrideForTesting != null
     ? memoryCapacityOverrideForTesting.currentMb
     : readCgroupMemoryCurrentMb();
-  const reserveMemMb = memoryCapacityOverrideForTesting?.reserveMb ?? env.WORKER_MEMORY_RESERVE_MB ?? 256;
-  const perBrowserMb = memoryCapacityOverrideForTesting?.perBrowserMb ?? env.BROWSER_MEMORY_ESTIMATE_MB ?? 350;
+  const reserveMemMb = memoryCapacityOverrideForTesting?.reserveMb ?? env.WORKER_MEMORY_RESERVE_MB ?? 128;
+  const perBrowserMb = memoryCapacityOverrideForTesting?.perBrowserMb ?? env.BROWSER_MEMORY_ESTIMATE_MB ?? 260;
 
   if (memLimitMb !== null) {
     const liveMemCurrent = memCurrentMb ?? 0;

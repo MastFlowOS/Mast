@@ -350,6 +350,7 @@ class ScraperConfig:
     # Timeouts (milliseconds)
     maps_timeout_ms: int = int(os.environ.get("MAPS_TIMEOUT_MS", "30000"))
     place_timeout_ms: int = int(os.environ.get("PLACE_TIMEOUT_MS", "5000"))
+    panel_marker_wait_ms: int | None = None
     # Hard bound on the single page.evaluate() that extracts a place's detail
     # panel (scraper/maps_scraper.py::_extract_place_data). Playwright's
     # evaluate() has no timeout of its own, so an unresponsive renderer
@@ -433,11 +434,37 @@ class ScraperConfig:
     )
 
     def __post_init__(self) -> None:
+        if self.panel_marker_wait_ms is None:
+            raw = os.environ.get("MAST_PANEL_MARKER_WAIT_MS", "5000")
+            try:
+                self.panel_marker_wait_ms = int(raw)
+            except (ValueError, TypeError):
+                self.panel_marker_wait_ms = 5000
+        try:
+            self.panel_marker_wait_ms = max(500, min(15000, int(self.panel_marker_wait_ms)))
+        except (ValueError, TypeError):
+            self.panel_marker_wait_ms = 5000
         if self.fast:
             self.site_contact_page_budget = 2
             self.ig_delay_min = 0.8
             self.ig_delay_max = 2.0
             self.scroll_max_rounds = 8
+
+
+def resolve_panel_marker_wait_ms(config: ScraperConfig | None = None) -> int:
+    """Return the configured panel marker wait timeout in ms.
+    Reads config.panel_marker_wait_ms if available, falling back to env var
+    MAST_PANEL_MARKER_WAIT_MS (default 5000, min 500, max 15000)."""
+    raw = None
+    if config is not None:
+        raw = getattr(config, "panel_marker_wait_ms", None)
+    if raw is None:
+        raw = os.environ.get("MAST_PANEL_MARKER_WAIT_MS")
+    try:
+        val = int(raw) if raw is not None else 5000
+    except (ValueError, TypeError):
+        val = 5000
+    return max(500, min(15000, val))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

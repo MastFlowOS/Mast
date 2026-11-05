@@ -77,6 +77,7 @@ from utils.runtime import (
     random_ua,
     ProxyManager,
     retry,
+    resolve_panel_marker_wait_ms,
 )
 from utils.perf import NullProfiler
 from exceptions import DiscoveryFailure, DiscoveryFailureReason
@@ -130,12 +131,190 @@ def _log_browser_page_crashed(reason: str, *, context_label: str = "", last_step
 
 _MAX_PANEL_VERIFY_LOGS_PER_AREA = 10
 _panel_verify_fail_counts: dict[str, int] = {}
+_dom_snapshot_counts: dict[str, int] = {}
+
 
 def reset_panel_verify_fail_counts(area_key: str | None = None) -> None:
     if area_key:
         _panel_verify_fail_counts.pop(area_key, None)
+        _dom_snapshot_counts.pop(f"{area_key}:verified", None)
+        _dom_snapshot_counts.pop(f"{area_key}:failure", None)
     else:
         _panel_verify_fail_counts.clear()
+        _dom_snapshot_counts.clear()
+
+
+_GOOGLE_MAPS_TITLE_SUFFIX_RE = re.compile(r"\s*[-–—·]\s*Google\s+Maps\s*$", re.IGNORECASE)
+
+
+def _extract_title_place_name(page_title: str | None) -> str:
+    """Extract the raw place name from a Google Maps page title ('<Name> - Google Maps').
+    Returns '' if the title is empty, lacks the Google Maps suffix or equals 'Google Maps',
+    or matches an excluded generic header like 'Results'."""
+    if not page_title or not isinstance(page_title, str):
+        return ""
+    if not _GOOGLE_MAPS_TITLE_SUFFIX_RE.search(page_title):
+        return ""
+    stripped = _GOOGLE_MAPS_TITLE_SUFFIX_RE.sub("", page_title).strip()
+    if not stripped or stripped.lower() == "google maps":
+        return ""
+    if _is_excluded_panel_header(stripped):
+        return ""
+    return stripped
+
+
+_DOM_SNAPSHOT_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_DOM_SNAPSHOT_QUERY_RE = re.compile(r'(\b(?:href|src|action)=["\'][^"\'?#]+)\?[^"\']*([\'"])', re.IGNORECASE)
+_DOM_SNAPSHOT_COOKIE_RE = re.compile(r"(?:cookie|set-cookie)\s*[:=]\s*[^;\"'<>]+", re.IGNORECASE)
+
+
+def _sanitize_dom_snapshot_html(html: str | None, max_bytes: int = 3072) -> str:
+    """Sanitize and truncate outerHTML for bounded DOM snapshot logging (max 3KB)."""
+    if not html or not isinstance(html, str):
+        return ""
+    cleaned = _DOM_SNAPSHOT_COOKIE_RE.sub("[COOKIE_REDACTED]", html)
+    cleaned = _DOM_SNAPSHOT_QUERY_RE.sub(r"\1?[REDACTED]\2", cleaned)
+    cleaned = _DOM_SNAPSHOT_EMAIL_RE.sub("[EMAIL_REDACTED]", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    encoded = cleaned.encode("utf-8", errors="ignore")
+    if len(encoded) > max_bytes:
+        cleaned = encoded[:max_bytes].decode("utf-8", errors="ignore") + "...[truncated]"
+    return cleaned
+
+
+def _get_dom_snapshot_max() -> int:
+    raw = os.getenv("MAST_PANEL_DOM_SNAPSHOT_MAX", "2").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 2
+
+
+_DOM_SNAPSHOT_JS = """
+() => {
+    function firstOuterHTML(selectors) {
+        for (const s of selectors) {
+            try {
+                const el = document.querySelector(s);
+                if (el && el.outerHTML) return el.outerHTML;
+            } catch (e) {}
+        }
+        return "";
+    }
+    return {
+        header: firstOuterHTML(["h1.DUwDvf", "h1.fontHeadlineLarge", "div[role='main'] h1", "h1"]),
+        phone: firstOuterHTML(["[data-item-id^='phone:']", "[data-tooltip='Copy phone number']", "a[href^='tel:']"]),
+        website: firstOuterHTML(["a[data-item-id='authority']", "a[data-item-id*='url']", "a[data-tooltip='Open website']", "a[aria-label*='website' i]"]),
+        address: firstOuterHTML(["[data-item-id='address']", "button[data-item-id='address']", "span[aria-label*='address' i]"]),
+    };
+}
+"""
+
+
+async def _capture_and_log_dom_snapshot(
+    page: Page,
+    *,
+    snapshot_kind: str,
+    area_key: str = "default",
+    card_name: str = "",
+    card_place_id: str = "",
+    reason: str = "",
+) -> bool:
+    """Capture bounded DOM outerHTML (max 3KB per region) for the first N verified cards
+    and first N failures per area run, controlled by MAST_PANEL_DOM_SNAPSHOT_MAX (default 2, 0 disables)."""
+    max_snaps = _get_dom_snapshot_max()
+    if max_snaps <= 0:
+        return False
+    counter_key = f"{area_key}:{snapshot_kind}"
+    current_count = _dom_snapshot_counts.get(counter_key, 0)
+    if current_count >= max_snaps:
+        return False
+    _dom_snapshot_counts[counter_key] = current_count + 1
+
+    regions = {"header": "", "phone": "", "website": "", "address": ""}
+    if hasattr(page, "evaluate"):
+        try:
+            raw_regions = await page.evaluate(_DOM_SNAPSHOT_JS)
+            if isinstance(raw_regions, dict):
+                for k in regions:
+                    if isinstance(raw_regions.get(k), str):
+                        regions[k] = raw_regions[k]
+        except Exception:
+            pass
+
+    if not any(regions.values()) and hasattr(page, "query_selector"):
+        region_selectors = {
+            "header": ("h1.DUwDvf", "h1.fontHeadlineLarge", "div[role='main'] h1", "h1"),
+            "phone": ("[data-item-id^='phone:']", "[data-tooltip='Copy phone number']", "a[href^='tel:']"),
+            "website": ("a[data-item-id='authority']", "a[data-item-id*='url']", "a[data-tooltip='Open website']"),
+            "address": ("[data-item-id='address']", "button[data-item-id='address']", "span[aria-label*='address' i]"),
+        }
+        for k, sels in region_selectors.items():
+            for sel in sels:
+                try:
+                    el = await page.query_selector(sel)
+                    if el is not None:
+                        if hasattr(el, "evaluate"):
+                            outer = await el.evaluate("el => el.outerHTML || ''")
+                        elif hasattr(el, "inner_text"):
+                            outer = f"<{sel}>{await el.inner_text()}</{sel}>"
+                        else:
+                            outer = ""
+                        if outer:
+                            regions[k] = str(outer)
+                            break
+                except Exception:
+                    continue
+
+    header_html = _sanitize_dom_snapshot_html(regions["header"], max_bytes=3072)
+    phone_html = _sanitize_dom_snapshot_html(regions["phone"], max_bytes=3072)
+    website_html = _sanitize_dom_snapshot_html(regions["website"], max_bytes=3072)
+    address_html = _sanitize_dom_snapshot_html(regions["address"], max_bytes=3072)
+
+    log.info(
+        f"[maps][dom-snapshot] kind={snapshot_kind} area={area_key!r} index={current_count + 1}/{max_snaps} "
+        f"card_name={card_name!r} card_place_id={card_place_id!r} reason={reason!r} "
+        f"header_html={header_html!r} phone_html={phone_html!r} "
+        f"website_html={website_html!r} address_html={address_html!r}"
+    )
+    return True
+
+
+def _log_verified_card_extraction_guard(
+    *,
+    card_name: str,
+    card_place_id: str,
+    place: "RawPlace | None",
+    panel_snap: dict | None = None,
+    area_key: str = "default",
+) -> None:
+    """Log one structured extraction-guard line per verified card reporting whether
+    name, phone, website, address, and rating were found and which selector matched each."""
+    matched = getattr(place, "_matched_selectors", None) if place is not None else None
+    if not isinstance(matched, dict):
+        matched = {}
+    snap_sel = (panel_snap or {}).get("matched_selector") or "none"
+    name_found = bool(place and place.name)
+    phone_found = bool(place and place.phone)
+    website_found = bool(place and place.website)
+    address_found = bool(place and place.address)
+    rating_found = bool(place and place.rating is not None)
+
+    name_sel = matched.get("name") or (snap_sel if name_found else "none")
+    phone_sel = matched.get("phone") or ("present" if phone_found else "none")
+    website_sel = matched.get("website") or ("present" if website_found else "none")
+    address_sel = matched.get("address") or ("present" if address_found else "none")
+    rating_sel = matched.get("rating") or ("present" if rating_found else "none")
+
+    log.info(
+        f"[maps][extraction-guard] area={area_key!r} card_name={card_name!r} card_place_id={card_place_id!r} "
+        f"name_found={name_found} name_selector={name_sel!r} "
+        f"phone_found={phone_found} phone_selector={phone_sel!r} "
+        f"website_found={website_found} website_selector={website_sel!r} "
+        f"address_found={address_found} address_selector={address_sel!r} "
+        f"rating_found={rating_found} rating_selector={rating_sel!r}"
+    )
+
 
 async def _check_consent_or_captcha_present(page: Page) -> tuple[bool, str]:
     try:
@@ -171,6 +350,22 @@ async def _check_consent_or_captcha_present(page: Page) -> tuple[bool, str]:
                 pass
     return False, "none"
 
+
+async def _read_page_title_safe(page: Page) -> str:
+    if not hasattr(page, "title"):
+        return ""
+    try:
+        t = page.title
+        if callable(t):
+            res = t()
+            if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+                res = await res
+            return str(res or "")
+        return str(t or "")
+    except Exception:
+        return ""
+
+
 async def _log_panel_verification_failure(
     page: Page,
     snap: dict,
@@ -180,27 +375,39 @@ async def _log_panel_verification_failure(
     card_signals: dict | None = None,
     area_key: str = "default",
 ) -> None:
-    count = _panel_verify_fail_counts.get(area_key, 0) + 1
-    _panel_verify_fail_counts[area_key] = count
+    effective_area_key = (area_key or "default").strip() or "default"
+    count = _panel_verify_fail_counts.get(effective_area_key, 0) + 1
+    _panel_verify_fail_counts[effective_area_key] = count
+
+    card_name = (card_signals or {}).get("name") or _place_name_from_href(card_href) or ""
+    card_pid = snap.get("card_place_id") or _stable_place_id_from_url(card_href) or ""
+
+    await _capture_and_log_dom_snapshot(
+        page,
+        snapshot_kind="failure",
+        area_key=effective_area_key,
+        card_name=card_name,
+        card_place_id=card_pid,
+        reason=reason,
+    )
+
     if count > _MAX_PANEL_VERIFY_LOGS_PER_AREA:
         if count == _MAX_PANEL_VERIFY_LOGS_PER_AREA + 1:
             log.warning(
-                f"[maps][panel-verify-fail] area={area_key!r} rate-limit reached "
+                f"[maps][panel-verify-fail] area={effective_area_key!r} rate-limit reached "
                 f"({_MAX_PANEL_VERIFY_LOGS_PER_AREA} failures logged); suppressing further failure lines for this area"
             )
         return
 
-    card_name = (card_signals or {}).get("name") or _place_name_from_href(card_href) or ""
-    card_pid = _stable_place_id_from_url(card_href) or ""
     raw_h1 = snap.get("raw_h1") or snap.get("raw_name") or ""
     matched_sel = snap.get("matched_selector") or "none"
     panel_open = bool(snap.get("open"))
     curr_url = snap.get("url") or (getattr(page, "url", "") or "")
+    url_pid = snap.get("url_place_id") if "url_place_id" in snap else (snap.get("place_id") or _stable_place_id_from_url(curr_url) or "")
+    verdict_source = snap.get("verdict_source") or "none"
 
-    try:
-        page_title = (await page.title() if hasattr(page, "title") else "") or ""
-    except Exception:
-        page_title = ""
+    page_title = snap.get("page_title") if "page_title" in snap else await _read_page_title_safe(page)
+    title_name = snap.get("title_name") if "title_name" in snap else _norm_identity_text(_extract_title_place_name(page_title))
 
     has_captcha, captcha_detail = await _check_consent_or_captcha_present(page)
 
@@ -213,8 +420,9 @@ async def _log_panel_verification_failure(
     vp_str = f"{vp.get('width')}x{vp.get('height')}" if isinstance(vp, dict) and "width" in vp else str(vp or "unknown")
 
     log.warning(
-        f"[maps][panel-verify-fail] reason={reason} card_name={card_name!r} "
-        f"card_place_id={card_pid!r} raw_panel_h1={raw_h1!r} "
+        f"[maps][panel-verify-fail] area={effective_area_key!r} reason={reason} card_name={card_name!r} "
+        f"card_place_id={card_pid!r} url_place_id={url_pid!r} title_name={title_name!r} "
+        f"verdict_source={verdict_source!r} raw_panel_h1={raw_h1!r} "
         f"matched_selector={matched_sel!r} panel_open={panel_open} "
         f"current_url={curr_url!r} page_title={page_title!r} "
         f"interstitial_or_captcha={has_captcha} "
@@ -1033,30 +1241,31 @@ _BACK_BUTTON_SELECTORS = [
 ]
 
 
+_PLACE_ANCHOR_5S_RE = re.compile(r"!5s[^!/?#&\s]+", re.IGNORECASE)
+_PLACE_SEARCH_1S_RE = re.compile(r"!2m\d+!1s[^!/?#&\s]+", re.IGNORECASE)
+_PLACE_BLOCK_1S_CID_RE = re.compile(r"!3m\d+!1s(0x[0-9a-fA-F]+:0x[0-9a-fA-F]+)", re.IGNORECASE)
+_PLACE_1S_CID_RE = re.compile(r"(?<!\!2m1)(?<!\!2m2)!1s(0x[0-9a-fA-F]+:0x[0-9a-fA-F]+)", re.IGNORECASE)
+_PLACE_BLOCK_1S_CHIJ_RE = re.compile(r"!3m\d+!1s(ChIJ[\w\-]+)", re.IGNORECASE)
+_PLACE_1S_CHIJ_RE = re.compile(r"(?<!\!2m1)(?<!\!2m2)!1s(ChIJ[\w\-]+)", re.IGNORECASE)
+
+
 def _place_identity_from_href(href: str) -> str:
     """Extract a stable place identity from a Maps href.
 
     A place's href embeds its actual CID — a hex pair like
-    '0x4876...:0x89ab...' — inside the `data=` segment. That CID is
-    stable for a given place, but everything else about the href (the
-    display-name slug, the lat/lng camera position, `entry=`/tracking
-    params) varies depending on *where* the link was captured from: a
-    card in the results feed vs. a self-referential link inside that
-    same place's own detail pane. Deduping on the raw href (or a
-    `?`-stripped prefix of it) treats the same physical place as "new"
-    every time it shows up with a differently-formatted href — this is
-    what let the same business get yielded repeatedly. Falls back to the
-    short `/g/<id>` id, then the bare href, if no CID is present.
+    '0x4876...:0x89ab...' — inside the `!3m6!1s` place block of the `data=`
+    segment. That CID is stable for a given place, whereas the `!5s` viewport
+    anchor token and camera coordinates vary. Deduping uses the authoritative
+    place ID from `_stable_place_id_from_url`, falling back to the `!5s`-stripped
+    base href only when no CID/ChIJ/`/g/` identifier exists.
     """
     if not href:
         return ""
-    m = _PLACE_CID_RE.search(href)
-    if m:
-        return m.group(0)
-    m = _PLACE_GID_RE.search(href)
-    if m:
-        return f"g/{m.group(1)}"
-    return href.split("?")[0]
+    pid = _stable_place_id_from_url(href)
+    if pid:
+        return pid
+    cleaned = _PLACE_ANCHOR_5S_RE.sub("", href)
+    return cleaned.split("?")[0]
 
 
 def _place_identity_from_data(place: "RawPlace") -> str:
@@ -1096,15 +1305,45 @@ def _place_name_from_href(href: str) -> str:
 
 
 def _stable_place_id_from_url(url: str) -> str:
-    if not url:
+    """Extract the authoritative place ID from a Google Maps URL.
+
+    Phase 1 Place-ID Parser rules:
+    1. Explicitly ignore any search/feed context URL (`/maps/search/...` without
+       `/maps/place/`) and any `!2m<N>!1s` search-query token.
+    2. Explicitly strip `!5s<id>` viewport anchor tokens so a viewport anchor
+       appearing earlier in `data=!3m1!5s0x...` is never mistaken for the place ID.
+       If a URL contains ONLY a `!5s` token and no `!1s` token (nor `/g/` ID),
+       this function returns `""` (falsy) — it never returns the `!5s` ID.
+    3. Prefer the `!3m<N>!1s<id>` place data block (`!3m6!1s0x...:0x...`), then
+       any non-search `!1s<id>` token, then `ChIJ` place tokens, then bare CID /
+       `ChIJ` / `/g/<id>` on the `!5s`-stripped string.
+    """
+    if not url or not isinstance(url, str):
         return ""
-    m = _PLACE_CID_RE.search(url)
+    if "/maps/search/" in url and "/maps/place/" not in url:
+        return ""
+    cleaned = _PLACE_ANCHOR_5S_RE.sub("", url)
+    cleaned = _PLACE_SEARCH_1S_RE.sub("", cleaned)
+
+    m = _PLACE_BLOCK_1S_CID_RE.search(cleaned)
     if m:
-        return m.group(0).lower()
-    m = _PLACE_CHIJ_RE.search(url)
+        return m.group(1).lower()
+    m = _PLACE_1S_CID_RE.search(cleaned)
+    if m:
+        return m.group(1).lower()
+    m = _PLACE_BLOCK_1S_CHIJ_RE.search(cleaned)
     if m:
         return m.group(1)
-    m = _PLACE_GID_RE.search(url)
+    m = _PLACE_1S_CHIJ_RE.search(cleaned)
+    if m:
+        return m.group(1)
+    m = _PLACE_CID_RE.search(cleaned)
+    if m:
+        return m.group(0).lower()
+    m = _PLACE_CHIJ_RE.search(cleaned)
+    if m:
+        return m.group(1)
+    m = _PLACE_GID_RE.search(cleaned)
     if m:
         return f"g/{m.group(1)}"
     return ""
@@ -1257,12 +1496,13 @@ _DEFAULT_IS_DETAIL_PANE_OPEN = _is_detail_pane_open
 async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> dict:
     """Capture the currently rendered detail-pane identity signals.
 
-    Phase 3 optimization: when `_is_detail_pane_open` has not been monkeypatched,
-    reads `raw_name` in a single pass over `_PLACE_NAME_SELECTORS` instead of
-    querying and reading the heading selectors twice per snapshot poll.
-    Excluded search-feed headers (e.g. 'Results') are never promoted into `raw_name`.
+    Phase 2 & 3: reads heading selectors (`_PLACE_NAME_SELECTORS`), `page.title()`,
+    optional `div[role='main']` `aria-label`, address selectors, and the authoritative
+    URL `!1s` place ID. Excluded search-feed headers (e.g. 'Results') are never
+    promoted into `raw_name`; when `h1` is excluded or missing, falls back to
+    `page_title` (stripped of ' - Google Maps') or `div[role='main'][aria-label]`.
     """
-    raw_name = ""
+    raw_h1_name = ""
     raw_h1 = ""
     matched_selector = "none"
     raw_address = ""
@@ -1277,7 +1517,7 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                         if not raw_h1 and t:
                             raw_h1 = t
                         if not _is_excluded_panel_header(t):
-                            raw_name = t
+                            raw_h1_name = t
                             raw_h1 = t
                             matched_selector = sel
                             break
@@ -1288,11 +1528,11 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                                 if not raw_h1 and ct:
                                     raw_h1 = ct
                                 if not _is_excluded_panel_header(ct):
-                                    raw_name = ct
+                                    raw_h1_name = ct
                                     raw_h1 = ct
                                     matched_selector = sel
                                     break
-                        if raw_name:
+                        if raw_h1_name:
                             break
                 except Exception:
                     continue
@@ -1306,7 +1546,7 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                     if not raw_h1 and t:
                         raw_h1 = t
                     if not _is_excluded_panel_header(t):
-                        raw_name = t
+                        raw_h1_name = t
                         raw_h1 = t
                         matched_selector = sel
                         detail_open = True
@@ -1318,7 +1558,7 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                                 if not raw_h1 and ct:
                                     raw_h1 = ct
                                 if not _is_excluded_panel_header(ct):
-                                    raw_name = ct
+                                    raw_h1_name = ct
                                     raw_h1 = ct
                                     matched_selector = sel
                                     detail_open = True
@@ -1339,6 +1579,30 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                 except Exception:
                     continue
 
+    url = getattr(page, "url", "") or ""
+    place_id = _stable_place_id_from_url(url) if "/maps/place/" in url else ""
+    if not detail_open and "/maps/place/" in url and "/maps/search/" not in url:
+        detail_open = True
+
+    page_title = await _read_page_title_safe(page)
+    raw_title_name = _extract_title_place_name(page_title) if (detail_open or "/maps/search/" not in url) else ""
+
+    raw_aria_name = ""
+    if (detail_open or not raw_h1_name) and hasattr(page, "query_selector"):
+        for main_sel in ("div[role='main'][aria-label]", "div[role='main']"):
+            try:
+                main_el = await page.query_selector(main_sel)
+                if main_el is not None and main_el is not feed_el and hasattr(main_el, "get_attribute"):
+                    aria_val = (await main_el.get_attribute("aria-label") or "").strip()
+                    if aria_val and not _is_excluded_panel_header(aria_val):
+                        raw_aria_name = aria_val
+                        break
+            except Exception:
+                continue
+
+    if not detail_open and (raw_title_name or raw_aria_name) and "/maps/search/" not in url:
+        detail_open = True
+
     if detail_open:
         for sel in _ADDRESS_SELECTORS:
             try:
@@ -1350,19 +1614,24 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
                         break
             except Exception:
                 continue
-    url = getattr(page, "url", "") or ""
-    place_id = _stable_place_id_from_url(url) if "/maps/place/" in url else ""
-    if not detail_open and "/maps/place/" in url and "/maps/search/" not in url:
-        detail_open = True
+
+    raw_name = raw_h1_name or (raw_title_name if detail_open else "") or (raw_aria_name if detail_open else "")
     return {
         "open": detail_open,
         "name": _norm_identity_text(raw_name),
         "raw_name": raw_name,
+        "h1_name": raw_h1_name,
         "raw_h1": raw_h1,
+        "page_title": page_title,
+        "raw_title_name": raw_title_name,
+        "title_name": _norm_identity_text(raw_title_name),
+        "raw_aria_name": raw_aria_name,
+        "aria_name": _norm_identity_text(raw_aria_name),
         "matched_selector": matched_selector,
         "address": _norm_identity_text(raw_address),
         "raw_address": raw_address,
         "place_id": place_id,
+        "url_place_id": place_id,
         "url": url,
     }
 
@@ -1378,29 +1647,86 @@ def _evaluate_panel_identity(
     allow_stub: bool = False,
 ) -> tuple[bool, str]:
     """Verify whether `snap` belongs to the intended clicked card rather than a
-    stale detail panel left over from an earlier card."""
-    raw_snap_name = snap.get("raw_name") or snap.get("name") or ""
-    panel_name = "" if _is_excluded_panel_header(raw_snap_name) else (snap.get("name") or "")
+    stale detail panel left over from an earlier card.
 
-    if not snap.get("open") and not panel_name:
+    Phase 2 rules:
+    - Uses h1, page_title (stripped of ' - Google Maps'), optional div[role='main']
+      aria-label, and URL !1s place ID as first-class identity signals.
+    - 'Results' (and other _PANEL_HEADER_EXCLUSIONS) is never used as a place name.
+    - Verification passes when (URL !1s id == card id) OR (title/h1/aria name is
+      consistent with card name AND the panel/URL is not stale from the previous card).
+    - Preserves full stale-panel rejection when URL !1s id or title/name matches the
+      prior card and differs from the current card.
+    """
+    if "h1_name" in snap:
+        raw_h1_candidate = snap.get("h1_name") or ""
+    else:
+        raw_h1_candidate = snap.get("raw_h1") or snap.get("raw_name") or snap.get("name") or ""
+    h1_name = "" if _is_excluded_panel_header(raw_h1_candidate) else _norm_identity_text(raw_h1_candidate)
+
+    raw_title_candidate = (
+        snap.get("raw_title_name")
+        or _extract_title_place_name(snap.get("page_title") or "")
+        or ""
+    )
+    title_name_raw = snap.get("title_name") or raw_title_candidate
+    title_name = "" if _is_excluded_panel_header(title_name_raw) else _norm_identity_text(title_name_raw)
+
+    raw_aria_candidate = snap.get("raw_aria_name") or snap.get("aria_label") or ""
+    aria_name_raw = snap.get("aria_name") or raw_aria_candidate
+    aria_name = "" if _is_excluded_panel_header(aria_name_raw) else _norm_identity_text(aria_name_raw)
+
+    # Also support callers that passed a pre-normalized non-excluded `raw_name`/`name` directly in `snap`
+    if not h1_name and not title_name and not aria_name:
+        fallback_raw = snap.get("raw_name") or snap.get("name") or ""
+        if not _is_excluded_panel_header(fallback_raw):
+            h1_name = _norm_identity_text(fallback_raw)
+
+    effective_name = h1_name or title_name or aria_name
+    name_source = "h1" if h1_name else ("title" if title_name else ("h1" if aria_name else "none"))
+
+    curr_url = snap.get("url") or ""
+    panel_pid = (
+        snap.get("place_id")
+        or snap.get("url_place_id")
+        or (_stable_place_id_from_url(curr_url) if "/maps/place/" in curr_url else "")
+    )
+    card_pid = (
+        _stable_place_id_from_url(card_href)
+        or (card_signals or {}).get("card_place_id")
+        or (card_signals or {}).get("place_id")
+        or ""
+    )
+
+    snap["title_name"] = title_name
+    snap["url_place_id"] = panel_pid
+    snap["card_place_id"] = card_pid
+    if not snap.get("raw_name") or _is_excluded_panel_header(snap.get("raw_name")):
+        resolved_raw = (
+            (raw_h1_candidate if not _is_excluded_panel_header(raw_h1_candidate) else "")
+            or raw_title_candidate
+            or raw_aria_candidate
+        )
+        if resolved_raw:
+            snap["raw_name"] = resolved_raw
+            snap["name"] = _norm_identity_text(resolved_raw)
+    elif not snap.get("name") and effective_name:
+        snap["name"] = effective_name
+
+    if not snap.get("open") and not effective_name:
+        snap["verdict_source"] = "none"
         if allow_stub:
-            # Minimal unit-test stub without detail-panel DOM elements
             return True, "stub_no_detail_dom"
         return False, "waiting_for_detail_panel"
 
-    card_pid = _stable_place_id_from_url(card_href)
-    panel_pid = snap.get("place_id") or ""
     card_name = _norm_identity_text((card_signals or {}).get("name") or "")
     card_slug_name = _place_name_from_href(card_href)
     expected_name = card_name or card_slug_name
     card_addr_hint = _extract_card_address_hint(card_signals, expected_name)
-    panel_addr = snap.get("address") or ""
+    panel_addr = snap.get("address") or _norm_identity_text(snap.get("raw_address") or "")
 
-    # 1. Strongest check: stable place-ID comparison when both card and panel URL expose one.
-    if card_pid and panel_pid and card_pid.lower() != panel_pid.lower():
-        return False, f"place_id_conflict(card={card_pid},panel={panel_pid})"
-
-    # 2. Check against prior open panel (either open before click or last verified card).
+    # 1. Check against prior open panel (either open before click or last verified card) FIRST
+    # so stale panels are always rejected before URL/title signals can pass.
     prior = None
     if pre_click_snapshot and pre_click_snapshot.get("open"):
         prior = pre_click_snapshot
@@ -1408,38 +1734,154 @@ def _evaluate_panel_identity(
         prior = last_verified_panel
 
     if prior is not None:
-        prior_pid = prior.get("place_id") or ""
-        prior_name = prior.get("name") or ""
+        prior_url = prior.get("url") or ""
+        prior_pid = (
+            prior.get("place_id")
+            or prior.get("url_place_id")
+            or (_stable_place_id_from_url(prior_url) if "/maps/place/" in prior_url else "")
+        )
+        prior_name = prior.get("name") or _norm_identity_text(
+            "" if _is_excluded_panel_header(prior.get("raw_name")) else (prior.get("raw_name") or "")
+        )
+        prior_title = (
+            prior.get("title_name")
+            or _norm_identity_text(_extract_title_place_name(prior.get("page_title") or ""))
+            or prior_name
+        )
         prior_addr = prior.get("address") or ""
+
         if panel_pid and prior_pid and panel_pid.lower() == prior_pid.lower():
             if not card_pid or card_pid.lower() != panel_pid.lower():
+                snap["verdict_source"] = "url_id"
                 return False, "panel_place_id_unchanged_from_prior"
-        # If panel name and address are identical to the prior card's panel and no new
-        # matching place_id proves the panel updated, reject as stale.
+
         if (
-            panel_name
-            and panel_name == prior_name
+            title_name
+            and prior_title
+            and title_name == prior_title
+            and (not expected_name or not _names_consistent(expected_name, title_name))
+            and not (card_pid and panel_pid and card_pid.lower() == panel_pid.lower())
+        ):
+            snap["verdict_source"] = "title"
+            if expected_name:
+                return False, f"name_conflict(expected={expected_name!r},actual={title_name!r})"
+            return False, "panel_name_and_address_unchanged_from_prior"
+
+        if (
+            effective_name
+            and prior_name
+            and effective_name == prior_name
             and panel_addr == prior_addr
             and not (card_pid and panel_pid and card_pid.lower() == panel_pid.lower())
         ):
+            snap["verdict_source"] = name_source
             return False, "panel_name_and_address_unchanged_from_prior"
 
-    # 3. Name consistency check.
+        if (
+            curr_url
+            and prior_url
+            and curr_url == prior_url
+            and "/maps/place/" in curr_url
+            and not (card_pid and panel_pid and card_pid.lower() == panel_pid.lower())
+        ):
+            snap["verdict_source"] = "url_id"
+            return False, "panel_place_id_unchanged_from_prior"
+
+    # 2. Authoritative place-ID conflict check when both card and panel URL expose a !1s ID.
+    if card_pid and panel_pid and card_pid.lower() != panel_pid.lower():
+        snap["verdict_source"] = "url_id"
+        return False, f"place_id_conflict(card={card_pid},panel={panel_pid})"
+
+    url_id_matched = bool(card_pid and panel_pid and card_pid.lower() == panel_pid.lower())
+
+    # 3. Name consistency check across h1, page_title, and aria-label.
     if expected_name:
-        if not panel_name:
+        if h1_name and not _names_consistent(expected_name, h1_name):
+            snap["verdict_source"] = "h1"
+            return False, f"name_conflict(expected={expected_name!r},actual={h1_name!r})"
+        if title_name and not _names_consistent(expected_name, title_name):
+            snap["verdict_source"] = "title"
+            return False, f"name_conflict(expected={expected_name!r},actual={title_name!r})"
+        if aria_name and not h1_name and not title_name and not _names_consistent(expected_name, aria_name):
+            snap["verdict_source"] = "h1"
+            return False, f"name_conflict(expected={expected_name!r},actual={aria_name!r})"
+        if not effective_name and not url_id_matched:
+            snap["verdict_source"] = "none"
             if allow_stub:
                 return True, "stub_no_panel_name"
             return False, "waiting_for_panel_name"
-        if not _names_consistent(expected_name, panel_name):
-            return False, f"name_conflict(expected={expected_name!r},actual={panel_name!r})"
-    elif not panel_name and not allow_stub:
+    elif not effective_name and not url_id_matched and not allow_stub:
+        snap["verdict_source"] = "none"
         return False, "waiting_for_panel_name"
 
     # 4. Address hint consistency check (distinguishes same-name branches).
     if card_addr_hint and panel_addr and not _addresses_consistent(card_addr_hint, panel_addr):
+        snap["verdict_source"] = name_source if effective_name else ("url_id" if url_id_matched else "none")
         return False, f"address_conflict(hint={card_addr_hint!r},actual={panel_addr!r})"
 
+    if h1_name:
+        snap["verdict_source"] = "h1"
+    elif url_id_matched and not title_name:
+        snap["verdict_source"] = "url_id"
+        if not snap.get("name") and expected_name:
+            snap["name"] = expected_name
+        if not snap.get("raw_name") or _is_excluded_panel_header(snap.get("raw_name")):
+            snap["raw_name"] = (
+                (card_signals or {}).get("name")
+                or _place_name_from_href(curr_url)
+                or _place_name_from_href(card_href)
+                or expected_name
+            )
+    elif title_name:
+        snap["verdict_source"] = "title" if not url_id_matched else "url_id"
+    elif url_id_matched:
+        snap["verdict_source"] = "url_id"
+    else:
+        snap["verdict_source"] = name_source
+
     return True, "verified"
+
+
+def _detect_stale_extraction(
+    curr_place: object | None,
+    last_verified: dict | None,
+) -> tuple[bool, str]:
+    """Check if the extracted place appears to have carried over phone/website/address
+    from the previously verified place panel (e.g. same website and phone while names differ).
+    Returns (is_stale, reason)."""
+    if not curr_place or not last_verified:
+        return False, "none"
+
+    prior_name = (last_verified.get("name") or last_verified.get("raw_name") or "").strip().lower()
+    curr_name = (getattr(curr_place, "name", "") or "").strip().lower()
+    if not prior_name or not curr_name:
+        return False, "none"
+
+    # If the names are consistent, it is the same place (not stale carry-over)
+    if _names_consistent(curr_name, prior_name):
+        return False, "none"
+
+    prior_phone = (last_verified.get("phone") or "").strip()
+    curr_phone = (getattr(curr_place, "phone", "") or "").strip()
+    prior_website = (last_verified.get("website") or "").strip()
+    curr_website = (getattr(curr_place, "website", "") or "").strip()
+    prior_address = (last_verified.get("address") or "").strip()
+    curr_address = (getattr(curr_place, "address", "") or "").strip()
+
+    # Phone is non-empty and identical to previous card (strong stale carry-over signal)
+    if curr_phone and prior_phone and curr_phone == prior_phone:
+        if curr_website and prior_website and curr_website == prior_website:
+            return True, "stale_website_and_phone"
+        if curr_address and prior_address and curr_address == prior_address:
+            return True, "stale_phone_and_address"
+        return True, "stale_phone"
+
+    # Website and address only (e.g. co-located tenants in same building/domain with different phones)
+    # Logged as a warning, but NOT cleared
+    if curr_website and prior_website and curr_website == prior_website and curr_address and prior_address and curr_address == prior_address:
+        return True, "warning_website_and_address_only"
+
+    return False, "none"
 
 
 def _resolve_identity_wait_ms(page: Page, found_panel: bool, config: ScraperConfig) -> int:
@@ -1500,6 +1942,145 @@ async def _wait_for_verified_panel_identity(
             )
             return False, last_snap, last_reason
         await asyncio.sleep(0.04)
+
+
+_CONTENT_MARKER_H1_SELECTORS = (
+    "h1.DUwDvf",
+    "h1.fontHeadlineLarge",
+    "div[role='main'] h1",
+    "h1[data-item-id]",
+    "div[role='region'] h1",
+)
+_CONTENT_MARKER_ARIA_SELECTORS = (
+    "div[role='main'][aria-label]",
+    "div[role='main']",
+)
+_CONTENT_MARKER_PHONE_SELECTORS = (
+    "[data-item-id^='phone:']",
+    "button[data-item-id^='phone:']",
+    "[data-tooltip='Copy phone number']",
+)
+_CONTENT_MARKER_AUTHORITY_SELECTORS = (
+    "a[data-item-id='authority']",
+    "a[data-item-id*='authority']",
+    "a[aria-label*='Website' i]",
+)
+_CONTENT_MARKER_ADDRESS_SELECTORS = (
+    "[data-item-id='address']",
+    "button[data-item-id='address']",
+    "div[data-item-id='address']",
+    "button[data-item-id*='address']",
+)
+
+
+async def _has_panel_content_marker(
+    page: Page,
+    feed_el: object = None,
+    snap: dict | None = None,
+) -> bool:
+    """Check if at least one panel content marker is mounted in the DOM.
+    Markers checked:
+    - h1 or aria-label name (non-empty and not an excluded header like 'Results')
+    - [data-item-id^='phone:']
+    - a[data-item-id='authority']
+    - [data-item-id='address']
+    """
+    if snap:
+        h1_name = snap.get("h1_name") or ""
+        if h1_name and not _is_excluded_panel_header(h1_name):
+            return True
+        aria_name = snap.get("raw_aria_name") or snap.get("aria_name") or ""
+        if aria_name and not _is_excluded_panel_header(aria_name):
+            return True
+        if snap.get("raw_address") or snap.get("address"):
+            return True
+
+    if not hasattr(page, "query_selector"):
+        return False
+
+    # 1. h1 name
+    for sel in _CONTENT_MARKER_H1_SELECTORS:
+        try:
+            el = await page.query_selector(sel)
+            if el is not None and el is not feed_el:
+                if hasattr(el, "inner_text"):
+                    t = (await el.inner_text() or "").strip()
+                    if t and not _is_excluded_panel_header(t):
+                        return True
+        except Exception:
+            pass
+
+    # 2. aria-label name on main
+    for sel in _CONTENT_MARKER_ARIA_SELECTORS:
+        try:
+            el = await page.query_selector(sel)
+            if el is not None and el is not feed_el:
+                if hasattr(el, "get_attribute"):
+                    aria = (await el.get_attribute("aria-label") or "").strip()
+                    if aria and not _is_excluded_panel_header(aria):
+                        return True
+        except Exception:
+            pass
+
+    # 3. phone
+    for sel in _CONTENT_MARKER_PHONE_SELECTORS:
+        try:
+            el = await page.query_selector(sel)
+            if el is not None and el is not feed_el:
+                return True
+        except Exception:
+            pass
+
+    # 4. authority / website
+    for sel in _CONTENT_MARKER_AUTHORITY_SELECTORS:
+        try:
+            el = await page.query_selector(sel)
+            if el is not None and el is not feed_el:
+                return True
+        except Exception:
+            pass
+
+    # 5. address
+    for sel in _CONTENT_MARKER_ADDRESS_SELECTORS:
+        try:
+            el = await page.query_selector(sel)
+            if el is not None and el is not feed_el:
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
+async def _wait_for_panel_content_markers(
+    page: Page,
+    *,
+    feed_el: object = None,
+    snap: dict | None = None,
+    timeout_s: float | None = None,
+    poll_interval_s: float = 0.15,
+) -> bool:
+    """Wait up to `timeout_s` (polling every `poll_interval_s`) for at least one
+    panel content marker to mount before extraction. If none mounts during timeout,
+    re-reads once. Returns True if at least one marker mounts, False otherwise."""
+    if timeout_s is None:
+        timeout_s = resolve_panel_marker_wait_ms() / 1000.0
+
+    # 1. Check immediately
+    if await _has_panel_content_marker(page, feed_el=feed_el, snap=snap):
+        return True
+
+    # 2. Poll up to timeout_s
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_s
+    while loop.time() < deadline:
+        await asyncio.sleep(poll_interval_s)
+        if await _has_panel_content_marker(page, feed_el=feed_el):
+            return True
+
+    # 3. Re-read once after timeout
+    await asyncio.sleep(0.05)
+    return await _has_panel_content_marker(page, feed_el=feed_el)
 
 
 def _is_target_closed_or_crashed_error(exc: BaseException) -> bool:
@@ -2306,8 +2887,10 @@ async def _extract_place_data_legacy(
     place = RawPlace(query=query, niche=niche, region=region, city=city, country=country)
 
     # Name
-    place.name = await _try_selectors(page, _PLACE_NAME_SELECTORS)
-    if not place.name:
+    raw_name_val = await _try_selectors(page, _PLACE_NAME_SELECTORS)
+    if raw_name_val and not _is_excluded_panel_header(raw_name_val):
+        place.name = raw_name_val
+    if not place.name or _is_excluded_panel_header(place.name):
         log.debug("[maps] could not extract place name — skipping")
         return None
 
@@ -2459,26 +3042,40 @@ _PLACE_EXTRACT_JS = """
         return false;
     }
 
+    const matchedSelectors = {
+        name: "none",
+        category: "none",
+        address: "none",
+        rating: "none",
+        review: "none",
+    };
+
     function firstNonExcludedName(selectors) {
         for (const s of selectors) {
             try {
                 const els = document.querySelectorAll(s);
                 for (const el of els) {
                     const t = (el.innerText || "").trim();
-                    if (t && !isExcludedHeader(t)) return t;
+                    if (t && !isExcludedHeader(t)) {
+                        matchedSelectors.name = s;
+                        return t;
+                    }
                 }
             } catch (e) {}
         }
         return "";
     }
 
-    function firstNonEmptyText(selectors) {
+    function firstNonEmptyText(selectors, key) {
         for (const s of selectors) {
             try {
                 const el = document.querySelector(s);
                 if (el) {
                     const t = (el.innerText || "").trim();
-                    if (t) return t;
+                    if (t) {
+                        if (key) matchedSelectors[key] = s;
+                        return t;
+                    }
                 }
             } catch (e) {}
         }
@@ -2486,10 +3083,10 @@ _PLACE_EXTRACT_JS = """
     }
 
     const name = firstNonExcludedName(sel.name);
-    const category = firstNonEmptyText(sel.category);
-    const address = firstNonEmptyText(sel.address);
-    const ratingRaw = firstNonEmptyText(sel.rating);
-    const reviewRaw = firstNonEmptyText(sel.review);
+    const category = firstNonEmptyText(sel.category, "category");
+    const address = firstNonEmptyText(sel.address, "address");
+    const ratingRaw = firstNonEmptyText(sel.rating, "rating");
+    const reviewRaw = firstNonEmptyText(sel.review, "review");
 
     // Flattened in the exact selector-then-DOM-order the legacy
     // `for sel in _PHONE_SELECTORS: for el in query_selector_all(sel)`
@@ -2501,6 +3098,7 @@ _PLACE_EXTRACT_JS = """
         try { els = Array.from(document.querySelectorAll(s)); } catch (e) {}
         for (const el of els) {
             phoneCandidates.push({
+                selector: s,
                 ariaLabel: el.getAttribute("aria-label") || "",
                 href: el.getAttribute("href") || "",
                 innerText: (el.innerText || "").trim(),
@@ -2516,6 +3114,7 @@ _PLACE_EXTRACT_JS = """
         try { el = document.querySelector(s); } catch (e) {}
         if (!el) { websiteCandidates.push(null); continue; }
         websiteCandidates.push({
+            selector: s,
             href: el.getAttribute("href") || "",
             innerText: (el.innerText || "").trim(),
         });
@@ -2555,10 +3154,33 @@ _PLACE_EXTRACT_JS = """
         name, category, address, ratingRaw, reviewRaw,
         phoneCandidates, websiteCandidates,
         reviewFallbackAria, hoursSummary, photosTabText,
+        matchedSelectors,
         html,
     };
 }
 """
+
+
+def _phone_from_candidates_with_selector(candidates: "list[dict]") -> tuple[str, str]:
+    """Return `(phone, matched_selector)` preserving `_phone_from_candidates` precedence."""
+    for c in candidates:
+        href = c.get("href") or ""
+        aria = c.get("ariaLabel") or ""
+        sel = c.get("selector") or "matched_candidate"
+
+        if href.startswith("tel:"):
+            return href[4:].strip(), sel
+        if "phone" in aria.lower() or "call" in aria.lower():
+            phones = extract_phones(aria, trusted=True)
+            if phones:
+                return phones[0], sel
+
+        text = c.get("innerText") or ""
+        phones = extract_phones(text, trusted=True)
+        if phones:
+            return phones[0], sel
+
+    return "", "none"
 
 
 def _phone_from_candidates(candidates: "list[dict]") -> str:
@@ -2567,23 +3189,8 @@ def _phone_from_candidates(candidates: "list[dict]") -> str:
     exactly). Operates on the flattened candidate list the batched JS
     collects instead of live Playwright elements.
     """
-    for c in candidates:
-        href = c.get("href") or ""
-        aria = c.get("ariaLabel") or ""
-
-        if href.startswith("tel:"):
-            return href[4:].strip()
-        if "phone" in aria.lower() or "call" in aria.lower():
-            phones = extract_phones(aria, trusted=True)
-            if phones:
-                return phones[0]
-
-        text = c.get("innerText") or ""
-        phones = extract_phones(text, trusted=True)
-        if phones:
-            return phones[0]
-
-    return ""
+    phone, _ = _phone_from_candidates_with_selector(candidates)
+    return phone
 
 
 def _phone_from_html_fallback(html: str) -> str:
@@ -2602,15 +3209,12 @@ def _phone_from_html_fallback(html: str) -> str:
     return ""
 
 
-def _website_from_candidates(candidates: "list[dict | None]") -> str:
-    """Pure port of `_extract_website` — one candidate per selector
-    (`query_selector` semantics, first match only), same fall-through from
-    "href is an ordering platform" to "check this element's text" that the
-    legacy per-selector loop body had.
-    """
-    for c in candidates:
+def _website_from_candidates_with_selector(candidates: "list[dict | None]") -> tuple[str, str]:
+    """Return `(website, matched_selector)` preserving `_website_from_candidates` precedence."""
+    for idx, c in enumerate(candidates):
         if not c:
             continue
+        sel = c.get("selector") or (_WEBSITE_SELECTORS[idx] if idx < len(_WEBSITE_SELECTORS) else "matched_candidate")
         href = c.get("href") or ""
         if href and href.startswith("http"):
             m = re.search(r"[?&]q=([^&]+)", href)
@@ -2618,11 +3222,21 @@ def _website_from_candidates(candidates: "list[dict | None]") -> str:
                 from urllib.parse import unquote
                 href = unquote(m.group(1))
             if not is_ordering_platform(href):
-                return clean_url(href)
+                return clean_url(href), sel
         text = c.get("innerText") or ""
         if text and "." in text and " " not in text:
-            return f"https://{text}" if not text.startswith("http") else text
-    return ""
+            return (f"https://{text}" if not text.startswith("http") else text), sel
+    return "", "none"
+
+
+def _website_from_candidates(candidates: "list[dict | None]") -> str:
+    """Pure port of `_extract_website` — one candidate per selector
+    (`query_selector` semantics, first match only), same fall-through from
+    "href is an ordering platform" to "check this element's text" that the
+    legacy per-selector loop body had.
+    """
+    site, _ = _website_from_candidates_with_selector(candidates)
+    return site
 
 
 _DETAIL_WEBSITE_PROBE_JS = """
@@ -2704,6 +3318,7 @@ async def _extract_place_data(
     country: str = "",
     profiler=None,
     probed_website: str | None = None,
+    fallback_name: str | None = None,
 ) -> RawPlace | None:
     """Extract all structured data from the currently open place panel.
 
@@ -2749,8 +3364,24 @@ async def _extract_place_data(
     if not data:
         return None
 
-    place.name = (data.get("name") or "").strip()
-    if not place.name:
+    js_matched = data.get("matchedSelectors") if isinstance(data.get("matchedSelectors"), dict) else {}
+    matched_selectors = {
+        "name": js_matched.get("name") or "none",
+        "address": js_matched.get("address") or "none",
+        "rating": js_matched.get("rating") or "none",
+        "phone": "none",
+        "website": "none",
+    }
+
+    raw_name_val = (data.get("name") or "").strip()
+    if raw_name_val and not _is_excluded_panel_header(raw_name_val):
+        place.name = raw_name_val
+    elif fallback_name:
+        fb = fallback_name.strip()
+        if fb and not _is_excluded_panel_header(fb):
+            place.name = fb
+            matched_selectors["name"] = "page_title_or_card_fallback"
+    if not place.name or _is_excluded_panel_header(place.name):
         log.debug("[maps] could not extract place name — skipping")
         return None
 
@@ -2767,7 +3398,7 @@ async def _extract_place_data(
     html = data.get("html") or ""
 
     phone_candidates = data.get("phoneCandidates") or []
-    phone = _phone_from_candidates(phone_candidates)
+    phone, phone_sel = _phone_from_candidates_with_selector(phone_candidates)
     phone_from_fallback = False
     if not phone:
         # Same html blob already fetched above — this eliminates the
@@ -2775,7 +3406,9 @@ async def _extract_place_data(
         phone = _phone_from_html_fallback(html)
         if phone:
             phone_from_fallback = True
+            phone_sel = "html_fallback"
     place.phone = phone
+    matched_selectors["phone"] = phone_sel
 
     if profiler is not None:
         if place.phone:
@@ -2796,18 +3429,27 @@ async def _extract_place_data(
 
     if probed_website:
         place.website = probed_website
+        matched_selectors["website"] = "probed_website"
         if profiler is not None:
             profiler.incr("maps_website_probe_reused")
     else:
-        place.website = _website_from_candidates(data.get("websiteCandidates") or [])
+        site_val, site_sel = _website_from_candidates_with_selector(data.get("websiteCandidates") or [])
+        place.website = site_val
+        matched_selectors["website"] = site_sel
 
     place.rating = _rating_from_raw((data.get("ratingRaw") or "").strip())
+    if place.rating is None:
+        matched_selectors["rating"] = "none"
     place.reviews = _reviews_from_raw_or_fallback(
         (data.get("reviewRaw") or "").strip(),
         data.get("reviewFallbackAria") or [],
     )
 
     place.maps_link = page.url
+    try:
+        setattr(place, "_matched_selectors", matched_selectors)
+    except Exception:
+        pass
 
     # --- Signals from full HTML scan — identical regexes to the legacy
     # path, operating on the same `html` string instead of a fresh
@@ -3352,7 +3994,12 @@ class MapsScraper:
     def _extract_canonical_place_id(href: str) -> str | None:
         if not href or "/maps/place/" not in href:
             return None
-        return _stable_place_id_from_url(href) or _place_identity_from_href(href)
+        pid = _stable_place_id_from_url(href)
+        if pid:
+            return pid
+        if "!5s" in href:
+            return None
+        return _place_identity_from_href(href) or None
 
     @property
     def browser(self) -> Browser:
@@ -3624,6 +4271,8 @@ class MapsScraper:
             "https://www.google.com/maps/search/"
             + quote_plus(full_query)
         )
+        area_key = (street or city or region or "default").strip() or "default"
+        reset_panel_verify_fail_counts(area_key)
 
         log.info(f"[maps] searching: {full_query!r}")
 
@@ -3951,6 +4600,19 @@ class MapsScraper:
                             pass
 
                 rounds_this_attempt = 0
+                clicks_in_attempt = 0
+                verified_in_attempt = 0
+
+                def _check_panel_verification_failed_outcome(exit_label: str) -> None:
+                    if clicks_in_attempt >= 3 and verified_in_attempt == 0 and yielded == 0:
+                        exhausted_mismatch_keys.clear()
+                        mismatch_retries_by_key.clear()
+                        seen_hrefs.clear()
+                        raise DiscoveryFailure(
+                            DiscoveryFailureReason.PANEL_VERIFICATION_FAILED,
+                            f"attempted {clicks_in_attempt} card click(s) and verified 0 (yielded=0) "
+                            f"at {exit_label} for {full_query!r} (area={area_key!r})",
+                        )
 
                 while (
                     yielded < max_results
@@ -4172,6 +4834,7 @@ class MapsScraper:
                                 set_last_navigation_step("card_click")
                                 await _human_click(page, anchor)
                                 clicks_this_round += 1
+                                clicks_in_attempt += 1
                                 self._profiler.incr("maps_candidates_clicked")
                         except Exception as exc:
                             log.info(
@@ -4308,10 +4971,44 @@ class MapsScraper:
                                 last_verified_panel=last_verified_panel,
                                 timeout_ms=identity_wait_ms,
                                 allow_stub=is_minimal_stub,
-                                area_key=region or city or "default",
+                                area_key=area_key,
                             )
                             if not identity_ok:
                                 return "mismatch", None, mismatch_reason
+
+                            verdict_source = (panel_snap or {}).get("verdict_source") or ""
+                            if verdict_source in ("url_id", "title"):
+                                marker_timeout_s = getattr(self.config, "panel_content_marker_timeout_s", None)
+                                if marker_timeout_s is None:
+                                    marker_timeout_s = resolve_panel_marker_wait_ms(self.config) / 1000.0
+                                marker_poll_s = getattr(self.config, "panel_content_marker_poll_s", 0.15)
+                                if (
+                                    getattr(self.config, "place_timeout_ms", 5000) <= 200
+                                    and not hasattr(self.config, "panel_content_marker_timeout_s")
+                                    and "MAST_PANEL_MARKER_WAIT_MS" not in os.environ
+                                ):
+                                    marker_timeout_s = min(marker_timeout_s, self.config.place_timeout_ms / 1000.0)
+                                    marker_poll_s = min(marker_poll_s, 0.02)
+                                markers_mounted = await _wait_for_panel_content_markers(
+                                    page,
+                                    feed_el=panel,
+                                    snap=panel_snap,
+                                    timeout_s=marker_timeout_s,
+                                    poll_interval_s=marker_poll_s,
+                                )
+                                if not markers_mounted:
+                                    c_name = (card_signals or {}).get("name") or ""
+                                    c_pid = (card_signals or {}).get("card_place_id") or ""
+                                    log.warning(
+                                        f"[maps][verified-but-empty] card verified via {verdict_source} "
+                                        f"but no panel content markers mounted for {card_href!r} "
+                                        f"(card_name={c_name!r}, place_id={c_pid!r})"
+                                    )
+                                    return "mismatch", None, "verified_but_empty"
+
+                                refreshed_snap = await _read_panel_identity_snapshot(page, panel)
+                                if refreshed_snap.get("open"):
+                                    panel_snap = refreshed_snap
 
                             verified_panel_snap = panel_snap
                             verified_raw_name = (panel_snap.get("raw_name") or "").strip()
@@ -4412,6 +5109,15 @@ class MapsScraper:
                                 try:
                                     set_last_navigation_step("extract_place_data")
                                     with self._profiler.timer("maps_place_extraction"):
+                                        verified_title = (panel_snap or {}).get("title_name") or ""
+                                        card_name = (card_signals or {}).get("name") or ""
+                                        fallback_card_name = (
+                                            (verified_title if verified_title and not _is_excluded_panel_header(verified_title) else "")
+                                            or (verified_raw_name if verified_raw_name and not _is_excluded_panel_header(verified_raw_name) else "")
+                                            or (card_name if card_name and not _is_excluded_panel_header(card_name) else "")
+                                            or (_place_name_from_href(card_href) if not _is_excluded_panel_header(_place_name_from_href(card_href)) else "")
+                                            or ""
+                                        )
                                         if _extract_place_data is _DEFAULT_EXTRACT_PLACE_DATA:
                                             extracted_place = await _extract_place_data(
                                                 page,
@@ -4423,6 +5129,7 @@ class MapsScraper:
                                                 country=country,
                                                 profiler=self._profiler,
                                                 probed_website=site_url or None,
+                                                fallback_name=fallback_card_name or None,
                                             )
                                         else:
                                             extracted_place = await _extract_place_data(
@@ -4437,12 +5144,67 @@ class MapsScraper:
                                             )
                                             if site_url and extracted_place and not extracted_place.website:
                                                 extracted_place.website = site_url
-                                        if extracted_place and not extracted_place.name:
-                                            extracted_place.name = (
-                                                (card_signals or {}).get("name")
-                                                or verified_raw_name
-                                                or _place_name_from_href(card_href)
-                                            )
+                                        if extracted_place and (not extracted_place.name or _is_excluded_panel_header(extracted_place.name)):
+                                            extracted_place.name = fallback_card_name
+
+                                        # Stale-data guard: ensure phone/website/address are not carried over from prior panel
+                                        is_stale, stale_reason = _detect_stale_extraction(extracted_place, last_verified_panel)
+                                        if is_stale and extracted_place:
+                                            if stale_reason == "warning_website_and_address_only":
+                                                log.warning(
+                                                    f"[maps][stale-extraction] co-located address and website warning for card {extracted_place.name!r} "
+                                                    f"matching prior {last_verified_panel.get('name')!r} (different phones) — retaining fields"
+                                                )
+                                            else:
+                                                log.warning(
+                                                    f"[maps][stale-extraction] stale data detected for card {extracted_place.name!r} "
+                                                    f"matching prior {last_verified_panel.get('name')!r} reason={stale_reason!r} — waiting to re-read once"
+                                                )
+                                                await asyncio.sleep(0.3)
+                                                if _extract_place_data is _DEFAULT_EXTRACT_PLACE_DATA:
+                                                    re_extracted = await _extract_place_data(
+                                                        page,
+                                                        config=self.config,
+                                                        query=full_query,
+                                                        niche=niche,
+                                                        region=region,
+                                                        city=city,
+                                                        country=country,
+                                                        profiler=self._profiler,
+                                                        probed_website=None,
+                                                        fallback_name=fallback_card_name or None,
+                                                    )
+                                                else:
+                                                    re_extracted = await _extract_place_data(
+                                                        page,
+                                                        config=self.config,
+                                                        query=full_query,
+                                                        niche=niche,
+                                                        region=region,
+                                                        city=city,
+                                                        country=country,
+                                                        profiler=self._profiler,
+                                                    )
+                                                if re_extracted:
+                                                    is_still_stale, still_reason = _detect_stale_extraction(re_extracted, last_verified_panel)
+                                                    if is_still_stale:
+                                                        prior_phone = (last_verified_panel.get("phone") or "").strip()
+                                                        curr_phone = (getattr(re_extracted, "phone", "") or "").strip()
+                                                        # Clear only when phone is non-empty and identical to previous card
+                                                        if curr_phone and prior_phone and curr_phone == prior_phone:
+                                                            log.warning(
+                                                                f"[maps][stale-extraction] re-read still stale ({still_reason!r}) for {re_extracted.name!r} — clearing carried-over fields"
+                                                            )
+                                                            if re_extracted.website and re_extracted.website == (last_verified_panel.get("website") or ""):
+                                                                re_extracted.website = ""
+                                                            re_extracted.phone = ""
+                                                            if re_extracted.address and re_extracted.address == (last_verified_panel.get("address") or ""):
+                                                                re_extracted.address = ""
+                                                        else:
+                                                            log.warning(
+                                                                f"[maps][stale-extraction] co-located website and address retained for {re_extracted.name!r} (different phones)"
+                                                            )
+                                                    extracted_place = re_extracted
                                 except PlaceExtractionTimeout as exc:
                                     seen_hrefs.add(place_key)
                                     self._profiler.incr("place_extraction_timeouts")
@@ -4463,6 +5225,9 @@ class MapsScraper:
                                     "open": True,
                                     "name": _norm_identity_text(extracted_place.name),
                                     "raw_name": extracted_place.name,
+                                    "h1_name": extracted_place.name,
+                                    "page_title": panel_snap.get("page_title") or "",
+                                    "title_name": panel_snap.get("title_name") or "",
                                     "address": _norm_identity_text(extracted_place.address),
                                     "raw_address": extracted_place.address,
                                     "place_id": _stable_place_id_from_url(getattr(page, "url", "")) if "/maps/place/" in (getattr(page, "url", "") or "") else "",
@@ -4483,10 +5248,33 @@ class MapsScraper:
                                         post_reason,
                                         card_href=card_href,
                                         card_signals=card_signals,
-                                        area_key=region or city or "default",
+                                        area_key=area_key,
                                     )
                                     return "mismatch", None, post_reason
 
+                            card_log_name = (
+                                (extracted_place.name if extracted_place else "")
+                                or verified_raw_name
+                                or (card_signals or {}).get("name")
+                                or _place_name_from_href(card_href)
+                                or ""
+                            )
+                            card_log_pid = verified_snap_pid or _stable_place_id_from_url(card_href) or ""
+                            _log_verified_card_extraction_guard(
+                                card_name=card_log_name,
+                                card_place_id=card_log_pid,
+                                place=extracted_place,
+                                panel_snap=panel_snap,
+                                area_key=area_key,
+                            )
+                            await _capture_and_log_dom_snapshot(
+                                page,
+                                snapshot_kind="verified",
+                                area_key=area_key,
+                                card_name=card_log_name,
+                                card_place_id=card_log_pid,
+                                reason="verified",
+                            )
                             return "ok", extracted_place, "verified"
 
                         try:
@@ -4518,6 +5306,8 @@ class MapsScraper:
                                 ) from None
 
                             log.info(f"[maps][diag] card_status={card_status} card_reason={card_reason} place={place.name if place else None}")
+                            if card_status in ("ok", "early_skip"):
+                                verified_in_attempt += 1
 
                             if card_status == "early_skip":
                                 _emit_card_processed("early_skip")
@@ -4534,6 +5324,8 @@ class MapsScraper:
                                     "place_id": snap_pid,
                                     "name": verified_panel_snap.get("name") or "",
                                     "address": verified_panel_snap.get("address") or "",
+                                    "phone": (verified_panel_snap.get("phone") or "").strip(),
+                                    "website": (verified_panel_snap.get("website") or "").strip(),
                                 }
                                 card_completed_cleanly = True
                                 continue
@@ -4556,7 +5348,7 @@ class MapsScraper:
                                 retries_for_key = mismatch_retries_by_key.get(place_key, 0) + 1
                                 mismatch_retries_by_key[place_key] = retries_for_key
 
-                                if card_reason in ("waiting_for_detail_panel", "waiting_for_panel_name"):
+                                if card_reason in ("waiting_for_detail_panel", "waiting_for_panel_name", "verified_but_empty"):
                                     max_unopened_retries = getattr(
                                         self.config, "max_unopened_panel_retries_per_card", 1
                                     )
@@ -4669,6 +5461,7 @@ class MapsScraper:
                                         f"recovery for {full_query!r} — terminating area safely"
                                     )
                                     generator_closing = True
+                                    _check_panel_verification_failed_outcome("stale_panel_search_nav_recovery")
                                     return
 
                                 if total_mismatch_recoveries >= max_area_recoveries:
@@ -4677,6 +5470,7 @@ class MapsScraper:
                                         f"{max_area_recoveries} for {full_query!r} — terminating area safely"
                                     )
                                     generator_closing = True
+                                    _check_panel_verification_failed_outcome("max_stale_panel_recoveries")
                                     return
 
                                 continue
@@ -4725,9 +5519,13 @@ class MapsScraper:
 
                             last_verified_panel = {
                                 "place_key": place_key,
+                                "card_href": card_href,
                                 "place_id": verified_pid,
                                 "name": _norm_identity_text(place.name),
-                                "address": _norm_identity_text(place.address),
+                                "raw_name": place.name,
+                                "address": (place.address or "").strip(),
+                                "phone": (place.phone or "").strip(),
+                                "website": (place.website or "").strip(),
                             }
                             seen_hrefs.add(place_key)
                             card_completed_cleanly = True
@@ -4856,9 +5654,11 @@ class MapsScraper:
                         body_lower = body_text.lower()
                         if any(eol.lower() in body_lower for eol in _EOL_TEXTS):
                             log.debug(f"[maps] reached end of results after {yielded} places")
+                            _check_panel_verification_failed_outcome("end_of_results")
                             return
                         if len(listing_anchors) == 0 and yielded == 0 and rounds_this_attempt >= 1:
                             log.info(f"[maps] 0 places found on initial scan for {full_query!r} — ending area search")
+                            _check_panel_verification_failed_outcome("empty_scan")
                             return
                     except Exception as exc:
                         if _is_target_closed_or_crashed_error(exc):
@@ -4900,6 +5700,7 @@ class MapsScraper:
                 # __done__'s own fields -- this event only marks WHEN
                 # scanning stopped, carrying how many places were yielded
                 # as item_id. Diagnostic only.
+                _check_panel_verification_failed_outcome("scroll_rounds_completed")
                 _emit_progress("search_exhausted", str(yielded))
                 return
 

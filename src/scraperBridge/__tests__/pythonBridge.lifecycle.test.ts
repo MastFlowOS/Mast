@@ -50,7 +50,7 @@ process.env.SCRAPER_SUBPROCESS_MAX_MS ??= "30000";
 process.env.SCRAPER_GRACEFUL_SHUTDOWN_MS ??= "1000";
 
 const { __testing } = await import("../pythonBridge.js");
-const { watchChildClose, gracefulKillProcessTree } = __testing;
+const { watchChildClose, gracefulKillProcessTree, attachSafeChildStreamHandlers, safeWriteChildStdin } = __testing;
 // `env` is a plain parsed object (not frozen) — runEngineQuery() reads
 // `env.SCRAPER_ENGINE_PATH` at call time, so mutating this property (rather
 // than process.env, which is only read once at module-import time by
@@ -166,6 +166,25 @@ describe("child exit-lifecycle primitives", () => {
     if (process.platform !== "win32") {
       assert.ok(elapsed >= graceMs, `expected escalation to wait out the ${graceMs}ms grace period, took ${elapsed}ms`);
     }
+  });
+
+  test("5b. attachSafeChildStreamHandlers and safeWriteChildStdin absorb EPIPE errors when child exits", async () => {
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
+    });
+    const closed = watchChildClose(child);
+    attachSafeChildStreamHandlers(child, "test-epipe");
+    await closed;
+
+    assert.doesNotThrow(() => {
+      safeWriteChildStdin(child, "payload-after-close\n");
+    });
+    const simulatedEpipe = new Error("write EPIPE");
+    (simulatedEpipe as any).code = "EPIPE";
+    assert.doesNotThrow(() => {
+      child.stdin?.emit("error", simulatedEpipe);
+    });
   });
 });
 

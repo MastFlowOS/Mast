@@ -247,9 +247,17 @@ def _run(
         scrape_job_id="test-scrape-job",
         requesting_user_id=requesting_user_id,
     )
+    import time as _time
+    last_ran_time = [_time.perf_counter()]
+
+    def _combined_callback(outcome):
+        cleanup_cb(outcome)
+        if outcome.ran:
+            last_ran_time[0] = _time.perf_counter()
+
     engine_runtime = coordinator.get_engine_runtime(session_id)
     driver = ExecutionDriver(
-        engine_runtime, stages, on_stage_outcome=cleanup_cb, idle_poll_seconds=0.0
+        engine_runtime, stages, on_stage_outcome=_combined_callback, idle_poll_seconds=0.005
     )
 
     queue_manager = ctx.runtime.queue_manager
@@ -259,11 +267,15 @@ def _run(
     ]
 
     def _fully_drained() -> bool:
-        return (
-            driver.producers_finished()
-            and all(queue_manager.get_queue(qid).is_empty() for qid in all_input_queue_ids)
-            and fan_in.pending_count() == 0
-        )
+        if not driver.producers_finished():
+            return False
+        if fan_in.pending_count() != 0:
+            return False
+        if any(not queue_manager.get_queue(qid).is_empty() for qid in all_input_queue_ids):
+            return False
+        if _time.perf_counter() - last_ran_time[0] < 0.15:
+            return False
+        return True
 
     driver.start()
     try:

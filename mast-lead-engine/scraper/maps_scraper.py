@@ -1976,46 +1976,27 @@ _CONTENT_MARKER_BUTTON_SELECTORS = (
     "button[aria-label*='back to results' i]",
     "button[jsaction*='pane.backButton']",
     "button[data-tooltip*='Back to results' i]",
-    "button[aria-label='Close']",
-    "button[aria-label*='Close' i]",
-    "button[data-value='Directions']",
-    "button[data-value='Save']",
-    "button[data-value='Share']",
-)
-_CONTENT_MARKER_RATING_SELECTORS = (
-    "div.F7nice",
-    "span.ceNzKf",
-    "span[aria-label*='stars' i]",
-    "span[aria-label*='star' i]",
-    "button[aria-label*='reviews' i]",
 )
 
 _PANEL_CONTENT_MARKER_JS = """
 () => {
-    const EXCLUDED = new Set(["results", "search results", "النتائج"]);
-    // 1. Check all h1 elements for a real place name
-    const h1s = document.querySelectorAll("h1.DUwDvf, h1.fontHeadlineLarge, div[role='main'] h1, h1[data-item-id], div[role='region'] h1, h1");
+    // 1. Authoritative detail-pane contact and action markers (phone, website, address, plus code, hours)
+    if (document.querySelector("[data-item-id^='phone:'], button[data-item-id^='phone:'], [data-tooltip='Copy phone number'], a[data-item-id='authority'], a[data-item-id*='authority'], a[aria-label*='Website' i], a[data-tooltip='Open website'], [data-item-id='address'], button[data-item-id='address'], div[data-item-id='address'], [data-item-id='oloc'], button[data-item-id*='hours']")) {
+        return true;
+    }
+    // 2. Detail-pane specific back button (exists ONLY when place pane is open, never on search results or searchbox)
+    if (document.querySelector("button[aria-label='Back to results'], button[aria-label*='back to results' i], button[jsaction*='pane.backButton'], button[data-tooltip*='Back to results' i]")) {
+        return true;
+    }
+    // 3. Genuine place name h1 outside search results feed and searchbox
+    const EXCLUDED = new Set(["results", "search results", "النتائج", "map", "google maps"]);
+    const h1s = document.querySelectorAll("h1.DUwDvf, h1.fontHeadlineLarge, h1[data-item-id]");
     for (const el of h1s) {
+        if (el.closest && el.closest("div[role='feed'], #searchbox, form")) continue;
         const t = (el.innerText || "").trim().toLowerCase();
         if (t && !EXCLUDED.has(t) && !t.startsWith("results for ") && !t.startsWith("search results")) {
             return true;
         }
-    }
-    // 2. Check main/region aria-label
-    const mains = document.querySelectorAll("div[role='main'][aria-label], div[role='region'][aria-label]");
-    for (const el of mains) {
-        const t = (el.getAttribute("aria-label") || "").trim().toLowerCase();
-        if (t && !EXCLUDED.has(t) && !t.startsWith("results for ") && !t.startsWith("search results")) {
-            return true;
-        }
-    }
-    // 3. Check back buttons and close buttons
-    if (document.querySelector("button[aria-label*='Back' i], button[aria-label*='back to results' i], button[jsaction*='pane.backButton'], button[data-tooltip*='Back' i], button[aria-label='Close'], button[aria-label*='Close' i], button[data-value='Directions'], button[data-value='Save'], button[data-value='Share']")) {
-        return true;
-    }
-    // 4. Check contact markers: phone, authority, address, rating
-    if (document.querySelector("[data-item-id^='phone:'], button[data-item-id^='phone:'], [data-tooltip='Copy phone number'], a[data-item-id='authority'], a[data-item-id*='authority'], a[aria-label*='Website' i], [data-item-id='address'], button[data-item-id='address'], div[data-item-id='address'], button[data-item-id*='address'], div.F7nice, span.ceNzKf, button[data-item-id*='hours'], [data-item-id='oloc']")) {
-        return true;
     }
     return false;
 }
@@ -2030,18 +2011,17 @@ async def _has_panel_content_marker(
     """Check if at least one panel content marker is mounted in the DOM.
     Markers checked:
     - h1 or aria-label name (non-empty and not an excluded header like 'Results')
-    - back button or close button
+    - back button (Back to results)
     - [data-item-id^='phone:']
     - a[data-item-id='authority']
     - [data-item-id='address']
-    - rating / review container
     """
     if snap:
         h1_name = snap.get("h1_name") or ""
         if h1_name and not _is_excluded_panel_header(h1_name):
             return True
         aria_name = snap.get("raw_aria_name") or snap.get("aria_name") or ""
-        if aria_name and not _is_excluded_panel_header(aria_name):
+        if aria_name and not _is_excluded_panel_header(aria_name) and aria_name.lower() not in ("map", "google maps"):
             return True
         if snap.get("raw_address") or snap.get("address"):
             return True
@@ -2083,12 +2063,12 @@ async def _has_panel_content_marker(
             if el is not None and el is not feed_el:
                 if hasattr(el, "get_attribute"):
                     aria = (await el.get_attribute("aria-label") or "").strip()
-                    if aria and not _is_excluded_panel_header(aria):
+                    if aria and not _is_excluded_panel_header(aria) and aria.lower() not in ("map", "google maps"):
                         return True
         except Exception:
             pass
 
-    # 3. detail panel back button or close button
+    # 3. detail panel back button (Back to results only)
     for sel in _CONTENT_MARKER_BUTTON_SELECTORS:
         try:
             el = await page.query_selector(sel)
@@ -2124,15 +2104,6 @@ async def _has_panel_content_marker(
         except Exception:
             pass
 
-    # 7. rating
-    for sel in _CONTENT_MARKER_RATING_SELECTORS:
-        try:
-            el = await page.query_selector(sel)
-            if el is not None and el is not feed_el:
-                return True
-        except Exception:
-            pass
-
     return False
 
 
@@ -2143,6 +2114,7 @@ async def _wait_for_panel_content_markers(
     snap: dict | None = None,
     timeout_s: float | None = None,
     poll_interval_s: float = 0.15,
+    anchor_el: object = None,
 ) -> bool:
     """Wait up to `timeout_s` (polling every `poll_interval_s`) for at least one
     panel content marker to mount before extraction. If none mounts during timeout,
@@ -2157,10 +2129,23 @@ async def _wait_for_panel_content_markers(
     # 2. Poll up to timeout_s
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout_s
+    start_time = loop.time()
+    retried_anchor_click = False
     while loop.time() < deadline:
         await asyncio.sleep(poll_interval_s)
         if await _has_panel_content_marker(page, feed_el=feed_el):
             return True
+        if (
+            not retried_anchor_click
+            and (loop.time() - start_time) >= 0.8
+            and anchor_el is not None
+            and hasattr(anchor_el, "evaluate")
+        ):
+            retried_anchor_click = True
+            try:
+                await anchor_el.evaluate("el => el.click()")
+            except Exception:
+                pass
 
     # 3. Re-read once after timeout
     await asyncio.sleep(0.05)
@@ -5079,6 +5064,7 @@ class MapsScraper:
                                     snap=panel_snap,
                                     timeout_s=marker_timeout_s,
                                     poll_interval_s=marker_poll_s,
+                                    anchor_el=anchor,
                                 )
                                 if not markers_mounted:
                                     refreshed_snap = await _read_panel_identity_snapshot(page, panel)

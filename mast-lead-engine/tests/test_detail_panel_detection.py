@@ -25,6 +25,8 @@ from scraper.maps_scraper import (
     _is_detail_pane_open,
     _read_panel_identity_snapshot,
     _return_to_results,
+    _has_panel_content_marker,
+    _wait_for_panel_content_markers,
 )
 from utils.perf import RunProfiler as PerfProfiler
 from utils.runtime import ScraperConfig
@@ -802,6 +804,7 @@ async def test_place_panel_wait_polls_past_excluded_results_header_and_verifies_
         ms._return_to_results = orig_return
         ms._human_scroll = orig_scroll
 
+
 @pytest.mark.asyncio
 async def test_unopened_detail_panel_with_results_header_routes_to_waiting_for_detail_panel():
     """When only '<h1>Results</h1>' is present and a card genuinely fails to open a detail
@@ -909,3 +912,96 @@ async def test_unopened_detail_panel_with_results_header_routes_to_waiting_for_d
         ms._extract_place_data = orig_extract
         ms._return_to_results = orig_return
         ms._human_scroll = orig_scroll
+
+
+@pytest.mark.asyncio
+async def test_panel_content_marker_searchbox_close_and_feed_rating_excluded():
+    """_has_panel_content_marker must NOT return True for searchbox close button,
+    feed rating stars, or map canvas aria-label."""
+    searchbox_close = _MockElement(attrs={"aria-label": "Close", "jsaction": "searchbox.clear"})
+    feed_rating = _MockElement(attrs={"class": "F7nice"})
+    feed = _MockElement(attrs={"role": "feed"})
+    map_region = _MockElement(attrs={"role": "region", "aria-label": "Map"})
+
+    page = _MockPage(
+        url="https://www.google.com/maps/search/Coffee+Shop",
+        feed=feed,
+        headings=[],
+        back_buttons={},
+        other_elements={
+            "button[aria-label='Close']": searchbox_close,
+            "div.F7nice": feed_rating,
+            "div[role='region'][aria-label]": map_region,
+        },
+    )
+
+    has_marker = await _has_panel_content_marker(page, feed_el=feed)
+    assert has_marker is False, "Searchbox close button, feed rating stars, or map region must NOT satisfy panel content markers"
+
+
+@pytest.mark.asyncio
+async def test_panel_content_marker_genuine_place_h1_and_back_button_accepted():
+    """_has_panel_content_marker must return True when an authoritative detail back button
+    or a genuine place h1 is present outside the feed."""
+    feed = _MockElement(attrs={"role": "feed"})
+    back_button = _MockElement(attrs={"aria-label": "Back to results", "jsaction": "pane.backButton"})
+
+    page = _MockPage(
+        url="https://www.google.com/maps/place/Casita+of+Brooklyn",
+        feed=feed,
+        headings=[],
+        back_buttons={"Back to results": back_button},
+    )
+
+    has_marker = await _has_panel_content_marker(page, feed_el=feed)
+    assert has_marker is True, "Detail back button 'Back to results' must satisfy panel content markers"
+
+
+@pytest.mark.asyncio
+async def test_panel_content_marker_contact_data_accepted():
+    """_has_panel_content_marker must return True when address or website markers mount."""
+    feed = _MockElement(attrs={"role": "feed"})
+    address_el = _MockElement(attrs={"data-item-id": "address"}, text="123 Coffee St")
+
+    page = _MockPage(
+        url="https://www.google.com/maps/place/Casita+of+Brooklyn",
+        feed=feed,
+        headings=[],
+        back_buttons={},
+        other_elements={"[data-item-id='address']": address_el},
+    )
+
+    has_marker = await _has_panel_content_marker(page, feed_el=feed)
+    assert has_marker is True, "data-item-id='address' must satisfy panel content markers"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_panel_content_markers_retries_anchor_click():
+    """_wait_for_panel_content_markers retries el.click() on anchor if markers do not mount within 0.8s."""
+    feed = _MockElement(attrs={"role": "feed"})
+    anchor_clicked = False
+
+    class _RetryAnchor:
+        async def evaluate(self, script: str):
+            nonlocal anchor_clicked
+            if "click" in script:
+                anchor_clicked = True
+            return None
+
+    page = _MockPage(
+        url="https://www.google.com/maps/place/Casita+of+Brooklyn",
+        feed=feed,
+        headings=[],
+        back_buttons={},
+    )
+
+    anchor = _RetryAnchor()
+    res = await _wait_for_panel_content_markers(
+        page,
+        feed_el=feed,
+        timeout_s=1.0,
+        poll_interval_s=0.1,
+        anchor_el=anchor,
+    )
+    assert res is False
+    assert anchor_clicked is True, "Must have retried DOM click on anchor when markers took >= 0.8s"

@@ -55,6 +55,32 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
       }
     });
 
+    it("admits enrichment when headroom is tight for browser but sufficient for lightweight enrichment", () => {
+      // Limit: 954MB, Current: 860MB
+      // Browser worker headroom: 954 - 128 - 860 = -34MB < 260MB (Denied)
+      // Enrichment headroom: 954 - 32 - 860 = 62MB >= 30MB (Granted)
+      setMemoryCapacityForTesting({
+        limitMb: 954,
+        currentMb: 860,
+        reserveMb: 128,
+        perBrowserMb: 260,
+      });
+
+      try {
+        const browserResult = trySharedPidAdmission(1, "area_worker");
+        assert.equal(browserResult.granted, false);
+        assert.match(browserResult.reason ?? "", /insufficient cgroup memory headroom/);
+
+        const enrichmentResult = trySharedPidAdmission(1, "enrichment");
+        assert.equal(enrichmentResult.granted, true);
+        if (enrichmentResult.granted) {
+          enrichmentResult.release();
+        }
+      } finally {
+        setMemoryCapacityForTesting(null);
+      }
+    });
+
     it("falls back to PID headroom when cgroup memory is unreadable/null", () => {
       setMemoryCapacityForTesting(null);
       __testing_sharedPidAdmission.setPidCapacity({ pidsMax: 1000, pidsCurrent: 100 });

@@ -343,6 +343,15 @@ export function measureResourceCapacity(configuredCeiling: number): ResourceCapa
   const nodePid = process.pid;
   const nodeThreadCount = readNodeThreadCount();
 
+  // For container environments with <= 1200MB memory (e.g. Railway 1GB containers),
+  // running multiple concurrent Chromium browsers induces severe memory starvation and
+  // OOM crashes. Budget at least 450MB per browser worker on small containers unless
+  // an explicit override is provided via env.
+  const effectivePerBrowserMb =
+    cgroupMemoryLimitMb !== null && cgroupMemoryLimitMb <= 1200
+      ? Math.max(450, env.BROWSER_MEMORY_ESTIMATE_MB)
+      : env.BROWSER_MEMORY_ESTIMATE_MB;
+
   const computed = computeSafeResourceCapacity({
     pidsMax: pidCapacity.pidsMax,
     pidsCurrent: pidCapacity.pidsCurrent,
@@ -351,7 +360,8 @@ export function measureResourceCapacity(configuredCeiling: number): ResourceCapa
     fallbackCeiling: env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS_FALLBACK,
     cgroupMemoryLimitMb,
     cgroupMemoryCurrentMb,
-    perBrowserMb: env.BROWSER_MEMORY_ESTIMATE_MB,
+    baseMemoryMb: env.WORKER_BASE_MEMORY_MB,
+    perBrowserMb: effectivePerBrowserMb,
     reserveMemoryMb: env.WORKER_MEMORY_RESERVE_MB,
     configuredCeiling,
     manualCap: env.GOOGLE_MAPS_SAFE_RESOURCE_WORKERS,
@@ -842,8 +852,13 @@ export function trySharedPidAdmission(pidsPerUnit: number, source: SharedPidAdmi
   const memCurrentMb = memoryCapacityOverrideForTesting != null
     ? memoryCapacityOverrideForTesting.currentMb
     : readCgroupMemoryCurrentMb();
-  const reserveMemMb = memoryCapacityOverrideForTesting?.reserveMb ?? env.WORKER_MEMORY_RESERVE_MB ?? 128;
-  const perBrowserMb = memoryCapacityOverrideForTesting?.perBrowserMb ?? env.BROWSER_MEMORY_ESTIMATE_MB ?? 260;
+  const isEnrichment = source === "enrichment";
+  const reserveMemMb = isEnrichment
+    ? Math.min(32, memoryCapacityOverrideForTesting?.reserveMb ?? env.WORKER_MEMORY_RESERVE_MB ?? 128)
+    : (memoryCapacityOverrideForTesting?.reserveMb ?? env.WORKER_MEMORY_RESERVE_MB ?? 128);
+  const perBrowserMb = isEnrichment
+    ? (env.ENRICHMENT_MEMORY_MB_PER_WORKER ?? 30)
+    : (memoryCapacityOverrideForTesting?.perBrowserMb ?? env.BROWSER_MEMORY_ESTIMATE_MB ?? 260);
 
   if (memLimitMb !== null) {
     const liveMemCurrent = memCurrentMb ?? 0;

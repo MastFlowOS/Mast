@@ -2269,6 +2269,7 @@ async def _wait_for_panel_content_markers(
     start_time = loop.time()
     last_diag = start_time
     retried_anchor_click = False
+    retry_threshold_s = 0.8 if timeout_s <= 1.5 else min(2.5, timeout_s * 0.6)
     while loop.time() < deadline:
         await asyncio.sleep(poll_interval_s)
         if await _has_panel_content_marker(page, feed_el=feed_el):
@@ -2278,13 +2279,13 @@ async def _wait_for_panel_content_markers(
             log.debug(f"[maps][marker-wait-poll] elapsed={loop.time() - start_time:.1f}s url={getattr(page, 'url', '')}")
         if (
             not retried_anchor_click
-            and (loop.time() - start_time) >= 0.8
+            and (loop.time() - start_time) >= retry_threshold_s
             and anchor_el is not None
             and hasattr(anchor_el, "evaluate")
         ):
             retried_anchor_click = True
             try:
-                await anchor_el.evaluate("el => { const t = el.closest('div.Nv2PK') || el; t.click(); el.click(); }")
+                await anchor_el.evaluate("el => { const t = el.closest('div.Nv2PK') || el; t.click(); }")
             except Exception:
                 pass
 
@@ -5274,7 +5275,7 @@ class MapsScraper:
                                     marker_timeout_s = min(marker_timeout_s, self.config.place_timeout_ms / 1000.0)
                                     marker_poll_s = min(marker_poll_s, 0.02)
                                 else:
-                                    marker_timeout_s = min(4.5, max(2.5, marker_timeout_s))
+                                    marker_timeout_s = min(6.0, max(3.5, marker_timeout_s))
                                 markers_mounted = await _wait_for_panel_content_markers(
                                     page,
                                     feed_el=panel,
@@ -5285,12 +5286,22 @@ class MapsScraper:
                                 )
                                 if not markers_mounted:
                                     refreshed_snap = await _read_panel_identity_snapshot(page, panel)
-                                    h1_cand = refreshed_snap.get("h1_name") or ""
+                                    h1_cand = (
+                                        refreshed_snap.get("h1_name")
+                                        or refreshed_snap.get("raw_h1")
+                                        or refreshed_snap.get("raw_name")
+                                        or ""
+                                    )
                                     has_detail_content = bool(
                                         (h1_cand and not _is_excluded_panel_header(h1_cand))
                                         or refreshed_snap.get("raw_address")
+                                        or refreshed_snap.get("address")
                                     )
-                                    if refreshed_snap.get("open") and has_detail_content:
+                                    if (
+                                        refreshed_snap.get("open")
+                                        or refreshed_snap.get("raw_name")
+                                        or refreshed_snap.get("raw_address")
+                                    ) and has_detail_content:
                                         panel_snap = refreshed_snap
                                         markers_mounted = True
                                     else:

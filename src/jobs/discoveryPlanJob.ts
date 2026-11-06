@@ -1520,8 +1520,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         totalCuratedAreas: streetCount,
         availableCapacity: browserSlotPool.available(),
         requestedQuantity: effectiveRequested,
-        maxCitySlotHoldingMs: Math.max(600_000, effectiveRequested * 45_000),
-        maxConsecutiveZeroYieldAreas: 5,
+        maxCitySlotHoldingMs: Math.max(240_000, effectiveRequested * 30_000),
+        maxConsecutiveZeroYieldAreas: 2,
         isBudgetExhausted: () => budgetCoordinator.isExhausted(),
         // This calls the Phase 2B RPC once per worker iteration. The pool's
         // `usedAreas` guard merely protects this invocation from a malformed
@@ -1765,8 +1765,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         requestedQuantity: effectiveRequested,
         citySlotCap,
         carryoverAreas: taskCarryoverAreas.get(String(task.id)),
-        maxCitySlotHoldingMs: Math.max(600_000, effectiveRequested * 45_000),
-        maxConsecutiveZeroYieldAreas: 5,
+        maxCitySlotHoldingMs: Math.max(240_000, effectiveRequested * 30_000),
+        maxConsecutiveZeroYieldAreas: 2,
         isBudgetExhausted: () => budgetCoordinator.isExhausted(),
         claimNextArea: async (usedAreas) => {
           // Reuse the EXISTING claim_discovery_area() atomic claim — never

@@ -2277,15 +2277,19 @@ async def _wait_for_panel_content_markers(
         if loop.time() - last_diag >= 2.0:
             last_diag = loop.time()
             log.debug(f"[maps][marker-wait-poll] elapsed={loop.time() - start_time:.1f}s url={getattr(page, 'url', '')}")
+        curr_u = getattr(page, "url", "") or ""
+        is_already_at_place = "/maps/place/" in curr_u and "/maps/search/" not in curr_u
+        is_real_browser = hasattr(page, "context")
         if (
             not retried_anchor_click
+            and (not is_real_browser or not is_already_at_place)
             and (loop.time() - start_time) >= retry_threshold_s
             and anchor_el is not None
             and hasattr(anchor_el, "evaluate")
         ):
             retried_anchor_click = True
             try:
-                await anchor_el.evaluate("el => { const t = el.closest('div.Nv2PK') || el; t.click(); }")
+                await anchor_el.evaluate("el => { const t = el.closest('div.Nv2PK'); if (t && t !== el) { t.click(); } else { el.click(); } }")
             except Exception:
                 pass
 
@@ -2807,7 +2811,7 @@ async def _human_click(page: Page, element) -> None:
         last_exc = exc
     try:
         if hasattr(element, "evaluate"):
-            await element.evaluate("el => { const t = el.closest('div.Nv2PK') || el; t.click(); el.click(); }")
+            await element.evaluate("el => { const t = el.closest('div.Nv2PK'); if (t && t !== el) { t.click(); } else { el.click(); } }")
             return
     except Exception as exc:
         last_exc = exc
@@ -5203,12 +5207,13 @@ class MapsScraper:
                                                         break
                                                     if (
                                                         not retried_dom_click
-                                                        and (asyncio.get_event_loop().time() - poll_start) >= 0.35
+                                                        and (asyncio.get_event_loop().time() - poll_start) >= min(1.0, poll_budget_s * 0.4)
                                                         and hasattr(anchor, "evaluate")
+                                                        and "/maps/place/" not in curr_u
                                                     ):
                                                         retried_dom_click = True
                                                         try:
-                                                            await anchor.evaluate("el => { const t = el.closest('div.Nv2PK') || el; t.click(); el.click(); }")
+                                                             await anchor.evaluate("el => { const t = el.closest('div.Nv2PK'); if (t && t !== el) { t.click(); } else { el.click(); } }")
                                                         except Exception:
                                                             pass
                                                     poll_sleep = 0.02 if self.config.place_timeout_ms <= 200 else 0.20
@@ -5286,22 +5291,13 @@ class MapsScraper:
                                 )
                                 if not markers_mounted:
                                     refreshed_snap = await _read_panel_identity_snapshot(page, panel)
-                                    h1_cand = (
-                                        refreshed_snap.get("h1_name")
-                                        or refreshed_snap.get("raw_h1")
-                                        or refreshed_snap.get("raw_name")
-                                        or ""
+                                    real_h1 = (refreshed_snap.get("h1_name") or refreshed_snap.get("raw_h1") or "").strip()
+                                    real_addr = (refreshed_snap.get("raw_address") or refreshed_snap.get("address") or "").strip()
+                                    has_real_detail_dom = bool(
+                                        (real_h1 and not _is_excluded_panel_header(real_h1))
+                                        or real_addr
                                     )
-                                    has_detail_content = bool(
-                                        (h1_cand and not _is_excluded_panel_header(h1_cand))
-                                        or refreshed_snap.get("raw_address")
-                                        or refreshed_snap.get("address")
-                                    )
-                                    if (
-                                        refreshed_snap.get("open")
-                                        or refreshed_snap.get("raw_name")
-                                        or refreshed_snap.get("raw_address")
-                                    ) and has_detail_content:
+                                    if refreshed_snap.get("open") and has_real_detail_dom:
                                         panel_snap = refreshed_snap
                                         markers_mounted = True
                                     else:

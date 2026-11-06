@@ -1131,7 +1131,7 @@ async def _validate_panel_candidate(
 
     if anchor_count == 0 and hasattr(panel, "wait_for_selector"):
         try:
-            cand = await panel.wait_for_selector("a[href*='/maps/place/']", timeout=2000)
+            cand = await panel.wait_for_selector("a[href*='/maps/place/']", timeout=6000)
             if cand is not None:
                 anchor_count = len(await panel.query_selector_all("a[href*='/maps/place/']"))
         except Exception:
@@ -1187,7 +1187,8 @@ async def _resolve_results_panel(page: Page, *, config: ScraperConfig) -> tuple[
     attempted: list[str] = []
     for sel in _PANEL_SELECTORS:
         try:
-            await page.wait_for_selector(sel, timeout=8000)
+            panel_timeout = 15000 if sel == "div[role='feed']" else 4000
+            await page.wait_for_selector(sel, timeout=panel_timeout)
         except PlaywrightTimeoutError:
             attempted.append(f"{sel!r}: not present")
             continue
@@ -1230,14 +1231,15 @@ _PLACE_GID_RE = re.compile(r"/g/([A-Za-z0-9_-]+)")
 # Controls that return from a place's detail pane to the results feed.
 # Maps' markup for this isn't stable, so several are tried in order.
 _BACK_BUTTON_SELECTORS = [
+    "div[role='main'] button[aria-label='Close']",
+    "div[role='region'] button[aria-label='Close']",
+    "button[aria-label='Close']:not([jsaction*='omnibox'])",
     "button[aria-label='Back to results']",
     "button[aria-label*='back to results' i]",
     "button[jsaction*='pane.backButton']",
     "button[data-tooltip*='Back to results' i]",
     "button[aria-label='Back']",
     "button[data-tooltip='Back']",
-    "button[aria-label='Close']",
-    "button[jsaction*='reveal.card.close']",
 ]
 
 
@@ -1426,20 +1428,48 @@ _DETAIL_BACK_BUTTON_SELECTORS = (
     "button[data-tooltip*='Back to results' i]",
 )
 
-_PANEL_HEADER_EXCLUSIONS = frozenset({"results", "search results", "النتائج"})
+_PANEL_HEADER_EXCLUSIONS = frozenset({
+    "results",
+    "search results",
+    "all results",
+    "نتائج",
+    "النتائج",
+    "ad",
+    "ads",
+    "sponsored",
+    "advertisement",
+    "promoted",
+    "إعلان",
+    "اعلان",
+    "إعلانات",
+    "اعلانات",
+    "ممول",
+    "مُموَّل",
+    "google maps",
+    "map",
+    "maps",
+    "خرائط google",
+    "خرائط",
+})
 
 
 def _is_excluded_panel_header(text: str | None) -> bool:
-    """Return True if `text` is empty or matches a generic search-results header
+    """Return True if `text` is empty or matches a generic search-results or ad header
     rather than an individual place name."""
     if not text:
         return True
     low = text.strip().lower()
     if not low:
         return True
+    low = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", low).strip()
     if low in _PANEL_HEADER_EXCLUSIONS:
         return True
-    if low.startswith("results for ") or low.startswith("search results"):
+    if (
+        low.startswith("results for ")
+        or low.startswith("search results")
+        or low.startswith("نتائج البحث عن")
+        or low.startswith("نتائج ")
+    ):
         return True
     return False
 
@@ -1490,6 +1520,72 @@ async def _is_detail_pane_open(page: Page, feed_el: object = None) -> bool:
     return False
 
 
+_PANEL_SNAPSHOT_JS = """
+() => {
+    const url = window.location.href || "";
+    const page_title = document.title || "";
+    
+    let detail_open = (url.includes("/maps/place/") && !url.includes("/maps/search/"));
+    if (!detail_open) {
+        const backBtn = document.querySelector("button[aria-label*='Back' i], button[data-tooltip*='Back' i], button[aria-label='Results' i], button[aria-label*='نتائج' i]");
+        if (backBtn && backBtn.offsetParent !== null) detail_open = true;
+    }
+    
+    const EXCLUDED = new Set([
+        "results", "search results", "all results", "نتائج", "النتائج",
+        "ad", "ads", "sponsored", "advertisement", "promoted",
+        "إعلان", "اعلان", "إعلانات", "اعلانات", "ممول", "مُموَّل",
+        "map", "maps", "google maps", "خرائط google", "خرائط"
+    ]);
+    function isExcluded(t) {
+        if (!t) return true;
+        const s = t.trim().toLowerCase().replace(/[\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]/g, "");
+        return EXCLUDED.has(s) || s.startsWith("results for ") || s.startsWith("search results") || s.startsWith("نتائج ");
+    }
+    
+    let raw_h1_name = "";
+    let raw_h1 = "";
+    let matched_selector = "none";
+    const h1s = document.querySelectorAll("h1.DUwDvf, h1.fontHeadlineLarge, h1[data-item-id], div[role='main'] h1, div[role='region'] h1, h1, div.DUwDvf");
+    for (const h of h1s) {
+        if (h.closest && h.closest("div[role='feed'], #searchbox, form")) continue;
+        const t = (h.innerText || "").trim();
+        if (!raw_h1 && t) raw_h1 = t;
+        if (!isExcluded(t)) {
+            raw_h1_name = t;
+            raw_h1 = t;
+            matched_selector = h.className || "h1";
+            detail_open = true;
+            break;
+        }
+    }
+    
+    let raw_aria_name = "";
+    const mainEl = document.querySelector("div[role='main'][aria-label]");
+    if (mainEl) {
+        const a = (mainEl.getAttribute("aria-label") || "").trim();
+        if (!isExcluded(a)) raw_aria_name = a;
+    }
+    
+    let raw_address = "";
+    const addrEl = document.querySelector("[data-item-id='address'], button[data-item-id='address'], div[data-item-id='address'], [data-tooltip='Copy address']");
+    if (addrEl) {
+        raw_address = (addrEl.innerText || "").trim();
+    }
+    
+    return {
+        url,
+        page_title,
+        detail_open,
+        raw_h1_name,
+        raw_h1,
+        matched_selector,
+        raw_aria_name,
+        raw_address
+    };
+}
+"""
+
 _DEFAULT_IS_DETAIL_PANE_OPEN = _is_detail_pane_open
 
 
@@ -1506,6 +1602,42 @@ async def _read_panel_identity_snapshot(page: Page, feed_el: object = None) -> d
     raw_h1 = ""
     matched_selector = "none"
     raw_address = ""
+    if hasattr(page, "evaluate") and hasattr(page, "context") and _is_detail_pane_open is _DEFAULT_IS_DETAIL_PANE_OPEN:
+        try:
+            js_data = await page.evaluate(_PANEL_SNAPSHOT_JS)
+            if isinstance(js_data, dict):
+                raw_h1_name = js_data.get("raw_h1_name") or ""
+                raw_h1 = js_data.get("raw_h1") or ""
+                matched_selector = js_data.get("matched_selector") or "none"
+                raw_address = js_data.get("raw_address") or ""
+                detail_open = js_data.get("detail_open") or False
+                url = js_data.get("url") or (getattr(page, "url", "") or "")
+                place_id = _stable_place_id_from_url(url) if "/maps/place/" in url else ""
+                page_title = js_data.get("page_title") or ""
+                raw_title_name = _extract_title_place_name(page_title) if (detail_open or "/maps/search/" not in url) else ""
+                raw_aria_name = js_data.get("raw_aria_name") or ""
+                raw_name = raw_h1_name or (raw_title_name if detail_open else "") or (raw_aria_name if detail_open else "")
+                return {
+                    "open": detail_open,
+                    "name": _norm_identity_text(raw_name),
+                    "raw_name": raw_name,
+                    "h1_name": raw_h1_name,
+                    "raw_h1": raw_h1,
+                    "page_title": page_title,
+                    "raw_title_name": raw_title_name,
+                    "title_name": _norm_identity_text(raw_title_name),
+                    "raw_aria_name": raw_aria_name,
+                    "aria_name": _norm_identity_text(raw_aria_name),
+                    "matched_selector": matched_selector,
+                    "address": _norm_identity_text(raw_address),
+                    "raw_address": raw_address,
+                    "place_id": place_id,
+                    "url_place_id": place_id,
+                    "url": url,
+                }
+        except Exception:
+            pass
+
     if _is_detail_pane_open is not _DEFAULT_IS_DETAIL_PANE_OPEN:
         detail_open = await _is_detail_pane_open(page, feed_el)
         if detail_open:
@@ -1912,7 +2044,7 @@ async def _wait_for_verified_panel_identity(
     area_key: str = "default",
 ) -> tuple[bool, dict, str]:
     """Bounded poll waiting for the detail panel to reflect the clicked card's identity."""
-    deadline = asyncio.get_event_loop().time() + max(0.05, min(timeout_ms, 5000) / 1000.0)
+    deadline = asyncio.get_event_loop().time() + max(0.05, timeout_ms / 1000.0)
     last_snap: dict = {}
     last_reason = "unverified"
     while True:
@@ -1941,7 +2073,8 @@ async def _wait_for_verified_panel_identity(
                 area_key=area_key,
             )
             return False, last_snap, last_reason
-        await asyncio.sleep(0.04)
+        poll_sleep = 0.02 if timeout_ms <= 250 else 0.20
+        await asyncio.sleep(poll_sleep)
 
 
 _CONTENT_MARKER_H1_SELECTORS = (
@@ -1984,17 +2117,22 @@ _PANEL_CONTENT_MARKER_JS = """
     if (document.querySelector("[data-item-id^='phone:'], button[data-item-id^='phone:'], [data-tooltip='Copy phone number'], a[data-item-id='authority'], a[data-item-id*='authority'], a[aria-label*='Website' i], a[data-tooltip='Open website'], [data-item-id='address'], button[data-item-id='address'], div[data-item-id='address'], [data-item-id='oloc'], button[data-item-id*='hours']")) {
         return true;
     }
-    // 2. Detail-pane specific back button (exists ONLY when place pane is open, never on search results or searchbox)
-    if (document.querySelector("button[aria-label='Back to results'], button[aria-label*='back to results' i], button[jsaction*='pane.backButton'], button[data-tooltip*='Back to results' i]")) {
+    // 2. Genuine place name h1 outside search results feed and searchbox (excluding ad headers and map labels)
+    const EXCLUDED = new Set([
+        "results", "search results", "all results", "نتائج", "النتائج",
+        "ad", "ads", "sponsored", "advertisement", "promoted",
+        "إعلان", "اعلان", "إعلانات", "اعلانات", "ممول", "مُموَّل",
+        "map", "maps", "google maps", "خرائط google", "خرائط"
+    ]);
+    if (document.querySelector("[data-item-id^='phone:'], a[data-item-id='authority'], [data-item-id='address'], button[data-tooltip='Copy phone number']")) {
         return true;
     }
-    // 3. Genuine place name h1 outside search results feed and searchbox
-    const EXCLUDED = new Set(["results", "search results", "النتائج", "map", "google maps"]);
-    const h1s = document.querySelectorAll("h1.DUwDvf, h1.fontHeadlineLarge, h1[data-item-id]");
+    const h1s = document.querySelectorAll("h1.DUwDvf, h1.fontHeadlineLarge, h1[data-item-id], div[role='main'] h1");
     for (const el of h1s) {
         if (el.closest && el.closest("div[role='feed'], #searchbox, form")) continue;
-        const t = (el.innerText || "").trim().toLowerCase();
-        if (t && !EXCLUDED.has(t) && !t.startsWith("results for ") && !t.startsWith("search results")) {
+        let t = (el.innerText || "").trim().toLowerCase();
+        t = t.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").trim();
+        if (t && !EXCLUDED.has(t) && !t.startsWith("results for ") && !t.startsWith("search results") && !t.startsWith("نتائج ")) {
             return true;
         }
     }
@@ -2026,14 +2164,13 @@ async def _has_panel_content_marker(
         if snap.get("raw_address") or snap.get("address"):
             return True
 
-    # Fast DOM evaluation inside the browser
-    if hasattr(page, "evaluate"):
+    # Fast DOM evaluation inside a real browser
+    if hasattr(page, "evaluate") and hasattr(page, "context"):
         try:
             has_marker = await page.evaluate(_PANEL_CONTENT_MARKER_JS)
-            if has_marker:
-                return True
-        except Exception:
-            pass
+            return bool(has_marker)
+        except Exception as exc:
+            log.warning(f"[maps][marker-eval-err] {exc}")
 
     if not hasattr(page, "query_selector"):
         return False
@@ -2113,7 +2250,7 @@ async def _wait_for_panel_content_markers(
     feed_el: object = None,
     snap: dict | None = None,
     timeout_s: float | None = None,
-    poll_interval_s: float = 0.15,
+    poll_interval_s: float = 0.25,
     anchor_el: object = None,
 ) -> bool:
     """Wait up to `timeout_s` (polling every `poll_interval_s`) for at least one
@@ -2130,11 +2267,15 @@ async def _wait_for_panel_content_markers(
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout_s
     start_time = loop.time()
+    last_diag = start_time
     retried_anchor_click = False
     while loop.time() < deadline:
         await asyncio.sleep(poll_interval_s)
         if await _has_panel_content_marker(page, feed_el=feed_el):
             return True
+        if loop.time() - last_diag >= 2.0:
+            last_diag = loop.time()
+            log.debug(f"[maps][marker-wait-poll] elapsed={loop.time() - start_time:.1f}s url={getattr(page, 'url', '')}")
         if (
             not retried_anchor_click
             and (loop.time() - start_time) >= 0.8
@@ -2463,12 +2604,15 @@ async def _return_to_results(
                 btn = await page.query_selector(sel)
                 if not btn or btn is feed_el:
                     continue
-                # Protect against searchbox clear/close buttons
+                # Protect against searchbox / omnibox clear/close buttons
                 if hasattr(btn, "get_attribute"):
                     try:
-                        jsaction = await btn.get_attribute("jsaction") or ""
-                        aria_label = await btn.get_attribute("aria-label") or ""
-                        if "searchbox" in jsaction or aria_label.lower() in ("clear search",):
+                        jsaction = (await btn.get_attribute("jsaction") or "").lower()
+                        aria_label = (await btn.get_attribute("aria-label") or "").strip().lower()
+                        if (
+                            any(bad in jsaction for bad in ("searchbox", "omnibox", "clear"))
+                            or aria_label in ("close", "clear search", "close search")
+                        ):
                             continue
                     except Exception:
                         pass
@@ -2481,8 +2625,12 @@ async def _return_to_results(
 
                 _emit("return_action_selected", "back_button")
                 try:
-                    await btn.click(timeout=min(2000, timeout_ms))
-                    _emit("return_action_executed", sel)
+                    if hasattr(btn, "evaluate") and hasattr(page, "context"):
+                        await btn.evaluate("el => el.click()")
+                        _emit("return_action_executed", f"{sel}:evaluate")
+                    else:
+                        await btn.click(timeout=min(2000, timeout_ms))
+                        _emit("return_action_executed", sel)
                 except Exception as click_err:
                     if _is_target_closed_or_crashed_error(click_err):
                         _emit_crash(click_err)
@@ -2512,7 +2660,7 @@ async def _return_to_results(
                 _emit("return_action_selected", "escape_key")
                 await page.keyboard.press("Escape")
                 _emit("return_action_executed", "escape_key")
-                if await _wait_for_feed_restored(page, panel_selector, timeout_s=0.5):
+                if await _wait_for_feed_restored(page, panel_selector, timeout_s=min(2.5, max(1.2, timeout_ms / 1000.0))):
                     if not (force_reset and "/maps/place/" in (getattr(page, "url", "") or "")):
                         _emit("search_feed_restored", "escape_key")
                         return True
@@ -2528,7 +2676,7 @@ async def _return_to_results(
                 _emit("return_action_selected", "history_back")
                 await page.evaluate("() => window.history ? window.history.back() : null")
                 _emit("return_action_executed", "history_back")
-                if await _wait_for_feed_restored(page, panel_selector, timeout_s=0.5):
+                if await _wait_for_feed_restored(page, panel_selector, timeout_s=min(2.5, max(1.2, timeout_ms / 1000.0))):
                     if not (force_reset and "/maps/place/" in (getattr(page, "url", "") or "")):
                         _emit("search_feed_restored", "history_back")
                         return True
@@ -2561,7 +2709,7 @@ async def _return_to_results(
                         except Exception:
                             pass
                 else:
-                    if await _wait_for_feed_restored(page, panel_selector, timeout_s=0.8):
+                    if await _wait_for_feed_restored(page, panel_selector, timeout_s=min(2.5, max(1.2, timeout_ms / 1000.0))):
                         _emit("search_feed_restored", "browser_go_back")
                         return True
         except Exception as gb_err:
@@ -2599,6 +2747,8 @@ async def _can_continue_from_split_results_feed(
     try:
         live_panel = await page.query_selector(panel_selector)
         if live_panel is None:
+            return False
+        if hasattr(page, "context") and await _is_detail_pane_open(page, live_panel):
             return False
         if not await _is_detail_pane_open(page, live_panel):
             return True
@@ -2768,6 +2918,11 @@ async def _wait_for_place_settle(
     get here) now resolves in well under 1000ms.
     """
     if not already_settled:
+        settle_timeout = (
+            config.place_timeout_ms
+            if getattr(config, "place_timeout_ms", 5000) <= 200
+            else max(config.place_settle_ms, getattr(config, "place_timeout_ms", 10000))
+        )
         try:
             await page.wait_for_function(
                 """() => {
@@ -2783,10 +2938,11 @@ async def _wait_for_place_settle(
                         "a[href^='tel:']",
                         "[data-item-id='oloc']",
                         "button[data-item-id*='hours']",
+                        "h1.DUwDvf",
                     ];
                     return sels.some(s => document.querySelector(s));
                 }""",
-                timeout=max(config.place_settle_ms, min(getattr(config, "place_timeout_ms", 4000), 4500)),
+                timeout=settle_timeout,
                 polling=50,
             )
         except PlaywrightTimeoutError:
@@ -3325,26 +3481,59 @@ _DETAIL_WEBSITE_PROBE_JS = """
 """
 
 
-async def _probe_detail_panel_website(page: Page) -> str:
-    """Authoritative, lightweight detail-panel website probe.
+async def _probe_detail_panel_website(
+    page: Page,
+    timeout_s: float = 2.0,
+    poll_interval_s: float = 0.1,
+) -> str:
+    """Authoritative, lightweight detail-panel website probe with bounded poll.
 
-    Evaluates _WEBSITE_SELECTORS on the currently-mounted detail panel and
-    runs candidate URLs through _website_from_candidates() (which preserves
+    Evaluates _WEBSITE_SELECTORS on the currently-mounted detail panel up to timeout_s
+    and runs candidate URLs through _website_from_candidates() (which preserves
     clean_url and is_ordering_platform rules).
     Falls back to per-selector query_selector evaluation if page.evaluate() raises.
     """
+    # 1. Immediate check
     try:
         candidates = await page.evaluate(_DETAIL_WEBSITE_PROBE_JS, _WEBSITE_SELECTORS)
-        if isinstance(candidates, list):
-            return _website_from_candidates(candidates)
+        if isinstance(candidates, list) and candidates:
+            url = _website_from_candidates(candidates)
+            if url:
+                return url
     except Exception:
         pass
 
-    # Fallback to query_selector
     try:
-        return await _extract_website(page)
+        url = await _extract_website(page)
+        if url:
+            return url
     except Exception:
+        pass
+
+    # If timeout_s <= 0 or running in a unit-test stub without browser context, return immediately
+    if timeout_s <= 0 or not hasattr(page, "context"):
         return ""
+
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_s
+    while loop.time() < deadline:
+        await asyncio.sleep(poll_interval_s)
+        try:
+            candidates = await page.evaluate(_DETAIL_WEBSITE_PROBE_JS, _WEBSITE_SELECTORS)
+            if isinstance(candidates, list) and candidates:
+                url = _website_from_candidates(candidates)
+                if url:
+                    return url
+        except Exception:
+            pass
+        try:
+            url = await _extract_website(page)
+            if url:
+                return url
+        except Exception:
+            pass
+
+    return ""
 
 
 def _rating_from_raw(raw_rating: str) -> "float | None":
@@ -4339,6 +4528,7 @@ class MapsScraper:
         search_url = (
             "https://www.google.com/maps/search/"
             + quote_plus(full_query)
+            + ("&hl=en" if "?" in full_query else "?hl=en")
         )
         area_key = (street or city or region or "default").strip() or "default"
         reset_panel_verify_fail_counts(area_key)
@@ -4500,11 +4690,11 @@ class MapsScraper:
                         try:
                             set_last_navigation_step("search_goto")
                             await page.goto(search_url, wait_until="domcontentloaded",
-                                            timeout=min(self.config.maps_timeout_ms, 12000))
+                                            timeout=self.config.maps_timeout_ms)
                         except PlaywrightTimeoutError as pto:
                             curr = getattr(page, "url", "") or ""
                             if "google.com/maps" in curr:
-                                log.info(f"[maps] navigation domcontentloaded timed out after 12s but page landed on {curr!r} — proceeding")
+                                log.info(f"[maps] navigation domcontentloaded timed out after {self.config.maps_timeout_ms}ms but page landed on {curr!r} — proceeding")
                             else:
                                 raise pto
                     _emit_progress("maps_navigation_complete", str(attempt))
@@ -4668,6 +4858,7 @@ class MapsScraper:
                         except Exception:
                             pass
 
+
                 rounds_this_attempt = 0
                 clicks_in_attempt = 0
                 verified_in_attempt = 0
@@ -4799,6 +4990,12 @@ class MapsScraper:
                         listing_anchors = await panel.query_selector_all(
                             "a[href*='/maps/place/']"
                         )
+                        if len(listing_anchors) == 0 and rounds_this_attempt == 1 and hasattr(panel, "wait_for_selector"):
+                            try:
+                                await panel.wait_for_selector("a[href*='/maps/place/']", timeout=6000)
+                                listing_anchors = await panel.query_selector_all("a[href*='/maps/place/']")
+                            except Exception:
+                                pass
 
                         if not _round_scan_emitted and len(listing_anchors) > 0:
                             _emit_progress("round_scanned", str(len(listing_anchors)))
@@ -4940,19 +5137,24 @@ class MapsScraper:
                             with self._profiler.timer("place_panel_wait"):
                                 found_panel = False
                                 panel_el = None
+                                panel_wait_timeout = (
+                                    self.config.place_timeout_ms
+                                    if self.config.place_timeout_ms <= 200
+                                    else max(self.config.place_timeout_ms, 8000)
+                                )
                                 try:
                                     try:
                                         panel_el = await page.wait_for_selector(
                                             _PLACE_NAME_SELECTOR_COMBINED,
                                             state="attached",
-                                            timeout=max(100, min(self.config.place_timeout_ms, 4000)),
+                                            timeout=panel_wait_timeout,
                                         )
                                         found_panel = panel_el is not None
                                     except TypeError:
                                         is_minimal_stub = True
                                         await page.wait_for_selector(
                                             _PLACE_NAME_SELECTOR_COMBINED,
-                                            timeout=max(100, min(self.config.place_timeout_ms, 4000)),
+                                            timeout=panel_wait_timeout,
                                         )
                                         found_panel = True
                                 except (PlaywrightTimeoutError, Exception):
@@ -4972,9 +5174,10 @@ class MapsScraper:
                                             # detail panel. Poll for actual detail-pane opening.
                                             if not await _is_detail_pane_open(page, panel):
                                                 found_panel = False
-                                                poll_budget_s = max(
-                                                    0.08,
-                                                    min(self.config.place_timeout_ms, 2500) / 1000.0,
+                                                poll_budget_s = (
+                                                    self.config.place_timeout_ms / 1000.0
+                                                    if self.config.place_timeout_ms <= 200
+                                                    else max(self.config.place_timeout_ms / 1000.0, 16.0 if yielded == 0 else 6.0)
                                                 )
                                                 poll_start = asyncio.get_event_loop().time()
                                                 poll_deadline = poll_start + poll_budget_s
@@ -4996,7 +5199,8 @@ class MapsScraper:
                                                             await anchor.evaluate("el => el.click()")
                                                         except Exception:
                                                             pass
-                                                    await asyncio.sleep(0.04)
+                                                    poll_sleep = 0.02 if self.config.place_timeout_ms <= 200 else 0.20
+                                                    await asyncio.sleep(poll_sleep)
 
                                 if found_panel:
                                     self._profiler.incr("place_panel_wait_resolved")
@@ -5050,7 +5254,7 @@ class MapsScraper:
                                 marker_timeout_s = getattr(self.config, "panel_content_marker_timeout_s", None)
                                 if marker_timeout_s is None:
                                     marker_timeout_s = resolve_panel_marker_wait_ms(self.config) / 1000.0
-                                marker_poll_s = getattr(self.config, "panel_content_marker_poll_s", 0.15)
+                                marker_poll_s = getattr(self.config, "panel_content_marker_poll_s", 0.25)
                                 if (
                                     getattr(self.config, "place_timeout_ms", 5000) <= 200
                                     and not hasattr(self.config, "panel_content_marker_timeout_s")
@@ -5058,17 +5262,24 @@ class MapsScraper:
                                 ):
                                     marker_timeout_s = min(marker_timeout_s, self.config.place_timeout_ms / 1000.0)
                                     marker_poll_s = min(marker_poll_s, 0.02)
+                                else:
+                                    marker_timeout_s = max(25.0 if yielded == 0 else 8.0, marker_timeout_s)
                                 markers_mounted = await _wait_for_panel_content_markers(
                                     page,
                                     feed_el=panel,
-                                    snap=panel_snap,
+                                    snap=None,
                                     timeout_s=marker_timeout_s,
                                     poll_interval_s=marker_poll_s,
                                     anchor_el=anchor,
                                 )
                                 if not markers_mounted:
                                     refreshed_snap = await _read_panel_identity_snapshot(page, panel)
-                                    if refreshed_snap.get("open") and (refreshed_snap.get("raw_name") or refreshed_snap.get("address")):
+                                    h1_cand = refreshed_snap.get("h1_name") or ""
+                                    has_detail_content = bool(
+                                        (h1_cand and not _is_excluded_panel_header(h1_cand))
+                                        or refreshed_snap.get("raw_address")
+                                    )
+                                    if refreshed_snap.get("open") and has_detail_content:
                                         panel_snap = refreshed_snap
                                         markers_mounted = True
                                     else:
@@ -5086,7 +5297,7 @@ class MapsScraper:
                                     panel_snap = refreshed_snap
 
                             verified_panel_snap = panel_snap
-                            verified_raw_name = (panel_snap.get("raw_name") or "").strip()
+                            verified_raw_name = (panel_snap.get("raw_name") or panel_snap.get("name") or "").strip()
                             verified_raw_addr = (panel_snap.get("raw_address") or "").strip()
                             verified_snap_pid = (panel_snap.get("place_id") or "").strip()
 
@@ -5094,7 +5305,7 @@ class MapsScraper:
                             # website probe, and full DOM extraction when panel identity snapshot
                             # already proves this listing is a header, known place, seen duplicate,
                             # or conclusively disqualified by canonical chain/cannabis rules.
-                            if verified_raw_name and verified_raw_name.lower() in _PANEL_HEADER_EXCLUSIONS:
+                            if verified_raw_name and _is_excluded_panel_header(verified_raw_name):
                                 self._profiler.incr("maps_detail_early_header_skipped")
                                 return "early_skip", None, "panel_header"
 
@@ -5167,9 +5378,16 @@ class MapsScraper:
                                     if not candidate_name:
                                         candidate_name = await _try_selectors(page, _PLACE_NAME_SELECTORS) or ""
 
+                                    candidate_phone = ""
+                                    try:
+                                        candidate_phone = await _extract_phone(page)
+                                    except Exception:
+                                        pass
+
                                     extracted_place = RawPlace(
                                         name=candidate_name or "Unknown Place",
                                         address=verified_raw_addr,
+                                        phone=candidate_phone,
                                         website="",
                                         maps_link=_verified_maps_link_from_href(card_href, getattr(page, "url", "")),
                                         city=city,
@@ -5567,7 +5785,7 @@ class MapsScraper:
                                 f"reviews={place.reviews}"
                             )
 
-                            if place.name.lower() in _PANEL_HEADER_EXCLUSIONS:
+                            if _is_excluded_panel_header(place.name):
                                 _emit_card_processed("disqualified")
                                 log.info(
                                     f"[maps][diag] parsed name matched the "

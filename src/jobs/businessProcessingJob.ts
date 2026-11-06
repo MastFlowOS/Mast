@@ -384,9 +384,17 @@ const ENRICH_SELF_CLAIM_TIMEOUT_MS = 30000;
  * Synchronously ensures a business has been through enrichment (website crawl/email extraction).
  */
 export async function ensureEnriched(businessId: string, options?: { requiredChannels?: string[] }): Promise<void> {
-  const { data: task, error } = await supabaseAdmin.from("business_processing_tasks")
+  let { data: task, error } = await supabaseAdmin.from("business_processing_tasks")
     .select("id, status, attempts").eq("business_id", businessId).eq("kind", "enrich").maybeSingle();
   if (error) throw error;
+  if (!task) {
+    const created = await claimOrCreateProcessingTask(businessId, "enrich");
+    if (!created) return;
+    const { data: createdTask, error: refetchErr } = await supabaseAdmin.from("business_processing_tasks")
+      .select("id, status, attempts").eq("id", created.id).maybeSingle();
+    if (refetchErr) throw refetchErr;
+    task = createdTask;
+  }
   if (!task || task.status === "completed") return; // nothing pending, or already done
 
   const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")
@@ -434,9 +442,17 @@ export async function ensureEnriched(businessId: string, options?: { requiredCha
  * Synchronously ensures a business has been through the intelligence pass (Instagram crawl/AI caching).
  */
 export async function ensureIntelligence(businessId: string): Promise<void> {
-  const { data: task, error } = await supabaseAdmin.from("business_processing_tasks")
+  let { data: task, error } = await supabaseAdmin.from("business_processing_tasks")
     .select("id, status, attempts").eq("business_id", businessId).eq("kind", "score").maybeSingle();
   if (error) throw error;
+  if (!task) {
+    const created = await claimOrCreateProcessingTask(businessId, "score");
+    if (!created) return;
+    const { data: createdTask, error: refetchErr } = await supabaseAdmin.from("business_processing_tasks")
+      .select("id, status, attempts").eq("id", created.id).maybeSingle();
+    if (refetchErr) throw refetchErr;
+    task = createdTask;
+  }
   if (!task || task.status === "completed") return; // nothing pending, or already done
 
   const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")

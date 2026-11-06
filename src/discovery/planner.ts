@@ -385,8 +385,10 @@ export async function dispatchQueuedDiscoveryTasks(planId: string, request: Disc
   if (!dispatchable.length) return;
 
   const boss = await getBoss();
-  for (const task of dispatchable) {
-    await boss.send(QUEUES.discoveryTask, { taskId: task.id, planId, request }, DISCOVERY_TASK_RETRY_OPTIONS);
+  for (let i = 0; i < dispatchable.length; i++) {
+    const task = dispatchable[i];
+    const scoutOffset = (runningCount ?? 0) + i;
+    await boss.send(QUEUES.discoveryTask, { taskId: task.id, planId, request, scoutOffset }, DISCOVERY_TASK_RETRY_OPTIONS);
   }
   console.info(
     `[discovery] plan=${planId} dispatched=${dispatchable.length} running_before=${runningCount ?? 0} ` +

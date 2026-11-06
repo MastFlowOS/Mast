@@ -65,7 +65,7 @@ import {
 const db = supabaseAdmin as any;
 
 export type DiscoveryPlanPayload = DiscoveryPlanRequest & { planId: string };
-export type DiscoveryTaskPayload = { taskId: string; planId: string; request: DiscoveryPlanRequest };
+export type DiscoveryTaskPayload = { taskId: string; planId: string; request: DiscoveryPlanRequest; scoutOffset?: number };
 
 /**
  * RELIABILITY FIX: mirrors planner.ts's DISCOVERY_TASK_RETRY_OPTIONS
@@ -1017,6 +1017,7 @@ export function publishAreaPoolLifecycleEvent(
   startedScoutSlots: Set<number>,
   event: AreaWorkerLogEvent,
   label: (area: string) => string | undefined,
+  scoutOffset: number = 0,
 ): void {
   // TASK 2 (live scout state) — `worker_finished` now also carries `slot`
   // (see googleAreaPool.ts), so this no longer needs the `scoutId ?? 0`
@@ -1024,10 +1025,11 @@ export function publishAreaPoolLifecycleEvent(
   // (scoutId 0 does not correspond to any real scout in the 1-indexed
   // scheme `scoutStartedEvent`/`areaStartedEvent` already use). Both
   // branches below now read the same real slotIndex.
-  const scoutId = "slot" in event ? event.slot + 1 : undefined;
+  const rawId = "slot" in event ? event.slot + scoutOffset : undefined;
+  const scoutId = rawId !== undefined ? (((rawId % 3) + 1) as 1 | 2 | 3) : undefined;
   if (event.type === "worker_started") {
-    if (scoutId !== undefined && !startedScoutSlots.has(event.slot)) {
-      startedScoutSlots.add(event.slot);
+    if (scoutId !== undefined && !startedScoutSlots.has(scoutId)) {
+      startedScoutSlots.add(scoutId);
       publishDiscoveryLiveEvent(scoutStartedEvent(planId, scoutId, label(event.area)));
     }
     publishDiscoveryLiveEvent(areaStartedEvent(planId, scoutId ?? 0, label(event.area)));
@@ -1082,7 +1084,13 @@ function logStreetPoolEvent(
       console.info(`[street-pool] task=${payload.taskId} city=${task.city} stopped reason=${event.reason}`);
       break;
   }
-  publishAreaPoolLifecycleEvent(payload.planId, startedScoutSlots, event, (area) => claims.get(area)?.streetName ?? claims.get(area)?.streetKey);
+  publishAreaPoolLifecycleEvent(
+    payload.planId,
+    startedScoutSlots,
+    event,
+    (area) => claims.get(area)?.streetName ?? claims.get(area)?.streetKey,
+    payload.scoutOffset ?? 0,
+  );
 }
 
 /** Worker Pools B Step 11 — concise, grep-able pool/worker log lines. */
@@ -1114,7 +1122,7 @@ function logAreaPoolEvent(payload: DiscoveryTaskPayload, task: any, event: AreaW
       console.info(`[google-area-pool] task=${payload.taskId} city=${task.city} stopped reason=${event.reason}`);
       break;
   }
-  publishAreaPoolLifecycleEvent(payload.planId, startedScoutSlots, event, (area) => area);
+  publishAreaPoolLifecycleEvent(payload.planId, startedScoutSlots, event, (area) => area, payload.scoutOffset ?? 0);
 }
 
 /**
@@ -1512,8 +1520,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         totalCuratedAreas: streetCount,
         availableCapacity: browserSlotPool.available(),
         requestedQuantity: effectiveRequested,
-        maxCitySlotHoldingMs: 180_000,
-        maxConsecutiveZeroYieldAreas: 3,
+        maxCitySlotHoldingMs: Math.max(600_000, effectiveRequested * 45_000),
+        maxConsecutiveZeroYieldAreas: 5,
         isBudgetExhausted: () => budgetCoordinator.isExhausted(),
         // This calls the Phase 2B RPC once per worker iteration. The pool's
         // `usedAreas` guard merely protects this invocation from a malformed
@@ -1573,7 +1581,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
           try {
             const searchStreet = (!lowValue.isLowValue && collapsedStreet) ? collapsedStreet : claim.streetName;
-            const attempt = await runOneAreaAttempt(attemptCtx, undefined, searchStreet, slotIndex + 1, undefined, remainingAreaBudgetMs);
+            const attempt = await runOneAreaAttempt(
+              attemptCtx,
+              undefined,
+              searchStreet,
+              ((slotIndex + (payload.scoutOffset ?? 0)) % 3) + 1,
+              undefined,
+              remainingAreaBudgetMs,
+            );
             pythonPerfData = attempt.pythonPerfData ?? pythonPerfData;
             bridgeTimings = attempt.bridgeTimings ?? bridgeTimings;
             progressMarks = attempt.progressMarks ?? progressMarks;
@@ -1691,7 +1706,12 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         : undefined;
       let attempt: AreaAttemptResult;
       try {
-        attempt = await runOneAreaAttempt(attemptCtx, claimedArea);
+        attempt = await runOneAreaAttempt(
+          attemptCtx,
+          claimedArea,
+          undefined,
+          ((payload.scoutOffset ?? 0) % 3) + 1,
+        );
       } finally {
         releaseLegacySharedPid?.();
         releaseLegacyResourceSlot?.();
@@ -1745,8 +1765,8 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
         requestedQuantity: effectiveRequested,
         citySlotCap,
         carryoverAreas: taskCarryoverAreas.get(String(task.id)),
-        maxCitySlotHoldingMs: 180_000,
-        maxConsecutiveZeroYieldAreas: 3,
+        maxCitySlotHoldingMs: Math.max(600_000, effectiveRequested * 45_000),
+        maxConsecutiveZeroYieldAreas: 5,
         isBudgetExhausted: () => budgetCoordinator.isExhausted(),
         claimNextArea: async (usedAreas) => {
           // Reuse the EXISTING claim_discovery_area() atomic claim — never
@@ -1771,7 +1791,14 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           // brand-new provider.search() stream — a fresh service.py /
           // MapsScraper / Playwright / Chromium process per area, never a
           // shared or reused browser.
-          const attempt = await runOneAreaAttempt(attemptCtx, area, undefined, slotIndex + 1, undefined, remainingAreaBudgetMs);
+          const attempt = await runOneAreaAttempt(
+            attemptCtx,
+            area,
+            undefined,
+            ((slotIndex + (payload.scoutOffset ?? 0)) % 3) + 1,
+            undefined,
+            remainingAreaBudgetMs,
+          );
 
           // Step 10: exactly one terminal accounting update per claimed
           // area, recorded when terminal (successful or retries exhausted).

@@ -2284,7 +2284,7 @@ async def _wait_for_panel_content_markers(
         ):
             retried_anchor_click = True
             try:
-                await anchor_el.evaluate("el => el.click()")
+                await anchor_el.evaluate("el => { const t = el.closest('div.Nv2PK') || el; t.click(); el.click(); }")
             except Exception:
                 pass
 
@@ -2779,28 +2779,39 @@ async def _can_continue_from_split_results_feed(
 
 async def _human_click(page: Page, element) -> None:
     """Click an element using real Playwright mouse hover + actionability-checked click,
-    falling back to direct DOM click (`el.click()`) and force-click if needed."""
+    falling back to direct DOM click (`el.click()`) and force-click if needed.
+    For Google Maps place cards, targets the outer card container (div.Nv2PK) which holds
+    the actual navigation event listeners."""
     last_exc: Exception | None = None
+    target_el = element
+    if hasattr(element, "evaluate_handle"):
+        try:
+            cand = await element.evaluate_handle("el => el.closest('div.Nv2PK') || el")
+            if cand is not None:
+                target_el = cand
+        except Exception:
+            pass
+
     try:
-        if hasattr(element, "bounding_box") and hasattr(page, "mouse"):
-            box = await element.bounding_box()
+        if hasattr(target_el, "bounding_box") and hasattr(page, "mouse"):
+            box = await target_el.bounding_box()
             if box:
                 cx = box["x"] + box["width"] / 2 + random.randint(-3, 3)
                 cy = box["y"] + box["height"] / 2 + random.randint(-2, 2)
                 await page.mouse.move(cx, cy)
                 await asyncio.sleep(random.uniform(0.04, 0.10))
-        await element.click(timeout=3000)
+        await target_el.click(timeout=3000)
         return
     except Exception as exc:
         last_exc = exc
     try:
         if hasattr(element, "evaluate"):
-            await element.evaluate("el => el.click()")
+            await element.evaluate("el => { const t = el.closest('div.Nv2PK') || el; t.click(); el.click(); }")
             return
     except Exception as exc:
         last_exc = exc
     try:
-        await element.click(force=True, timeout=2000)
+        await target_el.click(force=True, timeout=2000)
         return
     except Exception as exc:
         last_exc = exc
@@ -5177,7 +5188,7 @@ class MapsScraper:
                                                 poll_budget_s = (
                                                     self.config.place_timeout_ms / 1000.0
                                                     if self.config.place_timeout_ms <= 200
-                                                    else max(self.config.place_timeout_ms / 1000.0, 16.0 if yielded == 0 else 6.0)
+                                                    else min(max(self.config.place_timeout_ms / 1000.0, 3.5), 5.0)
                                                 )
                                                 poll_start = asyncio.get_event_loop().time()
                                                 poll_deadline = poll_start + poll_budget_s
@@ -5196,7 +5207,7 @@ class MapsScraper:
                                                     ):
                                                         retried_dom_click = True
                                                         try:
-                                                            await anchor.evaluate("el => el.click()")
+                                                            await anchor.evaluate("el => { const t = el.closest('div.Nv2PK') || el; t.click(); el.click(); }")
                                                         except Exception:
                                                             pass
                                                     poll_sleep = 0.02 if self.config.place_timeout_ms <= 200 else 0.20
@@ -5263,7 +5274,7 @@ class MapsScraper:
                                     marker_timeout_s = min(marker_timeout_s, self.config.place_timeout_ms / 1000.0)
                                     marker_poll_s = min(marker_poll_s, 0.02)
                                 else:
-                                    marker_timeout_s = max(25.0 if yielded == 0 else 8.0, marker_timeout_s)
+                                    marker_timeout_s = min(4.5, max(2.5, marker_timeout_s))
                                 markers_mounted = await _wait_for_panel_content_markers(
                                     page,
                                     feed_el=panel,

@@ -10,8 +10,43 @@ import { professionSlugForLabel } from "../../lib/professions.js";
 import { enqueueDiscoveryPlan } from "../../discovery/planner.js";
 import { terminateRequest } from "../../discovery/requestLifecycle.js";
 import { publishDiscoveryLiveEvent, discoveryFailedEvent } from "../../discovery/liveDiscoveryEvent.js";
+import { resolveBusinessLogo } from "../lib/businessLogoScraper.js";
 
 export const discoverRouter = Router();
+
+/**
+ * GET /v1/discover/business-logo
+ * 
+ * Public endpoint to resolve high-resolution business brand logos.
+ * Caches results in memory for 24 hours.
+ * Redirects directly to the high-res asset (or returns JSON if requested).
+ */
+discoverRouter.get("/business-logo", async (req, res, next) => {
+  try {
+    const rawUrl =
+      typeof req.query.url === "string"
+        ? req.query.url
+        : typeof req.query.domain === "string"
+          ? req.query.domain
+          : null;
+
+    if (!rawUrl || !rawUrl.trim()) {
+      return res.status(400).json({ error: "Missing url or domain query parameter" });
+    }
+
+    const logoUrl = await resolveBusinessLogo(rawUrl);
+
+    res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+
+    if (req.query.format === "json" || req.headers.accept?.includes("application/json")) {
+      return res.status(200).json({ logoUrl });
+    }
+
+    return res.redirect(302, logoUrl);
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * Collaborators the route calls through. Production uses the real functions;

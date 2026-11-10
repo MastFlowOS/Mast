@@ -669,7 +669,16 @@ export function subscribeToDiscoverJob(
         supabase!.from("scrape_jobs").select("status, results_count, query").eq("id", jobId).maybeSingle(),
       ]);
 
-      reconciled = true;
+      if (
+        terminalStatus ||
+        (jobRow &&
+          (jobRow.status === "completed" ||
+            jobRow.status === "completed_partial" ||
+            jobRow.status === "cancelled" ||
+            jobRow.status === "failed"))
+      ) {
+        reconciled = true;
+      }
 
       if (jobRow?.query && typeof jobRow.query === "object" && "quantity" in jobRow.query) {
         const q = Number((jobRow.query as { quantity?: unknown }).quantity);

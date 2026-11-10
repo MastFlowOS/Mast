@@ -15,7 +15,7 @@ import { intelligenceRouter } from "./server/routes/intelligence.js";
 import { outreachRouter } from "./server/routes/outreach.js";
 import { observabilityRouter } from "./server/routes/observability.js";
 import { desktopRouter } from "./server/routes/desktop.js";
-import { closePersistentEnrichmentWorkerGraceful } from "./scraperBridge/pythonBridge.js";
+import { closePersistentEnrichmentWorkerGraceful, persistentEnrichmentBridge } from "./scraperBridge/pythonBridge.js";
 
 // Catch anything that escapes Express entirely (e.g. an unawaited promise
 // rejection deep in pg-boss/Supabase client internals) — without these,
@@ -146,6 +146,17 @@ app.use((err: unknown, req: express.Request, res: express.Response, _next: expre
 
 const server = app.listen(env.PORT, () => {
   console.log(`[gateway] listening on :${env.PORT} (${env.NODE_ENV})`);
+  if (process.env.USE_PERSISTENT_ENRICHMENT === "true") {
+    console.log("[gateway] Pre-warming persistent enrichment daemon in background...");
+    persistentEnrichmentBridge
+      .warmup()
+      .then(() => {
+        console.log("[gateway] Persistent enrichment daemon pre-warmed and ready");
+      })
+      .catch((err) => {
+        console.warn("[gateway] Pre-warming enrichment daemon failed (will retry on first request):", err);
+      });
+  }
 });
 
 // ── Graceful shutdown ───────────────────────────────────────────────────

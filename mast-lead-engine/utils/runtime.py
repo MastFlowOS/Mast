@@ -362,6 +362,7 @@ class ScraperConfig:
     card_operation_timeout_ms: int = int(os.environ.get("CARD_OPERATION_TIMEOUT_MS", "45000"))
     return_to_results_timeout_ms: int = int(os.environ.get("RETURN_TO_RESULTS_TIMEOUT_MS", "4000"))
     max_stale_panel_retries_per_card: int = int(os.environ.get("MAX_STALE_PANEL_RETRIES_PER_CARD", "2"))
+    max_unopened_panel_retries_per_card: int = int(os.environ.get("MAX_UNOPENED_PANEL_RETRIES_PER_CARD", "1"))
     max_stale_panel_recoveries_per_area: int = int(os.environ.get("MAX_STALE_PANEL_RECOVERIES_PER_AREA", "6"))
     site_timeout_ms: int = int(os.environ.get("SITE_TIMEOUT_MS", "20000"))
     ig_timeout_ms: int = int(os.environ.get("IG_TIMEOUT_MS", "18000"))

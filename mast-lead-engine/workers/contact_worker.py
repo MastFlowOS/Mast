@@ -1103,13 +1103,23 @@ class ContactWorker(BaseWorker[WebsiteIntel, ContactIntel]):
         """
         (role, url) pairs — contact_page first (most likely to hold a
         contact form/explicit channels), then final_url if present and
-        distinct. See module docstring "Which pages get fetched".
+        distinct. When final_url is a subpath/location page, root domain
+        homepage is added if within the 3-page budget. See module docstring
+        "Which pages get fetched".
         """
         urls: "dict[str, str]" = {}
         if item.contact_page:
             urls.setdefault(item.contact_page, "contact_page")
         if item.final_url:
             urls.setdefault(item.final_url, "homepage")
+            try:
+                parsed = urllib.parse.urlparse(item.final_url)
+                if parsed.path and parsed.path.strip("/") != "":
+                    root_url = f"{parsed.scheme}://{parsed.netloc}/"
+                    if root_url not in urls and len(urls) < 3:
+                        urls.setdefault(root_url, "root_domain")
+            except Exception:
+                pass
         return tuple((role, url) for url, role in urls.items())
 
     def _fetch(self, url: str) -> Tuple[str, str, float]:

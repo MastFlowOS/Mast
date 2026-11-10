@@ -48,3 +48,8 @@ data/
 
 .vercel
 .env*
+
+# Local analysis & benchmarks
+output/
+scratch/
+.logs_analysis.txt

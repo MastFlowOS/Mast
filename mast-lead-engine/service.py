@@ -2401,6 +2401,10 @@ async def run_query(
                             log.info("[run_query] discovery_only: provider exhausted")
                         break
                     if isinstance(item, BaseException):
+                        if shutdown_event is not None and shutdown_event.is_set():
+                            _stopped_by_shutdown = True
+                            log.info("[run_query] discovery_only: stopped by shutdown (suppressed %s: %s)", type(item).__name__, item)
+                            break
                         raise item
                     candidate = item
                     pid = tracer.discover(candidate.name or "<unnamed>")

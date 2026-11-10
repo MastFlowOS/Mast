@@ -1843,7 +1843,7 @@ describe("Desktop Discovery Cloud Coordination (/v1/desktop)", () => {
           throw new PidAdmissionUnavailableError("PID limit reached: temporarily busy");
         }
         for (const b of Object.values(mockBusinesses)) {
-          b.email = "clinic@recoveredclinic.example.com";
+          b.email = "clinic@recoveredclinic.org";
         }
       };
 
@@ -2167,5 +2167,170 @@ describe("Desktop Discovery Cloud Coordination (/v1/desktop)", () => {
     assert.ok(keysA.includes("tel:5550123456"));
     assert.ok(keysA.includes("email:contact@acme.com"));
     assert.ok(keysA.includes("ig:acme_official"));
+  });
+
+  // ── 26. Task claim known-Place-ID transport and multi-tenant scoping ────────
+
+  test("task claim seeds authenticated user's known place IDs with strict multi-tenant isolation", async () => {
+    const planIdA = randomUUID();
+    const taskIdA = randomUUID();
+    const planIdB = randomUUID();
+    const taskIdB = randomUUID();
+
+    mockDiscoveryPlans[planIdA] = {
+      id: planIdA,
+      user_id: userA,
+      requested_count: 5,
+      delivered_count: 0,
+      status: "queued",
+      channels: ["website"],
+      region: "United States",
+      profession_slug: "dentists",
+    };
+
+    mockDiscoveryTasks[taskIdA] = {
+      id: taskIdA,
+      plan_id: planIdA,
+      user_id: userA,
+      city: "Chicago",
+      niche: "dentists",
+      country_code: "US",
+      candidate_budget: 10,
+      priority: 10,
+      status: "queued",
+      task_summary: { execution_target: "desktop" },
+      created_at: new Date().toISOString(),
+    };
+
+    mockDiscoveryPlans[planIdB] = {
+      id: planIdB,
+      user_id: userB,
+      requested_count: 5,
+      delivered_count: 0,
+      status: "queued",
+      channels: ["website"],
+      region: "United States",
+      profession_slug: "dentists",
+    };
+
+    mockDiscoveryTasks[taskIdB] = {
+      id: taskIdB,
+      plan_id: planIdB,
+      user_id: userB,
+      city: "Chicago",
+      niche: "dentists",
+      country_code: "US",
+      candidate_budget: 10,
+      priority: 10,
+      status: "queued",
+      task_summary: { execution_target: "desktop" },
+      created_at: new Date().toISOString(),
+    };
+
+    const origGetKnown = desktopDeps.getKnownPlaceIdsForTask;
+    desktopDeps.getKnownPlaceIdsForTask = async (db: any, userId: string | undefined) => {
+      if (userId === userA) {
+        return ["0x880fcd7f8fee01b5:0x89b38e817d796008", "ChIJuserAPlace123"];
+      } else if (userId === userB) {
+        return ["0x880e2cb111111111:0x1b2c3d4e5f6a7b8c", "ChIJuserBPlace456"];
+      }
+      return [];
+    };
+
+    try {
+      // User A claims Task A
+      const resA = await fetch(`${baseUrl}/tasks/claim`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({ workerId: "worker-userA" }),
+      });
+      assert.equal(resA.status, 200);
+      const dataA = await resA.json();
+      assert.ok(dataA.task, "User A must claim task");
+      assert.equal(dataA.task.id, taskIdA);
+      assert.deepEqual(dataA.task.knownPlaceIds, [
+        "0x880fcd7f8fee01b5:0x89b38e817d796008",
+        "ChIJuserAPlace123",
+      ]);
+
+      // User B claims Task B
+      const resB = await fetch(`${baseUrl}/tasks/claim`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenUserB}`,
+        },
+        body: JSON.stringify({ workerId: "worker-userB" }),
+      });
+      assert.equal(resB.status, 200);
+      const dataB = await resB.json();
+      assert.ok(dataB.task, "User B must claim task");
+      assert.equal(dataB.task.id, taskIdB);
+      assert.deepEqual(dataB.task.knownPlaceIds, [
+        "0x880e2cb111111111:0x1b2c3d4e5f6a7b8c",
+        "ChIJuserBPlace456",
+      ]);
+
+      // Multi-tenant isolation: User B's set must NEVER contain User A's place IDs
+      assert.ok(!dataB.task.knownPlaceIds.includes("0x880fcd7f8fee01b5:0x89b38e817d796008"));
+      assert.ok(!dataA.task.knownPlaceIds.includes("0x880e2cb111111111:0x1b2c3d4e5f6a7b8c"));
+    } finally {
+      desktopDeps.getKnownPlaceIdsForTask = origGetKnown;
+    }
+  });
+
+  test("task claim fails open gracefully and deduplicates place IDs when DB lookup throws", async () => {
+    const planId = randomUUID();
+    const taskId = randomUUID();
+
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userA,
+      requested_count: 5,
+      delivered_count: 0,
+      status: "queued",
+      channels: ["website"],
+      region: "United States",
+      profession_slug: "dentists",
+    };
+
+    mockDiscoveryTasks[taskId] = {
+      id: taskId,
+      plan_id: planId,
+      user_id: userA,
+      city: "Chicago",
+      niche: "dentists",
+      country_code: "US",
+      candidate_budget: 10,
+      priority: 10,
+      status: "queued",
+      task_summary: { execution_target: "desktop" },
+      created_at: new Date().toISOString(),
+    };
+
+    const origGetKnown = desktopDeps.getKnownPlaceIdsForTask;
+    desktopDeps.getKnownPlaceIdsForTask = async () => {
+      throw new Error("Simulated database timeout or network drop");
+    };
+
+    try {
+      const res = await fetch(`${baseUrl}/tasks/claim`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({ workerId: "worker-userA" }),
+      });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.ok(data.task, "Task must claim successfully in fail-open mode");
+      assert.deepEqual(data.task.knownPlaceIds, [], "knownPlaceIds defaults safely to empty array on DB failure");
+    } finally {
+      desktopDeps.getKnownPlaceIdsForTask = origGetKnown;
+    }
   });
 });

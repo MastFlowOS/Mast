@@ -607,7 +607,14 @@ function writeStopReasonFile(pid: number, reason: string) {
 }
 
 function killProcessTree(child: ReturnType<typeof spawn>) {
-  if (child.pid === undefined) return;
+  if (child.pid === undefined || (child as any)._isMock) {
+    try {
+      child.kill?.("SIGKILL");
+    } catch {
+      // Already gone or mock process
+    }
+    return;
+  }
   console.log(`[scraper-bridge] Killing process tree for child PID: ${child.pid}`);
   if (process.platform === "win32") {
     // taskkill /T is what tears down Chromium descendants.  Also terminate
@@ -1035,6 +1042,14 @@ export class EnrichmentShutdownError extends Error {
   }
 }
 
+export class EnrichmentHandshakeError extends Error {
+  readonly code = "ENRICHMENT_HANDSHAKE_ERROR";
+  constructor(message: string = "Enrichment daemon readiness handshake failed") {
+    super(message);
+    this.name = "EnrichmentHandshakeError";
+  }
+}
+
 interface QueuedAdmission {
   id: string;
   resolve: () => void;
@@ -1073,6 +1088,8 @@ interface InFlightEntry {
  * 7. Restart handling: Automatically restarts worker if child process dies/crashes
  * 8. Explicit opt-in: Only process.env.USE_PERSISTENT_ENRICHMENT === "true" activates persistent mode
  */
+export type SubprocessSpawner = (...args: any[]) => ChildProcess;
+
 export class PersistentEnrichmentBridge {
   private child: ChildProcess | null = null;
   private rl: ReturnType<typeof createInterface> | null = null;
@@ -1081,10 +1098,31 @@ export class PersistentEnrichmentBridge {
   private maxConcurrency = 16;
   private maxWaitQueue = parseInt(process.env.MAST_ENRICHMENT_MAX_QUEUE || "256", 10);
   private backendTimeoutMs = parseInt(process.env.MAST_ENRICHMENT_BACKEND_TIMEOUT_MS || "45000", 10);
+  private startupTimeoutMs = parseInt(process.env.MAST_ENRICHMENT_STARTUP_TIMEOUT_MS || "30000", 10);
   private waitQueue: QueuedAdmission[] = [];
   private reqSeq = 0;
+  private warmupSeq = 0;
   private spawnPromise: Promise<ChildProcess> | null = null;
   private isShuttingDown = false;
+  private _isReady = false;
+  private activeHandshake: {
+    id: string;
+    resolve: () => void;
+    reject: (err: Error) => void;
+    timer: NodeJS.Timeout;
+    startTime: number;
+  } | null = null;
+  private spawnFn: SubprocessSpawner = spawn as any;
+
+  constructor(customSpawn?: SubprocessSpawner) {
+    if (customSpawn) {
+      this.spawnFn = customSpawn;
+    }
+  }
+
+  public setSpawnFn(fn: SubprocessSpawner): void {
+    this.spawnFn = fn;
+  }
 
   public setMaxConcurrency(max: number): void {
     if (max > 0) this.maxConcurrency = max;
@@ -1100,6 +1138,14 @@ export class PersistentEnrichmentBridge {
 
   public getBackendTimeoutMs(): number {
     return this.backendTimeoutMs;
+  }
+
+  public setStartupTimeoutMs(ms: number): void {
+    if (ms > 0) this.startupTimeoutMs = ms;
+  }
+
+  public getStartupTimeoutMs(): number {
+    return this.startupTimeoutMs;
   }
 
   public getChildPid(): number | undefined {
@@ -1139,11 +1185,43 @@ export class PersistentEnrichmentBridge {
   }
 
   public isProcessAlive(): boolean {
-    return this.child !== null && !this.child.killed && this.child.exitCode === null && this.child.signalCode === null;
+    return (
+      this.child !== null &&
+      !this.child.killed &&
+      this.child.exitCode === null &&
+      this.child.signalCode === null &&
+      this.child.stdin !== null &&
+      !this.child.stdin.destroyed &&
+      !this.child.stdin.writableEnded
+    );
+  }
+
+  public get isReady(): boolean {
+    return this._isReady && this.isProcessAlive();
+  }
+
+  public isDaemonReady(): boolean {
+    return this.isReady;
+  }
+
+  public getActiveHandshakeId(): string | null {
+    return this.activeHandshake?.id ?? null;
   }
 
   public isShutdown(): boolean {
     return this.isShuttingDown;
+  }
+
+  public async warmup(): Promise<void> {
+    if (this.isShuttingDown) {
+      throw new EnrichmentShutdownError();
+    }
+    if (this.isProcessAlive() && this._isReady) {
+      console.log(`[scraper-bridge:enrich-daemon] Daemon already warm and ready (PID: ${this.child?.pid})`);
+      return;
+    }
+    console.log("[scraper-bridge:enrich-daemon] Warmup requested; ensuring daemon is spawned and handshake completed...");
+    await this.getOrSpawn();
   }
 
   private async acquireSlot(reqId: string, signal?: AbortSignal, deadlineMs: number = 35000): Promise<void> {
@@ -1225,7 +1303,13 @@ export class PersistentEnrichmentBridge {
     if (this.child === child) {
       this.child = null;
       this.rl = null;
+      this._isReady = false;
       this.spawnPromise = null;
+      if (this.activeHandshake) {
+        const h = this.activeHandshake;
+        this.activeHandshake = null;
+        h.reject(new Error(`Enrichment daemon process exited during handshake: ${exitErr.message}`));
+      }
     }
     // Only reject requests that were submitted to THIS child instance
     for (const [id, entry] of this.pending.entries()) {
@@ -1244,9 +1328,12 @@ export class PersistentEnrichmentBridge {
     }
   }
 
-  private async getOrSpawn(): Promise<ChildProcess> {
-    if (this.child && !this.child.killed && this.child.exitCode === null && this.child.signalCode === null) {
-      return this.child;
+  public getOrSpawn(): Promise<ChildProcess> {
+    if (this.isShuttingDown) {
+      return Promise.reject(new EnrichmentShutdownError());
+    }
+    if (this.child && this._isReady && !this.child.killed && this.child.exitCode === null && this.child.signalCode === null) {
+      return Promise.resolve(this.child);
     }
     if (this.spawnPromise) {
       return this.spawnPromise;
@@ -1254,12 +1341,15 @@ export class PersistentEnrichmentBridge {
 
     this.spawnPromise = (async () => {
       const enginePath = resolveEnginePath();
-      const child = spawn(PYTHON_CMD, ["service.py", "enrich-daemon"], {
+      const child = this.spawnFn(PYTHON_CMD, ["service.py", "enrich-daemon"], {
         cwd: enginePath,
         stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
         env: process.env.ENFORCE_LOCAL_ISOLATION === "true" ? getSanitizedSubprocessEnv() : process.env,
       });
+
+      this.child = child;
+      this._isReady = false;
 
       child.on("error", (err) => {
         console.warn(`[scraper-bridge:enrich-daemon] child process error (PID: ${child.pid})`, err);
@@ -1288,6 +1378,7 @@ export class PersistentEnrichmentBridge {
         input: child.stdout!,
         crlfDelay: Infinity,
       });
+      this.rl = rl;
 
       rl.on("line", (line) => {
         const trimmed = line.trim();
@@ -1296,6 +1387,28 @@ export class PersistentEnrichmentBridge {
           const msg = JSON.parse(trimmed);
           const reqId = msg.id;
           if (!reqId) return;
+
+          // Check if this is the active handshake response
+          if (this.activeHandshake && reqId === this.activeHandshake.id) {
+            const h = this.activeHandshake;
+            this.activeHandshake = null;
+            if (msg.pong === true) {
+              const elapsed = Date.now() - h.startTime;
+              console.log(`[scraper-bridge:enrich-daemon] Readiness confirmed in ${elapsed}ms (PID: ${child.pid}, id: ${reqId})`);
+              this._isReady = true;
+              h.resolve();
+            } else if (msg.error) {
+              console.warn(`[scraper-bridge:enrich-daemon] Handshake returned error: ${msg.error} (PID: ${child.pid})`);
+              killProcessTree(child);
+              h.reject(new Error(`Enrichment daemon handshake failed: ${msg.error}`));
+            } else {
+              console.warn(`[scraper-bridge:enrich-daemon] Handshake returned unexpected response: ${trimmed} (PID: ${child.pid})`);
+              killProcessTree(child);
+              h.reject(new Error(`Enrichment daemon handshake malformed response: ${trimmed}`));
+            }
+            return;
+          }
+
           const entry = this.pending.get(reqId);
           if (!entry) return;
 
@@ -1325,10 +1438,69 @@ export class PersistentEnrichmentBridge {
         }
       });
 
-      this.child = child;
-      this.rl = rl;
-      this.spawnPromise = null;
-      return child;
+      const handshakeId = `__handshake__-${process.pid}-${++this.warmupSeq}-${Date.now()}`;
+      const handshakeStartTime = Date.now();
+      console.log(`[scraper-bridge:enrich-daemon] Spawning enrichment daemon (PID: ${child.pid}), awaiting readiness ping/pong (id: ${handshakeId}, timeout: ${this.startupTimeoutMs}ms)...`);
+
+      const handshakePromise = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (this.activeHandshake && this.activeHandshake.id === handshakeId) {
+            console.warn(`[scraper-bridge:enrich-daemon] Readiness handshake timed out after ${this.startupTimeoutMs}ms (PID: ${child.pid})`);
+            this.activeHandshake = null;
+            killProcessTree(child);
+            reject(new Error(`Enrichment daemon handshake timed out after ${this.startupTimeoutMs}ms (PID: ${child.pid})`));
+          }
+        }, this.startupTimeoutMs);
+
+        this.activeHandshake = {
+          id: handshakeId,
+          resolve: () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          reject: (err: Error) => {
+            clearTimeout(timer);
+            reject(err);
+          },
+          timer,
+          startTime: handshakeStartTime,
+        };
+      });
+
+      try {
+        const pingPayload = JSON.stringify({ id: handshakeId, ping: true }) + "\n";
+        child.stdin!.write(pingPayload, (err) => {
+          if (err) {
+            console.warn(`[scraper-bridge:enrich-daemon] Failed to send ping to child stdin:`, err);
+            if (this.activeHandshake && this.activeHandshake.id === handshakeId) {
+              const h = this.activeHandshake;
+              this.activeHandshake = null;
+              h.reject(new Error(`Failed to write handshake ping: ${err.message}`));
+            }
+          }
+        });
+      } catch (writeErr: any) {
+        if (this.activeHandshake && this.activeHandshake.id === handshakeId) {
+          const h = this.activeHandshake;
+          this.activeHandshake = null;
+          h.reject(new Error(`Failed to write handshake ping: ${writeErr.message}`));
+        }
+      }
+
+      try {
+        await handshakePromise;
+        return child;
+      } catch (handshakeErr) {
+        this._isReady = false;
+        if (this.child === child) {
+          this.child = null;
+          this.rl = null;
+        }
+        killProcessTree(child);
+        throw handshakeErr;
+      } finally {
+        this.spawnPromise = null;
+      }
     })();
 
     return this.spawnPromise;
@@ -1358,6 +1530,11 @@ export class PersistentEnrichmentBridge {
     } catch (spawnErr) {
       this.releaseSlot();
       throw spawnErr;
+    }
+
+    if (signal?.aborted) {
+      this.releaseSlot();
+      throw new Error("Enrichment aborted before request dispatch");
     }
 
     return new Promise<EngineEnrichResult>((resolve, reject) => {
@@ -1478,8 +1655,15 @@ export class PersistentEnrichmentBridge {
   public async gracefulShutdown(timeoutMs: number = 20000): Promise<void> {
     if (this.isShuttingDown) return;
     this.isShuttingDown = true;
+    this._isReady = false;
 
     try {
+      if (this.activeHandshake) {
+        const h = this.activeHandshake;
+        this.activeHandshake = null;
+        h.reject(new EnrichmentShutdownError("Enrichment daemon shut down during handshake"));
+      }
+
       // 1. Reject any queued requests waiting for admission
       while (this.waitQueue.length > 0) {
         const next = this.waitQueue.shift();
@@ -1524,6 +1708,12 @@ export class PersistentEnrichmentBridge {
 
   public close(): void {
     this.isShuttingDown = false;
+    this._isReady = false;
+    if (this.activeHandshake) {
+      const h = this.activeHandshake;
+      this.activeHandshake = null;
+      h.reject(new EnrichmentShutdownError("Enrichment daemon closed during handshake"));
+    }
     if (this.child) {
       const child = this.child;
       try {
@@ -1614,7 +1804,12 @@ export async function runEngineEnrich(params: EngineEnrichParams, signal?: Abort
     ) {
       throw err;
     }
-    if (err?.message?.includes("Enrichment daemon error") || err?.message?.includes("ENOENT")) {
+    if (
+      err?.message?.includes("Enrichment daemon error") ||
+      err?.message?.includes("ENOENT") ||
+      err?.message?.includes("handshake") ||
+      err?.message?.includes("Enrichment daemon exited")
+    ) {
       console.warn("[scraper-bridge:enrich] persistent worker fallback to one-shot:", err.message);
       return runEngineEnrichOneShot(params, signal);
     }

@@ -278,43 +278,92 @@ function extractPlaceIdsFromRow(row: any, placeIds: Set<string>): void {
   }
 }
 
+export type TruncationStatus = "complete" | "truncated" | "possibly_truncated";
+
+export interface KnownPlaceIdsOptions {
+  pageSize?: number;
+  maxPages?: number;
+  countryScoped?: boolean;
+}
+
+export interface KnownPlaceIdsResult {
+  placeIds: string[];
+  truncationStatus: TruncationStatus;
+  totalLoaded: number;
+  pageCount: number;
+}
+
 /**
  * Scoped lookup of existing Google Maps place IDs already owned/discovered
- * for this user and globally in this country, allowing the scraper to skip known
- * cards before clicking into them.
+ * for the authenticated user, allowing the scraper to skip known cards before clicking into them.
+ * Multi-tenant safe: strictly user-scoped to preserve lead ownership privacy across users.
  *
  * NOTE: 'city' is not a dedicated column on the businesses table (which stores
- * 'country_code' and 'region'), so country_code is honored on businesses while
+ * 'country_code' and 'region'), so country_code is honored when countryScoped is enabled while
  * city filtering is omitted from the SQL query to safely prevent column errors.
  */
 export async function getKnownPlaceIdsForTask(
   db: any,
   userId: string | undefined,
-  countryCode: string,
+  countryCode?: string,
   city?: string,
+  options?: KnownPlaceIdsOptions,
 ): Promise<string[]> {
   if (!userId) return [];
+  const lookupStart = Date.now();
+  let truncationStatus: TruncationStatus = "complete";
+  let pageCount = 0;
   try {
     const placeIds = new Set<string>();
-    const pageSize = 1000;
-    const MAX_IDS = 10000;
+    const pageSize = Math.max(1, options?.pageSize ?? 1000);
+    const MAX_PAGES = Math.max(1, options?.maxPages ?? 500); // Defensive ceiling: up to 500,000 leads
 
-    // 1. User-scoped place IDs
+    // 1. User-scoped place IDs across all previous plans
     try {
       let from = 0;
-      while (placeIds.size < MAX_IDS) {
+      let lastSeenId: string | number | null = null;
+      while (pageCount < MAX_PAGES) {
+        pageCount++;
         let query = db
           .from("businesses")
-          .select("place_id, fingerprints, leads!inner(user_id)")
+          .select("id, place_id, fingerprints, leads!inner(user_id)")
           .eq("leads.user_id", userId);
 
-        if (countryCode && typeof query.eq === "function") {
-          query = query.eq("country_code", countryCode);
+        // Explicit country scoping policy:
+        // By default, known-ID filtering is USER PORTFOLIO-WIDE across all historical plans and countries.
+        // Google Maps Place IDs are globally unique, and lead delivery deduplication (deliver_lead_for_user)
+        // is user-wide. Omitting country filtering ensures historical businesses with NULL, empty, or inconsistent
+        // country codes are NEVER missed pre-click.
+        // If options?.countryScoped is explicitly true and countryCode is provided, we query matching country
+        // while EXPLICITLY including NULL and empty country codes so missing metadata rows are not dropped.
+        if (options?.countryScoped && countryCode) {
+          const normCountry = countryCode.trim().toUpperCase();
+          if (typeof query.or === "function") {
+            query = query.or(`country_code.eq.${normCountry},country_code.is.null,country_code.eq.`);
+          } else if (typeof query.eq === "function") {
+            query = query.eq("country_code", countryCode);
+          }
+        }
+
+        // Enforce deterministic pagination ordering by primary key
+        if (typeof query.order === "function") {
+          query = query.order("id", { ascending: true });
         }
 
         let data: any;
         let error: any;
-        if (typeof query.range === "function") {
+
+        // Keyset pagination using an immutable cursor (`id > lastSeenId`) prevents index-shifting offset drift
+        // from concurrent inserts/deletions. Note: Keyset pagination spans separate HTTP requests and does not
+        // provide MVCC snapshot consistency across queries; candidates inserted before the cursor during pagination
+        // are caught downstream by authoritative deduplication in `deliver_lead_for_user`.
+        // Both `.gt` and `.limit` are required for keyset pagination (standard on production Supabase query builders).
+        // If either is missing, fall back to `.range()` for test doubles that only support offset pagination.
+        if (typeof query.gt === "function" && typeof query.limit === "function") {
+          const res = await (lastSeenId != null ? query.gt("id", lastSeenId).limit(pageSize) : query.limit(pageSize));
+          data = res.data;
+          error = res.error;
+        } else if (typeof query.range === "function") {
           const res = await query.range(from, from + pageSize - 1);
           data = res.data;
           error = res.error;
@@ -329,59 +378,118 @@ export async function getKnownPlaceIdsForTask(
 
         for (const row of data) {
           extractPlaceIdsFromRow(row, placeIds);
-          if (placeIds.size >= MAX_IDS) break;
         }
 
-        if (data.length < pageSize) break;
+        if (data.length > 0) {
+          const lastRow = data[data.length - 1];
+          if (lastRow && lastRow.id != null) {
+            lastSeenId = lastRow.id;
+          }
+        }
+
+        if (data.length < pageSize) {
+          truncationStatus = "complete";
+          break;
+        }
+
+        if (pageCount >= MAX_PAGES) {
+          // Exactly reached MAX_PAGES ceiling with a full page.
+          // Probe for 1 overflow record to unambiguously distinguish:
+          // 1. Exactly (MAX_PAGES * pageSize) records -> complete
+          // 2. More than (MAX_PAGES * pageSize) records -> truncated
+          // 3. Probe error -> possibly_truncated
+          let probeQuery = db
+            .from("businesses")
+            .select("id, leads!inner(user_id)")
+            .eq("leads.user_id", userId);
+
+          if (options?.countryScoped && countryCode) {
+            const normCountry = countryCode.trim().toUpperCase();
+            if (typeof probeQuery.or === "function") {
+              probeQuery = probeQuery.or(`country_code.eq.${normCountry},country_code.is.null,country_code.eq.`);
+            } else if (typeof probeQuery.eq === "function") {
+              probeQuery = probeQuery.eq("country_code", countryCode);
+            }
+          }
+
+          if (lastSeenId != null && typeof probeQuery.gt === "function") {
+            probeQuery = probeQuery.gt("id", lastSeenId);
+          }
+          if (typeof probeQuery.order === "function") {
+            probeQuery = probeQuery.order("id", { ascending: true });
+          }
+
+          let probeRes: any;
+          if (typeof probeQuery.limit === "function") {
+            probeRes = await probeQuery.limit(1);
+          } else if (typeof probeQuery.range === "function") {
+            probeRes = await probeQuery.range(from + pageSize, from + pageSize);
+          }
+
+          if (probeRes?.error) {
+            truncationStatus = "possibly_truncated";
+            console.warn(
+              `[discoveryPlanJob] MAX_PAGES ceiling reached (${MAX_PAGES} pages); overflow probe error for user=${userId}, status=possibly_truncated:`,
+              probeRes.error,
+            );
+          } else if (probeRes?.data && probeRes.data.length > 0) {
+            truncationStatus = "truncated";
+            console.warn(
+              `[discoveryPlanJob] MAX_PAGES ceiling reached (${MAX_PAGES} pages, ${pageCount * pageSize} rows); confirmed truncated via overflow probe for user=${userId}`,
+            );
+          } else {
+            truncationStatus = "complete";
+            console.info(
+              `[discoveryPlanJob] MAX_PAGES ceiling reached exactly at user portfolio boundary (${pageCount * pageSize} rows); complete (not truncated) for user=${userId}`,
+            );
+          }
+          break;
+        }
+
         from += pageSize;
       }
     } catch (userErr) {
       console.warn("[discoveryPlanJob] error in user known place IDs lookup (failing open):", userErr);
     }
 
-    // 2. Global business place IDs (cross-user dedup before click)
-    try {
-      let globalFrom = 0;
-      while (placeIds.size < MAX_IDS) {
-        let query = db
-          .from("businesses")
-          .select("place_id, fingerprints");
-        if (countryCode && typeof query.eq === "function") {
-          query = query.eq("country_code", countryCode);
-        }
-
-        let data: any;
-        let error: any;
-        if (typeof query.range === "function") {
-          const res = await query.range(globalFrom, globalFrom + pageSize - 1);
-          data = res.data;
-          error = res.error;
-        } else {
-          break;
-        }
-
-        if (error || !data || data.length === 0) {
-          if (error) console.warn("[discoveryPlanJob] businesses global lookup error in getKnownPlaceIdsForTask (failing open):", error);
-          break;
-        }
-
-        for (const row of data) {
-          extractPlaceIdsFromRow(row, placeIds);
-          if (placeIds.size >= MAX_IDS) break;
-        }
-
-        if (data.length < pageSize) break;
-        globalFrom += pageSize;
-      }
-    } catch (globalErr) {
-      console.warn("[discoveryPlanJob] error in global known place IDs lookup (failing open):", globalErr);
+    const durationMs = Date.now() - lookupStart;
+    if (placeIds.size > 0 || durationMs > 100) {
+      console.info(`[discoveryPlanJob] known place IDs loaded: user=${userId} count=${placeIds.size} truncation=${truncationStatus} duration_ms=${durationMs}`);
     }
 
-    return Array.from(placeIds);
+    const result = Array.from(placeIds);
+    Object.defineProperties(result, {
+      truncationStatus: { value: truncationStatus, enumerable: false, writable: true },
+      totalLoaded: { value: result.length, enumerable: false, writable: true },
+      pageCount: { value: pageCount, enumerable: false, writable: true },
+    });
+    return result;
   } catch (err) {
     console.warn("[discoveryPlanJob] failed to load known place IDs for pre-click skip (failing open)", err);
-    return [];
+    const emptyResult: string[] = [];
+    Object.defineProperties(emptyResult, {
+      truncationStatus: { value: "complete" as TruncationStatus, enumerable: false, writable: true },
+      totalLoaded: { value: 0, enumerable: false, writable: true },
+      pageCount: { value: 0, enumerable: false, writable: true },
+    });
+    return emptyResult;
   }
+}
+
+export async function getKnownPlaceIdsResultForTask(
+  db: any,
+  userId: string | undefined,
+  countryCode?: string,
+  city?: string,
+  options?: KnownPlaceIdsOptions,
+): Promise<KnownPlaceIdsResult> {
+  const arr = await getKnownPlaceIdsForTask(db, userId, countryCode, city, options);
+  return {
+    placeIds: arr,
+    truncationStatus: (arr as any).truncationStatus ?? "complete",
+    totalLoaded: arr.length,
+    pageCount: (arr as any).pageCount ?? 0,
+  };
 }
 
 async function runOneAreaAttempt(

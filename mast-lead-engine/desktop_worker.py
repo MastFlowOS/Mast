@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -28,6 +29,8 @@ from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 _ENGINE_DIR = Path(__file__).resolve().parent
 if str(_ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(_ENGINE_DIR))
+
+from exceptions import DiscoveryFailure
 
 logging.basicConfig(
     level=logging.INFO,
@@ -222,6 +225,7 @@ class DesktopCoordinatorClient:
     auth_token: str = ""
 
     last_auth_error: bool = False
+    last_heartbeat_fatal: bool = False
     last_ingest_error: Optional[str] = None
     last_complete_error: Optional[str] = None
     _last_token_mtime: float = 0.0
@@ -232,6 +236,7 @@ class DesktopCoordinatorClient:
         self.worker_id = worker_id
         self.session = session
         self.last_auth_error = False
+        self.last_heartbeat_fatal = False
         self.last_ingest_error = None
         self.last_complete_error = None
         self._last_token_mtime = 0.0
@@ -288,17 +293,21 @@ class DesktopCoordinatorClient:
         async with self.session.post(url, json=payload, headers=self._headers()) as resp:
             if resp.status == 200:
                 self.last_auth_error = False
+                self.last_rate_limit = False
                 data = await resp.json()
                 return data.get("task")
             if resp.status == 401:
                 log.error("claim_task failed: Authentication rejected (401 Unauthorized). Provided token is invalid or expired.")
                 self.last_auth_error = True
                 return None
+            if resp.status == 429:
+                self.last_rate_limit = True
             error_text = await resp.text()
             log.warning("claim_task returned status %d: %s", resp.status, error_text)
             return None
 
     async def heartbeat(self, task_id: str, lease_token: str, metrics: Optional[dict] = None) -> bool:
+        """Sends a heartbeat to renew the task lease. Returns True if renewed, False if failed."""
         url = f"{self.api_base_url}/v1/desktop/tasks/{task_id}/heartbeat"
         payload = {"leaseToken": lease_token}
         if metrics:
@@ -309,16 +318,25 @@ class DesktopCoordinatorClient:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("renewed") is False:
+                        self.last_heartbeat_fatal = True
                         log.info("Heartbeat stopped by server for task %s (stopReason=%s)", task_id, data.get("stopReason"))
                         return False
+                    self.last_heartbeat_fatal = False
                     return True
                 if resp.status in (404, 409):
+                    self.last_heartbeat_fatal = True
                     log.warning("Heartbeat rejected (status %d): lease expired or reassigned", resp.status)
                     return False
+                if resp.status == 401:
+                    self.last_heartbeat_fatal = True
+                    log.warning("Heartbeat rejected (status 401): unauthorized")
+                    return False
+                self.last_heartbeat_fatal = False
                 error_text = await resp.text()
                 log.warning("Heartbeat unexpected status %d: %s", resp.status, error_text)
                 return False
         except Exception as exc:
+            self.last_heartbeat_fatal = False
             log.warning("Heartbeat request failed: %s", exc)
             return False
 
@@ -434,6 +452,7 @@ class DesktopWorker:
         self._shutdown_event = asyncio.Event()
         self._active_tasks: Dict[str, asyncio.Event] = {}
         self._plan_tasks: Dict[str, set[str]] = {}
+        self._known_place_ids: set[str] = set()
 
     async def execute_task(self, task: dict, task_abort: Optional[asyncio.Event] = None) -> bool:
         task_id = task["id"]
@@ -473,7 +492,10 @@ class DesktopWorker:
         task_shutdown_event = threading.Event()
 
         # Background heartbeat loop
+        consecutive_net_failures = 0
+
         async def _heartbeat_worker():
+            nonlocal consecutive_net_failures
             while not stop_heartbeat.is_set() and not task_abort.is_set():
                 try:
                     await asyncio.sleep(self.heartbeat_interval_s)
@@ -483,18 +505,43 @@ class DesktopWorker:
                     break
                 ok = await self.client.heartbeat(task_id, lease_token, metrics=metrics)
                 if not ok:
+                    is_fatal = getattr(self.client, "last_heartbeat_fatal", True)
+                    # If explicitly non-fatal (transient network glitch), allow up to 3 retries
+                    if is_fatal is False:
+                        consecutive_net_failures += 1
+                        log.warning(
+                            "Heartbeat network attempt (%d/3) failed for task %s; retaining lease",
+                            consecutive_net_failures,
+                            task_id,
+                        )
+                        if consecutive_net_failures < 3:
+                            continue
                     log.warning("Heartbeat failed or lease expired/cancelled for task %s; aborting task", task_id)
                     task_abort.set()
                     task_shutdown_event.set()
                     break
+                else:
+                    consecutive_net_failures = 0
 
         hb_task = asyncio.create_task(_heartbeat_worker())
+
+        task_start_time = time.monotonic()
+        max_task_duration_s = float(os.environ.get("MAST_MAX_TASK_DURATION_S", "300.0"))
 
         # Cooperative cancellation watcher: immediately signals task_shutdown_event
         # so service.run_query and GoogleMapsProvider abort active Playwright scraper
         async def _abort_watcher():
             while not stop_heartbeat.is_set():
                 if task_abort.is_set() or self._shutdown_event.is_set():
+                    task_shutdown_event.set()
+                    break
+                if time.monotonic() - task_start_time > max_task_duration_s:
+                    log.warning(
+                        "Task %s reached maximum task duration of %.1fs; aborting area to advance scout",
+                        task_id,
+                        max_task_duration_s,
+                    )
+                    task_abort.set()
                     task_shutdown_event.set()
                     break
                 try:
@@ -536,6 +583,7 @@ class DesktopWorker:
                 from service import run_query
                 runner = run_query
 
+        attempt_nonce = uuid.uuid4().hex[:8]
         batch_index = 0
         exhausted = False
         termination_reason = "SUCCESS_TARGET_REACHED"
@@ -546,6 +594,19 @@ class DesktopWorker:
         db_path = str(data_dir / "cache" / f"discovery-task-{task_id}.db")
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
+        # Task-scoped Place ID sets: strictly isolated per execute_task invocation
+        # to prevent state leaking across tasks, tenants, or concurrent executions.
+        task_known_place_ids: set[str] = set()
+        task_seen_place_ids: set[str] = set()
+
+        incoming_pids = task.get("knownPlaceIds") or []
+        if incoming_pids:
+            for raw_pid in incoming_pids:
+                if raw_pid and isinstance(raw_pid, str):
+                    task_known_place_ids.add(raw_pid.strip())
+
+        task_active_filter_pids: set[str] = set(task_known_place_ids)
+
         try:
             query_params = {
                 "query": search_query,
@@ -555,12 +616,13 @@ class DesktopWorker:
                 "region": task.get("region") or "",
                 "required_channels": engine_required_channels if engine_required_channels else None,
                 "deliver_target": candidate_budget,
-                "max_results": candidate_budget * 2,
+                "max_results": candidate_budget,
                 "db_path": db_path,
                 "discovery_only": True,
                 "require_viability": False,
                 "area": task.get("area") or "",
                 "shutdown_event": task_shutdown_event,
+                "known_place_ids": task_active_filter_pids,
             }
 
             # Bounded async queue decouples discovery scraping from gateway ingestion.
@@ -580,6 +642,18 @@ class DesktopWorker:
                             log.info("Task %s producer observed cancellation, shutdown, or consumer termination", task_id)
                             break
                         metrics["discovered"] += 1
+                        link = raw_lead.get("maps_link") or ""
+                        if link:
+                            pid_m = re.search(r"!1s(0x[a-f0-9]+:0x[a-f0-9]+)", link, re.I)
+                            if pid_m:
+                                cand_hex = pid_m.group(1)
+                                task_seen_place_ids.add(cand_hex)
+                                task_active_filter_pids.add(cand_hex)
+                            chij_m = re.search(r"(ChIJ[\w\-]+)", link, re.I)
+                            if chij_m:
+                                cand_chij = chij_m.group(1)
+                                task_seen_place_ids.add(cand_chij)
+                                task_active_filter_pids.add(cand_chij)
                         normalized = normalize_candidate_for_ingest(raw_lead, task)
                         while not (
                             self._shutdown_event.is_set()
@@ -592,6 +666,9 @@ class DesktopWorker:
                                 break
                             except asyncio.TimeoutError:
                                 continue
+                        if metrics["discovered"] >= candidate_budget:
+                            log.info("Task %s reached candidate budget %d discovered", task_id, candidate_budget)
+                            break
                 except Exception as exc:
                     log.exception("Discovery runner exception in task %s: %s", task_id, exc)
                     task_abort.set()
@@ -602,8 +679,6 @@ class DesktopWorker:
                     for _ in range(5):
                         if (
                             self._shutdown_event.is_set()
-                            or task_abort.is_set()
-                            or task_shutdown_event.is_set()
                             or (consumer_task is not None and consumer_task.done())
                         ):
                             break
@@ -614,27 +689,45 @@ class DesktopWorker:
                             continue
 
             MAX_BATCH_LATENCY_S = 1.5
+            max_consecutive_duplicates = int(os.environ.get("MAST_MAX_CONSECUTIVE_DUPLICATES", "4"))
+            max_zero_yield_rejections = int(os.environ.get("MAST_MAX_ZERO_YIELD_REJECTIONS", "5"))
+            max_consecutive_rejections = int(os.environ.get("MAST_MAX_CONSECUTIVE_REJECTIONS", "8"))
+            consecutive_duplicates = 0
+            consecutive_rejections = 0
 
             async def _ingest_consumer():
-                nonlocal batch_index, exhausted, termination_reason, task_status, task_error
+                nonlocal batch_index, exhausted, termination_reason, task_status, task_error, consecutive_duplicates, consecutive_rejections
                 batch_buffer: List[dict] = []
                 last_flush_time = time.monotonic()
 
                 async def _flush_current_buffer() -> bool:
-                    nonlocal batch_index, task_status, task_error, termination_reason, last_flush_time
+                    nonlocal batch_index, task_status, task_error, termination_reason, last_flush_time, consecutive_duplicates, consecutive_rejections
                     if not batch_buffer:
                         return True
                     batch_index += 1
-                    batch_id = f"{task_id}-batch-{batch_index}"
+                    batch_id = f"{task_id}-{attempt_nonce}-{batch_index}"
                     to_send = list(batch_buffer)
                     batch_buffer.clear()
                     last_flush_time = time.monotonic()
 
                     res = await self.client.ingest_batch(task_id, lease_token, batch_id, to_send)
                     if res is not None:
-                        metrics["accepted"] += res.get("accepted", 0)
-                        metrics["duplicates"] += res.get("duplicates", 0)
-                        metrics["rejected"] += res.get("rejected", 0)
+                        accepted_count = res.get("accepted", 0)
+                        duplicate_count = res.get("duplicates", 0)
+                        rejected_count = res.get("rejected", 0)
+                        metrics["accepted"] += accepted_count
+                        metrics["duplicates"] += duplicate_count
+                        metrics["rejected"] += rejected_count
+
+                        if accepted_count > 0:
+                            consecutive_duplicates = 0
+                            consecutive_rejections = 0
+                        else:
+                            if duplicate_count > 0:
+                                consecutive_duplicates += duplicate_count
+                            if rejected_count > 0:
+                                consecutive_rejections += rejected_count
+
                         if res.get("planTargetReached") or res.get("limitReached"):
                             log.info("Parent plan target reached or limit reached for task %s. Stopping execution.", task_id)
                             termination_reason = "PLAN_TARGET_REACHED"
@@ -645,6 +738,43 @@ class DesktopWorker:
                                     if sib_id in self._active_tasks:
                                         self._active_tasks[sib_id].set()
                             return False
+
+                        if max_consecutive_duplicates > 0 and consecutive_duplicates >= max_consecutive_duplicates:
+                            log.info(
+                                "Task %s reached %d consecutive duplicates (area saturation detected). Fast-advancing to next area.",
+                                task_id,
+                                consecutive_duplicates,
+                            )
+                            exhausted = True
+                            termination_reason = "SUCCESS_EXHAUSTED"
+                            task_abort.set()
+                            task_shutdown_event.set()
+                            return False
+
+                        if max_zero_yield_rejections > 0 and metrics["accepted"] == 0 and consecutive_rejections >= max_zero_yield_rejections:
+                            log.info(
+                                "Task %s reached %d consecutive rejections with 0 accepted leads (low-yield area detected). Fast-advancing to next area.",
+                                task_id,
+                                consecutive_rejections,
+                            )
+                            exhausted = True
+                            termination_reason = "SUCCESS_EXHAUSTED"
+                            task_abort.set()
+                            task_shutdown_event.set()
+                            return False
+
+                        if max_consecutive_rejections > 0 and consecutive_rejections >= max_consecutive_rejections:
+                            log.info(
+                                "Task %s reached %d consecutive rejections (area dried up). Fast-advancing to next area.",
+                                task_id,
+                                consecutive_rejections,
+                            )
+                            exhausted = True
+                            termination_reason = "SUCCESS_EXHAUSTED"
+                            task_abort.set()
+                            task_shutdown_event.set()
+                            return False
+
                         return True
                     else:
                         raw_err = getattr(self.client, "last_ingest_error", None)
@@ -689,6 +819,7 @@ class DesktopWorker:
                     should_flush = (
                         (batch_index == 0 and len(batch_buffer) >= 1)
                         or len(batch_buffer) >= self.batch_size
+                        or (metrics["discovered"] >= candidate_budget)
                         or (metrics["accepted"] + len(batch_buffer) >= candidate_budget)
                     )
 
@@ -697,8 +828,14 @@ class DesktopWorker:
                         if not ok:
                             break
 
-                    if metrics["accepted"] >= candidate_budget:
-                        log.info("Task %s reached candidate budget %d", task_id, candidate_budget)
+                    if metrics["accepted"] >= candidate_budget or metrics["discovered"] >= candidate_budget:
+                        log.info(
+                            "Task %s reached candidate budget %d (accepted=%d, discovered=%d)",
+                            task_id,
+                            candidate_budget,
+                            metrics["accepted"],
+                            metrics["discovered"],
+                        )
                         termination_reason = "SUCCESS_TARGET_REACHED"
                         task_abort.set()
                         task_shutdown_event.set()
@@ -708,24 +845,47 @@ class DesktopWorker:
                 if batch_buffer and not (self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set()) and task_status != "failed":
                     await _flush_current_buffer()
 
-                if metrics["accepted"] < candidate_budget and not (self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set()) and task_status != "failed":
+                if metrics["accepted"] < candidate_budget and metrics["discovered"] < candidate_budget and not (self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set()) and task_status != "failed":
                     exhausted = True
                     termination_reason = "SUCCESS_EXHAUSTED"
 
             consumer_task = asyncio.create_task(_ingest_consumer())
             producer_task = asyncio.create_task(_discovery_producer())
 
-            await asyncio.gather(producer_task, consumer_task)
+            try:
+                await asyncio.gather(producer_task, consumer_task)
+            finally:
+                if not producer_task.done():
+                    producer_task.cancel()
+                if not consumer_task.done():
+                    consumer_task.cancel()
+                try:
+                    await asyncio.gather(producer_task, consumer_task, return_exceptions=True)
+                except Exception:
+                    pass
 
-            if (self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set()) and termination_reason not in ("FAILURE_INGESTION", "PLAN_TARGET_REACHED") and metrics["accepted"] < candidate_budget:
+            if (self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set()) and termination_reason not in ("FAILURE_INGESTION", "PLAN_TARGET_REACHED", "SUCCESS_EXHAUSTED") and metrics["accepted"] < candidate_budget and metrics["discovered"] < candidate_budget:
                 termination_reason = "CANCELLED"
 
         except Exception as exc:
-            log.exception("Engine failure during task %s: %s", task_id, exc)
-            task_status = "failed"
-            exc_type = type(exc).__name__
-            task_error = f"{exc_type}: {exc}" if str(exc) else exc_type
-            termination_reason = f"FAILURE_{exc_type.upper()}"
+            if (
+                isinstance(exc, DiscoveryFailure)
+                and (task_abort.is_set() or task_shutdown_event.is_set() or self._shutdown_event.is_set())
+                and termination_reason in ("SUCCESS_EXHAUSTED", "PLAN_TARGET_REACHED")
+            ):
+                log.info(
+                    "Task %s cleanly completed cooperative fast-advance (%s) despite producer cancellation signal",
+                    task_id,
+                    termination_reason,
+                )
+                task_status = "completed"
+                exhausted = True
+            else:
+                log.exception("Engine failure during task %s: %s", task_id, exc)
+                task_status = "failed"
+                exc_type = type(exc).__name__
+                task_error = f"{exc_type}: {exc}" if str(exc) else exc_type
+                termination_reason = f"FAILURE_{exc_type.upper()}"
         finally:
             stop_heartbeat.set()
             task_shutdown_event.set()
@@ -748,10 +908,18 @@ class DesktopWorker:
             except Exception:
                 pass
 
+            # Explicit cleanup of task-scoped Place ID sets
+            task_known_place_ids.clear()
+            task_seen_place_ids.clear()
+            task_active_filter_pids.clear()
+
             if task_status == "failed":
                 completion_reason = "failed"
-            elif metrics["accepted"] >= candidate_budget:
+            elif metrics["accepted"] >= candidate_budget or metrics["discovered"] >= candidate_budget:
                 completion_reason = "target_reached"
+            elif termination_reason == "SUCCESS_EXHAUSTED" or exhausted:
+                completion_reason = "exhausted"
+                exhausted = True
             elif task_abort.is_set():
                 completion_reason = "cancelled"
             else:
@@ -805,6 +973,9 @@ class DesktopWorker:
                     if getattr(self.client, "last_auth_error", False):
                         # Avoid aggressive polling when unauthenticated; back off until token refreshes
                         await asyncio.sleep(min(poll_interval_s * 4, 30.0))
+                    elif getattr(self.client, "last_rate_limit", False):
+                        # Back off on 429 rate limit
+                        await asyncio.sleep(min(max(poll_interval_s * 3, 3.0), 10.0))
                     else:
                         active_plan = self.client._get_active_plan() if hasattr(self.client, "_get_active_plan") else None
                         eff_interval = min(1.5, poll_interval_s) if active_plan else poll_interval_s

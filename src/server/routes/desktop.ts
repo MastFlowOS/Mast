@@ -9,7 +9,7 @@ import { env } from "../../config/env.js";
 import { validateLead } from "../../lib/leadValidation.js";
 import { deliverLead, type DeliveryContext, type DeliveryResult } from "../../scraperBridge/deliverLead.js";
 import type { EngineLead } from "../../scraperBridge/pythonBridge.js";
-import { recordTaskOutcome, completePlanIfDrained } from "../../jobs/discoveryPlanJob.js";
+import { recordTaskOutcome, completePlanIfDrained, getKnownPlaceIdsForTask } from "../../jobs/discoveryPlanJob.js";
 import { processDiscoveredCandidate, type ProcessCandidateParams, type ProcessCandidateResult } from "../../discovery/candidatePipeline.js";
 import {
   publishDiscoveryLiveEvent,
@@ -28,7 +28,7 @@ export const desktopRouter = Router();
 export const DESKTOP_LEASE_TTL_MS = 60_000;
 
 /** Rate limiters for desktop coordination endpoints */
-const claimLimiter = createRateLimiter({ windowMs: 60_000, max: 60 });
+const claimLimiter = createRateLimiter({ windowMs: 60_000, max: 300 });
 const heartbeatLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
 const ingestLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
 const completeLimiter = createRateLimiter({ windowMs: 60_000, max: 60 });
@@ -41,6 +41,7 @@ export const desktopDeps = {
   deliverLead,
   recordTaskOutcome,
   completePlanIfDrained,
+  getKnownPlaceIdsForTask,
   processCandidate: (params: ProcessCandidateParams) => {
     return processDiscoveredCandidate(params, {
       db: desktopDeps.db,
@@ -514,9 +515,10 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
 
     const planTierId = (profile?.subscription_plan as PlanId) ?? "free";
     const baseConcurrencyCap = getPlanConcurrency(planTierId, env.PLAN_CONCURRENCY_OVERRIDES);
-    // Desktop worker runs locally on the user's desktop hardware, driving up to 3 concurrent scouts
-    // (matching the 3 scouts rendered on the live discovery UI and cloud area worker pool).
-    const concurrencyCap = Math.max(3, baseConcurrencyCap);
+    // Desktop worker runs locally on the user's desktop hardware, driving concurrent scouts
+    // (default 3, or strictly configured via MAST_MAX_SCOUTS e.g. 2 for busy hours).
+    const maxScoutsEnv = process.env.MAST_MAX_SCOUTS ? parseInt(process.env.MAST_MAX_SCOUTS, 10) : undefined;
+    const concurrencyCap = maxScoutsEnv !== undefined ? maxScoutsEnv : Math.max(3, baseConcurrencyCap);
 
     // 2. Count active running tasks for this user
     const { data: userRunningTasks } = await desktopDeps.db
@@ -637,7 +639,7 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
         if (typeof sid === "number") usedScoutIds.add(sid);
       }
       let assignedScoutId = 1;
-      for (let i = 1; i <= 3; i++) {
+      for (let i = 1; i <= concurrencyCap; i++) {
         if (!usedScoutIds.has(i)) {
           assignedScoutId = i;
           break;
@@ -645,25 +647,70 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
       }
 
       // Curated area rotation for cities with area breakdowns
+      const usedAreas = new Set<string>(task.task_summary?.used_areas || []);
       let claimedArea: string | undefined =
         task.task_summary?.area ??
         (task.task_summary?.area_label && task.task_summary.area_label !== task.city
           ? task.task_summary.area_label
           : undefined);
 
+      if (claimedArea && usedAreas.has(claimedArea)) {
+        claimedArea = undefined;
+      }
+
       if (!claimedArea) {
         const curatedAreas = desktopDeps.getAreasForCity(task.country_code, task.city);
         if (hasCuratedAreas(curatedAreas)) {
-          try {
-            claimedArea = await desktopDeps.claimAreaForCity(desktopDeps.db, {
-              niche: task.niche,
-              countryCode: task.country_code,
-              city: task.city,
-              source: task.source ?? "google_maps",
-              areas: curatedAreas,
-            });
-          } catch (err) {
-            console.warn(`[desktop-coordination] claimAreaForCity failed for ${task.city}:`, err);
+          const availableAreas = (curatedAreas || []).filter((a: string) => !usedAreas.has(a));
+          const baseAreasToClaim = availableAreas.length > 0 ? availableAreas : curatedAreas;
+
+          // Rank available areas by historical conversion yield (accepted / discovered)
+          // so scouts prioritize high-density, high-converting neighborhoods first
+          const { data: areaStatsRows } = await desktopDeps.db
+            .from("discovery_area_stats")
+            .select("area, accepted_count, discovered_count, last_searched_at")
+            .eq("city", task.city)
+            .eq("niche", task.niche);
+
+          const areaYieldMap = new Map<string, { yield: number; lastSearched: number }>();
+          for (const row of areaStatsRows || []) {
+            const disc = row.discovered_count || 0;
+            const acc = row.accepted_count || 0;
+            const y = disc >= 5 ? acc / disc : 0.20; // Default prior for fresh areas
+            const lastMs = row.last_searched_at ? Date.parse(row.last_searched_at) : 0;
+            areaYieldMap.set(row.area, { yield: y, lastSearched: lastMs });
+          }
+
+          const rankedAreas = [...baseAreasToClaim].sort((a, b) => {
+            const ya = areaYieldMap.get(a)?.yield ?? 0.20;
+            const yb = areaYieldMap.get(b)?.yield ?? 0.20;
+            if (Math.abs(yb - ya) > 0.05) {
+              return yb - ya; // Higher yield first
+            }
+            // For comparable yields, rotate by least-recently searched
+            const la = areaYieldMap.get(a)?.lastSearched ?? 0;
+            const lb = areaYieldMap.get(b)?.lastSearched ?? 0;
+            return la - lb;
+          });
+
+          for (const targetArea of rankedAreas) {
+            try {
+              claimedArea = await desktopDeps.claimAreaForCity(desktopDeps.db, {
+                niche: task.niche,
+                countryCode: task.country_code,
+                city: task.city,
+                source: task.source ?? "google_maps",
+                areas: [targetArea],
+                cooldownSeconds: 0,
+              });
+              if (claimedArea) break;
+            } catch (err) {
+              // Try next ranked area if locked
+            }
+          }
+
+          if (!claimedArea && rankedAreas.length > 0) {
+            claimedArea = rankedAreas[0];
           }
         }
       }
@@ -732,6 +779,27 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
           ? `${task.niche} in ${claimedArea}, ${task.city}`
           : `${task.niche} in ${task.city}`;
 
+        // Pre-seed known place IDs already owned/discovered by this authenticated user across all plans
+        let knownPlaceIds: string[] = [];
+        const knownIdsLookupStart = Date.now();
+        try {
+          knownPlaceIds = await desktopDeps.getKnownPlaceIdsForTask(
+            desktopDeps.db,
+            userId,
+            task.country_code,
+            task.city,
+          );
+        } catch (lookupErr: any) {
+          console.warn(`[desktop-coordination] error fetching known place IDs for user ${userId} (failing open):`, lookupErr?.message || lookupErr);
+          knownPlaceIds = [];
+        }
+        const knownIdsLookupDurationMs = Date.now() - knownIdsLookupStart;
+        if (knownPlaceIds.length > 0 || knownIdsLookupDurationMs > 50) {
+          console.info(
+            `[desktop-coordination] task ${task.id} seeded with ${knownPlaceIds.length} known place IDs for user ${userId} in ${knownIdsLookupDurationMs}ms`,
+          );
+        }
+
         // Safe client payload containing only task execution parameters — no secrets or DB credentials
         return res.status(200).json({
           task: {
@@ -741,7 +809,7 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
             niche: task.niche,
             countryCode: task.country_code,
             countryName: task.country_name,
-            candidateBudget: task.candidate_budget,
+            candidateBudget: claimedArea ? Math.min(task.candidate_budget, 14) : task.candidate_budget,
             channels: plan?.channels ?? [],
             region: plan?.region ?? "",
             professionSlug: plan?.profession_slug ?? null,
@@ -750,6 +818,7 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
             areaLabel,
             queryString,
             query: queryString,
+            knownPlaceIds: Array.from(new Set(knownPlaceIds)),
             leaseToken,
             leaseExpiresAt: leaseExpiresAt.toISOString(),
           },
@@ -818,8 +887,16 @@ desktopRouter.post("/tasks/:taskId/heartbeat", requireAuth, heartbeatLimiter, as
     const now = Date.now();
     const leaseExpiresAt = new Date(now + DESKTOP_LEASE_TTL_MS);
 
+    // Fetch fresh task_summary before heartbeat update to avoid clobbering used_areas or area rotation state
+    const { data: freshTaskForHb } = await desktopDeps.db
+      .from("discovery_tasks")
+      .select("task_summary")
+      .eq("id", taskId)
+      .maybeSingle();
+
+    const currentSummary = freshTaskForHb?.task_summary || task.task_summary || {};
     const updatedSummary = {
-      ...(task.task_summary || {}),
+      ...currentSummary,
       lease_expires_at: leaseExpiresAt.toISOString(),
       ...(body.metrics ? { live_metrics: body.metrics } : {}),
     };
@@ -986,10 +1063,12 @@ desktopRouter.post("/tasks/:taskId/ingest", requireAuth, ingestLimiter, async (r
       });
     }
 
-    // Preserve safe parallelism for light DB operations (website, phone), while bounding
-    // concurrency to 1 when enrichment subprocesses (email, instagram) are needed.
+    // When persistent enrichment is active, the enrichment daemon handles concurrent requests (up to 16 slots)
+    // without spawning new Python subprocesses. Allow concurrent processing across the batch.
     const needsEnrichment = (plan.channels ?? []).some((c: string) => c === "email" || c === "instagram");
-    const BATCH_CONCURRENCY = needsEnrichment ? 1 : 3;
+    const isPersistentEnrichment = process.env.USE_PERSISTENT_ENRICHMENT === "true";
+    const defaultBatchConcurrency = isPersistentEnrichment ? 6 : (needsEnrichment ? 1 : 3);
+    const BATCH_CONCURRENCY = Math.max(1, parseInt(process.env.MAST_DESKTOP_INGEST_CONCURRENCY || String(defaultBatchConcurrency), 10));
     let nextCandidateIndex = 0;
 
     const candidateWorker = async () => {
@@ -1004,21 +1083,27 @@ desktopRouter.post("/tasks/:taskId/ingest", requireAuth, ingestLimiter, async (r
           continue;
         }
 
-        const result = await desktopDeps.processCandidate({
-          lead: item.candidate,
-          planId: plan.id,
-          effectiveScoutId: scoutId,
-          areaLabel,
-          pipelineId: item.raw.pipeline_id,
-          requestedChannels: plan.channels ?? [],
-          userId,
-          professionSlug: plan.profession_slug,
-          region: plan.region,
-          scrapeJobId: plan.scrape_job_id,
-          dailyLimit: planConfig.dailyLeadLimit,
-          monthlyLimit: planConfig.monthlyLeadLimit,
-          startedAt: task.started_at ? Date.parse(task.started_at) : undefined,
-        });
+        let result: { outcome: "accepted" | "duplicate" | "rejected" | "limit_reached"; reason?: string };
+        try {
+          result = await desktopDeps.processCandidate({
+            lead: item.candidate,
+            planId: plan.id,
+            effectiveScoutId: scoutId,
+            areaLabel,
+            pipelineId: item.raw.pipeline_id,
+            requestedChannels: plan.channels ?? [],
+            userId,
+            professionSlug: plan.profession_slug,
+            region: plan.region,
+            scrapeJobId: plan.scrape_job_id,
+            dailyLimit: planConfig.dailyLeadLimit,
+            monthlyLimit: planConfig.monthlyLeadLimit,
+            startedAt: task.started_at ? Date.parse(task.started_at) : undefined,
+          });
+        } catch (procErr: any) {
+          console.warn(`[desktop-coordination] candidate processing error for ${item.candidate?.name}:`, procErr?.message || procErr);
+          result = { outcome: "rejected", reason: procErr?.message || "internal_processing_error" };
+        }
 
         if (result.outcome === "accepted") {
           accepted++;
@@ -1076,11 +1161,18 @@ desktopRouter.post("/tasks/:taskId/ingest", requireAuth, ingestLimiter, async (r
       rejectionReasons,
     };
 
-    // Atomically record counts and idempotent batch record
+    // Fetch fresh task_summary before ingest update to avoid race with concurrent /complete or area rotation
+    const { data: freshTaskForIngest } = await desktopDeps.db
+      .from("discovery_tasks")
+      .select("task_summary")
+      .eq("id", taskId)
+      .maybeSingle();
+
+    const currentIngestSummary = freshTaskForIngest?.task_summary || task.task_summary || {};
     const updatedSummary = {
-      ...(task.task_summary || {}),
+      ...currentIngestSummary,
       processed_batches: {
-        ...processedBatches,
+        ...(currentIngestSummary.processed_batches || processedBatches),
         [body.batchId]: batchResult,
       },
     };
@@ -1137,7 +1229,7 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
     const startedAt = task.started_at ? Date.parse(task.started_at) : Date.now();
 
     // Record outcome for claimed curated area if one was assigned
-    const claimedArea = task.task_summary?.area;
+    const claimedArea = task.task_summary?.area || (task.task_summary?.area_label && task.task_summary.area_label !== task.city ? task.task_summary.area_label : undefined);
     if (claimedArea) {
       try {
         await desktopDeps.recordAreaOutcome(desktopDeps.db, {
@@ -1148,6 +1240,17 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
           source: task.source ?? "google_maps",
           discovered: body.discovered,
           accepted: body.accepted,
+        });
+        // Keep city-level stats fresh so city rotation accurately reflects exploration recency
+        await desktopDeps.db.rpc("record_discovery_location_outcome", {
+          p_niche: task.niche,
+          p_country_code: task.country_code,
+          p_city: task.city,
+          p_source: task.source ?? "google_maps",
+          p_discovered_delta: body.discovered,
+          p_accepted_delta: body.accepted,
+          p_exhausted: Boolean(body.exhausted),
+          p_errored: body.status === "failed",
         });
       } catch (areaErr) {
         console.warn(`[desktop-coordination] recordAreaOutcome failed for ${task.id}:`, areaErr);
@@ -1171,11 +1274,76 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
       }),
     );
 
+    // Check whether the parent plan has reached its target or was cancelled
+    const { data: parentPlan } = await desktopDeps.db
+      .from("discovery_plans")
+      .select("requested_count, delivered_count, status")
+      .eq("id", task.plan_id)
+      .maybeSingle();
+
+    const planDelivered = parentPlan?.delivered_count ?? 0;
+    const planRequested = parentPlan?.requested_count ?? 0;
+    const isPlanSatisfied = parentPlan?.status === "completed" || (planRequested > 0 && planDelivered >= planRequested);
+    const isPlanCancelled = parentPlan?.status === "cancelled";
+    const isTargetReached =
+      body.terminationReason === "PLAN_TARGET_REACHED" ||
+      isPlanSatisfied;
+
+    // Check if this city has more unvisited curated areas
+    const curatedAreas = desktopDeps.getAreasForCity(task.country_code, task.city);
+    const priorUsedAreas: string[] = Array.isArray(task.task_summary?.used_areas)
+      ? task.task_summary.used_areas
+      : [];
+    const updatedUsedAreas =
+      claimedArea && !priorUsedAreas.includes(claimedArea)
+        ? [...priorUsedAreas, claimedArea]
+        : priorUsedAreas;
+
+    const hasMoreAreas =
+      !isTargetReached &&
+      !isPlanCancelled &&
+      hasCuratedAreas(curatedAreas) &&
+      (curatedAreas || []).some((a: string) => !updatedUsedAreas.includes(a));
+
+    if (hasMoreAreas) {
+      const updatedSummary = {
+        ...(task.task_summary || {}),
+        used_areas: updatedUsedAreas,
+        area: null,
+        area_label: null,
+        lease_token: null,
+        lease_expires_at: null,
+        worker_id: null,
+        processed_batches: {},
+      };
+
+      await desktopDeps.db
+        .from("discovery_tasks")
+        .update({
+          status: "queued",
+          discovered_count: (task.discovered_count || 0) + (body.discovered || 0),
+          accepted_count: (task.accepted_count || 0) + (body.accepted || 0),
+          rejected_count: (task.rejected_count || 0) + (body.rejected || 0),
+          last_heartbeat_at: null,
+          started_at: null,
+          completed_at: null,
+          task_summary: updatedSummary,
+        })
+        .eq("id", task.id);
+
+      return res.status(200).json({
+        success: true,
+        taskId: task.id,
+        status: "queued",
+        nextAreaAvailable: true,
+      });
+    }
+
     const outcome = {
-      discovered: body.discovered,
-      accepted: body.accepted,
-      rejected: body.rejected,
-      duplicates: body.duplicates,
+      discovered: (task.discovered_count || 0) + body.discovered,
+      accepted: (task.accepted_count || 0) + body.accepted,
+      rejected: (task.rejected_count || 0) + body.rejected,
+      duplicates: (task.task_summary?.duplicates || 0) + body.duplicates,
       exhausted: body.exhausted,
       status: body.status,
       error: sanitizedError,
@@ -1185,7 +1353,7 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
     };
 
     await desktopDeps.recordTaskOutcome(task, outcome);
-    if (body.terminationReason === "PLAN_TARGET_REACHED" || body.completionReason === "target_reached") {
+    if (isTargetReached) {
       await desktopDeps.db
         .from("discovery_tasks")
         .update({

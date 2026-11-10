@@ -26,7 +26,7 @@ import re
 import struct
 from typing import Optional, Set
 
-_HEX_PAIR_RE = re.compile(r"^0x([0-9a-fA-F]+):0x([0-9a-fA-F]+)$")
+_HEX_PAIR_RE = re.compile(r"^0[xX]([0-9a-fA-F]+):0[xX]([0-9a-fA-F]+)$")
 _CHIJ_RE = re.compile(r"^ChIJ[a-zA-Z0-9_-]{23}$")
 
 
@@ -83,6 +83,7 @@ def canonical_place_id(pid: str | None) -> str:
         converted = chij_to_hex(clean)
         if converted:
             return converted
+        return clean
     # Check hex pair format
     m = _HEX_PAIR_RE.match(clean)
     if m:
@@ -96,16 +97,19 @@ def canonical_place_id(pid: str | None) -> str:
 
 
 def expand_place_id_forms(pid: str | None) -> Set[str]:
-    """Return all equivalent representations of a place ID (hex pair, ChIJ, and lowercase).
+    """Return all equivalent representations of a place ID (hex pair and ChIJ).
 
-    This enables resilient O(1) membership testing across URL variants.
+    Hex pairs are returned in canonical format and lowercase for case-insensitive matching.
+    ChIJ tokens are Base64URL and MUST preserve exact case — they are NEVER lowercased.
+    This enables resilient O(1) membership testing across URL variants without false collisions.
     """
     if not pid:
         return set()
     raw = pid.strip()
-    forms: Set[str] = {raw, raw.lower()}
+    forms: Set[str] = set()
 
     if raw.startswith("ChIJ"):
+        forms.add(raw)
         h = chij_to_hex(raw)
         if h:
             forms.add(h)
@@ -113,11 +117,16 @@ def expand_place_id_forms(pid: str | None) -> Set[str]:
     else:
         m = _HEX_PAIR_RE.match(raw)
         if m:
+            forms.add(raw)
+            forms.add(raw.lower())
             c_hex = canonical_place_id(raw)
             forms.add(c_hex)
+            forms.add(c_hex.lower())
             chij = hex_to_chij(c_hex)
             if chij:
                 forms.add(chij)
-                forms.add(chij.lower())
+        else:
+            forms.add(raw)
+            forms.add(raw.lower())
 
     return forms

@@ -13,9 +13,9 @@
  * ChIJ to the hex pair must occur BEFORE lowercasing.
  */
 
-const HEX_PAIR_RE = /^0x([0-9a-fA-F]+):0x([0-9a-fA-F]+)$/;
+const HEX_PAIR_RE = /^0[xX]([0-9a-fA-F]+):0[xX]([0-9a-fA-F]+)$/;
 const HEX_PAIR_ANY_CASE_RE = /^0[xX]([0-9a-fA-F]+):0[xX]([0-9a-fA-F]+)$/;
-const HEX_PAIR_TEST_RE = /^0x[0-9a-fA-F]+:0x[0-9a-fA-F]+$/;
+const HEX_PAIR_TEST_RE = /^0[xX][0-9a-fA-F]+:0[xX][0-9a-fA-F]+$/;
 
 export function chijToHex(chij: string): string | null {
   if (!chij || !chij.startsWith("ChIJ") || chij.length !== 27) return null;
@@ -57,6 +57,7 @@ export function canonicalPlaceId(pid: string | null | undefined): string {
   if (clean.startsWith("ChIJ")) {
     const hex = chijToHex(clean);
     if (hex) return hex;
+    return clean;
   }
   const match = clean.match(HEX_PAIR_RE);
   if (match) {
@@ -75,23 +76,26 @@ export function expandPlaceIdForms(pid: string | null | undefined): Set<string> 
   const forms = new Set<string>();
   if (!pid) return forms;
   const raw = pid.trim();
-  forms.add(raw);
-  forms.add(raw.toLowerCase());
   if (raw.startsWith("ChIJ")) {
+    forms.add(raw);
     const h = chijToHex(raw);
     if (h) {
       forms.add(h);
       forms.add(h.toLowerCase());
     }
   } else if (HEX_PAIR_TEST_RE.test(raw)) {
+    forms.add(raw);
+    forms.add(raw.toLowerCase());
     const cHex = canonicalPlaceId(raw);
     forms.add(cHex);
     forms.add(cHex.toLowerCase());
     const chij = hexToChij(cHex);
     if (chij) {
       forms.add(chij);
-      forms.add(chij.toLowerCase());
     }
+  } else {
+    forms.add(raw);
+    forms.add(raw.toLowerCase());
   }
   return forms;
 }

@@ -429,6 +429,9 @@ class WebsiteWorker(BaseWorker[BusinessCandidate, WebsiteIntel]):
         if not re.match(r"^https?://", raw_website, re.IGNORECASE):
             target_url = "https://" + raw_website
             fallback_http_url: Optional[str] = "http://" + raw_website
+        elif raw_website.lower().startswith("http://"):
+            target_url = "https://" + raw_website[7:]
+            fallback_http_url = raw_website
         else:
             target_url = raw_website
             fallback_http_url = None

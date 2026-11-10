@@ -33,9 +33,9 @@
 
 /** Keyed by `${countryCode}:${city}`, matching planner.ts's own LocationStat key convention. */
 const CITY_AREAS: Record<string, string[]> = {
-  "US:New York": ["Manhattan", "Brooklyn", "Queens", "The Bronx", "Staten Island"],
-  "US:Los Angeles": ["Downtown LA", "Hollywood", "Santa Monica", "Venice", "Koreatown", "Silver Lake"],
-  "US:Chicago": ["The Loop", "Wicker Park", "Lincoln Park", "Logan Square", "Hyde Park"],
+  "US:New York": ["Williamsburg", "Greenwich Village", "East Village", "SoHo", "Brooklyn", "Queens", "Astoria", "The Bronx", "Manhattan", "Staten Island"],
+  "US:Los Angeles": ["Downtown LA", "Hollywood", "Santa Monica", "Venice", "Koreatown", "Silver Lake", "Pasadena", "Culver City", "West Hollywood"],
+  "US:Chicago": ["West Loop", "Wicker Park", "Lincoln Park", "Logan Square", "River North", "The Loop", "Hyde Park"],
   "US:Seattle": ["Capitol Hill", "Ballard", "Fremont", "Queen Anne", "Downtown Seattle"],
   "US:Austin": ["South Congress", "Downtown Austin", "East Austin", "Clarksville", "Mueller"],
   "US:Miami": ["Wynwood", "Brickell", "South Beach", "Little Havana", "Coconut Grove"],

@@ -217,19 +217,77 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
     .select("country_code, city, accepted_count, searches, last_searched_at")
     .eq("source", "google_maps")
     .in("niche", niches);
+  const { data: areaHistorical } = await db
+    .from("discovery_area_stats")
+    .select("country_code, city, last_searched_at, accepted_count, discovered_count")
+    .eq("source", "google_maps")
+    .in("niche", niches);
   const stats = new Map<string, LocationStat>();
-  for (const row of (historical ?? []) as LocationStat[]) stats.set(`${row.country_code}:${row.city}`, row);
+  for (const row of (historical ?? []) as LocationStat[]) stats.set(`${row.country_code}:${row.city}`, { ...row });
+
+  const areaAggregates = new Map<string, { accepted: number; discovered: number }>();
+
+  // Merge latest last_searched_at and aggregate discovery_area_stats so city conversion yield
+  // accurately reflects neighborhood outcomes
+  for (const aRow of (areaHistorical ?? []) as any[]) {
+    const key = `${aRow.country_code}:${aRow.city}`;
+    const currAgg = areaAggregates.get(key) || { accepted: 0, discovered: 0 };
+    currAgg.accepted += aRow.accepted_count || 0;
+    currAgg.discovered += aRow.discovered_count || 0;
+    areaAggregates.set(key, currAgg);
+
+    if (!aRow.last_searched_at) continue;
+    const existing = stats.get(key);
+    const areaMs = Date.parse(aRow.last_searched_at);
+    if (!existing) {
+      stats.set(key, {
+        country_code: aRow.country_code,
+        city: aRow.city,
+        accepted_count: 0,
+        searches: 0,
+        last_searched_at: aRow.last_searched_at,
+      });
+    } else {
+      const existingMs = existing.last_searched_at ? Date.parse(existing.last_searched_at) : 0;
+      if (areaMs > existingMs) {
+        existing.last_searched_at = aRow.last_searched_at;
+      }
+    }
+  }
 
   const targets = [...scopeTargets]
     .sort((a, b) => {
-      const sa = stats.get(`${a.country.code}:${a.city}`);
-      const sb = stats.get(`${b.country.code}:${b.city}`);
-      const yieldA = sa ? sa.accepted_count / Math.max(sa.searches, 1) : 1;
-      const yieldB = sb ? sb.accepted_count / Math.max(sb.searches, 1) : 1;
-      if (yieldA !== yieldB) return yieldB - yieldA;
+      const keyA = `${a.country.code}:${a.city}`;
+      const keyB = `${b.country.code}:${b.city}`;
+      const sa = stats.get(keyA);
+      const sb = stats.get(keyB);
+      const aggA = areaAggregates.get(keyA);
+      const aggB = areaAggregates.get(keyB);
+
+      // Conversion yield: prefer area-level historical conversion (accepted / discovered)
+      const yieldA = aggA && aggA.discovered >= 10
+        ? aggA.accepted / aggA.discovered
+        : sa && sa.searches >= 3
+          ? sa.accepted_count / Math.max(sa.searches, 1)
+          : 0.20; // Default for unsearched/low-sample cities
+
+      const yieldB = aggB && aggB.discovered >= 10
+        ? aggB.accepted / aggB.discovered
+        : sb && sb.searches >= 3
+          ? sb.accepted_count / Math.max(sb.searches, 1)
+          : 0.20;
+
+      // Primary: Conversion yield advantage (> 1% difference) prioritizes the more productive city
+      if (Math.abs(yieldB - yieldA) > 0.01) {
+        return yieldB - yieldA;
+      }
+
+      // Secondary: For cities with comparable yields, rotate by least-recently searched
       const recentA = sa?.last_searched_at ? Date.parse(sa.last_searched_at) : 0;
       const recentB = sb?.last_searched_at ? Date.parse(sb.last_searched_at) : 0;
       if (recentA !== recentB) return recentA - recentB;
+
+      if (yieldA !== yieldB) return yieldB - yieldA;
       return stableRank(`${planId}:${a.country.code}:${a.city}`) - stableRank(`${planId}:${b.country.code}:${b.city}`);
     });
 

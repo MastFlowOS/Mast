@@ -25,8 +25,30 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+try:
+    from dotenv import load_dotenv
+    _env_root = Path(__file__).resolve().parent.parent / ".env"
+    if _env_root.exists():
+        load_dotenv(_env_root)
+    else:
+        load_dotenv()
+except ImportError:
+    pass
 
 from service import run_query
 from storage.dedup import LeadStore

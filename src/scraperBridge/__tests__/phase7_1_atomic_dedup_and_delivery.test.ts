@@ -179,6 +179,74 @@ describe("Part A: Migration 047 Contract Validation", () => {
   });
 });
 
+describe("Part A2: Forward Migration 049 Contract Validation", () => {
+  const migration049Path = path.resolve(__dirname, "../../../migrations/049_fix_deliver_lead_for_user_bigint_lead_id.sql");
+  const migration049Sql = readFileSync(migration049Path, "utf8");
+
+  test("migration 049 safely drops existing function without CASCADE using exact signature", () => {
+    assert.ok(
+      migration049Sql.includes("DROP FUNCTION IF EXISTS public.deliver_lead_for_user(uuid, uuid, jsonb, integer, integer, uuid);"),
+      "Must explicitly drop function by exact argument signature to bypass Postgres return type restriction",
+    );
+    assert.ok(
+      !/DROP\s+FUNCTION[\s\S]*?CASCADE/i.test(migration049Sql),
+      "Must NOT use CASCADE in DROP FUNCTION statement",
+    );
+  });
+
+  test("migration 049 defines deliver_lead_for_user with lead_id bigint return type and variables", () => {
+    assert.ok(
+      migration049Sql.includes("lead_id bigint,"),
+      "Must declare lead_id bigint in RETURNS TABLE",
+    );
+    assert.ok(
+      migration049Sql.includes("v_existing_lead_id bigint;") && migration049Sql.includes("v_inserted_lead_id bigint;"),
+      "Must declare internal PL/pgSQL lead ID variables as bigint to prevent runtime assignment mismatch",
+    );
+  });
+
+  test("migration 049 preserves advisory locking (424243), user scoping, plan and credit transaction logic", () => {
+    assert.ok(
+      migration049Sql.includes("pg_advisory_xact_lock(424243,"),
+      "Must preserve namespace 424243 advisory transaction lock",
+    );
+    assert.ok(
+      migration049Sql.includes("WHERE user_id = p_user_id AND business_id = p_business_id"),
+      "Must preserve user-scoped ownership check",
+    );
+    assert.ok(
+      migration049Sql.includes("claim_discovery_delivery") && migration049Sql.includes("try_increment_lead_usage"),
+      "Must preserve plan claim and credit reservation",
+    );
+    assert.ok(
+      migration049Sql.includes("release_discovery_delivery"),
+      "Must preserve rollback on conflict or limit reached",
+    );
+  });
+
+  test("migration 049 preserves SECURITY DEFINER, search_path = pg_catalog, and grants", () => {
+    assert.ok(
+      migration049Sql.includes("SECURITY DEFINER") && migration049Sql.includes("SET search_path = pg_catalog"),
+      "Must preserve SECURITY DEFINER and safe search_path",
+    );
+    assert.ok(
+      migration049Sql.includes("REVOKE ALL ON FUNCTION public.deliver_lead_for_user(uuid, uuid, jsonb, integer, integer, uuid) FROM PUBLIC, anon, authenticated;"),
+      "Must revoke execution from untrusted roles",
+    );
+    assert.ok(
+      migration049Sql.includes("GRANT EXECUTE ON FUNCTION public.deliver_lead_for_user(uuid, uuid, jsonb, integer, integer, uuid) TO service_role, postgres;"),
+      "Must grant execution exclusively to service_role and postgres",
+    );
+  });
+
+  test("migration 049 notifies PostgREST to reload its schema cache upon commit", () => {
+    assert.ok(
+      migration049Sql.includes("NOTIFY pgrst, 'reload schema';"),
+      "Must include NOTIFY pgrst, 'reload schema' to immediately invalidate PostgREST RPC cache",
+    );
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Part B: Database Simulator (Models PostgreSQL Transaction & Advisory Locking)
 // ─────────────────────────────────────────────────────────────────────────────

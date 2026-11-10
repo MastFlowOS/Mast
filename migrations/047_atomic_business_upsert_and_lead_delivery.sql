@@ -380,7 +380,7 @@ CREATE OR REPLACE FUNCTION public.deliver_lead_for_user(
 )
 RETURNS TABLE (
   status text,              -- 'delivered' | 'duplicate' | 'plan_limit_reached' | 'credit_limit_reached'
-  lead_id uuid,
+  lead_id bigint,
   was_new_for_user boolean,
   credit_charged boolean,
   limit_reached boolean
@@ -390,8 +390,8 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
 DECLARE
-  v_existing_lead_id uuid;
-  v_inserted_lead_id uuid;
+  v_existing_lead_id bigint;
+  v_inserted_lead_id bigint;
   v_plan_claimed boolean := false;
   v_credit_allowed boolean := false;
 BEGIN
@@ -421,7 +421,7 @@ BEGIN
   IF p_discovery_plan_id IS NOT NULL THEN
     v_plan_claimed := public.claim_discovery_delivery(p_discovery_plan_id);
     IF NOT v_plan_claimed THEN
-      RETURN QUERY SELECT 'plan_limit_reached'::text, NULL::uuid, false, false, true;
+      RETURN QUERY SELECT 'plan_limit_reached'::text, NULL::bigint, false, false, true;
       RETURN;
     END IF;
   END IF;
@@ -436,7 +436,7 @@ BEGIN
     IF v_plan_claimed THEN
       PERFORM public.release_discovery_delivery(p_discovery_plan_id);
     END IF;
-    RETURN QUERY SELECT 'credit_limit_reached'::text, NULL::uuid, false, false, true;
+    RETURN QUERY SELECT 'credit_limit_reached'::text, NULL::bigint, false, false, true;
     RETURN;
   END IF;
 

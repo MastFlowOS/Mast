@@ -264,9 +264,6 @@ export async function processDiscoveredCandidate(
       }
       try {
         await deps.ensureEnriched(businessId, { requiredChannels: params.requestedChannels });
-        if (requestedChannels.includes("instagram")) {
-          await deps.ensureIntelligence(businessId);
-        }
         enrichmentSucceeded = true;
         break;
       } catch (enrichErr) {
@@ -350,20 +347,41 @@ export async function processDiscoveredCandidate(
 
   // 7. Deliver lead (authoritative deduplication, user limits, and credit accounting)
   funnel.recordReachingDelivery(pid);
-  const delivery: DeliveryResult = await deps.deliverLead(
-    deliverable,
-    {
-      userId: params.userId,
-      professionSlug: params.professionSlug ?? null,
-      discoveryMode: "live",
-      scrapeJobId: params.scrapeJobId,
-      dailyLimit: params.dailyLimit ?? 0,
-      monthlyLimit: params.monthlyLimit ?? 0,
-      discoveryPlanId: params.planId,
-    },
-    params.region,
-    businessId,
-  );
+  let delivery: DeliveryResult;
+  try {
+    delivery = await deps.deliverLead(
+      deliverable,
+      {
+        userId: params.userId,
+        professionSlug: params.professionSlug ?? null,
+        discoveryMode: "live",
+        scrapeJobId: params.scrapeJobId,
+        dailyLimit: params.dailyLimit ?? 0,
+        monthlyLimit: params.monthlyLimit ?? 0,
+        discoveryPlanId: params.planId,
+      },
+      params.region,
+      businessId,
+    );
+  } catch (deliveryErr: any) {
+    if (deliveryErr?.message?.includes("Ambiguous business match")) {
+      console.warn(`[candidatePipeline] ambiguous business match for candidate "${params.lead.name}": rejected cleanly`);
+      funnel.recordDuplicateSkipped("ambiguous_business_match", pid);
+      deps.publishDiscoveryLiveEvent(
+        candidateRejectedEvent(
+          params.planId,
+          params.effectiveScoutId,
+          pid,
+          "ambiguous_business_match",
+          params.areaLabel,
+          params.lead.name,
+          "duplicate",
+        ),
+      );
+      return { outcome: "rejected", reason: "ambiguous_business_match" };
+    }
+    throw deliveryErr;
+  }
 
   if (delivery.limitReached) {
     deps.publishDiscoveryLiveEvent(

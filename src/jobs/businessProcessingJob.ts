@@ -358,7 +358,7 @@ export async function handleBusinessProcessingJob(payload: BusinessProcessingPay
   }
 }
 
-const ENRICH_WAIT_INTERVAL_MS = 1000;
+const ENRICH_WAIT_INTERVAL_MS = parseInt(process.env.MAST_ENRICH_WAIT_INTERVAL_MS || "200", 10);
 const ENRICH_WAIT_TIMEOUT_MS = 30000;
 
 /**
@@ -384,22 +384,51 @@ const ENRICH_SELF_CLAIM_TIMEOUT_MS = 30000;
  * Synchronously ensures a business has been through enrichment (website crawl/email extraction).
  */
 export async function ensureEnriched(businessId: string, options?: { requiredChannels?: string[] }): Promise<void> {
+  // Fast path: if the business in the database already has all requested channels,
+  // return immediately without waiting or running redundant enrichment.
+  if (options?.requiredChannels && options.requiredChannels.length > 0) {
+    const { data: existingBiz } = await supabaseAdmin
+      .from("businesses")
+      .select("id, email, phone, website, instagram")
+      .eq("id", businessId)
+      .maybeSingle();
+    if (existingBiz) {
+      const allSatisfied = options.requiredChannels.every((ch) => {
+        if (ch === "email") return isValidEmail(existingBiz.email);
+        if (ch === "phone") return isValidPhone(existingBiz.phone);
+        if (ch === "website") return Boolean(existingBiz.website);
+        if (ch === "instagram") return Boolean(resolveInstagramToPersist(null, existingBiz.instagram));
+        return true;
+      });
+      if (allSatisfied) {
+        return;
+      }
+    }
+  }
+
   let { data: task, error } = await supabaseAdmin.from("business_processing_tasks")
-    .select("id, status, attempts").eq("business_id", businessId).eq("kind", "enrich").maybeSingle();
+    .select("id, status, attempts, last_heartbeat_at").eq("business_id", businessId).eq("kind", "enrich").maybeSingle();
   if (error) throw error;
   if (!task) {
     const created = await claimOrCreateProcessingTask(businessId, "enrich");
     if (!created) return;
     const { data: createdTask, error: refetchErr } = await supabaseAdmin.from("business_processing_tasks")
-      .select("id, status, attempts").eq("id", created.id).maybeSingle();
+      .select("id, status, attempts, last_heartbeat_at").eq("id", created.id).maybeSingle();
     if (refetchErr) throw refetchErr;
     task = createdTask;
   }
   if (!task || task.status === "completed") return; // nothing pending, or already done
 
+  // If the task was previously left in 'running' by a crashed process / previous run without heartbeat:
+  const isStaleRunning =
+    task.status === "running" &&
+    (!task.last_heartbeat_at || Date.now() - new Date(task.last_heartbeat_at).getTime() > 45000);
+
+  const claimFilter = isStaleRunning ? ["queued", "running"] : ["queued"];
+
   const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")
     .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), last_heartbeat_at: new Date().toISOString(), error: null })
-    .eq("id", task.id).eq("status", "queued").select("id, attempts").maybeSingle();
+    .eq("id", task.id).in("status", claimFilter).select("id, attempts").maybeSingle();
 
   if (claimed) {
     // AUDIT FIX (Finding 4/5): bound this inline call so it can't stall the
@@ -516,7 +545,7 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal, options?
       }
       const enrichT0 = Date.now();
       try {
-        site = await runEngineEnrich(
+        site = (await runEngineEnrich(
           {
             id: businessId,
             pipeline_id: businessId,
@@ -542,7 +571,7 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal, options?
             skip_instagram_worker: true,
           },
           signal,
-        );
+        )) || {};
       } finally {
         recordSubprocessExecution("website_enrich", Date.now() - enrichT0);
         admissionRelease?.();
@@ -550,14 +579,15 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal, options?
     }
 
     // Audit Broken #3 fix
-    const siteEmail = isValidEmail(site.email) ? site.email : undefined;
-    const sitePhone = isValidPhone(site.phone) ? site.phone : undefined;
-    const siteEmails = (site.emails ?? []).filter((email: any) => isValidEmail(email));
-    const sitePhones = (site.phones ?? []).filter((phone: any) => isValidPhone(phone));
+    const safeSite = site || {};
+    const siteEmail = isValidEmail(safeSite.email) ? safeSite.email : undefined;
+    const sitePhone = isValidPhone(safeSite.phone) ? safeSite.phone : undefined;
+    const siteEmails = (safeSite.emails ?? []).filter((email: any) => isValidEmail(email));
+    const sitePhones = (safeSite.phones ?? []).filter((phone: any) => isValidPhone(phone));
     // Instagram link ContactWorker found on the business's own website. Only
     // ever fills a missing/invalid stored value (see resolveInstagramToPersist);
     // an extraction miss leaves the column untouched.
-    const siteInstagram = resolveInstagramToPersist(business.instagram, site.instagram);
+    const siteInstagram = resolveInstagramToPersist(business.instagram, safeSite.instagram);
 
     // Milestone 2: Engine 2.0's ContactWorker/WebsiteWorker report objective
     // extraction facts only (see WebsiteIntel/ContactIntel's own contract
@@ -693,18 +723,24 @@ async function enrichBusiness(businessId: string, signal?: AbortSignal, options?
       typeof site.health_score === "number" &&
       site.universal_breakdown != null;
 
-    let scoreResult;
-    if (hasPrecomputedScores) {
-      scoreResult = await computeAndStoreOpportunityScores(businessId, undefined, site);
-    } else {
-      const scoreT0 = Date.now();
-      scoreResult = await computeAndStoreOpportunityScores(businessId);
-      recordSubprocessExecution("opportunity_score", Date.now() - scoreT0);
+    try {
+      let scoreResult;
+      if (hasPrecomputedScores) {
+        scoreResult = await computeAndStoreOpportunityScores(businessId, undefined, site);
+      } else {
+        const scoreT0 = Date.now();
+        scoreResult = await computeAndStoreOpportunityScores(businessId);
+        recordSubprocessExecution("opportunity_score", Date.now() - scoreT0);
+      }
+      if (process.env.NODE_ENV !== "production" && site?.profession_scores && scoreResult?.profession_scores) {
+        recordScoreParityCheck(businessId, site.profession_scores, scoreResult.profession_scores);
+      }
+      if (scoreResult) {
+        await computeAndStoreBusinessHealth(businessId, scoreResult);
+      }
+    } catch (scoreErr) {
+      console.warn(`[enrichBusiness] opportunity scoring failed for ${businessId} (non-fatal for delivery):`, scoreErr);
     }
-    if (process.env.NODE_ENV !== "production" && site?.profession_scores) {
-      recordScoreParityCheck(businessId, site.profession_scores, scoreResult.profession_scores);
-    }
-    await computeAndStoreBusinessHealth(businessId, scoreResult);
 
     // Push to intelligence queue
     await enqueueBusinessProcessing(businessId, "score");

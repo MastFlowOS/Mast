@@ -76,11 +76,18 @@ class _FakeElement:
                 await res
 
     async def evaluate(self, _script: str):
-        if self._on_click:
-            res = self._on_click()
-            if asyncio.iscoroutine(res):
-                await res
-        return None
+        if "click" in _script:
+            if self._on_click:
+                res = self._on_click()
+                if asyncio.iscoroutine(res):
+                    await res
+            return None
+        return {
+            "containerText": self._text,
+            "innerText": self._text,
+            "aria": self._attrs.get("aria-label", ""),
+            "href": self._attrs.get("href", ""),
+        }
 
 
 class _FakeFeedPanel:

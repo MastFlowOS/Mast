@@ -424,7 +424,7 @@ export async function ensureEnriched(businessId: string, options?: { requiredCha
     task.status === "running" &&
     (!task.last_heartbeat_at || Date.now() - new Date(task.last_heartbeat_at).getTime() > 45000);
 
-  const claimFilter = isStaleRunning ? ["queued", "running"] : ["queued"];
+  const claimFilter: Array<"queued" | "running"> = isStaleRunning ? ["queued", "running"] : ["queued"];
 
   const { data: claimed } = await supabaseAdmin.from("business_processing_tasks")
     .update({ status: "running", attempts: (task.attempts ?? 0) + 1, started_at: new Date().toISOString(), last_heartbeat_at: new Date().toISOString(), error: null })

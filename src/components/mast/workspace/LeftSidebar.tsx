@@ -41,6 +41,7 @@ import {
   resolveContactVerificationBadge,
 } from "@/lib/trustPanel";
 import { nicheImage } from "@/components/mast/discover/nicheImages";
+import { getBusinessLogoUrl } from "@/lib/businessLogo";
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -149,6 +150,46 @@ export function normalizeReason(raw: unknown, index: number): NormalizedReason {
     value: 0,
     impact: 0,
   };
+}
+
+function BusinessProfileAvatar({ lead }: { lead: Lead }) {
+  const logoUrl = useMemo(() => getBusinessLogoUrl(lead.website), [lead.website]);
+  const fallbackStockImage = useMemo(() => nicheImage(lead.niche || ""), [lead.niche]);
+  const [stage, setStage] = useState<"logo" | "stock" | "initials">(logoUrl ? "logo" : "stock");
+
+  useEffect(() => {
+    setStage(logoUrl ? "logo" : "stock");
+  }, [lead.id, logoUrl]);
+
+  if (stage === "initials" || (!logoUrl && !fallbackStockImage)) {
+    return (
+      <div className="size-full grid place-items-center text-sm font-bold text-brand bg-brand/10">
+        {lead.businessName.slice(0, 2).toUpperCase()}
+      </div>
+    );
+  }
+
+  if (stage === "logo" && logoUrl) {
+    return (
+      <div className="size-full flex items-center justify-center p-2.5 bg-white/[0.04]">
+        <img
+          src={logoUrl}
+          alt={lead.businessName}
+          className="size-full object-contain filter drop-shadow-xs"
+          onError={() => setStage(fallbackStockImage ? "stock" : "initials")}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={fallbackStockImage}
+      alt={lead.businessName}
+      className="size-full object-cover"
+      onError={() => setStage("initials")}
+    />
+  );
 }
 
 export function LeftSidebar({
@@ -274,7 +315,6 @@ export function LeftSidebar({
     : 0;
   const nicheLabel = leadNicheLabel(lead.niche);
   const ig = normalizeInstagram(lead.instagramHandle);
-  const businessImageUrl = nicheImage(lead.niche || "");
 
   // Real Opportunity Explanation read
   const { data: explanation } = useOpportunityExplanation(lead.id, Boolean(lead.businessId));
@@ -405,19 +445,9 @@ export function LeftSidebar({
       {/* ─── 1. LEAD PROFILE CARD ─── */}
       <div className="rounded-2xl border border-border/80 bg-card/40 p-4 space-y-3.5 shadow-xs">
         <div className="flex items-start gap-3">
-          {/* Business Image thumbnail */}
-          <div className="size-16 rounded-xl overflow-hidden bg-muted/40 border border-border/60 shrink-0">
-            <img
-              src={businessImageUrl}
-              alt={lead.businessName}
-              className="size-full object-cover"
-              onError={(e) => {
-                e.currentTarget.style.display = "none";
-              }}
-            />
-            <div className="size-full grid place-items-center text-sm font-bold text-brand bg-brand/10">
-              {lead.businessName.slice(0, 2).toUpperCase()}
-            </div>
+          {/* Business Image thumbnail / Logo */}
+          <div className="size-16 rounded-xl overflow-hidden bg-muted/40 border border-border/60 shrink-0 flex items-center justify-center">
+            <BusinessProfileAvatar lead={lead} />
           </div>
 
           {/* Business Name, Category, Location, Star */}

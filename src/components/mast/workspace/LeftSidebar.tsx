@@ -153,7 +153,7 @@ export function normalizeReason(raw: unknown, index: number): NormalizedReason {
 }
 
 function BusinessProfileAvatar({ lead }: { lead: Lead }) {
-  const logoUrl = useMemo(() => getBusinessLogoUrl(lead.website), [lead.website]);
+  const logoUrl = useMemo(() => getBusinessLogoUrl(lead.website, 256), [lead.website]);
   const fallbackStockImage = useMemo(() => nicheImage(lead.niche || ""), [lead.niche]);
   const [stage, setStage] = useState<"logo" | "stock" | "initials">(logoUrl ? "logo" : "stock");
 
@@ -163,26 +163,32 @@ function BusinessProfileAvatar({ lead }: { lead: Lead }) {
 
   if (stage === "initials" || (!logoUrl && !fallbackStockImage)) {
     return (
-      <div className="size-full grid place-items-center text-sm font-bold text-brand bg-brand/10">
+      <div className="size-14 rounded-xl grid place-items-center text-sm font-bold text-brand bg-brand/10 shrink-0">
         {lead.businessName.slice(0, 2).toUpperCase()}
       </div>
     );
   }
 
-  const currentSrc = stage === "logo" && logoUrl ? logoUrl : fallbackStockImage;
+  if (stage === "logo" && logoUrl) {
+    return (
+      <img
+        src={logoUrl}
+        alt={lead.businessName}
+        className="size-14 rounded-xl object-contain shrink-0"
+        onError={() => {
+          if (fallbackStockImage) setStage("stock");
+          else setStage("initials");
+        }}
+      />
+    );
+  }
 
   return (
     <img
-      src={currentSrc}
+      src={fallbackStockImage}
       alt={lead.businessName}
-      className="size-full object-cover"
-      onError={() => {
-        if (stage === "logo" && fallbackStockImage) {
-          setStage("stock");
-        } else {
-          setStage("initials");
-        }
-      }}
+      className="size-14 rounded-xl object-cover shrink-0"
+      onError={() => setStage("initials")}
     />
   );
 }
@@ -440,10 +446,8 @@ export function LeftSidebar({
       {/* ─── 1. LEAD PROFILE CARD ─── */}
       <div className="rounded-2xl border border-border/80 bg-card/40 p-4 space-y-3.5 shadow-xs">
         <div className="flex items-start gap-3">
-          {/* Business Image thumbnail / Logo */}
-          <div className="size-16 rounded-xl overflow-hidden bg-muted/40 border border-border/60 shrink-0 flex items-center justify-center">
-            <BusinessProfileAvatar lead={lead} />
-          </div>
+          {/* Business Logo / Profile Avatar */}
+          <BusinessProfileAvatar lead={lead} />
 
           {/* Business Name, Category, Location, Star */}
           <div className="min-w-0 flex-1">

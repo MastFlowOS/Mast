@@ -4,17 +4,17 @@ import { getBusinessLogoUrl } from "../businessLogo";
 describe("getBusinessLogoUrl", () => {
   it("generates a high-res Google Favicon URL for standard https domains", () => {
     const url = getBusinessLogoUrl("https://socochicago.com");
-    expect(url).toBe("https://www.google.com/s2/favicons?domain=socochicago.com&sz=128");
+    expect(url).toBe("https://www.google.com/s2/favicons?domain=socochicago.com&sz=256");
   });
 
   it("handles domains with www prefix by stripping www", () => {
     const url = getBusinessLogoUrl("https://www.papertigercafe.com");
-    expect(url).toBe("https://www.google.com/s2/favicons?domain=papertigercafe.com&sz=128");
+    expect(url).toBe("https://www.google.com/s2/favicons?domain=papertigercafe.com&sz=256");
   });
 
   it("handles URLs without protocol", () => {
     const url = getBusinessLogoUrl("colectivo.com/pages/lincoln-park");
-    expect(url).toBe("https://www.google.com/s2/favicons?domain=colectivo.com&sz=128");
+    expect(url).toBe("https://www.google.com/s2/favicons?domain=colectivo.com&sz=256");
   });
 
   it("customizes icon size when specified", () => {

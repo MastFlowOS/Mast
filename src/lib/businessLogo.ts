@@ -3,9 +3,9 @@
  * Google's global Favicon / Brand CDN.
  * 
  * Works with zero backend latency, zero external API keys, and has 99.9% uptime.
- * Size 128px provides crisp high-DPI rendering for avatars up to 64x64px.
+ * Size 256px provides crisp ultra-high-DPI rendering for avatars.
  */
-export function getBusinessLogoUrl(websiteUrl?: string | null, size: number = 128): string | null {
+export function getBusinessLogoUrl(websiteUrl?: string | null, size: number = 256): string | null {
   if (!websiteUrl || typeof websiteUrl !== "string") return null;
   const clean = websiteUrl.trim();
   if (!clean) return null;

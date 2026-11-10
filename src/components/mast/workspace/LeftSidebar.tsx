@@ -169,25 +169,20 @@ function BusinessProfileAvatar({ lead }: { lead: Lead }) {
     );
   }
 
-  if (stage === "logo" && logoUrl) {
-    return (
-      <div className="size-full flex items-center justify-center p-2.5 bg-white/[0.04]">
-        <img
-          src={logoUrl}
-          alt={lead.businessName}
-          className="size-full object-contain filter drop-shadow-xs"
-          onError={() => setStage(fallbackStockImage ? "stock" : "initials")}
-        />
-      </div>
-    );
-  }
+  const currentSrc = stage === "logo" && logoUrl ? logoUrl : fallbackStockImage;
 
   return (
     <img
-      src={fallbackStockImage}
+      src={currentSrc}
       alt={lead.businessName}
       className="size-full object-cover"
-      onError={() => setStage("initials")}
+      onError={() => {
+        if (stage === "logo" && fallbackStockImage) {
+          setStage("stock");
+        } else {
+          setStage("initials");
+        }
+      }}
     />
   );
 }

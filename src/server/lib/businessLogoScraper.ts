@@ -47,8 +47,20 @@ export function extractLogoFromHtml(html: string, baseUrl: string): string | nul
     return null;
   }
 
-  function cleanAndResolve(rawUrl: string): string {
+  function extractImgSrc(imgTag: string): string | null {
+    const dataSrc = imgTag.match(/\bdata-src=["']([^"']+)["']/i);
+    if (dataSrc && dataSrc[1] && !dataSrc[1].startsWith("data:")) return dataSrc[1];
+    const dataOrig = imgTag.match(/\bdata-original=["']([^"']+)["']/i);
+    if (dataOrig && dataOrig[1] && !dataOrig[1].startsWith("data:")) return dataOrig[1];
+    const src = imgTag.match(/\bsrc=["']([^"']+)["']/i);
+    if (src && src[1] && !src[1].startsWith("data:")) return src[1];
+    return null;
+  }
+
+  function cleanAndResolve(rawUrl: string): string | null {
     let resolved = rawUrl.trim();
+    if (!resolved || resolved.startsWith("data:")) return null;
+
     if (resolved.startsWith("//")) {
       resolved = `${base.protocol}${resolved}`;
     } else {
@@ -83,58 +95,90 @@ export function extractLogoFromHtml(html: string, baseUrl: string): string | nul
   const headerMatch = html.match(/<header\b[^>]*>([\s\S]*?)<\/header>/i);
   if (headerMatch) {
     const headerHtml = headerMatch[1];
-    const imgMatches = Array.from(headerHtml.matchAll(/<img\b[^>]+src=["']([^"']+)["'][^>]*>/gi));
+    const imgMatches = Array.from(headerHtml.matchAll(/<img\b[^>]*>/gi));
     for (const match of imgMatches) {
       const fullImgTag = match[0];
-      const src = match[1];
-      if (/logo|brand/i.test(fullImgTag) || /logo|brand/i.test(src)) {
-        return cleanAndResolve(src);
+      const src = extractImgSrc(fullImgTag);
+      if (src && (/logo|brand/i.test(fullImgTag) || /logo|brand/i.test(src))) {
+        const resolved = cleanAndResolve(src);
+        if (resolved) return resolved;
       }
     }
 
     const homeLinkImg = headerHtml.match(
-      /<a\b[^>]+href=["'](?:\/|https?:\/\/[^"']*)["'][^>]*>\s*<img\b[^>]+src=["']([^"']+)["']/i,
+      /<a\b[^>]+href=["'](?:\/|https?:\/\/[^"']*)["'][^>]*>\s*<img\b[^>]*>/i,
     );
-    if (homeLinkImg && homeLinkImg[1]) {
-      return cleanAndResolve(homeLinkImg[1]);
+    if (homeLinkImg) {
+      const src = extractImgSrc(homeLinkImg[0]);
+      if (src) {
+        const resolved = cleanAndResolve(src);
+        if (resolved) return resolved;
+      }
     }
   }
 
   // 2. Look for any <img> with class, id, or alt containing "logo" or "brand"
   const logoImgMatches = Array.from(
-    html.matchAll(/<img\b[^>]*\b(?:class|id|alt)=["'][^"']*\b(?:logo|brand)\b[^"']*["'][^>]*\bsrc=["']([^"']+)["']/gi),
+    html.matchAll(/<img\b[^>]*\b(?:class|id|alt)=["'][^"']*\b(?:logo|brand)\b[^"']*["'][^>]*>/gi),
   );
-  if (logoImgMatches.length > 0 && logoImgMatches[0][1]) {
-    return cleanAndResolve(logoImgMatches[0][1]);
+  for (const match of logoImgMatches) {
+    const src = extractImgSrc(match[0]);
+    if (src) {
+      const resolved = cleanAndResolve(src);
+      if (resolved) return resolved;
+    }
   }
 
-  const logoImgMatches2 = Array.from(
-    html.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*\b(?:class|id|alt)=["'][^"']*\b(?:logo|brand)\b[^"']*["']/gi),
+  // 3. High-resolution <link rel="icon" sizes="192x192"...>
+  const largeIcons = Array.from(
+    html.matchAll(/<link\b[^>]+rel=["'](?:shortcut )?icon["'][^>]*>/gi),
   );
-  if (logoImgMatches2.length > 0 && logoImgMatches2[0][1]) {
-    return cleanAndResolve(logoImgMatches2[0][1]);
+  for (const m of largeIcons) {
+    const tag = m[0];
+    const sizesMatch = tag.match(/sizes=["'](\d+)x\d+["']/i);
+    const size = sizesMatch ? parseInt(sizesMatch[1], 10) : 0;
+    if (size >= 96) {
+      const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
+      if (hrefMatch && hrefMatch[1]) {
+        const resolved = cleanAndResolve(hrefMatch[1]);
+        if (resolved) return resolved;
+      }
+    }
   }
 
-  // 3. Apple touch icon (almost universally 180x180 or 512x512 square high-DPI logo)
+  // 4. Apple touch icon (almost universally 180x180 or 512x512 square high-DPI logo)
   const appleTouchMatch =
     html.match(/<link\b[^>]+rel=["']apple-touch-icon(?:-precomposed)?["'][^>]+href=["']([^"']+)["']/i) ||
     html.match(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["']apple-touch-icon(?:-precomposed)?["']/i);
   if (appleTouchMatch && appleTouchMatch[1]) {
-    return cleanAndResolve(appleTouchMatch[1]);
+    const resolved = cleanAndResolve(appleTouchMatch[1]);
+    if (resolved) return resolved;
   }
 
-  // 4. Schema.org JSON-LD Organization logo
+  // 5. Schema.org JSON-LD Organization logo
   const jsonLdMatches = Array.from(html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi));
   for (const jsonLd of jsonLdMatches) {
     try {
       const parsed = JSON.parse(jsonLd[1]);
       if (parsed && typeof parsed === "object") {
-        if (typeof parsed.logo === "string") return cleanAndResolve(parsed.logo);
-        if (parsed.logo?.url && typeof parsed.logo.url === "string") return cleanAndResolve(parsed.logo.url);
+        if (typeof parsed.logo === "string") {
+          const res = cleanAndResolve(parsed.logo);
+          if (res) return res;
+        }
+        if (parsed.logo?.url && typeof parsed.logo.url === "string") {
+          const res = cleanAndResolve(parsed.logo.url);
+          if (res) return res;
+        }
         if (Array.isArray(parsed["@graph"])) {
           for (const item of parsed["@graph"]) {
-            if (typeof item?.logo === "string") return cleanAndResolve(item.logo);
-            if (item?.logo?.url && typeof item.logo.url === "string") return cleanAndResolve(item.logo.url);
+            if (typeof item?.logo === "string") {
+              const res = cleanAndResolve(item.logo);
+              if (res) return res;
+            }
+            if (item?.logo?.url && typeof item.logo.url === "string") {
+              const res = cleanAndResolve(item.logo.url);
+              if (res) return res;
+            }
           }
         }
       }
@@ -143,12 +187,13 @@ export function extractLogoFromHtml(html: string, baseUrl: string): string | nul
     }
   }
 
-  // 5. OpenGraph image (og:image) - high-res brand banner / logo
+  // 6. OpenGraph image (og:image) - high-res brand banner / logo
   const ogMatch =
     html.match(/<meta\b[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
     html.match(/<meta\b[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
   if (ogMatch && ogMatch[1]) {
-    return cleanAndResolve(ogMatch[1]);
+    const resolved = cleanAndResolve(ogMatch[1]);
+    if (resolved) return resolved;
   }
 
   return null;

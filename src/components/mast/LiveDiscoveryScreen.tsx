@@ -25,11 +25,11 @@ import type { DiscoveryMode } from "@/config/plans";
  * Pure presentation of Task 2's DiscoveryLiveState (via useLiveDiscoveryState)
  * plus the active Search Brief read from the Discover request:
  *   - Left column: Scalable Scout containers (starting at 0, appearing only when
- *     each scout is used, scaling from 1 to 10+ scouts) with worker icons, live
- *     status pills, timestamps, and a single-line live feed.
+ *     each scout is used, numbered sequentially 1..N in order of appearance) with
+ *     worker icons, live status pills, timestamps, and a single-line live feed.
  *   - Center column: "Scanning the web" heading, 3D isometric business-location
  *     map asset with glowing storefront pins, and underneath it the ocean-shaped
- *     target journey with the MAST raft sailing toward the destination island.
+ *     target journey asset with the 3D MAST raft sailing toward the island.
  *   - Right column: Compact Delivered and Rejected counters, followed by the
  *     compact Search Brief (Country, Niche, Channels, Discovery Method) and
  *     cancellation control.
@@ -102,7 +102,7 @@ function headerCopy(state: DiscoveryLiveState | null): {
 /**
  * Extracts the list of scouts that have actually been used/spawned.
  * Starts at 0 (empty array) when no scouts have started working yet, and scales
- * dynamically (1..N) as scouts emit events.
+ * dynamically as scouts emit events.
  */
 function selectUsedScouts(state: DiscoveryLiveState | null): ScoutLiveState[] {
   if (!state) return [];
@@ -151,15 +151,18 @@ function ScoutWorkerIcon({ className }: { className?: string }) {
 
 /**
  * Compact single-line live-feed Scout container.
- * No middle progress bar and no multi-line history footer — displays the worker
- * icon, Scout (N) header + Live pill, and the single-line live feed sentence + timestamp.
+ * Uses `displayIndex` (1..N) so that when 1 scout is active it is always labeled
+ * `Scout (1)`, when 2 scouts are active they are labeled `Scout (1)` and `Scout (2)`,
+ * etc., regardless of which backend worker offset started first.
  */
 function ScoutCard({
   scout,
+  displayIndex,
   highlighted,
   timestamp,
 }: {
   scout: ScoutLiveState;
+  displayIndex: number;
   highlighted: boolean;
   timestamp: string;
 }) {
@@ -169,7 +172,8 @@ function ScoutCard({
 
   return (
     <div
-      data-testid={`scout-card-${scout.scoutId}`}
+      data-testid={`scout-card-${displayIndex}`}
+      data-raw-scout-id={scout.scoutId}
       className={cn(
         "relative rounded-xl border px-3 py-2.5 transition-all duration-300",
         highlighted
@@ -194,7 +198,7 @@ function ScoutCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[13.5px] font-bold leading-tight tracking-tight text-white">
-              Scout ({scout.scoutId})
+              Scout ({displayIndex})
             </span>
 
             {/* Live Status Pill */}
@@ -225,7 +229,7 @@ function ScoutCard({
 
           {/* Single-Line Live Feed + Timestamp */}
           <div
-            data-testid={`scout-feed-${scout.scoutId}`}
+            data-testid={`scout-feed-${displayIndex}`}
             className="mt-1 flex items-baseline justify-between gap-2"
           >
             <span
@@ -260,23 +264,23 @@ function ScoutCard({
 }
 
 /**
- * Center 3D Isometric Business-Location Map using the exact reference asset
+ * Center 3D Isometric Business-Location Map using the reference asset
  * (`/images/discover-isometric-map.png`) with the storefront icon inside the
- * center hero pin, scaled to match the reference layout.
+ * center hero pin, scaled generously to anchor the middle workspace.
  */
-function IsometricDiscoveryMap({ activeAreaLabel }: { activeAreaLabel?: string }) {
+function IsometricDiscoveryMap() {
   return (
     <div
       data-testid="discovery-isometric-map"
-      className="relative mx-auto -mt-1 -mb-3 w-full max-w-[540px] select-none xl:max-w-[575px]"
+      className="relative mx-auto -mt-3 -mb-7 w-full max-w-[650px] select-none xl:max-w-[705px]"
     >
       {/* Ambient radial glow behind the 3D map */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-10 inset-y-6 -z-10 rounded-full opacity-75 blur-3xl"
+        className="pointer-events-none absolute inset-x-8 inset-y-6 -z-10 rounded-full opacity-80 blur-3xl"
         style={{
           background:
-            "radial-gradient(ellipse at 52% 52%, rgba(37, 99, 235, 0.42), rgba(14, 165, 233, 0.16) 50%, transparent 75%)",
+            "radial-gradient(ellipse at 52% 52%, rgba(37, 99, 235, 0.45), rgba(14, 165, 233, 0.18) 52%, transparent 75%)",
         }}
       />
 
@@ -284,7 +288,7 @@ function IsometricDiscoveryMap({ activeAreaLabel }: { activeAreaLabel?: string }
         <img
           src="/images/discover-isometric-map.png"
           alt="3D isometric business location discovery map"
-          className="block h-auto w-full drop-shadow-[0_22px_36px_rgba(0,0,0,0.75)]"
+          className="block h-auto w-full drop-shadow-[0_24px_40px_rgba(0,0,0,0.8)]"
           draggable={false}
         />
 
@@ -314,20 +318,14 @@ function IsometricDiscoveryMap({ activeAreaLabel }: { activeAreaLabel?: string }
           </g>
         </svg>
       </div>
-
-      {activeAreaLabel && (
-        <div className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full border border-sky-400/30 bg-[#08152d]/90 px-3 py-0.5 text-[10.5px] font-medium text-sky-200 shadow-lg backdrop-blur-sm">
-          Scanning · <span className="font-semibold text-white">{activeAreaLabel}</span>
-        </div>
-      )}
     </div>
   );
 }
 
 /**
  * Bottom Ocean-Shaped Target Journey Bar:
- * Wave-contoured ocean vessel where the MAST raft travels along the dashed sea
- * lane toward the tropical island as opportunities are delivered.
+ * Built on the uploaded ocean-bar & tropical-island asset (`/images/discover-ocean-bar.png`,
+ * 1024x230) and the 3D wooden raft asset (`/images/discover-mast-raft.png`, 833x640).
  */
 function TargetJourneyBar({
   delivered,
@@ -339,168 +337,97 @@ function TargetJourneyBar({
   progressPercent: number;
 }) {
   const clampedPct = Math.max(0, Math.min(100, progressPercent));
-  // Raft travels smoothly along the wave route from x=408 (0%) to x=655 (100%)
-  const raftX = 408 + (clampedPct / 100) * 247;
-  const raftY = 104 + Math.sin((clampedPct / 100) * Math.PI * 2) * 3.5;
-
-  // Wave-shaped outer container contour matching the reference artwork
-  const oceanWaveShape =
-    "M 84 36 " +
-    "C 165 36, 225 56, 305 52 " +
-    "C 365 49, 395 26, 450 28 " +
-    "C 505 30, 535 58, 595 54 " +
-    "C 655 50, 695 10, 775 10 " +
-    "C 865 10, 944 42, 944 92 " +
-    "C 944 132, 908 150, 856 150 " +
-    "L 84 150 " +
-    "C 38 150, 14 126, 14 93 " +
-    "C 14 60, 38 36, 84 36 Z";
+  // Raft travels smoothly along the sea lane from x=462 (0%) to x=696 (100%)
+  const raftX = 462 + (clampedPct / 100) * 234;
+  const raftY = 122 + Math.sin((clampedPct / 100) * Math.PI * 2) * 3;
 
   return (
     <div
       data-testid="discovery-target-journey"
-      className="relative mx-auto w-full max-w-[820px] select-none xl:max-w-[860px]"
+      className="relative mx-auto w-full max-w-[880px] select-none xl:max-w-[930px]"
     >
       {/* Ambient ocean bottom glow */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-10 -bottom-1 top-3 -z-10 rounded-full opacity-70 blur-2xl"
+        className="pointer-events-none absolute inset-x-10 bottom-1 top-6 -z-10 rounded-full opacity-75 blur-2xl"
         style={{
           background:
-            "radial-gradient(ellipse at 55% 65%, rgba(14, 165, 233, 0.32), rgba(37, 99, 235, 0.2) 55%, transparent 80%)",
+            "radial-gradient(ellipse at 55% 65%, rgba(14, 165, 233, 0.34), rgba(37, 99, 235, 0.22) 55%, transparent 80%)",
         }}
       />
 
       <svg
-        viewBox="0 0 960 156"
-        className="h-auto w-full overflow-visible drop-shadow-[0_14px_28px_rgba(0,0,0,0.75)]"
+        viewBox="0 0 1024 230"
+        className="h-auto w-full overflow-visible drop-shadow-[0_18px_34px_rgba(0,0,0,0.8)]"
         role="img"
         aria-label={`Target progress: ${delivered} of ${target || 0} opportunities`}
       >
-        <defs>
-          <clipPath id="ocean-wave-clip">
-            <path d={oceanWaveShape} />
-          </clipPath>
-
-          <linearGradient id="ocean-bg-grad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#071329" />
-            <stop offset="50%" stopColor="#091b38" />
-            <stop offset="100%" stopColor="#071630" />
-          </linearGradient>
-
-          <linearGradient id="ocean-water-swell" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#0c244a" stopOpacity="0.3" />
-            <stop offset="45%" stopColor="#0284c7" stopOpacity="0.38" />
-            <stop offset="80%" stopColor="#0369a1" stopOpacity="0.45" />
-            <stop offset="100%" stopColor="#0c244a" stopOpacity="0.3" />
-          </linearGradient>
-
-          <linearGradient id="ocean-border-grad" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#38bdf8" />
-            <stop offset="35%" stopColor="#60a5fa" />
-            <stop offset="70%" stopColor="#38bdf8" />
-            <stop offset="100%" stopColor="#7dd3fc" />
-          </linearGradient>
-
-          <linearGradient id="raft-sail-grad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#fef3c7" />
-            <stop offset="65%" stopColor="#fde68a" />
-            <stop offset="100%" stopColor="#f59e0b" />
-          </linearGradient>
-
-          <linearGradient id="island-sand-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#fde68a" />
-            <stop offset="55%" stopColor="#f59e0b" />
-            <stop offset="100%" stopColor="#b45309" />
-          </linearGradient>
-
-          <filter id="ocean-rim-glow" x="-10%" y="-20%" width="120%" height="140%">
-            <feGaussianBlur stdDeviation="4" result="blur" />
-            <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-
-        {/* Clipped Interior of the Ocean-Shaped Container */}
-        <g clipPath="url(#ocean-wave-clip)">
-          <path d={oceanWaveShape} fill="url(#ocean-bg-grad)" />
-
-          {/* Deep Ocean Wave Layers along the bottom */}
-          <path
-            d="M 0 118 C 140 102, 260 132, 410 114 C 560 96, 690 128, 830 110 C 900 100, 940 114, 960 118 L 960 160 L 0 160 Z"
-            fill="url(#ocean-water-swell)"
-          />
-          <path
-            d="M 0 132 C 180 118, 320 144, 480 126 C 640 108, 760 138, 960 122 L 960 160 L 0 160 Z"
-            fill="#0ea5e9"
-            opacity="0.16"
-          />
-
-          {/* Subtle water shimmer & foam highlights */}
-          <ellipse cx="425" cy="126" rx="75" ry="12" fill="#38bdf8" opacity="0.18" />
-          <ellipse cx="775" cy="112" rx="85" ry="18" fill="#38bdf8" opacity="0.24" />
-        </g>
-
-        {/* Glowing Wave-Shaped Outer Border */}
-        <path
-          d={oceanWaveShape}
-          fill="none"
-          stroke="url(#ocean-border-grad)"
-          strokeWidth="3"
-          filter="url(#ocean-rim-glow)"
-          opacity="0.85"
-        />
-        <path
-          d={oceanWaveShape}
-          fill="none"
-          stroke="#bae6fd"
-          strokeWidth="1.1"
-          opacity="0.9"
+        {/* 1. Uploaded Wave-Shaped Ocean Bar + Palm Tree Island + Counter Pill Asset */}
+        <image
+          href="/images/discover-ocean-bar.png"
+          x="0"
+          y="0"
+          width="1024"
+          height="230"
+          preserveAspectRatio="xMidYMid meet"
         />
 
-        {/* 1. LEFT: Target Bullseye Badge & "Target / N Opportunities" */}
-        <g transform="translate(76, 94)">
+        {/* 2. LEFT: Target Bullseye Badge & "Target / N Opportunities" */}
+        <g transform="translate(104, 136)">
           <circle
             cx="0"
             cy="0"
-            r="31"
-            fill="#0b1d3a"
+            r="35"
+            fill="#071835"
             stroke="rgba(56, 189, 248, 0.35)"
-            strokeWidth="1.5"
+            strokeWidth="1.6"
           />
           <circle
             cx="0"
             cy="0"
-            r="23"
-            fill="#0e274e"
-            stroke="rgba(56, 189, 248, 0.2)"
-            strokeWidth="1"
+            r="26"
+            fill="#0c254d"
+            stroke="rgba(56, 189, 248, 0.22)"
+            strokeWidth="1.2"
           />
           {/* Target rings */}
-          <circle cx="-1" cy="1" r="12" fill="none" stroke="#38bdf8" strokeWidth="2.2" />
-          <circle cx="-1" cy="1" r="6" fill="none" stroke="#38bdf8" strokeWidth="2" />
-          <circle cx="-1" cy="1" r="2.2" fill="#7dd3fc" />
+          <circle cx="-1" cy="1" r="13.5" fill="none" stroke="#38bdf8" strokeWidth="2.4" />
+          <circle cx="-1" cy="1" r="7" fill="none" stroke="#38bdf8" strokeWidth="2.1" />
+          <circle cx="-1" cy="1" r="2.5" fill="#7dd3fc" />
           {/* Bullseye arrow */}
-          <line x1="2" y1="-2" x2="12" y2="-12" stroke="#7dd3fc" strokeWidth="2.2" strokeLinecap="round" />
-          <polyline points="6,-12 12,-12 12,-6" fill="none" stroke="#7dd3fc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          <line
+            x1="2.5"
+            y1="-2.5"
+            x2="13.5"
+            y2="-13.5"
+            stroke="#7dd3fc"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+          <polyline
+            points="7,-13.5 13.5,-13.5 13.5,-7"
+            fill="none"
+            stroke="#7dd3fc"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
         </g>
 
         <text
-          x="124"
-          y="85"
+          x="156"
+          y="125"
           fill="#cbd5e1"
-          fontSize="14.5"
+          fontSize="16"
           fontWeight="500"
           fontFamily="inherit"
         >
           Target
         </text>
         <text
-          x="124"
-          y="111"
-          fontSize="21"
+          x="156"
+          y="154"
+          fontSize="24"
           fontWeight="800"
           fontFamily="inherit"
         >
@@ -508,153 +435,80 @@ function TargetJourneyBar({
           <tspan fill="#ffffff" fontWeight="700"> Opportunities</tspan>
         </text>
 
-        {/* 2. CENTER: Dashed Sea Route + Waypoint Rings + MAST Raft */}
+        {/* 3. CENTER: Dashed Sea Route + Waypoint Rings */}
         <path
-          d="M 408 106 C 468 96, 515 116, 565 106 C 615 96, 655 112, 706 102"
+          d="M 462 155 C 520 146, 558 164, 608 156 C 654 148, 694 160, 746 150"
           fill="none"
-          stroke="rgba(226, 232, 240, 0.75)"
-          strokeWidth="2.4"
-          strokeDasharray="6 7"
+          stroke="rgba(226, 232, 240, 0.8)"
+          strokeWidth="2.6"
+          strokeDasharray="7 8"
           strokeLinecap="round"
         />
 
         {/* Completed Sea Trail behind the raft */}
         {clampedPct > 0 && (
           <line
-            x1="395"
-            y1="106"
+            x1="452"
+            y1="155"
             x2={raftX}
-            y2={raftY + 4}
+            y2={raftY + 32}
             stroke="#38bdf8"
-            strokeWidth="3"
+            strokeWidth="3.2"
             strokeLinecap="round"
           />
         )}
 
-        {/* Waypoint Node 1 (~52% along route) */}
-        <g transform="translate(546, 108)">
+        {/* Waypoint Node 1 (~50% along route) */}
+        <g transform="translate(592, 158)">
           <circle
             cx="0"
             cy="0"
-            r="8.5"
-            fill="#081936"
-            stroke={clampedPct >= 50 ? "#38bdf8" : "#e2e8f0"}
-            strokeWidth="2.4"
+            r="9.5"
+            fill="#071733"
+            stroke={clampedPct >= 50 ? "#38bdf8" : "#f1f5f9"}
+            strokeWidth="2.6"
           />
           <circle
             cx="0"
             cy="0"
-            r="3"
+            r="3.5"
             fill={clampedPct >= 50 ? "#38bdf8" : "transparent"}
           />
         </g>
 
-        {/* Waypoint Node 2 (~82% along route) */}
-        <g transform="translate(642, 104)">
+        {/* Waypoint Node 2 (~80% along route) */}
+        <g transform="translate(684, 154)">
           <circle
             cx="0"
             cy="0"
-            r="8.5"
-            fill="#081936"
-            stroke={clampedPct >= 80 ? "#38bdf8" : "#e2e8f0"}
-            strokeWidth="2.4"
+            r="9.5"
+            fill="#071733"
+            stroke={clampedPct >= 80 ? "#38bdf8" : "#f1f5f9"}
+            strokeWidth="2.6"
           />
           <circle
             cx="0"
             cy="0"
-            r="3"
+            r="3.5"
             fill={clampedPct >= 80 ? "#38bdf8" : "transparent"}
           />
         </g>
 
-        {/* 3. RIGHT: Tropical Destination Island + Palm Tree + Counter Pill */}
-        <g transform="translate(772, 86)">
-          {/* Shallow turquoise water rings around island */}
-          <ellipse cx="0" cy="20" rx="74" ry="16" fill="#0284c7" opacity="0.35" />
-          <ellipse cx="0" cy="18" rx="62" ry="12" fill="#38bdf8" opacity="0.35" />
+        {/* 4. RIGHT: Delivered / Target Counter Text inside the Island's Glowing Pill */}
+        <text
+          x="844"
+          y="172"
+          textAnchor="middle"
+          fill="#ffffff"
+          fontSize="20.5"
+          fontWeight="800"
+          fontFamily="inherit"
+          style={{ fontVariantNumeric: "tabular-nums" }}
+        >
+          {delivered} / {target || "—"}
+        </text>
 
-          {/* Sandy Island Mound */}
-          <path
-            d="M -56 16 C -48 -4, -22 -12, 4 -12 C 30 -12, 50 -2, 58 16 C 40 22, -40 22, -56 16 Z"
-            fill="url(#island-sand-grad)"
-          />
-
-          {/* Island Rocks & Tropical Foliage */}
-          <ellipse cx="-32" cy="8" rx="10" ry="6" fill="#64748b" />
-          <ellipse cx="-24" cy="10" rx="7" ry="4.5" fill="#94a3b8" />
-          <ellipse cx="28" cy="9" rx="9" ry="5.5" fill="#64748b" />
-          <path d="M -18 4 Q -10 -6 0 3 Q 10 -5 18 4 Z" fill="#15803d" />
-          <path d="M -10 5 Q 0 -4 12 5 Z" fill="#22c55e" />
-
-          {/* Curved Palm Tree Trunk */}
-          <path
-            d="M -2 2 Q 6 -24 2 -48"
-            fill="none"
-            stroke="#78350f"
-            strokeWidth="6.5"
-            strokeLinecap="round"
-          />
-          <path
-            d="M -1 2 Q 7 -24 3 -48"
-            fill="none"
-            stroke="#b45309"
-            strokeWidth="3"
-            strokeLinecap="round"
-          />
-
-          {/* Coconuts */}
-          <circle cx="0" cy="-46" r="3.2" fill="#78350f" />
-          <circle cx="5" cy="-45" r="3.2" fill="#92400e" />
-
-          {/* Lush Palm Fronds */}
-          <path
-            d="M 2 -49 C -14 -58, -32 -50, -38 -36 C -24 -44, -10 -44, 2 -49 Z"
-            fill="#22c55e"
-          />
-          <path
-            d="M 2 -49 C -8 -66, -24 -68, -34 -58 C -20 -58, -8 -54, 2 -49 Z"
-            fill="#4ade80"
-          />
-          <path
-            d="M 2 -49 C 16 -66, 34 -64, 42 -52 C 28 -56, 14 -54, 2 -49 Z"
-            fill="#4ade80"
-          />
-          <path
-            d="M 2 -49 C 20 -56, 38 -44, 44 -30 C 30 -40, 16 -42, 2 -49 Z"
-            fill="#16a34a"
-          />
-          <path
-            d="M 2 -49 C 0 -68, 12 -74, 22 -68 C 12 -64, 6 -56, 2 -49 Z"
-            fill="#86efac"
-          />
-
-          {/* Delivered / Target Pill Badge on the front of the island */}
-          <g transform="translate(0, 26)">
-            <rect
-              x="-52"
-              y="-18"
-              width="104"
-              height="36"
-              rx="18"
-              fill="#08162f"
-              stroke="#38bdf8"
-              strokeWidth="1.6"
-            />
-            <text
-              x="0"
-              y="6"
-              textAnchor="middle"
-              fill="#ffffff"
-              fontSize="16.5"
-              fontWeight="700"
-              fontFamily="inherit"
-            >
-              {delivered} / {target || "—"}
-            </text>
-          </g>
-        </g>
-
-        {/* 4. THE MAST WOODEN RAFT (Animated position along the sea route) */}
+        {/* 5. THE UPLOADED 3D MAST RAFT ASSET (Animated position along the sea route) */}
         <g
           data-testid="discovery-mast-raft"
           style={{
@@ -662,70 +516,21 @@ function TargetJourneyBar({
             transition: "transform 600ms cubic-bezier(0.22, 1, 0.36, 1)",
           }}
         >
-          {/* Foamy water wake beneath the raft */}
-          <ellipse cx="0" cy="10" rx="46" ry="10" fill="#38bdf8" opacity="0.32" />
-          <path
-            d="M -42 12 Q -22 18 0 13 Q 22 18 42 11"
-            fill="none"
-            stroke="#e0f2fe"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            opacity="0.85"
-          />
-          <path
-            d="M -32 16 Q -10 21 16 16 Q 30 19 38 15"
-            fill="none"
-            stroke="#7dd3fc"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            opacity="0.7"
+          <image
+            href="/images/discover-mast-raft.png"
+            x="-84"
+            y="-78"
+            width="168"
+            height="129"
+            preserveAspectRatio="xMidYMid meet"
           />
 
-          {/* Wooden Raft Logs (3D isometric angle) */}
-          <g transform="translate(0, 4)">
-            {/* Cross-beams */}
-            <rect x="-28" y="-3" width="56" height="5" rx="2.5" fill="#78350f" />
-            {/* 5 lashed cedar logs */}
-            {[-24, -12, 0, 12, 24].map((lx, idx) => (
-              <g key={idx} transform={`translate(${lx}, ${idx % 2 === 0 ? 0 : 1})`}>
-                <rect
-                  x="-6"
-                  y="-6"
-                  width="12"
-                  height="14"
-                  rx="4"
-                  fill="#b45309"
-                  stroke="#78350f"
-                  strokeWidth="1"
-                />
-                <rect x="-4" y="-5" width="5" height="11" rx="2" fill="#d97706" />
-                <circle cx="0" cy="5" r="3.5" fill="#fbbf24" stroke="#92400e" strokeWidth="1" />
-              </g>
-            ))}
-            {/* Rope lashings */}
-            <line x1="-28" y1="1" x2="28" y2="1" stroke="#fde68a" strokeWidth="1.6" strokeDasharray="4 4" />
-          </g>
-
-          {/* Wooden Mast Pole */}
-          <line x1="-2" y1="-2" x2="-2" y2="-62" stroke="#78350f" strokeWidth="4" strokeLinecap="round" />
-          <line x1="-3" y1="-2" x2="-3" y2="-62" stroke="#d97706" strokeWidth="1.5" strokeLinecap="round" />
-          {/* Masthead flag/cap */}
-          <polygon points="-2,-64 8,-60 -2,-56" fill="#f59e0b" />
-
-          {/* Billowing Square Sail with "M" Emblem */}
+          {/* Bold "M" Emblem on the Raft Sail */}
           <path
-            d="M -22 -54 Q 2 -58 22 -48 C 28 -32, 26 -16, 18 -6 Q -2 -10 -20 -8 C -14 -22, -14 -38, -22 -54 Z"
-            fill="url(#raft-sail-grad)"
-            stroke="#d97706"
-            strokeWidth="1.2"
-          />
-
-          {/* Bold "M" Mark on the Sail */}
-          <path
-            d="M -7 -21 L -5 -38 L 2 -27 L 9 -38 L 11 -21"
+            d="M -4 -14 L -2 -33 L 6.5 -21 L 15 -33 L 17 -14"
             fill="none"
             stroke="#1e293b"
-            strokeWidth="3.2"
+            strokeWidth="3.6"
             strokeLinecap="round"
             strokeLinejoin="round"
           />
@@ -746,7 +551,28 @@ export function LiveDiscoveryScreen({
   isCancelling: boolean;
   searchBrief?: DiscoverySearchBrief;
 }) {
-  const scouts = useMemo(() => selectUsedScouts(state), [state]);
+  const rawScouts = useMemo(() => selectUsedScouts(state), [state]);
+
+  // Maintain chronological arrival order so the 1st scout that starts working is
+  // always Scout (1), the 2nd is always Scout (2), etc. — never jumping to Scout (3)
+  // when only 1 scout is active.
+  const arrivalOrderRef = useRef<number[]>([]);
+  const scouts = useMemo(() => {
+    if (rawScouts.length === 0) {
+      arrivalOrderRef.current = [];
+      return [];
+    }
+    const order = arrivalOrderRef.current;
+    for (const s of rawScouts) {
+      if (!order.includes(s.scoutId)) {
+        order.push(s.scoutId);
+      }
+    }
+    const byId = new Map(rawScouts.map((s) => [s.scoutId, s]));
+    return order
+      .map((id) => byId.get(id))
+      .filter((s): s is ScoutLiveState => Boolean(s));
+  }, [rawScouts]);
 
   const delivered = state?.delivered ?? 0;
   const rejected = state?.rejected ?? 0;
@@ -797,8 +623,6 @@ export function LiveDiscoveryScreen({
     scouts.find((s) => s.status === "active")?.scoutId ??
     scouts[0]?.scoutId;
 
-  const activeAreaLabel = scouts.find((s) => s.areaName)?.areaName;
-
   // Search Brief values with clean fallbacks
   const regionText = searchBrief?.region?.trim() || "United States";
   const primaryCountry = regionText.split(",")[0]?.trim() || "United States";
@@ -817,7 +641,7 @@ export function LiveDiscoveryScreen({
   return (
     <div
       data-testid="live-discovery-workspace"
-      className="relative mx-auto w-full max-w-[1440px] overflow-x-clip px-4 pb-3 pt-2.5 sm:px-6 lg:px-7"
+      className="relative mx-auto w-full max-w-[1440px] overflow-x-clip px-4 pb-2 pt-2 sm:px-6 lg:px-7"
     >
       {/* Subtle deep-space background atmosphere */}
       <div
@@ -857,7 +681,7 @@ export function LiveDiscoveryScreen({
                 <ScoutWorkerIcon className="size-4" />
               </div>
               <div className="min-w-0 flex-1">
-                <p className=" truncate text-xs font-medium text-slate-300">
+                <p className="truncate text-xs font-medium text-slate-300">
                   {state?.initialization?.active && state?.initialization?.message
                     ? state.initialization.message
                     : "Waiting to start..."}
@@ -869,13 +693,15 @@ export function LiveDiscoveryScreen({
             </div>
           ) : (
             <div className="max-h-[340px] space-y-2 overflow-y-auto pr-0.5">
-              {scouts.map((scout) => {
+              {scouts.map((scout, index) => {
+                const displayIndex = index + 1;
                 const latestTime =
                   scoutTimestamps[scout.scoutId] ?? formatTimestamp(state?.latestEventAt);
                 return (
                   <ScoutCard
                     key={scout.scoutId}
                     scout={scout}
+                    displayIndex={displayIndex}
                     highlighted={!isTerminal && scout.scoutId === highlightedScoutId}
                     timestamp={latestTime}
                   />
@@ -903,7 +729,7 @@ export function LiveDiscoveryScreen({
           )}
 
           <div className="w-full">
-            <IsometricDiscoveryMap activeAreaLabel={activeAreaLabel} />
+            <IsometricDiscoveryMap />
           </div>
         </section>
 
@@ -1047,7 +873,7 @@ export function LiveDiscoveryScreen({
       </div>
 
       {/* ── BOTTOM TARGET JOURNEY: Ocean Wave + MAST Raft + Destination Island ── */}
-      <div className="-mt-2 lg:-mt-4">
+      <div className="-mt-4 lg:-mt-7">
         <TargetJourneyBar
           delivered={delivered}
           target={target}

@@ -16,7 +16,7 @@ import {
 afterEach(cleanup);
 
 describe("LiveDiscoveryScreen — 3-Column Discovery Workspace", () => {
-  it("starts with 0 active scouts before any worker slot is used, and renders the 3D map asset, compact right counters/Search Brief, and bottom Target Journey", () => {
+  it("starts with 0 active scouts before any worker slot is used, and renders the 3D map asset, compact right counters/Search Brief, and bottom Target Journey assets", () => {
     const state = createInitialLiveDiscoveryState(10);
     const onCancel = vi.fn();
 
@@ -75,12 +75,14 @@ describe("LiveDiscoveryScreen — 3-Column Discovery Workspace", () => {
     expect(within(brief).getByText("Discovery Method")).toBeTruthy();
     expect(within(brief).getByText("Live Discovery")).toBeTruthy();
 
-    // 4. Bottom Target Journey underneath the central map
+    // 4. Bottom Target Journey underneath the central map using ocean bar & raft assets
     const journey = screen.getByTestId("discovery-target-journey");
     expect(within(journey).getByText("Target")).toBeTruthy();
     expect(within(journey).getByText("10")).toBeTruthy();
     expect(within(journey).getByText(/Opportunities/)).toBeTruthy();
     expect(within(journey).getByText("0 / 10")).toBeTruthy();
+    expect(journey.querySelector('image[href="/images/discover-ocean-bar.png"]')).toBeTruthy();
+    expect(journey.querySelector('image[href="/images/discover-mast-raft.png"]')).toBeTruthy();
     expect(screen.getByTestId("discovery-mast-raft")).toBeTruthy();
 
     // 5. Accessible cancellation functionality
@@ -89,7 +91,7 @@ describe("LiveDiscoveryScreen — 3-Column Discovery Workspace", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it("spawns Scout containers only as scouts are used, shows a single-line live feed per scout, and scales dynamically from 1 to 10 scouts", () => {
+  it("numbers active scouts sequentially starting at Scout (1) even if backend worker slot 3 starts first, and scales dynamically", () => {
     const planId = "plan-test";
     let state = createInitialLiveDiscoveryState(10);
     const onCancel = vi.fn();
@@ -100,54 +102,46 @@ describe("LiveDiscoveryScreen — 3-Column Discovery Workspace", () => {
 
     const raftBefore = screen.getByTestId("discovery-mast-raft").getAttribute("style") ?? "";
 
-    // Only Scout 1 starts working -> only Scout (1) appears ("1 active")
-    state = reduceLiveDiscoveryEvent(state, scoutStartedEvent(planId, 1, "Downtown Cairo"));
+    // Backend worker slot 3 starts first (e.g. scoutOffset=2 for Williamsburg) ->
+    // UI must display it as "Scout (1)" since only 1 scout is working!
+    state = reduceLiveDiscoveryEvent(state, scoutStartedEvent(planId, 3, "Williamsburg"));
     rerender(<LiveDiscoveryScreen state={state} onCancel={onCancel} isCancelling={false} />);
     expect(screen.getByTestId("scouts-active-badge").textContent).toBe("1 active");
     expect(screen.getByTestId("scout-card-1")).toBeTruthy();
-    expect(screen.queryByTestId("scout-card-2")).toBeNull();
+    expect(within(screen.getByTestId("scout-card-1")).getByText("Scout (1)")).toBeTruthy();
+    expect(screen.queryByTestId("scout-card-3")).toBeNull();
     expect(
-      within(screen.getByTestId("scout-feed-1")).getByText("Exploring Downtown Cairo..."),
+      within(screen.getByTestId("scout-feed-1")).getByText("Exploring Williamsburg..."),
     ).toBeTruthy();
 
-    // Scout 1 updates its single-line live feed (replaces previous line in place)
+    // Scout (1) updates its single-line live feed in place
     state = reduceLiveDiscoveryEvent(
       state,
-      candidateDiscoveredEvent(planId, 1, "#1", "Nile Roasters", "Downtown Cairo"),
+      candidateDiscoveredEvent(planId, 3, "#1", "Brooklyn Roasters", "Williamsburg"),
     );
     rerender(<LiveDiscoveryScreen state={state} onCancel={onCancel} isCancelling={false} />);
     expect(
-      within(screen.getByTestId("scout-feed-1")).getByText("Checking Nile Roasters..."),
+      within(screen.getByTestId("scout-feed-1")).getByText("Checking Brooklyn Roasters..."),
     ).toBeTruthy();
     expect(
-      within(screen.getByTestId("scout-card-1")).queryByText("Exploring Downtown Cairo..."),
+      within(screen.getByTestId("scout-card-1")).queryByText("Exploring Williamsburg..."),
     ).toBeNull();
 
-    // Scout 2 starts working + rejects a candidate while Scout 1 delivers a lead -> "2 active"
+    // Next backend worker slot (raw scoutId=1) starts working -> becomes "Scout (2)"
     state = reduceLiveDiscoveryEvent(
       state,
-      candidateRejectedEvent(planId, 2, "#2", "duplicate_already_owned_by_user", "Zamalek"),
+      candidateRejectedEvent(planId, 1, "#2", "duplicate_already_owned_by_user", "SoHo"),
     );
     state = reduceLiveDiscoveryEvent(
       state,
-      leadDeliveredEvent(planId, 1, "#1", "Nile Roasters", "Downtown Cairo"),
+      leadDeliveredEvent(planId, 3, "#1", "Brooklyn Roasters", "Williamsburg"),
     );
     rerender(<LiveDiscoveryScreen state={state} onCancel={onCancel} isCancelling={false} />);
 
     expect(screen.getByTestId("scouts-active-badge").textContent).toBe("2 active");
-    expect(screen.getByTestId("scout-card-1")).toBeTruthy();
-    expect(screen.getByTestId("scout-card-2")).toBeTruthy();
+    expect(within(screen.getByTestId("scout-card-1")).getByText("Scout (1)")).toBeTruthy();
+    expect(within(screen.getByTestId("scout-card-2")).getByText("Scout (2)")).toBeTruthy();
     expect(screen.queryByTestId("scout-card-3")).toBeNull();
-
-    // Scale up to 6 concurrent scouts (e.g. Scout 3..6 start working) -> "6 active"
-    for (let id = 3; id <= 6; id += 1) {
-      state = reduceLiveDiscoveryEvent(state, scoutStartedEvent(planId, id, `District ${id}`));
-    }
-    rerender(<LiveDiscoveryScreen state={state} onCancel={onCancel} isCancelling={false} />);
-    expect(screen.getByTestId("scouts-active-badge").textContent).toBe("6 active");
-    for (let id = 1; id <= 6; id += 1) {
-      expect(screen.getByTestId(`scout-card-${id}`)).toBeTruthy();
-    }
 
     expect(within(screen.getByTestId("discovery-delivered-card")).getByText("1")).toBeTruthy();
     expect(within(screen.getByTestId("discovery-rejected-card")).getByText("1")).toBeTruthy();

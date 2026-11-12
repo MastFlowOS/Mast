@@ -2073,6 +2073,7 @@ export interface WatchdogBudgets {
   startupDeadlineMs: number;
   livenessTimeoutMs: number;
   progressTimeoutMs: number;
+  initialSearchDeadlineMs?: number;
   cardAttemptDeadlineMs: number;
   recoveryDeadlineMs: number;
   finalizationDeadlineMs: number;
@@ -2105,6 +2106,7 @@ export function computeWatchdogBudgets(
     startupDeadlineMs: overrides?.startupDeadlineMs ?? 45_000,
     livenessTimeoutMs: overrides?.livenessTimeoutMs ?? 45_000,
     progressTimeoutMs,
+    initialSearchDeadlineMs: overrides?.initialSearchDeadlineMs,
     cardAttemptDeadlineMs,
     recoveryDeadlineMs,
     finalizationDeadlineMs: overrides?.finalizationDeadlineMs ?? 30_000,
@@ -2140,6 +2142,7 @@ export type WatchdogStateMachineOptions = {
   startupDeadlineMs?: number;
   livenessTimeoutMs?: number;
   progressTimeoutMs?: number;
+  initialSearchDeadlineMs?: number;
   cardAttemptDeadlineMs?: number;
   recoveryDeadlineMs?: number;
   finalizationDeadlineMs?: number;
@@ -2162,6 +2165,7 @@ export class WatchdogStateMachine {
   private lastHeartbeatSeq = -1;
   private readonly seenCardAttempts = new Set<string>();
   private readonly processedCardAttempts = new Set<string>();
+  private foundInitialAnchors = false;
   private rebuildCount = 0;
   private activeRebuildAttempt: number | null = null;
   private timedOut = false;
@@ -2170,6 +2174,7 @@ export class WatchdogStateMachine {
   readonly startupDeadlineMs: number;
   readonly livenessTimeoutMs: number;
   readonly progressTimeoutMs: number;
+  readonly initialSearchDeadlineMs: number;
   readonly cardAttemptDeadlineMs: number;
   readonly recoveryDeadlineMs: number;
   readonly finalizationDeadlineMs: number;
@@ -2183,6 +2188,7 @@ export class WatchdogStateMachine {
     this.startupDeadlineMs = options.startupDeadlineMs ?? computed.startupDeadlineMs;
     this.livenessTimeoutMs = options.livenessTimeoutMs ?? computed.livenessTimeoutMs;
     this.progressTimeoutMs = options.progressTimeoutMs ?? computed.progressTimeoutMs;
+    this.initialSearchDeadlineMs = options.initialSearchDeadlineMs ?? computed.initialSearchDeadlineMs ?? this.progressTimeoutMs;
     this.cardAttemptDeadlineMs = options.cardAttemptDeadlineMs ?? computed.cardAttemptDeadlineMs;
     this.recoveryDeadlineMs = options.recoveryDeadlineMs ?? computed.recoveryDeadlineMs;
     this.finalizationDeadlineMs = options.finalizationDeadlineMs ?? computed.finalizationDeadlineMs;
@@ -2264,6 +2270,9 @@ export class WatchdogStateMachine {
   }
 
   onSearchSpaceExpanded(newUniqueIds: number): boolean {
+    if (newUniqueIds > 0) {
+      this.foundInitialAnchors = true;
+    }
     if (newUniqueIds > 0 && this.state === "SCROLLING") {
       this.transitionToScrolling();
       return true;
@@ -2364,9 +2373,19 @@ export class WatchdogStateMachine {
     this.state = "SCROLLING";
     this.activeRebuildAttempt = null;
     this.cancelOperationTimer();
+    const hasAnyProgress =
+      this.seenCardAttempts.size > 0 ||
+      this.processedCardAttempts.size > 0 ||
+      this.foundInitialAnchors;
+    const deadline = hasAnyProgress
+      ? this.progressTimeoutMs
+      : Math.min(this.progressTimeoutMs, this.initialSearchDeadlineMs);
     this.operationTimer = setTimeout(() => {
-      this.fire("DISCOVERY_PROGRESS_TIMEOUT", `scrolling progress timeout (${this.progressTimeoutMs}ms)`);
-    }, this.progressTimeoutMs);
+      const reasonLabel = hasAnyProgress
+        ? `scrolling progress timeout (${deadline}ms)`
+        : `initial search yield deadline (${deadline}ms) exceeded — zero places found`;
+      this.fire("DISCOVERY_PROGRESS_TIMEOUT", reasonLabel);
+    }, deadline);
     this.operationTimer.unref?.();
   }
 
@@ -2773,6 +2792,7 @@ export async function* runEngineQuery(
     startupDeadlineMs: (env as any).SCRAPER_SUBPROCESS_STARTUP_MS ?? 45_000,
     livenessTimeoutMs: 45_000,
     progressTimeoutMs: Math.max(env.SCRAPER_SUBPROCESS_INACTIVITY_MS, 150_000),
+    initialSearchDeadlineMs: 45_000,
     finalizationDeadlineMs: Math.min(env.SCRAPER_SUBPROCESS_INACTIVITY_MS, 30_000),
     maxRebuilds: 2,
     absoluteCeilingMs: resolveAreaAttemptCeilingMs(options.remainingAreaBudgetMs, env.SCRAPER_SUBPROCESS_MAX_MS),

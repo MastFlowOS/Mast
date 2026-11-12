@@ -421,24 +421,27 @@ export function reduceLiveDiscoveryEvent(state: DiscoveryLiveState, event: Disco
     case "area_completed": {
       if (!isPositiveScoutId(scoutId)) return next;
       const outcome = event.areaOutcome;
+      const isExhausted = Boolean(outcome?.exhausted);
       if (outcome?.failed) {
         updateScoutSlot(scoutId, {
-          status: "active",
+          status: isExhausted ? "finished" : "active",
           sentence: AREA_SNAG,
           businessName: undefined,
         });
       } else if (outcome && outcome.accepted === 0) {
         const sentence = outcome.discovered === 0 ? "Quiet street. Moving on..." : "Nothing promising here. Moving on...";
         updateScoutSlot(scoutId, {
-          status: "active",
+          status: isExhausted ? "finished" : "active",
           sentence,
           businessName: undefined,
         });
+      } else if (isExhausted) {
+        updateScoutSlot(scoutId, {
+          status: "finished",
+          sentence: outcome && outcome.accepted > 0 ? OPPORTUNITY_SECURED : FINISHED_SEARCHING,
+          businessName: undefined,
+        });
       }
-      // else: at least one delivery came out of this area — the most
-      // recent lead_delivered sentence already told the real story; leave
-      // the scout's current sentence as-is rather than overwrite good news
-      // with a bookkeeping line.
       return next;
     }
 

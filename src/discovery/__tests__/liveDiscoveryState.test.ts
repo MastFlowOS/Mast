@@ -416,3 +416,21 @@ test("41. candidate_rejected accurately increments granular rejectionReasons cat
   assert.equal(state.rejectionReasons.enrichment_failure, 1);
 });
 
+test("42. area_completed with outcome.exhausted marks the scout finished instead of lingering active", () => {
+  let state = createInitialLiveDiscoveryState(10);
+  const startEvt = areaStartedEvent(PLAN, 2, "Silver Lake");
+  state = reduceLiveDiscoveryEvent(state, startEvt);
+  assert.equal(state.scouts[2].status, "active");
+
+  const completedEvt = areaCompletedEvent(PLAN, 2, "Silver Lake", {
+    discovered: 10,
+    accepted: 2,
+    rejected: 8,
+    duplicates: 0,
+    exhausted: true,
+  });
+  state = reduceLiveDiscoveryEvent(state, completedEvt);
+  assert.equal(state.scouts[2].status, "finished");
+  assert.equal(state.activeScouts?.[2]?.status, "finished");
+});
+

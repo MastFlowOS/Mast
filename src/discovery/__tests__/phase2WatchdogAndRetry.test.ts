@@ -144,6 +144,35 @@ describe("Phase 2: Watchdog and Retry Alignment", () => {
       assert.equal(watchdog.isTimedOut(), false);
       assert.equal(timedOutReason, null);
     });
+
+    test("fires DISCOVERY_PROGRESS_TIMEOUT at initialSearchDeadlineMs when zero places/cards are discovered", (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+      let timedOutReason: string | null = null;
+      let timedOutDetail: string | null = null;
+
+      const watchdog = new WatchdogStateMachine({
+        initialSearchDeadlineMs: 45_000,
+        livenessTimeoutMs: 300_000,
+        onTimeout: (reason, detail) => {
+          timedOutReason = reason;
+          timedOutDetail = detail;
+        },
+      });
+
+      // 1. Service ready -> scrolling
+      dispatchWatchdogProgressEvent(watchdog, { event: "service_ready" });
+      assert.equal(watchdog.getState(), "SCROLLING");
+
+      // 2. Advance clock by 44s: not yet timed out
+      t.mock.timers.tick(44_000);
+      assert.equal(watchdog.isTimedOut(), false);
+
+      // 3. Advance clock past 45s (e.g. +2s to 46s total) with zero cards/anchors found
+      t.mock.timers.tick(2_000);
+      assert.equal(watchdog.isTimedOut(), true);
+      assert.equal(timedOutReason, "DISCOVERY_PROGRESS_TIMEOUT");
+      assert.match(timedOutDetail ?? "", /initial search yield deadline \(45000ms\) exceeded/);
+    });
   });
 
   describe("Bounded Area Retries in Area Worker Pool", () => {

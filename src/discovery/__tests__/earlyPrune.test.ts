@@ -137,6 +137,8 @@ test("isChannelPotentiallySatisfiable helper correctly handles channels and webs
   assert.equal(isChannelPotentiallySatisfiable(lead({ website: "https://acme.example" }), "website"), true);
   assert.equal(isChannelPotentiallySatisfiable(lead(), "website"), false);
   assert.equal(isChannelPotentiallySatisfiable(lead({ website: "https://acme.example" }), "email"), true);
+  assert.equal(isChannelPotentiallySatisfiable(lead({ website: "https://order.toasttab.com/online/cafe" }), "email"), false);
+  assert.equal(isChannelPotentiallySatisfiable(lead({ website: "https://places.singleplatform.com/my-cafe" }), "email"), false);
   assert.equal(isChannelPotentiallySatisfiable(lead(), "email"), false);
 });
 

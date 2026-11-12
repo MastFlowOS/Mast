@@ -29,6 +29,7 @@
 
 import { channelsSatisfied, type ChannelCandidate } from "../lib/channelFilter.js";
 import { isValidWebsite } from "../lib/leadValidation.js";
+import { normalizeBrandDomain } from "../lib/brandDedup.js";
 
 /** Channels decidable from the Maps lead alone or requiring Maps presence. */
 const LEAD_ONLY_CHANNELS: readonly string[] = ["phone", "website"];
@@ -85,6 +86,12 @@ export function isChannelPotentiallySatisfiable(
   }
   // If the channel is missing on Maps, can it still be discovered from an available website?
   if (channel !== "website" && isValidWebsite(lead.website)) {
+    // If email is required but the website is a third-party ordering portal,
+    // food-delivery menu, or directory (e.g. toasttab.com, chownow.com, doordash.com),
+    // it never yields contact emails via static extraction. Fast prune in 0.001ms.
+    if (channel === "email" && !normalizeBrandDomain(lead.website)) {
+      return false;
+    }
     return true;
   }
   return false;

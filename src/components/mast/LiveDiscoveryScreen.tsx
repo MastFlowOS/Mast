@@ -13,6 +13,7 @@ import {
   Instagram,
   Radio,
   Settings,
+  Target,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DiscoveryLiveState, ScoutLiveState } from "@/discovery/liveDiscoveryState";
@@ -20,7 +21,7 @@ import { RegionMark } from "@/components/mast/discover/TargetRegionCard";
 import type { DiscoveryMode } from "@/config/plans";
 
 /**
- * MAST — Full 3-Column Live Discovery Workspace.
+ * MAST — Full 3-Column Live Discovery Workspace (Single-Viewport Layout).
  *
  * Pure presentation of Task 2's DiscoveryLiveState (via useLiveDiscoveryState)
  * plus the active Search Brief read from the Discover request:
@@ -28,8 +29,8 @@ import type { DiscoveryMode } from "@/config/plans";
  *     each scout is used, numbered sequentially 1..N in order of appearance) with
  *     worker icons, live status pills, timestamps, and a single-line live feed.
  *   - Center column: "Scanning the web" heading, 3D isometric business-location
- *     map asset with glowing storefront pins, and underneath it the ocean-shaped
- *     target journey asset with the 3D MAST raft sailing toward the island.
+ *     map asset with glowing storefront pins, and directly underneath it a sleek,
+ *     minimal target progress counter card.
  *   - Right column: Compact Delivered and Rejected counters, followed by the
  *     compact Search Brief (Country, Niche, Channels, Discovery Method) and
  *     cancellation control.
@@ -266,29 +267,30 @@ function ScoutCard({
 /**
  * Center 3D Isometric Business-Location Map using the reference asset
  * (`/images/discover-isometric-map.png`) with the storefront icon inside the
- * center hero pin, scaled generously to anchor the middle workspace.
+ * center hero pin, sized to fill the middle column while keeping the entire
+ * workspace within a single non-scrolling viewport.
  */
 function IsometricDiscoveryMap() {
   return (
     <div
       data-testid="discovery-isometric-map"
-      className="relative mx-auto -mt-3 -mb-7 w-full max-w-[650px] select-none xl:max-w-[705px]"
+      className="relative mx-auto -mt-2 -mb-3 w-full max-w-[540px] select-none xl:max-w-[590px]"
     >
       {/* Ambient radial glow behind the 3D map */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-8 inset-y-6 -z-10 rounded-full opacity-80 blur-3xl"
+        className="pointer-events-none absolute inset-x-8 inset-y-4 -z-10 rounded-full opacity-80 blur-3xl"
         style={{
           background:
             "radial-gradient(ellipse at 52% 52%, rgba(37, 99, 235, 0.45), rgba(14, 165, 233, 0.18) 52%, transparent 75%)",
         }}
       />
 
-      <div className="relative w-full">
+      <div className="relative mx-auto w-full">
         <img
           src="/images/discover-isometric-map.png"
           alt="3D isometric business location discovery map"
-          className="block h-auto w-full drop-shadow-[0_24px_40px_rgba(0,0,0,0.8)]"
+          className="mx-auto block max-h-[305px] w-full object-contain drop-shadow-[0_22px_36px_rgba(0,0,0,0.8)] xl:max-h-[335px]"
           draggable={false}
         />
 
@@ -297,6 +299,7 @@ function IsometricDiscoveryMap() {
           viewBox="0 0 1024 682"
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 h-full w-full"
+          preserveAspectRatio="xMidYMid meet"
         >
           <g
             transform="translate(531.5, 272)"
@@ -323,9 +326,9 @@ function IsometricDiscoveryMap() {
 }
 
 /**
- * Bottom Ocean-Shaped Target Journey Bar:
- * Built on the uploaded ocean-bar & tropical-island asset (`/images/discover-ocean-bar.png`,
- * 1024x230) and the 3D wooden raft asset (`/images/discover-mast-raft.png`, 833x640).
+ * Minimal UI-UX-Pro-Max Target Progress Counter:
+ * Clean dark-mode glassmorphic card underneath the 3D map with high-contrast
+ * tabular typography, subtle milestone ticks, and a precision glowing progress bar.
  */
 function TargetJourneyBar({
   delivered,
@@ -337,205 +340,58 @@ function TargetJourneyBar({
   progressPercent: number;
 }) {
   const clampedPct = Math.max(0, Math.min(100, progressPercent));
-  // Raft travels smoothly along the sea lane from x=462 (0%) to x=696 (100%)
-  const raftX = 462 + (clampedPct / 100) * 234;
-  const raftY = 122 + Math.sin((clampedPct / 100) * Math.PI * 2) * 3;
 
   return (
     <div
       data-testid="discovery-target-journey"
-      className="relative mx-auto w-full max-w-[880px] select-none xl:max-w-[930px]"
+      role="region"
+      aria-label={`Target progress: ${delivered} of ${target || 0} opportunities`}
+      className="relative mx-auto w-full max-w-[540px] select-none rounded-2xl border border-white/[0.08] bg-[#0a1224]/90 px-4 py-3 text-left shadow-[0_18px_42px_-12px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(148,163,184,0.08)] backdrop-blur-md xl:max-w-[580px]"
     >
-      {/* Ambient ocean bottom glow */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-10 bottom-1 top-6 -z-10 rounded-full opacity-75 blur-2xl"
-        style={{
-          background:
-            "radial-gradient(ellipse at 55% 65%, rgba(14, 165, 233, 0.34), rgba(37, 99, 235, 0.22) 55%, transparent 80%)",
-        }}
-      />
+      {/* Top Row: Target Identity on Left, Live Counter Pill on Right */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="grid size-8 shrink-0 place-items-center rounded-xl border border-sky-400/25 bg-sky-500/10 text-sky-400 shadow-[0_0_16px_-4px_rgba(56,189,248,0.35)]">
+            <Target className="size-4" />
+          </div>
+          <div className="leading-tight">
+            <div className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+              Target
+            </div>
+            <div className="mt-0.5 text-[14px] font-bold tracking-tight">
+              <span className="tabular-nums text-sky-400">{target || "—"}</span>
+              <span className="text-white"> Opportunities</span>
+            </div>
+          </div>
+        </div>
 
-      <svg
-        viewBox="0 0 1024 230"
-        className="h-auto w-full overflow-visible drop-shadow-[0_18px_34px_rgba(0,0,0,0.8)]"
-        role="img"
-        aria-label={`Target progress: ${delivered} of ${target || 0} opportunities`}
-      >
-        {/* 1. Uploaded Wave-Shaped Ocean Bar + Palm Tree Island + Counter Pill Asset */}
-        <image
-          href="/images/discover-ocean-bar.png"
-          x="0"
-          y="0"
-          width="1024"
-          height="230"
-          preserveAspectRatio="xMidYMid meet"
-        />
+        <div className="flex items-center gap-2.5">
+          <span className="font-mono text-[11px] font-medium tabular-nums text-slate-400">
+            {clampedPct}%
+          </span>
+          <div className="rounded-xl border border-blue-400/25 bg-[#101e3d] px-3 py-1 font-mono text-[13px] font-bold tabular-nums text-white shadow-inner">
+            {delivered} / {target || "—"}
+          </div>
+        </div>
+      </div>
 
-        {/* 2. LEFT: Target Bullseye Badge & "Target / N Opportunities" */}
-        <g transform="translate(104, 136)">
-          <circle
-            cx="0"
-            cy="0"
-            r="35"
-            fill="#071835"
-            stroke="rgba(56, 189, 248, 0.35)"
-            strokeWidth="1.6"
+      {/* Bottom Row: Minimal Precision Progress Track + Leading Pulse Node */}
+      <div className="relative mt-2.5 flex items-center">
+        <div className="relative h-2 w-full overflow-hidden rounded-full bg-[#111d38] ring-1 ring-inset ring-white/[0.06]">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-[#2563eb] via-[#3b82f6] to-[#38bdf8] shadow-[0_0_14px_rgba(56,189,248,0.65)] transition-all duration-500 ease-out"
+            style={{ width: `${clampedPct}%` }}
           />
-          <circle
-            cx="0"
-            cy="0"
-            r="26"
-            fill="#0c254d"
-            stroke="rgba(56, 189, 248, 0.22)"
-            strokeWidth="1.2"
-          />
-          {/* Target rings */}
-          <circle cx="-1" cy="1" r="13.5" fill="none" stroke="#38bdf8" strokeWidth="2.4" />
-          <circle cx="-1" cy="1" r="7" fill="none" stroke="#38bdf8" strokeWidth="2.1" />
-          <circle cx="-1" cy="1" r="2.5" fill="#7dd3fc" />
-          {/* Bullseye arrow */}
-          <line
-            x1="2.5"
-            y1="-2.5"
-            x2="13.5"
-            y2="-13.5"
-            stroke="#7dd3fc"
-            strokeWidth="2.4"
-            strokeLinecap="round"
-          />
-          <polyline
-            points="7,-13.5 13.5,-13.5 13.5,-7"
-            fill="none"
-            stroke="#7dd3fc"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </g>
+        </div>
 
-        <text
-          x="156"
-          y="125"
-          fill="#cbd5e1"
-          fontSize="16"
-          fontWeight="500"
-          fontFamily="inherit"
-        >
-          Target
-        </text>
-        <text
-          x="156"
-          y="154"
-          fontSize="24"
-          fontWeight="800"
-          fontFamily="inherit"
-        >
-          <tspan fill="#38bdf8">{target || "—"}</tspan>
-          <tspan fill="#ffffff" fontWeight="700"> Opportunities</tspan>
-        </text>
-
-        {/* 3. CENTER: Dashed Sea Route + Waypoint Rings */}
-        <path
-          d="M 462 155 C 520 146, 558 164, 608 156 C 654 148, 694 160, 746 150"
-          fill="none"
-          stroke="rgba(226, 232, 240, 0.8)"
-          strokeWidth="2.6"
-          strokeDasharray="7 8"
-          strokeLinecap="round"
-        />
-
-        {/* Completed Sea Trail behind the raft */}
-        {clampedPct > 0 && (
-          <line
-            x1="452"
-            y1="155"
-            x2={raftX}
-            y2={raftY + 32}
-            stroke="#38bdf8"
-            strokeWidth="3.2"
-            strokeLinecap="round"
-          />
-        )}
-
-        {/* Waypoint Node 1 (~50% along route) */}
-        <g transform="translate(592, 158)">
-          <circle
-            cx="0"
-            cy="0"
-            r="9.5"
-            fill="#071733"
-            stroke={clampedPct >= 50 ? "#38bdf8" : "#f1f5f9"}
-            strokeWidth="2.6"
-          />
-          <circle
-            cx="0"
-            cy="0"
-            r="3.5"
-            fill={clampedPct >= 50 ? "#38bdf8" : "transparent"}
-          />
-        </g>
-
-        {/* Waypoint Node 2 (~80% along route) */}
-        <g transform="translate(684, 154)">
-          <circle
-            cx="0"
-            cy="0"
-            r="9.5"
-            fill="#071733"
-            stroke={clampedPct >= 80 ? "#38bdf8" : "#f1f5f9"}
-            strokeWidth="2.6"
-          />
-          <circle
-            cx="0"
-            cy="0"
-            r="3.5"
-            fill={clampedPct >= 80 ? "#38bdf8" : "transparent"}
-          />
-        </g>
-
-        {/* 4. RIGHT: Delivered / Target Counter Text inside the Island's Glowing Pill */}
-        <text
-          x="844"
-          y="172"
-          textAnchor="middle"
-          fill="#ffffff"
-          fontSize="20.5"
-          fontWeight="800"
-          fontFamily="inherit"
-          style={{ fontVariantNumeric: "tabular-nums" }}
-        >
-          {delivered} / {target || "—"}
-        </text>
-
-        {/* 5. THE UPLOADED 3D MAST RAFT ASSET (Animated position along the sea route) */}
-        <g
+        {/* Leading-edge progress indicator node */}
+        <span
           data-testid="discovery-mast-raft"
-          style={{
-            transform: `translate(${raftX}px, ${raftY}px)`,
-            transition: "transform 600ms cubic-bezier(0.22, 1, 0.36, 1)",
-          }}
-        >
-          <image
-            href="/images/discover-mast-raft.png"
-            x="-84"
-            y="-78"
-            width="168"
-            height="129"
-            preserveAspectRatio="xMidYMid meet"
-          />
-
-          {/* Bold "M" Emblem on the Raft Sail */}
-          <path
-            d="M -4 -14 L -2 -33 L 6.5 -21 L 15 -33 L 17 -14"
-            fill="none"
-            stroke="#1e293b"
-            strokeWidth="3.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </g>
-      </svg>
+          aria-hidden="true"
+          className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-200 bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.9)] transition-all duration-500 ease-out"
+          style={{ left: `${clampedPct}%` }}
+        />
+      </div>
     </div>
   );
 }
@@ -641,7 +497,7 @@ export function LiveDiscoveryScreen({
   return (
     <div
       data-testid="live-discovery-workspace"
-      className="relative mx-auto w-full max-w-[1440px] overflow-x-clip px-4 pb-2 pt-2 sm:px-6 lg:px-7"
+      className="relative mx-auto w-full max-w-[1440px] overflow-hidden px-4 py-2 sm:px-6 lg:px-7"
     >
       {/* Subtle deep-space background atmosphere */}
       <div
@@ -655,7 +511,7 @@ export function LiveDiscoveryScreen({
         }}
       />
 
-      {/* Main Three-Column Discovery Workspace */}
+      {/* Main Three-Column Discovery Workspace — Fits Entirely in One Viewport */}
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[276px_minmax(0,1fr)_276px] xl:grid-cols-[296px_minmax(0,1fr)_296px]">
         {/* ── LEFT COLUMN: Dynamic & Scalable Scouts Panel ─────────────────── */}
         <section
@@ -692,7 +548,7 @@ export function LiveDiscoveryScreen({
               </div>
             </div>
           ) : (
-            <div className="max-h-[340px] space-y-2 overflow-y-auto pr-0.5">
+            <div className="max-h-[360px] space-y-2 overflow-y-auto pr-0.5">
               {scouts.map((scout, index) => {
                 const displayIndex = index + 1;
                 const latestTime =
@@ -711,25 +567,33 @@ export function LiveDiscoveryScreen({
           )}
         </section>
 
-        {/* ── CENTER COLUMN: Heading + 3D Isometric Business-Location Map ─── */}
+        {/* ── CENTER COLUMN: Heading + 3D Map + Minimal Target Progress Bar ── */}
         <section className="flex min-w-0 flex-col items-center pt-0.5 text-center">
           <p className="text-[10px] font-semibold uppercase tracking-[0.34em] text-slate-300/80">
             {eyebrow}
           </p>
-          <h1 className="mt-1 text-2xl font-extrabold tracking-tight sm:text-3xl xl:text-[36px] xl:leading-[1.1]">
+          <h1 className="mt-0.5 text-2xl font-extrabold tracking-tight sm:text-3xl xl:text-[34px] xl:leading-[1.1]">
             <span className="text-white">{titleWhite}</span>
             <span className="bg-gradient-to-r from-[#60a5fa] via-[#3b82f6] to-[#2563eb] bg-clip-text text-transparent">
               {titleAccent}
             </span>
           </h1>
           {subtitle && (
-            <p className="mt-1.5 max-w-lg text-xs leading-relaxed text-slate-300/85">
+            <p className="mt-1 max-w-lg text-xs leading-relaxed text-slate-300/85">
               {subtitle}
             </p>
           )}
 
           <div className="w-full">
             <IsometricDiscoveryMap />
+          </div>
+
+          <div className="mt-1 w-full">
+            <TargetJourneyBar
+              delivered={delivered}
+              target={target}
+              progressPercent={progressPercent}
+            />
           </div>
         </section>
 
@@ -870,15 +734,6 @@ export function LiveDiscoveryScreen({
             )}
           </section>
         </aside>
-      </div>
-
-      {/* ── BOTTOM TARGET JOURNEY: Ocean Wave + MAST Raft + Destination Island ── */}
-      <div className="-mt-4 lg:-mt-7">
-        <TargetJourneyBar
-          delivered={delivered}
-          target={target}
-          progressPercent={progressPercent}
-        />
       </div>
     </div>
   );

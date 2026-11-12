@@ -75,14 +75,14 @@ describe("LiveDiscoveryScreen — 3-Column Discovery Workspace", () => {
     expect(within(brief).getByText("Discovery Method")).toBeTruthy();
     expect(within(brief).getByText("Live Discovery")).toBeTruthy();
 
-    // 4. Bottom Target Journey underneath the central map using ocean bar & raft assets
+    // 4. Minimal Target Progress Counter underneath the central map (no ocean/raft images)
     const journey = screen.getByTestId("discovery-target-journey");
     expect(within(journey).getByText("Target")).toBeTruthy();
     expect(within(journey).getByText("10")).toBeTruthy();
     expect(within(journey).getByText(/Opportunities/)).toBeTruthy();
     expect(within(journey).getByText("0 / 10")).toBeTruthy();
-    expect(journey.querySelector('image[href="/images/discover-ocean-bar.png"]')).toBeTruthy();
-    expect(journey.querySelector('image[href="/images/discover-mast-raft.png"]')).toBeTruthy();
+    expect(within(journey).getByText("0%")).toBeTruthy();
+    expect(journey.querySelector("img, image")).toBeNull();
     expect(screen.getByTestId("discovery-mast-raft")).toBeTruthy();
 
     // 5. Accessible cancellation functionality

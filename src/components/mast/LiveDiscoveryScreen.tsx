@@ -290,7 +290,7 @@ function IsometricDiscoveryMap() {
         <img
           src="/images/discover-isometric-map.png"
           alt="3D isometric business location discovery map"
-          className="mx-auto block max-h-[315px] w-full object-contain drop-shadow-[0_22px_36px_rgba(0,0,0,0.8)] xl:max-h-[345px]"
+          className="mx-auto block max-h-[290px] w-full object-contain drop-shadow-[0_22px_36px_rgba(0,0,0,0.8)] xl:max-h-[320px]"
           draggable={false}
         />
 
@@ -483,7 +483,7 @@ export function LiveDiscoveryScreen({
   return (
     <div
       data-testid="live-discovery-workspace"
-      className="relative mx-auto flex min-h-[calc(100vh-88px)] w-full max-w-[1440px] flex-col justify-center overflow-hidden px-4 py-6 sm:px-6 lg:px-8"
+      className="relative mx-auto flex h-full w-full max-w-[1440px] flex-col justify-center overflow-hidden px-4 pt-10 pb-2 sm:px-6 lg:px-8 lg:pt-14"
     >
       {/* Subtle deep-space background atmosphere */}
       <div
@@ -491,13 +491,13 @@ export function LiveDiscoveryScreen({
         className="pointer-events-none absolute inset-0 -z-10 overflow-hidden"
         style={{
           background: [
-            "radial-gradient(ellipse 46% 42% at 50% 42%, rgba(29, 78, 216, 0.16), transparent 72%)",
+            "radial-gradient(ellipse 46% 42% at 50% 46%, rgba(29, 78, 216, 0.16), transparent 72%)",
             "radial-gradient(ellipse 35% 30% at 50% 85%, rgba(14, 165, 233, 0.12), transparent 70%)",
           ].join(","),
         }}
       />
 
-      {/* Main Three-Column Discovery Workspace — Vertically Centered in Viewport */}
+      {/* Main Three-Column Discovery Workspace — Shifted Down & Locked to Single Viewport */}
       <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[280px_minmax(0,1fr)_280px] xl:grid-cols-[300px_minmax(0,1fr)_300px]">
         {/* ── LEFT COLUMN: Dynamic & Scalable Scouts Panel ─────────────────── */}
         <section

@@ -359,6 +359,7 @@ function GetLeads() {
   // a live run has one: Instant Pool / Ranked Instant are pool-only, return
   // synchronously, and never show the scouting screen.
   const [planId, setPlanId] = useState<string | null>(null);
+  const [activeRequest, setActiveRequest] = useState<DiscoverRequestPayload | null>(null);
   // What the live run was actually asked for (the server's clamped
   // `requested`, not the slider). Live and pool runs are separate jobs with
   // separate counters, so the live state always starts from 0.
@@ -652,6 +653,7 @@ function GetLeads() {
     activeJobIdRef.current = null;
     setIsCancelling(false);
     setPlanId(null);
+    setActiveRequest(request);
     setLiveTarget(request.quantity);
     setLastRun(null);
 
@@ -943,7 +945,19 @@ function GetLeads() {
             progressPercent: liveTarget > 0 ? Math.min(100, Math.round((savedCount / liveTarget) * 100)) : 0,
           }
         : liveDiscoveryState;
-    return <LiveDiscoveryScreen state={liveScreenState} onCancel={handleCancelSearch} isCancelling={isCancelling} />;
+    return (
+      <LiveDiscoveryScreen
+        state={liveScreenState}
+        onCancel={handleCancelSearch}
+        isCancelling={isCancelling}
+        searchBrief={{
+          region: (activeRequest?.region ?? regions.join(", ")) || DEFAULT_REGION,
+          niche: (activeRequest?.niche ?? niches.join(", ")) || "—",
+          channels: activeRequest?.channels ?? channels,
+          method: activeRequest?.method ?? selectedMethod.id,
+        }}
+      />
+    );
   }
 
   // Instant Discovery (Starter/Pro/Premium) pool-shortfall backfill: no

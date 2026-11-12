@@ -1134,7 +1134,7 @@ export function publishAreaPoolLifecycleEvent(
   // scheme `scoutStartedEvent`/`areaStartedEvent` already use). Both
   // branches below now read the same real slotIndex.
   const rawId = "slot" in event ? event.slot + scoutOffset : undefined;
-  const scoutId = rawId !== undefined ? (((rawId % 3) + 1) as 1 | 2 | 3) : undefined;
+  const scoutId = rawId !== undefined ? rawId + 1 : undefined;
   if (event.type === "worker_started") {
     if (scoutId !== undefined && !startedScoutSlots.has(scoutId)) {
       startedScoutSlots.add(scoutId);
@@ -1693,7 +1693,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
               attemptCtx,
               undefined,
               searchStreet,
-              ((slotIndex + (payload.scoutOffset ?? 0)) % 3) + 1,
+              slotIndex + (payload.scoutOffset ?? 0) + 1,
               undefined,
               remainingAreaBudgetMs,
             );
@@ -1818,7 +1818,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
           attemptCtx,
           claimedArea,
           undefined,
-          ((payload.scoutOffset ?? 0) % 3) + 1,
+          (payload.scoutOffset ?? 0) + 1,
         );
       } finally {
         releaseLegacySharedPid?.();
@@ -1903,7 +1903,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
             attemptCtx,
             area,
             undefined,
-            ((slotIndex + (payload.scoutOffset ?? 0)) % 3) + 1,
+            slotIndex + (payload.scoutOffset ?? 0) + 1,
             undefined,
             remainingAreaBudgetMs,
           );

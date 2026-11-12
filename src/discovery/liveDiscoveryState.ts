@@ -34,7 +34,7 @@ export type ScoutId = 1 | 2 | 3;
 export type ScoutStatus = "idle" | "active" | "waiting" | "finished" | "error";
 
 export type ScoutLiveState = {
-  scoutId: ScoutId;
+  scoutId: number;
   status: ScoutStatus;
   sentence: string;
   areaName?: string;
@@ -76,6 +76,11 @@ export type DiscoveryInitializationState = {
 
 export type DiscoveryLiveState = {
   scouts: Record<ScoutId, ScoutLiveState>;
+  /**
+   * Dynamic map of scouts that have actually been used/spawned in this plan (1..N).
+   * Starts empty (`{}`) at plan creation and grows as worker slots emit events.
+   */
+  activeScouts?: Record<number, ScoutLiveState>;
   delivered: number;
   rejected: number;
   target: number;
@@ -102,7 +107,7 @@ export type DiscoveryLiveState = {
 
 const SCOUT_IDS: ScoutId[] = [1, 2, 3];
 
-function idleScout(scoutId: ScoutId): ScoutLiveState {
+function idleScout(scoutId: number): ScoutLiveState {
   return { scoutId, status: "idle", sentence: "Waiting to start..." };
 }
 
@@ -123,6 +128,7 @@ function idleScout(scoutId: ScoutId): ScoutLiveState {
 export function createInitialLiveDiscoveryState(target: number, initialDelivered = 0): DiscoveryLiveState {
   return {
     scouts: { 1: idleScout(1), 2: idleScout(2), 3: idleScout(3) },
+    activeScouts: {},
     delivered: initialDelivered,
     rejected: 0,
     target,
@@ -144,6 +150,10 @@ function computeProgressPercent(delivered: number, target: number): number {
 
 function isValidScoutId(scoutId: number | undefined): scoutId is ScoutId {
   return scoutId === 1 || scoutId === 2 || scoutId === 3;
+}
+
+function isPositiveScoutId(scoutId: number | undefined): scoutId is number {
+  return typeof scoutId === "number" && Number.isInteger(scoutId) && scoutId >= 1;
 }
 
 function hasProcessed(state: DiscoveryLiveState, eventId: string): boolean {
@@ -312,40 +322,73 @@ export function reduceLiveDiscoveryEvent(state: DiscoveryLiveState, event: Disco
   const next: DiscoveryLiveState = {
     ...state,
     scouts: { ...state.scouts },
+    activeScouts: { ...(state.activeScouts ?? {}) },
     _internal: { processedEventIds: state._internal.processedEventIds },
     latestEventAt: event.timestamp,
   };
 
   const scoutId = event.scoutId;
 
+  const updateScoutSlot = (
+    id: number,
+    patch: Partial<Omit<ScoutLiveState, "scoutId">>,
+  ) => {
+    const existingActive = next.activeScouts?.[id];
+    const existingFixed = isValidScoutId(id) ? next.scouts[id] : undefined;
+    const base = existingActive ?? existingFixed ?? idleScout(id);
+    const updated: ScoutLiveState = { ...base, ...patch, scoutId: id };
+    next.activeScouts = { ...next.activeScouts, [id]: updated };
+    if (isValidScoutId(id)) {
+      next.scouts[id] = updated;
+    }
+  };
+
   switch (event.type) {
     case "scout_started": {
-      if (!isValidScoutId(scoutId)) return next;
+      if (!isPositiveScoutId(scoutId)) return next;
       // area_started is always published immediately after this for the
       // exact same worker_started log line (see discoveryPlanJob.ts's
       // publishAreaPoolLifecycleEvent), so this only sets a reasonable
       // starting point — area_started (below) supplies the real content.
-      next.scouts[scoutId] = { ...next.scouts[scoutId], status: "active", sentence: areaStartSentence(event.areaLabel), areaName: event.areaLabel, businessName: undefined };
+      updateScoutSlot(scoutId, {
+        status: "active",
+        sentence: areaStartSentence(event.areaLabel),
+        areaName: event.areaLabel,
+        businessName: undefined,
+      });
       if (next.status === "starting") next.status = "discovering";
       return next;
     }
 
     case "area_started": {
-      if (!isValidScoutId(scoutId)) return next;
-      next.scouts[scoutId] = { ...next.scouts[scoutId], status: "active", sentence: areaStartSentence(event.areaLabel), areaName: event.areaLabel, businessName: undefined };
+      if (!isPositiveScoutId(scoutId)) return next;
+      updateScoutSlot(scoutId, {
+        status: "active",
+        sentence: areaStartSentence(event.areaLabel),
+        areaName: event.areaLabel,
+        businessName: undefined,
+      });
       if (next.status === "starting") next.status = "discovering";
       return next;
     }
 
     case "candidate_discovered": {
-      if (!isValidScoutId(scoutId)) return next;
-      next.scouts[scoutId] = { ...next.scouts[scoutId], status: "active", sentence: processingSentence(event.businessName), businessName: event.businessName };
+      if (!isPositiveScoutId(scoutId)) return next;
+      updateScoutSlot(scoutId, {
+        status: "active",
+        sentence: processingSentence(event.businessName),
+        businessName: event.businessName,
+      });
       return next;
     }
 
     case "candidate_rejected": {
-      if (isValidScoutId(scoutId)) {
-        next.scouts[scoutId] = { ...next.scouts[scoutId], status: "active", sentence: rejectionSentence(event.reason), businessName: undefined };
+      if (isPositiveScoutId(scoutId)) {
+        updateScoutSlot(scoutId, {
+          status: "active",
+          sentence: rejectionSentence(event.reason),
+          businessName: undefined,
+        });
       }
       if (countsAsRejection(event.reason) && !hasProcessed(next, event.id)) {
         next.rejected += 1;
@@ -360,8 +403,12 @@ export function reduceLiveDiscoveryEvent(state: DiscoveryLiveState, event: Disco
     }
 
     case "lead_delivered": {
-      if (isValidScoutId(scoutId)) {
-        next.scouts[scoutId] = { ...next.scouts[scoutId], status: "active", sentence: OPPORTUNITY_SECURED, businessName: undefined };
+      if (isPositiveScoutId(scoutId)) {
+        updateScoutSlot(scoutId, {
+          status: "active",
+          sentence: OPPORTUNITY_SECURED,
+          businessName: undefined,
+        });
       }
       if (!hasProcessed(next, event.id)) {
         next.delivered += 1;
@@ -372,13 +419,21 @@ export function reduceLiveDiscoveryEvent(state: DiscoveryLiveState, event: Disco
     }
 
     case "area_completed": {
-      if (!isValidScoutId(scoutId)) return next;
+      if (!isPositiveScoutId(scoutId)) return next;
       const outcome = event.areaOutcome;
       if (outcome?.failed) {
-        next.scouts[scoutId] = { ...next.scouts[scoutId], status: "active", sentence: AREA_SNAG, businessName: undefined };
+        updateScoutSlot(scoutId, {
+          status: "active",
+          sentence: AREA_SNAG,
+          businessName: undefined,
+        });
       } else if (outcome && outcome.accepted === 0) {
         const sentence = outcome.discovered === 0 ? "Quiet street. Moving on..." : "Nothing promising here. Moving on...";
-        next.scouts[scoutId] = { ...next.scouts[scoutId], status: "active", sentence, businessName: undefined };
+        updateScoutSlot(scoutId, {
+          status: "active",
+          sentence,
+          businessName: undefined,
+        });
       }
       // else: at least one delivery came out of this area — the most
       // recent lead_delivered sentence already told the real story; leave
@@ -401,6 +456,17 @@ export function reduceLiveDiscoveryEvent(state: DiscoveryLiveState, event: Disco
       for (const id of SCOUT_IDS) {
         next.scouts[id] = { ...next.scouts[id], status: "finished", sentence: FINISHED_SEARCHING, businessName: undefined };
       }
+      if (next.activeScouts) {
+        for (const key of Object.keys(next.activeScouts)) {
+          const id = Number(key);
+          next.activeScouts[id] = {
+            ...next.activeScouts[id],
+            status: "finished",
+            sentence: FINISHED_SEARCHING,
+            businessName: undefined,
+          };
+        }
+      }
       return next;
     }
 
@@ -410,6 +476,17 @@ export function reduceLiveDiscoveryEvent(state: DiscoveryLiveState, event: Disco
       next.status = "failed";
       for (const id of SCOUT_IDS) {
         next.scouts[id] = { ...next.scouts[id], status: "error", sentence: DISCOVERY_PROBLEM, businessName: undefined };
+      }
+      if (next.activeScouts) {
+        for (const key of Object.keys(next.activeScouts)) {
+          const id = Number(key);
+          next.activeScouts[id] = {
+            ...next.activeScouts[id],
+            status: "error",
+            sentence: DISCOVERY_PROBLEM,
+            businessName: undefined,
+          };
+        }
       }
       return next;
     }
@@ -464,7 +541,7 @@ export function reduceLiveDiscoveryEvents(state: DiscoveryLiveState, events: rea
   let i = 0;
   while (i < events.length) {
     const event = events[i];
-    if (event.type === "candidate_discovered" && isValidScoutId(event.scoutId)) {
+    if (event.type === "candidate_discovered" && isPositiveScoutId(event.scoutId)) {
       const scoutId = event.scoutId;
       let runEnd = i + 1;
       while (runEnd < events.length && events[runEnd].type === "candidate_discovered" && events[runEnd].scoutId === scoutId) {
@@ -473,11 +550,25 @@ export function reduceLiveDiscoveryEvents(state: DiscoveryLiveState, events: rea
       const runLength = runEnd - i;
       if (runLength >= 2) {
         const latest = events[runEnd - 1];
+        const baseScout =
+          acc.activeScouts?.[scoutId] ??
+          (isValidScoutId(scoutId) ? acc.scouts[scoutId] : undefined) ??
+          idleScout(scoutId);
+        const updatedScout: ScoutLiveState = {
+          ...baseScout,
+          scoutId,
+          status: "active",
+          sentence: `Found ${runLength} businesses. Checking them now...`,
+          businessName: undefined,
+        };
         acc = {
           ...acc,
-          scouts: {
-            ...acc.scouts,
-            [scoutId]: { ...acc.scouts[scoutId], status: "active", sentence: `Found ${runLength} businesses. Checking them now...`, businessName: undefined },
+          scouts: isValidScoutId(scoutId)
+            ? { ...acc.scouts, [scoutId]: updatedScout }
+            : acc.scouts,
+          activeScouts: {
+            ...(acc.activeScouts ?? {}),
+            [scoutId]: updatedScout,
           },
           latestEventAt: latest.timestamp,
         };

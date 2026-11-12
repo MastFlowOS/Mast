@@ -29,8 +29,8 @@ import type { DiscoveryMode } from "@/config/plans";
  *     each scout is used, numbered sequentially 1..N in order of appearance) with
  *     worker icons, live status pills, timestamps, and a single-line live feed.
  *   - Center column: "Scanning the web" heading, 3D isometric business-location
- *     map asset with glowing storefront pins, and directly underneath it a sleek,
- *     minimal target progress counter card.
+ *     map asset with glowing storefront pins, and directly underneath it a sleek
+ *     single-row floating target progress HUD bar.
  *   - Right column: Compact Delivered and Rejected counters, followed by the
  *     compact Search Brief (Country, Niche, Channels, Discovery Method) and
  *     cancellation control.
@@ -274,7 +274,7 @@ function IsometricDiscoveryMap() {
   return (
     <div
       data-testid="discovery-isometric-map"
-      className="relative mx-auto -mt-2 -mb-3 w-full max-w-[540px] select-none xl:max-w-[590px]"
+      className="relative mx-auto -mt-1 -mb-2 w-full max-w-[560px] select-none xl:max-w-[610px]"
     >
       {/* Ambient radial glow behind the 3D map */}
       <div
@@ -290,7 +290,7 @@ function IsometricDiscoveryMap() {
         <img
           src="/images/discover-isometric-map.png"
           alt="3D isometric business location discovery map"
-          className="mx-auto block max-h-[305px] w-full object-contain drop-shadow-[0_22px_36px_rgba(0,0,0,0.8)] xl:max-h-[335px]"
+          className="mx-auto block max-h-[315px] w-full object-contain drop-shadow-[0_22px_36px_rgba(0,0,0,0.8)] xl:max-h-[345px]"
           draggable={false}
         />
 
@@ -326,9 +326,9 @@ function IsometricDiscoveryMap() {
 }
 
 /**
- * Minimal UI-UX-Pro-Max Target Progress Counter:
- * Clean dark-mode glassmorphic card underneath the 3D map with high-contrast
- * tabular typography, subtle milestone ticks, and a precision glowing progress bar.
+ * Sleek Single-Row Floating HUD Target Counter:
+ * Compact inline glassmorphic dock with Target label on the left, clean
+ * knobless linear progress track in the middle, and crisp counter pill on the right.
  */
 function TargetJourneyBar({
   delivered,
@@ -346,51 +346,37 @@ function TargetJourneyBar({
       data-testid="discovery-target-journey"
       role="region"
       aria-label={`Target progress: ${delivered} of ${target || 0} opportunities`}
-      className="relative mx-auto w-full max-w-[540px] select-none rounded-2xl border border-white/[0.08] bg-[#0a1224]/90 px-4 py-3 text-left shadow-[0_18px_42px_-12px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(148,163,184,0.08)] backdrop-blur-md xl:max-w-[580px]"
+      className="relative mx-auto flex w-full max-w-[490px] select-none items-center gap-3.5 rounded-2xl border border-white/[0.08] bg-[#0a1224]/95 px-3.5 py-2.5 shadow-[0_16px_38px_-10px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-md xl:max-w-[520px]"
     >
-      {/* Top Row: Target Identity on Left, Live Counter Pill on Right */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <div className="grid size-8 shrink-0 place-items-center rounded-xl border border-sky-400/25 bg-sky-500/10 text-sky-400 shadow-[0_0_16px_-4px_rgba(56,189,248,0.35)]">
-            <Target className="size-4" />
-          </div>
-          <div className="leading-tight">
-            <div className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-              Target
-            </div>
-            <div className="mt-0.5 text-[14px] font-bold tracking-tight">
-              <span className="tabular-nums text-sky-400">{target || "—"}</span>
-              <span className="text-white"> Opportunities</span>
-            </div>
-          </div>
+      {/* Left: Compact Target Icon + Inline Target Label */}
+      <div className="flex shrink-0 items-center gap-2.5">
+        <div className="grid size-7 shrink-0 place-items-center rounded-lg border border-blue-400/25 bg-blue-500/10 text-sky-400">
+          <Target className="size-3.5" />
         </div>
-
-        <div className="flex items-center gap-2.5">
-          <span className="font-mono text-[11px] font-medium tabular-nums text-slate-400">
-            {clampedPct}%
-          </span>
-          <div className="rounded-xl border border-blue-400/25 bg-[#101e3d] px-3 py-1 font-mono text-[13px] font-bold tabular-nums text-white shadow-inner">
-            {delivered} / {target || "—"}
-          </div>
+        <div className="flex items-baseline gap-1.5 text-xs">
+          <span className="font-medium text-slate-400">Target</span>
+          <span className="font-extrabold tabular-nums text-sky-400">{target || "—"}</span>
+          <span className="font-semibold text-white">Opportunities</span>
         </div>
       </div>
 
-      {/* Bottom Row: Minimal Precision Progress Track + Leading Pulse Node */}
-      <div className="relative mt-2.5 flex items-center">
-        <div className="relative h-2 w-full overflow-hidden rounded-full bg-[#111d38] ring-1 ring-inset ring-white/[0.06]">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-[#2563eb] via-[#3b82f6] to-[#38bdf8] shadow-[0_0_14px_rgba(56,189,248,0.65)] transition-all duration-500 ease-out"
-            style={{ width: `${clampedPct}%` }}
-          />
-        </div>
-
-        {/* Leading-edge progress indicator node */}
-        <span
+      {/* Center: Clean Recessed Linear Track (No Protruding Slider Knob) */}
+      <div className="relative h-1.5 min-w-[72px] flex-1 overflow-hidden rounded-full bg-[#13203d] ring-1 ring-inset ring-white/[0.05]">
+        <div
           data-testid="discovery-mast-raft"
-          aria-hidden="true"
-          className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-200 bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.9)] transition-all duration-500 ease-out"
-          style={{ left: `${clampedPct}%` }}
+          className="h-full rounded-full bg-gradient-to-r from-[#2563eb] via-[#3b82f6] to-[#38bdf8] shadow-[0_0_12px_rgba(56,189,248,0.6)] transition-all duration-500 ease-out"
+          style={{ width: `${clampedPct}%` }}
         />
+      </div>
+
+      {/* Right: Crisp Delivered / Target Pill + Percentage */}
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="hidden font-mono text-[11px] font-medium tabular-nums text-slate-400 sm:inline">
+          {clampedPct}%
+        </span>
+        <div className="rounded-lg border border-white/[0.08] bg-[#101c38] px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-white">
+          {delivered} / {target || "—"}
+        </div>
       </div>
     </div>
   );
@@ -497,7 +483,7 @@ export function LiveDiscoveryScreen({
   return (
     <div
       data-testid="live-discovery-workspace"
-      className="relative mx-auto w-full max-w-[1440px] overflow-hidden px-4 py-2 sm:px-6 lg:px-7"
+      className="relative mx-auto flex min-h-[calc(100vh-88px)] w-full max-w-[1440px] flex-col justify-center overflow-hidden px-4 py-6 sm:px-6 lg:px-8"
     >
       {/* Subtle deep-space background atmosphere */}
       <div
@@ -505,18 +491,18 @@ export function LiveDiscoveryScreen({
         className="pointer-events-none absolute inset-0 -z-10 overflow-hidden"
         style={{
           background: [
-            "radial-gradient(ellipse 46% 42% at 50% 38%, rgba(29, 78, 216, 0.16), transparent 72%)",
+            "radial-gradient(ellipse 46% 42% at 50% 42%, rgba(29, 78, 216, 0.16), transparent 72%)",
             "radial-gradient(ellipse 35% 30% at 50% 85%, rgba(14, 165, 233, 0.12), transparent 70%)",
           ].join(","),
         }}
       />
 
-      {/* Main Three-Column Discovery Workspace — Fits Entirely in One Viewport */}
-      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[276px_minmax(0,1fr)_276px] xl:grid-cols-[296px_minmax(0,1fr)_296px]">
+      {/* Main Three-Column Discovery Workspace — Vertically Centered in Viewport */}
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[280px_minmax(0,1fr)_280px] xl:grid-cols-[300px_minmax(0,1fr)_300px]">
         {/* ── LEFT COLUMN: Dynamic & Scalable Scouts Panel ─────────────────── */}
         <section
           aria-label="Scouts"
-          className="rounded-2xl border border-white/[0.08] bg-[#0a1224]/90 p-3 shadow-[0_18px_42px_-12px_rgba(0,0,0,0.75)] backdrop-blur-md"
+          className="rounded-2xl border border-white/[0.08] bg-[#0a1224]/90 p-3.5 shadow-[0_18px_42px_-12px_rgba(0,0,0,0.75)] backdrop-blur-md"
         >
           <header className="mb-2.5 flex items-center gap-2.5 px-1">
             <h2 className="text-[15px] font-bold tracking-tight text-white">Scouts</h2>
@@ -567,19 +553,19 @@ export function LiveDiscoveryScreen({
           )}
         </section>
 
-        {/* ── CENTER COLUMN: Heading + 3D Map + Minimal Target Progress Bar ── */}
-        <section className="flex min-w-0 flex-col items-center pt-0.5 text-center">
+        {/* ── CENTER COLUMN: Heading + 3D Map + Sleek Single-Row Target Bar ── */}
+        <section className="flex min-w-0 flex-col items-center pt-1 text-center">
           <p className="text-[10px] font-semibold uppercase tracking-[0.34em] text-slate-300/80">
             {eyebrow}
           </p>
-          <h1 className="mt-0.5 text-2xl font-extrabold tracking-tight sm:text-3xl xl:text-[34px] xl:leading-[1.1]">
+          <h1 className="mt-1 text-2xl font-extrabold tracking-tight sm:text-3xl xl:text-[36px] xl:leading-[1.1]">
             <span className="text-white">{titleWhite}</span>
             <span className="bg-gradient-to-r from-[#60a5fa] via-[#3b82f6] to-[#2563eb] bg-clip-text text-transparent">
               {titleAccent}
             </span>
           </h1>
           {subtitle && (
-            <p className="mt-1 max-w-lg text-xs leading-relaxed text-slate-300/85">
+            <p className="mt-1.5 max-w-lg text-xs leading-relaxed text-slate-300/85">
               {subtitle}
             </p>
           )}
@@ -588,7 +574,7 @@ export function LiveDiscoveryScreen({
             <IsometricDiscoveryMap />
           </div>
 
-          <div className="mt-1 w-full">
+          <div className="mt-2 w-full">
             <TargetJourneyBar
               delivered={delivered}
               target={target}
@@ -598,12 +584,12 @@ export function LiveDiscoveryScreen({
         </section>
 
         {/* ── RIGHT COLUMN: Compact Delivered/Rejected + Search Brief ──────── */}
-        <aside className="space-y-2.5">
+        <aside className="space-y-3">
           {/* Delivered & Rejected Counter Cards */}
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-2 gap-3">
             <div
               data-testid="discovery-delivered-card"
-              className="rounded-xl border border-white/[0.08] bg-[#0a1224]/90 px-3.5 py-2.5 shadow-[0_14px_32px_-12px_rgba(0,0,0,0.7)] backdrop-blur-md"
+              className="rounded-xl border border-white/[0.08] bg-[#0a1224]/90 px-3.5 py-3 shadow-[0_14px_32px_-12px_rgba(0,0,0,0.7)] backdrop-blur-md"
             >
               <div className="grid size-7 place-items-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
                 <Check className="size-4" strokeWidth={2.6} />
@@ -616,7 +602,7 @@ export function LiveDiscoveryScreen({
 
             <div
               data-testid="discovery-rejected-card"
-              className="rounded-xl border border-white/[0.08] bg-[#0a1224]/90 px-3.5 py-2.5 shadow-[0_14px_32px_-12px_rgba(0,0,0,0.7)] backdrop-blur-md"
+              className="rounded-xl border border-white/[0.08] bg-[#0a1224]/90 px-3.5 py-3 shadow-[0_14px_32px_-12px_rgba(0,0,0,0.7)] backdrop-blur-md"
             >
               <div className="grid size-7 place-items-center rounded-lg border border-rose-500/30 bg-rose-500/15 text-rose-400">
                 <X className="size-4" strokeWidth={2.6} />
@@ -632,7 +618,7 @@ export function LiveDiscoveryScreen({
           <section
             aria-label="Search Brief"
             data-testid="discovery-search-brief"
-            className="rounded-2xl border border-white/[0.08] bg-[#0a1224]/90 px-3.5 py-3 shadow-[0_18px_42px_-12px_rgba(0,0,0,0.75)] backdrop-blur-md"
+            className="rounded-2xl border border-white/[0.08] bg-[#0a1224]/90 px-4 py-3.5 shadow-[0_18px_42px_-12px_rgba(0,0,0,0.75)] backdrop-blur-md"
           >
             <header className="flex items-center gap-2.5 border-b border-white/[0.07] pb-2.5">
               <div className="grid size-7 place-items-center rounded-lg border border-blue-400/30 bg-blue-500/15 text-blue-400">
@@ -643,7 +629,7 @@ export function LiveDiscoveryScreen({
 
             <dl className="mt-1 divide-y divide-white/[0.06]">
               {/* Country */}
-              <div className="flex items-center justify-between gap-2.5 py-2">
+              <div className="flex items-center justify-between gap-2.5 py-2.5">
                 <dt className="flex items-center gap-2 text-[11.5px] font-medium text-slate-300">
                   <MapPin className="size-3.5 shrink-0 text-slate-400" />
                   <span>Country</span>
@@ -663,7 +649,7 @@ export function LiveDiscoveryScreen({
               </div>
 
               {/* Niche */}
-              <div className="flex items-center justify-between gap-2.5 py-2">
+              <div className="flex items-center justify-between gap-2.5 py-2.5">
                 <dt className="flex items-center gap-2 text-[11.5px] font-medium text-slate-300">
                   <Layers className="size-3.5 shrink-0 text-slate-400" />
                   <span>Niche</span>
@@ -677,7 +663,7 @@ export function LiveDiscoveryScreen({
               </div>
 
               {/* Channels */}
-              <div className="flex items-center justify-between gap-2.5 py-2">
+              <div className="flex items-center justify-between gap-2.5 py-2.5">
                 <dt className="flex items-center gap-2 text-[11.5px] font-medium text-slate-300">
                   <Network className="size-3.5 shrink-0 text-slate-400" />
                   <span>Channels</span>
@@ -705,7 +691,7 @@ export function LiveDiscoveryScreen({
               </div>
 
               {/* Discovery Method */}
-              <div className="flex items-center justify-between gap-2.5 pt-2 pb-0.5">
+              <div className="flex items-center justify-between gap-2.5 pt-2.5 pb-0.5">
                 <dt className="flex items-center gap-2 text-[11.5px] font-medium text-slate-300">
                   <Zap className="size-3.5 shrink-0 text-slate-400" />
                   <span>Discovery Method</span>
@@ -721,7 +707,7 @@ export function LiveDiscoveryScreen({
 
             {/* Accessible Cancel Search control */}
             {!isTerminal && (
-              <div className="mt-2.5 border-t border-white/[0.07] pt-2.5">
+              <div className="mt-3 border-t border-white/[0.07] pt-2.5">
                 <button
                   type="button"
                   disabled={isCancelling}

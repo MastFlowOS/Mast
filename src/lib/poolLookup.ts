@@ -5,6 +5,7 @@ import { channelsSatisfied } from "../lib/channelFilter.js";
 import { evaluateLeadQuality, POOL_QUALITY_ARGS } from "../lib/leadQualityPolicy.js";
 import { COUNTRIES, REGION_NAMES } from "./geo/countries.js";
 import { parseGeoScope } from "./geo/scope.js";
+import { normalizeBrandDomain, normalizeBrandInstagram } from "./brandDedup.js";
 
 export type PoolLookupParams = {
   userId: string;
@@ -228,6 +229,8 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
     if (bizError) throw bizError;
 
     const businessById = new Map<string, PoolBusiness>((businesses ?? []).map((b) => [b.id, b as PoolBusiness]));
+    const seenBrandDomains = new Set<string>();
+    const seenBrandInstagrams = new Set<string>();
 
     try {
       for (const row of rows) {
@@ -252,6 +255,16 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
           continue;
         }
 
+        const brandDomain = normalizeBrandDomain(business.website);
+        const brandIg = normalizeBrandInstagram(business.instagram);
+        if (
+          (brandDomain && seenBrandDomains.has(brandDomain)) ||
+          (brandIg && seenBrandInstagrams.has(brandIg))
+        ) {
+          skipped.alreadyOwned += 1;
+          continue;
+        }
+
         const result = await insertLeadForUser(
           business,
           {
@@ -273,6 +286,8 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
         }
 
         if (result.wasNewForUser) {
+          if (brandDomain) seenBrandDomains.add(brandDomain);
+          if (brandIg) seenBrandInstagrams.add(brandIg);
           delivered.push({ businessId: row.business_id, opportunityScore: row.opportunity_score });
         } else {
           // Race with a concurrent request for the same user; the credit

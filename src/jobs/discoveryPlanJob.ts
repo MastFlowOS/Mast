@@ -60,6 +60,7 @@ import {
   discoveryFailedEvent,
   initializationProgressEvent,
 } from "../discovery/liveDiscoveryEvent.js";
+import { normalizeBrandDomain, normalizeBrandInstagram, extractBrandFingerprints } from "../lib/brandDedup.js";
 
 
 const db = supabaseAdmin as any;
@@ -278,6 +279,12 @@ function extractPlaceIdsFromRow(row: any, placeIds: Set<string>): void {
   }
 }
 
+function extractBrandIdentifiersFromRow(row: any, domains: Set<string>, instagrams: Set<string>): void {
+  const { domain, instagram } = extractBrandFingerprints(row);
+  if (domain) domains.add(domain);
+  if (instagram) instagrams.add(instagram);
+}
+
 export type TruncationStatus = "complete" | "truncated" | "possibly_truncated";
 
 export interface KnownPlaceIdsOptions {
@@ -291,6 +298,8 @@ export interface KnownPlaceIdsResult {
   truncationStatus: TruncationStatus;
   totalLoaded: number;
   pageCount: number;
+  knownDomains?: Set<string>;
+  knownInstagrams?: Set<string>;
 }
 
 /**
@@ -315,6 +324,8 @@ export async function getKnownPlaceIdsForTask(
   let pageCount = 0;
   try {
     const placeIds = new Set<string>();
+    const knownDomains = new Set<string>();
+    const knownInstagrams = new Set<string>();
     const pageSize = Math.max(1, options?.pageSize ?? 1000);
     const MAX_PAGES = Math.max(1, options?.maxPages ?? 500); // Defensive ceiling: up to 500,000 leads
 
@@ -326,7 +337,7 @@ export async function getKnownPlaceIdsForTask(
         pageCount++;
         let query = db
           .from("businesses")
-          .select("id, place_id, fingerprints, leads!inner(user_id)")
+          .select("id, place_id, fingerprints, website, instagram, leads!inner(user_id)")
           .eq("leads.user_id", userId);
 
         // Explicit country scoping policy:
@@ -378,6 +389,7 @@ export async function getKnownPlaceIdsForTask(
 
         for (const row of data) {
           extractPlaceIdsFromRow(row, placeIds);
+          extractBrandIdentifiersFromRow(row, knownDomains, knownInstagrams);
         }
 
         if (data.length > 0) {
@@ -462,6 +474,8 @@ export async function getKnownPlaceIdsForTask(
       truncationStatus: { value: truncationStatus, enumerable: false, writable: true },
       totalLoaded: { value: result.length, enumerable: false, writable: true },
       pageCount: { value: pageCount, enumerable: false, writable: true },
+      knownDomains: { value: knownDomains, enumerable: false, writable: true },
+      knownInstagrams: { value: knownInstagrams, enumerable: false, writable: true },
     });
     return result;
   } catch (err) {
@@ -471,6 +485,8 @@ export async function getKnownPlaceIdsForTask(
       truncationStatus: { value: "complete" as TruncationStatus, enumerable: false, writable: true },
       totalLoaded: { value: 0, enumerable: false, writable: true },
       pageCount: { value: 0, enumerable: false, writable: true },
+      knownDomains: { value: new Set<string>(), enumerable: false, writable: true },
+      knownInstagrams: { value: new Set<string>(), enumerable: false, writable: true },
     });
     return emptyResult;
   }
@@ -489,6 +505,8 @@ export async function getKnownPlaceIdsResultForTask(
     truncationStatus: (arr as any).truncationStatus ?? "complete",
     totalLoaded: arr.length,
     pageCount: (arr as any).pageCount ?? 0,
+    knownDomains: (arr as any).knownDomains ?? new Set<string>(),
+    knownInstagrams: (arr as any).knownInstagrams ?? new Set<string>(),
   };
 }
 
@@ -597,6 +615,9 @@ async function runOneAreaAttempt(
   const knownPlaceIds = ctx.cachedKnownPlaceIds
     ? [...ctx.cachedKnownPlaceIds]
     : await getKnownPlaceIdsForTask(db, task.user_id, task.country_code, task.city);
+  const taskSeenDomains: Set<string> = (ctx as any).taskSeenDomains ?? new Set<string>((ctx.cachedKnownPlaceIds as any)?.knownDomains ?? []);
+  const taskSeenInstagrams: Set<string> = (ctx as any).taskSeenInstagrams ?? new Set<string>((ctx.cachedKnownPlaceIds as any)?.knownInstagrams ?? []);
+  const taskInFlightBrands: Set<string> = (ctx as any).taskInFlightBrands ?? new Set<string>();
   const pythonTimer = profiler.timer("python_subprocess_total");
 
   // Outer loop: one iteration per SearchQuery (most providers produce one;
@@ -790,6 +811,34 @@ async function runOneAreaAttempt(
         continue;
       }
 
+      // ── Brand-level duplicate check (0ms in-memory set) ──
+      // If the user already owns a lead with this brand domain or Instagram handle,
+      // skip immediately to protect user credits and prevent duplicate branch pitches.
+      const initialBrandDomain = normalizeBrandDomain(lead.website);
+      const initialBrandIg = normalizeBrandInstagram(lead.instagram);
+      if (
+        (initialBrandDomain && (taskSeenDomains.has(initialBrandDomain) || taskInFlightBrands.has(`web:${initialBrandDomain}`))) ||
+        (initialBrandIg && (taskSeenInstagrams.has(initialBrandIg) || taskInFlightBrands.has(`ig:${initialBrandIg}`)))
+      ) {
+        duplicates += 1;
+        funnel.recordDuplicateSkipped("brand_portfolio_duplicate", pid);
+        traceLog(`PIPELINE ${pid}`);
+        traceLog(`EXITED HERE`);
+        traceLog(`reason=duplicate_brand_already_owned_by_user:domain=${initialBrandDomain},ig=${initialBrandIg}`);
+        publishDiscoveryLiveEvent(
+          candidateRejectedEvent(
+            payload.planId,
+            effectiveScoutId,
+            pid,
+            "duplicate_already_owned_by_user",
+            areaLabel,
+            lead.name,
+            "duplicate",
+          ),
+        );
+        continue;
+      }
+
       if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
         skipped += 1;
         traceLog(`PIPELINE ${pid}`);
@@ -800,6 +849,24 @@ async function runOneAreaAttempt(
 
       // Dispatch candidate ingestion to bounded pool
       const candidateTask = (async () => {
+        const inFlightKeys: string[] = [];
+        if (initialBrandDomain) {
+          const k = `web:${initialBrandDomain}`;
+          taskInFlightBrands.add(k);
+          inFlightKeys.push(k);
+        }
+        if (initialBrandIg) {
+          const k = `ig:${initialBrandIg}`;
+          taskInFlightBrands.add(k);
+          inFlightKeys.push(k);
+        }
+
+        const cleanupInFlight = () => {
+          for (const k of inFlightKeys) {
+            taskInFlightBrands.delete(k);
+          }
+        };
+
         try {
           let businessId: string;
           try {
@@ -807,6 +874,7 @@ async function runOneAreaAttempt(
             businessId = await upsertBusinessFromEngineLead(lead, payload.request.region, undefined, payload.request.scrapeJobId);
             tUpsert.end();
           } catch (upsertErr) {
+            cleanupInFlight();
             const message = upsertErr instanceof Error ? upsertErr.message : String(upsertErr);
             console.error(`[discoveryPlanJob] business upsert failed for pid=${pid} name=${lead.name}`, upsertErr);
             failed += 1;
@@ -818,6 +886,7 @@ async function runOneAreaAttempt(
           }
 
           if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
+            cleanupInFlight();
             skipped += 1;
             traceLog(`PIPELINE ${pid}`);
             traceLog(`EXITED HERE`);
@@ -837,6 +906,7 @@ async function runOneAreaAttempt(
               .maybeSingle();
 
             if (existingUserLead) {
+              cleanupInFlight();
               duplicates += 1;
               funnel.recordDuplicateSkipped("post_upsert_owned_lead", pid);
               traceLog(`PIPELINE ${pid}`);
@@ -898,6 +968,7 @@ async function runOneAreaAttempt(
             traceLog(`CHANNELS_AFTER_ENRICHMENT email=${!!enriched?.email}, phone=${!!enriched?.phone}, instagram=${!!enriched?.instagram}, website=${!!enriched?.website}`);
             traceLog(`CHANNELS_SATISFIED=${satisfied}`);
             if (!satisfied) {
+              cleanupInFlight();
               rejected += 1;
               const missingNow = requestedChannels.filter((c) => !channelsSatisfied(deliverable, [c]));
               funnel.recordMissingChannelRejection(missingNow, pid);
@@ -906,6 +977,33 @@ async function runOneAreaAttempt(
               traceLog(`reason=post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)},missing=${JSON.stringify(missingNow)},reachable=${websiteReachable},homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false},row=${JSON.stringify(enriched)}`);
               console.log(`[candidate-audit][${pid}] stage=post_enrichment_channel_gate decision=rejected requested=${JSON.stringify(requestedChannels)} missing=${JSON.stringify(missingNow)} reachable=${websiteReachable} homepage_fetch_failed=${contactAudit?.homepage_fetch_failed ?? false}`);
               publishDiscoveryLiveEvent(candidateRejectedEvent(payload.planId, effectiveScoutId, pid, `post_enrichment_channel_gate:requested=${JSON.stringify(requestedChannels)}`, areaLabel));
+              return;
+            }
+
+            // Post-enrichment brand-level dedup (catches brands discovered via website crawl)
+            const enrichedBrandDomain = normalizeBrandDomain(deliverable.website);
+            const enrichedBrandIg = normalizeBrandInstagram(deliverable.instagram);
+            if (
+              (enrichedBrandDomain && (taskSeenDomains.has(enrichedBrandDomain) || (taskInFlightBrands.has(`web:${enrichedBrandDomain}`) && !inFlightKeys.includes(`web:${enrichedBrandDomain}`)))) ||
+              (enrichedBrandIg && (taskSeenInstagrams.has(enrichedBrandIg) || (taskInFlightBrands.has(`ig:${enrichedBrandIg}`) && !inFlightKeys.includes(`ig:${enrichedBrandIg}`))))
+            ) {
+              duplicates += 1;
+              cleanupInFlight();
+              funnel.recordDuplicateSkipped("brand_portfolio_duplicate", pid);
+              traceLog(`PIPELINE ${pid}`);
+              traceLog(`EXITED HERE`);
+              traceLog(`reason=duplicate_brand_already_owned_by_user:domain=${enrichedBrandDomain},ig=${enrichedBrandIg}`);
+              publishDiscoveryLiveEvent(
+                candidateRejectedEvent(
+                  payload.planId,
+                  effectiveScoutId,
+                  pid,
+                  "duplicate_already_owned_by_user",
+                  areaLabel,
+                  deliverable.name,
+                  "duplicate",
+                ),
+              );
               return;
             }
 
@@ -928,6 +1026,7 @@ async function runOneAreaAttempt(
           tEnqueue.end();
 
           if (requestAbort.signal.aborted || (await observeTerminalPlan())) {
+            cleanupInFlight();
             skipped += 1;
             traceLog(`PIPELINE ${pid}`);
             traceLog(`EXITED HERE`);
@@ -951,6 +1050,7 @@ async function runOneAreaAttempt(
             }, payload.request.region, businessId);
             tDeliver.end();
           } catch (deliverErr) {
+            cleanupInFlight();
             const message = deliverErr instanceof Error ? deliverErr.message : String(deliverErr);
             console.error(`[discoveryPlanJob] deliverLead failed for pid=${pid} businessId=${businessId}`, deliverErr);
             failed += 1;
@@ -963,6 +1063,7 @@ async function runOneAreaAttempt(
           traceLog(`DELIVER_LEAD_END result=${JSON.stringify(delivery)}`);
 
           if (delivery.limitReached) {
+            cleanupInFlight();
             skipped += 1;
             traceLog(`PIPELINE ${pid}`);
             traceLog(`EXITED HERE`);
@@ -972,6 +1073,7 @@ async function runOneAreaAttempt(
             return;
           }
           if (!delivery.wasNewForUser) {
+            cleanupInFlight();
             traceLog(`PIPELINE ${pid}`);
             traceLog(`EXITED HERE`);
             traceLog(`reason=duplicate_already_owned_by_user:businessId=${businessId},no new leads row inserted`);
@@ -980,6 +1082,15 @@ async function runOneAreaAttempt(
             duplicates += 1;
             return;
           }
+
+          // Register brand domain and Instagram handle to permanently protect this task from duplicate branches
+          if (initialBrandDomain) taskSeenDomains.add(initialBrandDomain);
+          if (initialBrandIg) taskSeenInstagrams.add(initialBrandIg);
+          const finalBrandDomain = normalizeBrandDomain(deliverable.website);
+          const finalBrandIg = normalizeBrandInstagram(deliverable.instagram);
+          if (finalBrandDomain) taskSeenDomains.add(finalBrandDomain);
+          if (finalBrandIg) taskSeenInstagrams.add(finalBrandIg);
+          cleanupInFlight();
 
           funnel.recordDelivered(pid);
 
@@ -1002,6 +1113,7 @@ async function runOneAreaAttempt(
           console.log(`FINISHED`);
           await observeTerminalPlan(true);
         } catch (taskErr) {
+          cleanupInFlight();
           const message = taskErr instanceof Error ? taskErr.message : String(taskErr);
           console.error(`[discoveryPlanJob] unhandled candidate task failure for pid=${pid}:`, taskErr);
           failed += 1;
@@ -1575,6 +1687,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     const funnel = getCandidateFunnelTracker(payload.planId);
     const taskAttempt = (task.attempts ?? 0) + 1;
     const cachedKnownPlaceIds = await getKnownPlaceIdsForTask(db, task.user_id, task.country_code, task.city);
+    const taskSeenDomains = new Set<string>((cachedKnownPlaceIds as any)?.knownDomains ?? []);
+    const taskSeenInstagrams = new Set<string>((cachedKnownPlaceIds as any)?.knownInstagrams ?? []);
+    const taskInFlightBrands = new Set<string>();
     const attemptCtx = {
       db,
       task,
@@ -1589,6 +1704,9 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
       budgetCoordinator,
       nextAttemptId: () => funnel.nextAttemptId(taskAttempt),
       cachedKnownPlaceIds,
+      taskSeenDomains,
+      taskSeenInstagrams,
+      taskInFlightBrands,
     };
 
     // terminalReason declared above

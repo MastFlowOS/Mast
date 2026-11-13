@@ -1,27 +1,47 @@
 -- =============================================================================
--- Migration 050: Cross-User Lead Cooldown Protection (15-Day Anti-Spam Shield)
+-- Migration 050: Per-Profession Multi-User Lead Cooldown Protection
 -- =============================================================================
--- Prevents local businesses from becoming a "spam grave" by enforcing a
--- cross-user cooldown window (default 15 days) whenever a business is
--- delivered to any user:
---   1. Adds `cooldown_until timestamptz` to `public.businesses` + partial indexes
---      so active cooldown lookups execute in 0ms.
---   2. Updates `public.pool_lookup` (9-arg and 11-arg overloads) to exclude
---      businesses currently in cooldown (`b.cooldown_until <= now()`).
---   3. Updates `public.deliver_lead_for_user` to atomically guard against
---      concurrent cross-user race conditions (`FOR UPDATE` on `businesses`)
---      and stamp `cooldown_until = now() + N days` upon new lead delivery.
+-- Prevents local businesses from becoming a "spam grave" without draining city
+-- inventory for high-volume plans:
+--   1. Scopes cooldowns per (business_id, profession_slug) so a Web Designer
+--      receiving a lead never blocks a Video Editor, SEO agency, or Accountant.
+--   2. Allows up to 5 distinct users within the same profession over a 15-day
+--      window before stamping `cooldown_until = now() + 15 days` for that
+--      profession.
+--   3. Uses a partial index (`WHERE cooldown_until IS NOT NULL`) so `pool_lookup`
+--      and Live Discovery pre-click/pre-enrichment skips execute in 0ms and
+--      only filter businesses that have actually reached the 5-user cap.
 -- =============================================================================
 
 ALTER TABLE public.businesses
   ADD COLUMN IF NOT EXISTS cooldown_until timestamptz;
 
-CREATE INDEX IF NOT EXISTS idx_businesses_cooldown_until
-  ON public.businesses (cooldown_until)
+-- Clear any legacy global single-delivery cooldown stamps on businesses
+UPDATE public.businesses
+SET cooldown_until = NULL
+WHERE cooldown_until IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS public.business_profession_cooldowns (
+  business_id uuid NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+  profession_slug text NOT NULL,
+  delivery_count integer NOT NULL DEFAULT 1,
+  window_started_at timestamptz NOT NULL DEFAULT pg_catalog.now(),
+  cooldown_until timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.now(),
+  PRIMARY KEY (business_id, profession_slug)
+);
+
+ALTER TABLE public.business_profession_cooldowns ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE public.business_profession_cooldowns FROM PUBLIC, anon, authenticated;
+GRANT ALL ON TABLE public.business_profession_cooldowns TO service_role;
+
+CREATE INDEX IF NOT EXISTS idx_bpc_active_cooldown
+  ON public.business_profession_cooldowns (profession_slug, cooldown_until)
   WHERE cooldown_until IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_businesses_cooldown_country
-  ON public.businesses (country_code, cooldown_until)
+CREATE INDEX IF NOT EXISTS idx_bpc_business_profession_active
+  ON public.business_profession_cooldowns (business_id, profession_slug, cooldown_until)
   WHERE cooldown_until IS NOT NULL;
 
 -- -----------------------------------------------------------------------------
@@ -52,7 +72,14 @@ AS $$
     ON s.business_id = b.id AND s.profession_slug = p_profession_slug
   WHERE b.is_disqualified = false
     AND b.archived_at IS NULL
-    AND (b.cooldown_until IS NULL OR b.cooldown_until <= now())
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.business_profession_cooldowns bpc
+      WHERE bpc.business_id = b.id
+        AND bpc.profession_slug = COALESCE(NULLIF(btrim(p_profession_slug), ''), '__global__')
+        AND bpc.cooldown_until IS NOT NULL
+        AND bpc.cooldown_until > now()
+    )
     AND (
       CASE
         WHEN p_country_strict THEN coalesce(b.country_code = ANY(p_country_codes), false)
@@ -120,7 +147,14 @@ AS $$
     ON s.business_id = b.id AND s.profession_slug = p_profession_slug
   WHERE b.is_disqualified = false
     AND b.archived_at IS NULL
-    AND (b.cooldown_until IS NULL OR b.cooldown_until <= now())
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.business_profession_cooldowns bpc
+      WHERE bpc.business_id = b.id
+        AND bpc.profession_slug = COALESCE(NULLIF(btrim(p_profession_slug), ''), '__global__')
+        AND bpc.cooldown_until IS NOT NULL
+        AND bpc.cooldown_until > now()
+    )
     AND (
       CASE
         WHEN p_country_strict THEN coalesce(b.country_code = ANY(p_country_codes), false)
@@ -172,10 +206,10 @@ $$;
 GRANT EXECUTE ON FUNCTION public.pool_lookup(uuid, text, text, text, boolean, integer, text[], boolean, text[], numeric, integer) TO service_role;
 
 COMMENT ON FUNCTION public.pool_lookup(uuid, text, text, text, boolean, integer, text[], boolean, text[], numeric, integer) IS
-  'Shared pool lookup. Enforces cross-user cooldown, requested channels, and positive rating/review quality floors before ORDER BY/LIMIT.';
+  'Shared pool lookup. Enforces per-profession 5-user cooldown, requested channels, and positive rating/review quality floors before ORDER BY/LIMIT.';
 
 -- -----------------------------------------------------------------------------
--- 3. Update deliver_lead_for_user to enforce and stamp cross-user cooldown
+-- 3. Update deliver_lead_for_user to enforce and stamp per-profession 5-user cooldown
 -- -----------------------------------------------------------------------------
 DROP FUNCTION IF EXISTS public.deliver_lead_for_user(
   uuid, uuid, jsonb, integer, integer, uuid
@@ -207,9 +241,13 @@ DECLARE
   v_credit_allowed boolean := FALSE;
   v_source_label text;
   v_discovery_mode text;
+  v_profession_slug text;
   v_cooldown_until timestamptz;
   v_cooldown_days integer;
+  v_cooldown_max_users integer;
 BEGIN
+  v_profession_slug := COALESCE(NULLIF(pg_catalog.btrim(p_lead_row->>'profession_slug'), ''), '__global__');
+
   -- 1. Serialize concurrent delivery attempts for the same (user, business) pair
   PERFORM pg_catalog.pg_advisory_xact_lock(
     424243,
@@ -228,12 +266,17 @@ BEGIN
     RETURN;
   END IF;
 
-  -- 3. Serialize and check cross-user cooldown on the business row before
-  --    claiming any plan slot or charging user credits.
-  SELECT b.cooldown_until INTO v_cooldown_until
-  FROM public.businesses b
-  WHERE b.id = p_business_id
-  FOR UPDATE;
+  -- 3. Serialize and check per-profession cooldown before claiming any plan
+  --    slot or charging user credits.
+  PERFORM pg_catalog.pg_advisory_xact_lock(
+    424244,
+    pg_catalog.hashtext(p_business_id::text || ':' || v_profession_slug)
+  );
+
+  SELECT bpc.cooldown_until INTO v_cooldown_until
+  FROM public.business_profession_cooldowns bpc
+  WHERE bpc.business_id = p_business_id
+    AND bpc.profession_slug = v_profession_slug;
 
   IF v_cooldown_until IS NOT NULL AND v_cooldown_until > pg_catalog.now() THEN
     RETURN QUERY SELECT 'duplicate'::text, NULL::bigint, FALSE, FALSE, FALSE;
@@ -331,16 +374,62 @@ BEGIN
     RETURN;
   END IF;
 
-  -- 7. Stamp cross-user cooldown on the business so no other user receives
-  --    this lead during the cooldown window (default 15 days).
+  -- 7. Increment per-profession delivery counter and stamp 15-day cooldown
+  --    only when the 5th distinct user in this profession receives the lead.
   v_cooldown_days := GREATEST(
     1,
     COALESCE(NULLIF(p_lead_row->>'cooldown_days', '')::integer, 15)
   );
+  v_cooldown_max_users := GREATEST(
+    1,
+    COALESCE(NULLIF(p_lead_row->>'cooldown_max_users', '')::integer, 5)
+  );
 
-  UPDATE public.businesses
-  SET cooldown_until = pg_catalog.now() + pg_catalog.make_interval(days => v_cooldown_days)
-  WHERE id = p_business_id;
+  INSERT INTO public.business_profession_cooldowns AS bpc (
+    business_id,
+    profession_slug,
+    delivery_count,
+    window_started_at,
+    cooldown_until,
+    updated_at
+  ) VALUES (
+    p_business_id,
+    v_profession_slug,
+    1,
+    pg_catalog.now(),
+    CASE WHEN 1 >= v_cooldown_max_users
+         THEN pg_catalog.now() + pg_catalog.make_interval(days => v_cooldown_days)
+         ELSE NULL
+    END,
+    pg_catalog.now()
+  )
+  ON CONFLICT (business_id, profession_slug) DO UPDATE
+  SET
+    delivery_count = CASE
+      WHEN (bpc.cooldown_until IS NOT NULL AND bpc.cooldown_until <= pg_catalog.now())
+        OR bpc.window_started_at <= pg_catalog.now() - pg_catalog.make_interval(days => v_cooldown_days)
+      THEN 1
+      ELSE bpc.delivery_count + 1
+    END,
+    window_started_at = CASE
+      WHEN (bpc.cooldown_until IS NOT NULL AND bpc.cooldown_until <= pg_catalog.now())
+        OR bpc.window_started_at <= pg_catalog.now() - pg_catalog.make_interval(days => v_cooldown_days)
+      THEN pg_catalog.now()
+      ELSE bpc.window_started_at
+    END,
+    cooldown_until = CASE
+      WHEN (
+        CASE
+          WHEN (bpc.cooldown_until IS NOT NULL AND bpc.cooldown_until <= pg_catalog.now())
+            OR bpc.window_started_at <= pg_catalog.now() - pg_catalog.make_interval(days => v_cooldown_days)
+          THEN 1
+          ELSE bpc.delivery_count + 1
+        END
+      ) >= v_cooldown_max_users
+      THEN pg_catalog.now() + pg_catalog.make_interval(days => v_cooldown_days)
+      ELSE NULL
+    END,
+    updated_at = pg_catalog.now();
 
   -- 8. Seed initial timeline activity (non-fatal)
   v_discovery_mode := COALESCE(p_lead_row->>'discovery_mode', 'live');

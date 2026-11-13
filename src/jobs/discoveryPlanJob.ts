@@ -517,14 +517,16 @@ export type CooldownSnapshotResult = {
 };
 
 /**
- * Loads active cross-user cooldown businesses (`cooldown_until > now()`) for
- * pre-click and pre-enrichment skipping. Designed to run in parallel with
- * `getKnownPlaceIdsForTask` via `Promise.all` (0ms extra wall-clock latency),
- * backed by the `idx_businesses_cooldown_until` partial index.
+ * Loads businesses that have reached the 5-user per-profession cooldown
+ * (`business_profession_cooldowns.cooldown_until > now()`) for the requesting
+ * user's profession. Designed to run in parallel with `getKnownPlaceIdsForTask`
+ * via `Promise.all` (0ms extra wall-clock latency), backed by the
+ * `idx_bpc_active_cooldown` partial index.
  */
 export async function getCooldownSnapshotForTask(
   db: any,
   countryCode?: string,
+  professionSlug?: string | null,
   options?: { nowIso?: string; pageSize?: number; maxPages?: number },
 ): Promise<CooldownSnapshotResult> {
   const placeIds = new Set<string>();
@@ -540,13 +542,26 @@ export async function getCooldownSnapshotForTask(
     const maxPages = options?.maxPages ?? 50;
     const normalizedCountry = countryCode ? String(countryCode).trim().toUpperCase() : "";
     const validCountry = /^[A-Z]{2}$/.test(normalizedCountry) ? normalizedCountry : "";
+    const normalizedProfession =
+      typeof professionSlug === "string" && professionSlug.trim().length > 0
+        ? professionSlug.trim()
+        : "__global__";
 
     let lastId: string | number | null = null;
     for (let page = 0; page < maxPages; page++) {
       let query = db
         .from("businesses")
-        .select("id, place_id, fingerprints, website, instagram, cooldown_until")
-        .gt("cooldown_until", nowIso);
+        .select(
+          "id, place_id, fingerprints, website, instagram, business_profession_cooldowns!inner(profession_slug, cooldown_until)",
+        )
+        .eq("business_profession_cooldowns.profession_slug", normalizedProfession);
+
+      if (typeof query.gt === "function") {
+        query = query.gt("business_profession_cooldowns.cooldown_until", nowIso);
+      } else {
+        // Test double without .gt() support on inner join — fail open cleanly
+        break;
+      }
 
       if (validCountry && typeof query.or === "function") {
         query = query.or(`country_code.eq.${validCountry},country_code.is.null,country_code.eq.`);
@@ -1791,7 +1806,7 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
     const taskAttempt = (task.attempts ?? 0) + 1;
     const [userKnownPlaceIds, cooldownSnapshot] = await Promise.all([
       getKnownPlaceIdsForTask(db, task.user_id, task.country_code, task.city),
-      getCooldownSnapshotForTask(db, task.country_code),
+      getCooldownSnapshotForTask(db, task.country_code, payload.request?.professionSlug ?? (task as any).profession_slug),
     ]);
     const mergedKnownPlaceIdSet = new Set<string>(userKnownPlaceIds);
     for (const pid of cooldownSnapshot.placeIds) {

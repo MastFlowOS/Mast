@@ -126,9 +126,10 @@ export const EnvSchema = z
       .min(30_000)
       .default(30 * 60 * 1000),
 
-    // Cross-user lead cooldown window (in days) after a business is delivered to any user,
-    // preventing the same local business from being delivered to multiple users within this window.
+    // Cross-user lead cooldown window (in days) and max distinct users per profession
+    // before a business enters cooldown for that profession.
     LEAD_COOLDOWN_DAYS: z.coerce.number().int().min(1).default(15),
+    LEAD_COOLDOWN_MAX_USERS: z.coerce.number().int().min(1).default(5),
 
     // PHASE 5 — Configurable plan concurrency limits (Refinement 1).
     // JSON blob mapping PlanId → max browser-backed running tasks for that plan.

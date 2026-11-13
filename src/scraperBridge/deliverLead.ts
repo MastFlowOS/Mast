@@ -139,6 +139,16 @@ export function resolveLeadCooldownDays(): number {
   return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 15;
 }
 
+export function resolveLeadCooldownMaxUsers(): number {
+  const raw = Number(process.env.LEAD_COOLDOWN_MAX_USERS);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 5;
+}
+
+export function normalizeCooldownProfessionSlug(professionSlug: string | null | undefined): string {
+  const trimmed = typeof professionSlug === "string" ? professionSlug.trim() : "";
+  return trimmed.length > 0 ? trimmed : "__global__";
+}
+
 export function resolveBusinessCountryCode(lead: EngineLead, region: string): string | null {
   const direct = countryCodeFrom(lead.country_code) ?? countryCodeFrom(lead.country);
   if (direct) return direct;
@@ -501,7 +511,11 @@ export async function insertLeadForUser(
     const { data, error } = await (supabaseAdmin as any).rpc("deliver_lead_for_user", {
       p_user_id: ctx.userId,
       p_business_id: business.id,
-      p_lead_row: { ...leadRow, cooldown_days: resolveLeadCooldownDays() },
+      p_lead_row: {
+        ...leadRow,
+        cooldown_days: resolveLeadCooldownDays(),
+        cooldown_max_users: resolveLeadCooldownMaxUsers(),
+      },
       p_daily_limit: ctx.dailyLimit,
       p_monthly_limit: ctx.monthlyLimit,
       p_discovery_plan_id: ctx.discoveryPlanId ?? null,
@@ -581,6 +595,21 @@ export async function insertLeadForUser(
     return { businessId: business.id, wasNewForUser: false };
   }
 
+  const professionKey = normalizeCooldownProfessionSlug(ctx.professionSlug);
+  try {
+    const { data: activeCooldown } = await (supabaseAdmin as any)
+      .from("business_profession_cooldowns")
+      .select("cooldown_until")
+      .eq("business_id", business.id)
+      .eq("profession_slug", professionKey)
+      .maybeSingle();
+    if (activeCooldown?.cooldown_until && Date.parse(activeCooldown.cooldown_until) > Date.now()) {
+      return { businessId: business.id, wasNewForUser: false };
+    }
+  } catch {
+    // Non-fatal in minimal test doubles
+  }
+
   // The request cap must be atomic too: many independent city workers can
   // discover at once, but together they cannot exceed the requested count.
   let planSlotReserved = false;
@@ -645,11 +674,44 @@ export async function insertLeadForUser(
 
   try {
     const cooldownDays = resolveLeadCooldownDays();
-    const cooldownUntil = new Date(Date.now() + cooldownDays * 24 * 60 * 60 * 1000).toISOString();
-    await supabaseAdmin
-      .from("businesses")
-      .update({ cooldown_until: cooldownUntil } as any)
-      .eq("id", business.id);
+    const maxUsers = resolveLeadCooldownMaxUsers();
+    const windowMs = cooldownDays * 24 * 60 * 60 * 1000;
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    const { data: existingBpc } = await (supabaseAdmin as any)
+      .from("business_profession_cooldowns")
+      .select("delivery_count, window_started_at, cooldown_until")
+      .eq("business_id", business.id)
+      .eq("profession_slug", professionKey)
+      .maybeSingle();
+
+    if (!existingBpc) {
+      await (supabaseAdmin as any).from("business_profession_cooldowns").insert({
+        business_id: business.id,
+        profession_slug: professionKey,
+        delivery_count: 1,
+        window_started_at: nowIso,
+        cooldown_until: 1 >= maxUsers ? new Date(nowMs + windowMs).toISOString() : null,
+        updated_at: nowIso,
+      });
+    } else {
+      const windowExpired =
+        (existingBpc.cooldown_until && Date.parse(existingBpc.cooldown_until) <= nowMs) ||
+        (existingBpc.window_started_at && Date.parse(existingBpc.window_started_at) <= nowMs - windowMs);
+      const nextCount = windowExpired ? 1 : (Number(existingBpc.delivery_count) || 0) + 1;
+      const nextCooldownUntil = nextCount >= maxUsers ? new Date(nowMs + windowMs).toISOString() : null;
+      await (supabaseAdmin as any)
+        .from("business_profession_cooldowns")
+        .update({
+          delivery_count: nextCount,
+          window_started_at: windowExpired ? nowIso : existingBpc.window_started_at,
+          cooldown_until: nextCooldownUntil,
+          updated_at: nowIso,
+        })
+        .eq("business_id", business.id)
+        .eq("profession_slug", professionKey);
+    }
   } catch {
     // Non-fatal in minimal test doubles
   }

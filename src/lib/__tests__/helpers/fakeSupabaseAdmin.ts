@@ -25,6 +25,7 @@ export class FakeDb {
   businesses: Row[] = [];
   leads: Row[] = [];
   lead_activities: Row[] = [];
+  business_profession_cooldowns: Row[] = [];
   /** business_id -> opportunity score, for the ranked (Pro) pool path */
   opportunityScores = new Map<string, number>();
   ops: RecordedOp[] = [];
@@ -48,7 +49,14 @@ export class FakeDb {
   }
 
   private table(name: string): Row[] {
-    if (name === "businesses" || name === "leads" || name === "lead_activities") return this[name];
+    if (
+      name === "businesses" ||
+      name === "leads" ||
+      name === "lead_activities" ||
+      name === "business_profession_cooldowns"
+    ) {
+      return this[name];
+    }
     throw new Error(`FakeDb: unsupported table "${name}"`);
   }
 
@@ -86,10 +94,22 @@ export class FakeDb {
     // profession slug no score can ever match, so ranking has nothing to use.
     const scoreFor = (id: string): number | null =>
       args.p_profession_slug == null ? null : (this.opportunityScores.get(id) ?? null);
+    const professionKey =
+      typeof args.p_profession_slug === "string" && args.p_profession_slug.trim().length > 0
+        ? args.p_profession_slug.trim()
+        : "__global__";
+    const isProfessionCooldownActive = (businessId: string) =>
+      this.business_profession_cooldowns.some(
+        (bpc) =>
+          bpc.business_id === businessId &&
+          bpc.profession_slug === professionKey &&
+          bpc.cooldown_until &&
+          Date.parse(String(bpc.cooldown_until)) > Date.now(),
+      );
     const matches = this.businesses.filter(
       (b) =>
         b.is_disqualified !== true &&
-        (!b.cooldown_until || Date.parse(String(b.cooldown_until)) <= Date.now()) &&
+        !isProfessionCooldownActive(b.id) &&
         regionOk(b) &&
         (args.p_niche === "" || has(b.niche, args.p_niche)) &&
         channelOk(b) &&

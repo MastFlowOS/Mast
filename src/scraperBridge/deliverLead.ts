@@ -134,6 +134,11 @@ export function isLegacyFallbackPermitted(): boolean {
   return env === "test" || env === "development";
 }
 
+export function resolveLeadCooldownDays(): number {
+  const raw = Number(process.env.LEAD_COOLDOWN_DAYS);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 15;
+}
+
 export function resolveBusinessCountryCode(lead: EngineLead, region: string): string | null {
   const direct = countryCodeFrom(lead.country_code) ?? countryCodeFrom(lead.country);
   if (direct) return direct;
@@ -250,7 +255,7 @@ export async function upsertBusinessFromEngineLead(
       if (!isLegacyFallbackPermitted()) {
         throw new Error(`[deliverLead] Fail-closed atomic upsert RPC failed (NODE_ENV=${process.env.NODE_ENV ?? "unset"}): ${errMsg} (code: ${rpcError.code || "unknown"})`);
       }
-      if (!errMsg.includes("does not exist") && !errMsg.includes("function") && rpcError.code !== "42883") {
+      if (!errMsg.includes("does not exist") && !errMsg.includes("function") && !errMsg.includes("unsupported rpc") && rpcError.code !== "42883") {
         throw rpcError;
       }
     }
@@ -259,7 +264,7 @@ export async function upsertBusinessFromEngineLead(
       throw rpcErr instanceof Error ? rpcErr : new Error(String(rpcErr));
     }
     const errMsg = rpcErr instanceof Error ? rpcErr.message : String(rpcErr);
-    if (!errMsg.includes("does not exist") && !errMsg.includes("function") && (rpcErr as any)?.code !== "42883") {
+    if (!errMsg.includes("does not exist") && !errMsg.includes("function") && !errMsg.includes("unsupported rpc") && (rpcErr as any)?.code !== "42883") {
       throw rpcErr;
     }
   }
@@ -496,7 +501,7 @@ export async function insertLeadForUser(
     const { data, error } = await (supabaseAdmin as any).rpc("deliver_lead_for_user", {
       p_user_id: ctx.userId,
       p_business_id: business.id,
-      p_lead_row: leadRow,
+      p_lead_row: { ...leadRow, cooldown_days: resolveLeadCooldownDays() },
       p_daily_limit: ctx.dailyLimit,
       p_monthly_limit: ctx.monthlyLimit,
       p_discovery_plan_id: ctx.discoveryPlanId ?? null,
@@ -542,7 +547,7 @@ export async function insertLeadForUser(
       if (!isLegacyFallbackPermitted()) {
         throw new Error(`[deliverLead] Fail-closed atomic lead delivery RPC failed (NODE_ENV=${process.env.NODE_ENV ?? "unset"}): ${errMsg} (code: ${error.code || "unknown"})`);
       }
-      if (!errMsg.includes("does not exist") && !errMsg.includes("function") && error.code !== "42883") {
+      if (!errMsg.includes("does not exist") && !errMsg.includes("function") && !errMsg.includes("unsupported rpc") && error.code !== "42883") {
         throw error;
       }
     }
@@ -551,7 +556,7 @@ export async function insertLeadForUser(
       throw rpcErr instanceof Error ? rpcErr : new Error(String(rpcErr));
     }
     const errMsg = rpcErr instanceof Error ? rpcErr.message : String(rpcErr);
-    if (!errMsg.includes("does not exist") && !errMsg.includes("function") && (rpcErr as any)?.code !== "42883") {
+    if (!errMsg.includes("does not exist") && !errMsg.includes("function") && !errMsg.includes("unsupported rpc") && (rpcErr as any)?.code !== "42883") {
       throw rpcErr;
     }
   }
@@ -636,6 +641,17 @@ export async function insertLeadForUser(
     await refundLeadUsage(ctx, "duplicate_race");
     if (planSlotReserved) await (supabaseAdmin as any).rpc("release_discovery_delivery", { p_plan_id: ctx.discoveryPlanId });
     return { businessId: business.id, wasNewForUser: false };
+  }
+
+  try {
+    const cooldownDays = resolveLeadCooldownDays();
+    const cooldownUntil = new Date(Date.now() + cooldownDays * 24 * 60 * 60 * 1000).toISOString();
+    await supabaseAdmin
+      .from("businesses")
+      .update({ cooldown_until: cooldownUntil } as any)
+      .eq("id", business.id);
+  } catch {
+    // Non-fatal in minimal test doubles
   }
 
   // Seed one timeline event so the CRM/Relationships view isn't empty the

@@ -396,12 +396,16 @@ describe("MAST Hardened Migration Runner — Safety & Defect Verification Suite"
     );
   });
 
-  // Scenario 11: All baseline migrations applied, no new migrations -> clean up-to-date no-op
+  // Scenario 11: All baseline + forward migrations applied, no new migrations -> clean up-to-date no-op
   test("Scenario 11: Up-to-date database performs zero DDL and returns clean success", async () => {
+    const allDiskSql = fs
+      .readdirSync(path.resolve("migrations"))
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
     const client = new MockPgClient({
       markerTables: ["businesses", "leads", "profiles"],
       ledgerExists: true,
-      appliedMigrations: [...allBaseline]
+      appliedMigrations: allDiskSql
     });
 
     const result = await runMigrations({

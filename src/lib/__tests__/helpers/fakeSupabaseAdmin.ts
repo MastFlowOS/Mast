@@ -89,6 +89,7 @@ export class FakeDb {
     const matches = this.businesses.filter(
       (b) =>
         b.is_disqualified !== true &&
+        (!b.cooldown_until || Date.parse(String(b.cooldown_until)) <= Date.now()) &&
         regionOk(b) &&
         (args.p_niche === "" || has(b.niche, args.p_niche)) &&
         channelOk(b) &&
@@ -109,6 +110,9 @@ export class FakeDb {
   }
 
   rpc(fn: string, args: Row) {
+    if (fn !== "pool_lookup" && fn !== "try_increment_lead_usage") {
+      throw new Error(`FakeDb: unsupported rpc "${fn}"`);
+    }
     this.rpcCalls.push({ fn, args });
     let data: unknown;
     let error: { message: string } | null = null;

@@ -510,6 +510,109 @@ export async function getKnownPlaceIdsResultForTask(
   };
 }
 
+export type CooldownSnapshotResult = {
+  placeIds: string[];
+  domains: Set<string>;
+  instagrams: Set<string>;
+};
+
+/**
+ * Loads active cross-user cooldown businesses (`cooldown_until > now()`) for
+ * pre-click and pre-enrichment skipping. Designed to run in parallel with
+ * `getKnownPlaceIdsForTask` via `Promise.all` (0ms extra wall-clock latency),
+ * backed by the `idx_businesses_cooldown_until` partial index.
+ */
+export async function getCooldownSnapshotForTask(
+  db: any,
+  countryCode?: string,
+  options?: { nowIso?: string; pageSize?: number; maxPages?: number },
+): Promise<CooldownSnapshotResult> {
+  const placeIds = new Set<string>();
+  const domains = new Set<string>();
+  const instagrams = new Set<string>();
+  if (!db || typeof db.from !== "function") {
+    return { placeIds: [], domains, instagrams };
+  }
+
+  try {
+    const nowIso = options?.nowIso ?? new Date().toISOString();
+    const pageSize = options?.pageSize ?? 1000;
+    const maxPages = options?.maxPages ?? 50;
+    const normalizedCountry = countryCode ? String(countryCode).trim().toUpperCase() : "";
+    const validCountry = /^[A-Z]{2}$/.test(normalizedCountry) ? normalizedCountry : "";
+
+    let lastId: string | number | null = null;
+    for (let page = 0; page < maxPages; page++) {
+      let query = db
+        .from("businesses")
+        .select("id, place_id, fingerprints, website, instagram, cooldown_until")
+        .gt("cooldown_until", nowIso);
+
+      if (validCountry && typeof query.or === "function") {
+        query = query.or(`country_code.eq.${validCountry},country_code.is.null,country_code.eq.`);
+      }
+      if (typeof query.order === "function") {
+        query = query.order("id", { ascending: true });
+      }
+      if (lastId != null && typeof query.gt === "function") {
+        query = query.gt("id", lastId);
+      }
+
+      const res = typeof query.limit === "function"
+        ? await query.limit(pageSize)
+        : typeof query.range === "function"
+          ? await query.range(page * pageSize, (page + 1) * pageSize - 1)
+          : { data: [], error: null };
+
+      if (res?.error || !Array.isArray(res?.data) || res.data.length === 0) {
+        break;
+      }
+
+      for (const row of res.data) {
+        if (row.place_id && typeof row.place_id === "string") {
+          for (const form of expandPlaceIdForms(row.place_id)) {
+            placeIds.add(form);
+          }
+        }
+        if (Array.isArray(row.fingerprints)) {
+          for (const fp of row.fingerprints) {
+            if (typeof fp === "string" && fp.startsWith("place:")) {
+              const pid = fp.slice("place:".length).trim();
+              if (pid) {
+                for (const form of expandPlaceIdForms(pid)) {
+                  placeIds.add(form);
+                }
+              }
+            }
+          }
+        }
+        const dom = normalizeBrandDomain(row.website);
+        if (dom) domains.add(dom);
+        const ig = normalizeBrandInstagram(row.instagram);
+        if (ig) instagrams.add(ig);
+      }
+
+      const lastRow = res.data[res.data.length - 1];
+      if (lastRow?.id != null) {
+        lastId = lastRow.id;
+      } else {
+        break;
+      }
+      if (res.data.length < pageSize) {
+        break;
+      }
+    }
+  } catch (err) {
+    console.warn("[discoveryPlanJob] cooldown snapshot lookup failed (failing open):", err);
+  }
+
+  return {
+    placeIds: Array.from(placeIds),
+    domains,
+    instagrams,
+  };
+}
+
 async function runOneAreaAttempt(
   ctx: {
     db: any;
@@ -1686,9 +1789,27 @@ export async function handleDiscoveryTask(payload: DiscoveryTaskPayload): Promis
 
     const funnel = getCandidateFunnelTracker(payload.planId);
     const taskAttempt = (task.attempts ?? 0) + 1;
-    const cachedKnownPlaceIds = await getKnownPlaceIdsForTask(db, task.user_id, task.country_code, task.city);
-    const taskSeenDomains = new Set<string>((cachedKnownPlaceIds as any)?.knownDomains ?? []);
-    const taskSeenInstagrams = new Set<string>((cachedKnownPlaceIds as any)?.knownInstagrams ?? []);
+    const [userKnownPlaceIds, cooldownSnapshot] = await Promise.all([
+      getKnownPlaceIdsForTask(db, task.user_id, task.country_code, task.city),
+      getCooldownSnapshotForTask(db, task.country_code),
+    ]);
+    const mergedKnownPlaceIdSet = new Set<string>(userKnownPlaceIds);
+    for (const pid of cooldownSnapshot.placeIds) {
+      mergedKnownPlaceIdSet.add(pid);
+    }
+    const cachedKnownPlaceIds = Array.from(mergedKnownPlaceIdSet);
+    const taskSeenDomains = new Set<string>((userKnownPlaceIds as any)?.knownDomains ?? []);
+    for (const dom of cooldownSnapshot.domains) {
+      taskSeenDomains.add(dom);
+    }
+    const taskSeenInstagrams = new Set<string>((userKnownPlaceIds as any)?.knownInstagrams ?? []);
+    for (const ig of cooldownSnapshot.instagrams) {
+      taskSeenInstagrams.add(ig);
+    }
+    Object.defineProperties(cachedKnownPlaceIds, {
+      knownDomains: { value: taskSeenDomains, enumerable: false, writable: true },
+      knownInstagrams: { value: taskSeenInstagrams, enumerable: false, writable: true },
+    });
     const taskInFlightBrands = new Set<string>();
     const attemptCtx = {
       db,

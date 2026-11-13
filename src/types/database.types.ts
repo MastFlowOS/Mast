@@ -93,6 +93,7 @@ export type Database = {
           load_time_ms: number | null;
           seo: Json;
           blog: Json;
+          cooldown_until: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -140,6 +141,7 @@ export type Database = {
           load_time_ms?: number | null;
           seo?: Json;
           blog?: Json;
+          cooldown_until?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -187,6 +189,7 @@ export type Database = {
           load_time_ms?: number | null;
           seo?: Json;
           blog?: Json;
+          cooldown_until?: string | null;
           created_at?: string;
           updated_at?: string;
         };

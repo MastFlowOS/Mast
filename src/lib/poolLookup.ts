@@ -221,7 +221,7 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
   if (rows.length > 0) {
     const { data: businesses, error: bizError } = await supabaseAdmin
       .from("businesses")
-      .select("id, name, niche, address, website, email, phone, instagram, reviews_rating, reviews_count")
+      .select("id, name, niche, address, website, email, phone, instagram, reviews_rating, reviews_count, cooldown_until")
       .in(
         "id",
         rows.map((r) => r.business_id),
@@ -249,7 +249,18 @@ export async function lookupAndDeliverFromPool(params: PoolLookupParams): Promis
 
         // Safeguard only: the SQL already excluded these. Field names differ
         // from the engine lead (reviews_rating/reviews_count -> rating/reviews).
-        const b = business as PoolBusiness & { reviews_rating?: unknown; reviews_count?: unknown };
+        const b = business as PoolBusiness & {
+          reviews_rating?: unknown;
+          reviews_count?: unknown;
+          cooldown_until?: string | null;
+        };
+        if (b.cooldown_until) {
+          const cooldownMs = Date.parse(b.cooldown_until);
+          if (Number.isFinite(cooldownMs) && cooldownMs > Date.now()) {
+            skipped.alreadyOwned += 1;
+            continue;
+          }
+        }
         if (evaluateLeadQuality({ rating: b.reviews_rating, reviews: b.reviews_count }).reject) {
           skipped.qualityMismatch += 1;
           continue;

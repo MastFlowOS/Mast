@@ -82,7 +82,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
           title: isExport && !/^export/i.test(title) ? "Export complete" : title,
           description:
             isExport && !/^export/i.test(title) ? `${title}.` : description,
-          autoDismissMs: t.type === "error" ? 7500 : 6000,
+          autoDismissMs: t.type === "error" ? 5500 : 4200,
         });
 
         addNotification({

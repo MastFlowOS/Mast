@@ -310,7 +310,7 @@ function DashboardLayout() {
         {/* Logo */}
         <div
           className={cn(
-            "h-[52px] flex items-center border-b border-border shrink-0 overflow-hidden transition-all duration-300",
+            "h-14 flex items-center border-b border-border shrink-0 overflow-hidden transition-all duration-300",
             sidebarExpanded ? "px-5" : "justify-center px-2",
           )}
         >

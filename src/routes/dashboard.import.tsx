@@ -674,7 +674,7 @@ function ImportExportPage() {
           title: "Import complete",
           description: `${result.imported.toLocaleString()} ${contactWord} added.`,
           actionLabel: "View →",
-          autoDismissMs: 15000,
+          autoDismissMs: 6000,
           onAction: () => {
             dismissDynamicIslandEvent("import_complete");
             void navigate({ to: "/dashboard/relationships" });
@@ -745,7 +745,7 @@ function ImportExportPage() {
         type: "import_complete",
         title: "Export complete",
         description: `${previewCount.toLocaleString()} ${oppWord} exported (${formatLabel}).`,
-        autoDismissMs: 10000,
+        autoDismissMs: 4500,
       });
       addNotification({
         icon: "CheckCircle2",

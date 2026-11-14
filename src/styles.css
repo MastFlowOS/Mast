@@ -233,6 +233,83 @@
   to   { opacity: 1; transform: translateX(0); }
 }
 
+/* -- Dynamic Island entrance, morph & disappearing animations -- */
+@keyframes island-expand-in {
+  0% {
+    opacity: 0;
+    max-width: 140px;
+    transform: translateY(-8px) scaleX(0.45) scaleY(0.68);
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    max-width: 560px;
+    transform: translateY(0) scaleX(1) scaleY(1);
+  }
+}
+
+@keyframes island-collapse-out {
+  0% {
+    opacity: 1;
+    max-width: 560px;
+    transform: translateY(0) scaleX(1) scaleY(1);
+  }
+  40% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    max-width: 120px;
+    transform: translateY(-7px) scaleX(0.42) scaleY(0.64);
+  }
+}
+
+@keyframes island-content-in {
+  0% {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes island-content-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.95);
+  }
+}
+
+@keyframes island-dropdown-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px) scaleX(0.88) scaleY(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scaleX(1) scaleY(1);
+  }
+}
+
+@keyframes island-dropdown-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scaleX(1) scaleY(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-10px) scaleX(0.88) scaleY(0.92);
+  }
+}
+
 /* -- Page-level entrance --------------------------------------- */
 /*
   Intentionally opacity + transform only. This used to also animate

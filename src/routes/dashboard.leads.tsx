@@ -750,7 +750,7 @@ function GetLeads() {
             title: "Discovery complete",
             description: oppPhrase,
             actionLabel: "View →",
-            autoDismissMs: 15000,
+            autoDismissMs: 6500,
             onAction: () => {
               dismissDynamicIslandEvent("discovery_complete");
               void navigate({ to: "/dashboard/relationships" });

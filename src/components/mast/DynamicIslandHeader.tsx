@@ -9,7 +9,6 @@ import {
   Settings,
   Clock,
 } from "lucide-react";
-import { MastWordmark } from "@/components/mast/MastWordmark";
 import { cn } from "@/lib/utils";
 import {
   type DynamicIslandEvent,
@@ -226,18 +225,20 @@ function EventStatusIcon({ event }: { event: DynamicIslandEvent }) {
 function HeaderContourSvg({
   isError,
   isActive,
+  isOpen,
 }: {
   isError: boolean;
   isActive: boolean;
+  isOpen: boolean;
 }) {
   const strokeColor = isError
     ? "rgba(225, 45, 75, 0.72)"
-    : isActive
+    : isActive || isOpen
       ? "rgba(48, 78, 148, 0.95)"
       : "rgba(36, 60, 115, 0.88)";
   const troughColor = isError
     ? "rgba(190, 38, 65, 0.62)"
-    : isActive
+    : isActive || isOpen
       ? "rgba(56, 90, 168, 0.92)"
       : "rgba(40, 66, 126, 0.82)";
 
@@ -263,31 +264,57 @@ function HeaderContourSvg({
         </linearGradient>
       </defs>
 
-      {/* Recessed center Dynamic Island well fill — touches all the way down to y=55 */}
-      <path
-        d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1 Z"
-        fill="url(#mast-header-well-fill)"
-      />
+      {isOpen ? (
+        <>
+          {/* Open state: well fill flows vertically into the attached dropdown */}
+          <path
+            d="M 0 1 C 55 1, 100 18, 100 56 L 480 56 C 480 18, 525 1, 580 1 Z"
+            fill="url(#mast-header-well-fill)"
+          />
+          <path
+            d="M 0 1 C 55 1, 100 18, 100 56"
+            fill="none"
+            stroke={troughColor}
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+          <path
+            d="M 480 56 C 480 18, 525 1, 580 1"
+            fill="none"
+            stroke={troughColor}
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+        </>
+      ) : (
+        <>
+          {/* Closed state: recessed center Dynamic Island well touching bottom of navbar */}
+          <path
+            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1 Z"
+            fill="url(#mast-header-well-fill)"
+          />
 
-      {/* Subtle dark-blue under-stroke along the contoured well */}
-      <path
-        d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
-        fill="none"
-        stroke={strokeColor}
-        strokeOpacity={isActive ? "0.28" : "0.16"}
-        strokeWidth="3"
-        vectorEffect="non-scaling-stroke"
-        style={{ transition: "stroke-opacity 320ms ease" }}
-      />
+          {/* Subtle dark-blue under-stroke along the contoured well */}
+          <path
+            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
+            fill="none"
+            stroke={strokeColor}
+            strokeOpacity={isActive ? "0.28" : "0.16"}
+            strokeWidth="3"
+            vectorEffect="non-scaling-stroke"
+            style={{ transition: "stroke-opacity 320ms ease" }}
+          />
 
-      {/* Primary sculpted dark-blue contour stroke touching the bottom of the navbar */}
-      <path
-        d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
-        fill="none"
-        stroke="url(#mast-header-contour-stroke)"
-        strokeWidth="1.5"
-        vectorEffect="non-scaling-stroke"
-      />
+          {/* Primary sculpted dark-blue contour stroke touching the bottom of the navbar */}
+          <path
+            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
+            fill="none"
+            stroke="url(#mast-header-contour-stroke)"
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+        </>
+      )}
     </svg>
   );
 }
@@ -397,7 +424,7 @@ export function DynamicIslandHeader({
         className,
       )}
     >
-      {/* ── LEFT WING: MAST Brand Area + Top/Bottom Contour Continuation ── */}
+      {/* ── LEFT WING: Top/Bottom Contour Continuation (no duplicate MAST logo) ─ */}
       <div className="relative z-10 flex items-center pl-4 sm:pl-6 pr-2 border-b border-[oklch(0.21_0.035_262)]">
         <div
           aria-hidden="true"
@@ -407,22 +434,19 @@ export function DynamicIslandHeader({
               "linear-gradient(90deg, rgba(36, 60, 115, 0.12) 0%, rgba(36, 60, 115, 0.88) 100%)",
           }}
         />
-        <Link
-          to="/dashboard"
-          className="inline-flex items-center focus-visible:outline-none rounded-md"
-          aria-label="MAST Dashboard"
-        >
-          <MastWordmark height={15} />
-        </Link>
       </div>
 
       {/* ── CENTER: The Contoured Dynamic Island Container Itself ──────── */}
       <div
         ref={notifRef}
-        className="relative z-20 flex items-center justify-center w-[320px] sm:w-[520px] md:w-[600px] max-w-[68vw] h-full"
+        className="relative z-20 flex items-center justify-center w-[340px] sm:w-[560px] md:w-[640px] max-w-[74vw] h-full"
       >
-        {/* Sculpted dark-blue Dynamic Island contour touching top (y=1) to bottom (y=55) of navbar */}
-        <HeaderContourSvg isError={isErrorState} isActive={showIslandCapsule} />
+        {/* Sculpted dark-blue Dynamic Island contour — flows down into the notifications drawer when open */}
+        <HeaderContourSvg
+          isError={isErrorState}
+          isActive={showIslandCapsule}
+          isOpen={notifOpen}
+        />
 
         <div
           data-testid="dynamic-island-center"
@@ -534,21 +558,24 @@ export function DynamicIslandHeader({
           )}
         </div>
 
-        {/* Centered Dynamic Island Notifications Dropdown */}
+        {/* Attached Dynamic Island Notifications Drawer — continuous dark-blue outline */}
         {notifOpen && (
           <div
             data-testid="dynamic-island-notifications-dropdown"
             onClick={(e) => e.stopPropagation()}
             className={cn(
-              "absolute left-1/2 -translate-x-1/2 top-full mt-2 w-[400px] sm:w-[460px] max-w-[calc(100vw-2rem)]",
-              "bg-[oklch(0.145_0.028_265)] border border-[oklch(0.26_0.036_265)] rounded-2xl shadow-2xl z-50 overflow-hidden",
+              "absolute left-[17.241%] right-[17.241%] top-full -mt-[1px]",
+              "bg-[oklch(0.130_0.031_263)] border-x border-b border-t-0 rounded-b-2xl shadow-2xl z-50 overflow-hidden",
+              isErrorState
+                ? "border-[rgba(190,38,65,0.62)]"
+                : "border-[rgba(56,90,168,0.92)]",
             )}
             style={{
               transformOrigin: "center top",
               animation: "island-dropdown-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both",
             }}
           >
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/70 bg-[oklch(0.132_0.026_265)]">
+            <div className="flex items-center justify-between px-4 py-2 border-b border-[rgba(56,90,168,0.24)] bg-[oklch(0.122_0.029_263)]">
               <div className="flex items-center gap-2">
                 <h3 className="font-semibold text-xs text-foreground tracking-wide">
                   Notifications

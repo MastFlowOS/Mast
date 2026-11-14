@@ -218,8 +218,10 @@ function EventStatusIcon({ event }: { event: DynamicIslandEvent }) {
 }
 
 /**
- * Contoured SVG frame that gives the MAST header its signature sculpted
- * center Dynamic Island well. Present in both idle and active states.
+ * Contoured SVG frame that forms the Dynamic Island container itself.
+ * The curve starts at the top of the navbar (y=1) and sweeps all the way
+ * down to touch the bottom edge of the navbar (y=55 in a 56px header),
+ * outlined in dark navy blue.
  */
 function HeaderContourSvg({
   isError,
@@ -228,66 +230,62 @@ function HeaderContourSvg({
   isError: boolean;
   isActive: boolean;
 }) {
-  const accentColor = isError
-    ? "rgba(244, 63, 94, 0.62)"
+  const strokeColor = isError
+    ? "rgba(225, 45, 75, 0.72)"
     : isActive
-      ? "rgba(147, 83, 255, 0.78)"
-      : "rgba(139, 92, 246, 0.58)";
+      ? "rgba(48, 78, 148, 0.95)"
+      : "rgba(36, 60, 115, 0.88)";
   const troughColor = isError
-    ? "rgba(244, 63, 94, 0.44)"
+    ? "rgba(190, 38, 65, 0.62)"
     : isActive
-      ? "rgba(124, 58, 237, 0.60)"
-      : "rgba(124, 58, 237, 0.42)";
+      ? "rgba(56, 90, 168, 0.92)"
+      : "rgba(40, 66, 126, 0.82)";
 
   return (
     <svg
       className="pointer-events-none absolute inset-0 h-full w-full select-none"
-      viewBox="0 0 1200 56"
+      viewBox="0 0 580 56"
       preserveAspectRatio="none"
       aria-hidden="true"
     >
       <defs>
         <linearGradient id="mast-header-contour-stroke" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="rgba(148, 163, 184, 0.08)" />
-          <stop offset="20%" stopColor="rgba(139, 92, 246, 0.18)" />
-          <stop offset="26%" stopColor={accentColor} />
-          <stop offset="34%" stopColor={troughColor} />
+          <stop offset="0%" stopColor={strokeColor} />
+          <stop offset="18%" stopColor={troughColor} />
           <stop offset="50%" stopColor={troughColor} />
-          <stop offset="66%" stopColor={troughColor} />
-          <stop offset="74%" stopColor={accentColor} />
-          <stop offset="80%" stopColor="rgba(139, 92, 246, 0.18)" />
-          <stop offset="100%" stopColor="rgba(148, 163, 184, 0.08)" />
+          <stop offset="82%" stopColor={troughColor} />
+          <stop offset="100%" stopColor={strokeColor} />
         </linearGradient>
 
         <linearGradient id="mast-header-well-fill" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="oklch(0.122 0.028 265)" />
-          <stop offset="100%" stopColor="oklch(0.140 0.030 265)" />
+          <stop offset="0%" stopColor="oklch(0.118 0.028 263)" />
+          <stop offset="100%" stopColor="oklch(0.134 0.032 263)" />
         </linearGradient>
       </defs>
 
-      {/* Recessed center well fill (deep MAST dark navy blue) */}
+      {/* Recessed center Dynamic Island well fill — touches all the way down to y=55 */}
       <path
-        d="M 270 1 C 316 1, 330 51, 376 51 L 824 51 C 870 51, 884 1, 930 1 Z"
+        d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1 Z"
         fill="url(#mast-header-well-fill)"
       />
 
-      {/* Subtle ambient under-stroke along the contoured well */}
+      {/* Subtle dark-blue under-stroke along the contoured well */}
       <path
-        d="M 230 1.25 L 270 1.25 C 316 1.25, 330 51, 376 51 L 824 51 C 870 51, 884 1.25, 930 1.25 L 970 1.25"
+        d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
         fill="none"
-        stroke={accentColor}
-        strokeOpacity={isActive ? "0.28" : "0.18"}
-        strokeWidth="2.75"
+        stroke={strokeColor}
+        strokeOpacity={isActive ? "0.28" : "0.16"}
+        strokeWidth="3"
         vectorEffect="non-scaling-stroke"
         style={{ transition: "stroke-opacity 320ms ease" }}
       />
 
-      {/* Primary sculpted contour stroke */}
+      {/* Primary sculpted dark-blue contour stroke touching the bottom of the navbar */}
       <path
-        d="M 16 1.25 L 270 1.25 C 316 1.25, 330 51, 376 51 L 824 51 C 870 51, 884 1.25, 930 1.25 L 1184 1.25"
+        d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
         fill="none"
         stroke="url(#mast-header-contour-stroke)"
-        strokeWidth="1.25"
+        strokeWidth="1.5"
         vectorEffect="non-scaling-stroke"
       />
     </svg>
@@ -393,17 +391,22 @@ export function DynamicIslandHeader({
       data-testid="mast-dynamic-island-header"
       data-island-state={event.type}
       className={cn(
-        "relative h-14 shrink-0 sticky top-0 z-30 px-4 sm:px-6",
-        "bg-[oklch(0.155_0.028_265)] border-b border-border",
-        "grid grid-cols-[auto_1fr_auto] items-center gap-3 sm:gap-5",
+        "relative h-14 shrink-0 sticky top-0 z-30",
+        "bg-[oklch(0.148_0.028_265)]",
+        "grid grid-cols-[1fr_auto_1fr] items-stretch",
         className,
       )}
     >
-      {/* Distinctive contoured well silhouette */}
-      <HeaderContourSvg isError={isErrorState} isActive={showIslandCapsule} />
-
-      {/* ── LEFT: MAST Brand Area ──────────────────────────────────────── */}
-      <div className="relative z-10 flex items-center pl-1 sm:pl-2">
+      {/* ── LEFT WING: MAST Brand Area + Top/Bottom Contour Continuation ── */}
+      <div className="relative z-10 flex items-center pl-4 sm:pl-6 pr-2 border-b border-[oklch(0.21_0.035_262)]">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute top-0 left-4 right-0 h-[1.5px]"
+          style={{
+            background:
+              "linear-gradient(90deg, rgba(36, 60, 115, 0.12) 0%, rgba(36, 60, 115, 0.88) 100%)",
+          }}
+        />
         <Link
           to="/dashboard"
           className="inline-flex items-center focus-visible:outline-none rounded-md"
@@ -413,11 +416,14 @@ export function DynamicIslandHeader({
         </Link>
       </div>
 
-      {/* ── CENTER: Dynamic Island Status Surface + Centered Dropdown ──── */}
+      {/* ── CENTER: The Contoured Dynamic Island Container Itself ──────── */}
       <div
         ref={notifRef}
-        className="relative z-10 flex items-center justify-center min-w-0 h-full px-1 sm:px-3"
+        className="relative z-20 flex items-center justify-center w-[320px] sm:w-[520px] md:w-[600px] max-w-[68vw] h-full"
       >
+        {/* Sculpted dark-blue Dynamic Island contour touching top (y=1) to bottom (y=55) of navbar */}
+        <HeaderContourSvg isError={isErrorState} isActive={showIslandCapsule} />
+
         <div
           data-testid="dynamic-island-center"
           role="button"
@@ -431,7 +437,7 @@ export function DynamicIslandHeader({
               handleIslandToggle();
             }
           }}
-          className="flex items-center justify-center w-full max-w-[560px] h-full cursor-pointer select-none focus-visible:outline-none"
+          className="relative z-10 flex items-center justify-center w-full h-full px-10 sm:px-[92px] md:px-[106px] cursor-pointer select-none focus-visible:outline-none"
           aria-live="polite"
         >
           {showIslandCapsule && (
@@ -440,14 +446,8 @@ export function DynamicIslandHeader({
               data-testid={`dynamic-island-pill-${renderedEvent.type}`}
               data-visual-phase={visualPhase}
               className={cn(
-                "relative flex items-center rounded-full border overflow-hidden",
-                "bg-[oklch(0.165_0.032_264)] hover:bg-[oklch(0.175_0.034_264)]",
-                isErrorState
-                  ? "border-rose-500/25"
-                  : "border-[oklch(0.29_0.048_266)]",
-                renderedEvent.type === "discovery_active"
-                  ? "w-full max-w-[520px] min-h-[40px] px-4 py-1.5 gap-3.5"
-                  : "w-full max-w-[530px] min-h-[40px] px-3.5 sm:px-4 py-1.5 gap-3 sm:gap-4 justify-between",
+                "relative flex items-center justify-between w-full h-full min-w-0 gap-3 sm:gap-4",
+                isErrorState ? "border-rose-500/25" : "",
               )}
               style={{
                 transformOrigin: "center top",
@@ -457,89 +457,79 @@ export function DynamicIslandHeader({
                     : "island-expand-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both",
               }}
             >
-              <div
-                className="flex items-center justify-between w-full min-w-0 gap-3 sm:gap-4"
-                style={{
-                  animation:
-                    visualPhase === "exiting"
-                      ? "island-content-out 200ms cubic-bezier(0.4, 0, 1, 1) forwards"
-                      : "island-content-in 340ms cubic-bezier(0.16, 1, 0.3, 1) 50ms both",
-                }}
-              >
-                {renderedEvent.type === "discovery_active" ? (
-                  <>
-                    <DiscoveryProgressRing progress={renderedEvent.progress ?? 0} />
-                    <div className="min-w-0 flex-1 flex items-center gap-2">
-                      <span className="text-[13.5px] sm:text-sm font-semibold tracking-[-0.01em] text-foreground truncate">
-                        {renderedEvent.title || "Discovery in progress"}
-                      </span>
-                      {renderedEvent.description && (
-                        <span className="hidden lg:inline text-xs text-muted-foreground truncate">
-                          · {renderedEvent.description}
-                        </span>
-                      )}
-                    </div>
-                    <div
-                      className="w-20 sm:w-28 md:w-36 h-1.5 rounded-full bg-white/[0.12] overflow-hidden shrink-0"
-                      role="progressbar"
-                      aria-valuenow={clampProgress(renderedEvent.progress)}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                    >
-                      <div
-                        className="h-full rounded-full bg-brand"
-                        style={{
-                          width: `${clampProgress(renderedEvent.progress)}%`,
-                          transition: "width 420ms cubic-bezier(0.16, 1, 0.3, 1)",
-                        }}
-                      />
-                    </div>
-                    <span
-                      data-testid="dynamic-island-progress-pct"
-                      className="text-[13.5px] sm:text-sm font-bold tabular-nums text-foreground shrink-0 min-w-[2.4rem] text-right"
-                    >
-                      {clampProgress(renderedEvent.progress)}%
+              {renderedEvent.type === "discovery_active" ? (
+                <>
+                  <DiscoveryProgressRing progress={renderedEvent.progress ?? 0} />
+                  <div className="min-w-0 flex-1 flex items-center gap-2">
+                    <span className="text-[13.5px] sm:text-sm font-semibold tracking-[-0.01em] text-foreground truncate">
+                      {renderedEvent.title || "Discovery in progress"}
                     </span>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <EventStatusIcon event={renderedEvent} />
-                      <div className="min-w-0 flex-1 flex flex-col sm:flex-row sm:items-baseline sm:gap-2">
-                        <p className="text-[13.5px] sm:text-sm font-semibold tracking-[-0.01em] text-foreground leading-tight truncate">
-                          {renderedEvent.title}
-                        </p>
-                        {renderedEvent.description && (
-                          <p className="text-xs text-muted-foreground leading-tight truncate mt-0.5 sm:mt-0">
-                            {renderedEvent.description}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    {renderedEvent.actionLabel ? (
-                      <button
-                        type="button"
-                        onClick={handleActionClick}
-                        data-testid="dynamic-island-action-btn"
-                        className={cn(
-                          "shrink-0 rounded-full px-3.5 py-1 text-xs font-semibold",
-                          "inline-flex items-center gap-1 transition-colors duration-150 cursor-pointer",
-                          isErrorState
-                            ? "bg-[oklch(0.20_0.038_265)] hover:bg-[oklch(0.235_0.044_265)] text-foreground border border-white/10"
-                            : "bg-[oklch(0.21_0.045_265)] hover:bg-[oklch(0.245_0.052_265)] text-foreground border border-[oklch(0.32_0.055_268)]",
-                        )}
-                      >
-                        <span>{renderedEvent.actionLabel}</span>
-                      </button>
-                    ) : (
-                      <span className="hidden sm:inline-flex items-center gap-1 shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground bg-white/[0.04] border border-white/[0.07]">
-                        Just now
+                    {renderedEvent.description && (
+                      <span className="hidden lg:inline text-xs text-muted-foreground truncate">
+                        · {renderedEvent.description}
                       </span>
                     )}
-                  </>
-                )}
-              </div>
+                  </div>
+                  <div
+                    className="w-20 sm:w-28 md:w-36 h-1.5 rounded-full bg-white/[0.12] overflow-hidden shrink-0"
+                    role="progressbar"
+                    aria-valuenow={clampProgress(renderedEvent.progress)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
+                    <div
+                      className="h-full rounded-full bg-brand"
+                      style={{
+                        width: `${clampProgress(renderedEvent.progress)}%`,
+                        transition: "width 420ms cubic-bezier(0.16, 1, 0.3, 1)",
+                      }}
+                    />
+                  </div>
+                  <span
+                    data-testid="dynamic-island-progress-pct"
+                    className="text-[13.5px] sm:text-sm font-bold tabular-nums text-foreground shrink-0 min-w-[2.4rem] text-right"
+                  >
+                    {clampProgress(renderedEvent.progress)}%
+                  </span>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <EventStatusIcon event={renderedEvent} />
+                    <div className="min-w-0 flex-1 flex flex-col sm:flex-row sm:items-baseline sm:gap-2">
+                      <p className="text-[13.5px] sm:text-sm font-semibold tracking-[-0.01em] text-foreground leading-tight truncate">
+                        {renderedEvent.title}
+                      </p>
+                      {renderedEvent.description && (
+                        <p className="text-xs text-muted-foreground leading-tight truncate mt-0.5 sm:mt-0">
+                          {renderedEvent.description}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {renderedEvent.actionLabel ? (
+                    <button
+                      type="button"
+                      onClick={handleActionClick}
+                      data-testid="dynamic-island-action-btn"
+                      className={cn(
+                        "shrink-0 rounded-full px-3.5 py-1 text-xs font-semibold",
+                        "inline-flex items-center gap-1 transition-colors duration-150 cursor-pointer",
+                        isErrorState
+                          ? "bg-[oklch(0.20_0.038_265)] hover:bg-[oklch(0.235_0.044_265)] text-foreground border border-white/10"
+                          : "bg-[oklch(0.19_0.042_262)] hover:bg-[oklch(0.225_0.048_262)] text-foreground border border-[rgba(56,90,168,0.45)]",
+                      )}
+                    >
+                      <span>{renderedEvent.actionLabel}</span>
+                    </button>
+                  ) : (
+                    <span className="hidden sm:inline-flex items-center gap-1 shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground bg-white/[0.04] border border-white/[0.07]">
+                      Just now
+                    </span>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -676,8 +666,16 @@ export function DynamicIslandHeader({
         )}
       </div>
 
-      {/* ── RIGHT: Circular User Avatar ONLY (no bell, no text, no chevron) ─ */}
-      <div className="relative z-10 flex items-center pr-1">
+      {/* ── RIGHT WING: Circular User Avatar ONLY (no bell, no text, no chevron) ─ */}
+      <div className="relative z-10 flex items-center justify-end pl-2 pr-4 sm:pr-6 border-b border-[oklch(0.21_0.035_262)]">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute top-0 left-0 right-4 h-[1.5px]"
+          style={{
+            background:
+              "linear-gradient(90deg, rgba(36, 60, 115, 0.88) 0%, rgba(36, 60, 115, 0.12) 100%)",
+          }}
+        />
         <div ref={accountRef} className="relative">
           <button
             type="button"

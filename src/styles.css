@@ -237,15 +237,13 @@
 @keyframes island-expand-in {
   0% {
     opacity: 0;
-    max-width: 140px;
-    transform: translateY(-8px) scaleX(0.45) scaleY(0.68);
+    transform: translateY(-10px) scaleX(0.72) scaleY(0.78);
   }
-  55% {
+  60% {
     opacity: 1;
   }
   100% {
     opacity: 1;
-    max-width: 560px;
     transform: translateY(0) scaleX(1) scaleY(1);
   }
 }
@@ -253,16 +251,14 @@
 @keyframes island-collapse-out {
   0% {
     opacity: 1;
-    max-width: 560px;
     transform: translateY(0) scaleX(1) scaleY(1);
   }
-  40% {
-    opacity: 0.75;
+  45% {
+    opacity: 0.65;
   }
   100% {
     opacity: 0;
-    max-width: 120px;
-    transform: translateY(-7px) scaleX(0.42) scaleY(0.64);
+    transform: translateY(-9px) scaleX(0.72) scaleY(0.75);
   }
 }
 

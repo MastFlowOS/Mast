@@ -59,8 +59,8 @@ const NOTIF_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
  */
 function DiscoveryProgressRing({ progress }: { progress: number }) {
   const pct = clampProgress(progress);
-  const size = 28;
-  const strokeWidth = 2.5;
+  const size = 22;
+  const strokeWidth = 2.25;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   // Ensure a small visible arc even at 0-4% so the active ring reads clearly
@@ -115,13 +115,13 @@ function EventStatusIcon({ event }: { event: DynamicIslandEvent }) {
     case "discovery_complete":
       return (
         <div
-          className="size-7 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 grid place-items-center shrink-0"
+          className="size-6 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 grid place-items-center shrink-0"
           aria-hidden="true"
         >
           <svg
             viewBox="0 0 20 20"
             fill="none"
-            className="size-4"
+            className="size-3.5"
             stroke="currentColor"
             strokeWidth="1.75"
             strokeLinecap="round"
@@ -136,23 +136,23 @@ function EventStatusIcon({ event }: { event: DynamicIslandEvent }) {
     case "notification":
       return (
         <div
-          className="size-7 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 grid place-items-center shrink-0"
+          className="size-6 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 grid place-items-center shrink-0"
           aria-hidden="true"
         >
-          <Bell className="size-3.5" />
+          <Bell className="size-3" />
         </div>
       );
 
     case "import_complete":
       return (
         <div
-          className="size-7 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 grid place-items-center shrink-0"
+          className="size-6 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 grid place-items-center shrink-0"
           aria-hidden="true"
         >
           <svg
             viewBox="0 0 20 20"
             fill="none"
-            className="size-4"
+            className="size-3.5"
             stroke="currentColor"
             strokeWidth="1.75"
             strokeLinecap="round"
@@ -168,13 +168,13 @@ function EventStatusIcon({ event }: { event: DynamicIslandEvent }) {
     case "credits_low":
       return (
         <div
-          className="size-7 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 grid place-items-center shrink-0"
+          className="size-6 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 grid place-items-center shrink-0"
           aria-hidden="true"
         >
           <svg
             viewBox="0 0 20 20"
             fill="none"
-            className="size-4"
+            className="size-3.5"
             stroke="currentColor"
             strokeWidth="1.6"
             strokeLinecap="round"
@@ -190,13 +190,13 @@ function EventStatusIcon({ event }: { event: DynamicIslandEvent }) {
     case "discovery_error":
       return (
         <div
-          className="size-7 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 grid place-items-center shrink-0"
+          className="size-6 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 grid place-items-center shrink-0"
           aria-hidden="true"
         >
           <svg
             viewBox="0 0 20 20"
             fill="none"
-            className="size-4"
+            className="size-3.5"
             stroke="currentColor"
             strokeWidth="1.75"
             strokeLinecap="round"
@@ -219,60 +219,60 @@ function EventStatusIcon({ event }: { event: DynamicIslandEvent }) {
  */
 function HeaderContourSvg({ isError }: { isError: boolean }) {
   const accentColor = isError
-    ? "rgba(244, 63, 94, 0.55)"
-    : "rgba(147, 83, 255, 0.72)";
+    ? "rgba(244, 63, 94, 0.50)"
+    : "rgba(139, 92, 246, 0.62)";
   const troughColor = isError
-    ? "rgba(244, 63, 94, 0.38)"
-    : "rgba(124, 58, 237, 0.52)";
+    ? "rgba(244, 63, 94, 0.34)"
+    : "rgba(124, 58, 237, 0.44)";
 
   return (
     <svg
       className="pointer-events-none absolute inset-0 h-full w-full select-none"
-      viewBox="0 0 1200 64"
+      viewBox="0 0 1200 52"
       preserveAspectRatio="none"
       aria-hidden="true"
     >
       <defs>
         <linearGradient id="mast-header-contour-stroke" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="rgba(255, 255, 255, 0.05)" />
-          <stop offset="16%" stopColor="rgba(147, 83, 255, 0.18)" />
-          <stop offset="22%" stopColor={accentColor} />
-          <stop offset="30%" stopColor={troughColor} />
+          <stop offset="0%" stopColor="rgba(148, 163, 184, 0.08)" />
+          <stop offset="22%" stopColor="rgba(139, 92, 246, 0.16)" />
+          <stop offset="28%" stopColor={accentColor} />
+          <stop offset="36%" stopColor={troughColor} />
           <stop offset="50%" stopColor={troughColor} />
-          <stop offset="70%" stopColor={troughColor} />
-          <stop offset="78%" stopColor={accentColor} />
-          <stop offset="84%" stopColor="rgba(147, 83, 255, 0.18)" />
-          <stop offset="100%" stopColor="rgba(255, 255, 255, 0.05)" />
+          <stop offset="64%" stopColor={troughColor} />
+          <stop offset="72%" stopColor={accentColor} />
+          <stop offset="78%" stopColor="rgba(139, 92, 246, 0.16)" />
+          <stop offset="100%" stopColor="rgba(148, 163, 184, 0.08)" />
         </linearGradient>
 
         <linearGradient id="mast-header-well-fill" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="oklch(0.095 0.02 265)" />
-          <stop offset="100%" stopColor="oklch(0.112 0.022 265)" />
+          <stop offset="0%" stopColor="oklch(0.125 0.028 265)" />
+          <stop offset="100%" stopColor="oklch(0.142 0.030 265)" />
         </linearGradient>
       </defs>
 
-      {/* Recessed center well fill */}
+      {/* Recessed center well fill (deep MAST dark navy blue) */}
       <path
-        d="M 220 1 C 268 1, 280 58, 330 58 L 870 58 C 920 58, 932 1, 980 1 Z"
+        d="M 290 1 C 332 1, 344 46, 386 46 L 814 46 C 856 46, 868 1, 910 1 Z"
         fill="url(#mast-header-well-fill)"
       />
 
       {/* Subtle ambient under-stroke along the contoured well */}
       <path
-        d="M 180 1.5 L 220 1.5 C 268 1.5, 280 58, 330 58 L 870 58 C 920 58, 932 1.5, 980 1.5 L 1020 1.5"
+        d="M 250 1.25 L 290 1.25 C 332 1.25, 344 46, 386 46 L 814 46 C 856 46, 868 1.25, 910 1.25 L 950 1.25"
         fill="none"
         stroke={accentColor}
-        strokeOpacity="0.22"
-        strokeWidth="3"
+        strokeOpacity="0.18"
+        strokeWidth="2.5"
         vectorEffect="non-scaling-stroke"
       />
 
       {/* Primary sculpted contour stroke */}
       <path
-        d="M 16 1.5 L 220 1.5 C 268 1.5, 280 58, 330 58 L 870 58 C 920 58, 932 1.5, 980 1.5 L 1184 1.5"
+        d="M 16 1.25 L 290 1.25 C 332 1.25, 344 46, 386 46 L 814 46 C 856 46, 868 1.25, 910 1.25 L 1184 1.25"
         fill="none"
         stroke="url(#mast-header-contour-stroke)"
-        strokeWidth="1.25"
+        strokeWidth="1.15"
         vectorEffect="non-scaling-stroke"
       />
     </svg>
@@ -363,9 +363,9 @@ export function DynamicIslandHeader({
       data-testid="mast-dynamic-island-header"
       data-island-state={event.type}
       className={cn(
-        "relative h-16 shrink-0 sticky top-0 z-30 px-4 sm:px-6",
-        "bg-[oklch(0.122_0.023_265)] border-b border-white/[0.06]",
-        "grid grid-cols-[auto_1fr_auto] items-center gap-3 sm:gap-6",
+        "relative h-[52px] shrink-0 sticky top-0 z-30 px-4 sm:px-5",
+        "bg-[oklch(0.155_0.028_265)] border-b border-border",
+        "grid grid-cols-[auto_1fr_auto] items-center gap-3 sm:gap-5",
         className,
       )}
     >
@@ -379,14 +379,14 @@ export function DynamicIslandHeader({
           className="inline-flex items-center focus-visible:outline-none rounded-md"
           aria-label="MAST Dashboard"
         >
-          <MastWordmark height={16} />
+          <MastWordmark height={14} />
         </Link>
       </div>
 
       {/* ── CENTER: Dynamic Island Status Surface ──────────────────────── */}
       <div
         data-testid="dynamic-island-center"
-        className="relative z-10 flex items-center justify-center min-w-0 h-full px-1 sm:px-4"
+        className="relative z-10 flex items-center justify-center min-w-0 h-full px-1 sm:px-3"
         aria-live="polite"
       >
         {showIslandCapsule && (
@@ -395,13 +395,13 @@ export function DynamicIslandHeader({
             data-testid={`dynamic-island-pill-${renderedEvent.type}`}
             className={cn(
               "relative flex items-center rounded-full border",
-              "bg-[oklch(0.145_0.026_268)]",
+              "bg-[oklch(0.165_0.032_264)]",
               isErrorState
                 ? "border-rose-500/25"
-                : "border-[rgba(147,83,255,0.22)]",
+                : "border-[oklch(0.28_0.045_265)]",
               renderedEvent.type === "discovery_active"
-                ? "w-full max-w-[440px] px-3.5 py-1.5 gap-3 sm:gap-3.5"
-                : "w-full max-w-[460px] px-3 py-1.5 gap-2.5 sm:gap-3.5 justify-between",
+                ? "w-full max-w-[360px] px-3 py-1 gap-2.5 sm:gap-3"
+                : "w-full max-w-[380px] px-2.5 py-1 gap-2 sm:gap-3 justify-between",
             )}
             style={{
               opacity: visualPhase === "exiting" ? 0 : 1,
@@ -422,18 +422,18 @@ export function DynamicIslandHeader({
             {renderedEvent.type === "discovery_active" ? (
               <>
                 <DiscoveryProgressRing progress={renderedEvent.progress ?? 0} />
-                <div className="min-w-0 flex-1 flex items-center gap-2">
-                  <span className="text-xs sm:text-[13px] font-medium text-foreground truncate">
+                <div className="min-w-0 flex-1 flex items-center gap-1.5">
+                  <span className="text-[11.5px] sm:text-xs font-medium text-foreground truncate">
                     {renderedEvent.title || "Discovery in progress"}
                   </span>
                   {renderedEvent.description && (
-                    <span className="hidden xl:inline text-[11px] text-muted-foreground truncate">
+                    <span className="hidden xl:inline text-[10.5px] text-muted-foreground truncate">
                       · {renderedEvent.description}
                     </span>
                   )}
                 </div>
                 <div
-                  className="w-16 sm:w-28 md:w-32 h-1.5 rounded-full bg-white/[0.10] overflow-hidden shrink-0"
+                  className="w-14 sm:w-20 md:w-24 h-1 rounded-full bg-white/[0.10] overflow-hidden shrink-0"
                   role="progressbar"
                   aria-valuenow={clampProgress(renderedEvent.progress)}
                   aria-valuemin={0}
@@ -449,21 +449,21 @@ export function DynamicIslandHeader({
                 </div>
                 <span
                   data-testid="dynamic-island-progress-pct"
-                  className="text-xs sm:text-[13px] font-semibold tabular-nums text-foreground shrink-0 min-w-[2.25rem] text-right"
+                  className="text-[11.5px] sm:text-xs font-semibold tabular-nums text-foreground shrink-0 min-w-[2.1rem] text-right"
                 >
                   {clampProgress(renderedEvent.progress)}%
                 </span>
               </>
             ) : (
               <>
-                <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+                <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
                   <EventStatusIcon event={renderedEvent} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-xs sm:text-[13px] font-semibold text-foreground leading-tight truncate">
+                    <p className="text-[11.5px] sm:text-xs font-semibold text-foreground leading-tight truncate">
                       {renderedEvent.title}
                     </p>
                     {renderedEvent.description && (
-                      <p className="text-[11px] text-muted-foreground leading-tight truncate mt-0.5">
+                      <p className="text-[10.5px] text-muted-foreground leading-tight truncate mt-0.5">
                         {renderedEvent.description}
                       </p>
                     )}
@@ -476,11 +476,11 @@ export function DynamicIslandHeader({
                     onClick={handleActionClick}
                     data-testid="dynamic-island-action-btn"
                     className={cn(
-                      "shrink-0 rounded-full px-3 sm:px-3.5 py-1 text-[11px] font-medium",
+                      "shrink-0 rounded-full px-2.5 sm:px-3 py-0.5 text-[10.5px] font-medium",
                       "inline-flex items-center gap-1 transition-colors duration-150 cursor-pointer",
                       isErrorState
-                        ? "bg-[oklch(0.20_0.04_280)] hover:bg-[oklch(0.24_0.05_280)] text-foreground border border-white/10"
-                        : "bg-[oklch(0.21_0.055_282)] hover:bg-[oklch(0.25_0.065_282)] text-foreground border border-[rgba(147,83,255,0.28)]",
+                        ? "bg-[oklch(0.20_0.038_265)] hover:bg-[oklch(0.235_0.044_265)] text-foreground border border-white/10"
+                        : "bg-[oklch(0.205_0.042_265)] hover:bg-[oklch(0.24_0.048_265)] text-foreground border border-[oklch(0.30_0.05_268)]",
                     )}
                   >
                     <span>{renderedEvent.actionLabel}</span>
@@ -493,7 +493,7 @@ export function DynamicIslandHeader({
       </div>
 
       {/* ── RIGHT: Notification Bell + Circular Avatar ONLY ────────────── */}
-      <div className="relative z-10 flex items-center gap-2.5 sm:gap-3 pr-1">
+      <div className="relative z-10 flex items-center gap-2 sm:gap-2.5 pr-1">
         {/* Notification Bell */}
         <div ref={notifRef} className="relative">
           <button
@@ -501,13 +501,13 @@ export function DynamicIslandHeader({
             onClick={() => setNotifOpen((o) => !o)}
             aria-label="Notifications"
             data-testid="header-notification-bell"
-            className="relative size-9 grid place-items-center rounded-xl border border-white/[0.08] bg-white/[0.025] text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors shrink-0 cursor-pointer"
+            className="relative size-8 grid place-items-center rounded-lg border border-border bg-[oklch(0.175_0.03_265)] text-muted-foreground hover:text-foreground hover:bg-[oklch(0.20_0.034_265)] transition-colors shrink-0 cursor-pointer"
           >
-            <Bell className="size-4 shrink-0" />
+            <Bell className="size-3.5 shrink-0" />
             {hasUnreadBellDot && (
               <span
                 data-testid="notification-unread-badge"
-                className="absolute top-1.5 right-1.5 size-2 rounded-full bg-brand ring-2 ring-[oklch(0.122_0.023_265)]"
+                className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-brand ring-2 ring-[oklch(0.155_0.028_265)]"
               />
             )}
           </button>
@@ -605,7 +605,7 @@ export function DynamicIslandHeader({
             onClick={() => setAccountOpen((o) => !o)}
             aria-label="Account"
             data-testid="header-user-avatar"
-            className="size-9 rounded-full bg-brand/20 border border-white/15 hover:border-brand/50 flex items-center justify-center text-xs font-bold text-brand shrink-0 overflow-hidden transition-colors cursor-pointer"
+            className="size-8 rounded-full bg-brand/20 border border-brand/30 hover:border-brand/50 flex items-center justify-center text-[11px] font-bold text-brand shrink-0 overflow-hidden transition-colors cursor-pointer"
           >
             {user?.avatarUrl ? (
               <img

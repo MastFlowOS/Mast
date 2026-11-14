@@ -305,12 +305,12 @@ function DashboardLayout() {
         {/* Logo */}
         <div
           className={cn(
-            "h-16 flex items-center border-b border-border shrink-0 overflow-hidden transition-all duration-300",
+            "h-[52px] flex items-center border-b border-border shrink-0 overflow-hidden transition-all duration-300",
             sidebarExpanded ? "px-5" : "justify-center px-2",
           )}
         >
           <Link to="/" className="flex items-center min-w-0 shrink-0">
-            <MastWordmark height={sidebarExpanded ? 18 : 11} />
+            <MastWordmark height={sidebarExpanded ? 16 : 10} />
           </Link>
         </div>
 

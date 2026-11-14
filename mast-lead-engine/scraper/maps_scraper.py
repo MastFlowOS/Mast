@@ -728,7 +728,7 @@ class CardOperationTimeout(PlaceExtractionTimeout):
 # Upper bound on closing a page/context during per-attempt cleanup. A renderer
 # that stopped answering evaluate() must not also be able to stall the
 # cleanup that is supposed to recover from it.
-_CLOSE_TIMEOUT_S = 10.0
+_CLOSE_TIMEOUT_S = 1.5
 
 
 async def _close_bounded(closer, what: str) -> None:
@@ -1194,7 +1194,7 @@ async def _resolve_results_panel(page: Page, *, config: ScraperConfig) -> tuple[
     """
     # Fast-path: canonical desktop Google Maps feed with place anchors
     try:
-        await page.wait_for_selector("div[role='feed'] a[href*='/maps/place/']", timeout=5000)
+        await page.wait_for_selector("div[role='feed'] a[href*='/maps/place/']", timeout=8000)
         feed_panel = await page.query_selector("div[role='feed']")
         if feed_panel is not None:
             a_count = len(await feed_panel.query_selector_all("a[href*='/maps/place/']"))
@@ -1207,8 +1207,7 @@ async def _resolve_results_panel(page: Page, *, config: ScraperConfig) -> tuple[
     attempted: list[str] = []
     for sel in _PANEL_SELECTORS:
         try:
-            panel_timeout = 4000 if sel == "div[role='feed']" else 1500
-            await page.wait_for_selector(sel, timeout=panel_timeout)
+            await page.wait_for_selector(sel, timeout=500)
         except PlaywrightTimeoutError:
             attempted.append(f"{sel!r}: not present")
             continue
@@ -4467,7 +4466,7 @@ async def _execute_return_failure_recovery(
                 await page.goto(
                     search_url,
                     wait_until="domcontentloaded",
-                    timeout=config.maps_timeout_ms,
+                    timeout=min(15000, config.maps_timeout_ms),
                 )
                 panel_sel, _ = await _resolve_results_panel(
                     page, config=config
@@ -5252,9 +5251,9 @@ class MapsScraper:
 
             try:
                 with self._profiler.timer("context_creation"):
-                    ctx = await asyncio.wait_for(_new_stealth_context(self.browser, proxy=proxy), timeout=10.0)
+                    ctx = await asyncio.wait_for(_new_stealth_context(self.browser, proxy=proxy), timeout=18.0)
                 with self._profiler.timer("page_creation"):
-                    page = await asyncio.wait_for(ctx.new_page(), timeout=10.0)
+                    page = await asyncio.wait_for(ctx.new_page(), timeout=18.0)
             except Exception as ctx_err:
                 log.error(f"[maps] failed or timed out creating browser context/page on attempt {attempt}: {ctx_err}")
                 raise DiscoveryFailure(
@@ -5302,13 +5301,16 @@ class MapsScraper:
                     with self._profiler.timer("maps_initial_load"):
                         try:
                             set_last_navigation_step("search_goto")
-                            rec_goto_timeout = min(15000, max(8000, self.config.maps_timeout_ms))
+                            rec_goto_timeout = min(20000, max(10000, self.config.maps_timeout_ms))
                             await page.goto(search_url, wait_until="domcontentloaded",
                                             timeout=rec_goto_timeout)
                         except PlaywrightTimeoutError as pto:
                             curr = getattr(page, "url", "") or ""
-                            if "google.com/maps" in curr:
+                            if "google.com/maps/search" in curr or "google.com/maps/place" in curr:
                                 log.info(f"[maps] navigation timed out after {rec_goto_timeout}ms but page landed on {curr!r} — proceeding")
+                            elif "google.com/maps" in curr:
+                                log.info(f"[maps] navigation timed out on bare Maps URL {curr!r} — retrying search URL once")
+                                await page.goto(search_url, wait_until="domcontentloaded", timeout=12000)
                             else:
                                 raise pto
                     _emit_progress("maps_navigation_complete", str(attempt))
@@ -6483,16 +6485,27 @@ class MapsScraper:
                                         _emit_card_processed("mismatch_exhausted")
                                         exhausted_mismatch_keys.add(place_key)
                                         seen_hrefs.add(place_key)
-                                        consecutive_mismatches_in_round = 0
+                                        consecutive_mismatches_in_round += 1
                                         log.info(
                                             f"[maps][stale-panel] abandoning card after bounded panel wait "
-                                            f"for place_key={place_key!r} reason={card_reason}"
+                                            f"for place_key={place_key!r} reason={card_reason} "
+                                            f"consecutive_in_round={consecutive_mismatches_in_round}"
                                         )
                                     else:
                                         _emit_card_processed("mismatch")
-                                    continue
-
-                                consecutive_mismatches_in_round += 1
+                                        consecutive_mismatches_in_round += 1
+                                    mismatch_threshold = (
+                                        1 if (yielded == 0 and search_nav_recovery_used)
+                                        else 2 if yielded == 0
+                                        else 3
+                                    )
+                                    if consecutive_mismatches_in_round < mismatch_threshold:
+                                        continue
+                                    # Repeated consecutive unopened panels: fall through to search_nav_recovery / area termination
+                                    returned = True
+                                    feed_still_present = False
+                                else:
+                                    consecutive_mismatches_in_round += 1
                                 total_mismatch_recoveries += 1
                                 max_card_retries = getattr(self.config, "max_stale_panel_retries_per_card", 2)
                                 if retries_for_key > max_card_retries:
@@ -6516,8 +6529,13 @@ class MapsScraper:
                                 max_area_recoveries = getattr(
                                     self.config, "max_stale_panel_recoveries_per_area", 6
                                 )
-                                if consecutive_mismatches_in_round >= 3 or (not returned and not feed_still_present):
-                                    if not search_nav_recovery_used:
+                                recovery_threshold = (
+                                    1 if (yielded == 0 and search_nav_recovery_used)
+                                    else 2 if yielded == 0
+                                    else 3
+                                )
+                                if consecutive_mismatches_in_round >= recovery_threshold or (not returned and not feed_still_present):
+                                    if not search_nav_recovery_used and yielded > 0:
                                         search_nav_recovery_used = True
                                         self._profiler.incr("stale_panel_search_nav_recovery")
                                         log.info(
@@ -6862,7 +6880,11 @@ class MapsScraper:
                 # propagates all the way to service.py's `__done__`
                 # sentinel as an explicit, machine-readable reason.
                 crashed = True
-                is_last_attempt = attempt >= max_attempts
+                is_last_attempt = (
+                    attempt >= max_attempts
+                    or (exc.reason in (DiscoveryFailureReason.PANEL_VERIFICATION_FAILED, DiscoveryFailureReason.RETURN_TO_RESULTS_FAILED, DiscoveryFailureReason.PANEL_NOT_FOUND) and yielded == 0)
+                    or (should_stop is not None and should_stop())
+                )
                 log.error(
                     f"[maps] discovery failure ({exc.reason.value}) for "
                     f"{full_query!r} (attempt {attempt}/{max_attempts}, "

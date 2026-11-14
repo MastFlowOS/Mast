@@ -615,6 +615,9 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
       const planIndexB = eligiblePlanIds.indexOf(b.plan_id);
       if (planIndexA !== planIndexB) return planIndexA - planIndexB;
       if ((b.priority ?? 0) !== (a.priority ?? 0)) return (b.priority ?? 0) - (a.priority ?? 0);
+      const rankA = typeof a.task_summary?.rank_index === "number" ? a.task_summary.rank_index : Number.MAX_SAFE_INTEGER;
+      const rankB = typeof b.task_summary?.rank_index === "number" ? b.task_summary.rank_index : Number.MAX_SAFE_INTEGER;
+      if (rankA !== rankB) return rankA - rankB;
       return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
     });
 
@@ -684,29 +687,40 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
           const rankedAreas = [...baseAreasToClaim].sort((a, b) => {
             const ya = areaYieldMap.get(a)?.yield ?? 0.20;
             const yb = areaYieldMap.get(b)?.yield ?? 0.20;
-            if (Math.abs(yb - ya) > 0.05) {
-              return yb - ya; // Higher yield first
-            }
-            // For comparable yields, rotate by least-recently searched
+            // 0. Proven zero-yield areas (discovered >= 5, accepted == 0) always go last
+            if ((ya === 0) !== (yb === 0)) return ya === 0 ? 1 : -1;
+
             const la = areaYieldMap.get(a)?.lastSearched ?? 0;
             const lb = areaYieldMap.get(b)?.lastSearched ?? 0;
-            return la - lb;
+            // 1. Never-searched viable areas first so every run opens fresh ground
+            if ((la === 0) !== (lb === 0)) return la === 0 ? -1 : 1;
+            // 2. Both never searched: preserve curated priority order (or yield prior)
+            if (la === 0 && lb === 0) {
+              return yb - ya;
+            }
+            // 3. Both searched: if noticeably different search times (> 30 mins), least-recently-searched first
+            if (Math.abs(la - lb) > 30 * 60 * 1000) {
+              return la - lb;
+            }
+            // 4. Comparable recency: higher historical yield first
+            return yb - ya;
           });
 
-          for (const targetArea of rankedAreas) {
-            try {
-              claimedArea = await desktopDeps.claimAreaForCity(desktopDeps.db, {
-                niche: task.niche,
-                countryCode: task.country_code,
-                city: task.city,
-                source: task.source ?? "google_maps",
-                areas: [targetArea],
-                cooldownSeconds: 0,
-              });
-              if (claimedArea) break;
-            } catch (err) {
-              // Try next ranked area if locked
-            }
+          // Pass only the top-ranked window (at least 4 areas) to claim_discovery_area
+          // so Postgres's `last_searched_at asc nulls first` doesn't pick a random
+          // low-priority neighborhood out of 20+ unsearched rows.
+          const areaClaimWindow = rankedAreas.slice(0, Math.min(rankedAreas.length, 4));
+          try {
+            claimedArea = await desktopDeps.claimAreaForCity(desktopDeps.db, {
+              niche: task.niche,
+              countryCode: task.country_code,
+              city: task.city,
+              source: task.source ?? "google_maps",
+              areas: areaClaimWindow,
+              cooldownSeconds: 7200, // 2-hour cooldown ensures rotation across fresh neighborhoods
+            });
+          } catch (err) {
+            console.warn("[desktop-coordination] error claiming area for city:", err);
           }
 
           if (!claimedArea && rankedAreas.length > 0) {
@@ -1230,50 +1244,6 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
 
     // Record outcome for claimed curated area if one was assigned
     const claimedArea = task.task_summary?.area || (task.task_summary?.area_label && task.task_summary.area_label !== task.city ? task.task_summary.area_label : undefined);
-    if (claimedArea) {
-      try {
-        await desktopDeps.recordAreaOutcome(desktopDeps.db, {
-          niche: task.niche,
-          countryCode: task.country_code,
-          city: task.city,
-          area: claimedArea,
-          source: task.source ?? "google_maps",
-          discovered: body.discovered,
-          accepted: body.accepted,
-        });
-        // Keep city-level stats fresh so city rotation accurately reflects exploration recency
-        await desktopDeps.db.rpc("record_discovery_location_outcome", {
-          p_niche: task.niche,
-          p_country_code: task.country_code,
-          p_city: task.city,
-          p_source: task.source ?? "google_maps",
-          p_discovered_delta: body.discovered,
-          p_accepted_delta: body.accepted,
-          p_exhausted: Boolean(body.exhausted),
-          p_errored: body.status === "failed",
-        });
-      } catch (areaErr) {
-        console.warn(`[desktop-coordination] recordAreaOutcome failed for ${task.id}:`, areaErr);
-      }
-    }
-
-    const sanitizedError = sanitizeWorkerError(body.error);
-
-    // Publish area completion live event for the live discovery UI
-    const scoutId = task.task_summary?.scout_id ?? 1;
-    const areaLabel = task.task_summary?.area_label ?? task.city;
-    desktopDeps.publishDiscoveryLiveEvent(
-      areaCompletedEvent(task.plan_id, scoutId, areaLabel, {
-        discovered: body.discovered,
-        accepted: body.accepted,
-        rejected: body.rejected,
-        duplicates: body.duplicates,
-        exhausted: body.exhausted,
-        failed: body.status === "failed",
-        error: sanitizedError,
-      }),
-    );
-
     // Check whether the parent plan has reached its target or was cancelled
     const { data: parentPlan } = await desktopDeps.db
       .from("discovery_plans")
@@ -1304,6 +1274,51 @@ desktopRouter.post("/tasks/:taskId/complete", requireAuth, completeLimiter, asyn
       !isPlanCancelled &&
       hasCuratedAreas(curatedAreas) &&
       (curatedAreas || []).some((a: string) => !updatedUsedAreas.includes(a));
+
+    if (claimedArea) {
+      try {
+        await desktopDeps.recordAreaOutcome(desktopDeps.db, {
+          niche: task.niche,
+          countryCode: task.country_code,
+          city: task.city,
+          area: claimedArea,
+          source: task.source ?? "google_maps",
+          discovered: body.discovered,
+          accepted: body.accepted,
+        });
+        // Keep city-level stats fresh so city rotation accurately reflects exploration recency.
+        // A city is ONLY exhausted if all its curated areas have been exhausted.
+        await desktopDeps.db.rpc("record_discovery_location_outcome", {
+          p_niche: task.niche,
+          p_country_code: task.country_code,
+          p_city: task.city,
+          p_source: task.source ?? "google_maps",
+          p_discovered_delta: body.discovered,
+          p_accepted_delta: body.accepted,
+          p_exhausted: hasCuratedAreas(curatedAreas) ? (Boolean(body.exhausted) && !hasMoreAreas) : Boolean(body.exhausted),
+          p_errored: body.status === "failed",
+        });
+      } catch (areaErr) {
+        console.warn(`[desktop-coordination] recordAreaOutcome failed for ${task.id}:`, areaErr);
+      }
+    }
+
+    const sanitizedError = sanitizeWorkerError(body.error);
+
+    // Publish area completion live event for the live discovery UI
+    const scoutId = task.task_summary?.scout_id ?? 1;
+    const areaLabel = task.task_summary?.area_label ?? task.city;
+    desktopDeps.publishDiscoveryLiveEvent(
+      areaCompletedEvent(task.plan_id, scoutId, areaLabel, {
+        discovered: body.discovered,
+        accepted: body.accepted,
+        rejected: body.rejected,
+        duplicates: body.duplicates,
+        exhausted: body.exhausted,
+        failed: body.status === "failed",
+        error: sanitizedError,
+      }),
+    );
 
     if (hasMoreAreas) {
       const updatedSummary = {

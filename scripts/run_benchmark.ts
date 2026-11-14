@@ -54,8 +54,9 @@ async function main() {
   if (resetState) {
     console.log("Cleaning up prior test leads for USER_ID (RESET_BENCHMARK_STATE=true)...");
     await supabase.from("leads").delete().eq("user_id", USER_ID);
-    console.log("Resetting discovery_area_stats for Coffee Shop niche...");
+    console.log("Resetting discovery_area_stats and discovery_location_stats for Coffee Shop niche...");
     await supabase.from("discovery_area_stats").delete().eq("niche", "Coffee Shop");
+    await supabase.from("discovery_location_stats").delete().eq("niche", "Coffee Shop");
   } else {
     console.log("Preserving prior test leads and discovery_area_stats for real deduplication & area rotation...");
   }
@@ -67,10 +68,14 @@ async function main() {
   const isLocalApi = API_URL.includes("127.0.0.1") || API_URL.includes("localhost");
 
   if (isLocalApi) {
+    if (!fs.existsSync("dist/server.js")) {
+      console.log("dist/server.js not found, building server...");
+      execSync("npm run build:server", { stdio: "inherit" });
+    }
     console.log(`Spawning local gateway server on ${API_URL}...`);
     const serverLogStream = fs.createWriteStream(`output/iteration_${iterNum}_server.log`, { flags: "w" });
-    serverProc = spawn("npx", ["tsx", "src/server.ts"], {
-      env: { ...process.env, PORT: "8080", USE_PERSISTENT_ENRICHMENT: "true", MAST_DESKTOP_INGEST_CONCURRENCY: "2", NODE_OPTIONS: "--max-old-space-size=2048", MAST_MAX_SCOUTS: "2" },
+    serverProc = spawn("node", ["dist/server.js"], {
+      env: { ...process.env, PORT: "8080", USE_PERSISTENT_ENRICHMENT: "true", MAST_DESKTOP_INGEST_CONCURRENCY: "2", NODE_OPTIONS: "--max-old-space-size=1024", MAST_MAX_SCOUTS: "2" },
       stdio: ["ignore", "pipe", "pipe"],
       shell: true,
     });
@@ -92,7 +97,13 @@ async function main() {
     }
     if (!ready) {
       console.error("Local gateway server failed to start within 30 seconds!");
-      serverProc.kill("SIGTERM");
+      try {
+        if (process.platform === "win32" && serverProc?.pid) {
+          execSync(`taskkill /pid ${serverProc.pid} /T /F`, { stdio: "ignore" });
+        } else {
+          serverProc.kill("SIGTERM");
+        }
+      } catch (e) {}
       process.exit(1);
     }
   }
@@ -110,26 +121,28 @@ async function main() {
     "--auth-token", token,
     "--concurrency", "2",
     "--batch-size", "1",
-    "--poll-interval", "1.0",
+    "--poll-interval", "0.5",
   ], {
     env: {
       ...process.env,
+      NODE_OPTIONS: undefined,
       PYTHONUNBUFFERED: "1",
-      NODE_OPTIONS: "--max-old-space-size=1024 --max-semi-space-size=64",
       PLACE_EXTRACT_TIMEOUT_MS: "8000",
       CARD_OPERATION_TIMEOUT_MS: "25000",
       RETURN_TO_RESULTS_TIMEOUT_MS: "2500",
       MAST_PANEL_MARKER_WAIT_MS: "5000",
-      MAST_STAGE_A_COLD_MOUNT_WAIT_MS: "8000",
-      MAST_STAGE_A_MOUNT_WAIT_MS: "4000",
-      MAST_STAGE_B_MOUNT_WAIT_MS: "1500",
+      MAST_STAGE_A_COLD_MOUNT_WAIT_MS: "7500",
+      MAST_STAGE_A_MOUNT_WAIT_MS: "2500",
+      MAST_STAGE_B_MOUNT_WAIT_MS: "2000",
       MAST_DISABLE_EXCEPTIONAL_GOTO: "true",
       MAX_STALE_PANEL_RETRIES_PER_CARD: "0",
       MAX_UNOPENED_PANEL_RETRIES_PER_CARD: "0",
       MAST_MAX_CONSECUTIVE_DUPLICATES: "4",
       MAST_MAX_ZERO_YIELD_REJECTIONS: "5",
       MAST_MAX_CONSECUTIVE_REJECTIONS: "8",
-      MAST_MAX_TASK_DURATION_S: "120.0",
+      MAST_ZERO_YIELD_TASK_DURATION_S: "110.0",
+      MAST_STALE_YIELD_TASK_DURATION_S: "42.0",
+      MAST_MAX_TASK_DURATION_S: "180.0",
     },
   });
 
@@ -301,14 +314,22 @@ async function main() {
   // Terminate worker child process cleanly
   console.log("Shutting down desktop worker process...");
   try {
-    workerProc.kill("SIGTERM");
+    if (process.platform === "win32" && workerProc?.pid) {
+      execSync(`taskkill /pid ${workerProc.pid} /T /F`, { stdio: "ignore" });
+    } else {
+      workerProc.kill("SIGTERM");
+    }
     await new Promise((r) => setTimeout(r, 1500));
   } catch (e) {}
 
   if (serverProc) {
     console.log("Shutting down local gateway server...");
     try {
-      serverProc.kill("SIGTERM");
+      if (process.platform === "win32" && serverProc?.pid) {
+        execSync(`taskkill /pid ${serverProc.pid} /T /F`, { stdio: "ignore" });
+      } else {
+        serverProc.kill("SIGTERM");
+      }
       await new Promise((r) => setTimeout(r, 1000));
     } catch (e) {}
   }

@@ -526,21 +526,44 @@ class DesktopWorker:
         hb_task = asyncio.create_task(_heartbeat_worker())
 
         task_start_time = time.monotonic()
-        max_task_duration_s = float(os.environ.get("MAST_MAX_TASK_DURATION_S", "300.0"))
+        max_task_duration_s = float(os.environ.get("MAST_MAX_TASK_DURATION_S", "180.0"))
+        zero_yield_max_duration_s = float(os.environ.get("MAST_ZERO_YIELD_TASK_DURATION_S", "110.0"))
+        stale_yield_max_duration_s = float(os.environ.get("MAST_STALE_YIELD_TASK_DURATION_S", "42.0"))
+        batch_index = 0
+        exhausted = False
+        termination_reason = "SUCCESS_TARGET_REACHED"
+        task_status = "completed"
+        task_error: Optional[str] = None
 
         # Cooperative cancellation watcher: immediately signals task_shutdown_event
         # so service.run_query and GoogleMapsProvider abort active Playwright scraper
         async def _abort_watcher():
+            nonlocal exhausted, termination_reason
+            last_accepted_count = 0
+            last_accepted_time = task_start_time
             while not stop_heartbeat.is_set():
                 if task_abort.is_set() or self._shutdown_event.is_set():
                     task_shutdown_event.set()
                     break
-                if time.monotonic() - task_start_time > max_task_duration_s:
+                now_mono = time.monotonic()
+                if metrics["accepted"] > last_accepted_count:
+                    last_accepted_count = metrics["accepted"]
+                    last_accepted_time = now_mono
+                elapsed_task_s = now_mono - task_start_time
+                stale_elapsed_s = now_mono - last_accepted_time
+                effective_limit_s = zero_yield_max_duration_s if metrics["accepted"] == 0 else max_task_duration_s
+                if elapsed_task_s > effective_limit_s or (
+                    metrics["accepted"] > 0 and stale_elapsed_s > stale_yield_max_duration_s
+                ):
                     log.warning(
-                        "Task %s reached maximum task duration of %.1fs; aborting area to advance scout",
+                        "Task %s reached duration/stale limit (elapsed=%.1fs, stale=%.1fs, accepted=%d); aborting area to advance scout",
                         task_id,
-                        max_task_duration_s,
+                        elapsed_task_s,
+                        stale_elapsed_s,
+                        metrics["accepted"],
                     )
+                    exhausted = True
+                    termination_reason = "SUCCESS_EXHAUSTED"
                     task_abort.set()
                     task_shutdown_event.set()
                     break
@@ -584,11 +607,6 @@ class DesktopWorker:
                 runner = run_query
 
         attempt_nonce = uuid.uuid4().hex[:8]
-        batch_index = 0
-        exhausted = False
-        termination_reason = "SUCCESS_TARGET_REACHED"
-        task_status = "completed"
-        task_error: Optional[str] = None
 
         data_dir = get_desktop_data_dir()
         db_path = str(data_dir / "cache" / f"discovery-task-{task_id}.db")
@@ -790,7 +808,7 @@ class DesktopWorker:
                 while True:
                     if self._shutdown_event.is_set() or task_abort.is_set() or task_shutdown_event.is_set():
                         log.info("Task %s ingest consumer observed cancellation or shutdown", task_id)
-                        if termination_reason == "SUCCESS_TARGET_REACHED":
+                        if termination_reason == "SUCCESS_TARGET_REACHED" and not exhausted:
                             termination_reason = "CANCELLED"
                         break
 

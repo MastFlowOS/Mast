@@ -1,0 +1,59 @@
+{
+  "in": 0,
+  "out": 5,
+  "panel": 5,
+  "investors": [
+    {
+      "investor": "The Tech Billionaire Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "You dodged who is actually going to pay, where your six paid API keys live in a desktop app, and why a shared lead pool won't just spam the same local shops, leaving me asking \"Is this a business or a hobby?\"\u2014For that reason, I'm out.",
+      "change": "Show me a server-side proxy and cost cap for those six paid APIs, an anti-collision rule so the Global Lead Pool doesn't burn local leads, and a controlled test proving thriving offline shops with bad sites actually buy from cold outreach."
+    },
+    {
+      "investor": "The Royalty Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "I want a piece of every sale, and right now you have no API cost math at 25,000 leads, no rule stopping ten local designers from spamming the same caf\u00e9, and no proof a booked-out freelancer won't cancel tomorrow \u2014 For that reason, I'm out.",
+      "change": "A verified per-lead API and AI cost breakdown at 25,000 monthly leads alongside a hard lead-cooldown rule and 90-day retention numbers from paying users."
+    },
+    {
+      "investor": "The Customer Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "When I ask myself, \"Would I actually buy this?\" I see 300 free leads that can already book me out, manual outreach I still have to send myself, and no answer on what tool I'd cancel or how you stop competing freelancers from flooding the same local business: For that reason, I'm out.",
+      "change": "Show me a cohort of freelancers who stayed on the $79/mo Pro plan for 6+ months after landing clients, plus a concrete lead-exclusivity or cooldown rule and false-positive rate data on sparse local profiles."
+    },
+    {
+      "investor": "The Numbers Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "You claim over 85% gross margin, yet at full Premium usage your $0.005 AI drafts alone eat $125 of a $199 plan before 6 paid APIs, Free-tier costs, or any CAC and payback math exist\u2014For that reason, I'm out.",
+      "change": "A real unit-economics spreadsheet showing per-user AI and API costs at full Pro/Premium quotas, Free-to-paid conversion, target CAC, and payback months on the $29 Starter tier."
+    },
+    {
+      "investor": "The Skeptic Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "I've seen this movie before, where a shared lead pool turns into a spam herd chasing thriving offline businesses that never wanted a new website or logo in the first place: For that reason, I'm out.",
+      "change": "Live conversion data from at least 100 outreach attempts showing that high-Health, low-digital-score local businesses actually reply and buy, paired with a hard cooldown or exclusivity cap on Global Lead Pool leads."
+    }
+  ],
+  "homework": [
+    "the founder needs to find out which segment actually converts and retains post-launch.",
+    "the founder needs to find out where the 6 paid API keys are stored/proxied in the desktop worker and who absorbs API costs when Free users run 300 searches/month.",
+    "the founder needs to find out whether thriving offline businesses actually buy digital services.",
+    "the founder needs to find out exact API + AI costs at 25,000 Premium leads/month to prove >85% margin.",
+    "the founder needs to find out how to prevent multiple local designers from pitching the same business.",
+    "the founder needs to find out whether users actually stay subscribed once booked out.",
+    "the founder needs to find out which existing tool/CRM users cancel to adopt Mast.",
+    "the founder needs to find out how to prevent lead-pool overlap and identical AI pitches across competing users.",
+    "the founder needs to find out how scoring avoids false positives on sparse profiles.",
+    "the founder needs to find out exact margins at 6,000\u201325,000 AI drafts plus 6 paid APIs and Free-tier subsidies.",
+    "the founder needs to find out target CAC, free-to-paid conversion rate, and payback months on Starter.",
+    "the founder needs to find out how fast the Global Lead Pool saturates local markets and affects reply rates.",
+    "the founder needs to find out via live tests whether offline-thriving businesses with bad sites buy.",
+    "the founder needs to find out what cooldown or exclusivity stops 50 users from hitting the top-ranked lead.",
+    "the founder needs to find out exact branding scoring criteria and false-positive rates."
+  ]
+}

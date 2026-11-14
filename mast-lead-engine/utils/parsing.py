@@ -922,6 +922,8 @@ CHAIN_KEYWORDS = (
     "gloria jean", "coffee bean", "lavazza", "illy caffe",
     "paul bakery", "greggs", "le pain quotidien", "mcdonalds",
     "pizzahut", "pizzaexpress", "nandos", "wagamama",
+    "blue bottle", "la colombe", "capital one café", "capital one cafe",
+    "peet's coffee", "philz coffee",
 )
 
 CANNABIS_KEYWORDS = (

@@ -55,9 +55,13 @@ test("a single-country scope expands to that country's internal major-city tasks
   // country (see src/lib/__tests__/countryScope.test.ts for the full
   // US ≠ Canada ≠ UK regression suite).
   const targets = resolveDiscoveryTargets({ region: "United States" });
+  const expectedUsCities = COUNTRIES.find((c) => c.code === "US")!.majorCities;
   assert.ok(targets.every((t) => t.country.code === "US"));
-  assert.deepEqual(targets.map((t) => t.city).sort(), ["Chicago", "Los Angeles", "New York"].sort());
-  assert.ok(COUNTRIES.some((c) => c.code === "US"));
+  assert.deepEqual(targets.map((t) => t.city).sort(), [...expectedUsCities].sort());
+  assert.ok(expectedUsCities.includes("New York"));
+  assert.ok(expectedUsCities.includes("Los Angeles"));
+  assert.ok(expectedUsCities.includes("Chicago"));
+  assert.ok(expectedUsCities.length > 3, "US should cover many cities nationwide");
 });
 
 // ── C — Cities are internal only; no public city request field exists ──
@@ -76,7 +80,8 @@ test("resolveDiscoveryTargets accepts no city field — region/currencies only",
 test("every internal city task for a plan shares the same plan-level target (no per-city sub-target)", () => {
   const targets = resolveDiscoveryTargets({ region: "North America" });
   const usTargets = targets.filter((t) => t.country.code === "US");
-  assert.equal(usTargets.length, 3, "US contributes 3 internal city tasks under the one plan");
+  const expectedUsCount = COUNTRIES.find((c) => c.code === "US")!.majorCities.length;
+  assert.equal(usTargets.length, expectedUsCount, "US contributes all its internal city tasks under the one plan");
   // resolveDiscoveryTargets() returns work units only — it deliberately
   // carries no per-target quantity/sub-target field. The shared target
   // lives solely at discovery_plans.requested_count (see

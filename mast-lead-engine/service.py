@@ -2376,6 +2376,9 @@ async def run_query(
                 target=_discover_worker, name="mast-discovery-only", daemon=True
             )
             thread.start()
+            _consecutive_pruned = 0
+            _max_consecutive_pruned = int(os.environ.get("MAST_MAX_CONSECUTIVE_PRUNED", "6"))
+            _max_zero_yield_pruned = int(os.environ.get("MAST_MAX_ZERO_YIELD_PRUNED", "4"))
             try:
                 while not gate.target_reached:
                     # LIFECYCLE FIX: checked *before* the next (blocking)
@@ -2411,6 +2414,16 @@ async def run_query(
                     raw_dict = _candidate_dict(candidate)
                     if is_chain(candidate.name) or is_cannabis(raw_dict):
                         tracer.reject(pid, "chain_or_cannabis")
+                        _consecutive_pruned += 1
+                        _prune_limit = _max_zero_yield_pruned if gate.accepted == 0 else _max_consecutive_pruned
+                        if _prune_limit > 0 and _consecutive_pruned >= _prune_limit:
+                            log.info(
+                                "[run_query] discovery_only: fast-bailing low-yield area after %d consecutive pruned candidates (accepted=%d)",
+                                _consecutive_pruned, gate.accepted,
+                            )
+                            if shutdown_event is not None:
+                                shutdown_event.set()
+                            break
                         continue
                     # Early channel prune. MUST run before try_accept_lead():
                     # the website fast-abort yields a minimal stub, and a
@@ -2420,7 +2433,18 @@ async def run_query(
                     _unsat = _first_unsatisfiable_channel(candidate, required_channels)
                     if _unsat is not None:
                         tracer.reject(pid, f"early_channel_pruned:{_unsat}")
+                        _consecutive_pruned += 1
+                        _prune_limit = _max_zero_yield_pruned if gate.accepted == 0 else _max_consecutive_pruned
+                        if _prune_limit > 0 and _consecutive_pruned >= _prune_limit:
+                            log.info(
+                                "[run_query] discovery_only: fast-bailing low-yield area after %d consecutive pruned candidates (accepted=%d)",
+                                _consecutive_pruned, gate.accepted,
+                            )
+                            if shutdown_event is not None:
+                                shutdown_event.set()
+                            break
                         continue
+                    _consecutive_pruned = 0
                     raw_dict["fingerprints"] = sorted(fingerprints_for(raw_dict))
                     raw_dict["is_disqualified"] = False
                     raw_dict["_pipeline_id"] = pid

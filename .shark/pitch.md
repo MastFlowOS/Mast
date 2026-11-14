@@ -1,5 +1,21 @@
 Mast: an intelligent client acquisition engine and CRM workspace for freelancers that identifies thriving local businesses with critical digital gaps and converts them through research-backed outreach.
 
+## Current Stage & Goal of This Pitch
+- **Status**: Pre-launch / NOT published yet. No live public users, revenue, CAC, or conversion metrics exist yet.
+- **Internal Validation**: Completed 100s of internal discovery runs with a healthy engine and no scraper issues/blocks so far.
+- **CRITICAL INSTRUCTION FOR THE PANEL**: The founder is NOT pitching for money, valuation, or sales metrics today. Do NOT base your questions or verdict on "0 paying users", "no revenue", "no CAC/LTV/payback math", or "prove API/AI cost per lead". Pretend this is an **idea-only review**: evaluate strictly whether the **core idea, product workflow, problem-solution fit, and technical mechanics** of Mast are actually good or flawed.
+
+## Data Source Architecture & Scraper Resilience (Already Built)
+- **Own Street Layer (OSM + DB Cache)**: Mast uses OpenStreetMap (Overpass) to build and cache boundary-verified street inventories in its own database, so it does not rely on Google Maps for geography.
+- **8-Provider Engine**: The Python discovery engine includes `google_maps` and `overpass` (credential-free) alongside 6 official API-key providers (`yelp`, `apple_maps`, `foursquare`, `azure_maps`, `crunchbase`, `apollo`) as multi-source backups/complements.
+- **Distributed Desktop Execution + Global Pool Caching**: Discovery runs from each user's desktop rather than a single central scraping IP, and discovered/enriched businesses are cached in Mast's Global Lead Pool so repeat queries don't re-hit external sources.
+
+## Founder Clarifications on Product Mechanics & Retention
+- **Niche-Matched Lead Delivery**: Mast only delivers a business to a freelancer when the business actually exhibits a gap matching that freelancer's service (e.g., an outdated logo is delivered to a graphic designer; a bad website is delivered to a web/tech freelancer).
+- **Per-Profession 5-User Threshold + 15-Day Cooldown (Implemented in Production DB & Discovery Engine)**: Instead of a global lock on the business, Mast uses `public.business_profession_cooldowns` keyed on `(business_id, profession_slug)` (`LEAD_COOLDOWN_MAX_USERS = 5`, `LEAD_COOLDOWN_DAYS = 15`). Up to 5 different users in the *same* profession can receive a business within a 15-day window (`delivery_count` 1→5); on the 5th delivery in that profession, `cooldown_until = now() + 15 days` is stamped for that `(business_id, profession_slug)` pair only. Other professions (e.g., web design vs. graphic design vs. SEO) have completely independent counters and never block each other, and no single agency can hoard or lock a city's leads. Both Instant Pool (`pool_lookup`) and live desktop discovery (`getCooldownSnapshotForTask`) skip businesses that hit 5/5 in that profession before clicking or crawling.
+- **Higher Relevance & Retention**: Instead of cold-outreaching 100 random businesses where most already have a provider or don't need the service (~5 replies, 1 deal), Mast targets ~90% relevance—delivering businesses that actually need the service, increasing deal close rates. When a freelancer sees Mast actively generating profit for them, they keep using it rather than churning after a few deals.
+- **Why Paid Tiers Upgrade Beyond Volume**: 20 leads/day on Free is insufficient for cold outreach conversion and basically nothing for agencies. Paid tiers don't just add lead credits—they unlock higher lead quality, Opportunity Score ranking, AI Workspace, and outreach/CTA message generation, directly increasing close rates.
+
 ## 1. Problem & Origin
 Built by a remote freelancer with 2 years of remote freelancing experience after hitting the limits of existing platforms:
 - Freelance marketplaces (Fiverr/Upwork) impose brutal price wars, race-to-the-bottom bidding, and heavy take rates.

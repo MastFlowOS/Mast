@@ -255,6 +255,12 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
     }
   }
 
+  // Preserve countries.ts metro-size order as the deterministic tie-breaker
+  // so fresh/unsearched plans start with the largest commercial hubs (e.g.
+  // New York, Los Angeles) instead of randomly picking smaller cities.
+  const scopeOrder = new Map<string, number>();
+  scopeTargets.forEach((t, idx) => scopeOrder.set(`${t.country.code}:${t.city}`, idx));
+
   const targets = [...scopeTargets]
     .sort((a, b) => {
       const keyA = `${a.country.code}:${a.city}`;
@@ -288,7 +294,7 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
       if (recentA !== recentB) return recentA - recentB;
 
       if (yieldA !== yieldB) return yieldB - yieldA;
-      return stableRank(`${planId}:${a.country.code}:${a.city}`) - stableRank(`${planId}:${b.country.code}:${b.city}`);
+      return (scopeOrder.get(keyA) ?? 0) - (scopeOrder.get(keyB) ?? 0);
     });
 
   const taskCount = targets.length * niches.length;
@@ -342,6 +348,7 @@ export async function materializeDiscoveryPlan(planId: string, request: Discover
         execution_target: request.executionTarget ?? "cloud",
         task_summary: {
           execution_target: request.executionTarget ?? "cloud",
+          rank_index: rankIndex,
         },
       };
     }),

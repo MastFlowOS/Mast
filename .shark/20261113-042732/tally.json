@@ -1,0 +1,58 @@
+{
+  "in": 0,
+  "out": 5,
+  "panel": 5,
+  "investors": [
+    {
+      "investor": "The Tech Billionaire Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "You couldn't answer how you'll maintain desktop Python scrapers when sites break or stop five freelancers from hitting the same local shop with cookie-cutter pitches, and without proof anyone will pay $79 a month instead of camping on your free tier, I have to ask if this is a business or a hobby\u2014For that reason, I'm out.",
+      "change": "Show me a resilient, zero-fire-drill update and anti-block architecture for the desktop worker alongside a real mechanism that keeps pitches distinct across the 5-user window and converts free users to paid tiers."
+    },
+    {
+      "investor": "The Royalty Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "I want a piece of every sale, not a lead pool that lets five freelancers hit the same business in fifteen days with no answer on pitch differentiation, buyer intent, or API terms-of-service compliance \u2014 For that reason, I'm out.",
+      "change": "Show me written confirmation that your API providers permit Global Lead Pool caching and sharing, plus a mechanism that keeps pitches distinct across all five freelancers."
+    },
+    {
+      "investor": "The Customer Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "When I ask myself, \"Would I actually buy this?\" at $79 a month for 400 manual leads I can't possibly send while four other freelancers pitch the same business every 15 days, the answer is no \u2014 For that reason, I'm out.",
+      "change": "Show me live reply-rate data proving the 2nd through 5th freelancer in the same profession still book meetings on the same business within 15 days, and give solo freelancers a paid-tier reason that isn't 400 leads they don't have time to manually send."
+    },
+    {
+      "investor": "The Numbers Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "Your tier math still doesn't add up\u2014you can't explain who burns 1,000 manual leads a day, whether 5 pitches every 15 days kills reply rates, or why anyone upgrades off a 300-lead free tier, so show me the numbers when you have them\u2014For that reason, I'm out.",
+      "change": "Live post-launch cohort math showing Free-to-Paid conversion rates, actual reply rates for the 1st through 5th freelancer pitching the same business in a 15-day window, and how many leads paid agencies actually contact per day."
+    },
+    {
+      "investor": "The Skeptic Shark",
+      "decision": "OUT",
+      "offer": "none",
+      "reason": "I've seen this movie before\u2014your Opportunity Score mistakes having a digital gap for willingness to pay to fix it, and with no cross-profession cap you'll flood the same local owners with pitch spam; For that reason, I'm out.",
+      "change": "Show me a verified buying-intent signal in your scoring that separates \"ugly site\" from \"ready to buy,\" plus a hard cross-profession cooldown cap per business."
+    }
+  ],
+  "homework": [
+    "the founder needs to find out how desktop scraper updates, selector fixes, and user IP blocks are managed at scale.",
+    "the founder needs to find out how code detects an \"outdated logo\" and prevents 5 users sending similar hooks.",
+    "the founder needs to find out how Mast keeps pitches distinct across those 5 users.",
+    "the founder needs to find out what separates \"has a gap\" from \"willing to pay to fix it.\"",
+    "the founder needs to find out if the 6 API providers' TOS permit caching and sharing data in the Global Lead Pool.",
+    "the founder needs to find out why solo users capped by manual outreach need 400 leads/day.",
+    "the founder needs to find out how Mast protects reply rates for the 2nd\u20135th freelancer pitching the same business in 15 days.",
+    "the founder needs to find out which paid tools users will cancel.",
+    "the founder needs to find out who consumes 1,000 manual leads/day and how.",
+    "the founder needs to find out whether 5 pitches per 15 days hurts reply rates.",
+    "the founder needs to find out actual Free-to-Paid conversion rates post-launch.",
+    "the founder needs to find out how Opportunity Score separates \"has a gap\" from \"will pay to fix it.\"",
+    "the founder needs to find out how to prevent cross-profession pitch overload.",
+    "the founder needs to find out long-term reliability against residential IP blocks and site changes."
+  ]
+}

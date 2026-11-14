@@ -77,6 +77,12 @@ import {
 import type { DiscoveryMode } from "@/config/plans";
 import { addNotification } from "@/lib/notifications";
 import {
+  dismissDynamicIslandEvent,
+  publishDynamicIslandEvent,
+  removeDynamicIslandEvent,
+  updateDynamicIslandProgress,
+} from "@/lib/dynamic-island";
+import {
   DEFAULT_CHANNELS,
   channelsForRequest,
   toggleChannelSelection,
@@ -421,6 +427,9 @@ function GetLeads() {
   useEffect(() => {
     if (!activeJobIdRef.current) return;
     runStartupWatchdogCheck();
+    if (liveDiscoveryState) {
+      updateDynamicIslandProgress(liveDiscoveryState.progressPercent);
+    }
   }, [liveDiscoveryState, runStartupWatchdogCheck]);
 
   // The last finished run: its truthful outcome (requested / delivered /
@@ -666,6 +675,13 @@ function GetLeads() {
     setShowCompletion(false);
     setNewOpportunities([]);
 
+    publishDynamicIslandEvent({
+      id: "discovery_active",
+      type: "discovery_active",
+      title: "Discovery in progress",
+      progress: 0,
+    });
+
     const startTime = Date.now();
 
     // A very short minimum so an instant, fully-cached Instant Discovery
@@ -710,7 +726,36 @@ function GetLeads() {
         if (outcome.toast === "success") toast.success(outcome.headline);
         else if (outcome.toast === "error") toast.error(outcome.headline, outcome.detail ? { description: outcome.detail } : undefined);
         else toast.info(outcome.headline, outcome.detail ? { description: outcome.detail } : undefined);
-        if (outcome.delivered > 0) {
+
+        if (outcome.kind === "failed") {
+          publishDynamicIslandEvent({
+            id: "discovery_error",
+            type: "discovery_error",
+            title: "Discovery failed",
+            description: "Couldn't fetch results. Try again.",
+            actionLabel: "Retry →",
+            onAction: () => {
+              dismissDynamicIslandEvent("discovery_error");
+              void runDiscovery(request);
+            },
+          });
+        } else if (outcome.delivered > 0) {
+          const oppPhrase =
+            outcome.delivered === 1
+              ? "1 opportunity is ready to review."
+              : `${outcome.delivered} opportunities are ready to review.`;
+          publishDynamicIslandEvent({
+            id: "discovery_complete",
+            type: "discovery_complete",
+            title: "Discovery complete",
+            description: oppPhrase,
+            actionLabel: "View →",
+            autoDismissMs: 15000,
+            onAction: () => {
+              dismissDynamicIslandEvent("discovery_complete");
+              void navigate({ to: "/dashboard/relationships" });
+            },
+          });
           addNotification({
             icon: "CheckCircle2",
             iconColor: "text-emerald-400",
@@ -719,7 +764,10 @@ function GetLeads() {
             body: `Delivered ${outcome.delivered} of ${outcome.requested} requested opportunities to your pipeline.`,
             category: "notifyNewLead",
           });
+        } else {
+          removeDynamicIslandEvent("discovery_active");
         }
+
         // Final sync — credits/counters/CRM/analytics all reflect what was
         // actually delivered.
         queryClient.invalidateQueries({ queryKey: queryKeys.account });
@@ -737,6 +785,9 @@ function GetLeads() {
       }
       if (seenLeadIdsRef.current.has(lead.id)) return; // no duplicate opportunities, ever
       seenLeadIdsRef.current.add(lead.id);
+      const targetQty = Math.max(1, request.quantity);
+      const nextPct = Math.min(99, Math.round((seenLeadIdsRef.current.size / targetQty) * 100));
+      updateDynamicIslandProgress(nextPct);
       setNewOpportunities((prev) => {
         const next = [...prev, lead];
         if (prev.length === 0) setFirstOpportunityId(lead.id);
@@ -836,6 +887,17 @@ function GetLeads() {
         watchdogTimerRef.current = null;
       }
       setIsGenerating(false);
+      publishDynamicIslandEvent({
+        id: "discovery_error",
+        type: "discovery_error",
+        title: "Discovery failed",
+        description: "Couldn't fetch results. Try again.",
+        actionLabel: "Retry →",
+        onAction: () => {
+          dismissDynamicIslandEvent("discovery_error");
+          void runDiscovery(request);
+        },
+      });
       if (err instanceof ApiError) {
         if (err.message.includes("LIMIT_EXCEEDED_DAILY")) {
           toast.error("Daily capacity reached", { description: `You have ${dailyRemaining} opportunities remaining today.` });

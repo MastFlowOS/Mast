@@ -36,6 +36,11 @@ import {
 import { FeatureGate } from "@/components/mast/FeatureGate";
 import { cn } from "@/lib/utils";
 import { downloadFile, leadsToCSV } from "@/lib/leadExport";
+import {
+  dismissDynamicIslandEvent,
+  publishDynamicIslandEvent,
+} from "@/lib/dynamic-island";
+import { addNotification } from "@/lib/notifications";
 
 export const Route = createFileRoute("/dashboard/import")({
   head: () => ({ meta: [{ title: "Data Import / Export — Mast" }] }),
@@ -661,6 +666,29 @@ function ImportExportPage() {
       });
       setStep("done");
       toast.success(`${result.imported} opportunities imported`);
+      if (result.imported > 0) {
+        const contactWord = result.imported === 1 ? "contact" : "contacts";
+        publishDynamicIslandEvent({
+          id: "import_complete",
+          type: "import_complete",
+          title: "Import complete",
+          description: `${result.imported.toLocaleString()} ${contactWord} added.`,
+          actionLabel: "View →",
+          autoDismissMs: 15000,
+          onAction: () => {
+            dismissDynamicIslandEvent("import_complete");
+            void navigate({ to: "/dashboard/relationships" });
+          },
+        });
+        addNotification({
+          icon: "CheckCircle2",
+          iconColor: "text-emerald-400",
+          iconBg: "bg-emerald-400/10 border-emerald-400/20",
+          title: "Import complete",
+          body: `${result.imported.toLocaleString()} ${contactWord} added to your workspace.`,
+          category: "notifyNewLead",
+        });
+      }
       setImportHistory((prev: ImportHistoryEntry[]) => [
         {
           id: Date.now().toString(),

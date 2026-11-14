@@ -5,15 +5,22 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MastWordmark } from "@/components/mast/MastWordmark";
-import { useAccount, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
+import { DynamicIslandHeader } from "@/components/mast/DynamicIslandHeader";
+import { useAccount, useFollowups, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
+import {
+  createDynamicIslandEvent,
+  dismissDynamicIslandEvent,
+  useDynamicIsland,
+  type DynamicIslandEvent,
+} from "@/lib/dynamic-island";
 import { useNavIndicator } from "@/hooks/use-nav-indicator";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { DevPlanSwitcher } from "@/components/mast/DevPlanSwitcher";
 import {
-  Crosshair, Search, Kanban, Bell, Settings, LogOut, X,
-  CheckCircle2, ArrowUpCircle, Network, Upload, CreditCard, Zap, Bug,
+  Crosshair, Search, Kanban, Bell, Settings, LogOut,
+  Network, Upload, CreditCard, Zap, Bug,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -41,10 +48,6 @@ const NAV = [
 const ITEM_H   = 40; // px — nav item height (py-2 + text-sm line-height)
 const ITEM_GAP = 2;  // px — space-y-[2px]
 
-const NOTIF_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  CheckCircle2, ArrowUpCircle, Bell,
-};
-
 function DashboardLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate  = useNavigate();
@@ -52,6 +55,7 @@ function DashboardLayout() {
   const { data: auth, isLoading: authLoading } = useMe();
   const user    = auth?.user ?? null;
   const { data: account } = useAccount(!!user);
+  const { data: followupsData = [] } = useFollowups({ limit: 500 }, !!user);
   const logout  = useLogout();
 
   // ── Sidebar rail (desktop/tablet only — mobile keeps the original
@@ -102,9 +106,6 @@ function DashboardLayout() {
   const { indicator, setContainer: setNavContainer, registerItem } = useNavIndicator(activeTo);
 
   // ── Notification state ────────────────────────────────────────────────────
-  const [notifOpen, setNotifOpen] = useState(false);
-  const notifRef = useRef<HTMLDivElement>(null);
-
   // <main> is the one element that scrolls and it stays mounted across tabs, so it would
   // otherwise keep the previous tab's scroll position. Always start a new page at the top.
   const mainRef = useRef<HTMLElement>(null);
@@ -127,14 +128,6 @@ function DashboardLayout() {
     return initial;
   });
 
-  useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setNotifOpen(false);
-    };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
-
   // Listen to external/real-time notifications state changes
   useEffect(() => {
     const handleUpdate = () => {
@@ -153,7 +146,7 @@ function DashboardLayout() {
     setNotifications(updated);
     try { localStorage.setItem("mast_notifications", JSON.stringify(updated)); } catch { /* ignore */ }
   };
-  const dismiss = (id: number) => {
+  const dismiss = (id: number | string) => {
     const updated = notifications.filter((n) => n.id !== id);
     setNotifications(updated);
     try { localStorage.setItem("mast_notifications", JSON.stringify(updated)); } catch { /* ignore */ }
@@ -170,6 +163,72 @@ function DashboardLayout() {
   const planName  = account?.subscription?.name ?? user?.plan ?? "Pro";
   const creditPct = credits.limit > 0
     ? Math.min(100, Math.round((credits.used / credits.limit) * 100)) : 0;
+
+  // ── Ambient Dynamic Island events (real due follow-ups + low credits) ──────
+  const dueFollowupsCount = useMemo(() => {
+    if (!Array.isArray(followupsData) || followupsData.length === 0) return 0;
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+    const endOfTodayMs = endOfToday.getTime();
+    return followupsData.filter((f) => {
+      if (f.status === "completed" || f.status === "cancelled") return false;
+      const dueMs = new Date(f.dueAt).getTime();
+      return !Number.isNaN(dueMs) && dueMs <= endOfTodayMs;
+    }).length;
+  }, [followupsData]);
+
+  const ambientEvents = useMemo<DynamicIslandEvent[]>(() => {
+    const list: DynamicIslandEvent[] = [];
+
+    if (dueFollowupsCount > 0 && !pathname.startsWith("/dashboard/follow-ups")) {
+      const eventId = `followups_due_${dueFollowupsCount}`;
+      list.push(
+        createDynamicIslandEvent({
+          id: eventId,
+          type: "notification",
+          title: `${dueFollowupsCount} follow-up${dueFollowupsCount === 1 ? " needs" : "s need"} attention`,
+          description: "New reminders just now.",
+          actionLabel: "Review →",
+          actionHref: "/dashboard/follow-ups",
+          timestamp: 20,
+          onAction: () => {
+            dismissDynamicIslandEvent(eventId);
+            dismissDynamicIslandEvent("notification");
+            void navigate({ to: "/dashboard/follow-ups" });
+          },
+        }),
+      );
+    }
+
+    const isLowCredits =
+      Boolean(account || user) &&
+      credits.limit > 0 &&
+      credits.remaining <= Math.min(50, Math.max(10, Math.floor(credits.limit * 0.1)));
+
+    if (isLowCredits && !pathname.startsWith("/dashboard/subscription")) {
+      const eventId = `credits_low_${credits.remaining}`;
+      list.push(
+        createDynamicIslandEvent({
+          id: eventId,
+          type: "credits_low",
+          title: "Credits running low",
+          description: `${credits.remaining.toLocaleString()} credit${credits.remaining === 1 ? "" : "s"} remaining.`,
+          actionLabel: "Upgrade →",
+          actionHref: "/dashboard/subscription",
+          timestamp: 10,
+          onAction: () => {
+            dismissDynamicIslandEvent(eventId);
+            dismissDynamicIslandEvent("credits_low");
+            void navigate({ to: "/dashboard/subscription" });
+          },
+        }),
+      );
+    }
+
+    return list;
+  }, [dueFollowupsCount, pathname, navigate, account, user, credits.limit, credits.remaining]);
+
+  const { activeEvent } = useDynamicIsland(ambientEvents);
 
   const initials = user?.fullName
     ? user.fullName.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("")
@@ -468,114 +527,17 @@ function DashboardLayout() {
       */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
 
-        {/* Topbar */}
-        <header className="h-16 border-b border-border flex items-center justify-between px-6 bg-background/80 backdrop-blur-xl sticky top-0 z-30 shrink-0">
-          <div className="flex items-center gap-3 max-w-md w-full">
-            <Search className="size-4 text-muted-foreground shrink-0" />
-            <input
-              placeholder="Search opportunities, campaigns, contacts…"
-              className="bg-transparent outline-none text-sm w-full placeholder:text-muted-foreground"
-            />
-          </div>
-
-          <div className="flex items-center gap-3">
-            {/* Notification bell */}
-            <div ref={notifRef} className="relative">
-              <button
-                onClick={() => setNotifOpen((o) => !o)}
-                className="relative size-9 grid place-items-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-card transition-colors shrink-0"
-              >
-                <Bell className="size-4 shrink-0" />
-                {unread > 0 && (
-                  <span className="absolute -top-1 -right-1 size-4 rounded-full bg-brand text-brand-foreground text-[9px] font-bold grid place-items-center shrink-0">
-                    {unread}
-                  </span>
-                )}
-              </button>
-
-
-              {notifOpen && (
-                <div className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden animate-fade-down">
-                  <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                    <h3 className="font-bold text-sm">Notifications</h3>
-                    <div className="flex items-center gap-3">
-                      {unread > 0 && (
-                        <button onClick={markRead} className="text-xs text-brand font-semibold hover:text-brand-dark transition-colors">
-                          Mark all read
-                        </button>
-                      )}
-                      <button onClick={() => setNotifOpen(false)} className="size-6 grid place-items-center text-muted-foreground hover:text-foreground transition-colors shrink-0">
-                        <X className="size-4 shrink-0" />
-                      </button>
-
-                    </div>
-                  </div>
-                  <div className="max-h-96 overflow-y-auto">
-                    {notifications.length === 0 ? (
-                      <div className="py-10 text-center text-sm text-muted-foreground">No notifications</div>
-                    ) : notifications.map((n) => {
-                      const Icon = NOTIF_ICONS[n.icon] ?? Bell;
-                      return (
-                        <div key={n.id} className={cn(
-                          "flex items-start gap-3 px-4 py-3 border-b border-border/50 last:border-0 hover:bg-muted/20 transition-colors",
-                          n.unread && "bg-brand/5",
-                        )}>
-                          <div className={cn("size-8 rounded-lg border grid place-items-center shrink-0 mt-0.5", n.iconBg)}>
-                            <Icon className={cn("size-4", n.iconColor)} />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-start justify-between gap-2">
-                              <p className={cn("text-sm font-semibold leading-tight", n.unread ? "text-foreground" : "text-muted-foreground")}>
-                                {n.title}
-                                {n.unread && <span className="inline-block ml-1.5 size-1.5 rounded-full bg-brand align-middle" />}
-                              </p>
-                              <button onClick={() => dismiss(n.id)} className="size-4 grid place-items-center text-muted-foreground/60 hover:text-muted-foreground shrink-0 transition-colors">
-                                <X className="size-4 shrink-0" />
-                              </button>
-
-                            </div>
-                            <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{n.body}</p>
-                            <p className="text-[10px] text-muted-foreground/60 mt-1">{n.time}</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* User */}
-            <div className="flex items-center gap-2.5 shrink-0">
-              <div className="size-9 rounded-full bg-brand/20 border border-brand/30 flex items-center justify-center text-sm font-bold text-brand shrink-0 overflow-hidden">
-                {user?.avatarUrl ? (
-                  <img
-                    src={user.avatarUrl}
-                    alt={user.fullName || "User avatar"}
-                    className="w-full h-full object-cover object-center shrink-0 block"
-                    style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }}
-                  />
-                ) : (
-                  initials
-                )}
-              </div>
-              <div className="hidden md:block">
-                <p className="text-sm font-semibold leading-tight">{user?.fullName || "My Workspace"}</p>
-                <p className="text-[11px] text-muted-foreground leading-tight">{planName} Plan</p>
-              </div>
-            </div>
-
-
-            {/* Logout */}
-            <button
-              onClick={handleLogout}
-              className="size-9 grid place-items-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-card transition-colors shrink-0"
-              title="Log out"
-            >
-              <LogOut className="size-4 shrink-0" />
-            </button>
-          </div>
-        </header>
+        {/* Dynamic Island Top Header */}
+        <DynamicIslandHeader
+          event={activeEvent}
+          notifications={notifications}
+          unreadCount={unread}
+          onMarkAllRead={markRead}
+          onDismissNotification={dismiss}
+          user={user}
+          planName={planName}
+          onLogout={handleLogout}
+        />
 
         {/* Page content — plain Outlet, no key trick.
             min-h-0: same flex min-height reset as the column above, so this

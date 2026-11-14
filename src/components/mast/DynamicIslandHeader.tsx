@@ -333,9 +333,36 @@ export function DynamicIslandHeader({
   className,
 }: DynamicIslandHeaderProps) {
   const [notifOpen, setNotifOpen] = useState(false);
+  const [drawerMounted, setDrawerMounted] = useState(false);
+  const [drawerExpanded, setDrawerExpanded] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const accountRef = useRef<HTMLDivElement>(null);
+
+  // Smooth expanding & contracting lifecycle for the Dynamic Island notifications drawer
+  useEffect(() => {
+    if (notifOpen) {
+      setDrawerMounted(true);
+      let raf2 = 0;
+      const raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => {
+          setDrawerExpanded(true);
+        });
+      });
+      return () => {
+        cancelAnimationFrame(raf1);
+        if (raf2) cancelAnimationFrame(raf2);
+      };
+    }
+
+    setDrawerExpanded(false);
+    if (!drawerMounted) return;
+    const timer = setTimeout(() => {
+      setDrawerMounted(false);
+    }, 280);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notifOpen]);
 
   // Smooth entrance & disappearing handling for the Dynamic Island capsule
   const isIdle = event.type === "idle";
@@ -445,7 +472,7 @@ export function DynamicIslandHeader({
         <HeaderContourSvg
           isError={isErrorState}
           isActive={showIslandCapsule}
-          isOpen={notifOpen}
+          isOpen={drawerExpanded}
         />
 
         <div
@@ -558,24 +585,33 @@ export function DynamicIslandHeader({
           )}
         </div>
 
-        {/* Attached Dynamic Island Notifications Drawer — continuous dark-blue outline */}
-        {notifOpen && (
+        {/* Attached Dynamic Island Notifications Drawer — smooth expanding & contracting animation */}
+        {drawerMounted && (
           <div
             data-testid="dynamic-island-notifications-dropdown"
+            data-state={drawerExpanded ? "open" : "closing"}
             onClick={(e) => e.stopPropagation()}
             className={cn(
-              "absolute left-[17.241%] right-[17.241%] top-full -mt-[1px]",
+              "absolute left-[17.241%] right-[17.241%] top-full -mt-[1px] grid",
               "bg-[oklch(0.130_0.031_263)] border-x border-b border-t-0 rounded-b-2xl shadow-2xl z-50 overflow-hidden",
               isErrorState
                 ? "border-[rgba(190,38,65,0.62)]"
                 : "border-[rgba(56,90,168,0.92)]",
             )}
             style={{
+              gridTemplateRows: drawerExpanded ? "1fr" : "0fr",
+              opacity: drawerExpanded ? 1 : 0,
+              transform: drawerExpanded
+                ? "translateY(0) scaleY(1)"
+                : "translateY(-6px) scaleY(0.92)",
               transformOrigin: "center top",
-              animation: "island-dropdown-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both",
+              transition: drawerExpanded
+                ? "grid-template-rows 340ms cubic-bezier(0.16, 1, 0.3, 1), opacity 240ms cubic-bezier(0.16, 1, 0.3, 1), transform 340ms cubic-bezier(0.16, 1, 0.3, 1)"
+                : "grid-template-rows 260ms cubic-bezier(0.4, 0, 0.2, 1), opacity 190ms cubic-bezier(0.4, 0, 1, 1), transform 260ms cubic-bezier(0.4, 0, 0.2, 1)",
             }}
           >
-            <div className="flex items-center justify-between px-4 py-2 border-b border-[rgba(56,90,168,0.24)] bg-[oklch(0.122_0.029_263)]">
+            <div className="overflow-hidden min-h-0">
+              <div className="flex items-center justify-between px-4 py-2 border-b border-[rgba(56,90,168,0.24)] bg-[oklch(0.122_0.029_263)]">
               <div className="flex items-center gap-2">
                 <h3 className="font-semibold text-xs text-foreground tracking-wide">
                   Notifications
@@ -688,6 +724,7 @@ export function DynamicIslandHeader({
                   );
                 })
               )}
+            </div>
             </div>
           </div>
         )}

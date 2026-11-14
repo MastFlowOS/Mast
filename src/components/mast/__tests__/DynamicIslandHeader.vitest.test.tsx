@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act, waitFor } from "@testing-library/react";
 import React from "react";
 
 vi.mock("@tanstack/react-router", () => ({
@@ -78,7 +78,7 @@ describe("MAST Dynamic Island Header & Priority System", () => {
     expect(screen.queryByText(/Mast OS/i)).toBeNull();
   });
 
-  it("opens and closes centered notifications dropdown with timestamps when pressing inside the Dynamic Island", () => {
+  it("opens and closes centered notifications dropdown with timestamps when pressing inside the Dynamic Island", async () => {
     const nowIso = new Date().toISOString();
     render(
       <DynamicIslandHeader
@@ -126,9 +126,17 @@ describe("MAST Dynamic Island Header & Priority System", () => {
     expect(timestamps.length).toBe(2);
     expect(timestamps[0].textContent).toContain("Just now");
 
-    // Second press inside the Dynamic Island closes the dropdown
+    // Second press inside the Dynamic Island triggers contracting animation then unmounts
     fireEvent.click(center);
-    expect(screen.queryByTestId("dynamic-island-notifications-dropdown")).toBeNull();
+    expect(dropdown.getAttribute("data-state")).toBe("closing");
+    await waitFor(
+      () => {
+        expect(
+          screen.queryByTestId("dynamic-island-notifications-dropdown"),
+        ).toBeNull();
+      },
+      { timeout: 1000 },
+    );
   });
 
   it("renders ACTIVE DISCOVERY state with circular progress ring, title, progress bar, and percentage", () => {

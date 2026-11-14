@@ -68,14 +68,67 @@ describe("MAST Dynamic Island Header & Priority System", () => {
     // Left: MAST logo
     expect(screen.getByAltText("MAST")).toBeTruthy();
 
-    // Right: Notification bell + circular user avatar ONLY (no permanent "My Workspace", "Mast OS", or plan text)
-    expect(screen.getByTestId("header-notification-bell")).toBeTruthy();
+    // Right: circular user avatar ONLY (no bell icon, no permanent "My Workspace", "Mast OS", or plan text)
+    expect(screen.queryByTestId("header-notification-bell")).toBeNull();
     const avatar = screen.getByTestId("header-user-avatar");
     expect(avatar).toBeTruthy();
     expect(avatar.textContent).toBe("AR");
     expect(screen.queryByText(/Alex Rivera/i)).toBeNull();
     expect(screen.queryByText(/Pro Plan/i)).toBeNull();
     expect(screen.queryByText(/Mast OS/i)).toBeNull();
+  });
+
+  it("opens and closes centered notifications dropdown with timestamps when pressing inside the Dynamic Island", () => {
+    const nowIso = new Date().toISOString();
+    render(
+      <DynamicIslandHeader
+        event={IDLE_DYNAMIC_ISLAND_EVENT}
+        unreadCount={2}
+        notifications={[
+          {
+            id: "n1",
+            icon: "CheckCircle2",
+            iconColor: "text-emerald-400",
+            iconBg: "bg-emerald-400/10 border-emerald-400/20",
+            title: "Export complete",
+            body: "10 opportunities exported as CSV.",
+            createdAt: nowIso,
+            time: "Just now",
+            unread: true,
+          },
+          {
+            id: "n2",
+            icon: "CheckCircle2",
+            iconColor: "text-emerald-400",
+            iconBg: "bg-emerald-400/10 border-emerald-400/20",
+            title: "Import complete",
+            body: "247 contacts added to your workspace.",
+            createdAt: nowIso,
+            time: "Just now",
+            unread: true,
+          },
+        ]}
+      />,
+    );
+
+    const center = screen.getByTestId("dynamic-island-center");
+    expect(screen.queryByTestId("dynamic-island-notifications-dropdown")).toBeNull();
+
+    // First press inside the Dynamic Island opens the centered dropdown
+    fireEvent.click(center);
+    const dropdown = screen.getByTestId("dynamic-island-notifications-dropdown");
+    expect(dropdown).toBeTruthy();
+    expect(screen.getByText("Export complete")).toBeTruthy();
+    expect(screen.getByText("10 opportunities exported as CSV.")).toBeTruthy();
+    expect(screen.getByText("Import complete")).toBeTruthy();
+
+    const timestamps = screen.getAllByTestId("notification-item-timestamp");
+    expect(timestamps.length).toBe(2);
+    expect(timestamps[0].textContent).toContain("Just now");
+
+    // Second press inside the Dynamic Island closes the dropdown
+    fireEvent.click(center);
+    expect(screen.queryByTestId("dynamic-island-notifications-dropdown")).toBeNull();
   });
 
   it("renders ACTIVE DISCOVERY state with circular progress ring, title, progress bar, and percentage", () => {
@@ -136,7 +189,7 @@ describe("MAST Dynamic Island Header & Priority System", () => {
     expect(onAction).toHaveBeenCalledTimes(1);
   });
 
-  it("renders NOTIFICATION / ACTION NEEDED state and reflects unread badge on the bell", () => {
+  it("renders NOTIFICATION / ACTION NEEDED state inside the center Dynamic Island", () => {
     const onAction = vi.fn();
     const event = createDynamicIslandEvent({
       type: "notification",
@@ -153,7 +206,7 @@ describe("MAST Dynamic Island Header & Priority System", () => {
     ).toBeTruthy();
     expect(screen.getByText("3 follow-ups need attention")).toBeTruthy();
     expect(screen.getByText("New reminders just now.")).toBeTruthy();
-    expect(screen.getByTestId("notification-unread-badge")).toBeTruthy();
+    expect(screen.queryByTestId("header-notification-bell")).toBeNull();
 
     const btn = screen.getByTestId("dynamic-island-action-btn");
     expect(btn.textContent).toBe("Review →");

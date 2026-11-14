@@ -122,6 +122,7 @@ function DashboardLayout() {
       iconColor: "text-emerald-400", iconBg: "bg-emerald-400/10 border-emerald-400/20",
       title: "Welcome to MAST",
       body: "Your workspace is ready. Start discovering opportunities.",
+      createdAt: new Date().toISOString(),
       time: "Just now", unread: true,
     }];
     try { localStorage.setItem("mast_notifications", JSON.stringify(initial)); } catch { /* ignore */ }
@@ -150,6 +151,10 @@ function DashboardLayout() {
     const updated = notifications.filter((n) => n.id !== id);
     setNotifications(updated);
     try { localStorage.setItem("mast_notifications", JSON.stringify(updated)); } catch { /* ignore */ }
+  };
+  const clearAll = () => {
+    setNotifications([]);
+    try { localStorage.setItem("mast_notifications", JSON.stringify([])); } catch { /* ignore */ }
   };
 
   const isWorkspaceReady = !authLoading && !!user && user.onboardingCompleted;
@@ -533,6 +538,7 @@ function DashboardLayout() {
           notifications={notifications}
           unreadCount={unread}
           onMarkAllRead={markRead}
+          onClearAllNotifications={clearAll}
           onDismissNotification={dismiss}
           user={user}
           planName={planName}

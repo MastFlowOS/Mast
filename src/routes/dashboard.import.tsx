@@ -738,7 +738,23 @@ function ImportExportPage() {
         );
       }
 
-      toast.success(`${previewCount.toLocaleString()} opportunities exported`);
+      const oppWord = previewCount === 1 ? "opportunity" : "opportunities";
+      const formatLabel = exportFormat === "xlsx" ? "Excel" : "CSV";
+      publishDynamicIslandEvent({
+        id: "export_complete",
+        type: "import_complete",
+        title: "Export complete",
+        description: `${previewCount.toLocaleString()} ${oppWord} exported (${formatLabel}).`,
+        autoDismissMs: 10000,
+      });
+      addNotification({
+        icon: "CheckCircle2",
+        iconColor: "text-emerald-400",
+        iconBg: "bg-emerald-400/10 border-emerald-400/20",
+        title: "Export complete",
+        body: `${previewCount.toLocaleString()} ${oppWord} exported as ${formatLabel}.`,
+        category: "notifyNewLead",
+      });
       setExportHistory((prev: ExportHistoryEntry[]) => [
         {
           id: Date.now().toString(),

@@ -266,22 +266,22 @@ function HeaderContourSvg({
 
       {isOpen ? (
         <>
-          {/* Open state: well fill flows vertically into the attached dropdown */}
+          {/* Open state: keep the EXACT same top curve (zero shrinking), and open the bottom into the dropdown */}
           <path
-            d="M 0 1 C 55 1, 100 18, 100 56 L 480 56 C 480 18, 525 1, 580 1 Z"
+            d="M 0 1 C 44 1, 56 55, 100 55 L 100 56 L 480 56 L 480 55 C 524 55, 536 1, 580 1 Z"
             fill="url(#mast-header-well-fill)"
           />
           <path
-            d="M 0 1 C 55 1, 100 18, 100 56"
+            d="M 0 1 C 44 1, 56 55, 100 55 L 100 56"
             fill="none"
-            stroke={troughColor}
+            stroke="url(#mast-header-contour-stroke)"
             strokeWidth="1.5"
             vectorEffect="non-scaling-stroke"
           />
           <path
-            d="M 480 56 C 480 18, 525 1, 580 1"
+            d="M 480 56 L 480 55 C 524 55, 536 1, 580 1"
             fill="none"
-            stroke={troughColor}
+            stroke="url(#mast-header-contour-stroke)"
             strokeWidth="1.5"
             vectorEffect="non-scaling-stroke"
           />
@@ -333,34 +333,24 @@ export function DynamicIslandHeader({
   className,
 }: DynamicIslandHeaderProps) {
   const [notifOpen, setNotifOpen] = useState(false);
-  const [drawerMounted, setDrawerMounted] = useState(false);
-  const [drawerExpanded, setDrawerExpanded] = useState(false);
+  const [drawerPhase, setDrawerPhase] = useState<"closed" | "open" | "closing">("closed");
   const [accountOpen, setAccountOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const accountRef = useRef<HTMLDivElement>(null);
 
-  // Smooth expanding & contracting lifecycle for the Dynamic Island notifications drawer
+  // Smooth CSS keyframe lifecycle for the Dynamic Island notifications drawer
   useEffect(() => {
     if (notifOpen) {
-      setDrawerMounted(true);
-      let raf2 = 0;
-      const raf1 = requestAnimationFrame(() => {
-        raf2 = requestAnimationFrame(() => {
-          setDrawerExpanded(true);
-        });
-      });
-      return () => {
-        cancelAnimationFrame(raf1);
-        if (raf2) cancelAnimationFrame(raf2);
-      };
+      setDrawerPhase("open");
+      return;
     }
-
-    setDrawerExpanded(false);
-    if (!drawerMounted) return;
-    const timer = setTimeout(() => {
-      setDrawerMounted(false);
-    }, 280);
-    return () => clearTimeout(timer);
+    if (drawerPhase === "open") {
+      setDrawerPhase("closing");
+      const timer = setTimeout(() => {
+        setDrawerPhase("closed");
+      }, 240);
+      return () => clearTimeout(timer);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notifOpen]);
 
@@ -472,7 +462,7 @@ export function DynamicIslandHeader({
         <HeaderContourSvg
           isError={isErrorState}
           isActive={showIslandCapsule}
-          isOpen={drawerExpanded}
+          isOpen={drawerPhase === "open"}
         />
 
         <div
@@ -585,32 +575,28 @@ export function DynamicIslandHeader({
           )}
         </div>
 
-        {/* Attached Dynamic Island Notifications Drawer — smooth expanding & contracting animation */}
-        {drawerMounted && (
+        {/* Attached Dynamic Island Notifications Drawer — smooth dropdown down & up */}
+        {drawerPhase !== "closed" && (
           <div
             data-testid="dynamic-island-notifications-dropdown"
-            data-state={drawerExpanded ? "open" : "closing"}
+            data-state={drawerPhase}
             onClick={(e) => e.stopPropagation()}
             className={cn(
-              "absolute left-[17.241%] right-[17.241%] top-full -mt-[1px] grid",
+              "absolute left-[17.241%] right-[17.241%] top-full -mt-[1px]",
               "bg-[oklch(0.130_0.031_263)] border-x border-b border-t-0 rounded-b-2xl shadow-2xl z-50 overflow-hidden",
               isErrorState
                 ? "border-[rgba(190,38,65,0.62)]"
                 : "border-[rgba(56,90,168,0.92)]",
             )}
             style={{
-              gridTemplateRows: drawerExpanded ? "1fr" : "0fr",
-              opacity: drawerExpanded ? 1 : 0,
-              transform: drawerExpanded
-                ? "translateY(0) scaleY(1)"
-                : "translateY(-6px) scaleY(0.92)",
               transformOrigin: "center top",
-              transition: drawerExpanded
-                ? "grid-template-rows 340ms cubic-bezier(0.16, 1, 0.3, 1), opacity 240ms cubic-bezier(0.16, 1, 0.3, 1), transform 340ms cubic-bezier(0.16, 1, 0.3, 1)"
-                : "grid-template-rows 260ms cubic-bezier(0.4, 0, 0.2, 1), opacity 190ms cubic-bezier(0.4, 0, 1, 1), transform 260ms cubic-bezier(0.4, 0, 0.2, 1)",
+              animation:
+                drawerPhase === "closing"
+                  ? "island-dropdown-out 240ms cubic-bezier(0.4, 0, 0.2, 1) forwards"
+                  : "island-dropdown-in 320ms cubic-bezier(0.16, 1, 0.3, 1) forwards",
             }}
           >
-            <div className="overflow-hidden min-h-0">
+            <div>
               <div className="flex items-center justify-between px-4 py-2 border-b border-[rgba(56,90,168,0.24)] bg-[oklch(0.122_0.029_263)]">
               <div className="flex items-center gap-2">
                 <h3 className="font-semibold text-xs text-foreground tracking-wide">

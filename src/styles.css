@@ -287,22 +287,26 @@
 @keyframes island-dropdown-in {
   0% {
     opacity: 0;
-    transform: translateY(-12px) scaleY(0.86);
+    max-height: 0px;
+    transform: translateY(-6px);
   }
   100% {
     opacity: 1;
-    transform: translateY(0) scaleY(1);
+    max-height: 420px;
+    transform: translateY(0);
   }
 }
 
 @keyframes island-dropdown-out {
   0% {
     opacity: 1;
-    transform: translateY(0) scaleY(1);
+    max-height: 420px;
+    transform: translateY(0);
   }
   100% {
     opacity: 0;
-    transform: translateY(-10px) scaleY(0.86);
+    max-height: 0px;
+    transform: translateY(-6px);
   }
 }
 

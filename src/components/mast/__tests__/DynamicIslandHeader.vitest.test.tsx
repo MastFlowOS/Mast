@@ -470,4 +470,74 @@ describe("MAST Dynamic Island Header & Priority System", () => {
       expect(onLogout).toHaveBeenCalledTimes(1);
     });
   });
+
+  it("renders a compact Antigravity-style Update available pill in the top-right wing and triggers install", () => {
+    const installUpdate = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(
+      <DynamicIslandHeader
+        event={IDLE_DYNAMIC_ISLAND_EVENT}
+        user={{ fullName: "Mast OS" }}
+        desktopUpdater={{
+          status: "available",
+          version: "1.0.1",
+          progress: null,
+          error: null,
+          installUpdate,
+        }}
+      />,
+    );
+
+    const updateBtn = screen.getByTestId("desktop-update-button") as HTMLButtonElement;
+    expect(updateBtn.textContent).toContain("Update available");
+    expect(updateBtn.disabled).toBe(false);
+
+    fireEvent.click(updateBtn);
+    expect(installUpdate).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <DynamicIslandHeader
+        event={IDLE_DYNAMIC_ISLAND_EVENT}
+        user={{ fullName: "Mast OS" }}
+        desktopUpdater={{
+          status: "downloading",
+          version: "1.0.1",
+          progress: 42,
+          error: null,
+          installUpdate,
+        }}
+      />,
+    );
+    expect(screen.getByTestId("desktop-update-button").textContent).toContain("Updating 42%");
+    expect((screen.getByTestId("desktop-update-button") as HTMLButtonElement).disabled).toBe(true);
+
+    rerender(
+      <DynamicIslandHeader
+        event={IDLE_DYNAMIC_ISLAND_EVENT}
+        user={{ fullName: "Mast OS" }}
+        desktopUpdater={{
+          status: "installing",
+          version: "1.0.1",
+          progress: 100,
+          error: null,
+          installUpdate,
+        }}
+      />,
+    );
+    expect(screen.getByTestId("desktop-update-button").textContent).toContain("Restarting...");
+
+    rerender(
+      <DynamicIslandHeader
+        event={IDLE_DYNAMIC_ISLAND_EVENT}
+        user={{ fullName: "Mast OS" }}
+        desktopUpdater={{
+          status: "idle",
+          version: null,
+          progress: null,
+          error: null,
+          installUpdate,
+        }}
+      />,
+    );
+    expect(screen.queryByTestId("desktop-update-button")).toBeNull();
+  });
 });

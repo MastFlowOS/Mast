@@ -12,6 +12,8 @@ import {
   X,
   LogOut,
   Settings,
+  Download,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MastWordmark } from "@/components/mast/MastWordmark";
@@ -21,6 +23,10 @@ import {
   clampProgress,
 } from "@/lib/dynamic-island";
 import { formatNotificationTimestamp } from "@/lib/notifications";
+import {
+  useDesktopUpdater,
+  type DesktopUpdaterState,
+} from "@/lib/desktop/useDesktopUpdater";
 
 export interface HeaderNotificationItem {
   id: number | string;
@@ -53,6 +59,10 @@ export interface DynamicIslandHeaderProps {
   } | null;
   planName?: string;
   onLogout?: () => void;
+  desktopUpdater?: Pick<
+    DesktopUpdaterState,
+    "status" | "version" | "progress" | "error" | "installUpdate"
+  >;
   className?: string;
 }
 
@@ -433,8 +443,11 @@ export function DynamicIslandHeader({
   user,
   planName = "Pro",
   onLogout,
+  desktopUpdater,
   className,
 }: DynamicIslandHeaderProps) {
+  const hookDesktopUpdater = useDesktopUpdater();
+  const updater = desktopUpdater ?? hookDesktopUpdater;
   const [notifOpen, setNotifOpen] = useState(false);
   const [drawerPhase, setDrawerPhase] = useState<"closed" | "opening" | "open" | "closing">("closed");
   const [morphProgress, setMorphProgress] = useState(0);
@@ -1015,8 +1028,8 @@ export function DynamicIslandHeader({
         )}
       </div>
 
-      {/* ── RIGHT WING: Circular User Avatar ONLY (no bell, no text, no chevron) ─ */}
-      <div className="relative z-10 flex items-center justify-end pl-2 pr-4 sm:pr-6 border-b border-[oklch(0.21_0.035_262)]">
+      {/* ── RIGHT WING: Compact Desktop Update Pill (when available) + User Avatar ─ */}
+      <div className="relative z-10 flex items-center justify-end gap-2.5 pl-2 pr-4 sm:pr-6 border-b border-[oklch(0.21_0.035_262)]">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute top-0 left-0 right-4 h-[1.5px]"
@@ -1025,6 +1038,54 @@ export function DynamicIslandHeader({
               "linear-gradient(90deg, rgba(36, 60, 115, 0.88) 0%, rgba(36, 60, 115, 0.12) 100%)",
           }}
         />
+        {(updater.status === "available" ||
+          updater.status === "downloading" ||
+          updater.status === "installing" ||
+          updater.status === "error") && (
+          <button
+            type="button"
+            data-testid="desktop-update-button"
+            disabled={
+              updater.status === "downloading" ||
+              updater.status === "installing"
+            }
+            onClick={() => void updater.installUpdate()}
+            title={
+              updater.status === "error"
+                ? updater.error || "Update failed — click to retry"
+                : updater.version
+                  ? `Update MAST to v${updater.version} and restart`
+                  : "Update MAST and restart"
+            }
+            className={cn(
+              "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-semibold tracking-tight transition-colors shrink-0 border",
+              updater.status === "error"
+                ? "bg-destructive/15 border-destructive/40 text-destructive hover:bg-destructive/25 cursor-pointer"
+                : updater.status === "downloading" ||
+                    updater.status === "installing"
+                  ? "bg-brand/15 border-brand/30 text-brand cursor-wait opacity-90"
+                  : "bg-brand/15 border-brand/35 text-brand hover:bg-brand/25 cursor-pointer",
+            )}
+          >
+            {updater.status === "downloading" ||
+            updater.status === "installing" ? (
+              <Loader2 className="size-3 animate-spin shrink-0" />
+            ) : updater.status === "error" ? (
+              <AlertCircle className="size-3 shrink-0" />
+            ) : (
+              <Download className="size-3 shrink-0" />
+            )}
+            <span>
+              {updater.status === "downloading"
+                ? `Updating ${updater.progress ?? 0}%`
+                : updater.status === "installing"
+                  ? "Restarting..."
+                  : updater.status === "error"
+                    ? "Retry update"
+                    : "Update available"}
+            </span>
+          </button>
+        )}
         <div ref={accountRef} className="relative">
           <button
             type="button"

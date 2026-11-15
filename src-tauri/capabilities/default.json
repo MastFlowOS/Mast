@@ -20,6 +20,8 @@
   },
   "permissions": [
     "core:default",
+    "updater:default",
+    "process:default",
     "allow-desktop-worker-commands",
     "allow-get-desktop-info",
     "allow-get-worker-status",

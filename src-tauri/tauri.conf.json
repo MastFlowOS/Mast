@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "resources": [
       "bin/**/*"
     ],
@@ -39,5 +40,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzQzBFQjU3NDgwOUQ5MjgKUldRbzJRbElWK3ZBMDlwMnNBTUlXelZaMDM2T1pFTG5lakVSSlAxVjdWaFVyaU5FME9RUGxPY0gK",
+      "endpoints": [
+        "https://github.com/MastFlowOS/Mast/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

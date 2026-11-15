@@ -14,6 +14,7 @@ import {
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MastWordmark } from "@/components/mast/MastWordmark";
 import {
   type DynamicIslandEvent,
   clampProgress,
@@ -663,13 +664,13 @@ export function DynamicIslandHeader({
       data-testid="mast-dynamic-island-header"
       data-island-state={event.type}
       className={cn(
-        "relative h-14 shrink-0 sticky top-0 z-30",
+        "relative h-14 shrink-0 sticky top-0 z-40",
         "bg-[oklch(0.148_0.028_265)]",
         "grid grid-cols-[1fr_auto_1fr] items-stretch",
         className,
       )}
     >
-      {/* ── LEFT WING: Top/Bottom Contour Continuation (no duplicate MAST logo) ─ */}
+      {/* ── LEFT WING: Fixed single MAST wordmark & seamless navbar contour ─ */}
       <div className="relative z-10 flex items-center pl-4 sm:pl-6 pr-2 border-b border-[oklch(0.21_0.035_262)]">
         <div
           aria-hidden="true"
@@ -679,12 +680,18 @@ export function DynamicIslandHeader({
               "linear-gradient(90deg, rgba(36, 60, 115, 0.12) 0%, rgba(36, 60, 115, 0.88) 100%)",
           }}
         />
+        <Link to="/" className="flex items-center shrink-0">
+          <MastWordmark
+            height={null}
+            className="h-[12px] sm:h-[18px] lg:h-[22px] w-auto"
+          />
+        </Link>
       </div>
 
       {/* ── CENTER: The Contoured Dynamic Island Container Itself ──────── */}
       <div
         ref={notifRef}
-        className="relative z-20 flex items-center justify-center w-[340px] sm:w-[560px] md:w-[640px] max-w-[74vw] h-full"
+        className="relative z-20 flex items-center justify-center w-[240px] sm:w-[460px] md:w-[540px] lg:w-[640px] max-w-[64vw] h-full"
       >
         {/* Unified sculpted dark-blue Dynamic Island contour — stretches downward into funnel when open, zero color/thickness changes */}
         <UnifiedIslandSvg

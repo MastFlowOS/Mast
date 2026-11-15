@@ -104,3 +104,82 @@ export function addNotification(payload: NotificationPayload) {
     console.warn("[addNotification] failed to save notification", err);
   }
 }
+
+const notifiedDailyResetCycles = new Set<string>();
+
+export function clearDailyCreditResetNotificationCache(): void {
+  notifiedDailyResetCycles.clear();
+}
+
+/**
+ * Emits the "Daily Credits Reset" notification at most once per expired
+ * `next_daily_reset` cycle (and only when daily credits were actually used).
+ * Prevents duplicate notifications on every reload because `checkAndResetUsage`
+ * computes resets in memory without mutating `profiles.next_daily_reset`.
+ */
+export function maybeNotifyDailyCreditReset(params: {
+  userId?: string | null;
+  previousResetAt?: string | null;
+  dailyLeadsUsed?: number | null;
+  nowMs?: number;
+}): boolean {
+  const { userId, previousResetAt, dailyLeadsUsed, nowMs = Date.now() } = params;
+  if (!previousResetAt || (dailyLeadsUsed ?? 0) <= 0) {
+    return false;
+  }
+
+  const resetMs = new Date(previousResetAt).getTime();
+  if (Number.isNaN(resetMs) || resetMs > nowMs) {
+    return false;
+  }
+
+  const userKey = userId || "anon";
+  const cycleKey = `${userKey}:${previousResetAt}`;
+  if (notifiedDailyResetCycles.has(cycleKey)) {
+    return false;
+  }
+
+  const storageKey = `mast_daily_reset_notified_${userKey}`;
+  try {
+    if (typeof localStorage !== "undefined") {
+      if (localStorage.getItem(storageKey) === previousResetAt) {
+        notifiedDailyResetCycles.add(cycleKey);
+        return false;
+      }
+
+      const saved = localStorage.getItem("mast_notifications");
+      if (saved) {
+        const list = JSON.parse(saved);
+        if (
+          Array.isArray(list) &&
+          list.some(
+            (n) =>
+              n?.title === "Daily Credits Reset" &&
+              n?.createdAt &&
+              !Number.isNaN(new Date(n.createdAt).getTime()) &&
+              new Date(n.createdAt).getTime() >= resetMs,
+          )
+        ) {
+          localStorage.setItem(storageKey, previousResetAt);
+          notifiedDailyResetCycles.add(cycleKey);
+          return false;
+        }
+      }
+
+      localStorage.setItem(storageKey, previousResetAt);
+    }
+  } catch (err) {
+    console.warn("[maybeNotifyDailyCreditReset] storage check failed", err);
+  }
+
+  notifiedDailyResetCycles.add(cycleKey);
+  addNotification({
+    icon: "CheckCircle2",
+    iconColor: "text-emerald-400",
+    iconBg: "bg-emerald-400/10 border-emerald-400/20",
+    title: "Daily Credits Reset",
+    body: "Your daily lead generation limit has been reset. Start acquiring new clients!",
+    category: "notifyCreditsReset",
+  });
+  return true;
+}

@@ -6,8 +6,9 @@ interface MastWordmarkProps {
   /**
    * Rendered height in px. Width follows automatically from the asset's
    * intrinsic aspect ratio so the mark is never stretched or distorted.
+   * Pass `null` when sizing via CSS height utility classes instead.
    */
-  height?: number;
+  height?: number | null;
 }
 
 // Intrinsic pixel size of the source asset — used to reserve layout space
@@ -24,13 +25,14 @@ const ASPECT_RATIO = ASSET_WIDTH / ASSET_HEIGHT;
  * consistent and only needs to change in one place.
  */
 export function MastWordmark({ className, height = 24 }: MastWordmarkProps) {
+  const numericHeight = height ?? 22;
   return (
     <img
       src={mastWordmark}
       alt="MAST"
-      width={Math.round(height * ASPECT_RATIO)}
-      height={height}
-      style={{ height, width: "auto" }}
+      width={Math.round(numericHeight * ASPECT_RATIO)}
+      height={numericHeight}
+      style={height != null ? { height, width: "auto" } : undefined}
       className={cn("select-none shrink-0", className)}
       draggable={false}
     />

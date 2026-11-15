@@ -6,7 +6,6 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { MastWordmark } from "@/components/mast/MastWordmark";
 import { DynamicIslandHeader } from "@/components/mast/DynamicIslandHeader";
 import { useAccount, useFollowups, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
 import {
@@ -274,50 +273,48 @@ function DashboardLayout() {
   };
 
   return (
-    <div className="h-screen flex bg-background text-foreground overflow-hidden">
+    <div className="h-screen flex flex-col bg-background text-foreground overflow-hidden">
+      {/* Dynamic Island Top Header — full width across sidebar + page so MAST stays fixed and no vertical border cuts the navbar */}
+      <DynamicIslandHeader
+        event={activeEvent}
+        notifications={notifications}
+        unreadCount={unread}
+        onMarkAllRead={markRead}
+        onClearAllNotifications={clearAll}
+        onDismissNotification={dismiss}
+        user={user}
+        planName={planName}
+        onLogout={handleLogout}
+      />
 
-      {/* ── Sidebar ──────────────────────────────────────────────────────── */}
-      {/*
-        Desktop/tablet: a slim icon rail by default that expands into an
-        overlay on hover. The `aside` is taken out of flow (fixed) so
-        expanding it never reflows the dashboard — the spacer div below
-        reserves the rail's footprint in the flex row in its place.
-        Mobile (<768px): unchanged from before — the sidebar renders inline
-        at full width, no hover/collapse behavior (touch has no hover).
-        `overflow-hidden` on the aside clips label/branding text during the
-        width transition instead of wrapping or causing a horizontal
-        scrollbar; the nav's own overflow-y-auto still scrolls vertically.
-      */}
-      {!isMobile && (
-        <div className="shrink-0" style={{ width: RAIL_WIDTH }} aria-hidden="true" />
-      )}
-      <aside
-        onMouseEnter={!isMobile ? () => setSidebarHovered(true) : undefined}
-        onMouseLeave={!isMobile ? () => setSidebarHovered(false) : undefined}
-        className={cn(
-          "shrink-0 border-r border-border flex flex-col overflow-hidden",
-          !isMobile && "fixed left-0 top-0 h-screen z-40",
+      {/* ── Body row below navbar: Sidebar + Main Area ───────────────────── */}
+      <div className="flex-1 flex min-w-0 min-h-0 relative">
+        {/* ── Sidebar ────────────────────────────────────────────────────── */}
+        {/*
+          Desktop/tablet: a slim icon rail by default that expands into an
+          overlay on hover starting cleanly below the h-14 navbar (top-14),
+          so expanding/collapsing never affects the fixed MAST wordmark or
+          adds a vertical divider across the navbar.
+        */}
+        {!isMobile && (
+          <div className="shrink-0" style={{ width: RAIL_WIDTH }} aria-hidden="true" />
         )}
-        style={{
-          background: "oklch(0.155 0.028 265)",
-          width: sidebarWidth,
-          transition: `width ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}, box-shadow ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
-          boxShadow: !isMobile && sidebarExpanded
-            ? "12px 0 32px -12px rgba(0,0,0,0.55)"
-            : "none",
-        }}
-      >
-        {/* Logo */}
-        <div
+        <aside
+          onMouseEnter={!isMobile ? () => setSidebarHovered(true) : undefined}
+          onMouseLeave={!isMobile ? () => setSidebarHovered(false) : undefined}
           className={cn(
-            "h-14 flex items-center border-b border-border shrink-0 overflow-hidden transition-all duration-300",
-            sidebarExpanded ? "px-5" : "justify-center px-2",
+            "shrink-0 border-r border-border flex flex-col overflow-hidden",
+            !isMobile && "fixed left-0 top-14 h-[calc(100vh-3.5rem)] z-30",
           )}
+          style={{
+            background: "oklch(0.155 0.028 265)",
+            width: sidebarWidth,
+            transition: `width ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}, box-shadow ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
+            boxShadow: !isMobile && sidebarExpanded
+              ? "12px 0 32px -12px rgba(0,0,0,0.55)"
+              : "none",
+          }}
         >
-          <Link to="/" className="flex items-center min-w-0 shrink-0">
-            <MastWordmark height={sidebarExpanded ? 16 : 10} />
-          </Link>
-        </div>
 
         {/* Nav with CSS-animated indicator */}
         {/*
@@ -521,36 +518,16 @@ function DashboardLayout() {
         </div>
       </aside>
 
-      {/* ── Main area ────────────────────────────────────────────────────── */}
-      {/*
-        min-h-0 is required here: flex items default to min-height:auto,
-        which lets them refuse to shrink below their content's intrinsic
-        height even with flex-1. Without it, this column (and therefore
-        the h-screen shell above it) inflates to fit tall page content
-        instead of clamping to the viewport, which hands scrolling to the
-        document — a second scroll container fighting the one below.
-      */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
-
-        {/* Dynamic Island Top Header */}
-        <DynamicIslandHeader
-          event={activeEvent}
-          notifications={notifications}
-          unreadCount={unread}
-          onMarkAllRead={markRead}
-          onClearAllNotifications={clearAll}
-          onDismissNotification={dismiss}
-          user={user}
-          planName={planName}
-          onLogout={handleLogout}
-        />
-
-        {/* Page content — plain Outlet, no key trick.
-            min-h-0: same flex min-height reset as the column above, so this
-            is the ONE element that actually owns vertical scrolling.
-            overscroll-behavior: contain stops any residual scroll chaining
-            from ever bleeding into a scrollable ancestor. */}
-        <main ref={mainRef} className="flex-1 min-h-0 overflow-y-auto" style={{ overscrollBehavior: "contain" }}>
+        {/* ── Main area ──────────────────────────────────────────────────── */}
+        {/*
+          min-h-0 is required here: flex items default to min-height:auto,
+          which lets them refuse to shrink below their content's intrinsic
+          height even with flex-1. Without it, this column (and therefore
+          the h-screen shell above it) inflates to fit tall page content
+          instead of clamping to the viewport, which hands scrolling to the
+          document — a second scroll container fighting the one below.
+        */}
+        <main ref={mainRef} className="flex-1 min-w-0 min-h-0 overflow-y-auto" style={{ overscrollBehavior: "contain" }}>
           {!isWorkspaceReady ? (
             <div className="h-full min-h-[400px] flex flex-col items-center justify-center p-8 space-y-3">
               <div className="size-8 rounded-full border-2 border-brand/30 border-t-brand animate-spin" />

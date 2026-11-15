@@ -65,8 +65,8 @@ describe("MAST Dynamic Island Header & Priority System", () => {
     // No progress bar or loading indicator during idle
     expect(screen.queryByRole("progressbar")).toBeNull();
 
-    // No duplicate MAST logo in the top header (sidebar owns the MAST wordmark)
-    expect(screen.queryByAltText("MAST")).toBeNull();
+    // Single fixed MAST wordmark lives in the navbar left wing (never duplicated or resized by sidebar)
+    expect(screen.getAllByAltText("MAST")).toHaveLength(1);
 
     // Right: circular user avatar ONLY (no bell icon, no permanent "My Workspace", "Mast OS", or plan text)
     expect(screen.queryByTestId("header-notification-bell")).toBeNull();

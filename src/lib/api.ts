@@ -3,7 +3,7 @@ import { isDiscoveryModeAllowed, type DiscoveryMode } from "../config/plans.js";
 import { getDraftProvenance } from "./outreach/draftProvenance";
 import { getPlan, PLANS } from "./plans";
 import { supabase } from "./supabase";
-import { addNotification } from "./notifications";
+import { maybeNotifyDailyCreditReset } from "./notifications";
 import { buildPermissionsManager, getDevPlanOverride, type FeatureId } from "./permissions";
 import { UsageService } from "./usage";
 import { parseGeoScope, validateDiscoveryRegion } from "./geo/scope";
@@ -1017,20 +1017,17 @@ async function checkAndResetUsage(profile: any): Promise<any> {
 
   // Daily Reset check
   if (!dailyReset || new Date(dailyReset) <= now) {
-    const wasInitialized = !!profile.next_daily_reset;
+    const previousResetAt = profile.next_daily_reset;
+    const previousDailyUsed = profile.daily_leads_used ?? 0;
     dailyUsed = 0;
     dailyReset = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
     needsUpdate = true;
-    if (wasInitialized) {
-      addNotification({
-        icon: "CheckCircle2",
-        iconColor: "text-emerald-400",
-        iconBg: "bg-emerald-400/10 border-emerald-400/20",
-        title: "Daily Credits Reset",
-        body: "Your daily lead generation limit has been reset. Start acquiring new clients!",
-        category: "notifyCreditsReset",
-      });
-    }
+    maybeNotifyDailyCreditReset({
+      userId: profile.id,
+      previousResetAt,
+      dailyLeadsUsed: previousDailyUsed,
+      nowMs: now.getTime(),
+    });
   }
 
   // Monthly Reset check

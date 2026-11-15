@@ -878,7 +878,7 @@ export function DynamicIslandHeader({
               {/* Compact notification introduction/summary filling upper island area */}
               <div
                 data-testid="dynamic-island-notifications-intro"
-                className="flex items-center gap-3 px-1.5 pt-2.5 pb-2"
+                className="flex items-center gap-3 px-3 pt-2.5 pb-2"
                 style={{
                   marginLeft: bodyInset + 1,
                   marginRight: bodyInset + 1,
@@ -904,7 +904,7 @@ export function DynamicIslandHeader({
               {/* Contained notification cards */}
               <div
                 className={cn(
-                  "max-h-[300px] flex flex-col gap-2 px-0.5 pb-1",
+                  "max-h-[304px] flex flex-col gap-2 px-2.5 pb-2",
                   drawerPhase === "open" ? "overflow-y-auto" : "overflow-hidden",
                 )}
                 style={{

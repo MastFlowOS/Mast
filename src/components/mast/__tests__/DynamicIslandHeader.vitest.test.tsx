@@ -118,9 +118,19 @@ describe("MAST Dynamic Island Header & Priority System", () => {
     fireEvent.click(center);
     const dropdown = screen.getByTestId("dynamic-island-notifications-dropdown");
     expect(dropdown).toBeTruthy();
+
+    const intro = screen.getByTestId("dynamic-island-notifications-intro");
+    expect(intro.textContent).toContain("2 new notifications");
+    expect(intro.textContent).toContain("Here\u2019s what\u2019s new in your workspace.");
+
     expect(screen.getByText("Export complete")).toBeTruthy();
     expect(screen.getByText("10 opportunities exported as CSV.")).toBeTruthy();
     expect(screen.getByText("Import complete")).toBeTruthy();
+
+    const items = screen.getAllByTestId("dynamic-island-notification-item");
+    expect(items.length).toBe(2);
+    expect(items[0].getAttribute("data-featured-unread")).toBe("true");
+    expect(items[1].getAttribute("data-featured-unread")).toBe("false");
 
     const timestamps = screen.getAllByTestId("notification-item-timestamp");
     expect(timestamps.length).toBe(2);

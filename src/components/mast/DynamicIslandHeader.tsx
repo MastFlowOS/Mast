@@ -6,10 +6,12 @@ import {
   ArrowUpCircle,
   Target,
   Trophy,
+  Link2,
+  Database,
+  AlertCircle,
   X,
   LogOut,
   Settings,
-  Clock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -58,7 +60,51 @@ const NOTIF_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
   Bell,
   Target,
   Trophy,
+  Link2,
+  Database,
+  AlertCircle,
 };
+
+function resolveNotificationVisual(item: HeaderNotificationItem) {
+  const explicitIcon = item.icon && item.icon !== "Bell" ? NOTIF_ICONS[item.icon] : undefined;
+  if (explicitIcon) {
+    return {
+      Icon: explicitIcon,
+      iconColor: item.iconColor || "text-brand",
+      iconBg: item.iconBg || "bg-brand/12 border-brand/25",
+    };
+  }
+
+  if (/error|fail|unable|invalid/i.test(item.title)) {
+    return {
+      Icon: AlertCircle,
+      iconColor: item.iconColor || "text-rose-400",
+      iconBg: item.iconBg || "bg-rose-500/12 border-rose-500/25",
+    };
+  }
+
+  if (/connect|sync|integrat/i.test(item.title)) {
+    return {
+      Icon: Link2,
+      iconColor: item.iconColor || "text-sky-400",
+      iconBg: item.iconBg || "bg-sky-500/12 border-sky-500/25",
+    };
+  }
+
+  if (/credit|limit|plan|billing|reset/i.test(item.title)) {
+    return {
+      Icon: Database,
+      iconColor: item.iconColor || "text-brand",
+      iconBg: item.iconBg || "bg-brand/12 border-brand/25",
+    };
+  }
+
+  return {
+    Icon: Bell,
+    iconColor: item.iconColor || "text-brand",
+    iconBg: item.iconBg || "bg-brand/12 border-brand/25",
+  };
+}
 
 /**
  * Circular SVG progress ring for `discovery_active`.
@@ -588,6 +634,17 @@ export function DynamicIslandHeader({
 
   const showIslandCapsule = visualPhase !== "idle" && renderedEvent.type !== "idle";
   const isErrorState = showIslandCapsule && renderedEvent.type === "discovery_error";
+  const firstUnreadIdx = notifications.findIndex((n) => n.unread);
+  const introTitle =
+    unreadCount > 0
+      ? `${unreadCount} new ${unreadCount === 1 ? "notification" : "notifications"}`
+      : notifications.length > 0
+        ? "All caught up"
+        : "No new notifications";
+  const introSubtitle =
+    notifications.length > 0
+      ? "Here\u2019s what\u2019s new in your workspace."
+      : "Discovery, import, and export alerts will appear here.";
 
   const handleActionClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -760,9 +817,10 @@ export function DynamicIslandHeader({
               pointerEvents: drawerPhase === "closing" ? "none" : "auto",
             }}
           >
-            <div ref={dropdownMeasureRef} className="pb-2">
+            <div ref={dropdownMeasureRef} className="pb-2.5">
+              {/* Compact top bar: title, count pill, bulk controls */}
               <div
-                className="flex items-center justify-between py-2.5 px-3.5"
+                className="flex items-center justify-between py-2 px-3.5"
                 style={{
                   marginLeft: headerInset,
                   marginRight: headerInset,
@@ -810,16 +868,43 @@ export function DynamicIslandHeader({
               </div>
 
               <div
-                className="border-b border-[rgba(56,90,168,0.22)]"
+                className="border-b border-white/[0.07]"
                 style={{
                   marginLeft: headerInset + 6,
                   marginRight: headerInset + 6,
                 }}
               />
 
+              {/* Compact notification introduction/summary filling upper island area */}
+              <div
+                data-testid="dynamic-island-notifications-intro"
+                className="flex items-center gap-3 px-1.5 pt-2.5 pb-2"
+                style={{
+                  marginLeft: bodyInset + 1,
+                  marginRight: bodyInset + 1,
+                  opacity: Math.min(1, Math.max(0, (morphProgress - 0.06) * 1.35)),
+                }}
+              >
+                <div
+                  className="size-9 rounded-lg bg-brand/12 border border-brand/25 text-brand grid place-items-center shrink-0"
+                  aria-hidden="true"
+                >
+                  <Bell className="size-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-semibold text-foreground leading-tight truncate">
+                    {introTitle}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug truncate">
+                    {introSubtitle}
+                  </p>
+                </div>
+              </div>
+
+              {/* Contained notification cards */}
               <div
                 className={cn(
-                  "max-h-72 divide-y divide-border/40",
+                  "max-h-[300px] flex flex-col gap-2 px-0.5 pb-1",
                   drawerPhase === "open" ? "overflow-y-auto" : "overflow-hidden",
                 )}
                 style={{
@@ -829,71 +914,87 @@ export function DynamicIslandHeader({
                 }}
               >
                 {notifications.length === 0 ? (
-                  <div className="py-8 px-4 text-center">
+                  <div className="rounded-xl bg-[oklch(0.144_0.025_264)] border border-white/[0.06] py-6 px-4 text-center">
                     <p className="text-xs font-medium text-muted-foreground">
                       No prior notifications
                     </p>
-                    <p className="text-[11px] text-muted-foreground/60 mt-0.5">
+                    <p className="text-[11px] text-muted-foreground/65 mt-0.5">
                       Events from discovery, imports, exports, and reminders will appear here.
                     </p>
                   </div>
                 ) : (
-                  notifications.map((n) => {
-                    const Icon = (n.icon && NOTIF_ICONS[n.icon]) || Bell;
+                  notifications.map((n, index) => {
+                    const { Icon, iconColor, iconBg } = resolveNotificationVisual(n);
                     const formattedTime = formatNotificationTimestamp(
                       n.createdAt,
                       n.time,
                     );
+                    const isFeaturedUnread = Boolean(n.unread && index === firstUnreadIdx);
                     return (
                       <div
                         key={n.id}
                         data-testid="dynamic-island-notification-item"
+                        data-featured-unread={isFeaturedUnread ? "true" : "false"}
                         className={cn(
-                          "flex items-start gap-3 px-4 py-2.5 hover:bg-white/[0.03] transition-colors",
-                          n.unread && "bg-brand/[0.06]",
+                          "group flex items-center gap-2.5 sm:gap-3 rounded-xl px-2.5 py-2 sm:px-3 sm:py-2.5 transition-colors",
+                          isFeaturedUnread
+                            ? "bg-[oklch(0.165_0.042_274)] border border-brand/35 hover:bg-[oklch(0.175_0.045_274)]"
+                            : n.unread
+                              ? "bg-[oklch(0.152_0.028_264)] border border-white/[0.07] hover:bg-[oklch(0.164_0.030_264)]"
+                              : "bg-[oklch(0.140_0.024_264)] border border-white/[0.05] hover:bg-[oklch(0.152_0.026_264)]",
                         )}
                       >
                         <div
                           className={cn(
-                            "size-7 rounded-full border grid place-items-center shrink-0 mt-0.5",
-                            n.iconBg || "bg-brand/10 border-brand/25",
+                            "size-7 sm:size-8 rounded-lg border grid place-items-center shrink-0",
+                            iconBg,
                           )}
                         >
-                          <Icon className={cn("size-3.5", n.iconColor || "text-brand")} />
+                          <Icon className={cn("size-3.5 sm:size-4", iconColor)} />
                         </div>
+
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-start justify-between gap-2">
-                            <p
-                              className={cn(
-                                "text-xs font-semibold leading-tight truncate",
-                                n.unread ? "text-foreground" : "text-muted-foreground",
-                              )}
-                            >
-                              {n.title}
-                              {n.unread && (
-                                <span className="inline-block ml-1.5 size-1.5 rounded-full bg-brand align-middle" />
-                              )}
-                            </p>
-                            {onDismissNotification && (
-                              <button
-                                type="button"
-                                onClick={() => onDismissNotification(n.id)}
-                                aria-label="Dismiss notification"
-                                className="size-4 grid place-items-center text-muted-foreground/60 hover:text-foreground shrink-0 transition-colors cursor-pointer"
-                              >
-                                <X className="size-3.5 shrink-0" />
-                              </button>
+                          <p
+                            className={cn(
+                              "text-[12.5px] font-semibold leading-tight truncate",
+                              n.unread ? "text-foreground" : "text-foreground/85",
                             )}
-                          </div>
-                          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                          >
+                            {n.title}
+                          </p>
+                          <p
+                            className={cn(
+                              "text-[11px] mt-0.5 leading-snug line-clamp-2",
+                              n.unread ? "text-muted-foreground" : "text-muted-foreground/80",
+                            )}
+                          >
                             {n.body}
                           </p>
-                          <div className="flex items-center gap-1 mt-1 text-[10px] text-muted-foreground/75">
-                            <Clock className="size-2.5 shrink-0" />
-                            <span data-testid="notification-item-timestamp">
-                              {formattedTime}
-                            </span>
-                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span
+                            data-testid="notification-item-timestamp"
+                            className="inline-flex items-center rounded-full bg-white/[0.05] border border-white/[0.07] px-2 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums whitespace-nowrap"
+                          >
+                            {formattedTime}
+                          </span>
+                          {n.unread && (
+                            <span
+                              aria-label="Unread notification"
+                              className="size-2 rounded-full bg-brand shrink-0"
+                            />
+                          )}
+                          {onDismissNotification && (
+                            <button
+                              type="button"
+                              onClick={() => onDismissNotification(n.id)}
+                              aria-label="Dismiss notification"
+                              className="w-0 overflow-hidden opacity-0 group-hover:w-4 group-hover:opacity-100 focus:w-4 focus:opacity-100 size-4 grid place-items-center text-muted-foreground/60 hover:text-foreground shrink-0 transition-all cursor-pointer"
+                            >
+                              <X className="size-3.5 shrink-0" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     );

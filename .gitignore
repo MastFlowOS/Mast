@@ -22,7 +22,7 @@ __pycache__/
 *$py.class
 dist-worker/
 build-worker/
-spec-worker/
+# Keep spec-worker/ tracked so CI can run build:worker
 
 # Wrangler / Cloudflare
 .wrangler/

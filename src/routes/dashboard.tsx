@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DynamicIslandHeader } from "@/components/mast/DynamicIslandHeader";
+import { dedupeDailyResetNotifications } from "@/lib/notifications";
 import { useAccount, useFollowups, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
 import {
   createDynamicIslandEvent,
@@ -114,7 +115,16 @@ function DashboardLayout() {
   const [notifications, setNotifications] = useState<any[]>(() => {
     try {
       const saved = localStorage.getItem("mast_notifications");
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const cleaned = dedupeDailyResetNotifications(parsed);
+          if (cleaned.length !== parsed.length) {
+            try { localStorage.setItem("mast_notifications", JSON.stringify(cleaned)); } catch { /* ignore */ }
+          }
+          return cleaned;
+        }
+      }
     } catch { /* ignore */ }
     const initial = [{
       id: 1, icon: "CheckCircle2",
@@ -133,7 +143,12 @@ function DashboardLayout() {
     const handleUpdate = () => {
       try {
         const saved = localStorage.getItem("mast_notifications");
-        if (saved) setNotifications(JSON.parse(saved));
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            setNotifications(dedupeDailyResetNotifications(parsed));
+          }
+        }
       } catch { /* ignore */ }
     };
     window.addEventListener("mast_notifications_update", handleUpdate);

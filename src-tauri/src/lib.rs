@@ -437,7 +437,12 @@ fn start_worker(
     }
 
     cmd.arg("--api-url").arg(validated_api_url);
-    cmd.arg("--concurrency").arg("1");
+    let desktop_concurrency = std::env::var("MAST_DESKTOP_CONCURRENCY")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "auto".to_string());
+    cmd.arg("--concurrency").arg(desktop_concurrency);
 
     // Pass auth token securely via environment variable (not visible in command line / Process Explorer)
     write_auth_token_file(&auth_token);

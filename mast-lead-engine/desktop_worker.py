@@ -54,6 +54,113 @@ def get_desktop_data_dir() -> Path:
     return data_dir
 
 
+DEFAULT_PER_SCOUT_MB = 260.0
+DEFAULT_DESKTOP_RESERVE_MB = 512.0
+
+
+def get_available_memory_mb() -> Optional[float]:
+    """
+    Returns currently available/free physical RAM in MB using psutil if installed,
+    falling back to native OS APIs (Windows GlobalMemoryStatusEx, Linux /proc/meminfo).
+    """
+    try:
+        import psutil  # type: ignore
+
+        return float(psutil.virtual_memory().available) / (1024.0 * 1024.0)
+    except Exception:
+        pass
+
+    if platform.system() == "Windows" or sys.platform == "win32":
+        try:
+            import ctypes
+
+            class _MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = _MemoryStatusEx()
+            stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return float(stat.ullAvailPhys) / (1024.0 * 1024.0)
+        except Exception:
+            pass
+
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        try:
+            content = meminfo.read_text(encoding="utf-8")
+            avail_match = re.search(r"^MemAvailable:\s*(\d+)\s+kB", content, re.MULTILINE)
+            if avail_match:
+                return float(avail_match.group(1)) / 1024.0
+            free_match = re.search(r"^MemFree:\s*(\d+)\s+kB", content, re.MULTILINE)
+            if free_match:
+                return float(free_match.group(1)) / 1024.0
+        except Exception:
+            pass
+
+    return None
+
+
+def compute_desktop_max_scouts(
+    available_memory_mb: Optional[float],
+    per_scout_mb: Optional[float] = None,
+    reserve_mb: Optional[float] = None,
+) -> int:
+    """
+    Computes exact concurrent desktop scout capacity strictly from free/available RAM.
+    No artificial upper cap: if the PC has headroom for 1 -> 1, 2 -> 2, 100 -> 100.
+    """
+    if per_scout_mb is None:
+        raw_per = os.environ.get("MAST_BROWSER_MEMORY_ESTIMATE_MB") or os.environ.get("BROWSER_MEMORY_ESTIMATE_MB")
+        try:
+            per_scout_mb = float(raw_per) if raw_per else DEFAULT_PER_SCOUT_MB
+        except ValueError:
+            per_scout_mb = DEFAULT_PER_SCOUT_MB
+    per_scout_mb = max(50.0, float(per_scout_mb))
+
+    if reserve_mb is None:
+        raw_res = os.environ.get("MAST_MEMORY_RESERVE_MB") or os.environ.get("WORKER_MEMORY_RESERVE_MB")
+        try:
+            reserve_mb = float(raw_res) if raw_res else DEFAULT_DESKTOP_RESERVE_MB
+        except ValueError:
+            reserve_mb = DEFAULT_DESKTOP_RESERVE_MB
+    reserve_mb = max(0.0, float(reserve_mb))
+
+    if available_memory_mb is None:
+        return 1
+
+    headroom_mb = max(0.0, float(available_memory_mb) - reserve_mb)
+    return max(1, int(headroom_mb // per_scout_mb))
+
+
+def resolve_desktop_concurrency(raw_value: Optional[str] = None) -> tuple[int, Optional[float]]:
+    """
+    Resolves scout concurrency from an explicit integer override or 'auto' (measured from free RAM).
+    Returns (concurrency, available_memory_mb).
+    """
+    avail_mb = get_available_memory_mb()
+    candidate = (raw_value if raw_value is not None else os.environ.get("MAST_DESKTOP_CONCURRENCY", "auto")).strip()
+    if not candidate or candidate.lower() == "auto":
+        return compute_desktop_max_scouts(avail_mb), avail_mb
+    try:
+        parsed = int(candidate)
+    except ValueError:
+        log.warning("Invalid concurrency %r; falling back to hardware auto-detection", candidate)
+        return compute_desktop_max_scouts(avail_mb), avail_mb
+    if parsed <= 0:
+        return compute_desktop_max_scouts(avail_mb), avail_mb
+    return parsed, avail_mb
+
+
 def is_chromium_installed(browsers_path: Path | str) -> bool:
     """Checks whether a valid Chromium binary exists in browsers_path."""
     bp = Path(browsers_path)
@@ -229,12 +336,21 @@ class DesktopCoordinatorClient:
     last_ingest_error: Optional[str] = None
     last_complete_error: Optional[str] = None
     _last_token_mtime: float = 0.0
+    max_scouts: Optional[int] = None
 
-    def __init__(self, api_base_url: str, auth_token: str, worker_id: str, session: Any):
+    def __init__(
+        self,
+        api_base_url: str,
+        auth_token: str,
+        worker_id: str,
+        session: Any,
+        max_scouts: Optional[int] = None,
+    ):
         self.api_base_url = api_base_url.rstrip("/")
         self.auth_token = auth_token
         self.worker_id = worker_id
         self.session = session
+        self.max_scouts = max_scouts
         self.last_auth_error = False
         self.last_heartbeat_fatal = False
         self.last_ingest_error = None
@@ -289,6 +405,8 @@ class DesktopCoordinatorClient:
         active_plan = self._get_active_plan()
         if active_plan:
             payload["preferredPlanId"] = active_plan
+        if self.max_scouts is not None and self.max_scouts >= 1:
+            payload["maxScouts"] = int(self.max_scouts)
 
         async with self.session.post(url, json=payload, headers=self._headers()) as resp:
             if resp.status == 200:
@@ -448,11 +566,17 @@ class DesktopWorker:
         self.batch_size = max(1, batch_size)
         self.heartbeat_interval_s = heartbeat_interval_s
         self.concurrency = max(1, concurrency)
+        try:
+            if getattr(self.client, "max_scouts", None) is None:
+                self.client.max_scouts = self.concurrency
+        except Exception:
+            pass
         self._engine_runner = engine_runner
         self._shutdown_event = asyncio.Event()
         self._active_tasks: Dict[str, asyncio.Event] = {}
         self._plan_tasks: Dict[str, set[str]] = {}
         self._known_place_ids: set[str] = set()
+        self._idle_backoff_until: float = 0.0
 
     async def execute_task(self, task: dict, task_abort: Optional[asyncio.Event] = None) -> bool:
         task_id = task["id"]
@@ -961,10 +1085,20 @@ class DesktopWorker:
 
     async def _worker_slot_loop(self, slot_index: int, poll_interval_s: float, once: bool) -> None:
         log.info("Desktop scout slot %d started", slot_index + 1)
+        if slot_index > 0 and not once:
+            await asyncio.sleep(min(2.0, slot_index * 0.02))
         while not self._shutdown_event.is_set():
             try:
+                if not once:
+                    now_mono = time.monotonic()
+                    if now_mono < self._idle_backoff_until:
+                        jitter = (slot_index % 15) * 0.02 if self.concurrency > 1 else 0.0
+                        await asyncio.sleep((self._idle_backoff_until - now_mono) + jitter)
+                        if self._shutdown_event.is_set():
+                            break
                 task = await self.client.claim_task()
                 if task:
+                    self._idle_backoff_until = 0.0
                     task_id = task.get("id")
                     plan_id = task.get("planId")
                     task_abort = asyncio.Event()
@@ -990,14 +1124,16 @@ class DesktopWorker:
                         break
                     if getattr(self.client, "last_auth_error", False):
                         # Avoid aggressive polling when unauthenticated; back off until token refreshes
-                        await asyncio.sleep(min(poll_interval_s * 4, 30.0))
+                        delay = min(poll_interval_s * 4, 30.0)
                     elif getattr(self.client, "last_rate_limit", False):
                         # Back off on 429 rate limit
-                        await asyncio.sleep(min(max(poll_interval_s * 3, 3.0), 10.0))
+                        delay = min(max(poll_interval_s * 3, 3.0), 10.0)
                     else:
                         active_plan = self.client._get_active_plan() if hasattr(self.client, "_get_active_plan") else None
-                        eff_interval = min(1.5, poll_interval_s) if active_plan else poll_interval_s
-                        await asyncio.sleep(eff_interval)
+                        delay = min(1.5, poll_interval_s) if active_plan else poll_interval_s
+                    self._idle_backoff_until = max(self._idle_backoff_until, time.monotonic() + delay)
+                    jitter = (slot_index % 15) * 0.02 if self.concurrency > 1 else 0.0
+                    await asyncio.sleep(delay + jitter)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -1054,8 +1190,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="Unique worker identifier (defaults to desktop-<hostname>-<shortid>)")
     p.add_argument("--batch-size", type=int, default=int(os.environ.get("MAST_DESKTOP_BATCH_SIZE", "5")),
                    help="Batch size for lead ingestion (default: 5)")
-    p.add_argument("--concurrency", type=int, default=int(os.environ.get("MAST_DESKTOP_CONCURRENCY", "1")),
-                   help="Maximum concurrent scout tasks (default: 1)")
+    p.add_argument("--concurrency", default=os.environ.get("MAST_DESKTOP_CONCURRENCY", "auto"),
+                   help="Maximum concurrent scout tasks ('auto' sizes from available PC RAM, or an explicit integer)")
     p.add_argument("--poll-interval", type=float, default=5.0,
                    help="Polling interval when idle in seconds (default: 5.0)")
     p.add_argument("--heartbeat-interval", type=float, default=15.0,
@@ -1103,21 +1239,31 @@ async def async_main() -> int:
     if args.test_browser:
         return await run_browser_test(browsers_path)
 
+    concurrency, available_ram_mb = resolve_desktop_concurrency(args.concurrency)
+    log.info(
+        "Resolved desktop scout concurrency=%d (requested=%r, available_ram_mb=%s)",
+        concurrency,
+        args.concurrency,
+        f"{available_ram_mb:.0f}" if available_ram_mb is not None else "unknown",
+    )
+
     worker_id = args.worker_id or f"desktop-{socket.gethostname()}-{uuid.uuid4().hex[:6]}"
 
     import aiohttp
-    async with aiohttp.ClientSession() as session:
+    connector = aiohttp.TCPConnector(limit=max(100, concurrency * 2))
+    async with aiohttp.ClientSession(connector=connector) as session:
         client = DesktopCoordinatorClient(
             api_base_url=args.api_url,
             auth_token=args.auth_token,
             worker_id=worker_id,
             session=session,
+            max_scouts=concurrency,
         )
         worker = DesktopWorker(
             client=client,
             batch_size=args.batch_size,
             heartbeat_interval_s=args.heartbeat_interval,
-            concurrency=args.concurrency,
+            concurrency=concurrency,
         )
         await worker.run_loop(poll_interval_s=args.poll_interval, once=args.once)
 

@@ -2333,4 +2333,91 @@ describe("Desktop Discovery Cloud Coordination (/v1/desktop)", () => {
       desktopDeps.getKnownPlaceIdsForTask = origGetKnown;
     }
   });
+
+  test("task claim honors exact hardware-reported maxScouts (1, 2, or high capacity without artificial cap)", async () => {
+    const planId = randomUUID();
+    mockDiscoveryPlans[planId] = {
+      id: planId,
+      user_id: userB,
+      requested_count: 50,
+      delivered_count: 0,
+      status: "running",
+      channels: ["website"],
+      region: "United States",
+      profession_slug: "dentists",
+    };
+
+    const makeTasks = (count: number) => {
+      for (const id of Object.keys(mockDiscoveryTasks)) delete mockDiscoveryTasks[id];
+      for (let i = 0; i < count; i++) {
+        const id = randomUUID();
+        mockDiscoveryTasks[id] = {
+          id,
+          plan_id: planId,
+          user_id: userB,
+          city: `City-${i + 1}`,
+          niche: "dentists",
+          priority: 100 - i,
+          status: "queued",
+          task_summary: { execution_target: "desktop" },
+          created_at: new Date(Date.now() + i).toISOString(),
+        };
+      }
+    };
+
+    // 1) PC maxScouts = 1 -> strictly 1 scout can claim, 2nd claim blocked
+    makeTasks(3);
+    const res1a = await fetch(`${baseUrl}/tasks/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenUserB}` },
+      body: JSON.stringify({ workerId: "pc-low-1", maxScouts: 1 }),
+    });
+    assert.equal((await res1a.json()).task?.city, "City-1");
+    const res1b = await fetch(`${baseUrl}/tasks/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenUserB}` },
+      body: JSON.stringify({ workerId: "pc-low-1", maxScouts: 1 }),
+    });
+    const data1b = await res1b.json();
+    assert.equal(data1b.task, null);
+    assert.equal(data1b.concurrencyCap, 1);
+
+    // 2) PC maxScouts = 2 -> strictly 2 scouts can claim, 3rd blocked
+    makeTasks(4);
+    for (let i = 0; i < 2; i++) {
+      const r = await fetch(`${baseUrl}/tasks/claim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenUserB}` },
+        body: JSON.stringify({ workerId: "pc-two", maxScouts: 2 }),
+      });
+      assert.ok((await r.json()).task);
+    }
+    const res2c = await fetch(`${baseUrl}/tasks/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenUserB}` },
+      body: JSON.stringify({ workerId: "pc-two", maxScouts: 2 }),
+    });
+    const data2c = await res2c.json();
+    assert.equal(data2c.task, null);
+    assert.equal(data2c.concurrencyCap, 2);
+
+    // 3) High-RAM PC maxScouts = 25 on free plan -> allows all 25 scouts without artificial 3-scout cap
+    makeTasks(26);
+    for (let i = 0; i < 25; i++) {
+      const r = await fetch(`${baseUrl}/tasks/claim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenUserB}` },
+        body: JSON.stringify({ workerId: "pc-high", maxScouts: 25 }),
+      });
+      assert.ok((await r.json()).task, `High-RAM scout ${i + 1}/25 must be allowed`);
+    }
+    const res26 = await fetch(`${baseUrl}/tasks/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenUserB}` },
+      body: JSON.stringify({ workerId: "pc-high", maxScouts: 25 }),
+    });
+    const data26 = await res26.json();
+    assert.equal(data26.task, null);
+    assert.equal(data26.concurrencyCap, 25);
+  });
 });

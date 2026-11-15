@@ -28,10 +28,10 @@ export const desktopRouter = Router();
 export const DESKTOP_LEASE_TTL_MS = 60_000;
 
 /** Rate limiters for desktop coordination endpoints */
-const claimLimiter = createRateLimiter({ windowMs: 60_000, max: 300 });
-const heartbeatLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
-const ingestLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
-const completeLimiter = createRateLimiter({ windowMs: 60_000, max: 60 });
+const claimLimiter = createRateLimiter({ windowMs: 60_000, max: 1200 });
+const heartbeatLimiter = createRateLimiter({ windowMs: 60_000, max: 1200 });
+const ingestLimiter = createRateLimiter({ windowMs: 60_000, max: 1200 });
+const completeLimiter = createRateLimiter({ windowMs: 60_000, max: 600 });
 
 /**
  * Dependency collaborators container for unit testing and mocking.
@@ -61,6 +61,7 @@ const ClaimTaskSchema = z.object({
   workerId: z.string().min(1).max(128),
   preferredTaskId: z.string().uuid().optional(),
   preferredPlanId: z.string().uuid().optional(),
+  maxScouts: z.number().int().min(1).max(500).optional(),
 });
 
 const HeartbeatSchema = z.object({
@@ -515,10 +516,14 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
 
     const planTierId = (profile?.subscription_plan as PlanId) ?? "free";
     const baseConcurrencyCap = getPlanConcurrency(planTierId, env.PLAN_CONCURRENCY_OVERRIDES);
-    // Desktop worker runs locally on the user's desktop hardware, driving concurrent scouts
-    // (default 3, or strictly configured via MAST_MAX_SCOUTS e.g. 2 for busy hours).
+    // Desktop scouts run on the user's own PC hardware. When the worker reports its
+    // hardware-measured scout capacity (`body.maxScouts`), honor that exact capacity
+    // (1 -> 1, 2 -> 2, 100 -> 100), bounded only by an explicit ops MAST_MAX_SCOUTS override.
     const maxScoutsEnv = process.env.MAST_MAX_SCOUTS ? parseInt(process.env.MAST_MAX_SCOUTS, 10) : undefined;
-    const concurrencyCap = maxScoutsEnv !== undefined ? maxScoutsEnv : Math.max(3, baseConcurrencyCap);
+    const concurrencyCap =
+      body.maxScouts !== undefined
+        ? (maxScoutsEnv !== undefined ? Math.min(maxScoutsEnv, body.maxScouts) : body.maxScouts)
+        : (maxScoutsEnv !== undefined ? maxScoutsEnv : Math.max(3, baseConcurrencyCap));
 
     // 2. Count active running tasks for this user
     const { data: userRunningTasks } = await desktopDeps.db
@@ -582,7 +587,7 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
     const { data: candidateTasks, error: candidateError } = await query
       .order("priority", { ascending: false })
       .order("created_at", { ascending: true })
-      .limit(20);
+      .limit(Math.max(50, concurrencyCap * 2));
 
     if (candidateError) throw candidateError;
 

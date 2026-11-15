@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MastWordmark } from "@/components/mast/MastWordmark";
+import { useMastConfirm } from "@/components/mast/ui/MastConfirm";
 import {
   type DynamicIslandEvent,
   clampProgress,
@@ -439,6 +440,7 @@ export function DynamicIslandHeader({
   const [morphProgress, setMorphProgress] = useState(0);
   const morphRef = useRef(0);
   const [accountOpen, setAccountOpen] = useState(false);
+  const { confirm, ConfirmDialog } = useMastConfirm();
   const notifRef = useRef<HTMLDivElement>(null);
   const dropdownMeasureRef = useRef<HTMLDivElement>(null);
   const [centerWidth, setCenterWidth] = useState(640);
@@ -1070,9 +1072,19 @@ export function DynamicIslandHeader({
                 {onLogout && (
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       setAccountOpen(false);
-                      onLogout();
+                      const confirmed = await confirm({
+                        title: "Log out of MAST?",
+                        description:
+                          "You\u2019ll need to sign back in to access your workspace.",
+                        confirmLabel: "Log out",
+                        cancelLabel: "Cancel",
+                        destructive: true,
+                      });
+                      if (confirmed) {
+                        onLogout();
+                      }
                     }}
                     className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
                   >
@@ -1085,6 +1097,7 @@ export function DynamicIslandHeader({
           )}
         </div>
       </div>
+      <ConfirmDialog />
     </header>
   );
 }

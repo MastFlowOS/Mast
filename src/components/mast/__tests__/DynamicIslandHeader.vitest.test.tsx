@@ -437,4 +437,37 @@ describe("MAST Dynamic Island Header & Priority System", () => {
         .getAttribute("data-island-state"),
     ).toBe("idle");
   });
+
+  it("asks for confirmation before logging out from the avatar menu", async () => {
+    const onLogout = vi.fn();
+    render(
+      <DynamicIslandHeader
+        event={IDLE_DYNAMIC_ISLAND_EVENT}
+        user={{ fullName: "Mast OS", email: "mastflow.os@gmail.com" }}
+        onLogout={onLogout}
+      />,
+    );
+
+    // Open account menu and click Log out — must prompt instead of logging out immediately
+    fireEvent.click(screen.getByTestId("header-user-avatar"));
+    fireEvent.click(screen.getByRole("button", { name: "Log out" }));
+    expect(onLogout).not.toHaveBeenCalled();
+    expect(screen.getByText("Log out of MAST?")).toBeTruthy();
+
+    // Cancel keeps session active
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.queryByText("Log out of MAST?")).toBeNull();
+    });
+    expect(onLogout).not.toHaveBeenCalled();
+
+    // Re-open menu and confirm Log out
+    fireEvent.click(screen.getByTestId("header-user-avatar"));
+    fireEvent.click(screen.getByRole("button", { name: "Log out" }));
+    const confirmBtns = screen.getAllByRole("button", { name: "Log out" });
+    fireEvent.click(confirmBtns[confirmBtns.length - 1]);
+    await waitFor(() => {
+      expect(onLogout).toHaveBeenCalledTimes(1);
+    });
+  });
 });

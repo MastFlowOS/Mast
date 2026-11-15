@@ -284,34 +284,6 @@
   }
 }
 
-@keyframes island-dropdown-in {
-  0% {
-    opacity: 0;
-    transform: scaleY(0.08);
-  }
-  30% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 1;
-    transform: scaleY(1);
-  }
-}
-
-@keyframes island-dropdown-out {
-  0% {
-    opacity: 1;
-    transform: scaleY(1);
-  }
-  70% {
-    opacity: 0.7;
-  }
-  100% {
-    opacity: 0;
-    transform: scaleY(0.08);
-  }
-}
-
 /* -- Page-level entrance --------------------------------------- */
 /*
   Intentionally opacity + transform only. This used to also animate

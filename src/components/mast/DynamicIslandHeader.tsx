@@ -222,35 +222,102 @@ function EventStatusIcon({ event }: { event: DynamicIslandEvent }) {
 
 /**
  * Contoured SVG frame that forms the Dynamic Island container itself.
- * The curve starts at the top of the navbar (y=1) and sweeps all the way
- * down to touch the bottom edge of the navbar (y=55 in a 56px header),
- * outlined in dark navy blue.
+ * Unified Dynamic Island contour SVG spanning the navbar well (y=0..56)
+ * and, when expanded (morphProgress > 0), seamlessly stretching downward and
+ * inward from the exact same top-left/top-right curve into the attached
+ * Notifications funnel — with zero color/thickness changes on open/close.
  */
-function HeaderContourSvg({
+function UnifiedIslandSvg({
+  width,
+  dropdownHeight,
+  morphProgress,
   isError,
   isActive,
-  isOpen,
 }: {
+  width: number;
+  dropdownHeight: number;
+  morphProgress: number;
   isError: boolean;
   isActive: boolean;
-  isOpen: boolean;
 }) {
+  const w = Math.max(240, Math.round(width));
+  const hDrop = Math.max(88, Math.round(dropdownHeight));
+  const p = Math.max(0, Math.min(1, morphProgress));
+
+  const bodyInset = getFunnelBodyInset(w);
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+  const yBot = 55 + p * hDrop;
+  const br = Math.min(18, p * 18, Math.max(0, (yBot - 55) * 0.45));
+
+  // Closed endpoints match the original 580x56 well ratios exactly (44/580, 56/580, 100/580)
+  const cp1L = 0.075862 * w;
+  const cp2LX = lerp(0.096552 * w, bodyInset, p);
+  const cp2Y = lerp(
+    55,
+    Math.min(yBot - br, 55 + Math.min(55, hDrop * 0.25)),
+    p,
+  );
+  const endLX = lerp(0.172414 * w, bodyInset, p);
+  const endY = lerp(
+    55,
+    Math.min(yBot - br, 55 + Math.min(130, hDrop * 0.6)),
+    p,
+  );
+
+  const cp1R = w - cp1L;
+  const cp2RX = w - cp2LX;
+  const endRX = w - endLX;
+
+  const svgHeight = Math.max(56, Math.ceil(yBot + 2));
+
+  // Identical outline colors in idle/open/closed — only active events or errors tint it
   const strokeColor = isError
     ? "rgba(225, 45, 75, 0.72)"
-    : isActive || isOpen
+    : isActive
       ? "rgba(48, 78, 148, 0.95)"
       : "rgba(36, 60, 115, 0.88)";
   const troughColor = isError
     ? "rgba(190, 38, 65, 0.62)"
-    : isActive || isOpen
+    : isActive
       ? "rgba(56, 90, 168, 0.92)"
       : "rgba(40, 66, 126, 0.82)";
 
+  const f = (n: number) => n.toFixed(2);
+
+  const strokeD =
+    p <= 0.001
+      ? [
+          `M 0 1`,
+          `C ${f(cp1L)} 1, ${f(cp2LX)} 55, ${f(endLX)} 55`,
+          `L ${f(endRX)} 55`,
+          `C ${f(cp2RX)} 55, ${f(cp1R)} 1, ${w} 1`,
+        ].join(" ")
+      : [
+          `M 0 1`,
+          `C ${f(cp1L)} 1, ${f(cp2LX)} ${f(cp2Y)}, ${f(endLX)} ${f(endY)}`,
+          `L ${f(endLX)} ${f(yBot - br)}`,
+          `Q ${f(endLX)} ${f(yBot)}, ${f(endLX + br)} ${f(yBot)}`,
+          `L ${f(endRX - br)} ${f(yBot)}`,
+          `Q ${f(endRX)} ${f(yBot)}, ${f(endRX)} ${f(yBot - br)}`,
+          `L ${f(endRX)} ${f(endY)}`,
+          `C ${f(cp2RX)} ${f(cp2Y)}, ${f(cp1R)} 1, ${w} 1`,
+        ].join(" ");
+
+  const fillD = `${strokeD} Z`;
+
   return (
     <svg
-      className="pointer-events-none absolute inset-0 h-full w-full select-none"
-      viewBox="0 0 580 56"
-      preserveAspectRatio="none"
+      className="pointer-events-none absolute top-0 left-0 select-none"
+      style={{
+        width: w,
+        height: svgHeight,
+        filter:
+          p > 0.02
+            ? `drop-shadow(0 24px 48px rgba(0, 0, 0, ${(0.75 * p).toFixed(2)}))`
+            : undefined,
+      }}
+      viewBox={`0 0 ${w} ${svgHeight}`}
       aria-hidden="true"
     >
       <defs>
@@ -264,174 +331,47 @@ function HeaderContourSvg({
 
         <linearGradient id="mast-header-well-fill" x1="0%" y1="0%" x2="0%" y2="100%">
           <stop offset="0%" stopColor="oklch(0.118 0.028 263)" />
-          <stop offset="100%" stopColor="oklch(0.134 0.032 263)" />
+          <stop offset={p > 0.02 ? "22%" : "100%"} stopColor="oklch(0.134 0.032 263)" />
+          {p > 0.02 && <stop offset="100%" stopColor="oklch(0.120 0.028 263)" />}
         </linearGradient>
+
+        <clipPath id="mast-dropdown-body-clip" clipPathUnits="userSpaceOnUse">
+          <path d={fillD} transform="translate(0, -56)" />
+        </clipPath>
       </defs>
 
-      {isOpen ? (
-        <>
-          {/* Open state: keep the Dynamic Island contour in the navbar 100% identical, opening only its bottom edge into the attached dropdown */}
-          <path
-            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1 L 580 1 L 0 1 Z"
-            fill="url(#mast-header-well-fill)"
-          />
-          <rect
-            x="100"
-            y="54.5"
-            width="380"
-            height="1.5"
-            fill="oklch(0.134 0.032 263)"
-          />
-          <path
-            d="M 0 1 C 44 1, 56 55, 100 55"
-            fill="none"
-            stroke={strokeColor}
-            strokeOpacity="0.24"
-            strokeWidth="3"
-            vectorEffect="non-scaling-stroke"
-          />
-          <path
-            d="M 480 55 C 524 55, 536 1, 580 1"
-            fill="none"
-            stroke={strokeColor}
-            strokeOpacity="0.24"
-            strokeWidth="3"
-            vectorEffect="non-scaling-stroke"
-          />
-          <path
-            d="M 0 1 C 44 1, 56 55, 100 55"
-            fill="none"
-            stroke="url(#mast-header-contour-stroke)"
-            strokeWidth="1.5"
-            vectorEffect="non-scaling-stroke"
-          />
-          <path
-            d="M 480 55 C 524 55, 536 1, 580 1"
-            fill="none"
-            stroke="url(#mast-header-contour-stroke)"
-            strokeWidth="1.5"
-            vectorEffect="non-scaling-stroke"
-          />
-        </>
-      ) : (
-        <>
-          {/* Closed state: recessed center Dynamic Island well touching bottom of navbar */}
-          <path
-            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1 Z"
-            fill="url(#mast-header-well-fill)"
-          />
+      <path d={fillD} fill="url(#mast-header-well-fill)" />
 
-          {/* Subtle dark-blue under-stroke along the contoured well */}
-          <path
-            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
-            fill="none"
-            stroke={strokeColor}
-            strokeOpacity={isActive ? "0.28" : "0.16"}
-            strokeWidth="3"
-            vectorEffect="non-scaling-stroke"
-            style={{ transition: "stroke-opacity 320ms ease" }}
-          />
-
-          {/* Primary sculpted dark-blue contour stroke touching the bottom of the navbar */}
-          <path
-            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
-            fill="none"
-            stroke="url(#mast-header-contour-stroke)"
-            strokeWidth="1.5"
-            vectorEffect="non-scaling-stroke"
-          />
-        </>
-      )}
-    </svg>
-  );
-}
-
-/**
- * Contoured SVG outline for the attached Notifications dropdown.
- * Leaves the navbar Dynamic Island untouched and seamlessly extends its
- * bottom contour (100..480) downward and inward into the notifications body,
- * curving cleanly down to match the Dynamic Island silhouette.
- */
-function DropdownContourSvg({
-  width,
-  height,
-  inset,
-  isError,
-}: {
-  width: number;
-  height: number;
-  inset: number;
-  isError: boolean;
-}) {
-  const w = Math.max(160, Math.round(width));
-  const h = Math.max(80, Math.round(height));
-  const neckH = Math.min(46, Math.max(26, Math.round(h * 0.24)));
-  const br = Math.min(20, Math.max(12, Math.round(h * 0.1)));
-  const yTop = 0.75;
-  const yBot = h - 0.75;
-
-  const strokeColor = isError
-    ? "rgba(225, 45, 75, 0.72)"
-    : "rgba(56, 90, 168, 0.92)";
-
-  const fillD = [
-    `M 0 0`,
-    `L ${w} 0`,
-    `L ${w} ${yTop}`,
-    `C ${w - inset * 0.45} ${yTop}, ${w - inset} ${neckH * 0.36}, ${w - inset} ${neckH}`,
-    `L ${w - inset} ${yBot - br}`,
-    `Q ${w - inset} ${yBot}, ${w - inset - br} ${yBot}`,
-    `L ${inset + br} ${yBot}`,
-    `Q ${inset} ${yBot}, ${inset} ${yBot - br}`,
-    `L ${inset} ${neckH}`,
-    `C ${inset} ${neckH * 0.36}, ${inset * 0.45} ${yTop}, 0 ${yTop}`,
-    `Z`,
-  ].join(" ");
-
-  const strokeD = [
-    `M 0 ${yTop}`,
-    `C ${inset * 0.45} ${yTop}, ${inset} ${neckH * 0.36}, ${inset} ${neckH}`,
-    `L ${inset} ${yBot - br}`,
-    `Q ${inset} ${yBot}, ${inset + br} ${yBot}`,
-    `L ${w - inset - br} ${yBot}`,
-    `Q ${w - inset} ${yBot}, ${w - inset} ${yBot - br}`,
-    `L ${w - inset} ${neckH}`,
-    `C ${w - inset} ${neckH * 0.36}, ${w - inset * 0.45} ${yTop}, ${w} ${yTop}`,
-  ].join(" ");
-
-  return (
-    <svg
-      className="pointer-events-none absolute inset-0 h-full w-full select-none"
-      viewBox={`0 0 ${w} ${h}`}
-      preserveAspectRatio="none"
-      aria-hidden="true"
-    >
-      <defs>
-        <linearGradient id="mast-dropdown-well-fill" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="oklch(0.134 0.032 263)" />
-          <stop offset="100%" stopColor="oklch(0.120 0.028 263)" />
-        </linearGradient>
-      </defs>
-      <path d={fillD} fill="url(#mast-dropdown-well-fill)" />
+      {/* Subtle dark-blue under-stroke along the unified contour */}
       <path
         d={strokeD}
         fill="none"
         stroke={strokeColor}
-        strokeOpacity="0.24"
+        strokeOpacity={isActive ? "0.28" : "0.16"}
         strokeWidth="3"
         strokeLinecap="round"
         strokeLinejoin="round"
+        style={{ transition: "stroke-opacity 320ms ease" }}
       />
+
+      {/* Primary sculpted dark-blue contour stroke */}
       <path
         d={strokeD}
         fill="none"
-        stroke={strokeColor}
+        stroke="url(#mast-header-contour-stroke)"
         strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
     </svg>
   );
+}
+
+function getFunnelBodyInset(width: number) {
+  if (width >= 540) {
+    return Math.round((width - Math.min(370, width * 0.59)) / 2);
+  }
+  return Math.max(Math.round(width * 0.185), Math.round(0.172414 * width) + 6);
 }
 
 export function DynamicIslandHeader({
@@ -449,58 +389,138 @@ export function DynamicIslandHeader({
 }: DynamicIslandHeaderProps) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [drawerPhase, setDrawerPhase] = useState<"closed" | "opening" | "open" | "closing">("closed");
+  const [morphProgress, setMorphProgress] = useState(0);
+  const morphRef = useRef(0);
   const [accountOpen, setAccountOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const [dropdownBox, setDropdownBox] = useState({ width: 419, height: 220 });
+  const dropdownMeasureRef = useRef<HTMLDivElement>(null);
+  const [centerWidth, setCenterWidth] = useState(640);
+  const [dropdownHeight, setDropdownHeight] = useState(220);
   const accountRef = useRef<HTMLDivElement>(null);
 
-  // Measure the notifications drawer so the inward-curving contour SVG renders 1:1 pixels
+  // Measure the Dynamic Island slot width so UnifiedIslandSvg always renders 1:1 pixels
   useLayoutEffect(() => {
-    const el = dropdownRef.current;
-    if (!el || drawerPhase === "closed") return;
+    const el = notifRef.current;
+    if (!el) return;
 
-    const updateSize = () => {
+    const updateWidth = () => {
       const rect = el.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
-        setDropdownBox((prev) =>
-          Math.abs(prev.width - rect.width) > 0.5 ||
-          Math.abs(prev.height - rect.height) > 0.5
-            ? { width: rect.width, height: rect.height }
-            : prev,
-        );
+      if (rect.width > 0) {
+        setCenterWidth((prev) => (Math.abs(prev - rect.width) > 0.5 ? rect.width : prev));
       }
     };
 
-    updateSize();
+    updateWidth();
     if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(updateSize);
+    const ro = new ResizeObserver(updateWidth);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Measure the notifications content natural height while mounted
+  useLayoutEffect(() => {
+    const el = dropdownMeasureRef.current;
+    if (!el || drawerPhase === "closed") return;
+
+    const updateHeight = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.height > 0) {
+        setDropdownHeight((prev) => (Math.abs(prev - rect.height) > 0.5 ? rect.height : prev));
+      }
+    };
+
+    updateHeight();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(updateHeight);
     ro.observe(el);
     return () => ro.disconnect();
   }, [drawerPhase, notifications.length]);
 
-  const dropdownInset =
-    dropdownBox.width >= 340
-      ? Math.round(Math.min(30, dropdownBox.width * 0.072))
-      : Math.round(Math.max(12, dropdownBox.width * 0.055));
+  const bodyInset = getFunnelBodyInset(Math.max(240, Math.round(centerWidth)));
+  const headerInset =
+    centerWidth >= 540
+      ? Math.max(Math.round(bodyInset * 0.82), Math.round(centerWidth * 0.165))
+      : Math.max(54, Math.round(bodyInset * 0.85));
 
-  // Smooth CSS keyframe lifecycle for the Dynamic Island notifications drawer.
-  // Once "opening" finishes (280ms), we settle into "open" with no active transform/animation
-  // layer so nested scroll containers inside the sticky header always paint in Chromium.
+  // Smooth RAF morph lifecycle (0 <-> 1) that stretches/retracts the unified SVG
+  // downward from the Dynamic Island with zero CSS transform/animation clipping bugs.
   useEffect(() => {
+    let rafId = 0;
+
     if (notifOpen) {
       setDrawerPhase("opening");
+      const startVal = morphRef.current;
+      const startTime = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const duration = 300;
+
+      const tick = (now: number) => {
+        const t = Math.min(1, (now - startTime) / duration);
+        const eased = 1 - Math.pow(1 - t, 3);
+        const next = startVal + (1 - startVal) * eased;
+        morphRef.current = next;
+        setMorphProgress(next);
+        if (t < 1) {
+          rafId = requestAnimationFrame(tick);
+        } else {
+          morphRef.current = 1;
+          setMorphProgress(1);
+          setDrawerPhase("open");
+        }
+      };
+
+      if (typeof requestAnimationFrame !== "undefined") {
+        rafId = requestAnimationFrame(tick);
+      }
+
       const timer = setTimeout(() => {
+        cancelAnimationFrame(rafId);
+        morphRef.current = 1;
+        setMorphProgress(1);
         setDrawerPhase("open");
-      }, 280);
-      return () => clearTimeout(timer);
+      }, duration + 16);
+
+      return () => {
+        cancelAnimationFrame(rafId);
+        clearTimeout(timer);
+      };
     }
+
     if (drawerPhase === "opening" || drawerPhase === "open") {
       setDrawerPhase("closing");
+      const startVal = morphRef.current > 0 ? morphRef.current : 1;
+      const startTime = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const duration = 220;
+
+      const tick = (now: number) => {
+        const t = Math.min(1, (now - startTime) / duration);
+        const eased = 1 - Math.pow(1 - t, 2.5);
+        const next = startVal * (1 - eased);
+        morphRef.current = next;
+        setMorphProgress(next);
+        if (t < 1) {
+          rafId = requestAnimationFrame(tick);
+        } else {
+          morphRef.current = 0;
+          setMorphProgress(0);
+          setDrawerPhase("closed");
+        }
+      };
+
+      if (typeof requestAnimationFrame !== "undefined") {
+        rafId = requestAnimationFrame(tick);
+      }
+
       const timer = setTimeout(() => {
+        cancelAnimationFrame(rafId);
+        morphRef.current = 0;
+        setMorphProgress(0);
         setDrawerPhase("closed");
-      }, 220);
-      return () => clearTimeout(timer);
+      }, duration + 16);
+
+      return () => {
+        cancelAnimationFrame(rafId);
+        clearTimeout(timer);
+      };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notifOpen]);
@@ -609,11 +629,13 @@ export function DynamicIslandHeader({
         ref={notifRef}
         className="relative z-20 flex items-center justify-center w-[340px] sm:w-[560px] md:w-[640px] max-w-[74vw] h-full"
       >
-        {/* Sculpted dark-blue Dynamic Island contour — stays identical in navbar, stretches down into drawer when open */}
-        <HeaderContourSvg
+        {/* Unified sculpted dark-blue Dynamic Island contour — stretches downward into funnel when open, zero color/thickness changes */}
+        <UnifiedIslandSvg
+          width={centerWidth}
+          dropdownHeight={dropdownHeight}
+          morphProgress={drawerPhase === "closed" ? 0 : morphProgress}
           isError={isErrorState}
           isActive={showIslandCapsule}
-          isOpen={drawerPhase !== "closed"}
         />
 
         <div
@@ -726,162 +748,158 @@ export function DynamicIslandHeader({
           )}
         </div>
 
-        {/* Attached Dynamic Island Notifications Drawer — curves inward downward from the Dynamic Island */}
+        {/* Attached Dynamic Island Notifications Drawer — seamlessly continues the island curve downward */}
         {drawerPhase !== "closed" && (
           <div
-            ref={dropdownRef}
             data-testid="dynamic-island-notifications-dropdown"
             data-state={drawerPhase === "closing" ? "closing" : "open"}
             onClick={(e) => e.stopPropagation()}
-            className="absolute left-[17.241379%] right-[17.241379%] top-[55px] z-50 drop-shadow-[0_24px_48px_rgba(0,0,0,0.75)]"
-            style={
-              drawerPhase === "opening"
-                ? {
-                    transformOrigin: "center top",
-                    animation: "island-dropdown-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both",
-                  }
-                : drawerPhase === "closing"
-                  ? {
-                      transformOrigin: "center top",
-                      animation: "island-dropdown-out 220ms cubic-bezier(0.4, 0, 0.2, 1) forwards",
-                    }
-                  : undefined
-            }
+            className="absolute left-0 right-0 top-[56px] z-30"
+            style={{
+              clipPath: "url(#mast-dropdown-body-clip)",
+              pointerEvents: drawerPhase === "closing" ? "none" : "auto",
+            }}
           >
-            <DropdownContourSvg
-              width={dropdownBox.width}
-              height={dropdownBox.height}
-              inset={dropdownInset}
-              isError={isErrorState}
-            />
-
-            <div
-              className="relative z-10 overflow-hidden rounded-b-[19px]"
-              style={{
-                marginLeft: dropdownInset + 1,
-                marginRight: dropdownInset + 1,
-                marginBottom: 1,
-              }}
-            >
-              <div className="flex items-center justify-between px-4 py-2.5 border-b border-[rgba(56,90,168,0.22)]">
-              <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-xs text-foreground tracking-wide">
-                  Notifications
-                </h3>
-                {unreadCount > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-brand/20 text-brand border border-brand/30">
-                    {unreadCount} new
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2.5">
-                {unreadCount > 0 && onMarkAllRead && (
-                  <button
-                    type="button"
-                    onClick={onMarkAllRead}
-                    className="text-[11px] text-brand font-semibold hover:text-brand-dark transition-colors cursor-pointer"
-                  >
-                    Mark all read
-                  </button>
-                )}
-                {notifications.length > 0 && onClearAllNotifications && (
-                  <button
-                    type="button"
-                    onClick={onClearAllNotifications}
-                    className="text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                  >
-                    Clear all
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setNotifOpen(false)}
-                  aria-label="Close notifications"
-                  className="size-5 grid place-items-center text-muted-foreground hover:text-foreground transition-colors shrink-0 cursor-pointer"
-                >
-                  <X className="size-3.5 shrink-0" />
-                </button>
-              </div>
-            </div>
-
-            <div
-              className={cn(
-                "max-h-72 divide-y divide-border/40",
-                drawerPhase === "open" ? "overflow-y-auto" : "overflow-hidden",
-              )}
-            >
-              {notifications.length === 0 ? (
-                <div className="py-9 px-4 text-center">
-                  <p className="text-xs font-medium text-muted-foreground">
-                    No prior notifications
-                  </p>
-                  <p className="text-[11px] text-muted-foreground/60 mt-0.5">
-                    Events from discovery, imports, exports, and reminders will appear here.
-                  </p>
+            <div ref={dropdownMeasureRef} className="pb-2">
+              <div
+                className="flex items-center justify-between py-2.5 px-3.5"
+                style={{
+                  marginLeft: headerInset,
+                  marginRight: headerInset,
+                  opacity: Math.min(1, morphProgress * 1.4),
+                }}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <h3 className="font-semibold text-xs text-foreground tracking-wide">
+                    Notifications
+                  </h3>
+                  {unreadCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-brand/20 text-brand border border-brand/30 shrink-0">
+                      {unreadCount} new
+                    </span>
+                  )}
                 </div>
-              ) : (
-                notifications.map((n) => {
-                  const Icon = (n.icon && NOTIF_ICONS[n.icon]) || Bell;
-                  const formattedTime = formatNotificationTimestamp(
-                    n.createdAt,
-                    n.time,
-                  );
-                  return (
-                    <div
-                      key={n.id}
-                      data-testid="dynamic-island-notification-item"
-                      className={cn(
-                        "flex items-start gap-3 px-4 py-2.5 hover:bg-white/[0.03] transition-colors",
-                        n.unread && "bg-brand/[0.06]",
-                      )}
+                <div className="flex items-center gap-2.5 shrink-0">
+                  {unreadCount > 0 && onMarkAllRead && (
+                    <button
+                      type="button"
+                      onClick={onMarkAllRead}
+                      className="text-[11px] text-brand font-semibold hover:text-brand-dark transition-colors cursor-pointer"
                     >
+                      Mark all read
+                    </button>
+                  )}
+                  {notifications.length > 0 && onClearAllNotifications && (
+                    <button
+                      type="button"
+                      onClick={onClearAllNotifications}
+                      className="text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                    >
+                      Clear all
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setNotifOpen(false)}
+                    aria-label="Close notifications"
+                    className="size-5 grid place-items-center text-muted-foreground hover:text-foreground transition-colors shrink-0 cursor-pointer"
+                  >
+                    <X className="size-3.5 shrink-0" />
+                  </button>
+                </div>
+              </div>
+
+              <div
+                className="border-b border-[rgba(56,90,168,0.22)]"
+                style={{
+                  marginLeft: headerInset + 6,
+                  marginRight: headerInset + 6,
+                }}
+              />
+
+              <div
+                className={cn(
+                  "max-h-72 divide-y divide-border/40",
+                  drawerPhase === "open" ? "overflow-y-auto" : "overflow-hidden",
+                )}
+                style={{
+                  marginLeft: bodyInset + 1,
+                  marginRight: bodyInset + 1,
+                  opacity: Math.min(1, Math.max(0, (morphProgress - 0.1) * 1.25)),
+                }}
+              >
+                {notifications.length === 0 ? (
+                  <div className="py-8 px-4 text-center">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      No prior notifications
+                    </p>
+                    <p className="text-[11px] text-muted-foreground/60 mt-0.5">
+                      Events from discovery, imports, exports, and reminders will appear here.
+                    </p>
+                  </div>
+                ) : (
+                  notifications.map((n) => {
+                    const Icon = (n.icon && NOTIF_ICONS[n.icon]) || Bell;
+                    const formattedTime = formatNotificationTimestamp(
+                      n.createdAt,
+                      n.time,
+                    );
+                    return (
                       <div
+                        key={n.id}
+                        data-testid="dynamic-island-notification-item"
                         className={cn(
-                          "size-7 rounded-full border grid place-items-center shrink-0 mt-0.5",
-                          n.iconBg || "bg-brand/10 border-brand/25",
+                          "flex items-start gap-3 px-4 py-2.5 hover:bg-white/[0.03] transition-colors",
+                          n.unread && "bg-brand/[0.06]",
                         )}
                       >
-                        <Icon className={cn("size-3.5", n.iconColor || "text-brand")} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                          <p
-                            className={cn(
-                              "text-xs font-semibold leading-tight truncate",
-                              n.unread ? "text-foreground" : "text-muted-foreground",
-                            )}
-                          >
-                            {n.title}
-                            {n.unread && (
-                              <span className="inline-block ml-1.5 size-1.5 rounded-full bg-brand align-middle" />
-                            )}
-                          </p>
-                          {onDismissNotification && (
-                            <button
-                              type="button"
-                              onClick={() => onDismissNotification(n.id)}
-                              aria-label="Dismiss notification"
-                              className="size-4 grid place-items-center text-muted-foreground/60 hover:text-foreground shrink-0 transition-colors cursor-pointer"
-                            >
-                              <X className="size-3.5 shrink-0" />
-                            </button>
+                        <div
+                          className={cn(
+                            "size-7 rounded-full border grid place-items-center shrink-0 mt-0.5",
+                            n.iconBg || "bg-brand/10 border-brand/25",
                           )}
+                        >
+                          <Icon className={cn("size-3.5", n.iconColor || "text-brand")} />
                         </div>
-                        <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                          {n.body}
-                        </p>
-                        <div className="flex items-center gap-1 mt-1 text-[10px] text-muted-foreground/75">
-                          <Clock className="size-2.5 shrink-0" />
-                          <span data-testid="notification-item-timestamp">
-                            {formattedTime}
-                          </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-2">
+                            <p
+                              className={cn(
+                                "text-xs font-semibold leading-tight truncate",
+                                n.unread ? "text-foreground" : "text-muted-foreground",
+                              )}
+                            >
+                              {n.title}
+                              {n.unread && (
+                                <span className="inline-block ml-1.5 size-1.5 rounded-full bg-brand align-middle" />
+                              )}
+                            </p>
+                            {onDismissNotification && (
+                              <button
+                                type="button"
+                                onClick={() => onDismissNotification(n.id)}
+                                aria-label="Dismiss notification"
+                                className="size-4 grid place-items-center text-muted-foreground/60 hover:text-foreground shrink-0 transition-colors cursor-pointer"
+                              >
+                                <X className="size-3.5 shrink-0" />
+                              </button>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                            {n.body}
+                          </p>
+                          <div className="flex items-center gap-1 mt-1 text-[10px] text-muted-foreground/75">
+                            <Clock className="size-2.5 shrink-0" />
+                            <span data-testid="notification-item-timestamp">
+                              {formattedTime}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+                    );
+                  })
+                )}
+              </div>
             </div>
           </div>
         )}

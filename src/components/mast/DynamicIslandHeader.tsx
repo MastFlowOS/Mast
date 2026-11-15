@@ -4,6 +4,8 @@ import {
   Bell,
   CheckCircle2,
   ArrowUpCircle,
+  Target,
+  Trophy,
   X,
   LogOut,
   Settings,
@@ -54,6 +56,8 @@ const NOTIF_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
   CheckCircle2,
   ArrowUpCircle,
   Bell,
+  Target,
+  Trophy,
 };
 
 /**
@@ -266,20 +270,20 @@ function HeaderContourSvg({
 
       {isOpen ? (
         <>
-          {/* Open state: keep the EXACT same top curve (zero shrinking), and open the bottom into the dropdown */}
+          {/* Open state: inward curve continues curving inward all the way until it reaches the notifications width (x=100..480) with zero flat horizontal shelf */}
           <path
-            d="M 0 1 C 44 1, 56 55, 100 55 L 100 56 L 480 56 L 480 55 C 524 55, 536 1, 580 1 Z"
+            d="M 0 1 C 40 1, 80 46, 100 56 L 480 56 C 500 46, 540 1, 580 1 Z"
             fill="url(#mast-header-well-fill)"
           />
           <path
-            d="M 0 1 C 44 1, 56 55, 100 55 L 100 56"
+            d="M 0 1 C 40 1, 80 46, 100 56"
             fill="none"
             stroke="url(#mast-header-contour-stroke)"
             strokeWidth="1.5"
             vectorEffect="non-scaling-stroke"
           />
           <path
-            d="M 480 56 L 480 55 C 524 55, 536 1, 580 1"
+            d="M 480 56 C 500 46, 540 1, 580 1"
             fill="none"
             stroke="url(#mast-header-contour-stroke)"
             strokeWidth="1.5"
@@ -290,13 +294,13 @@ function HeaderContourSvg({
         <>
           {/* Closed state: recessed center Dynamic Island well touching bottom of navbar */}
           <path
-            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1 Z"
+            d="M 0 1 C 42 1, 74 55, 100 55 L 480 55 C 506 55, 538 1, 580 1 Z"
             fill="url(#mast-header-well-fill)"
           />
 
           {/* Subtle dark-blue under-stroke along the contoured well */}
           <path
-            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
+            d="M 0 1 C 42 1, 74 55, 100 55 L 480 55 C 506 55, 538 1, 580 1"
             fill="none"
             stroke={strokeColor}
             strokeOpacity={isActive ? "0.28" : "0.16"}
@@ -307,7 +311,7 @@ function HeaderContourSvg({
 
           {/* Primary sculpted dark-blue contour stroke touching the bottom of the navbar */}
           <path
-            d="M 0 1 C 44 1, 56 55, 100 55 L 480 55 C 524 55, 536 1, 580 1"
+            d="M 0 1 C 42 1, 74 55, 100 55 L 480 55 C 506 55, 538 1, 580 1"
             fill="none"
             stroke="url(#mast-header-contour-stroke)"
             strokeWidth="1.5"
@@ -333,22 +337,27 @@ export function DynamicIslandHeader({
   className,
 }: DynamicIslandHeaderProps) {
   const [notifOpen, setNotifOpen] = useState(false);
-  const [drawerPhase, setDrawerPhase] = useState<"closed" | "open" | "closing">("closed");
+  const [drawerPhase, setDrawerPhase] = useState<"closed" | "opening" | "open" | "closing">("closed");
   const [accountOpen, setAccountOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const accountRef = useRef<HTMLDivElement>(null);
 
-  // Smooth CSS keyframe lifecycle for the Dynamic Island notifications drawer
+  // Smooth CSS keyframe lifecycle for the Dynamic Island notifications drawer.
+  // Once "opening" finishes (280ms), we settle into "open" with no active transform/animation
+  // layer so nested scroll containers inside the sticky header always paint in Chromium.
   useEffect(() => {
     if (notifOpen) {
-      setDrawerPhase("open");
-      return;
+      setDrawerPhase("opening");
+      const timer = setTimeout(() => {
+        setDrawerPhase("open");
+      }, 280);
+      return () => clearTimeout(timer);
     }
-    if (drawerPhase === "open") {
+    if (drawerPhase === "opening" || drawerPhase === "open") {
       setDrawerPhase("closing");
       const timer = setTimeout(() => {
         setDrawerPhase("closed");
-      }, 240);
+      }, 220);
       return () => clearTimeout(timer);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -462,7 +471,7 @@ export function DynamicIslandHeader({
         <HeaderContourSvg
           isError={isErrorState}
           isActive={showIslandCapsule}
-          isOpen={drawerPhase === "open"}
+          isOpen={drawerPhase === "opening" || drawerPhase === "open"}
         />
 
         <div
@@ -579,22 +588,28 @@ export function DynamicIslandHeader({
         {drawerPhase !== "closed" && (
           <div
             data-testid="dynamic-island-notifications-dropdown"
-            data-state={drawerPhase}
+            data-state={drawerPhase === "closing" ? "closing" : "open"}
             onClick={(e) => e.stopPropagation()}
             className={cn(
-              "absolute left-[17.241%] right-[17.241%] top-full -mt-[1px]",
+              "absolute left-[17.241379%] right-[17.241379%] top-full -mt-[1px]",
               "bg-[oklch(0.130_0.031_263)] border-x border-b border-t-0 rounded-b-2xl shadow-2xl z-50 overflow-hidden",
               isErrorState
                 ? "border-[rgba(190,38,65,0.62)]"
                 : "border-[rgba(56,90,168,0.92)]",
             )}
-            style={{
-              transformOrigin: "center top",
-              animation:
-                drawerPhase === "closing"
-                  ? "island-dropdown-out 240ms cubic-bezier(0.4, 0, 0.2, 1) forwards"
-                  : "island-dropdown-in 320ms cubic-bezier(0.16, 1, 0.3, 1) forwards",
-            }}
+            style={
+              drawerPhase === "opening"
+                ? {
+                    transformOrigin: "center top",
+                    animation: "island-dropdown-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both",
+                  }
+                : drawerPhase === "closing"
+                  ? {
+                      transformOrigin: "center top",
+                      animation: "island-dropdown-out 220ms cubic-bezier(0.4, 0, 0.2, 1) forwards",
+                    }
+                  : undefined
+            }
           >
             <div>
               <div className="flex items-center justify-between px-4 py-2 border-b border-[rgba(56,90,168,0.24)] bg-[oklch(0.122_0.029_263)]">
@@ -638,7 +653,12 @@ export function DynamicIslandHeader({
               </div>
             </div>
 
-            <div className="max-h-80 overflow-y-auto divide-y divide-border/40">
+            <div
+              className={cn(
+                "max-h-80 divide-y divide-border/40",
+                notifications.length > 4 && drawerPhase === "open" && "overflow-y-auto",
+              )}
+            >
               {notifications.length === 0 ? (
                 <div className="py-9 px-4 text-center">
                   <p className="text-xs font-medium text-muted-foreground">

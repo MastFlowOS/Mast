@@ -151,6 +151,8 @@ export function normalizeInstagram(input?: string | null): NormalizedInstagram |
   return {
     handle,
     profileUrl: `https://www.instagram.com/${handle}/`,
-    dmUrl: `https://ig.me/m/${handle}`,
+    // Use www.instagram.com/m/<handle> directly (the same destination ig.me/m/<handle>
+    // redirects to) so ISPs/networks that drop ig.me still open the DM thread directly.
+    dmUrl: `https://www.instagram.com/m/${handle}`,
   };
 }

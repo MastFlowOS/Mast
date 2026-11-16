@@ -9,7 +9,7 @@ describe("Bug 2: Instagram URL and Handle Normalization", () => {
     assert.notEqual(res, null);
     assert.equal(res?.handle, "recessgrove");
     assert.equal(res?.profileUrl, "https://www.instagram.com/recessgrove/");
-    assert.equal(res?.dmUrl, "https://ig.me/m/recessgrove");
+    assert.equal(res?.dmUrl, "https://www.instagram.com/m/recessgrove");
   });
 
   it("2. normalizes @handle", () => {
@@ -17,7 +17,7 @@ describe("Bug 2: Instagram URL and Handle Normalization", () => {
     assert.notEqual(res, null);
     assert.equal(res?.handle, "recessgrove");
     assert.equal(res?.profileUrl, "https://www.instagram.com/recessgrove/");
-    assert.equal(res?.dmUrl, "https://ig.me/m/recessgrove");
+    assert.equal(res?.dmUrl, "https://www.instagram.com/m/recessgrove");
   });
 
   it("3. normalizes full instagram URL without double prefixing", () => {
@@ -25,13 +25,13 @@ describe("Bug 2: Instagram URL and Handle Normalization", () => {
     assert.notEqual(res1, null);
     assert.equal(res1?.handle, "recessgrove");
     assert.equal(res1?.profileUrl, "https://www.instagram.com/recessgrove/");
-    assert.equal(res1?.dmUrl, "https://ig.me/m/recessgrove");
+    assert.equal(res1?.dmUrl, "https://www.instagram.com/m/recessgrove");
 
     const res2 = normalizeInstagram("https://www.instagram.com/recessgrove");
     assert.notEqual(res2, null);
     assert.equal(res2?.handle, "recessgrove");
     assert.equal(res2?.profileUrl, "https://www.instagram.com/recessgrove/");
-    assert.equal(res2?.dmUrl, "https://ig.me/m/recessgrove");
+    assert.equal(res2?.dmUrl, "https://www.instagram.com/m/recessgrove");
   });
 
   it("4. normalizes URL with trailing slash, query params, and hashes", () => {
@@ -39,7 +39,7 @@ describe("Bug 2: Instagram URL and Handle Normalization", () => {
     assert.notEqual(res, null);
     assert.equal(res?.handle, "recessgrove");
     assert.equal(res?.profileUrl, "https://www.instagram.com/recessgrove/");
-    assert.equal(res?.dmUrl, "https://ig.me/m/recessgrove");
+    assert.equal(res?.dmUrl, "https://www.instagram.com/m/recessgrove");
   });
 
   it("5. normalizes malformed double URL from existing stored data", () => {
@@ -47,7 +47,7 @@ describe("Bug 2: Instagram URL and Handle Normalization", () => {
     assert.notEqual(res, null);
     assert.equal(res?.handle, "recessgrove");
     assert.equal(res?.profileUrl, "https://www.instagram.com/recessgrove/");
-    assert.equal(res?.dmUrl, "https://ig.me/m/recessgrove");
+    assert.equal(res?.dmUrl, "https://www.instagram.com/m/recessgrove");
   });
 
   it("6. rejects reserved Instagram paths, numeric-only handles, and bare homepages", () => {
@@ -86,9 +86,9 @@ describe("Bug 2: Instagram URL and Handle Normalization", () => {
     assert.equal(ig?.profileUrl, "https://www.instagram.com/recessgrove/");
   });
 
-  it("8. InstagramForm generates correct ig.me DM URL", () => {
+  it("8. InstagramForm generates correct instagram.com/m DM URL", () => {
     const ig = normalizeInstagram("https://www.instagram.com/recessgrove/");
-    assert.equal(ig?.dmUrl, "https://ig.me/m/recessgrove");
+    assert.equal(ig?.dmUrl, "https://www.instagram.com/m/recessgrove");
   });
 
   it("9 & 10 & 11. Open Instagram + Copy Message behavior simulation", async () => {
@@ -102,9 +102,9 @@ describe("Bug 2: Instagram URL and Handle Normalization", () => {
     const handle = normalized!.handle;
     assert.equal(handle, "recessgrove");
 
-    // 3. Construct ig.me DM URL
+    // 3. Construct direct DM URL
     const dmUrl = normalized!.dmUrl;
-    assert.equal(dmUrl, "https://ig.me/m/recessgrove");
+    assert.equal(dmUrl, "https://www.instagram.com/m/recessgrove");
 
     // 4 & 5. Copy message to clipboard + window.open simulation
     let openedUrl: string | null = null;
@@ -122,7 +122,7 @@ describe("Bug 2: Instagram URL and Handle Normalization", () => {
     // Success path
     fakeWindowOpen(dmUrl);
     await fakeClipboardWrite(message);
-    assert.equal(openedUrl, "https://ig.me/m/recessgrove");
+    assert.equal(openedUrl, "https://www.instagram.com/m/recessgrove");
     assert.equal(copiedText, message);
 
     // 11. Clipboard failure still opens Instagram
@@ -138,7 +138,7 @@ describe("Bug 2: Instagram URL and Handle Normalization", () => {
     } catch {
       copyError = true;
     }
-    assert.equal(openedUrl, "https://ig.me/m/recessgrove");
+    assert.equal(openedUrl, "https://www.instagram.com/m/recessgrove");
     assert.equal(copyError, true);
   });
 

@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode, type ReactElement } from "react";
 import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
@@ -9,6 +9,8 @@ import { GroundSurface } from "@/components/mast/landing/GroundSurface";
 import { GoldFlow } from "@/components/mast/landing/GoldFlow";
 import { useGlobeBox } from "@/hooks/use-globe-box";
 import { useHeroVisualSync } from "@/hooks/use-hero-visual-sync";
+import { useMe } from "@/hooks/use-mast-api";
+import { isDesktopApp } from "@/lib/desktop";
 import {
   Sparkles, Users, Zap, ShieldCheck,
   CheckCircle2, ArrowRight, BarChart3,
@@ -32,6 +34,20 @@ export const Route = createFileRoute("/")({
 });
 
 function LandingPage() {
+  const navigate = useNavigate();
+  const inDesktop = isDesktopApp();
+  const { data: auth, isLoading: authLoading } = useMe(inDesktop);
+
+  // Desktop users launching or auto-relaunching after an update should land
+  // directly in their workspace if a valid session already exists.
+  useEffect(() => {
+    if (!inDesktop || authLoading || !auth?.user) return;
+    void navigate({
+      to: auth.user.onboardingCompleted ? "/dashboard" : "/onboarding",
+      replace: true,
+    });
+  }, [inDesktop, authLoading, auth?.user, navigate]);
+
   return (
     <>
       {/* Global night world foundation: continuous deep space across all sections */}

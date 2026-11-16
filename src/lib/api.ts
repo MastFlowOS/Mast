@@ -967,6 +967,58 @@ async function clearRejectedSession(
   return { sessionPreserved: false };
 }
 
+function isTransientRefreshError(error: { status?: number; name?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false;
+  if (error.name === "AuthRetryableFetchError") return true;
+  if (typeof error.status === "number" && (error.status === 0 || error.status >= 500)) return true;
+  const msg = (error.message ?? "").toLowerCase();
+  return msg.includes("failed to fetch") || msg.includes("network") || msg.includes("timeout");
+}
+
+async function recoverSessionOnAuthRejection(
+  session: { access_token: string; expires_at?: number; user: any },
+  error: any,
+) {
+  if (!supabase) return { session: null, profile: null, activeProfile: null };
+
+  console.warn("[Mast:getMe] profiles query rejected (stale/expired JWT); attempting session refresh before clearing.", {
+    message: error?.message,
+    code: error?.code,
+  });
+
+  const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+  if (refreshError || !refreshed?.session) {
+    if (isTransientRefreshError(refreshError)) {
+      console.warn("[Mast:getMe] session refresh failed transiently — preserving local session.", {
+        message: refreshError?.message,
+        status: (refreshError as any)?.status,
+      });
+      throw new ApiError(503, refreshError?.message || "Temporary network error refreshing session", refreshError);
+    }
+    await clearRejectedSession(session, error);
+    return { session: null, profile: null, activeProfile: null };
+  }
+
+  invalidateProfileCache();
+  try {
+    const res = await fetchProfileWithDedup(refreshed.session.user.id);
+    return { session: refreshed.session, profile: res.profile, activeProfile: res.activeProfile };
+  } catch (retryError: any) {
+    if (retryError?.code === "PGRST116") {
+      return { session: refreshed.session, profile: null, activeProfile: null };
+    }
+    if (isFutureIatRejection(retryError)) {
+      logAuthRejectionDiagnostics(refreshed.session, retryError);
+      throw new ApiError(FUTURE_IAT_ERROR_STATUS, FUTURE_IAT_ERROR_MESSAGE, retryError);
+    }
+    if (isAuthRejection(retryError)) {
+      await clearRejectedSession(refreshed.session, retryError);
+      return { session: null, profile: null, activeProfile: null };
+    }
+    return { session: refreshed.session, profile: null, activeProfile: null };
+  }
+}
+
 async function enforceCapability(featureId: FeatureId): Promise<void> {
   const userId = await requireUserId();
   const { data: profile } = await supabase!
@@ -1141,34 +1193,39 @@ export async function getMe() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return { user: null };
 
+  let activeSession = session;
   let profile: any = null;
   let activeProfile: any = null;
 
   try {
-    const res = await fetchProfileWithDedup(session.user.id);
+    const res = await fetchProfileWithDedup(activeSession.user.id);
     profile = res.profile;
     activeProfile = res.activeProfile;
     console.log("[Mast:getMe] profiles query → success", { plan: profile?.subscription_plan ?? "none" });
   } catch (error: any) {
     if (error.code === "PGRST116") {
-      console.warn("[Mast:getMe] profiles query → no row found (PGRST116).", { userId: session.user.id });
+      console.warn("[Mast:getMe] profiles query → no row found (PGRST116).", { userId: activeSession.user.id });
     } else if (isFutureIatRejection(error)) {
-      logAuthRejectionDiagnostics(session, error);
+      logAuthRejectionDiagnostics(activeSession, error);
       console.error(
         "[Mast:getMe] profiles query → PGRST303, session preserved, surfacing error (no retry, no sign-out)",
         { message: error.message, code: error.code },
       );
       throw new ApiError(FUTURE_IAT_ERROR_STATUS, FUTURE_IAT_ERROR_MESSAGE, error);
     } else if (isAuthRejection(error)) {
-      console.error("[Mast:getMe] profiles query → auth rejected, clearing session", { message: error.message, code: error.code });
-      await clearRejectedSession(session, error);
-      return { user: null };
+      const recovered = await recoverSessionOnAuthRejection(activeSession, error);
+      if (!recovered.session) {
+        return { user: null };
+      }
+      activeSession = recovered.session;
+      profile = recovered.profile;
+      activeProfile = recovered.activeProfile;
     } else {
       console.error("[Mast:getMe] profiles query → error", { message: error.message, code: error.code });
     }
   }
 
-  const emailConfirmed = session.user.email_confirmed_at ? true : false;
+  const emailConfirmed = activeSession.user.email_confirmed_at ? true : false;
   if (!activeProfile && profile) {
     activeProfile = await checkAndResetUsage(profile);
   }
@@ -1180,9 +1237,9 @@ export async function getMe() {
   const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
 
   const user: AuthUser = {
-    id: session.user.id,
-    fullName: activeProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.fullName || "",
-    email: session.user.email || "",
+    id: activeSession.user.id,
+    fullName: activeProfile?.full_name || activeSession.user.user_metadata?.full_name || activeSession.user.user_metadata?.fullName || "",
+    email: activeSession.user.email || "",
     plan: resolvedPlan,
     subscriptionStatus: "active",
     creditsLimit: monthlyLimit,

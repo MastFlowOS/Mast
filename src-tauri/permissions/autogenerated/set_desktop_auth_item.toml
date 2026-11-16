@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-desktop-auth-item"
+description = "Enables the set_desktop_auth_item command without any pre-configured scope."
+commands.allow = ["set_desktop_auth_item"]
+
+[[permission]]
+identifier = "deny-set-desktop-auth-item"
+description = "Denies the set_desktop_auth_item command without any pre-configured scope."
+commands.deny = ["set_desktop_auth_item"]

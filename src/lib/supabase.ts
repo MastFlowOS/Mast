@@ -1,4 +1,10 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient, type SupportedStorage } from "@supabase/supabase-js";
+import {
+  getDesktopAuthItem,
+  isDesktopApp,
+  removeDesktopAuthItem,
+  setDesktopAuthItem,
+} from "@/lib/desktop";
 
 /**
  * Browser client. Uses the public anon key and is safe to ship to the
@@ -54,6 +60,74 @@ export const supabaseConfigError: string | null = (() => {
   return null;
 })();
 
+function readLocalStorageItem(key: string): string | null {
+  try {
+    return typeof window !== "undefined" && window.localStorage
+      ? window.localStorage.getItem(key)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorageItem(key: string, value: string): void {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.setItem(key, value);
+    }
+  } catch {
+    // Ignore localStorage quota/security errors
+  }
+}
+
+function deleteLocalStorageItem(key: string): void {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore localStorage security errors
+  }
+}
+
+export function createDesktopAwareAuthStorage(): SupportedStorage | undefined {
+  if (typeof window === "undefined") return undefined;
+
+  if (!isDesktopApp()) {
+    return {
+      getItem: (key) => readLocalStorageItem(key),
+      setItem: (key, value) => writeLocalStorageItem(key, value),
+      removeItem: (key) => deleteLocalStorageItem(key),
+    };
+  }
+
+  return {
+    async getItem(key: string): Promise<string | null> {
+      // Prefer the Tauri disk-backed store so sessions captured across OAuth
+      // origins (e.g. Site URL redirect) immediately hydrate http://tauri.localhost.
+      const diskValue = await getDesktopAuthItem(key);
+      if (diskValue !== null) {
+        writeLocalStorageItem(key, diskValue);
+        return diskValue;
+      }
+
+      const localValue = readLocalStorageItem(key);
+      if (localValue !== null) {
+        await setDesktopAuthItem(key, localValue);
+      }
+      return localValue;
+    },
+    async setItem(key: string, value: string): Promise<void> {
+      writeLocalStorageItem(key, value);
+      await setDesktopAuthItem(key, value);
+    },
+    async removeItem(key: string): Promise<void> {
+      deleteLocalStorageItem(key);
+      await removeDesktopAuthItem(key);
+    },
+  };
+}
+
 // null when misconfigured, so every consumer must guard with `if (!supabase)`
 // before use — the pattern already followed throughout src/lib/api.ts and
 // the auth-related route components.
@@ -64,6 +138,7 @@ export let supabase: SupabaseClient | null =
           persistSession: true,
           autoRefreshToken: true,
           detectSessionInUrl: true,
+          storage: createDesktopAwareAuthStorage(),
         },
       })
     : null;

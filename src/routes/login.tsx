@@ -6,6 +6,7 @@ import { ApiError } from "@/lib/api";
 import { useLogin, useMe, useSignup } from "@/hooks/use-mast-api";
 import { Eye, EyeOff } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { isDesktopApp } from "@/lib/desktop";
 import { useQueryClient } from "@tanstack/react-query";
 
 export const Route = createFileRoute("/login")({
@@ -106,6 +107,22 @@ export function AuthShell({ mode }: { mode: "login" | "signup" }) {
     }
     setIsGooglePending(true);
     try {
+      // Desktop WebView2 runs Google OAuth in the main window so Tauri can
+      // capture any Site-URL fallback redirect back onto http://tauri.localhost.
+      if (isDesktopApp()) {
+        const { error: desktopOAuthErr } = await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: {
+            redirectTo: `${window.location.origin}/auth/callback`,
+            queryParams: {
+              prompt: "select_account",
+            },
+          },
+        });
+        if (desktopOAuthErr) throw desktopOAuthErr;
+        return;
+      }
+
       // 1. Attempt Popup OAuth
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",

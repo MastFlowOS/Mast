@@ -7,6 +7,10 @@ fn main() {
             "stop_worker",
             "update_worker_token",
             "set_active_plan",
+            "get_desktop_auth_item",
+            "set_desktop_auth_item",
+            "remove_desktop_auth_item",
+            "return_to_desktop_app",
         ]),
     );
 

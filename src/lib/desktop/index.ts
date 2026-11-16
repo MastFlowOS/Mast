@@ -175,3 +175,41 @@ export async function setActiveDesktopPlan(planId: string | null): Promise<void>
     console.warn("Failed to set active discovery plan in desktop host:", error);
   }
 }
+
+/**
+ * Reads an auth storage item from the Tauri user-scoped desktop store
+ * (%LOCALAPPDATA%\MAST\auth-storage.json). Returns null outside Tauri or on error.
+ */
+export async function getDesktopAuthItem(key: string): Promise<string | null> {
+  if (!isDesktopApp() || !key) return null;
+  try {
+    return await invoke<string | null>("get_desktop_auth_item", { key });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persists an auth storage item to the Tauri user-scoped desktop store so
+ * sessions survive origin hops and installer updates cleanly.
+ */
+export async function setDesktopAuthItem(key: string, value: string): Promise<void> {
+  if (!isDesktopApp() || !key) return;
+  try {
+    await invoke("set_desktop_auth_item", { key, value });
+  } catch {
+    // Non-fatal: localStorage copy remains intact
+  }
+}
+
+/**
+ * Deletes an auth storage item from the Tauri user-scoped desktop store on sign-out.
+ */
+export async function removeDesktopAuthItem(key: string): Promise<void> {
+  if (!isDesktopApp() || !key) return;
+  try {
+    await invoke("remove_desktop_auth_item", { key });
+  } catch {
+    // Non-fatal: localStorage removal already ran
+  }
+}

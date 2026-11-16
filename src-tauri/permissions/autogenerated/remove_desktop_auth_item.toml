@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remove-desktop-auth-item"
+description = "Enables the remove_desktop_auth_item command without any pre-configured scope."
+commands.allow = ["remove_desktop_auth_item"]
+
+[[permission]]
+identifier = "deny-remove-desktop-auth-item"
+description = "Denies the remove_desktop_auth_item command without any pre-configured scope."
+commands.deny = ["remove_desktop_auth_item"]

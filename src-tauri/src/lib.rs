@@ -22,6 +22,8 @@ pub struct AppState {
     pub status: Arc<Mutex<String>>,
     pub last_error: Arc<Mutex<Option<String>>>,
     pub recent_logs: Arc<Mutex<Vec<String>>>,
+    pub desktop_origin: Arc<Mutex<Option<String>>>,
+    pub auth_storage_lock: Arc<Mutex<()>>,
 }
 
 fn sanitize_log_line(raw: &str) -> String {
@@ -156,6 +158,142 @@ fn remove_active_plan_file() {
     let plan_file = dir.join("active_plan.txt");
     let _ = std::fs::remove_file(plan_file);
 }
+
+fn read_auth_storage_map(path: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return std::collections::BTreeMap::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn write_auth_storage_map(
+    path: &std::path::Path,
+    map: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to prepare auth dir: {}", e))?;
+    }
+    let serialized = serde_json::to_string(map).map_err(|e| format!("Failed to serialize auth map: {}", e))?;
+    std::fs::write(path, serialized).map_err(|e| format!("Failed to write auth store: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+fn get_auth_storage_item_at(
+    lock: &Mutex<()>,
+    path: &std::path::Path,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let _guard = lock.lock().map_err(|_| "Auth storage lock poisoned".to_string())?;
+    Ok(read_auth_storage_map(path).get(key).cloned())
+}
+
+fn set_auth_storage_item_at(
+    lock: &Mutex<()>,
+    path: &std::path::Path,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    let _guard = lock.lock().map_err(|_| "Auth storage lock poisoned".to_string())?;
+    let mut map = read_auth_storage_map(path);
+    map.insert(key.to_string(), value.to_string());
+    write_auth_storage_map(path, &map)
+}
+
+fn remove_auth_storage_item_at(
+    lock: &Mutex<()>,
+    path: &std::path::Path,
+    key: &str,
+) -> Result<(), String> {
+    let _guard = lock.lock().map_err(|_| "Auth storage lock poisoned".to_string())?;
+    let mut map = read_auth_storage_map(path);
+    map.remove(key);
+    if map.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return Ok(());
+    }
+    write_auth_storage_map(path, &map)
+}
+
+fn is_desktop_local_host(host: &str) -> bool {
+    matches!(host, "tauri.localhost" | "localhost" | "127.0.0.1")
+}
+
+fn is_remote_oauth_redirect_host(host: &str) -> bool {
+    host == "mast-flow.vercel.app"
+        || host == "mast-flow.com"
+        || host.ends_with(".mast-flow.com")
+}
+
+fn default_desktop_origin() -> &'static str {
+    #[cfg(windows)]
+    {
+        "http://tauri.localhost"
+    }
+    #[cfg(not(windows))]
+    {
+        "tauri://localhost"
+    }
+}
+
+fn build_desktop_return_url(base_origin: &str, path: Option<&str>) -> Result<tauri::Url, String> {
+    let target_path = path
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .unwrap_or("/dashboard");
+    if !target_path.starts_with('/') || target_path.starts_with("//") {
+        return Err("Desktop navigation path must be a relative route starting with '/'.".to_string());
+    }
+    let full = format!("{}{}", base_origin.trim_end_matches('/'), target_path);
+    tauri::Url::parse(&full).map_err(|e| format!("Invalid desktop return URL: {}", e))
+}
+
+const REMOTE_OAUTH_BRIDGE_JS: &str = r#"(function () {
+  if (window.__mastDesktopOAuthBridgeStarted) return;
+  window.__mastDesktopOAuthBridgeStarted = true;
+  var deadline = Date.now() + 10000;
+  function findSessionEntry() {
+    try {
+      for (var i = 0; i < window.localStorage.length; i++) {
+        var k = window.localStorage.key(i);
+        if (!k || !/^sb-[a-z0-9-]+-auth-token$/i.test(k)) continue;
+        var v = window.localStorage.getItem(k);
+        if (!v) continue;
+        var parsed = JSON.parse(v);
+        if (parsed && parsed.access_token && parsed.refresh_token) {
+          return { key: k, value: v };
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+  async function pump() {
+    var entry = findSessionEntry();
+    if (entry && window.__TAURI_INTERNALS__ && typeof window.__TAURI_INTERNALS__.invoke === "function") {
+      try {
+        await window.__TAURI_INTERNALS__.invoke("set_desktop_auth_item", {
+          key: entry.key,
+          value: entry.value,
+        });
+        try {
+          window.localStorage.removeItem(entry.key);
+        } catch (_) {}
+        await window.__TAURI_INTERNALS__.invoke("return_to_desktop_app", {
+          path: "/dashboard",
+        });
+        return;
+      } catch (_) {}
+    }
+    if (Date.now() < deadline) {
+      window.setTimeout(pump, 150);
+    }
+  }
+  void pump();
+})();"#;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedWorker {
@@ -605,6 +743,51 @@ fn stop_worker(state: State<AppState>) -> Result<WorkerStatus, String> {
     })
 }
 
+#[tauri::command]
+fn get_desktop_auth_item(state: State<AppState>, key: String) -> Result<Option<String>, String> {
+    if key.trim().is_empty() {
+        return Ok(None);
+    }
+    let path = get_mast_data_dir().join("auth-storage.json");
+    get_auth_storage_item_at(&state.auth_storage_lock, &path, &key)
+}
+
+#[tauri::command]
+fn set_desktop_auth_item(state: State<AppState>, key: String, value: String) -> Result<(), String> {
+    if key.trim().is_empty() {
+        return Err("Auth storage key cannot be empty".to_string());
+    }
+    let path = get_mast_data_dir().join("auth-storage.json");
+    set_auth_storage_item_at(&state.auth_storage_lock, &path, &key, &value)
+}
+
+#[tauri::command]
+fn remove_desktop_auth_item(state: State<AppState>, key: String) -> Result<(), String> {
+    if key.trim().is_empty() {
+        return Ok(());
+    }
+    let path = get_mast_data_dir().join("auth-storage.json");
+    remove_auth_storage_item_at(&state.auth_storage_lock, &path, &key)
+}
+
+#[tauri::command]
+fn return_to_desktop_app(
+    webview: tauri::Webview,
+    state: State<AppState>,
+    path: Option<String>,
+) -> Result<(), String> {
+    let base_origin = state
+        .desktop_origin
+        .lock()
+        .map_err(|_| "Desktop origin lock poisoned".to_string())?
+        .clone()
+        .unwrap_or_else(|| default_desktop_origin().to_string());
+    let target_url = build_desktop_return_url(&base_origin, path.as_deref())?;
+    webview
+        .navigate(target_url)
+        .map_err(|e| format!("Failed to return to desktop app: {}", e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState {
@@ -612,6 +795,8 @@ pub fn run() {
         status: Arc::new(Mutex::new("stopped".to_string())),
         last_error: Arc::new(Mutex::new(None)),
         recent_logs: Arc::new(Mutex::new(Vec::new())),
+        desktop_origin: Arc::new(Mutex::new(None)),
+        auth_storage_lock: Arc::new(Mutex::new(())),
     };
 
     tauri::Builder::default()
@@ -625,13 +810,34 @@ pub fn run() {
             start_worker,
             stop_worker,
             update_worker_token,
-            set_active_plan
+            set_active_plan,
+            get_desktop_auth_item,
+            set_desktop_auth_item,
+            remove_desktop_auth_item,
+            return_to_desktop_app
         ])
-        // Temporary diagnostic: print every page-load URL so we can determine whether
-        // the webview starts on localhost and later navigates to a remote origin.
-        .on_page_load(|_webview, payload| {
+        .on_page_load(|webview, payload| {
+            let url = payload.url();
             if cfg!(debug_assertions) {
-                println!("[MAST PAGE LOAD] event={:?} url={}", payload.event(), payload.url());
+                println!("[MAST PAGE LOAD] event={:?} url={}", payload.event(), url);
+            }
+
+            if let Some(host) = url.host_str() {
+                let host_lower = host.to_lowercase();
+                if is_desktop_local_host(&host_lower) {
+                    let origin = match url.port() {
+                        Some(port) => format!("{}://{}:{}", url.scheme(), host_lower, port),
+                        None => format!("{}://{}", url.scheme(), host_lower),
+                    };
+                    let state = webview.state::<AppState>();
+                    if let Ok(mut guard) = state.desktop_origin.lock() {
+                        *guard = Some(origin);
+                    };
+                } else if payload.event() == tauri::webview::PageLoadEvent::Finished
+                    && is_remote_oauth_redirect_host(&host_lower)
+                {
+                    let _ = webview.eval(REMOTE_OAUTH_BRIDGE_JS);
+                }
             }
         })
         .on_window_event(|window, event| {
@@ -701,6 +907,10 @@ mod tests {
             "start_worker",
             "stop_worker",
             "update_worker_token",
+            "get_desktop_auth_item",
+            "set_desktop_auth_item",
+            "remove_desktop_auth_item",
+            "return_to_desktop_app",
         ];
 
         for cmd in required_commands {
@@ -761,5 +971,44 @@ mod tests {
         assert!(!sanitized.contains("eyJhbGciOiJIUzI1NiJ9"));
         assert!(sanitized.contains("[REDACTED_AUTH_TOKEN]"));
         assert!(sanitized.contains("[REDACTED_JWT]"));
+    }
+
+    #[test]
+    fn test_desktop_auth_storage_roundtrip() {
+        let lock = Mutex::new(());
+        let unique = format!(
+            "mast-auth-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        let path = dir.join("auth-storage.json");
+
+        assert_eq!(get_auth_storage_item_at(&lock, &path, "sb-test-auth-token").unwrap(), None);
+        set_auth_storage_item_at(&lock, &path, "sb-test-auth-token", "{\"access_token\":\"a\"}").unwrap();
+        assert_eq!(
+            get_auth_storage_item_at(&lock, &path, "sb-test-auth-token").unwrap(),
+            Some("{\"access_token\":\"a\"}".to_string())
+        );
+
+        remove_auth_storage_item_at(&lock, &path, "sb-test-auth-token").unwrap();
+        assert_eq!(get_auth_storage_item_at(&lock, &path, "sb-test-auth-token").unwrap(), None);
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_desktop_return_url_and_host_helpers() {
+        assert!(is_desktop_local_host("tauri.localhost"));
+        assert!(is_desktop_local_host("localhost"));
+        assert!(is_remote_oauth_redirect_host("mast-flow.vercel.app"));
+        assert!(is_remote_oauth_redirect_host("app.mast-flow.com"));
+        assert!(!is_remote_oauth_redirect_host("evil.example.com"));
+
+        let ok_url = build_desktop_return_url("http://tauri.localhost", Some("/dashboard")).unwrap();
+        assert_eq!(ok_url.as_str(), "http://tauri.localhost/dashboard");
+        assert!(build_desktop_return_url("http://tauri.localhost", Some("//evil.com")).is_err());
     }
 }

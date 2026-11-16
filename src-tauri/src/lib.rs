@@ -428,6 +428,9 @@ fn start_worker(
         }
     }
 
+    // Clear any leftover orphaned mast-desktop-worker.exe before spawning a fresh one.
+    terminate_orphaned_workers();
+
     let resolved = resolve_worker(&app)?;
     let mut cmd = Command::new(&resolved.executable);
     cmd.current_dir(&resolved.work_dir);
@@ -551,6 +554,17 @@ fn set_active_plan(plan_id: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
+fn terminate_orphaned_workers() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/IM", "mast-desktop-worker.exe"])
+            .creation_flags(0x08000000)
+            .status();
+    }
+}
+
 fn terminate_child_process_tree(child: &mut Child) {
     #[cfg(windows)]
     {
@@ -566,16 +580,21 @@ fn terminate_child_process_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
-#[tauri::command]
-fn stop_worker(state: State<AppState>) -> Result<WorkerStatus, String> {
+fn cleanup_worker_state(state: &AppState) {
     let mut child_guard = state.worker_child.lock().unwrap();
     if let Some(ref mut child) = *child_guard {
         terminate_child_process_tree(child);
     }
     *child_guard = None;
+    terminate_orphaned_workers();
     *state.status.lock().unwrap() = "stopped".to_string();
     remove_auth_token_file();
     remove_active_plan_file();
+}
+
+#[tauri::command]
+fn stop_worker(state: State<AppState>) -> Result<WorkerStatus, String> {
+    cleanup_worker_state(&state);
 
     Ok(WorkerStatus {
         is_running: false,
@@ -619,18 +638,19 @@ pub fn run() {
             match event {
                 tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
                     let state = window.state::<AppState>();
-                    let mut child_guard = state.worker_child.lock().unwrap();
-                    if let Some(ref mut child) = *child_guard {
-                        terminate_child_process_tree(child);
-                    }
-                    *child_guard = None;
-                    remove_auth_token_file();
+                    cleanup_worker_state(&state);
                 }
                 _ => {}
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<AppState>();
+                cleanup_worker_state(&state);
+            }
+        });
 }
 
 #[cfg(test)]

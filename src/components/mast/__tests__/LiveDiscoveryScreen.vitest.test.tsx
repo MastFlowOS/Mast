@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
+
+vi.mock("@/lib/supabaseAdmin", () => ({ supabaseAdmin: {} }));
+
 import { LiveDiscoveryScreen } from "../LiveDiscoveryScreen";
 import {
   createInitialLiveDiscoveryState,

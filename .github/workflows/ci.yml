@@ -41,9 +41,26 @@ jobs:
         run: npm run build
 
       - name: Frontend unit tests (Vitest)
+        env:
+          NODE_ENV: test
+          SUPABASE_URL: https://example-ci.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ci-test-service-role-key
+          SUPABASE_JWT_SECRET: ci-test-jwt-secret
+          DATABASE_URL: postgres://user:pass@localhost:5432/testdb
+          ALLOWED_ORIGIN: http://localhost:5173
+          VITE_SUPABASE_URL: https://example-ci.supabase.co
+          VITE_SUPABASE_ANON_KEY: ci-public-anon-token-for-vite-build-check-123456
+          VITE_API_BASE_URL: https://mast-production-4e64.up.railway.app
         run: npm run test
 
       - name: API & SMTP security tests
+        env:
+          NODE_ENV: test
+          SUPABASE_URL: https://example-ci.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ci-test-service-role-key
+          SUPABASE_JWT_SECRET: ci-test-jwt-secret
+          DATABASE_URL: postgres://user:pass@localhost:5432/testdb
+          ALLOWED_ORIGIN: http://localhost:5173
         run: npm run test:api
 
       - name: Desktop worker & Maps SPA unit tests

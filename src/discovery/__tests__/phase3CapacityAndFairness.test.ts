@@ -26,11 +26,11 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
       });
 
       try {
-        const result = trySharedPidAdmission(1, 4);
+        const result = trySharedPidAdmission(1, "area_worker");
         assert.equal(result.granted, false);
         assert.match(result.reason ?? "", /insufficient cgroup memory headroom/);
       } finally {
-        setMemoryCapacityForTesting(null);
+        setMemoryCapacityForTesting(undefined);
       }
     });
 
@@ -45,13 +45,13 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
       });
 
       try {
-        const result = trySharedPidAdmission(1, 4);
+        const result = trySharedPidAdmission(1, "area_worker");
         assert.equal(result.granted, true);
         if (result.granted) {
           result.release();
         }
       } finally {
-        setMemoryCapacityForTesting(null);
+        setMemoryCapacityForTesting(undefined);
       }
     });
 
@@ -77,22 +77,23 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
           enrichmentResult.release();
         }
       } finally {
-        setMemoryCapacityForTesting(null);
+        setMemoryCapacityForTesting(undefined);
       }
     });
 
     it("falls back to PID headroom when cgroup memory is unreadable/null", () => {
-      setMemoryCapacityForTesting(null);
-      __testing_sharedPidAdmission.setPidCapacity({ pidsMax: 1000, pidsCurrent: 100 });
+      setMemoryCapacityForTesting({ limitMb: null, currentMb: null });
+      __testing_sharedPidAdmission.setPidCapacity({ cgroupVersion: "v2", pidsMax: 1000, pidsCurrent: 100 });
 
       try {
         // Concurrency 1 under safe limit
-        const result = trySharedPidAdmission(1, 4);
+        const result = trySharedPidAdmission(1, "area_worker");
         assert.equal(result.granted, true);
         if (result.granted) {
           result.release();
         }
       } finally {
+        setMemoryCapacityForTesting(undefined);
         __testing_sharedPidAdmission.setPidCapacity(undefined);
       }
     });
@@ -120,6 +121,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
             rejected: 0,
             duplicates: 0,
             failed: false,
+            exhausted: false,
           };
         },
       });
@@ -127,7 +129,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
       assert.equal(poolResult.yieldedSlotsForFairness, true);
       assert.equal(poolResult.stoppedReason, "zero_yield_limit");
       assert.ok(poolResult.areasProcessed.length <= 4, "Stopped early to prevent holding slots");
-      assert.ok(poolResult.consecutiveZeroYieldCount >= 3);
+      assert.ok((poolResult.consecutiveZeroYieldCount ?? 0) >= 3);
     });
 
     it("resets consecutive zero-yield count when an area produces accepted leads", async () => {
@@ -146,9 +148,9 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
         runArea: async (area) => {
           // Area 2 produces a lead, resetting the consecutive zero-yield counter
           if (area === "area-2") {
-            return { discovered: 1, accepted: 1, rejected: 0, duplicates: 0, failed: false };
+            return { discovered: 1, accepted: 1, rejected: 0, duplicates: 0, failed: false, exhausted: false };
           }
-          return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, failed: false };
+          return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, failed: false, exhausted: false };
         },
       });
 
@@ -193,6 +195,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
           rejected: 0,
           duplicates: 0,
           failed: false,
+          exhausted: false,
         }),
       });
 
@@ -231,6 +234,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
           rejected: 0,
           duplicates: 0,
           failed: false,
+          exhausted: false,
         }),
       });
 
@@ -310,6 +314,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
               rejected: 0,
               duplicates: 0,
               failed: true,
+              exhausted: false,
               failureReason: "PANEL_VERIFICATION_FAILED",
               error: "Panel verification failed",
             };
@@ -321,6 +326,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
               rejected: 0,
               duplicates: 0,
               failed: true,
+              exhausted: false,
               failureReason: "WATCHDOG_TIMEOUT",
               error: "Watchdog timeout",
             };
@@ -331,6 +337,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
             rejected: 0,
             duplicates: 0,
             failed: true,
+            exhausted: false,
             error: "Chromium target crashed",
           };
         },
@@ -361,9 +368,9 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
         runArea: async (area, _slot, retryCount) => {
           processed.push(area);
           if (area === "area-1" && retryCount === 0) {
-            return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, failed: true, error: "transient network" };
+            return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, failed: true, exhausted: false, error: "transient network" };
           }
-          return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, failed: false };
+          return { discovered: 0, accepted: 0, rejected: 0, duplicates: 0, failed: false, exhausted: false };
         },
       });
 
@@ -381,7 +388,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
         claimNextArea: async () => "area-3",
         runArea: async (area) => {
           runOrder.push(area);
-          return { discovered: 2, accepted: 2, rejected: 0, duplicates: 0, failed: false };
+          return { discovered: 2, accepted: 2, rejected: 0, duplicates: 0, failed: false, exhausted: false };
         },
       });
 
@@ -416,6 +423,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
             rejected: 0,
             duplicates: 0,
             failed: true,
+            exhausted: false,
             failureReason: "PANEL_VERIFICATION_FAILED",
             error: "Panel verification failed",
           };
@@ -441,6 +449,7 @@ describe("Phase 3: Crash Resilience and Capacity Fairness", () => {
           rejected: 0,
           duplicates: 0,
           failed: false,
+          exhausted: false,
         }),
       });
 

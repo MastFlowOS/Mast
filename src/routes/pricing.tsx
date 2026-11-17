@@ -170,10 +170,10 @@ const tiers: Tier[] = [
 // Contact channel icon renderer
 function ContactChannelIcons({ channels }: { channels: string[] }) {
   const iconMap: Record<string, React.ReactNode> = {
-    email: <Mail key="email" className="size-4 text-sky-400" title="Business Email" />,
-    phone: <Phone key="phone" className="size-4 text-purple-400" title="Business Phone" />,
-    instagram: <Instagram key="instagram" className="size-4 text-pink-400" title="Instagram Profile" />,
-    website: <Globe2 key="website" className="size-4 text-teal-400" title="Business Website" />,
+    email: <span key="email" title="Business Email" aria-label="Business Email"><Mail className="size-4 text-sky-400" /></span>,
+    phone: <span key="phone" title="Business Phone" aria-label="Business Phone"><Phone className="size-4 text-purple-400" /></span>,
+    instagram: <span key="instagram" title="Instagram Profile" aria-label="Instagram Profile"><Instagram className="size-4 text-pink-400" /></span>,
+    website: <span key="website" title="Business Website" aria-label="Business Website"><Globe2 className="size-4 text-teal-400" /></span>,
   };
   return (
     <span className="inline-flex items-center gap-1.5 justify-center">

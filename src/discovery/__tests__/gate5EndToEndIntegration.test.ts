@@ -143,7 +143,7 @@ describe("MAST Phase 7.3 Gate 5 — End-to-End Integration & Regression Testing"
       assert.equal(earlyConsume.status, "CLICK_NOT_STARTED");
 
       // Transition claim to CLICK_STARTED via notifyClickStarted
-      const clickTrans = coordinator.notifyClickStarted(scoutId, requestId, claim1.claimToken, canonicalId1);
+      const clickTrans = coordinator.notifyClickStarted(scoutId, requestId, claim1.claimToken);
       assert.equal(clickTrans.status, "CLICK_STARTED");
 
       // Now candidate receipt can be consumed once
@@ -274,7 +274,7 @@ describe("MAST Phase 7.3 Gate 5 — End-to-End Integration & Regression Testing"
       assert.equal(prematureConsume.status, "CLICK_NOT_STARTED");
 
       // 5. Advance claim to CLICK_STARTED
-      const trans = coordinator.notifyClickStarted(scoutA, reqA, claimA.claimToken, canonicalA);
+      const trans = coordinator.notifyClickStarted(scoutA, reqA, claimA.claimToken);
       assert.equal(trans.status, "CLICK_STARTED");
 
       // 6. Successful single-use consumption
@@ -342,7 +342,6 @@ describe("MAST Phase 7.3 Gate 5 — End-to-End Integration & Regression Testing"
         receiptId: fallbackRes.receipt.receiptId,
         scoutId: scoutA,
         requestId: reqA,
-        cardUrl: validFallbackUrl,
       });
       assert.equal(clickFallback.success, true);
 

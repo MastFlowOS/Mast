@@ -27,7 +27,7 @@ import {
   cancelOpenCandidates,
   closeCandidateTerminal,
   createAreaProductivityState,
-} from "../areaProductivity.js";
+} from "./areaProductivity.js";
 
 function harness() {
   const state = createAreaProductivityState();

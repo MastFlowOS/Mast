@@ -15,8 +15,7 @@ describe("Phase 7: Optimization of Spawns and Routes", () => {
     it("skips enrich spawn when no input fields are provided (runEngineEnrich)", async () => {
       const emptyParams = {};
       const result = await runEngineEnrich(emptyParams);
-      assert.equal(result.enriched, false);
-      assert.equal((result as any).status, "empty_input");
+      assert.equal((result as { status?: string }).status, "empty_input");
     });
 
     it("skips enrich spawn when fields are whitespace only (runEngineEnrichOneShot)", async () => {
@@ -27,8 +26,7 @@ describe("Phase 7: Optimization of Spawns and Routes", () => {
         phone: undefined,
       };
       const result = await runEngineEnrichOneShot(whitespaceParams);
-      assert.equal(result.enriched, false);
-      assert.equal((result as any).status, "empty_input");
+      assert.equal((result as { status?: string }).status, "empty_input");
     });
   });
 

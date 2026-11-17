@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  node-and-python-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Python test dependencies
+        run: pip install -r mast-lead-engine/requirements.txt pytest pytest-asyncio
+
+      - name: Server build check
+        run: npm run build:server
+
+      - name: Client production build check
+        env:
+          VITE_SUPABASE_URL: https://example-ci.supabase.co
+          VITE_SUPABASE_ANON_KEY: ci-public-anon-token-for-vite-build-check-123456
+          VITE_API_BASE_URL: https://mast-production-4e64.up.railway.app
+        run: npm run build
+
+      - name: Frontend unit tests (Vitest)
+        run: npm run test
+
+      - name: API & SMTP security tests
+        run: npm run test:api
+
+      - name: Desktop worker & Maps SPA unit tests
+        run: pytest mast-lead-engine/tests/test_desktop_worker.py mast-lead-engine/tests/test_maps_scraper_spa_interaction_fix.py mast-lead-engine/tests/test_maps_scraper_return_to_results_bounded.py -q

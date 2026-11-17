@@ -21,6 +21,7 @@ import {
   generateDailyGoals,
   DailyGoalGenerationError,
   localDateKey,
+  planCan,
   planMatrix,
   reconcileDailyGoals,
   type BuildDailyGoalsInput,
@@ -414,7 +415,18 @@ test("17. start conversations and reconnect have independent predicates", () => 
 
 // ─── 18. Daily targets never exceed realistic available capacity ──────────────
 test("18. daily targets never exceed realistic available capacity", () => {
-  const s = input({ plan: "free", dailyDiscoverLimit: 12, dailyDiscoverUsed: 0 });
+  const base = input({ plan: "free", dailyDiscoverLimit: 12, dailyDiscoverUsed: 0 });
+  const s = {
+    plan: base.plan,
+    can: (f: Parameters<typeof planCan>[1]) => planCan(base.plan, f),
+    now: base.now,
+    dateKey: localDateKey(base.now),
+    leads: base.leads,
+    followups: base.followups,
+    dailyRemaining: Math.max(0, (base.dailyDiscoverLimit ?? 12) - (base.dailyDiscoverUsed ?? 0)),
+    monthlyRemaining: base.monthlyRemaining ?? null,
+    projectedDiscoveryYield: 0,
+  };
   const dTarget = discoverTarget(s);
   const aTarget = addRelationshipTarget(s);
   assert.ok(dTarget !== null && aTarget !== null);

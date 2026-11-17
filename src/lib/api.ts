@@ -1157,7 +1157,8 @@ export async function fetchProfileWithDedup(userId: string): Promise<{ profile: 
     return profileInFlight.promise;
   }
 
-  const promise = (async () => {
+  let promise!: Promise<{ profile: any; activeProfile: any }>;
+  promise = (async () => {
     try {
       console.log("[Mast:fetchProfileWithDedup] profiles query → request started", { userId });
       const { data: profile, error } = await supabase!

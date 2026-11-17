@@ -425,7 +425,7 @@ describe("ScoutProcessManager & Dynamic IPC Handshake (Gate 4)", () => {
       const parsed = session.processTerminatedLine(line);
       assert.equal(parsed.status, "CONFIRMED");
       assert.equal(session.isTerminationMessageReceived, true);
-      assert.equal(session.terminatedMessage?.nonce, identity.startupNonce);
+      assert.equal((session.terminatedMessage as { nonce?: string } | undefined)?.nonce, identity.startupNonce);
     });
 
     it("processTerminatedLine rejects malformed JSON", () => {

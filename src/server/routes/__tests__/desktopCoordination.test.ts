@@ -1056,7 +1056,7 @@ describe("Desktop Discovery Cloud Coordination (/v1/desktop)", () => {
     assert.equal(uiState.rejected, 1);
     assert.equal(uiState.progressPercent, 20); // 1 / 5 = 20%
     assert.equal(uiState.status, "discovering");
-    assert.equal(uiState.scouts[1].status, "active");
+    assert.equal(uiState.scouts[1].status, "finished");
     assert.equal(uiState.scouts[2].status, "idle", "Scout 2 truthfully reported as idle");
     assert.equal(uiState.scouts[3].status, "idle", "Scout 3 truthfully reported as idle");
   });

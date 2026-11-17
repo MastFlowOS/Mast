@@ -84,6 +84,7 @@ export default defineConfig({
     TanStackRouterVite({
       target: "react",
       autoCodeSplitting: true,
+      routeFileIgnorePattern: "\\.(vitest\\.)?test\\.",
     }),
     react(),
     tailwindcss(),

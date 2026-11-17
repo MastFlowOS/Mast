@@ -96,13 +96,17 @@ app.use(
 
       if (
         isConfigured ||
-        cleanOrigin.endsWith(".vercel.app") ||
+        /^https:\/\/mast-flow(?:-[a-z0-9-]+)*\.vercel\.app$/i.test(cleanOrigin) ||
+        /^https:\/\/(?:[a-z0-9-]+\.)*mast-flow\.com$/i.test(cleanOrigin) ||
+        cleanOrigin === "tauri://localhost" ||
+        cleanOrigin === "http://tauri.localhost" ||
+        cleanOrigin === "https://tauri.localhost" ||
         cleanOrigin.includes("localhost") ||
         cleanOrigin.includes("127.0.0.1")
       ) {
         return callback(null, true);
       }
-      return callback(null, configuredOrigins[0] || true);
+      return callback(null, false);
     },
     credentials: true,
   }),

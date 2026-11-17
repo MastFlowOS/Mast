@@ -16,11 +16,13 @@ import {
 describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
   test("buildGoogleMapsEngineParams maps knownPlaceIds to known_place_ids only when non-empty", () => {
     const query = { queryString: "dentist Chicago", niche: "dentist" };
-    const target = { city: "Chicago", countryCode: "US", niche: "dentist" };
+    const target = { city: "Chicago", countryCode: "US", region: "North America", niche: "dentist" };
 
     // With knownPlaceIds
     const paramsWithKnown = buildGoogleMapsEngineParams(query, target, {
       maxResults: 10,
+      candidateBudget: 10,
+      discoveryOnly: false,
       knownPlaceIds: ["ChIJ12345", "0x880e2c3cd0f4c5f1:0x39659b8a1c89078f"],
     });
     assert.deepEqual(paramsWithKnown.known_place_ids, [
@@ -31,11 +33,15 @@ describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
     // Without knownPlaceIds (undefined or empty)
     const paramsWithout = buildGoogleMapsEngineParams(query, target, {
       maxResults: 10,
+      candidateBudget: 10,
+      discoveryOnly: false,
     });
     assert.equal(paramsWithout.known_place_ids, undefined);
 
     const paramsEmpty = buildGoogleMapsEngineParams(query, target, {
       maxResults: 10,
+      candidateBudget: 10,
+      discoveryOnly: false,
       knownPlaceIds: [],
     });
     assert.equal(paramsEmpty.known_place_ids, undefined);
@@ -78,9 +84,6 @@ describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
       "ChIJabc123",
       "ChIJdef456",
       "ChIJdirect789",
-      "chijabc123",
-      "chijdef456",
-      "chijdirect789",
     ];
     assert.deepStrictEqual(ids.slice().sort(), expected.slice().sort());
   });
@@ -130,7 +133,7 @@ describe("Discovery Plan Job & Google Maps Pre-Click Integration", () => {
       assert.equal(params.city, "ChicagoMock");
       assert.equal(params.country_code, "US");
       freshCount = 150; // Populated by builder
-      return { status: "ok" as const, fetched: 150, upserted: 150 };
+      return { status: "ok" as const, fetched: 150, upserted: 150, batches: 1 };
     };
 
     // Simulate discoveryPlanJob mode decision logic

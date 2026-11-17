@@ -541,7 +541,7 @@ describe("Phase 2: Watchdog and Retry Alignment", () => {
     test("pythonBridge.ts fails closed immediately as WATCHDOG_TIMEOUT when remainingAreaBudgetMs is 0 or negative", async () => {
       let doneInfo: any;
       const gen = runEngineQuery(
-        { niche: "cafe", location: "NYC", limit: 5 },
+        { query: "cafe in NYC", niche: "cafe", city: "NYC", country: "US", max_results: 5 },
         undefined,
         (info) => {
           doneInfo = info;
@@ -562,7 +562,7 @@ describe("Phase 2: Watchdog and Retry Alignment", () => {
       // Also verify negative budget
       let negativeDoneInfo: any;
       const genNeg = runEngineQuery(
-        { niche: "cafe", location: "NYC", limit: 5 },
+        { query: "cafe in NYC", niche: "cafe", city: "NYC", country: "US", max_results: 5 },
         undefined,
         (info) => {
           negativeDoneInfo = info;
@@ -577,9 +577,9 @@ describe("Phase 2: Watchdog and Retry Alignment", () => {
       const provider = new GoogleMapsProvider();
       let doneInfo: any;
       const gen = provider.search(
-        { niche: "cafe", location: "NYC" },
-        { area: "Downtown" },
-        { requestId: "req-test-1", limit: 10, remainingAreaBudgetMs: -50 },
+        { niche: "cafe", queryString: "cafe in NYC" },
+        { city: "NYC", countryCode: "US", region: "North America", niche: "cafe", area: "Downtown" },
+        { requestId: "req-test-1", maxResults: 10, candidateBudget: 10, discoveryOnly: true, remainingAreaBudgetMs: -50 },
         undefined,
         (info) => {
           doneInfo = info;

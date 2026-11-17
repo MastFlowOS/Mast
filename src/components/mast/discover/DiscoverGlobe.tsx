@@ -9,7 +9,7 @@
  * fades out just past the equator.
  */
 import { useEffect, useState } from "react";
-import globeArtUrl from "@/assets/discover-globe.png";
+import globeArtUrl from "@/assets/discover-globe.webp";
 import { GLOBE_ART } from "./globeArt";
 
 // Artwork placement, in multiples of the planet's width (--g), so the planet

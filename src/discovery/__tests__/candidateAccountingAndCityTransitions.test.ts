@@ -69,17 +69,17 @@ test("Priority 2: cityTransitionFor maps RETURN_TO_RESULTS_FAILED to SCRAPER_FAI
 
 test("Priority 4: buildGoogleMapsEngineParams sets street and street_mode=true in street mode", () => {
   const streetParams = buildGoogleMapsEngineParams(
-    { query: "hvac in Chicago", niche: "hvac" },
-    { niche: "hvac", city: "Chicago", street: "Michigan Ave" },
-    { maxResults: 30, discoveryOnly: true },
+    { queryString: "hvac in Chicago", niche: "hvac" },
+    { niche: "hvac", city: "Chicago", countryCode: "US", region: "North America", street: "Michigan Ave" },
+    { maxResults: 30, candidateBudget: 30, discoveryOnly: true },
   );
   assert.equal(streetParams.street, "Michigan Ave");
   assert.equal(streetParams.street_mode, true);
 
   const areaParams = buildGoogleMapsEngineParams(
-    { query: "hvac in Chicago", niche: "hvac" },
-    { niche: "hvac", city: "Chicago", area: "Loop" },
-    { maxResults: 30, discoveryOnly: true },
+    { queryString: "hvac in Chicago", niche: "hvac" },
+    { niche: "hvac", city: "Chicago", countryCode: "US", region: "North America", area: "Loop" },
+    { maxResults: 30, candidateBudget: 30, discoveryOnly: true },
   );
   assert.equal(streetParams.street, "Michigan Ave");
   assert.equal(areaParams.street, undefined);

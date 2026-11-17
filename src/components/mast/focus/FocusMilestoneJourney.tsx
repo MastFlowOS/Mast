@@ -108,19 +108,19 @@ export function bezierToSvgPath(pts: [Point, Point, Point, Point]): string {
 // Background environment images matching the 4 time-of-day states
 export const PERIOD_IMAGES: Record<GreetingPeriod, { src: string; alt: string }> = {
   morning: {
-    src: "/images/focus/mountain-morning.png",
+    src: "/images/focus/mountain-morning.webp",
     alt: "Early morning mountain background with sunrise",
   },
   afternoon: {
-    src: "/images/focus/mountain-afternoon.png",
+    src: "/images/focus/mountain-afternoon.webp",
     alt: "Afternoon mountain background with daylight peaks",
   },
   evening: {
-    src: "/images/focus/mountain-evening.png",
+    src: "/images/focus/mountain-evening.webp",
     alt: "Evening sunset mountain background with warm orange sky",
   },
   night: {
-    src: "/images/focus/mountain-night.png",
+    src: "/images/focus/mountain-night.webp",
     alt: "Night mountain background with starry sky and moon",
   },
 };

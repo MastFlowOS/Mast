@@ -342,7 +342,7 @@ describe("MAST Phase 3: City-Wide Candidate Budget & Concurrency Integration", (
     assert.equal(budgetOutcome.terminationReason, "SUCCESS_CONSUMER_STOPPED");
     assert.equal(budgetOutcome.failureReason, undefined);
     assert.equal(budgetOutcome.schedulerReason, "SUCCESS_CONSUMER_STOPPED");
-    assert.notEqual(budgetOutcome.shouldRetry, true);
+    assert.notEqual((budgetOutcome as { shouldRetry?: boolean }).shouldRetry, true);
 
     // Strict distinction
     assert.notEqual(budgetOutcome.terminationReason, cancelOutcome.terminationReason);

@@ -550,7 +550,7 @@ async def test_multiple_m6qerb_candidates_finds_scrollable_feed():
     cand1 = _MockElement(attrs={"class": "m6QErb", "role": "feed"})
     async def eval_cand1(script, *_args):
         if "scrollHeight" in script:
-            return {"scrollHeight": 2000, "clientHeight": 600, "childCount": 10}
+            return {"scrollHeight": 2000, "clientHeight": 600, "childCount": 10, "role": "feed"}
         return None
     cand1.evaluate = eval_cand1
 
@@ -585,7 +585,7 @@ async def test_unrelated_headings_and_non_scrollable_containers_rejected():
     cand.evaluate = eval_cand
     valid, evidence = await ms._validate_panel_candidate(_MockPage(), cand, selector="div.m6QErb", strict=True)
     assert valid is False
-    assert "not scrollable" in evidence
+    assert "requires place anchors or role='feed'" in evidence
 
 
 # ==============================================================================
@@ -895,6 +895,7 @@ async def test_unopened_detail_panel_with_results_header_routes_to_waiting_for_d
             RunStats(),
             profiler=profiler,
         )
+        scraper.config.max_unopened_panel_retries_per_card = 0
         scraper._browser = object()
         scraper._limiter.acquire = lambda *_a, **_k: asyncio.sleep(0)
 

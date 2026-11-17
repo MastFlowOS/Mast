@@ -40,17 +40,24 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function resolveAssetFile(assetUrl: string): string {
+  const clean = assetUrl.replace(/^\//, "");
+  return clean.startsWith("src/")
+    ? path.join(process.cwd(), clean)
+    : path.join(process.cwd(), "public", clean);
+}
+
 describe("nicheImages", () => {
   it("maps every niche to a distinct, existing file", () => {
     const urls = NICHES.map(nicheImage);
     expect(new Set(urls).size).toBe(NICHES.length);
     for (const u of urls) {
-      expect(fs.existsSync(path.join(process.cwd(), "public", u))).toBe(true);
+      expect(fs.existsSync(resolveAssetFile(u))).toBe(true);
     }
   });
   it("falls back for unknown niches", () => {
     expect(nicheImage("Not A Niche")).toBe(NICHE_IMAGE_FALLBACK);
-    expect(fs.existsSync(path.join(process.cwd(), "public", NICHE_IMAGE_FALLBACK))).toBe(true);
+    expect(fs.existsSync(resolveAssetFile(NICHE_IMAGE_FALLBACK))).toBe(true);
   });
 });
 

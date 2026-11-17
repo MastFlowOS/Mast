@@ -1045,7 +1045,7 @@ function ImportExportPage() {
                               {LEAD_FIELDS.map((field) => (
                                 <SelectItem key={field.key} value={field.key}>
                                   {field.label}
-                                  {field.required ? " *" : ""}
+                                  {"required" in field && field.required ? " *" : ""}
                                 </SelectItem>
                               ))}
                             </SelectContent>

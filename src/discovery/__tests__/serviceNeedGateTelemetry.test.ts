@@ -409,8 +409,8 @@ describe("Phase 2 Service-Need Gate Telemetry Integration", () => {
         seo: {
           has_title: true,
           has_meta_description: true,
-          title: "Artisan Roasters - Fresh Daily",
-          meta_description: "Finest roasted coffee beans and cafe specialties.",
+          title_length: 30,
+          meta_description_length: 48,
         },
       });
       recordServiceNeedGateObservation(enrichedLead, defaultCtx, "biz_enriched_real");

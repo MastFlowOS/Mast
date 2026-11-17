@@ -908,6 +908,7 @@ class DesktopWorker:
                 nonlocal batch_index, exhausted, termination_reason, task_status, task_error, consecutive_duplicates, consecutive_rejections
                 batch_buffer: List[dict] = []
                 last_flush_time = time.monotonic()
+                consumed = 0
 
                 async def _flush_current_buffer() -> bool:
                     nonlocal batch_index, task_status, task_error, termination_reason, last_flush_time, consecutive_duplicates, consecutive_rejections
@@ -1019,6 +1020,7 @@ class DesktopWorker:
                                 termination_reason = "CANCELLED"
                         break
 
+                    consumed += 1
                     batch_buffer.append(candidate)
 
                     # Flush criteria:
@@ -1028,7 +1030,7 @@ class DesktopWorker:
                     should_flush = (
                         (batch_index == 0 and len(batch_buffer) >= 1)
                         or len(batch_buffer) >= self.batch_size
-                        or (metrics["discovered"] >= candidate_budget)
+                        or (consumed >= candidate_budget)
                         or (metrics["accepted"] + len(batch_buffer) >= candidate_budget)
                     )
 
@@ -1037,7 +1039,7 @@ class DesktopWorker:
                         if not ok:
                             break
 
-                    if metrics["accepted"] >= candidate_budget or metrics["discovered"] >= candidate_budget:
+                    if metrics["accepted"] >= candidate_budget or consumed >= candidate_budget:
                         log.info(
                             "Task %s reached candidate budget %d (accepted=%d, discovered=%d)",
                             task_id,

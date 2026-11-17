@@ -496,7 +496,7 @@ describe("LeftSidebar — Lead Details Panel Enhancements", () => {
         { id: "act-4", leadId: mockLead.id, type: "call_completed", timestamp: "2026-03-01T12:00:00Z", content: "Phone call completed #4" },
         { id: "act-5", leadId: mockLead.id, type: "followup_scheduled", timestamp: "2026-03-01T11:00:00Z", content: "Follow-up scheduled #5" },
         { id: "act-6", leadId: mockLead.id, type: "opportunity_discovered", timestamp: "2026-03-01T10:00:00Z", content: "Discovered #6" },
-        { id: "act-7", leadId: mockLead.id, type: "lead_created", timestamp: "2026-03-01T09:00:00Z", content: "Created #7" },
+        { id: "act-7", leadId: mockLead.id, type: "note_added", timestamp: "2026-03-01T09:00:00Z", content: "Created #7" },
       ];
       h.activitiesData = mockActivities;
 
@@ -534,7 +534,7 @@ describe("LeftSidebar — Lead Details Panel Enhancements", () => {
     it("hides pagination controls when there are 3 or fewer activities", () => {
       h.activitiesData = [
         { id: "act-1", leadId: mockLead.id, type: "email_sent", timestamp: "2026-03-01T15:00:00Z", content: "Email sent" },
-        { id: "act-2", leadId: mockLead.id, type: "lead_created", timestamp: "2026-03-01T10:00:00Z", content: "Lead created" },
+        { id: "act-2", leadId: mockLead.id, type: "note_added", timestamp: "2026-03-01T10:00:00Z", content: "Lead created" },
       ];
 
       render(<ActivityTimeline lead={mockLead} />);

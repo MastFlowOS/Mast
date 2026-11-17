@@ -101,7 +101,7 @@ function AnalyticsPage() {
     totalLeads: leads.length,
     contacted: leads.filter((lead) => CONTACTED_STATUSES.includes(normalizeLeadStatus(lead.status))).length,
     replied: leads.filter((lead) => normalizeLeadStatus(lead.status) === "replied").length,
-    interested: leads.filter((lead) => normalizeLeadStatus(lead.status) === "interested").length,
+    interested: leads.filter((lead) => INTERESTED_STATUSES.includes(normalizeLeadStatus(lead.status))).length,
     closed: leads.filter((lead) => normalizeLeadStatus(lead.status) === "closed").length,
     dead: leads.filter((lead) => normalizeLeadStatus(lead.status) === "dead").length,
     followupsDue: leads.filter((lead) => Boolean(lead.followUpAt)).length,
@@ -453,8 +453,9 @@ function buildLeadHealth(leads: Lead[]) {
 
       const lastSignal = lead.lastContactedAt ?? lead.updatedAt ?? lead.createdAt;
       const age = daysSince(lastSignal);
+      const hasOverdueFollowUp = Boolean(lead.followUpAt && new Date(lead.followUpAt).getTime() <= Date.now());
       if (age >= 30) counts.stale += 1;
-      else if (age >= 14 || status === "follow_up_due") counts.atRisk += 1;
+      else if (age >= 14 || hasOverdueFollowUp) counts.atRisk += 1;
       else counts.healthy += 1;
 
       return counts;
@@ -466,7 +467,7 @@ function buildLeadHealth(leads: Lead[]) {
 function buildChannelPerformance(leads: Lead[]): PerformanceRow[] {
   const channels = [
     { name: "Email", color: "#38bdf8", hasLead: (lead: Lead) => Boolean(lead.email), sent: (status: string) => status === "email_sent" },
-    { name: "Phone", color: "#a78bfa", hasLead: (lead: Lead) => Boolean(lead.phone), sent: (status: string) => status === "contacted" },
+    { name: "Phone", color: "#a78bfa", hasLead: (lead: Lead) => Boolean(lead.phone), sent: (status: string) => ["called", "contacted"].includes(status) },
     { name: "Instagram", color: "#818cf8", hasLead: (lead: Lead) => Boolean(lead.instagramHandle), sent: (status: string) => status === "instagram_sent" },
     { name: "Website/Form", color: "#22d3ee", hasLead: (lead: Lead) => Boolean(lead.website), sent: (status: string) => status === "contact_form_sent" },
   ];

@@ -99,6 +99,7 @@ export const ISO_NUMERIC_BY_ALPHA2: Readonly<Record<string, string>> = {
   AM: "051",
   JO: "400",
   LB: "422",
+  PS: "275",
   ID: "360",
   VN: "704",
   PH: "608",

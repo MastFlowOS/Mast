@@ -156,27 +156,48 @@ test("7. scan budget matches actual discovery bound and telemetry reflects the s
 // ── Test 8: Quality gates unchanged ─────────────────────────────────────────
 test("8. quality gates unchanged: Instagram >100K rejection, niche mismatch rejection, website/email/phone/IG validation", () => {
   // Test valid qualified lead
-  const validLead: EngineLead = {
+  const validLead = {
     name: "Valid Dental Clinic",
+    address: "100 Congress Ave, Austin, TX",
     query: "dentist",
     city: "Austin",
+    region: "North America",
     country: "US",
     niche: "dentist",
     website: "https://validdental.com",
     email: "contact@validdental.com",
     phone: "+15125551234",
     instagram: "validdental",
+    facebook: "",
+    linkedin: "",
+    rating: 4.8,
+    reviews: 42,
+    description: "",
+    category: "Dentist",
+    hours: "",
+    maps_link: "https://www.google.com/maps/place/Valid+Dental",
+    instagram_bio: "",
+    instagram_followers: 0,
+    instagram_post_count: 0,
+    instagram_is_business: false,
+    instagram_external_url: "",
+    instagram_last_post_date: "",
+    instagram_last_post_caption: "",
+    instagram_error: "",
+    ig_source: "",
+    website_is_weak: false,
+    website_signals: {},
     fingerprints: ["fp1"],
-  };
+  } as unknown as EngineLead;
   const valResult = validateLead(validLead);
   assert.equal(valResult.valid, true);
 
   // Missing website -> fails channelsSatisfied if website required
-  const noWebLead: EngineLead = { ...validLead, website: undefined };
+  const noWebLead: EngineLead = { ...validLead, website: "" };
   assert.equal(channelsSatisfied(noWebLead, ["website", "email", "phone", "instagram"]), false);
 
   // Missing email -> channelsSatisfied fails if email required
-  const noEmailLead: EngineLead = { ...validLead, email: undefined };
+  const noEmailLead: EngineLead = { ...validLead, email: "" };
   assert.equal(channelsSatisfied(noEmailLead, ["email"]), false);
   assert.equal(channelsSatisfied(validLead, ["website", "email", "phone", "instagram"]), true);
 

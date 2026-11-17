@@ -161,17 +161,72 @@ def resolve_desktop_concurrency(raw_value: Optional[str] = None) -> tuple[int, O
     return parsed, avail_mb
 
 
-def is_chromium_installed(browsers_path: Path | str) -> bool:
-    """Checks whether a valid Chromium binary exists in browsers_path."""
+def get_expected_chromium_revisions() -> tuple[Optional[str], Optional[str]]:
+    """
+    Returns (chromium_revision, headless_shell_revision) expected by the bundled
+    Playwright driver's browsers.json, or (None, None) if unavailable.
+    """
+    try:
+        from playwright._impl._driver import compute_driver_executable
+
+        _node_exe, cli_js = compute_driver_executable()
+        browsers_json = Path(cli_js).parent / "browsers.json"
+        if not browsers_json.is_file():
+            return None, None
+        manifest = json.loads(browsers_json.read_text(encoding="utf-8"))
+        browsers = manifest.get("browsers", [])
+        chromium_rev = None
+        headless_rev = None
+        for entry in browsers:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            rev = entry.get("revision")
+            if name == "chromium" and rev:
+                chromium_rev = str(rev)
+            elif name == "chromium-headless-shell" and rev:
+                headless_rev = str(rev)
+        return chromium_rev, headless_rev
+    except Exception:
+        return None, None
+
+
+def is_chromium_installed(
+    browsers_path: Path | str,
+    expected_revisions: Optional[tuple[Optional[str], Optional[str]]] = None,
+) -> bool:
+    """
+    Checks whether a compatible Chromium binary exists in browsers_path.
+    When Playwright's expected revision can be read from browsers.json, only an
+    exact matching revision satisfies the check so an unrelated system Playwright
+    install (e.g. chromium-1228 when driver expects chromium-1117) never masks
+    a missing browser.
+    """
     bp = Path(browsers_path)
     if not bp.exists():
         return False
+
+    chromium_rev, headless_rev = (
+        expected_revisions
+        if expected_revisions is not None
+        else get_expected_chromium_revisions()
+    )
+    dir_pattern = f"chromium-{chromium_rev}" if chromium_rev else "chromium-*"
+    headless_dir_pattern = (
+        f"chromium_headless_shell-{headless_rev or chromium_rev}"
+        if (headless_rev or chromium_rev)
+        else "chromium_headless_shell-*"
+    )
+
     chrome_exes = (
-        list(bp.glob("chromium-*/chrome-win64/chrome.exe"))
-        + list(bp.glob("chromium_headless_shell-*/chrome-headless-shell-win64/chrome-headless-shell.exe"))
-        + list(bp.glob("chromium-*/chrome.exe"))
-        + list(bp.glob("chromium-*/chrome-linux/chrome"))
-        + list(bp.glob("chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"))
+        list(bp.glob(f"{dir_pattern}/chrome-win/chrome.exe"))
+        + list(bp.glob(f"{dir_pattern}/chrome-win64/chrome.exe"))
+        + list(bp.glob(f"{dir_pattern}/chrome.exe"))
+        + list(bp.glob(f"{dir_pattern}/chrome-linux/chrome"))
+        + list(bp.glob(f"{dir_pattern}/chrome-linux64/chrome"))
+        + list(bp.glob(f"{dir_pattern}/chrome-mac*/Chromium.app/Contents/MacOS/Chromium"))
+        + list(bp.glob(f"{headless_dir_pattern}/chrome-headless-shell-win64/chrome-headless-shell.exe"))
+        + list(bp.glob(f"{headless_dir_pattern}/chrome-headless-shell-win32/chrome-headless-shell.exe"))
     )
     return any(p.is_file() for p in chrome_exes)
 
@@ -245,36 +300,43 @@ def setup_playwright_browsers_path(provision_if_missing: bool = True) -> str:
     Checks:
     1. PLAYWRIGHT_BROWSERS_PATH env var if set and already populated with a browser.
     2. Bundled executable browsers/ folder (for standalone installer releases).
-    3. %LOCALAPPDATA%\\ms-playwright if already populated.
-    4. %LOCALAPPDATA%\\MAST\\browsers (provisioned automatically if missing).
+    3. %LOCALAPPDATA%\\MAST\\browsers if already populated with the expected revision.
+    4. %LOCALAPPDATA%\\ms-playwright if already populated with the expected revision.
+    5. %LOCALAPPDATA%\\MAST\\browsers (provisioned automatically if missing).
     """
+    expected_revs = get_expected_chromium_revisions()
+
     # 1. Explicit environment variable override
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if env_path and is_chromium_installed(env_path):
+    if env_path and is_chromium_installed(env_path, expected_revs):
         return env_path
 
     # 2. Bundled alongside frozen executable (PyInstaller onedir mode)
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).parent
         bundled_browsers = exe_dir / "browsers"
-        if is_chromium_installed(bundled_browsers):
+        if is_chromium_installed(bundled_browsers, expected_revs):
             os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundled_browsers)
             return str(bundled_browsers)
 
-    # 3. Standard Windows LocalAppData
+    # 3. Local MAST application data directory (check existing before provisioning)
+    target_dir = get_desktop_data_dir() / "browsers"
+    if is_chromium_installed(target_dir, expected_revs):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(target_dir)
+        return str(target_dir)
+
+    # 4. Standard Windows LocalAppData ms-playwright if matching revision exists
     if platform.system() == "Windows":
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
             standard_ms = Path(local_app_data) / "ms-playwright"
-            if is_chromium_installed(standard_ms):
+            if is_chromium_installed(standard_ms, expected_revs):
                 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(standard_ms)
                 return str(standard_ms)
 
-    # 4. Local application data directory (provisioned if missing)
-    target_dir = get_desktop_data_dir() / "browsers"
+    # 5. Provision compatible browser into MAST app data directory
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(target_dir)
-
-    if provision_if_missing and not is_chromium_installed(target_dir):
+    if provision_if_missing and not is_chromium_installed(target_dir, expected_revs):
         ensure_playwright_browser_provisioned(target_dir)
 
     return str(target_dir)

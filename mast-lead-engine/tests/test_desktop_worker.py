@@ -667,7 +667,17 @@ class TestBrowserDetectionAndProvisioning(unittest.IsolatedAsyncioTestCase):
             chrome_exe = chrome_dir / "chrome.exe"
             chrome_exe.write_text("fake binary")
 
-            self.assertTrue(is_chromium_installed(tmpdir))
+            self.assertTrue(is_chromium_installed(tmpdir, expected_revisions=("1228", None)))
+            self.assertTrue(is_chromium_installed(tmpdir, expected_revisions=(None, None)))
+            self.assertFalse(is_chromium_installed(tmpdir, expected_revisions=("1117", None)))
+
+    def test_is_chromium_installed_detects_playwright_144_chrome_win_layout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            chrome_dir = Path(tmpdir) / "chromium-1117" / "chrome-win"
+            chrome_dir.mkdir(parents=True)
+            (chrome_dir / "chrome.exe").write_text("fake binary")
+
+            self.assertTrue(is_chromium_installed(tmpdir, expected_revisions=("1117", None)))
 
     def test_ensure_playwright_browser_provisioned_skips_when_installed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -675,8 +685,9 @@ class TestBrowserDetectionAndProvisioning(unittest.IsolatedAsyncioTestCase):
             chrome_dir.mkdir(parents=True)
             (chrome_dir / "chrome.exe").write_text("fake binary")
 
-            result = ensure_playwright_browser_provisioned(tmpdir)
-            self.assertEqual(result, Path(tmpdir))
+            with patch("desktop_worker.get_expected_chromium_revisions", return_value=("1228", None)):
+                result = ensure_playwright_browser_provisioned(tmpdir)
+                self.assertEqual(result, Path(tmpdir))
 
     def test_setup_playwright_browsers_path_returns_valid_string(self):
         path = setup_playwright_browsers_path(provision_if_missing=False)

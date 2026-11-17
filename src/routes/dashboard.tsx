@@ -45,7 +45,7 @@ const NAV = [
   { label: "Settings",        to: "/dashboard/settings",      icon: Settings },
 ] as { label: string; to: string; icon: React.ComponentType<{ className?: string }>; exact?: boolean }[];
 
-const ITEM_H   = 36; // px — crisp nav row height
+const ITEM_H   = 40; // px — nav item height (py-2 + text-sm line-height)
 const ITEM_GAP = 2;  // px — space-y-[2px]
 
 function DashboardLayout() {
@@ -196,11 +196,6 @@ function DashboardLayout() {
     }).length;
   }, [followupsData]);
 
-  const isLowCredits =
-    Boolean(account || user) &&
-    credits.limit > 0 &&
-    credits.remaining <= Math.min(50, Math.max(10, Math.floor(credits.limit * 0.1)));
-
   const ambientEvents = useMemo<DynamicIslandEvent[]>(() => {
     const list: DynamicIslandEvent[] = [];
 
@@ -224,6 +219,11 @@ function DashboardLayout() {
       );
     }
 
+    const isLowCredits =
+      Boolean(account || user) &&
+      credits.limit > 0 &&
+      credits.remaining <= Math.min(50, Math.max(10, Math.floor(credits.limit * 0.1)));
+
     if (isLowCredits && !pathname.startsWith("/dashboard/subscription")) {
       const eventId = `credits_low_${credits.remaining}`;
       list.push(
@@ -245,7 +245,7 @@ function DashboardLayout() {
     }
 
     return list;
-  }, [dueFollowupsCount, pathname, navigate, isLowCredits, credits.remaining]);
+  }, [dueFollowupsCount, pathname, navigate, account, user, credits.limit, credits.remaining]);
 
   const { activeEvent } = useDynamicIsland(ambientEvents);
 
@@ -263,27 +263,27 @@ function DashboardLayout() {
     return <WorkspacePausedScreen user={user} onLogout={handleLogout} />;
   }
 
-  // Collapsed icon rail vs. overlay drawer. Mobile is always "expanded"
+  // Collapsed icon rail vs. full-width overlay. Mobile is always "expanded"
   // (unchanged, in-flow, full-width layout) — only desktop/tablet gets the
   // hover-to-expand rail.
   const sidebarExpanded = isMobile ? true : sidebarHovered;
-  const RAIL_WIDTH = 64;
-  const SIDEBAR_WIDTH = 240;
+  const RAIL_WIDTH = 72;
+  const SIDEBAR_WIDTH = 256; // same as the old w-64
   const sidebarWidth = isMobile ? SIDEBAR_WIDTH : (sidebarExpanded ? SIDEBAR_WIDTH : RAIL_WIDTH);
 
   // One easing curve drives the whole rail so it reads as a single surface
   // unfolding rather than several elements animating independently.
   const SIDEBAR_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
-  const SIDEBAR_DURATION_MS = 260;
+  const SIDEBAR_DURATION_MS = 340;
 
-  const labelClass = "whitespace-nowrap motion-reduce:transition-none";
+  const labelClass = "whitespace-nowrap";
   // Labels reveal only once the rail has visibly started widening (a short
   // delay on expand), but drop out with zero delay on collapse — so nothing
   // lingers mid-shrink and nothing appears before there's room for it.
   const labelStyle: React.CSSProperties = {
     opacity: sidebarExpanded ? 1 : 0,
-    transform: sidebarExpanded ? "translateX(0)" : "translateX(-4px)",
-    transition: `opacity 180ms ${SIDEBAR_EASE} ${sidebarExpanded ? "60ms" : "0ms"}, transform 180ms ${SIDEBAR_EASE} ${sidebarExpanded ? "60ms" : "0ms"}`,
+    transform: sidebarExpanded ? "translateX(0)" : "translateX(-6px)",
+    transition: `opacity 220ms ${SIDEBAR_EASE} ${sidebarExpanded ? "90ms" : "0ms"}, transform 220ms ${SIDEBAR_EASE} ${sidebarExpanded ? "90ms" : "0ms"}`,
     pointerEvents: sidebarExpanded ? "auto" : "none",
   };
 
@@ -306,8 +306,8 @@ function DashboardLayout() {
       <div className="flex-1 flex min-w-0 min-h-0 relative">
         {/* ── Sidebar ────────────────────────────────────────────────────── */}
         {/*
-          Desktop/tablet: a slim 64px icon rail by default that expands into
-          an overlay on hover starting cleanly below the h-14 navbar (top-14),
+          Desktop/tablet: a slim icon rail by default that expands into an
+          overlay on hover starting cleanly below the h-14 navbar (top-14),
           so expanding/collapsing never affects the fixed MAST wordmark or
           adds a vertical divider across the navbar.
         */}
@@ -318,94 +318,89 @@ function DashboardLayout() {
           onMouseEnter={!isMobile ? () => setSidebarHovered(true) : undefined}
           onMouseLeave={!isMobile ? () => setSidebarHovered(false) : undefined}
           className={cn(
-            "shrink-0 border-r border-white/[0.06] flex flex-col overflow-hidden motion-reduce:!transition-none",
+            "shrink-0 border-r border-border flex flex-col overflow-hidden",
             !isMobile && "fixed left-0 top-14 h-[calc(100vh-3.5rem)] z-30",
           )}
           style={{
-            background: !isMobile && sidebarExpanded
-              ? "oklch(0.135 0.024 265 / 0.96)"
-              : "oklch(0.125 0.022 265)",
-            backdropFilter: !isMobile && sidebarExpanded ? "blur(12px)" : undefined,
+            background: "oklch(0.155 0.028 265)",
             width: sidebarWidth,
-            transition: `width ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}, background-color ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}, box-shadow ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
+            transition: `width ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}, box-shadow ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
             boxShadow: !isMobile && sidebarExpanded
-              ? "8px 0 28px -8px rgba(0,0,0,0.6)"
+              ? "12px 0 32px -12px rgba(0,0,0,0.55)"
               : "none",
           }}
         >
 
-        {/* Nav with CSS-animated active surface */}
+        {/* Nav with CSS-animated indicator */}
         {/*
           Layout note: the indicator must live OUTSIDE the space-y container
           so Tailwind's `> * + *` selector doesn't add a margin-top to the
           first Link (which would throw off the offset calculation).
-          Horizontal geometry is locked so icons stay centered in the 64px
-          rail (10px container + 14px item + 16px icon + 14px + 10px = 64px)
-          and never shift horizontally when the drawer expands.
+          Structure:
+            <nav relative>          ← positioned ancestor for the absolute indicator
+              <indicator absolute>  ← translated by safeIdx; accounts for p-3 offset
+              <div space-y p-3>     ← normal-flow items; items start at 12px from nav top
+          The rail/expanded states share the same item order and heights, so
+          the indicator's top/height never need to be remeasured on hover —
+          only the row's width changes.
         */}
-        <nav
-          ref={(el) => setNavContainer(el)}
-          className="relative flex-1 overflow-y-auto"
-          aria-label="Main navigation"
-        >
-          {/* Gliding active surface — neutral elevated pill, no neon glow */}
+        <nav ref={(el) => setNavContainer(el)} className="relative flex-1 overflow-y-auto">
+          {/* Gliding indicator — positioned to match the p-3 item container */}
           <div
             aria-hidden="true"
-            className="motion-reduce:!transition-none"
             style={{
               position: "absolute",
-              left: "10px",
-              right: "10px",
+              left: "12px",
+              right: "12px",
               height: `${indicator.height}px`,
               top: `${indicator.top}px`,
               opacity: indicator.opacity,
               borderRadius: "8px",
-              background: "rgba(255, 255, 255, 0.065)",
-              border: "1px solid rgba(255, 255, 255, 0.08)",
-              boxShadow: "0 1px 2px rgba(0, 0, 0, 0.25)",
-              transition: "top 260ms cubic-bezier(0.22, 1, 0.36, 1), height 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 150ms ease",
+              background: "color-mix(in oklab, var(--brand) 12%, transparent)",
+              transition: "top 400ms cubic-bezier(0.16, 1, 0.3, 1), height 400ms cubic-bezier(0.16, 1, 0.3, 1), opacity 150ms ease",
               pointerEvents: "none",
               zIndex: 0,
             }}
-          />
+          >
+            {/* Left accent bar */}
+            <div style={{
+              position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)",
+              width: "3px", height: "55%", borderRadius: "0 3px 3px 0",
+              background: "var(--color-brand)",
+              boxShadow: "0 0 10px color-mix(in oklab, var(--brand) 70%, transparent)",
+            }} />
+          </div>
 
-          {/* Items — px-2.5 py-3 container + space-y-[2px] gap */}
-          <div className="px-2.5 py-3 space-y-[2px]">
+          {/* Items — p-3 padding + space-y-[2px] gap */}
+          <div className="p-3 space-y-[2px]">
             {NAV.map((item, idx) => {
               const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
               const showDividerBefore = idx === 5 || idx === 8;
               return (
                 <Fragment key={item.to}>
                   {showDividerBefore && (
-                    <div
-                      aria-hidden="true"
-                      className="mx-2 bg-white/[0.06] shrink-0"
-                      style={{ height: "1px", marginTop: "10px", marginBottom: "10px" }}
+                    <div 
+                      className="h-px bg-border/30 shrink-0" 
+                      style={{ height: '1px', marginTop: '9px', marginBottom: '9px' }} 
                     />
                   )}
                   <Link
                     to={item.to}
                     ref={(el: HTMLAnchorElement | null) => registerItem(item.to, el)}
-                    aria-current={active ? "page" : undefined}
                     className={cn(
-                      "group relative z-10 flex items-center gap-3 px-3.5 rounded-lg",
-                      "text-[13px] font-medium tracking-[-0.005em] mast-focus transition-colors duration-150",
+                      "relative z-10 flex items-center gap-3 px-3 py-2 rounded-lg",
+                      "text-sm font-medium transition-colors duration-150",
                       active
-                        ? "text-foreground"
-                        : "text-muted-foreground hover:text-foreground hover:bg-white/[0.035]",
+                        ? "text-brand"
+                        : "text-muted-foreground hover:text-foreground",
                     )}
                     style={{ height: `${ITEM_H}px` }}
                     title={sidebarExpanded ? undefined : item.label}
                   >
-                    <item.icon
-                      aria-hidden="true"
-                      className={cn(
-                        "size-4 shrink-0 transition-colors duration-150",
-                        active
-                          ? "text-brand"
-                          : "text-muted-foreground/80 group-hover:text-foreground/85",
-                      )}
-                    />
+                    <item.icon className={cn(
+                      "size-4 shrink-0 transition-colors",
+                      active ? "text-brand" : "text-muted-foreground",
+                    )} />
                     <span className={labelClass} style={labelStyle}>{item.label}</span>
                   </Link>
                 </Fragment>
@@ -419,34 +414,29 @@ function DashboardLayout() {
               return (
                 <>
                   <div
-                    aria-hidden="true"
-                    className="mx-2 bg-amber-500/20 shrink-0"
-                    style={{ height: "1px", marginTop: "10px", marginBottom: "10px" }}
+                    className="h-px bg-amber-500/20 shrink-0"
+                    style={{ height: '1px', marginTop: '9px', marginBottom: '9px' }}
                   />
                   <Link
                     to={opsTo}
                     ref={(el: HTMLAnchorElement | null) => registerItem(opsTo, el)}
-                    aria-current={opsActive ? "page" : undefined}
                     className={cn(
-                      "group relative z-10 flex items-center gap-3 px-3.5 rounded-lg",
-                      "text-[13px] font-medium tracking-[-0.005em] mast-focus transition-colors duration-150",
+                      "relative z-10 flex items-center gap-3 px-3 py-2 rounded-lg",
+                      "text-sm font-medium transition-colors duration-150",
                       opsActive
-                        ? "text-amber-300"
-                        : "text-amber-500/70 hover:text-amber-300 hover:bg-white/[0.035]",
+                        ? "text-amber-400"
+                        : "text-amber-600/60 hover:text-amber-400",
                     )}
                     style={{ height: `${ITEM_H}px` }}
                     title={sidebarExpanded ? undefined : "Ops"}
                   >
-                    <Bug
-                      aria-hidden="true"
-                      className={cn(
-                        "size-4 shrink-0 transition-colors duration-150",
-                        opsActive ? "text-amber-400" : "text-amber-500/70 group-hover:text-amber-400",
-                      )}
-                    />
+                    <Bug className={cn(
+                      "size-4 shrink-0 transition-colors",
+                      opsActive ? "text-amber-400" : "text-amber-600/60",
+                    )} />
                     <span className={labelClass} style={labelStyle}>Ops</span>
                     <span
-                      className="ml-auto text-[9px] font-semibold tracking-wider uppercase text-amber-400/75 border border-amber-500/25 rounded px-1 whitespace-nowrap"
+                      className="ml-auto text-[9px] font-bold tracking-wider uppercase text-amber-600/60 border border-amber-600/30 rounded px-1 whitespace-nowrap"
                       style={labelStyle}
                     >
                       eng
@@ -458,69 +448,84 @@ function DashboardLayout() {
           </div>
         </nav>
 
-        {/* Account / usage dock — clean grounded footer without box-in-a-box clutter */}
-        <div className="px-2.5 py-3 border-t border-white/[0.06] shrink-0">
-          <div className="flex items-center gap-2.5 px-1.5">
-            <div
-              className="relative shrink-0 size-8 rounded-full overflow-hidden ring-1 ring-white/10 bg-white/[0.06] flex items-center justify-center text-[11px] font-semibold text-foreground/85"
-              title={`${credits.remaining.toLocaleString()} / ${credits.limit.toLocaleString()} credits left`}
-            >
-              {user?.avatarUrl ? (
-                <img
-                  src={user.avatarUrl}
-                  alt={user.fullName || "User avatar"}
-                  className="w-full h-full object-cover object-center"
-                />
-              ) : (
-                initials
-              )}
-            </div>
-            <div className="min-w-0 flex-1 overflow-hidden">
-              <p className="text-[13px] font-medium text-foreground truncate leading-tight" style={labelStyle}>
-                {user?.fullName || "My Workspace"}
-              </p>
-              <p className="text-[11px] text-muted-foreground truncate leading-tight mt-0.5" style={labelStyle}>
-                {planName} Plan
-              </p>
-            </div>
-          </div>
-
-          {/* Credits — collapses row height cleanly when rail shrinks */}
+        {/* Account / usage dock — one persistent surface instead of two
+            hard-swapped layouts. The avatar (with a thin usage ring baked
+            in, so collapsed still shows something) stays put in both
+            states; only the identity text and the credits block fade and
+            collapse, on the same easing/timing as the rail width. */}
+        <div className="p-2.5 border-t border-border shrink-0">
           <div
-            className="grid motion-reduce:!transition-none"
-            style={{
-              gridTemplateRows: sidebarExpanded ? "1fr" : "0fr",
-              transition: `grid-template-rows ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
-            }}
+            className="rounded-xl border border-border overflow-hidden"
+            style={{ background: "oklch(0.135 0.024 265)" }}
           >
-            <div className="overflow-hidden min-h-0">
-              <div className="px-1.5 pt-3 space-y-1.5" style={labelStyle}>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground tabular-nums whitespace-nowrap">
-                    <span className="text-foreground/90 font-medium">
-                      {credits.remaining.toLocaleString()}
-                    </span>
-                    {" / "}
-                    {credits.limit.toLocaleString()} credits
-                  </span>
-                  <Link
-                    to="/dashboard/subscription"
-                    className="font-medium text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap mast-focus rounded"
-                  >
-                    Upgrade
-                  </Link>
-                </div>
-                <div className="h-1 w-full bg-white/[0.07] rounded-full overflow-hidden">
-                  <div
-                    className={cn(
-                      "h-full rounded-full motion-reduce:!transition-none",
-                      isLowCredits ? "bg-amber-400/90" : "bg-foreground/55",
-                    )}
-                    style={{
-                      width: `${creditPct}%`,
-                      transition: `width 500ms ${SIDEBAR_EASE}`,
-                    }}
+            {/* Identity row */}
+            <div className="flex items-center gap-2.5 px-2.5 py-2">
+              <div
+                className="relative shrink-0 size-8 rounded-full overflow-hidden border border-brand/30 bg-brand/20 flex items-center justify-center text-[10px] font-bold text-brand"
+                title={`${creditPct}% of credits used`}
+              >
+                {/* Thin usage ring — doubles as the "tiny usage indicator"
+                    for the collapsed rail, without needing extra height. */}
+                <div
+                  aria-hidden="true"
+                  className="absolute inset-0 rounded-full pointer-events-none z-10"
+                  style={{
+                    background: `conic-gradient(var(--brand) ${creditPct * 3.6}deg, var(--color-border) 0deg)`,
+                    WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
+                    mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
+                  }}
+                />
+                {user?.avatarUrl ? (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.fullName || "User avatar"}
+                    className="absolute inset-0 w-full h-full object-cover object-center"
+                    style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }}
                   />
+                ) : (
+                  initials
+                )}
+              </div>
+              <div className="min-w-0 overflow-hidden">
+                <p className="text-xs font-semibold text-foreground truncate" style={labelStyle}>
+                  {user?.fullName || "My Workspace"}
+                </p>
+                <p className="text-[10px] text-muted-foreground truncate" style={labelStyle}>
+                  {planName} Plan
+                </p>
+              </div>
+            </div>
+
+            {/* Credits — collapses its row height (not just opacity) so the
+                rail doesn't keep reserving space for hidden content while
+                collapsed. */}
+            <div
+              className="grid"
+              style={{
+                gridTemplateRows: sidebarExpanded ? "1fr" : "0fr",
+                transition: `grid-template-rows ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
+              }}
+            >
+              <div className="overflow-hidden min-h-0">
+                <div className="px-2.5 pb-2.5 pt-0.5" style={labelStyle}>
+                  <div className="h-1 w-full bg-border rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-brand rounded-full"
+                      style={{ width: `${creditPct}%`, transition: `width 700ms ${SIDEBAR_EASE}` }}
+                    />
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between gap-2">
+                    <p className="text-[10px] text-foreground whitespace-nowrap">
+                      {credits.remaining.toLocaleString()}
+                      <span className="text-muted-foreground">/{credits.limit.toLocaleString()}</span>
+                    </p>
+                    <Link
+                      to="/dashboard/subscription"
+                      className="text-[10px] font-semibold text-brand hover:text-brand-dark transition-colors whitespace-nowrap"
+                    >
+                      Upgrade →
+                    </Link>
+                  </div>
                 </div>
               </div>
             </div>

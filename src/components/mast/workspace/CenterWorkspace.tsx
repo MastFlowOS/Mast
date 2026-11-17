@@ -30,6 +30,7 @@ import { useRecordLeadActivity, useSendLeadEmail } from "@/hooks/use-mast-api";
 import { ApiError, isMissingBackendEndpoint } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 import { normalizeInstagram } from "@/lib/instagram";
+import { openExternalPopup, openGmailComposePopup } from "@/lib/externalPopup";
 import { TEMPLATES } from "@/lib/lead-workspace";
 import { htmlToPlainText, countWords } from "@/lib/richText";
 import { RichTextEditor } from "./components/RichTextEditor";
@@ -153,10 +154,22 @@ export function CenterWorkspace({
       return;
     }
     const cleanBody = htmlToPlainText(body);
-    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(
-      lead.email,
-    )}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(cleanBody)}`;
-    window.open(gmailUrl, "_blank", "noopener,noreferrer");
+    const popupResult = openGmailComposePopup({
+      to: lead.email,
+      subject,
+      body: cleanBody,
+    });
+
+    if (!popupResult.opened && popupResult.url) {
+      toast.info("Popup blocked. Click below to open Gmail.", {
+        action: {
+          label: "Open Gmail",
+          onClick: () => openExternalPopup(popupResult.url!),
+        },
+      });
+    } else {
+      toast.success("Opening Gmail popup…");
+    }
 
     try {
       await recordActivity.mutateAsync({
@@ -172,7 +185,6 @@ export function CenterWorkspace({
     } catch {
       // Non-critical
     }
-    toast.success("Opening in Gmail…");
   };
 
   const handleOpenMailClient = async () => {
@@ -211,41 +223,42 @@ export function CenterWorkspace({
     // 1. Read current message including user's latest edits
     const messageText = htmlToPlainText(body).trim();
 
-    // 2. Copy exact message text to clipboard immediately from user click
-    let copiedSuccessfully = false;
-    if (messageText) {
-      try {
-        await navigator.clipboard.writeText(messageText);
-        copiedSuccessfully = true;
-      } catch {
-        try {
-          const tempEl = document.createElement("textarea");
-          tempEl.value = messageText;
-          tempEl.style.position = "fixed";
-          tempEl.style.opacity = "0";
-          document.body.appendChild(tempEl);
-          tempEl.focus();
-          tempEl.select();
-          copiedSuccessfully = document.execCommand("copy");
-          document.body.removeChild(tempEl);
-        } catch {
-          copiedSuccessfully = false;
-        }
-      }
-    }
+    // 2. Start clipboard copy synchronously, then open popup immediately before awaiting
+    const copyPromise: Promise<boolean> = messageText
+      ? navigator.clipboard
+          .writeText(messageText)
+          .then(() => true)
+          .catch(() => {
+            try {
+              const tempEl = document.createElement("textarea");
+              tempEl.value = messageText;
+              tempEl.style.position = "fixed";
+              tempEl.style.opacity = "0";
+              document.body.appendChild(tempEl);
+              tempEl.focus();
+              tempEl.select();
+              const ok = document.execCommand("copy");
+              document.body.removeChild(tempEl);
+              return ok;
+            } catch {
+              return false;
+            }
+          })
+      : Promise.resolve(false);
 
-    // 3. Open Instagram destination in a new window/tab
-    const newWindow = window.open(ig.dmUrl, "_blank", "noopener,noreferrer");
+    // 3. Open Instagram destination in a Chrome popup window
+    const popupResult = openExternalPopup(ig.dmUrl);
+    const copiedSuccessfully = await copyPromise;
 
     // 4. Clear feedback and graceful fallbacks
     if (copiedSuccessfully) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-      if (!newWindow || newWindow.closed || typeof newWindow.closed === "undefined") {
+      if (!popupResult.opened) {
         toast.info("Message copied! Your browser blocked opening Instagram automatically.", {
           action: {
             label: "Open Instagram",
-            onClick: () => window.open(ig.dmUrl, "_blank", "noopener,noreferrer"),
+            onClick: () => openExternalPopup(ig.dmUrl),
           },
         });
       } else {
@@ -293,19 +306,16 @@ export function CenterWorkspace({
         toast.error("No website recorded for this lead");
         return;
       }
-      let didCopy = false;
       const cleanBody = htmlToPlainText(body).trim();
-      if (cleanBody) {
-        try {
-          await navigator.clipboard.writeText(cleanBody);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-          didCopy = true;
-        } catch {
-          // Non-critical
-        }
+      const copyPromise = cleanBody
+        ? navigator.clipboard.writeText(cleanBody).then(() => true).catch(() => false)
+        : Promise.resolve(false);
+      openExternalPopup(websiteUrl);
+      const didCopy = await copyPromise;
+      if (didCopy) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
       }
-      window.open(websiteUrl, "_blank", "noopener,noreferrer");
       try {
         await recordActivity.mutateAsync({
           lead,

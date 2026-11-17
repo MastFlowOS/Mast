@@ -8,6 +8,7 @@ import { ApiError, type Lead } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 
 import { normalizeInstagram } from "@/lib/instagram";
+import { openExternalPopup } from "@/lib/externalPopup";
 
 interface InstagramFormProps {
   lead: Lead;
@@ -51,14 +52,10 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
       return;
     }
 
-    // Auto-copy message before opening Instagram
-    let didCopy = false;
-    if (body.trim()) {
-      didCopy = await copyToClipboard(body);
-    }
-
-    // Open ig.me DM link in a new tab/window without sending or DOM injection
-    window.open(ig.dmUrl, "_blank", "noopener,noreferrer");
+    // Auto-copy message synchronously, then open Instagram popup immediately
+    const copyPromise = body.trim() ? copyToClipboard(body) : Promise.resolve(false);
+    openExternalPopup(ig.dmUrl);
+    const didCopy = await copyPromise;
 
     try {
       await recordActivity.mutateAsync({

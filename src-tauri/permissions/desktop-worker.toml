@@ -11,5 +11,6 @@ commands.allow = [
   "get_desktop_auth_item",
   "set_desktop_auth_item",
   "remove_desktop_auth_item",
-  "return_to_desktop_app"
+  "return_to_desktop_app",
+  "open_external_popup"
 ]

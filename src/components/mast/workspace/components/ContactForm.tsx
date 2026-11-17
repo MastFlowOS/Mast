@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useRecordLeadActivity } from "@/hooks/use-mast-api";
 import { ApiError, type Lead } from "@/lib/api";
+import { openExternalPopup } from "@/lib/externalPopup";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 
 interface ContactFormProps {
@@ -44,8 +45,9 @@ export function ContactForm({ lead, body, setBody }: ContactFormProps) {
       toast.error("No website recorded for this lead");
       return;
     }
-    if (body.trim()) await copyMessage();
-    window.open(websiteUrl, "_blank", "noopener,noreferrer");
+    const copyPromise = body.trim() ? copyMessage() : Promise.resolve();
+    openExternalPopup(websiteUrl);
+    await copyPromise;
     try {
       await recordActivity.mutateAsync({
         lead,

@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   AlertTriangle,
@@ -23,7 +24,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useBulkImportLeads, useLeads, useMe } from "@/hooks/use-mast-api";
+import { queryKeys, useBulkImportLeads, useLeads, useMe, useSettings } from "@/hooks/use-mast-api";
 import type { CreateLeadBody, Lead } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,6 +42,19 @@ import {
   publishDynamicIslandEvent,
 } from "@/lib/dynamic-island";
 import { addNotification } from "@/lib/notifications";
+import {
+  createHistoryEntryId,
+  enqueueHistoryRemoteSync,
+  loadLocalExportHistory,
+  loadLocalImportHistory,
+  mergeHistoryEntries,
+  parseExportHistory,
+  parseImportHistory,
+  saveLocalExportHistory,
+  saveLocalImportHistory,
+  type ExportHistoryEntry,
+  type ImportHistoryEntry,
+} from "@/lib/importExportHistory";
 
 export const Route = createFileRoute("/dashboard/import")({
   head: () => ({ meta: [{ title: "Data Import / Export — Mast" }] }),
@@ -176,22 +190,6 @@ interface ParsedRow {
   email: string;
   isDuplicate: boolean;
   mastId: string;
-}
-
-interface ImportHistoryEntry {
-  id: string;
-  fileName: string;
-  date: string;
-  leadsImported: number;
-  duplicatesSkipped: number;
-}
-
-interface ExportHistoryEntry {
-  id: string;
-  date: string;
-  recordCount: number;
-  format: "CSV" | "Excel";
-  filter: string;
 }
 
 type ExportScope = "all" | "selected" | "status" | "niche" | "region" | "pipeline";
@@ -508,11 +506,16 @@ function HistoryEmptyState({ title, message }: { title: string; message: string 
 
 function ImportExportPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const bulkImport = useBulkImportLeads();
   const { data: auth } = useMe();
+  const userId = auth?.user?.id ?? "";
+  const { data: settingsData } = useSettings(Boolean(userId));
   const planId = auth?.user?.plan ?? "free";
   const isStarterPlus = planId !== "free";
+  const lastRemoteImportSyncRef = useRef<string>("");
+  const lastRemoteExportSyncRef = useRef<string>("");
 
   // Tab switch: "import" | "export"
   const [activeWorkflow, setActiveWorkflow] = useState<"import" | "export">("import");
@@ -544,11 +547,59 @@ function ImportExportPage() {
     ? leadsData
     : (leadsData as { leads?: Lead[] })?.leads ?? [];
 
-  // History State
+  // History State (hydrated from localStorage + Supabase profiles.settings)
   const [importHistory, setImportHistory] = useState<ImportHistoryEntry[]>([]);
   const [exportHistory, setExportHistory] = useState<ExportHistoryEntry[]>([]);
   const [showAllImports, setShowAllImports] = useState(false);
   const [showAllExports, setShowAllExports] = useState(false);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    const localImports = loadLocalImportHistory(userId);
+    const remoteImports = parseImportHistory(settingsData?.importHistory);
+    const mergedImports = mergeHistoryEntries(localImports, remoteImports);
+    setImportHistory(mergedImports);
+    if (mergedImports.some((entry) => !localImports.some((l) => l.id === entry.id))) {
+      saveLocalImportHistory(userId, mergedImports);
+    }
+
+    const localExports = loadLocalExportHistory(userId);
+    const remoteExports = parseExportHistory(settingsData?.exportHistory);
+    const mergedExports = mergeHistoryEntries(localExports, remoteExports);
+    setExportHistory(mergedExports);
+    if (mergedExports.some((entry) => !localExports.some((l) => l.id === entry.id))) {
+      saveLocalExportHistory(userId, mergedExports);
+    }
+
+    if (settingsData !== undefined) {
+      const missingRemoteImports = mergedImports.some(
+        (entry) => !remoteImports.some((r) => r.id === entry.id),
+      );
+      const missingRemoteExports = mergedExports.some(
+        (entry) => !remoteExports.some((r) => r.id === entry.id),
+      );
+      const importKey = `${userId}:${mergedImports.map((e) => e.id).join(",")}`;
+      const exportKey = `${userId}:${mergedExports.map((e) => e.id).join(",")}`;
+      const syncPayload: {
+        importHistory?: ImportHistoryEntry[];
+        exportHistory?: ExportHistoryEntry[];
+      } = {};
+      if (missingRemoteImports && lastRemoteImportSyncRef.current !== importKey) {
+        lastRemoteImportSyncRef.current = importKey;
+        syncPayload.importHistory = mergedImports;
+      }
+      if (missingRemoteExports && lastRemoteExportSyncRef.current !== exportKey) {
+        lastRemoteExportSyncRef.current = exportKey;
+        syncPayload.exportHistory = mergedExports;
+      }
+      if (syncPayload.importHistory || syncPayload.exportHistory) {
+        void enqueueHistoryRemoteSync(syncPayload)
+          .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.settings }))
+          .catch(() => undefined);
+      }
+    }
+  }, [userId, settingsData, queryClient]);
 
   // Dynamic header date
   const currentDateStr = useMemo(() => {
@@ -689,16 +740,22 @@ function ImportExportPage() {
           category: "notifyNewLead",
         });
       }
-      setImportHistory((prev: ImportHistoryEntry[]) => [
-        {
-          id: Date.now().toString(),
-          fileName,
-          date: new Date().toISOString(),
-          leadsImported: result.imported,
-          duplicatesSkipped: result.skipped,
-        },
-        ...prev,
-      ]);
+      const newEntry: ImportHistoryEntry = {
+        id: createHistoryEntryId(),
+        fileName,
+        date: new Date().toISOString(),
+        leadsImported: result.imported,
+        duplicatesSkipped: result.skipped,
+      };
+      const nextImports = mergeHistoryEntries([newEntry], loadLocalImportHistory(userId), importHistory);
+      saveLocalImportHistory(userId, nextImports);
+      setImportHistory(nextImports);
+      if (userId) {
+        lastRemoteImportSyncRef.current = `${userId}:${nextImports.map((e) => e.id).join(",")}`;
+        void enqueueHistoryRemoteSync({ importHistory: nextImports })
+          .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.settings }))
+          .catch(() => undefined);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Import failed");
     }
@@ -755,27 +812,33 @@ function ImportExportPage() {
         body: `${previewCount.toLocaleString()} ${oppWord} exported as ${formatLabel}.`,
         category: "notifyNewLead",
       });
-      setExportHistory((prev: ExportHistoryEntry[]) => [
-        {
-          id: Date.now().toString(),
-          date: new Date().toISOString(),
-          recordCount: previewCount,
-          format: exportFormat === "xlsx" ? "Excel" : "CSV",
-          filter:
-            exportScope === "all"
-              ? "All Opportunities"
-              : exportScope === "status"
-              ? `Status: ${filterValue}`
-              : exportScope === "niche"
-              ? `Niche: ${filterValue || "all"}`
-              : exportScope === "region"
-              ? `Region: ${filterValue || "all"}`
-              : exportScope === "pipeline"
-              ? `Pipeline: ${filterValue || "all"}`
-              : "Selected",
-        },
-        ...prev,
-      ]);
+      const newEntry: ExportHistoryEntry = {
+        id: createHistoryEntryId(),
+        date: new Date().toISOString(),
+        recordCount: previewCount,
+        format: exportFormat === "xlsx" ? "Excel" : "CSV",
+        filter:
+          exportScope === "all"
+            ? "All Opportunities"
+            : exportScope === "status"
+            ? `Status: ${filterValue}`
+            : exportScope === "niche"
+            ? `Niche: ${filterValue || "all"}`
+            : exportScope === "region"
+            ? `Region: ${filterValue || "all"}`
+            : exportScope === "pipeline"
+            ? `Pipeline: ${filterValue || "all"}`
+            : "Selected",
+      };
+      const nextExports = mergeHistoryEntries([newEntry], loadLocalExportHistory(userId), exportHistory);
+      saveLocalExportHistory(userId, nextExports);
+      setExportHistory(nextExports);
+      if (userId) {
+        lastRemoteExportSyncRef.current = `${userId}:${nextExports.map((e) => e.id).join(",")}`;
+        void enqueueHistoryRemoteSync({ exportHistory: nextExports })
+          .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.settings }))
+          .catch(() => undefined);
+      }
     } catch {
       toast.error("Export failed. Please try again.");
     } finally {

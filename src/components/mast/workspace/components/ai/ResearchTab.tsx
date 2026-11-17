@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import type { Lead } from "@/lib/api";
 import { useOpportunityExplanation, useLeadTrust, useSettings } from "@/hooks/use-mast-api";
 import { leadNicheDisplay } from "@/lib/lead-workspace";
+import { openExternalPopup } from "@/lib/externalPopup";
 
 interface ResearchTabProps {
   lead: Lead;
@@ -144,6 +145,10 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
                 href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`}
                 target="_blank"
                 rel="noreferrer"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openExternalPopup(lead.website!);
+                }}
                 className="text-foreground hover:underline truncate"
               >
                 {lead.website.replace(/^https?:\/\/(www\.)?/, "")}

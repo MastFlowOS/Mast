@@ -213,3 +213,18 @@ export async function removeDesktopAuthItem(key: string): Promise<void> {
     // Non-fatal: localStorage removal already ran
   }
 }
+
+/**
+ * Opens an external http(s) URL in a dedicated Google Chrome `--app` popup window
+ * using the user's normal signed-in Chrome profile (falling back to the OS browser
+ * if Chrome is not installed). Returns false outside Tauri or if invocation fails.
+ */
+export async function openDesktopChromePopup(url: string): Promise<boolean> {
+  if (!isDesktopApp() || !url) return false;
+  try {
+    await invoke("open_external_popup", { url });
+    return true;
+  } catch {
+    return false;
+  }
+}

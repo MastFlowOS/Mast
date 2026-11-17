@@ -68,6 +68,7 @@ import { FeatureGate } from "@/components/mast/FeatureGate";
 import { cn } from "@/lib/utils";
 import { setLeadNavigationContext } from "@/lib/leadNavigation";
 import { exportLeadsAsCSV } from "@/lib/leadExport";
+import { buildGmailComposeUrl, openExternalPopup } from "@/lib/externalPopup";
 
 export const Route = createFileRoute("/dashboard/relationships")({
   head: () => ({ meta: [{ title: "Relationships — Mast" }] }),
@@ -403,7 +404,7 @@ function ContactActions({ lead }: { lead: Lead }) {
       label: "Email",
       Icon: Mail,
       value: lead.email,
-      href: lead.email ? `mailto:${lead.email}` : null,
+      href: lead.email ? buildGmailComposeUrl({ to: lead.email }) : null,
     },
     {
       key: "phone",
@@ -435,8 +436,14 @@ function ContactActions({ lead }: { lead: Lead }) {
           <a
             key={key}
             href={href}
-            target={key === "email" || key === "phone" ? undefined : "_blank"}
+            target={key === "phone" ? undefined : "_blank"}
             rel="noopener noreferrer"
+            onClick={(e) => {
+              if (key !== "phone") {
+                e.preventDefault();
+                openExternalPopup(href);
+              }
+            }}
             title={`${label}: ${value}`}
             aria-label={`${label} ${lead.businessName}`}
             className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-brand/10 hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"

@@ -9,6 +9,8 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { useEffect, useState } from "react";
 import { supabase, supabaseConfigError } from "@/lib/supabase";
+import { isDesktopApp } from "@/lib/desktop";
+import { openExternalPopup } from "@/lib/externalPopup";
 
 // ─── Config-error screen (inline styles — renders even without Tailwind) ──────
 function SupabaseConfigError({ message }: { message: string }) {
@@ -293,6 +295,33 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
 // ─── Root component ───────────────────────────────────────────────────────────
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+
+  // Route external links clicked inside the desktop shell to a clean Chrome popup
+  // instead of opening unauthenticated WebView2 windows.
+  useEffect(() => {
+    if (!isDesktopApp()) return;
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!anchor) return;
+      if (anchor.hasAttribute("data-native-link")) return;
+      const href = anchor.getAttribute("href");
+      if (!href || !/^https?:\/\//i.test(href)) return;
+      try {
+        const parsed = new URL(href);
+        if (parsed.origin === window.location.origin) return;
+      } catch {
+        return;
+      }
+      event.preventDefault();
+      openExternalPopup(href);
+    };
+    document.addEventListener("click", handleDocumentClick);
+    return () => document.removeEventListener("click", handleDocumentClick);
+  }, []);
 
   // If credentials are missing, show the config error screen immediately.
   // This renders using inline styles so it works even if Tailwind fails.

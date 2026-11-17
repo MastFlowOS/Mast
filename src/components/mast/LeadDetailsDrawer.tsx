@@ -23,6 +23,7 @@ import {
 import type { Lead } from "@/lib/api";
 import { stripActivityMarkers } from "@/lib/lead-workspace";
 import { normalizeInstagram } from "@/lib/instagram";
+import { openExternalPopup, openGmailComposePopup } from "@/lib/externalPopup";
 
 interface LeadDetailsDrawerProps {
   lead: Lead | null;
@@ -95,8 +96,8 @@ Mast Acquisition OS`;
 
   const handleSendEmail = () => {
     if (lead.email) {
-      window.location.href = `mailto:${lead.email}?subject=Collaboration%20Query`;
-      toast.success("Opening default email client...");
+      openGmailComposePopup({ to: lead.email, subject: "Collaboration Query" });
+      toast.success("Opening Gmail popup…");
     } else {
       toast.error("No email available for this lead.");
     }
@@ -255,6 +256,10 @@ Mast Acquisition OS`;
                       href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`}
                       target="_blank"
                       rel="noopener noreferrer"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        openExternalPopup(lead.website!);
+                      }}
                       className="size-7 rounded bg-brand/10 hover:bg-brand/20 grid place-items-center text-brand transition-colors focus:outline-none"
                     >
                       <ExternalLink className="size-4" />
@@ -279,6 +284,10 @@ Mast Acquisition OS`;
                           href={ig.profileUrl}
                           target="_blank"
                           rel="noopener noreferrer"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            openExternalPopup(ig.profileUrl);
+                          }}
                           className="size-7 rounded bg-brand/10 hover:bg-brand/20 grid place-items-center text-brand transition-colors focus:outline-none"
                         >
                           <ExternalLink className="size-4" />

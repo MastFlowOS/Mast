@@ -788,6 +788,103 @@ fn return_to_desktop_app(
         .map_err(|e| format!("Failed to return to desktop app: {}", e))
 }
 
+fn validate_external_popup_url(raw_url: &str) -> Result<tauri::Url, String> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return Err("External URL cannot be empty.".to_string());
+    }
+    let parsed = tauri::Url::parse(trimmed)
+        .map_err(|e| format!("Invalid external URL: {}", e))?;
+    let scheme = parsed.scheme();
+    if scheme != "https" && scheme != "http" {
+        return Err(format!("Unsupported URL scheme '{}': only http and https are allowed.", scheme));
+    }
+    if !parsed.has_host() {
+        return Err("External URL must include a host.".to_string());
+    }
+    Ok(parsed)
+}
+
+#[cfg(windows)]
+fn find_chrome_executable() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for env_key in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"] {
+        if let Ok(base) = std::env::var(env_key) {
+            if !base.trim().is_empty() {
+                candidates.push(
+                    PathBuf::from(base)
+                        .join("Google")
+                        .join("Chrome")
+                        .join("Application")
+                        .join("chrome.exe"),
+                );
+            }
+        }
+    }
+    candidates.push(PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"));
+    candidates.push(PathBuf::from(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"));
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+#[tauri::command]
+fn open_external_popup(url: String) -> Result<(), String> {
+    let parsed = validate_external_popup_url(&url)?;
+    let target = parsed.as_str();
+
+    #[cfg(windows)]
+    {
+        if let Some(chrome_exe) = find_chrome_executable() {
+            Command::new(chrome_exe)
+                .arg(format!("--app={}", target))
+                .arg("--window-size=1120,780")
+                .spawn()
+                .map_err(|e| format!("Failed to launch Chrome popup: {}", e))?;
+            return Ok(());
+        }
+        Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", target])
+            .spawn()
+            .map_err(|e| format!("Failed to open URL in browser: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_arg = format!("--app={}", target);
+        if Command::new("open")
+            .args(["-na", "Google Chrome", "--args", &app_arg, "--window-size=1120,780"])
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+        Command::new("open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL in browser: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let app_arg = format!("--app={}", target);
+        for bin in ["google-chrome", "chromium", "chromium-browser"] {
+            if Command::new(bin)
+                .args([&app_arg, "--window-size=1120,780"])
+                .spawn()
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL in browser: {}", e))?;
+        return Ok(());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState {
@@ -814,7 +911,8 @@ pub fn run() {
             get_desktop_auth_item,
             set_desktop_auth_item,
             remove_desktop_auth_item,
-            return_to_desktop_app
+            return_to_desktop_app,
+            open_external_popup
         ])
         .on_page_load(|webview, payload| {
             let url = payload.url();
@@ -911,6 +1009,7 @@ mod tests {
             "set_desktop_auth_item",
             "remove_desktop_auth_item",
             "return_to_desktop_app",
+            "open_external_popup",
         ];
 
         for cmd in required_commands {
@@ -1010,5 +1109,16 @@ mod tests {
         let ok_url = build_desktop_return_url("http://tauri.localhost", Some("/dashboard")).unwrap();
         assert_eq!(ok_url.as_str(), "http://tauri.localhost/dashboard");
         assert!(build_desktop_return_url("http://tauri.localhost", Some("//evil.com")).is_err());
+    }
+
+    #[test]
+    fn test_validate_external_popup_url() {
+        assert!(validate_external_popup_url("https://www.instagram.com/m/cafe").is_ok());
+        assert!(validate_external_popup_url("https://mail.google.com/mail/?view=cm&fs=1&to=a@b.com").is_ok());
+        assert!(validate_external_popup_url("http://example.com").is_ok());
+        assert!(validate_external_popup_url("javascript:alert(1)").is_err());
+        assert!(validate_external_popup_url("file:///C:/Windows/win.ini").is_err());
+        assert!(validate_external_popup_url("data:text/html,<h1>hi</h1>").is_err());
+        assert!(validate_external_popup_url("   ").is_err());
     }
 }

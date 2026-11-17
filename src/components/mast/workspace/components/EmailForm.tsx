@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useRecordLeadActivity, useSendLeadEmail } from "@/hooks/use-mast-api";
 import { ApiError, isMissingBackendEndpoint, type Lead } from "@/lib/api";
+import { openGmailComposePopup } from "@/lib/externalPopup";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 import { normalizeLeadStatus } from "@/lib/lead-workspace";
 
@@ -28,24 +29,12 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
     setIsSent(["contacted", "email_sent"].includes(normalizeLeadStatus(lead.status)) && Boolean(lead.lastContactedAt));
   }, [lead.lastContactedAt, lead.status]);
 
-  const buildMailtoUrl = () => {
-    if (!lead.email) return "";
-    const params = new URLSearchParams();
-    if (subject) params.set("subject", subject);
-    if (body) params.set("body", body);
-    const query = params.toString();
-    return `mailto:${lead.email}${query ? `?${query}` : ""}`;
-  };
-
   const handleOpenMail = async () => {
     if (!lead.email) {
       toast.error("No email address for this lead");
       return;
     }
-    // Use location.href so mailto opens the default mail client correctly
-    // without triggering popup blockers or broken blank tabs
-    const url = buildMailtoUrl();
-    window.location.href = url;
+    openGmailComposePopup({ to: lead.email, subject, body });
 
     try {
       await recordActivity.mutateAsync({
@@ -55,13 +44,13 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
           channel: "email",
           subject,
           body,
-          content: `Email client opened for ${lead.email}`,
+          content: `Gmail composer opened for ${lead.email}`,
         },
       });
     } catch {
       // Non-critical
     }
-    toast.success("Opening email client…");
+    toast.success("Opening Gmail popup…");
   };
 
   const handleSend = async () => {
@@ -81,8 +70,8 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
       }
     } catch (error) {
       if (isMissingBackendEndpoint(error)) {
-        // Fallback: open mail client and record activity
-        window.location.href = buildMailtoUrl();
+        // Fallback: open Gmail popup and record activity
+        openGmailComposePopup({ to: lead.email, subject, body });
         try {
           await recordActivity.mutateAsync({
             lead,
@@ -91,13 +80,13 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
               channel: "email",
               subject,
               body,
-              content: "Connected email send unavailable; mail client opened",
+              content: "Connected email send unavailable; Gmail composer opened",
             },
           });
         } catch {
           // Non-critical
         }
-        toast.info("Connected email not available. Opening your mail client.");
+        toast.info("Connected email not available. Opening Gmail popup.");
         return;
       }
       toast.error(error instanceof Error ? error.message : "Failed to send email");

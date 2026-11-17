@@ -453,16 +453,19 @@ function DashboardLayout() {
           <div
             className="relative rounded-xl border overflow-hidden"
             style={{
-              background: "linear-gradient(155deg, #0b0d22 0%, #070816 100%)",
-              borderColor: "rgba(25, 25, 112, 0.55)",
-              boxShadow: "inset 0 1px 0 rgba(25, 25, 112, 0.3), 0 6px 16px -6px rgba(0, 0, 0, 0.55)",
+              borderColor: sidebarExpanded ? "rgba(25, 25, 112, 0.55)" : "transparent",
+              boxShadow: sidebarExpanded
+                ? "inset 0 1px 0 rgba(25, 25, 112, 0.3), 0 6px 16px -6px rgba(0, 0, 0, 0.55)"
+                : "none",
+              transition: `border-color ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}, box-shadow ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
             }}
           >
-            {/* Layered flowing #191970 waves in the upper-right portion of the card */}
+            {/* Card surface + layered flowing #191970 waves (shown only when expanded so collapsed rail shows the circular avatar cleanly without a square box) */}
             <div
               aria-hidden="true"
               className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl"
               style={{
+                background: "linear-gradient(155deg, #0b0d22 0%, #070816 100%)",
                 opacity: sidebarExpanded ? 1 : 0,
                 transition: `opacity 200ms ${SIDEBAR_EASE}`,
               }}

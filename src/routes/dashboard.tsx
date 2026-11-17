@@ -448,20 +448,99 @@ function DashboardLayout() {
           </div>
         </nav>
 
-        {/* Account / usage dock — one persistent surface instead of two
-            hard-swapped layouts. The avatar (with a thin usage ring baked
-            in, so collapsed still shows something) stays put in both
-            states; only the identity text and the credits block fade and
-            collapse, on the same easing/timing as the rail width. */}
+        {/* Account / usage dock — dark navy card with layered #191970 waves */}
         <div className="p-2.5 border-t border-border shrink-0">
           <div
-            className="rounded-xl border border-border overflow-hidden"
-            style={{ background: "oklch(0.135 0.024 265)" }}
+            className="relative rounded-xl border overflow-hidden"
+            style={{
+              background: "linear-gradient(155deg, #0b0d22 0%, #070816 100%)",
+              borderColor: "rgba(25, 25, 112, 0.55)",
+              boxShadow: "inset 0 1px 0 rgba(25, 25, 112, 0.3), 0 6px 16px -6px rgba(0, 0, 0, 0.55)",
+            }}
           >
+            {/* Layered flowing #191970 waves in the upper-right portion of the card */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl"
+              style={{
+                opacity: sidebarExpanded ? 1 : 0,
+                transition: `opacity 200ms ${SIDEBAR_EASE}`,
+              }}
+            >
+              <svg
+                viewBox="0 0 236 104"
+                preserveAspectRatio="none"
+                className="w-full h-full block"
+              >
+                <defs>
+                  <radialGradient id="mast-wave-ambient" cx="88%" cy="16%" r="58%">
+                    <stop offset="0%" stopColor="#191970" stopOpacity="0.45" />
+                    <stop offset="100%" stopColor="#191970" stopOpacity="0" />
+                  </radialGradient>
+                  <linearGradient id="mast-wave-back" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#191970" stopOpacity="0.06" />
+                    <stop offset="45%" stopColor="#191970" stopOpacity="0.38" />
+                    <stop offset="100%" stopColor="#191970" stopOpacity="0.58" />
+                  </linearGradient>
+                  <linearGradient id="mast-wave-mid" x1="0%" y1="50%" x2="100%" y2="10%">
+                    <stop offset="0%" stopColor="#191970" stopOpacity="0.16" />
+                    <stop offset="50%" stopColor="#191970" stopOpacity="0.62" />
+                    <stop offset="100%" stopColor="#191970" stopOpacity="0.82" />
+                  </linearGradient>
+                  <linearGradient id="mast-wave-front" x1="0%" y1="40%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#191970" stopOpacity="0.35" />
+                    <stop offset="100%" stopColor="#191970" stopOpacity="0.98" />
+                  </linearGradient>
+                </defs>
+
+                <rect width="236" height="104" fill="url(#mast-wave-ambient)" />
+
+                {/* Back flowing wave */}
+                <path
+                  d="M 68 0 C 94 10, 108 42, 146 42 C 178 42, 198 22, 236 30 L 236 0 Z"
+                  fill="url(#mast-wave-back)"
+                  stroke="#191970"
+                  strokeOpacity="0.75"
+                  strokeWidth="1"
+                />
+
+                {/* Middle S-curve wave */}
+                <path
+                  d="M 96 0 C 118 14, 128 54, 166 50 C 194 47, 210 20, 236 22 L 236 0 Z"
+                  fill="url(#mast-wave-mid)"
+                  stroke="#191970"
+                  strokeOpacity="0.9"
+                  strokeWidth="1"
+                />
+
+                {/* Upper-right crest wave */}
+                <path
+                  d="M 138 0 C 154 16, 164 42, 194 38 C 212 36, 224 16, 236 12 L 236 0 Z"
+                  fill="url(#mast-wave-front)"
+                  stroke="#191970"
+                  strokeWidth="1"
+                />
+
+                {/* Lower subtle right swell */}
+                <path
+                  d="M 122 80 C 158 76, 186 44, 236 42 L 236 80 Z"
+                  fill="#191970"
+                  fillOpacity="0.28"
+                  stroke="#191970"
+                  strokeOpacity="0.55"
+                  strokeWidth="0.9"
+                />
+              </svg>
+            </div>
+
             {/* Identity row */}
-            <div className="flex items-center gap-2.5 px-2.5 py-2">
+            <div className="relative z-10 flex items-center gap-2.5 px-2.5 py-2.5">
               <div
-                className="relative shrink-0 size-8 rounded-full overflow-hidden border border-brand/30 bg-brand/20 flex items-center justify-center text-[10px] font-bold text-brand"
+                className="relative shrink-0 size-8 rounded-full overflow-hidden border flex items-center justify-center text-[10px] font-bold text-slate-200"
+                style={{
+                  borderColor: "rgba(25, 25, 112, 0.7)",
+                  backgroundColor: "rgba(25, 25, 112, 0.32)",
+                }}
                 title={`${creditPct}% of credits used`}
               >
                 {/* Thin usage ring — doubles as the "tiny usage indicator"
@@ -470,7 +549,7 @@ function DashboardLayout() {
                   aria-hidden="true"
                   className="absolute inset-0 rounded-full pointer-events-none z-10"
                   style={{
-                    background: `conic-gradient(var(--brand) ${creditPct * 3.6}deg, var(--color-border) 0deg)`,
+                    background: `conic-gradient(#191970 ${creditPct * 3.6}deg, rgba(25, 25, 112, 0.22) 0deg)`,
                     WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
                     mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))",
                   }}
@@ -487,10 +566,10 @@ function DashboardLayout() {
                 )}
               </div>
               <div className="min-w-0 overflow-hidden">
-                <p className="text-xs font-semibold text-foreground truncate" style={labelStyle}>
+                <p className="text-xs font-semibold text-white truncate" style={labelStyle}>
                   {user?.fullName || "My Workspace"}
                 </p>
-                <p className="text-[10px] text-muted-foreground truncate" style={labelStyle}>
+                <p className="text-[10px] text-slate-400 truncate" style={labelStyle}>
                   {planName} Plan
                 </p>
               </div>
@@ -500,7 +579,7 @@ function DashboardLayout() {
                 rail doesn't keep reserving space for hidden content while
                 collapsed. */}
             <div
-              className="grid"
+              className="relative z-10 grid"
               style={{
                 gridTemplateRows: sidebarExpanded ? "1fr" : "0fr",
                 transition: `grid-template-rows ${SIDEBAR_DURATION_MS}ms ${SIDEBAR_EASE}`,
@@ -508,20 +587,34 @@ function DashboardLayout() {
             >
               <div className="overflow-hidden min-h-0">
                 <div className="px-2.5 pb-2.5 pt-0.5" style={labelStyle}>
-                  <div className="h-1 w-full bg-border rounded-full overflow-hidden">
+                  <div
+                    className="h-1.5 w-full rounded-full overflow-hidden"
+                    style={{
+                      backgroundColor: "#090a24",
+                      boxShadow: "inset 0 0 0 1px rgba(25, 25, 112, 0.4)",
+                    }}
+                  >
                     <div
-                      className="h-full bg-brand rounded-full"
-                      style={{ width: `${creditPct}%`, transition: `width 700ms ${SIDEBAR_EASE}` }}
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${creditPct}%`,
+                        backgroundColor: "#191970",
+                        transition: `width 700ms ${SIDEBAR_EASE}`,
+                      }}
                     />
                   </div>
-                  <div className="mt-1.5 flex items-center justify-between gap-2">
-                    <p className="text-[10px] text-foreground whitespace-nowrap">
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <p className="text-[10.5px] font-semibold text-white tabular-nums whitespace-nowrap">
                       {credits.remaining.toLocaleString()}
-                      <span className="text-muted-foreground">/{credits.limit.toLocaleString()}</span>
+                      <span className="font-normal text-slate-400">/{credits.limit.toLocaleString()}</span>
                     </p>
                     <Link
                       to="/dashboard/subscription"
-                      className="text-[10px] font-semibold text-brand hover:text-brand-dark transition-colors whitespace-nowrap"
+                      className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-medium text-slate-200 hover:text-white transition-colors whitespace-nowrap"
+                      style={{
+                        backgroundColor: "rgba(25, 25, 112, 0.45)",
+                        border: "1px solid #191970",
+                      }}
                     >
                       Upgrade →
                     </Link>

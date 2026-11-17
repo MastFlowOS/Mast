@@ -5857,19 +5857,19 @@ class MapsScraper:
                             is_cold_start = (yielded == 0 or clicks_in_attempt <= 1)
                             # Stage A: Fast conditional mount wait
                             # For cold card 0, component hydration takes ~6-8s.
-                            # For warm cards, it resolves in ~0.4s-1.5s and immediately breaks out of the loop.
+                            # For warm cards, it resolves in ~0.4s-2.5s and immediately breaks out of the loop.
                             stage_a_budget_ms = int(
                                 os.environ.get("MAST_STAGE_A_COLD_MOUNT_WAIT_MS", "8000")
                                 if is_cold_start
-                                else os.environ.get("MAST_STAGE_A_MOUNT_WAIT_MS", "4000")
+                                else os.environ.get("MAST_STAGE_A_MOUNT_WAIT_MS", "4500")
                             )
                             stage_a_timeout_s = (
                                 self.config.place_timeout_ms / 1000.0
                                 if is_fast_mode
                                 else max(1.2, stage_a_budget_ms / 1000.0)
                             )
-                            # Stage B: Immediate controlled retry wait (configurable, default 2500ms)
-                            stage_b_budget_ms = int(os.environ.get("MAST_STAGE_B_MOUNT_WAIT_MS", "2500"))
+                            # Stage B: Immediate controlled retry wait (configurable, default 4000ms)
+                            stage_b_budget_ms = int(os.environ.get("MAST_STAGE_B_MOUNT_WAIT_MS", "4000"))
                             stage_b_timeout_s = (
                                 self.config.place_timeout_ms / 1000.0
                                 if is_fast_mode
@@ -5880,10 +5880,32 @@ class MapsScraper:
                             panel_verified = False
                             panel_snap: dict = {}
                             mismatch_reason: str = "waiting_for_detail_panel"
+                            pre_click_url = (pre_click_snapshot or {}).get("url") or ""
+                            pre_click_pid = ((pre_click_snapshot or {}).get("place_id") or "").lower()
+                            target_card_pid = (_stable_place_id_from_url(card_href or "") or "").lower()
+                            nav_in_flight = False
+                            hydration_grace_granted = False
+                            stage_a_started = loop.time()
+                            early_dead_click_s = 3.2 if is_cold_start else 2.2
+                            hydration_grace_s = float(
+                                os.environ.get("MAST_STAGE_A_HYDRATION_GRACE_MS", "2500")
+                            ) / 1000.0
+
+                            def _check_nav_in_flight(url_now: str, snap_now: dict | None) -> bool:
+                                if not url_now or "/maps/place/" not in url_now or "/maps/search/" in url_now:
+                                    return False
+                                snap_pid_now = ((snap_now or {}).get("place_id") or "").lower()
+                                if target_card_pid and snap_pid_now:
+                                    return snap_pid_now == target_card_pid and snap_pid_now != pre_click_pid
+                                if url_now != pre_click_url:
+                                    if pre_click_pid and snap_pid_now == pre_click_pid:
+                                        return False
+                                    return True
+                                return False
 
                             # ── STAGE A: Fast Conditional Detail DOM Mount Wait ──
                             with self._profiler.timer("place_panel_wait"):
-                                stage_a_deadline = loop.time() + stage_a_timeout_s
+                                stage_a_deadline = stage_a_started + stage_a_timeout_s
                                 while loop.time() < stage_a_deadline:
                                     curr_url = getattr(page, "url", "") or ""
                                     if "/maps/place/" in curr_url and "/maps/search/" not in curr_url:
@@ -5891,6 +5913,8 @@ class MapsScraper:
                                             time_to_place_url_ms = (loop.time() - t0) * 1000.0
 
                                     snap = await _read_panel_identity_snapshot(page, panel)
+                                    if _check_nav_in_flight(curr_url, snap):
+                                        nav_in_flight = True
                                     if _is_real_detail_dom_mounted(snap, expected_name=expected_card_name, last_verified_panel=last_verified_panel):
                                         ok, reason = _evaluate_panel_identity(
                                             snap,
@@ -5940,6 +5964,26 @@ class MapsScraper:
                                     if should_stop is not None and should_stop():
                                         self._profiler.incr("place_panel_wait_aborted")
                                         return "panel_timeout", None, "panel_wait_timeout"
+
+                                    if not is_fast_mode:
+                                        elapsed_a = loop.time() - stage_a_started
+                                        if (
+                                            not nav_in_flight
+                                            and not stale_panel_detected
+                                            and not is_minimal_stub
+                                            and not snap.get("open")
+                                            and not (snap.get("h1_name") or "").strip()
+                                            and elapsed_a >= early_dead_click_s
+                                        ):
+                                            break
+                                        if (
+                                            nav_in_flight
+                                            and not hydration_grace_granted
+                                            and not stale_panel_detected
+                                            and loop.time() + poll_interval_s >= stage_a_deadline
+                                        ):
+                                            hydration_grace_granted = True
+                                            stage_a_deadline += hydration_grace_s
 
                                     await asyncio.sleep(poll_interval_s)
 

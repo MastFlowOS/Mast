@@ -518,12 +518,13 @@ desktopRouter.post("/tasks/claim", requireAuth, claimLimiter, async (req: Reques
     const baseConcurrencyCap = getPlanConcurrency(planTierId, env.PLAN_CONCURRENCY_OVERRIDES);
     // Desktop scouts run on the user's own PC hardware. When the worker reports its
     // hardware-measured scout capacity (`body.maxScouts`), honor that exact capacity
-    // (1 -> 1, 2 -> 2, 100 -> 100), bounded only by an explicit ops MAST_MAX_SCOUTS override.
+    // up to the hard ceiling of 15 concurrent scouts (further bounded by MAST_MAX_SCOUTS if lower).
     const maxScoutsEnv = process.env.MAST_MAX_SCOUTS ? parseInt(process.env.MAST_MAX_SCOUTS, 10) : undefined;
+    const hardCeiling = maxScoutsEnv !== undefined ? Math.min(15, maxScoutsEnv) : 15;
     const concurrencyCap =
       body.maxScouts !== undefined
-        ? (maxScoutsEnv !== undefined ? Math.min(maxScoutsEnv, body.maxScouts) : body.maxScouts)
-        : (maxScoutsEnv !== undefined ? maxScoutsEnv : Math.max(3, baseConcurrencyCap));
+        ? Math.min(hardCeiling, body.maxScouts)
+        : Math.min(hardCeiling, Math.max(3, baseConcurrencyCap));
 
     // 2. Count active running tasks for this user
     const { data: userRunningTasks } = await desktopDeps.db

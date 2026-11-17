@@ -448,6 +448,19 @@ function GetLeads() {
     setActivePlan,
   } = useDesktopWorker();
   const [executionTarget, setExecutionTarget] = useState<"desktop" | "cloud">("desktop");
+  const hasAutoWarmedWorkerRef = useRef(false);
+
+  // Pre-warm the lightweight Python worker process when opening the Leads/Discovery view
+  // in MAST Desktop so cold worker startup happens while the user configures a search.
+  useEffect(() => {
+    if (!isDesktop || executionTarget !== "desktop") return;
+    if (hasAutoWarmedWorkerRef.current) return;
+    if (workerStatus.is_running || isWorkerLoading || workerStatus.last_error) return;
+    hasAutoWarmedWorkerRef.current = true;
+    void startWorker().catch(() => {
+      // Non-fatal: handleGenerate still runs prepareAndStartWorker() and surfaces actionable errors.
+    });
+  }, [isDesktop, executionTarget, workerStatus.is_running, workerStatus.last_error, isWorkerLoading, startWorker]);
 
   const handleSelectExecutionTarget = (target: "desktop" | "cloud") => {
     setExecutionTarget(target);

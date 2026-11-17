@@ -2401,23 +2401,23 @@ describe("Desktop Discovery Cloud Coordination (/v1/desktop)", () => {
     assert.equal(data2c.task, null);
     assert.equal(data2c.concurrencyCap, 2);
 
-    // 3) High-RAM PC maxScouts = 25 on free plan -> allows all 25 scouts without artificial 3-scout cap
-    makeTasks(26);
-    for (let i = 0; i < 25; i++) {
+    // 3) High-RAM PC maxScouts = 25 on free plan -> capped at hard ceiling of 15 scouts
+    makeTasks(20);
+    for (let i = 0; i < 15; i++) {
       const r = await fetch(`${baseUrl}/tasks/claim`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenUserB}` },
         body: JSON.stringify({ workerId: "pc-high", maxScouts: 25 }),
       });
-      assert.ok((await r.json()).task, `High-RAM scout ${i + 1}/25 must be allowed`);
+      assert.ok((await r.json()).task, `High-RAM scout ${i + 1}/15 must be allowed`);
     }
-    const res26 = await fetch(`${baseUrl}/tasks/claim`, {
+    const res16 = await fetch(`${baseUrl}/tasks/claim`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenUserB}` },
       body: JSON.stringify({ workerId: "pc-high", maxScouts: 25 }),
     });
-    const data26 = await res26.json();
-    assert.equal(data26.task, null);
-    assert.equal(data26.concurrencyCap, 25);
+    const data16 = await res16.json();
+    assert.equal(data16.task, null);
+    assert.equal(data16.concurrencyCap, 15);
   });
 });

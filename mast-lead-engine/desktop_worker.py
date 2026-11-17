@@ -56,6 +56,7 @@ def get_desktop_data_dir() -> Path:
 
 DEFAULT_PER_SCOUT_MB = 260.0
 DEFAULT_DESKTOP_RESERVE_MB = 512.0
+DEFAULT_MAX_DESKTOP_SCOUTS = 15
 
 
 def get_available_memory_mb() -> Optional[float]:
@@ -114,10 +115,11 @@ def compute_desktop_max_scouts(
     available_memory_mb: Optional[float],
     per_scout_mb: Optional[float] = None,
     reserve_mb: Optional[float] = None,
+    max_scouts: Optional[int] = None,
 ) -> int:
     """
-    Computes exact concurrent desktop scout capacity strictly from free/available RAM.
-    No artificial upper cap: if the PC has headroom for 1 -> 1, 2 -> 2, 100 -> 100.
+    Computes exact concurrent desktop scout capacity strictly from free/available RAM,
+    clamped to the hard ceiling (`DEFAULT_MAX_DESKTOP_SCOUTS`, 15).
     """
     if per_scout_mb is None:
         raw_per = os.environ.get("MAST_BROWSER_MEMORY_ESTIMATE_MB") or os.environ.get("BROWSER_MEMORY_ESTIMATE_MB")
@@ -135,16 +137,19 @@ def compute_desktop_max_scouts(
             reserve_mb = DEFAULT_DESKTOP_RESERVE_MB
     reserve_mb = max(0.0, float(reserve_mb))
 
+    ceiling = DEFAULT_MAX_DESKTOP_SCOUTS if max_scouts is None else max(1, min(DEFAULT_MAX_DESKTOP_SCOUTS, int(max_scouts)))
+
     if available_memory_mb is None:
         return 1
 
     headroom_mb = max(0.0, float(available_memory_mb) - reserve_mb)
-    return max(1, int(headroom_mb // per_scout_mb))
+    return min(ceiling, max(1, int(headroom_mb // per_scout_mb)))
 
 
 def resolve_desktop_concurrency(raw_value: Optional[str] = None) -> tuple[int, Optional[float]]:
     """
-    Resolves scout concurrency from an explicit integer override or 'auto' (measured from free RAM).
+    Resolves scout concurrency from an explicit integer override or 'auto' (measured from free RAM),
+    clamped to `DEFAULT_MAX_DESKTOP_SCOUTS` (15).
     Returns (concurrency, available_memory_mb).
     """
     avail_mb = get_available_memory_mb()
@@ -158,7 +163,7 @@ def resolve_desktop_concurrency(raw_value: Optional[str] = None) -> tuple[int, O
         return compute_desktop_max_scouts(avail_mb), avail_mb
     if parsed <= 0:
         return compute_desktop_max_scouts(avail_mb), avail_mb
-    return parsed, avail_mb
+    return min(DEFAULT_MAX_DESKTOP_SCOUTS, parsed), avail_mb
 
 
 def get_expected_chromium_revisions() -> tuple[Optional[str], Optional[str]]:

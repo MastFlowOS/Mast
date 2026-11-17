@@ -888,15 +888,15 @@ class TestHardwareScoutCapacity(unittest.TestCase):
         self.assertEqual(compute_desktop_max_scouts(772.0, per_scout_mb=260.0, reserve_mb=512.0), 1)
         # Headroom for exactly 2 scouts -> 2 scouts
         self.assertEqual(compute_desktop_max_scouts(1032.0, per_scout_mb=260.0, reserve_mb=512.0), 2)
-        # Headroom for 100 scouts -> 100 scouts (no artificial cap)
-        self.assertEqual(compute_desktop_max_scouts(26512.0, per_scout_mb=260.0, reserve_mb=512.0), 100)
+        # Headroom above 15 scouts -> hard ceiling of 15 scouts
+        self.assertEqual(compute_desktop_max_scouts(26512.0, per_scout_mb=260.0, reserve_mb=512.0), 15)
         # Unknown memory falls back safely to 1
         self.assertEqual(compute_desktop_max_scouts(None), 1)
 
     def test_resolve_desktop_concurrency_auto_and_explicit(self):
         with patch("desktop_worker.get_available_memory_mb", return_value=26512.0):
             scouts, avail = resolve_desktop_concurrency("auto")
-            self.assertEqual(scouts, 100)
+            self.assertEqual(scouts, 15)
             self.assertEqual(avail, 26512.0)
 
         with patch("desktop_worker.get_available_memory_mb", return_value=1032.0):
@@ -906,6 +906,10 @@ class TestHardwareScoutCapacity(unittest.TestCase):
         with patch("desktop_worker.get_available_memory_mb", return_value=26512.0):
             scouts, _ = resolve_desktop_concurrency("4")
             self.assertEqual(scouts, 4)
+
+        with patch("desktop_worker.get_available_memory_mb", return_value=26512.0):
+            scouts, _ = resolve_desktop_concurrency("50")
+            self.assertEqual(scouts, 15)
 
 
 if __name__ == "__main__":

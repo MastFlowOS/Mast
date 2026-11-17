@@ -871,7 +871,10 @@ class TestDesktopCoordinatorClient(unittest.IsolatedAsyncioTestCase):
 class TestPathAndEnvironmentSafety(unittest.TestCase):
     def test_paths_with_spaces_in_data_dir(self):
         with tempfile.TemporaryDirectory(prefix="Path With Spaces_") as space_dir:
-            with patch.dict(os.environ, {"LOCALAPPDATA": space_dir}):
+            with patch.dict(
+                os.environ,
+                {"LOCALAPPDATA": space_dir, "HOME": space_dir, "USERPROFILE": space_dir},
+            ):
                 data_dir = get_desktop_data_dir()
                 self.assertTrue(data_dir.exists())
                 self.assertIn("Path With Spaces", str(data_dir))

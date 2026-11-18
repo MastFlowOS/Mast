@@ -271,6 +271,33 @@ describe("Discover redesign — Target Region is a country selector", () => {
     expect(ca.getAttribute("aria-selected")).toBe("true");
     expect(h.toastError).toHaveBeenCalledTimes(1);
   });
+
+  it("shows an X button on picked country pills to remove directly and caps selection at 5 countries", async () => {
+    await renderDiscover("pro");
+    await pickCountry("United Kingdom");
+    await pickCountry("Germany");
+    expect(regionTrigger().textContent).toContain("United States");
+    expect(regionTrigger().textContent).toContain("United Kingdom");
+    expect(regionTrigger().textContent).toContain("Germany");
+
+    // Remove United States directly via its pill X without searching
+    fireEvent.click(screen.getByRole("button", { name: "Remove United States" }));
+    expect(regionTrigger().textContent).not.toContain("United States");
+    expect(regionTrigger().textContent).toContain("United Kingdom");
+    expect(regionTrigger().textContent).toContain("Germany");
+
+    // Pick 3 more countries to hit the hard ceiling of 5 (UK, Germany, Canada, France, Japan)
+    await pickCountry("Canada");
+    await pickCountry("France");
+    await pickCountry("Japan");
+    expect(regionTrigger().textContent).toContain("5/5");
+
+    // Attempting a 6th country is rejected with toast error and stays at 5
+    await pickCountry("Brazil");
+    expect(h.toastError).toHaveBeenCalledTimes(1);
+    expect(regionTrigger().textContent).not.toContain("Brazil");
+    expect(regionTrigger().textContent).toContain("5/5");
+  });
 });
 
 describe("Discover redesign — preserved behavior", () => {

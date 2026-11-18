@@ -116,6 +116,16 @@ describe("2. plan gating stays correct", () => {
       assert.equal(scope.validateDiscoveryRegion(c, paid).ok, true, c);
     }
   });
+
+  test("hard ceiling of 5 countries per discovery scope", () => {
+    const five = "United States, Canada, United Kingdom, Germany, France";
+    assert.equal(scope.validateDiscoveryRegion(five, paid).ok, true);
+
+    const six = `${five}, Japan`;
+    const res = scope.validateDiscoveryRegion(six, paid);
+    assert.equal(res.ok, false);
+    if (!res.ok) assert.equal(res.code, "invalid_region");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────

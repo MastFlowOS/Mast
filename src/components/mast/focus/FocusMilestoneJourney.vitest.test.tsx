@@ -56,16 +56,18 @@ describe("FocusMilestoneJourney — peak popups & Next Tier Rewards", () => {
     expect(onClaimReward).toHaveBeenCalledWith("closer");
   });
 
-  it("shows Claimed state for claimed peaks and XP needed for locked peaks", () => {
+  it("shows Claimed state and peak checkmark for claimed current tier, and XP needed for locked peaks", () => {
     render(
       <FocusMilestoneJourney
         xp={700}
         currentName="Rainmaker"
         nextName="Operator"
-        claimedTierIds={["prospector"]}
+        claimedTierIds={["prospector", "rainmaker"]}
         onClaimReward={vi.fn()}
       />,
     );
+
+    expect(screen.getByTestId("summit-check-rainmaker")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Prospector:/i }));
     expect(screen.getByText("Claimed")).toBeTruthy();

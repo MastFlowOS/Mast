@@ -525,9 +525,10 @@ export function FocusMilestoneJourney({
                       className="focus-summit-circle-svg"
                     />
 
-                    {/* Completed checkmark */}
-                    {isPassed && (
+                    {/* Completed / claimed current-tier checkmark */}
+                    {(isPassed || (isCurrent && claimedSet.has(tier.id))) && (
                       <path
+                        data-testid={`summit-check-${tier.id}`}
                         d={`M ${peak.x - 4.5} ${peak.y - 0.5} L ${peak.x - 1} ${peak.y + 3.5} L ${peak.x + 5} ${peak.y - 3.5}`}
                         fill="none"
                         stroke="#34d399"
@@ -537,8 +538,8 @@ export function FocusMilestoneJourney({
                       />
                     )}
 
-                    {/* Current tier center core */}
-                    {isCurrent && (
+                    {/* Current tier center core (replaced by checkmark once current tier reward is claimed) */}
+                    {isCurrent && !claimedSet.has(tier.id) && (
                       <circle
                         cx={peak.x}
                         cy={peak.y}

@@ -66,7 +66,13 @@ import {
   panelSurface,
   type SummaryRow,
 } from "@/components/mast/discover/DiscoverPanels";
-import { GLOBAL_SCOPE, isLocalGeoToken, parseGeoScope } from "@/lib/geo/scope";
+import {
+  GLOBAL_SCOPE,
+  MAX_SELECTED_COUNTRIES,
+  findCountryByName,
+  isLocalGeoToken,
+  parseGeoScope,
+} from "@/lib/geo/scope";
 import {
   DISCOVERY_METHODS,
   discoveryMethodForPlan,
@@ -328,7 +334,13 @@ function GetLeads() {
       // tokens the backend actually understands are applied.
       const stored: Region[] = parseGeoScope(settings.defaultRegions).tokens;
       if (stored.length > 0) {
-        setRegions(stored);
+        let countrySeen = 0;
+        const clamped = stored.filter((tok) => {
+          if (!findCountryByName(tok)) return true;
+          countrySeen += 1;
+          return countrySeen <= MAX_SELECTED_COUNTRIES;
+        });
+        setRegions(clamped);
         hasInitializedRef.current = true;
       }
     }
@@ -518,13 +530,27 @@ function GetLeads() {
     if (r === GLOBAL_SCOPE) {
       setRegions([GLOBAL_SCOPE]);
     } else {
+      const withoutGlobal = regions.filter((x) => x !== GLOBAL_SCOPE);
+      const isRemoving = withoutGlobal.includes(r);
+      if (!isRemoving && findCountryByName(r)) {
+        const selectedCountryCount = withoutGlobal.filter((x) => Boolean(findCountryByName(x))).length;
+        if (selectedCountryCount >= MAX_SELECTED_COUNTRIES) {
+          toast.error(`You can select up to ${MAX_SELECTED_COUNTRIES} countries at a time.`);
+          return;
+        }
+      }
       setRegions((prev) => {
-        const withoutGlobal = prev.filter((x) => x !== GLOBAL_SCOPE);
-        return withoutGlobal.includes(r)
-          ? withoutGlobal.filter((x) => x !== r).length === 0
+        const prevWithoutGlobal = prev.filter((x) => x !== GLOBAL_SCOPE);
+        if (prevWithoutGlobal.includes(r)) {
+          return prevWithoutGlobal.filter((x) => x !== r).length === 0
             ? [r] // keep at least one
-            : withoutGlobal.filter((x) => x !== r)
-          : [...withoutGlobal, r];
+            : prevWithoutGlobal.filter((x) => x !== r);
+        }
+        if (findCountryByName(r)) {
+          const prevCountryCount = prevWithoutGlobal.filter((x) => Boolean(findCountryByName(x))).length;
+          if (prevCountryCount >= MAX_SELECTED_COUNTRIES) return prevWithoutGlobal;
+        }
+        return [...prevWithoutGlobal, r];
       });
     }
   };

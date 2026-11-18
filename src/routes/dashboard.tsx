@@ -179,6 +179,8 @@ function DashboardLayout() {
     used: user?.creditsUsed ?? 0,
     remaining: user?.creditsRemaining ?? 1000,
   };
+  const planId    = String(account?.subscription?.plan ?? user?.plan ?? "pro").toLowerCase();
+  const isMaxPlan = planId === "premium" || planId === "scale";
   const planName  = account?.subscription?.name ?? user?.plan ?? "Pro";
   const creditPct = credits.limit > 0
     ? Math.min(100, Math.round((credits.used / credits.limit) * 100)) : 0;
@@ -232,7 +234,7 @@ function DashboardLayout() {
           type: "credits_low",
           title: "Credits running low",
           description: `${credits.remaining.toLocaleString()} credit${credits.remaining === 1 ? "" : "s"} remaining.`,
-          actionLabel: "Upgrade →",
+          actionLabel: isMaxPlan ? "Manage →" : "Upgrade →",
           actionHref: "/dashboard/subscription",
           timestamp: 10,
           onAction: () => {
@@ -245,7 +247,7 @@ function DashboardLayout() {
     }
 
     return list;
-  }, [dueFollowupsCount, pathname, navigate, account, user, credits.limit, credits.remaining]);
+  }, [dueFollowupsCount, pathname, navigate, account, user, credits.limit, credits.remaining, isMaxPlan]);
 
   const { activeEvent } = useDynamicIsland(ambientEvents);
 
@@ -611,16 +613,18 @@ function DashboardLayout() {
                       {credits.remaining.toLocaleString()}
                       <span className="font-normal text-slate-400">/{credits.limit.toLocaleString()}</span>
                     </p>
-                    <Link
-                      to="/dashboard/subscription"
-                      className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-medium text-slate-200 hover:text-white transition-colors whitespace-nowrap"
-                      style={{
-                        backgroundColor: "rgba(25, 25, 112, 0.45)",
-                        border: "1px solid #191970",
-                      }}
-                    >
-                      Upgrade →
-                    </Link>
+                    {!isMaxPlan && (
+                      <Link
+                        to="/dashboard/subscription"
+                        className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-medium text-slate-200 hover:text-white transition-colors whitespace-nowrap"
+                        style={{
+                          backgroundColor: "rgba(25, 25, 112, 0.45)",
+                          border: "1px solid #191970",
+                        }}
+                      >
+                        Upgrade →
+                      </Link>
+                    )}
                   </div>
                 </div>
               </div>

@@ -17,6 +17,9 @@ import { COUNTRIES, REGION_NAMES, type CountryInfo, type RegionName } from "./co
 
 export const GLOBAL_SCOPE = "Global";
 
+/** Hard ceiling on the number of individual countries in a single discovery scope. */
+export const MAX_SELECTED_COUNTRIES = 5;
+
 /** The only continent a plan without `regionalSearch` may search. Kept
  * identical to the pre-existing server gate (discover.ts), now extended to
  * the countries that sit inside it. */
@@ -124,6 +127,13 @@ export function validateDiscoveryRegion(regionField: string, opts: { regionalSea
       ok: false,
       code: "invalid_region",
       message: `Unsupported location: ${scope.invalid.join(", ")}. Choose a supported country or region.`,
+    };
+  }
+  if (scope.countries.length > MAX_SELECTED_COUNTRIES) {
+    return {
+      ok: false,
+      code: "invalid_region",
+      message: `Select at most ${MAX_SELECTED_COUNTRIES} countries per discovery run.`,
     };
   }
   if (!opts.regionalSearch && !isLocalGeoScope(scope)) {

@@ -11,10 +11,15 @@
  * only presents them.
  */
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
-import { CheckSquare, ChevronDown, Globe2, Lock, MapPin, Search } from "lucide-react";
+import { CheckSquare, ChevronDown, Globe2, Lock, MapPin, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
-import { GLOBAL_SCOPE, findCountryByName, isLocalGeoToken } from "@/lib/geo/scope";
+import {
+  GLOBAL_SCOPE,
+  MAX_SELECTED_COUNTRIES,
+  findCountryByName,
+  isLocalGeoToken,
+} from "@/lib/geo/scope";
 import { IconTile, panelSurface } from "./DiscoverPanels";
 
 // d3-geo + the atlas load only after the form has rendered.
@@ -44,7 +49,7 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Close on outside click.
@@ -87,6 +92,10 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
 
   const current = regions[regions.length - 1];
   const extra = Math.max(0, regions.length - 1);
+  const selectedCountryCount = regions.filter(
+    (r) => r !== GLOBAL_SCOPE && Boolean(findCountryByName(r)),
+  ).length;
+  const atCountryCeiling = selectedCountryCount >= MAX_SELECTED_COUNTRIES;
   const locked = (r: string) => !hasRegionalSearch && !isLocalGeoToken(r);
 
   return (
@@ -134,10 +143,10 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
 
         {/* The dropdown — pinned to the bottom of the card */}
         <div className="relative mt-2">
-          <button
+          <div
             ref={triggerRef}
-            type="button"
             role="combobox"
+            tabIndex={0}
             aria-haspopup="listbox"
             aria-expanded={open}
             aria-controls="region-listbox"
@@ -145,51 +154,115 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
             onClick={() => setOpen((o) => !o)}
             onKeyDown={(e) => {
               if (e.key === "Escape") setOpen(false);
+              if (e.key === "Enter" || e.key === " ") {
+                if (e.target === triggerRef.current) {
+                  e.preventDefault();
+                  setOpen((o) => !o);
+                }
+              }
             }}
             className={cn(
-              "flex h-11 w-full cursor-pointer items-center gap-2.5 rounded-xl border bg-black/25 px-3 text-left text-[13px] font-medium text-foreground outline-none transition-colors",
+              "flex min-h-11 w-full cursor-pointer items-center justify-between gap-2 rounded-xl border bg-black/25 px-2.5 py-1.5 text-left text-[13px] font-medium text-foreground outline-none transition-colors",
               "focus-visible:ring-2 focus-visible:ring-brand/45",
               open ? "border-brand/60" : "border-white/10 hover:border-white/25",
             )}
           >
-            <RegionMark name={current} />
-            <span className="min-w-0 flex-1 truncate">{current ?? "Select a country"}</span>
-            {extra > 0 && <span className="shrink-0 text-xs text-muted-foreground">+{extra}</span>}
-            <ChevronDown
-              aria-hidden="true"
-              className={cn(
-                "size-4 shrink-0 text-muted-foreground transition-transform",
-                open && "rotate-180",
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+              {regions.length > 0 ? (
+                regions.map((r) => (
+                  <span
+                    key={r}
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-white/[0.12] bg-white/[0.06] py-1 pl-2 pr-1.5 text-xs font-medium text-foreground"
+                  >
+                    <RegionMark name={r} small />
+                    <span className="truncate">{r}</span>
+                    <button
+                      type="button"
+                      aria-label={regions.length > 1 ? `Remove ${r}` : `Change ${r}`}
+                      title={
+                        regions.length > 1
+                          ? `Remove ${r}`
+                          : "Change region"
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (regions.length > 1) {
+                          onToggle(r);
+                        } else {
+                          setOpen(true);
+                        }
+                      }}
+                      className="inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+                    >
+                      <X className="size-3" aria-hidden="true" />
+                    </button>
+                  </span>
+                ))
+              ) : (
+                <span className="px-1 text-muted-foreground">Select a country</span>
               )}
-            />
-          </button>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1.5">
+              {selectedCountryCount > 0 && (
+                <span
+                  className={cn(
+                    "font-mono text-[11px] tabular-nums",
+                    atCountryCeiling ? "text-amber-300" : "text-muted-foreground",
+                  )}
+                  title={`Up to ${MAX_SELECTED_COUNTRIES} countries`}
+                >
+                  {selectedCountryCount}/{MAX_SELECTED_COUNTRIES}
+                </span>
+              )}
+              <ChevronDown
+                aria-hidden="true"
+                className={cn(
+                  "size-4 shrink-0 text-muted-foreground transition-transform",
+                  open && "rotate-180",
+                )}
+              />
+            </div>
+          </div>
 
           {open && (
             <div className="absolute left-0 right-0 top-full z-30 mt-1.5 overflow-hidden rounded-xl border border-border bg-card shadow-lg">
               {/* Search sits at the top of the dropdown… */}
-              <div className="relative border-b border-border/60 p-2">
-                <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  ref={searchRef}
-                  type="text"
-                  aria-label="Search countries"
-                  aria-controls="region-listbox"
-                  aria-autocomplete="list"
-                  placeholder="Search countries…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") close();
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      if (firstMatch) {
-                        pick(firstMatch);
-                        setOpen(false);
+              <div className="flex items-center gap-2 border-b border-border/60 p-2">
+                <div className="relative flex-1">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <input
+                    ref={searchRef}
+                    type="text"
+                    aria-label="Search countries"
+                    aria-controls="region-listbox"
+                    aria-autocomplete="list"
+                    placeholder="Search countries…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") close();
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (firstMatch) {
+                          pick(firstMatch);
+                          setOpen(false);
+                        }
                       }
-                    }
-                  }}
-                  className="h-9 w-full rounded-lg border border-white/10 bg-black/25 pl-8 pr-3 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-brand focus:ring-2 focus:ring-brand/35"
-                />
+                    }}
+                    className="h-9 w-full rounded-lg border border-white/10 bg-black/25 pl-8 pr-3 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-brand focus:ring-2 focus:ring-brand/35"
+                  />
+                </div>
+                <span
+                  className={cn(
+                    "shrink-0 rounded-md border px-2 py-1 font-mono text-[10.5px] tabular-nums",
+                    atCountryCeiling
+                      ? "border-amber-400/35 bg-amber-500/10 text-amber-300"
+                      : "border-white/10 bg-white/[0.03] text-muted-foreground",
+                  )}
+                >
+                  {selectedCountryCount}/{MAX_SELECTED_COUNTRIES}
+                </span>
               </div>
 
               {/* …followed by the list. */}
@@ -201,15 +274,19 @@ export function TargetRegionCard({ regions, onToggle, hasRegionalSearch, classNa
               >
                 {countries.length + broad.length > 0 ? (
                   <>
-                    {countries.map((r) => (
-                      <RegionOption
-                        key={r}
-                        label={r}
-                        selected={regions.includes(r)}
-                        locked={locked(r)}
-                        onPick={() => pick(r)}
-                      />
-                    ))}
+                    {countries.map((r) => {
+                      const isSelected = regions.includes(r);
+                      return (
+                        <RegionOption
+                          key={r}
+                          label={r}
+                          selected={isSelected}
+                          locked={locked(r)}
+                          atLimit={!isSelected && atCountryCeiling}
+                          onPick={() => pick(r)}
+                        />
+                      );
+                    })}
                     {broad.length > 0 && (
                       <p className="border-t border-border/60 px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
                         Regions
@@ -243,11 +320,13 @@ export function RegionOption({
   label,
   selected,
   locked,
+  atLimit,
   onPick,
 }: {
   label: string;
   selected: boolean;
   locked?: boolean;
+  atLimit?: boolean;
   onPick: () => void;
 }) {
   return (
@@ -261,7 +340,7 @@ export function RegionOption({
       className={cn(
         "flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:bg-muted/40",
         selected ? "font-medium text-brand" : "text-foreground",
-        locked && "opacity-55",
+        (locked || atLimit) && "opacity-55",
       )}
     >
       <RegionMark name={label} small />
@@ -270,6 +349,8 @@ export function RegionOption({
         <Lock className="size-3 shrink-0 text-muted-foreground" aria-label="Locked on your plan" />
       ) : selected ? (
         <CheckSquare className="size-3.5 shrink-0 text-brand" />
+      ) : atLimit ? (
+        <span className="text-[10px] text-muted-foreground">Max {MAX_SELECTED_COUNTRIES}</span>
       ) : null}
     </button>
   );

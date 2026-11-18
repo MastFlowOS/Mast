@@ -17,6 +17,7 @@ import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import {
   decryptInboxPassword,
+  decryptSmtpPasswordForInbox,
   encryptInboxPassword,
   InboxCryptoError,
   isInboxKeyConfigured,
@@ -40,12 +41,26 @@ export const inboxDeps = {
   isEncryptionConfigured: () => isInboxKeyConfigured(),
   encryptPassword: encryptInboxPassword,
   decryptPassword: decryptInboxPassword,
+  decryptSmtpPassword: decryptSmtpPasswordForInbox,
   validateImapHost,
   testImapConnection,
   pollUserImapInbox,
   ingestEmailReply,
   ingestInstagramSyncEvents,
 };
+
+async function resolveSavedSmtpPassword(userId: string): Promise<string | null> {
+  const { data: smtpRow, error } = await inboxDeps.db
+    .from("user_smtp_credentials")
+    .select("password_ciphertext")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error || !smtpRow?.password_ciphertext) {
+    return null;
+  }
+  return inboxDeps.decryptSmtpPassword(smtpRow.password_ciphertext, userId);
+}
 
 function generateInboundToken(): string {
   return crypto.randomBytes(24).toString("base64url");
@@ -57,6 +72,7 @@ const SaveInboxSettingsSchema = z.object({
   imapPort: z.coerce.number().int().min(1).max(65535).optional().nullable(),
   imapUsername: z.string().trim().max(320).optional().nullable(),
   imapPassword: z.string().max(500).optional().nullable(),
+  useSmtpPassword: z.boolean().optional().default(false),
   imapTls: z.boolean().optional().default(true),
   igEmailAlertsEnabled: z.boolean().optional().default(true),
   enabled: z.boolean().optional().default(true),
@@ -67,6 +83,7 @@ const TestImapSchema = z.object({
   imapPort: z.coerce.number().int().min(1).max(65535),
   imapUsername: z.string().trim().min(1).max(320),
   imapPassword: z.string().max(500).optional(),
+  useSmtpPassword: z.boolean().optional().default(false),
   imapTls: z.boolean().optional().default(true),
 });
 
@@ -194,6 +211,21 @@ inboxRouter.put("/settings", requireAuth, async (req, res, next) => {
           });
         }
         passwordCiphertext = inboxDeps.encryptPassword(input.imapPassword, userId);
+      } else if (input.useSmtpPassword) {
+        if (!encryptionConfigured) {
+          return res.status(503).json({
+            code: "inbox_key_not_configured",
+            message: "Server encryption key (SMTP_CREDENTIALS_KEY) is not configured.",
+          });
+        }
+        const smtpPass = await resolveSavedSmtpPassword(userId);
+        if (!smtpPass) {
+          return res.status(400).json({
+            code: "missing_imap_password",
+            message: "No saved SMTP password found to reuse. Save SMTP settings first or enter your IMAP app password.",
+          });
+        }
+        passwordCiphertext = inboxDeps.encryptPassword(smtpPass, userId);
       } else if (!passwordCiphertext) {
         return res.status(400).json({
           code: "missing_imap_password",
@@ -258,8 +290,19 @@ inboxRouter.post("/test", requireAuth, syncLimiter, async (req, res, next) => {
       });
     }
 
-    const { imapHost, imapPort, imapUsername, imapPassword, imapTls } = parsed.data;
+    const { imapHost, imapPort, imapUsername, imapPassword, useSmtpPassword, imapTls } = parsed.data;
     let resolvedPassword = imapPassword?.trim() ? imapPassword : "";
+
+    if (!resolvedPassword && useSmtpPassword) {
+      const smtpPass = await resolveSavedSmtpPassword(userId);
+      if (!smtpPass) {
+        return res.status(400).json({
+          code: "missing_imap_password",
+          message: "No saved SMTP password found to test. Save SMTP settings first or enter your IMAP app password.",
+        });
+      }
+      resolvedPassword = smtpPass;
+    }
 
     if (!resolvedPassword) {
       const { data: existing } = await inboxDeps.db

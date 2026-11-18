@@ -14,9 +14,11 @@ describe("Inbox routes (/v1/inbox)", () => {
   });
 
   let connections: any[] = [];
+  let smtpRows: any[] = [];
   let savedSyncCalls = 0;
   let capturedEmailInput: any = null;
   let capturedIgEvents: any[] = [];
+  let capturedTestedCreds: any = null;
 
   const origDeps = { ...inboxDeps };
 
@@ -27,10 +29,15 @@ describe("Inbox routes (/v1/inbox)", () => {
         let op: "select" | "insert" | "update" | "upsert" = "select";
         let payload: any = null;
 
-        const apply = () =>
-          (table === "user_inbox_connections" ? connections : []).filter((r) =>
-            filters.every((fn) => fn(r)),
-          );
+        const apply = () => {
+          const rows =
+            table === "user_inbox_connections"
+              ? connections
+              : table === "user_smtp_credentials"
+                ? smtpRows
+                : [];
+          return rows.filter((r) => filters.every((fn) => fn(r)));
+        };
 
         const builder: any = {
           select() {
@@ -79,12 +86,15 @@ describe("Inbox routes (/v1/inbox)", () => {
     inboxDeps.isEncryptionConfigured = () => true;
     inboxDeps.encryptPassword = (pass: string, uid: string) => `enc:${uid}:${pass}`;
     inboxDeps.decryptPassword = (cipher: string) => cipher.split(":")[2] || "";
+    inboxDeps.decryptSmtpPassword = (cipher: string) => cipher.split(":")[2] || "";
     inboxDeps.validateImapHost = async (host: string) => ({
       canonicalHost: host,
       pinnedIp: "93.184.216.34",
       family: 4,
     });
-    inboxDeps.testImapConnection = async () => {};
+    inboxDeps.testImapConnection = async (creds) => {
+      capturedTestedCreds = creds;
+    };
     inboxDeps.pollUserImapInbox = async () => {
       savedSyncCalls++;
       return { fetched: 3, matched: 1, recorded: 1, filtered: 0, lastUid: 45, uidValidity: 1 };
@@ -126,9 +136,11 @@ describe("Inbox routes (/v1/inbox)", () => {
 
   beforeEach(() => {
     connections = [];
+    smtpRows = [];
     savedSyncCalls = 0;
     capturedEmailInput = null;
     capturedIgEvents = [];
+    capturedTestedCreds = null;
   });
 
   it("lazily provisions an inbound token on GET /settings and never leaks passwords", async () => {
@@ -210,5 +222,45 @@ describe("Inbox routes (/v1/inbox)", () => {
     const body: any = await res.json();
     assert.equal(body.recorded, 1);
     assert.equal(capturedIgEvents.length, 1);
+  });
+
+  it("reuses saved SMTP password server-side when useSmtpPassword is true on /test and /settings", async () => {
+    smtpRows.push({
+      user_id: userId,
+      password_ciphertext: `smtp:${userId}:smtp-app-pw-999`,
+    });
+
+    const testRes = await fetch(`${baseUrl}/v1/inbox/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        imapUsername: "me@gmail.com",
+        useSmtpPassword: true,
+        imapTls: true,
+      }),
+    });
+    assert.equal(testRes.status, 200);
+    assert.equal(capturedTestedCreds?.password, "smtp-app-pw-999");
+
+    const saveRes = await fetch(`${baseUrl}/v1/inbox/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        provider: "imap",
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        imapUsername: "me@gmail.com",
+        useSmtpPassword: true,
+        imapTls: true,
+        igEmailAlertsEnabled: true,
+      }),
+    });
+    assert.equal(saveRes.status, 200);
+    const saved: any = await saveRes.json();
+    assert.equal(saved.configured, true);
+    assert.equal(saved.hasPassword, true);
+    assert.equal(connections[0].password_ciphertext, `enc:${userId}:smtp-app-pw-999`);
   });
 });

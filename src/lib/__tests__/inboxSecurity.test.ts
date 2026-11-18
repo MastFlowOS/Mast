@@ -4,9 +4,11 @@ import { randomBytes } from "node:crypto";
 import {
   CREDENTIALS_KEY_ENV_VAR,
   decryptInboxPassword,
+  decryptSmtpPasswordForInbox,
   encryptInboxPassword,
   InboxCryptoError,
 } from "../inboxCrypto.js";
+import { encryptSmtpSecret } from "../../../api/_smtpCrypto.js";
 import { InboxHostError, validateImapHost } from "../inboxHostValidator.js";
 
 describe("inboxSecurity", () => {
@@ -23,6 +25,15 @@ describe("inboxSecurity", () => {
     // Cross-user AAD check must fail
     assert.throws(
       () => decryptInboxPassword(token1, "user-b", env),
+      (err: unknown) => err instanceof InboxCryptoError && err.code === "inbox_decrypt_failed",
+    );
+
+    // Server-side SMTP secret reuse must decrypt using mast:smtp-credentials:v1:<userId> AAD
+    const rawKey = Buffer.from(key, "base64");
+    const smtpToken = encryptSmtpSecret("smtp-app-pass-456", "user-a", rawKey);
+    assert.equal(decryptSmtpPasswordForInbox(smtpToken, "user-a", env), "smtp-app-pass-456");
+    assert.throws(
+      () => decryptSmtpPasswordForInbox(smtpToken, "user-b", env),
       (err: unknown) => err instanceof InboxCryptoError && err.code === "inbox_decrypt_failed",
     );
   });

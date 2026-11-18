@@ -73,9 +73,10 @@ export function encryptInboxPassword(
   ].join(".");
 }
 
-export function decryptInboxPassword(
+function decryptWithAad(
   token: string,
-  userId: string,
+  aad: Buffer,
+  errorMessage: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const key = loadInboxKey(env);
@@ -92,14 +93,42 @@ export function decryptInboxPassword(
       throw new Error("Invalid IV or authTag length");
     }
     const decipher = createDecipheriv("aes-256-gcm", key, iv);
-    decipher.setAAD(Buffer.from(userId, "utf8"));
+    decipher.setAAD(aad);
     decipher.setAuthTag(authTag);
     const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     return decrypted.toString("utf8");
   } catch {
-    throw new InboxCryptoError(
-      "inbox_decrypt_failed",
-      "Stored inbox credentials could not be decrypted. Please re-enter your IMAP password.",
-    );
+    throw new InboxCryptoError("inbox_decrypt_failed", errorMessage);
   }
+}
+
+export function decryptInboxPassword(
+  token: string,
+  userId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return decryptWithAad(
+    token,
+    Buffer.from(userId, "utf8"),
+    "Stored inbox credentials could not be decrypted. Please re-enter your IMAP password.",
+    env,
+  );
+}
+
+/**
+ * Decrypts a `user_smtp_credentials.password_ciphertext` token (encrypted by
+ * `api/_smtpCrypto.ts` with `mast:smtp-credentials:v1:<userId>` AAD) server-side
+ * so Auto-fill from SMTP can reuse the saved App Password without exposing it.
+ */
+export function decryptSmtpPasswordForInbox(
+  token: string,
+  userId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return decryptWithAad(
+    token,
+    Buffer.from(`mast:smtp-credentials:${VERSION}:${userId}`, "utf8"),
+    "Saved SMTP password could not be decrypted. Please re-enter your IMAP password.",
+    env,
+  );
 }

@@ -1029,7 +1029,12 @@ function SettingsPage() {
       </div>
 
       {/* ── Row 3b: Client Reply Observation (IMAP & Instagram) ───────────── */}
-      <ReplyObservationCard smtpHost={smtpHost} smtpUser={smtpUser} />
+      <ReplyObservationCard
+        smtpHost={smtpHost}
+        smtpUser={smtpUser}
+        smtpPassword={smtpPassword}
+        smtpHasSavedPassword={Boolean(serverSmtp?.hasPassword)}
+      />
 
       {/* ── Row 4: Notifications (Left) + Workspace Info (Right) ────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

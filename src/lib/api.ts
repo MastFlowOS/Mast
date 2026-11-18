@@ -3115,6 +3115,7 @@ export async function saveInboxSettings(input: {
   imapPort?: string | number;
   imapUsername?: string;
   imapPassword?: string;
+  useSmtpPassword?: boolean;
   imapTls?: boolean;
   igEmailAlertsEnabled?: boolean;
   enabled?: boolean;
@@ -3130,6 +3131,7 @@ export async function testInboxConnection(input: {
   imapPort: string | number;
   imapUsername: string;
   imapPassword?: string;
+  useSmtpPassword?: boolean;
   imapTls?: boolean;
 }): Promise<{ success: boolean; message?: string }> {
   return backendFetch<{ success: boolean; message?: string }>("/v1/inbox/test", {

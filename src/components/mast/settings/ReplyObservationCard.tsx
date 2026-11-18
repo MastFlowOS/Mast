@@ -25,9 +25,16 @@ import { supabase } from "@/lib/supabase";
 interface ReplyObservationCardProps {
   smtpHost: string;
   smtpUser: string;
+  smtpPassword?: string;
+  smtpHasSavedPassword?: boolean;
 }
 
-export function ReplyObservationCard({ smtpHost, smtpUser }: ReplyObservationCardProps) {
+export function ReplyObservationCard({
+  smtpHost,
+  smtpUser,
+  smtpPassword = "",
+  smtpHasSavedPassword = false,
+}: ReplyObservationCardProps) {
   const inboxQuery = useInboxSettings(true);
   const saveInbox = useSaveInboxSettings();
   const testInbox = useTestInboxConnection();
@@ -40,6 +47,7 @@ export function ReplyObservationCard({ smtpHost, smtpUser }: ReplyObservationCar
   const [imapPort, setImapPort] = useState("993");
   const [imapUsername, setImapUsername] = useState("");
   const [imapPassword, setImapPassword] = useState("");
+  const [useSmtpPassword, setUseSmtpPassword] = useState(false);
   const [imapTls, setImapTls] = useState(true);
   const [igEmailAlerts, setIgEmailAlerts] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
@@ -58,15 +66,27 @@ export function ReplyObservationCard({ smtpHost, smtpUser }: ReplyObservationCar
 
   const handleAutoFillFromSmtp = () => {
     const guess = deriveImapDefaultsFromSmtp(smtpHost);
-    if (!guess.imapHost && !smtpUser) {
+    if (!guess.imapHost && !smtpUser && !smtpPassword.trim() && !smtpHasSavedPassword) {
       toast.info("Enter your SMTP settings above first, or type your IMAP host manually.");
       return;
     }
     if (guess.imapHost) setImapHost(guess.imapHost);
     setImapPort(guess.imapPort);
     setImapTls(guess.imapTls);
-    if (smtpUser && !imapUsername) setImapUsername(smtpUser);
-    toast.success("Filled IMAP defaults from your SMTP settings.");
+    if (smtpUser) setImapUsername(smtpUser);
+
+    let passwordNote = "";
+    if (smtpPassword.trim()) {
+      setImapPassword(smtpPassword);
+      setUseSmtpPassword(false);
+      passwordNote = " + App Password";
+    } else if (smtpHasSavedPassword) {
+      setImapPassword("");
+      setUseSmtpPassword(true);
+      passwordNote = " + saved SMTP App Password";
+    }
+
+    toast.success(`Synced host, email${passwordNote} from SMTP (IMAP uses port 993 TLS).`);
   };
 
   const handleTest = async () => {
@@ -80,6 +100,7 @@ export function ReplyObservationCard({ smtpHost, smtpUser }: ReplyObservationCar
         imapPort: Number(imapPort || 993),
         imapUsername: imapUsername.trim(),
         imapPassword: imapPassword || undefined,
+        useSmtpPassword: useSmtpPassword && !imapPassword ? true : undefined,
         imapTls,
       });
       toast.success("IMAP connection verified!");
@@ -97,11 +118,13 @@ export function ReplyObservationCard({ smtpHost, smtpUser }: ReplyObservationCar
         imapPort: hasImapFields ? Number(imapPort || 993) : undefined,
         imapUsername: hasImapFields ? imapUsername.trim() : undefined,
         imapPassword: imapPassword || undefined,
+        useSmtpPassword: useSmtpPassword && !imapPassword ? true : undefined,
         imapTls,
         igEmailAlertsEnabled: igEmailAlerts,
         enabled: true,
       });
       setImapPassword("");
+      setUseSmtpPassword(false);
       toast.success("Reply observation settings saved.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not save reply observation settings.");
@@ -128,6 +151,7 @@ export function ReplyObservationCard({ smtpHost, smtpUser }: ReplyObservationCar
       setImapPort("993");
       setImapUsername("");
       setImapPassword("");
+      setUseSmtpPassword(false);
       toast.success("IMAP inbox credentials removed.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not disconnect IMAP.");
@@ -241,13 +265,28 @@ export function ReplyObservationCard({ smtpHost, smtpUser }: ReplyObservationCar
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-muted-foreground mb-1">App Password / Password</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-semibold text-muted-foreground">App Password / Password</label>
+                {useSmtpPassword && !imapPassword && (
+                  <span className="text-[10px] font-medium text-brand">Using saved SMTP password</span>
+                )}
+              </div>
               <div className="relative">
                 <input
                   type={showPassword ? "text" : "password"}
+                  autoComplete="new-password"
                   value={imapPassword}
-                  onChange={(e) => setImapPassword(e.target.value)}
-                  placeholder={server?.hasPassword ? "•••••••• saved (leave blank to keep)" : "••••••••"}
+                  onChange={(e) => {
+                    setImapPassword(e.target.value);
+                    if (e.target.value) setUseSmtpPassword(false);
+                  }}
+                  placeholder={
+                    useSmtpPassword && !imapPassword
+                      ? "•••••••• Using saved SMTP password"
+                      : server?.hasPassword
+                        ? "•••••••• saved (leave blank to keep)"
+                        : "••••••••"
+                  }
                   className="w-full bg-background border border-border/80 focus:border-blue-500 outline-none px-3 py-2 pr-9 rounded-xl text-sm"
                 />
                 <button

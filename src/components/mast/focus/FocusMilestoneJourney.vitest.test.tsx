@@ -2,75 +2,98 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { FocusMilestoneJourney } from "./FocusMilestoneJourney";
+import { FocusStack } from "./FocusSections";
+import { MILESTONE_TIERS } from "@/lib/focus";
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, to: _to, hash: _hash, ...rest }: any) => <a {...rest}>{children}</a>,
+}));
 
 afterEach(() => {
   cleanup();
 });
 
-describe("FocusMilestoneJourney — tier rewards", () => {
-  it("highlights the first unlocked unclaimed tier and invokes onClaimReward on Claim click", () => {
+describe("FocusMilestoneJourney — peak popups & Next Tier Rewards", () => {
+  it("replaces XP TO NEXT TIER with NEXT TIER REWARDS in the stats strip", () => {
+    render(
+      <FocusMilestoneJourney
+        xp={700}
+        currentName="Rainmaker"
+        nextName="Operator"
+        claimedTierIds={[]}
+        onClaimReward={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("NEXT TIER REWARDS")).toBeTruthy();
+    expect(screen.getByText("+400 Credits & +50 Daily Cap")).toBeTruthy();
+    expect(screen.queryByText("XP TO NEXT TIER")).toBeNull();
+    expect(screen.queryByText("TIER REWARDS")).toBeNull();
+  });
+
+  it("opens a popup when clicking a mountain tier peak and calls onClaimReward when Claim is clicked", () => {
     const onClaimReward = vi.fn();
     render(
       <FocusMilestoneJourney
-        xp={120}
-        currentName="Prospector"
-        nextName="Closer"
-        claimedTierIds={["explorer"]}
+        xp={700}
+        currentName="Rainmaker"
+        nextName="Operator"
+        claimedTierIds={["explorer", "prospector"]}
         onClaimReward={onClaimReward}
       />,
     );
 
-    // Prospector (100 XP) is unlocked and unclaimed -> selected automatically
-    expect(screen.getByText("Prospector Reward")).toBeTruthy();
-    expect(screen.getByText("+50 Bonus Credits")).toBeTruthy();
-    expect(screen.getByText("+10 Daily Lead Cap")).toBeTruthy();
+    // No popup open initially
+    expect(screen.queryByRole("dialog")).toBeNull();
 
-    const claimBtn = screen.getByRole("button", { name: /Claim Reward/i });
+    // Press the Closer peak on the mountain
+    fireEvent.click(screen.getByRole("button", { name: /Closer:/i }));
+    expect(screen.getByRole("dialog", { name: "Closer reward" })).toBeTruthy();
+
+    const claimBtn = screen.getByRole("button", { name: /Claim \+100 Credits & \+20 Daily Cap/i });
+    fireEvent.click(claimBtn);
+    expect(onClaimReward).toHaveBeenCalledTimes(1);
+    expect(onClaimReward).toHaveBeenCalledWith("closer");
+  });
+
+  it("shows Claimed state for claimed peaks and XP needed for locked peaks", () => {
+    render(
+      <FocusMilestoneJourney
+        xp={700}
+        currentName="Rainmaker"
+        nextName="Operator"
+        claimedTierIds={["prospector"]}
+        onClaimReward={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Prospector:/i }));
+    expect(screen.getByText("Claimed")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Operator:/i }));
+    expect(screen.getByText("100 XP to unlock")).toBeTruthy();
+  });
+});
+
+describe("FocusStack — missed tier rewards", () => {
+  it("renders missed tier rewards with a working Claim button even when other priorities are empty", () => {
+    const onClaimReward = vi.fn();
+    const missed = [MILESTONE_TIERS[0], MILESTONE_TIERS[1]];
+
+    render(
+      <FocusStack
+        priorities={[]}
+        missedRewards={missed}
+        onClaimReward={onClaimReward}
+      />,
+    );
+
+    expect(screen.getByText("You missed your Explorer reward")).toBeTruthy();
+    expect(screen.getByText("You missed your Prospector reward")).toBeTruthy();
+
+    const claimBtn = screen.getByRole("button", { name: /Claim Prospector reward/i });
     fireEvent.click(claimBtn);
     expect(onClaimReward).toHaveBeenCalledTimes(1);
     expect(onClaimReward).toHaveBeenCalledWith("prospector");
-  });
-
-  it("shows Claimed state for claimed tiers and XP lock state for future tiers", () => {
-    render(
-      <FocusMilestoneJourney
-        xp={120}
-        currentName="Prospector"
-        nextName="Closer"
-        claimedTierIds={["explorer", "prospector"]}
-        onClaimReward={vi.fn()}
-      />,
-    );
-
-    // Defaults to nextTier (Closer, 250 XP) when all unlocked tiers are claimed
-    expect(screen.getByText("Closer Reward")).toBeTruthy();
-    expect(screen.getByText("130 XP to unlock")).toBeTruthy();
-
-    // Selecting Explorer via peak button shows Claimed state
-    const explorerPeak = screen.getByRole("button", { name: /Explorer:/i });
-    fireEvent.click(explorerPeak);
-    expect(screen.getByText("Explorer Reward")).toBeTruthy();
-    expect(screen.getByText("Claimed")).toBeTruthy();
-  });
-
-  it("shows peak reward tooltip on hover and expands all 7 tiers on toggle", () => {
-    render(
-      <FocusMilestoneJourney
-        xp={120}
-        currentName="Prospector"
-        nextName="Closer"
-        claimedTierIds={["explorer"]}
-        onClaimReward={vi.fn()}
-      />,
-    );
-
-    const closerPeak = screen.getByRole("button", { name: /Closer:/i });
-    fireEvent.mouseEnter(closerPeak);
-    expect(screen.getByText("+100 Credits & +20 Daily Cap")).toBeTruthy();
-    expect(screen.getByText("130 XP needed to unlock")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: /View all 7 tiers/i }));
-    expect(screen.getByText("Revenue Architect")).toBeTruthy();
-    expect(screen.getByText("Operator")).toBeTruthy();
   });
 });

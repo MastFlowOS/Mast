@@ -9,6 +9,8 @@ import {
   Clock,
   Sparkles,
   AlertCircle,
+  Gift,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -18,6 +20,7 @@ import {
   type FocusMomentumEvent,
   type FocusMastSignal,
   type FocusWeeklyPulse,
+  type MilestoneTier,
 } from "@/lib/focus";
 import { MILESTONE_XP_BADGE_ID } from "@/lib/xp-fly";
 
@@ -361,10 +364,19 @@ export function FocusPrimaryHero({ recommendation }: PrimaryHeroProps) {
 
 type StackProps = {
   priorities: FocusStackPriority[];
+  missedRewards?: MilestoneTier[];
+  claimingTierId?: string | null;
+  onClaimReward?: (tierId: string) => void;
 };
 
-export function FocusStack({ priorities }: StackProps) {
-  if (priorities.length === 0) return null;
+export function FocusStack({
+  priorities,
+  missedRewards = [],
+  claimingTierId = null,
+  onClaimReward,
+}: StackProps) {
+  const totalCount = missedRewards.length + priorities.length;
+  if (totalCount === 0) return null;
 
   return (
     <section className="focus-stack-section animate-fade-up" aria-labelledby="focus-stack-title">
@@ -374,7 +386,7 @@ export function FocusStack({ priorities }: StackProps) {
             FOCUS STACK
           </h2>
           <span className="focus-module-badge">
-            {priorities.length} {priorities.length === 1 ? "PRIORITY" : "PRIORITIES"}
+            {totalCount} {totalCount === 1 ? "PRIORITY" : "PRIORITIES"}
           </span>
         </div>
         <span className="focus-module-hint">Queued after your primary focus</span>
@@ -382,10 +394,58 @@ export function FocusStack({ priorities }: StackProps) {
 
       <div className="focus-stack-card">
         <div className="focus-stack-list" role="list">
-          {priorities.map((item) => (
+          {missedRewards.map((tier, idx) => {
+            const isClaiming = claimingTierId === tier.id;
+            return (
+              <div key={`missed-reward-${tier.id}`} role="listitem" className="focus-stack-row">
+                <div className="focus-stack-main">
+                  <span className="focus-stack-num">{String(idx + 1).padStart(2, "0")}</span>
+
+                  <div className="focus-stack-info">
+                    <div className="focus-stack-top">
+                      <span className="focus-stack-title">
+                        You missed your {tier.name} reward
+                      </span>
+                      <span className="focus-stack-meta">{tier.reward}</span>
+                    </div>
+                    <div className="focus-stack-why">
+                      <span className="focus-why-prefix">WHY:</span>{" "}
+                      You reached {tier.name} ({tier.xpRequired.toLocaleString()} XP) without claiming this reward.
+                    </div>
+                  </div>
+                </div>
+
+                <div className="focus-stack-action">
+                  <button
+                    type="button"
+                    disabled={Boolean(claimingTierId) || !onClaimReward}
+                    onClick={() => onClaimReward?.(tier.id)}
+                    className="focus-stack-link cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                    aria-label={`Claim ${tier.name} reward (${tier.reward})`}
+                  >
+                    {isClaiming ? (
+                      <>
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                        <span className="focus-link-text">Claiming…</span>
+                      </>
+                    ) : (
+                      <>
+                        <Gift className="size-3.5 text-amber-400" aria-hidden="true" />
+                        <span className="focus-link-text">Claim</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+
+          {priorities.map((item, idx) => (
             <div key={item.id} role="listitem" className="focus-stack-row">
               <div className="focus-stack-main">
-                <span className="focus-stack-num">{item.number}</span>
+                <span className="focus-stack-num">
+                  {String(missedRewards.length + idx + 1).padStart(2, "0")}
+                </span>
 
                 <div className="focus-stack-info">
                   <div className="focus-stack-top">

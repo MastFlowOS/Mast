@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { useAccount, useFollowups, useLeads, useMe, useXp } from "@/hooks/use-mast-api";
 import { useFocusProgress } from "@/hooks/use-focus-progress";
 import { useDailyGoals } from "@/hooks/use-daily-goals";
-import { buildFocusSnapshot, getNextMilestone, type FocusContext } from "@/lib/focus";
+import { buildFocusSnapshot, getNextMilestone, MILESTONE_TIERS, type FocusContext } from "@/lib/focus";
 import { planCan } from "@/lib/dailyGoals";
 import { summarizeDailyGoals, toPriorityGoals } from "@/lib/focusDailyGoals";
 import { getPlan } from "@/lib/plans";
@@ -128,6 +128,12 @@ export function FocusDashboard() {
   // Clear state: no priority survived the waterfall.
   const isAllClear = snapshot.isClear;
   const nextTier = getNextMilestone(xp);
+  const missedRewardTiers = MILESTONE_TIERS.filter(
+    (tier) =>
+      xp >= tier.xpRequired &&
+      tier.xpRequired < currentMilestone.xpRequired &&
+      !claimedTierIds.includes(tier.id),
+  );
 
   return (
     <div className="focus-page-root animate-page-enter">
@@ -148,6 +154,12 @@ export function FocusDashboard() {
               nextTierName={nextTier?.name ?? null}
               xpToNextTier={nextTier ? Math.max(0, nextTier.xpRequired - xp) : 0}
             />
+            <FocusStack
+              priorities={[]}
+              missedRewards={missedRewardTiers}
+              claimingTierId={claimingTierId}
+              onClaimReward={claimTierReward}
+            />
             <div className="focus-paired-grid focus-intelligence-grid">
               <FocusSignal signal={snapshot.signal} />
               <FocusWeeklyPulse pulse={weeklyPulse} />
@@ -162,8 +174,13 @@ export function FocusDashboard() {
               todayContext={todayContext}
             />
 
-            {/* 3. FOCUS STACK (3 Editorial Priorities in Coherent Surface) */}
-            <FocusStack priorities={snapshot.focusStack} />
+            {/* 3. FOCUS STACK (3 Editorial Priorities + Missed Tier Rewards) */}
+            <FocusStack
+              priorities={snapshot.focusStack}
+              missedRewards={missedRewardTiers}
+              claimingTierId={claimingTierId}
+              onClaimReward={claimTierReward}
+            />
 
             {/* 4. PAIRED GRID: TODAY'S GOALS (~60%) + RECENT ACTIVITY (~40%) */}
             <div className="focus-paired-grid focus-goals-momentum-grid">

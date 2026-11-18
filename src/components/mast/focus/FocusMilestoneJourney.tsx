@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useEffect } from "react";
-import { Check, Gift, Loader2, Lock, Sparkles, Zap } from "lucide-react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
+import { Check, Gift, Loader2, Lock, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   MILESTONE_TIERS,
@@ -182,38 +182,39 @@ export function FocusMilestoneJourney({
     return MILESTONE_TIERS.slice(start, start + 4);
   }, [currentIndex]);
 
-  const xpRemaining = nextTier ? Math.max(0, nextTier.xpRequired - xp) : 0;
   const targetXp = nextTier ? nextTier.xpRequired : currentTier.xpRequired;
 
   const claimedSet = useMemo(() => new Set(claimedTierIds), [claimedTierIds]);
-  const [hoveredTierId, setHoveredTierId] = useState<string | null>(null);
-  const [manualSelectedTierId, setManualSelectedTierId] = useState<string | null>(null);
-  const [showAllTiers, setShowAllTiers] = useState(false);
+  const [openPeakId, setOpenPeakId] = useState<string | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
 
-  const firstClaimableTier = useMemo(
-    () => MILESTONE_TIERS.find((t) => xp >= t.xpRequired && !claimedSet.has(t.id)) ?? null,
-    [xp, claimedSet],
-  );
+  useEffect(() => {
+    if (!openPeakId) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (stageRef.current && !stageRef.current.contains(e.target as Node)) {
+        setOpenPeakId(null);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenPeakId(null);
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openPeakId]);
 
-  const activeSelectedTier = useMemo(() => {
-    if (manualSelectedTierId) {
-      const found = MILESTONE_TIERS.find((t) => t.id === manualSelectedTierId);
-      if (found) return found;
-    }
-    return firstClaimableTier ?? nextTier ?? currentTier;
-  }, [manualSelectedTierId, firstClaimableTier, nextTier, currentTier]);
-
-  const rewardStripTiers = showAllTiers ? MILESTONE_TIERS : displayTiers;
-
-  const hoveredPeakInfo = useMemo(() => {
-    if (!hoveredTierId) return null;
-    const idx = displayTiers.findIndex((t) => t.id === hoveredTierId);
+  const openPeakInfo = useMemo(() => {
+    if (!openPeakId) return null;
+    const idx = displayTiers.findIndex((t) => t.id === openPeakId);
     if (idx === -1) return null;
     const tier = displayTiers[idx];
     const peak = MOUNTAIN_PEAKS[idx];
     if (!tier || !peak) return null;
     return { tier, peak, idx };
-  }, [hoveredTierId, displayTiers]);
+  }, [openPeakId, displayTiers]);
 
   // Active progression calculation across the 3 route segments
   const { activeSegmentIndex, activeProgressRatio, activePoint } = useMemo(() => {
@@ -247,18 +248,17 @@ export function FocusMilestoneJourney({
       className="focus-milestone-journey-section animate-fade-up"
       aria-label="Milestone Journey"
     >
-      <div className="focus-milestone-shell">
-        <div className="focus-milestone-canvas-card">
-          {/* CARD HEADER */}
-          <div className="focus-milestone-card-header">
-            <h2 className="focus-milestone-title">MILESTONE JOURNEY</h2>
-            <p className="focus-milestone-sub">
-              Complete goals, earn XP and climb to the next tier.
-            </p>
-          </div>
+      <div className="focus-milestone-canvas-card">
+        {/* CARD HEADER */}
+        <div className="focus-milestone-card-header">
+          <h2 className="focus-milestone-title">MILESTONE JOURNEY</h2>
+          <p className="focus-milestone-sub">
+            Complete goals, earn XP and climb to the next tier.
+          </p>
+        </div>
 
-          {/* TERRAIN PROGRESSION SCENE (SVG & Background locked 1:1 together) */}
-          <div className="focus-mountain-terrain-stage">
+        {/* TERRAIN PROGRESSION SCENE (SVG & Background locked 1:1 together) */}
+        <div ref={stageRef} className="focus-mountain-terrain-stage">
           {/* TIME-OF-DAY MOUNTAIN BACKGROUND ENVIRONMENT */}
           <div className="focus-mountain-environment" aria-hidden="true">
             {(Object.keys(PERIOD_IMAGES) as GreetingPeriod[]).map((p) => {
@@ -491,17 +491,16 @@ export function FocusMilestoneJourney({
                     )}
                     role="button"
                     tabIndex={0}
-                    aria-pressed={activeSelectedTier.id === tier.id}
+                    aria-expanded={openPeakId === tier.id}
                     aria-label={`${tier.name}: ${stateTag}, ${tier.xpRequired} XP, Reward: ${tier.reward}`}
-                    onMouseEnter={() => setHoveredTierId(tier.id)}
-                    onMouseLeave={() => setHoveredTierId((prev) => (prev === tier.id ? null : prev))}
-                    onFocus={() => setHoveredTierId(tier.id)}
-                    onBlur={() => setHoveredTierId((prev) => (prev === tier.id ? null : prev))}
-                    onClick={() => setManualSelectedTierId(tier.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpenPeakId((prev) => (prev === tier.id ? null : tier.id));
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        setManualSelectedTierId(tier.id);
+                        setOpenPeakId((prev) => (prev === tier.id ? null : tier.id));
                       }
                     }}
                   >
@@ -515,19 +514,6 @@ export function FocusMilestoneJourney({
                         stroke="rgba(196, 181, 253, 0.45)"
                         strokeWidth="1"
                         className="focus-beacon-pulse"
-                      />
-                    )}
-
-                    {/* Selection ring when inspecting this tier */}
-                    {activeSelectedTier.id === tier.id && (
-                      <circle
-                        cx={peak.x}
-                        cy={peak.y}
-                        r="16.5"
-                        fill="none"
-                        stroke="rgba(255, 255, 255, 0.45)"
-                        strokeWidth="1"
-                        strokeDasharray="3 3"
                       />
                     )}
 
@@ -581,7 +567,7 @@ export function FocusMilestoneJourney({
                       </g>
                     )}
 
-                    {/* Unclaimed reward beacon dot on unlocked peaks */}
+                    {/* Unclaimed reward indicator dot on unlocked peaks */}
                     {xp >= tier.xpRequired && !claimedSet.has(tier.id) && (
                       <circle
                         cx={peak.x + 9.5}
@@ -598,36 +584,80 @@ export function FocusMilestoneJourney({
             })}
           </svg>
 
-          {/* INTERACTIVE PEAK HOVER TOOLTIP */}
-          {hoveredPeakInfo && (() => {
-            const { tier, peak } = hoveredPeakInfo;
+          {/* PEAK POPUP (click any tier on the mountain to inspect/claim) */}
+          {openPeakInfo && (() => {
+            const { tier, peak, idx } = openPeakInfo;
             const isUnlocked = xp >= tier.xpRequired;
             const isClaimed = claimedSet.has(tier.id);
+            const isClaiming = claimingTierId === tier.id;
             const leftPct = Math.min(82, Math.max(18, (peak.x / 1024) * 100));
-            const topPct = Math.max(14, (peak.y / 341) * 100);
+            const topPct = (peak.y / 341) * 100;
+            const openBelow = idx >= 2;
             return (
               <div
-                role="status"
-                aria-live="polite"
-                className="pointer-events-none hidden sm:block absolute z-20 -translate-x-1/2 translate-y-4 w-56 rounded-xl border border-white/15 bg-[#0b101b]/95 backdrop-blur-md px-3 py-2.5 shadow-2xl"
+                role="dialog"
+                aria-label={`${tier.name} reward`}
+                onClick={(e) => e.stopPropagation()}
+                className={cn(
+                  "absolute z-30 -translate-x-1/2 w-60 rounded-xl border border-white/15 bg-[#0b101b]/95 backdrop-blur-md p-3 shadow-2xl",
+                  openBelow ? "translate-y-4" : "-translate-y-[calc(100%+18px)]",
+                )}
                 style={{ left: `${leftPct}%`, top: `${topPct}%` }}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-white truncate">{tier.name}</span>
-                  <span className="text-[10px] font-mono text-white/60 shrink-0">
-                    {tier.xpRequired.toLocaleString()} XP
-                  </span>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-semibold text-white">{tier.name}</span>
+                      <span className="text-[10px] font-mono text-white/50">
+                        {tier.xpRequired.toLocaleString()} XP
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs font-medium text-amber-300">
+                      {tier.reward}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setOpenPeakId(null)}
+                    aria-label="Close reward popup"
+                    className="rounded p-0.5 text-white/45 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <X className="size-3.5" />
+                  </button>
                 </div>
-                <p className="mt-1 text-[11px] font-medium text-amber-300">
-                  {tier.reward}
-                </p>
-                <p className="mt-0.5 text-[10px] text-white/60">
-                  {isClaimed
-                    ? "Reward claimed"
-                    : isUnlocked
-                      ? "Unlocked — click to claim below"
-                      : `${(tier.xpRequired - xp).toLocaleString()} XP needed to unlock`}
-                </p>
+
+                <div className="mt-2.5">
+                  {isClaimed ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/12 px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                      <Check aria-hidden="true" className="size-3" />
+                      Claimed
+                    </span>
+                  ) : isUnlocked ? (
+                    <button
+                      type="button"
+                      disabled={Boolean(claimingTierId) || !onClaimReward}
+                      onClick={() => onClaimReward?.(tier.id)}
+                      className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand hover:bg-brand-dark disabled:opacity-60 px-3 py-1.5 text-xs font-semibold text-white transition-colors cursor-pointer disabled:cursor-not-allowed"
+                    >
+                      {isClaiming ? (
+                        <>
+                          <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+                          Claiming…
+                        </>
+                      ) : (
+                        <>
+                          <Gift aria-hidden="true" className="size-3.5" />
+                          Claim {tier.reward}
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-white/55 tabular-nums">
+                      <Lock aria-hidden="true" className="size-3" />
+                      {(tier.xpRequired - xp).toLocaleString()} XP to unlock
+                    </span>
+                  )}
+                </div>
               </div>
             );
           })()}
@@ -652,167 +682,11 @@ export function FocusMilestoneJourney({
           <div className="focus-stats-divider" aria-hidden="true" />
 
           <div className="focus-stats-col">
-            <span className="focus-stats-caption">XP TO NEXT TIER</span>
-            <span className="focus-stats-value font-mono focus-stats-highlight">
-              {nextTier ? `${xpRemaining.toLocaleString()} XP to ${nextTier.name}` : "Top tier reached"}
+            <span className="focus-stats-caption">NEXT TIER REWARDS</span>
+            <span className="focus-stats-value focus-stats-highlight">
+              {nextTier ? nextTier.reward : "Top tier reached"}
             </span>
           </div>
-        </div>
-        </div>
-
-        {/* COMPACT TIER REWARDS STRIP */}
-        <div className="border-t border-white/[0.08] bg-[#0b0f1a]/95 px-4 sm:px-6 py-3.5 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Gift aria-hidden="true" className="size-3.5 text-amber-400" />
-              <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-white/85">
-                Tier Rewards
-              </span>
-              <span className="text-[11px] text-white/45 tabular-nums">
-                {claimedTierIds.length} / {MILESTONE_TIERS.length} claimed
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowAllTiers((v) => !v)}
-              className="text-[11px] font-medium text-white/60 hover:text-white transition-colors cursor-pointer"
-            >
-              {showAllTiers ? "Show current 4 tiers" : `View all ${MILESTONE_TIERS.length} tiers`}
-            </button>
-          </div>
-
-          {/* Tier selector strip */}
-          <div
-            className={cn(
-              "grid gap-2",
-              showAllTiers ? "grid-cols-2 sm:grid-cols-4 lg:grid-cols-7" : "grid-cols-2 sm:grid-cols-4",
-            )}
-          >
-            {rewardStripTiers.map((tier) => {
-              const isUnlocked = xp >= tier.xpRequired;
-              const isClaimed = claimedSet.has(tier.id);
-              const isClaimable = isUnlocked && !isClaimed;
-              const isSelected = activeSelectedTier.id === tier.id;
-
-              return (
-                <button
-                  key={tier.id}
-                  type="button"
-                  onClick={() => setManualSelectedTierId(tier.id)}
-                  aria-pressed={isSelected}
-                  className={cn(
-                    "group relative flex flex-col items-start gap-1 rounded-xl border px-3 py-2 text-left transition-all cursor-pointer",
-                    isSelected
-                      ? "border-brand/55 bg-brand/12 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
-                      : isClaimable
-                        ? "border-amber-400/35 bg-amber-500/[0.06] hover:border-amber-400/55"
-                        : "border-white/[0.07] bg-white/[0.025] hover:border-white/15 hover:bg-white/[0.04]",
-                  )}
-                >
-                  <div className="flex w-full items-center justify-between gap-1.5">
-                    <span className="text-xs font-semibold text-white truncate">
-                      {tier.name}
-                    </span>
-                    {isClaimed ? (
-                      <Check aria-hidden="true" className="size-3.5 shrink-0 text-emerald-400" />
-                    ) : isClaimable ? (
-                      <span
-                        aria-label="Ready to claim"
-                        className="size-2 rounded-full bg-amber-400 shrink-0"
-                      />
-                    ) : (
-                      <Lock aria-hidden="true" className="size-3 shrink-0 text-white/35" />
-                    )}
-                  </div>
-                  <div className="flex w-full items-center justify-between gap-1 text-[10.5px]">
-                    <span
-                      className={cn(
-                        "font-medium truncate",
-                        isClaimed
-                          ? "text-emerald-300/90"
-                          : isClaimable
-                            ? "text-amber-300"
-                            : "text-white/55",
-                      )}
-                    >
-                      +{tier.bonusCredits.toLocaleString()} cr
-                      {tier.dailyLimitBonus > 0 ? ` · +${tier.dailyLimitBonus}/d` : ""}
-                    </span>
-                    <span className="font-mono text-[10px] text-white/40 shrink-0">
-                      {tier.xpRequired}
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Selected tier detail & Claim action */}
-          {(() => {
-            const tier = activeSelectedTier;
-            const isUnlocked = xp >= tier.xpRequired;
-            const isClaimed = claimedSet.has(tier.id);
-            const isClaiming = claimingTierId === tier.id;
-            const xpNeeded = Math.max(0, tier.xpRequired - xp);
-
-            return (
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3.5 py-2.5">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-semibold text-white">
-                      {tier.name} Reward
-                    </span>
-                    <span className="inline-flex items-center gap-1 rounded-md border border-brand/30 bg-brand/15 px-1.5 py-0.5 text-[10px] font-semibold text-purple-200">
-                      <Sparkles aria-hidden="true" className="size-2.5" />
-                      +{tier.bonusCredits.toLocaleString()} Bonus Credits
-                    </span>
-                    {tier.dailyLimitBonus > 0 && (
-                      <span className="inline-flex items-center gap-1 rounded-md border border-sky-400/30 bg-sky-400/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200">
-                        <Zap aria-hidden="true" className="size-2.5" />
-                        +{tier.dailyLimitBonus} Daily Lead Cap
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11.5px] text-white/60 leading-snug">
-                    {tier.rewardDetail}
-                  </p>
-                </div>
-
-                <div className="shrink-0 flex items-center">
-                  {isClaimed ? (
-                    <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/12 px-3 py-1.5 text-xs font-semibold text-emerald-300">
-                      <Check aria-hidden="true" className="size-3.5" />
-                      Claimed
-                    </span>
-                  ) : isUnlocked ? (
-                    <button
-                      type="button"
-                      disabled={Boolean(claimingTierId) || !onClaimReward}
-                      onClick={() => onClaimReward?.(tier.id)}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-brand hover:bg-brand-dark disabled:opacity-60 px-3.5 py-1.5 text-xs font-semibold text-white transition-colors cursor-pointer disabled:cursor-not-allowed"
-                    >
-                      {isClaiming ? (
-                        <>
-                          <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
-                          Claiming…
-                        </>
-                      ) : (
-                        <>
-                          <Gift aria-hidden="true" className="size-3.5" />
-                          Claim Reward
-                        </>
-                      )}
-                    </button>
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-white/55 tabular-nums">
-                      <Lock aria-hidden="true" className="size-3" />
-                      {xpNeeded.toLocaleString()} XP to unlock
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
         </div>
       </div>
 
@@ -823,20 +697,14 @@ export function FocusMilestoneJourney({
           position: relative;
         }
 
-        .focus-milestone-shell {
+        .focus-milestone-canvas-card {
+          position: relative;
           width: 100%;
           background: #090d15;
           border: 1px solid rgba(255, 255, 255, 0.08);
           border-radius: 16px;
           overflow: hidden;
           box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6);
-        }
-
-        .focus-milestone-canvas-card {
-          position: relative;
-          width: 100%;
-          background: #090d15;
-          overflow: hidden;
         }
 
         /* ── TIME-OF-DAY MOUNTAIN BACKGROUND ── */

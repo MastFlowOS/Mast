@@ -1,10 +1,19 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { addNotification } from "@/lib/notifications";
-import { getCurrentMilestone, getNextMilestone, milestoneProgress } from "@/lib/focus";
+import {
+  getCurrentMilestone,
+  getMilestoneTierById,
+  getNextMilestone,
+  milestoneProgress,
+} from "@/lib/focus";
 import type { DailyGoalInstance } from "@/lib/dailyGoals";
 import { isDailyGoalComplete } from "@/lib/focusDailyGoals";
-import { useXp } from "@/hooks/use-mast-api";
+import {
+  useClaimMilestoneReward,
+  useMilestoneRewards,
+  useXp,
+} from "@/hooks/use-mast-api";
 import { useClaimDailyGoal } from "@/hooks/use-daily-goals";
 import { bumpMilestoneBadge, flyXpToMilestone } from "@/lib/xp-fly";
 
@@ -23,9 +32,12 @@ import { bumpMilestoneBadge, flyXpToMilestone } from "@/lib/xp-fly";
  */
 export function useFocusProgress(dateKey: string) {
   const { data: xp = 0, isLoading: xpLoading } = useXp();
+  const { data: milestoneClaims = [] } = useMilestoneRewards();
   const claimMutation = useClaimDailyGoal(dateKey);
+  const claimRewardMutation = useClaimMilestoneReward();
 
   const [claimingGoalIds, setClaimingGoalIds] = useState<Set<string>>(new Set());
+  const [claimingTierId, setClaimingTierId] = useState<string | null>(null);
   // Bumped every time a claim lands, so <FocusMilestones> can key a
   // one-shot bump animation off of it without needing its own XP-diff logic.
   const [xpBumpTick, setXpBumpTick] = useState(0);
@@ -33,6 +45,12 @@ export function useFocusProgress(dateKey: string) {
   const [leveledUpTier, setLeveledUpTier] = useState<string | null>(null);
 
   const inFlightRef = useRef<Set<string>>(new Set());
+  const rewardInFlightRef = useRef<string | null>(null);
+
+  const claimedTierIds = useMemo(
+    () => milestoneClaims.map((c) => c.tierId),
+    [milestoneClaims],
+  );
 
   const finishClaiming = useCallback((goalId: string) => {
     inFlightRef.current.delete(goalId);
@@ -118,6 +136,59 @@ export function useFocusProgress(dateKey: string) {
     [claimMutation.mutate, finishClaiming],
   );
 
+  const claimTierReward = useCallback(
+    (tierId: string) => {
+      if (rewardInFlightRef.current) return;
+      const tier = getMilestoneTierById(tierId);
+      if (!tier) return;
+      if (xp < tier.xpRequired) return;
+      if (claimedTierIds.includes(tierId)) return;
+
+      rewardInFlightRef.current = tierId;
+      setClaimingTierId(tierId);
+
+      claimRewardMutation.mutate(tierId, {
+        onSuccess: (res) => {
+          rewardInFlightRef.current = null;
+          setClaimingTierId(null);
+
+          if (!res.awarded) {
+            toast.info(`${tier.name} reward already claimed`);
+            return;
+          }
+
+          const parts = [`+${res.bonusCredits.toLocaleString()} bonus credits`];
+          if (res.dailyLimitBonus > 0) {
+            parts.push(`+${res.dailyLimitBonus} daily cap`);
+          }
+          const summary = parts.join(" & ");
+
+          toast.success(`${tier.name} Reward Claimed`, {
+            description: `Unlocked ${summary}.`,
+            duration: 5000,
+          });
+          addNotification({
+            icon: "Trophy",
+            iconColor: "text-emerald-400",
+            iconBg: "bg-emerald-400/10 border-emerald-400/20",
+            title: `${tier.name} Reward Claimed`,
+            body: `Added ${summary} to your workspace.`,
+            category: "notifyAnnouncements",
+          });
+        },
+        onError: (err) => {
+          rewardInFlightRef.current = null;
+          setClaimingTierId(null);
+          toast.error("Couldn't claim tier reward", {
+            description: err instanceof Error ? err.message : "Please try again in a moment.",
+          });
+        },
+      });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [xp, claimedTierIds, claimRewardMutation.mutate],
+  );
+
   return {
     xp,
     currentMilestone: getCurrentMilestone(xp),
@@ -126,6 +197,9 @@ export function useFocusProgress(dateKey: string) {
     isLoading: xpLoading,
     claimGoal,
     claimingGoalIds,
+    claimedTierIds,
+    claimingTierId,
+    claimTierReward,
     xpBumpTick,
     leveledUpTier,
   };

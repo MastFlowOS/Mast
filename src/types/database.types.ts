@@ -518,6 +518,8 @@ export type Database = {
           pending_plan_change: string | null;
           settings: Json | null;
           xp: number;
+          bonus_credits: number;
+          daily_limit_bonus: number;
         };
         Insert: {
           id: string;
@@ -532,6 +534,8 @@ export type Database = {
           pending_plan_change?: string | null;
           settings?: Json | null;
           xp?: number;
+          bonus_credits?: number;
+          daily_limit_bonus?: number;
         };
         Update: {
           id?: string;
@@ -546,6 +550,8 @@ export type Database = {
           pending_plan_change?: string | null;
           settings?: Json | null;
           xp?: number;
+          bonus_credits?: number;
+          daily_limit_bonus?: number;
         };
         Relationships: [];
       };

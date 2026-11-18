@@ -99,6 +99,9 @@ export function FocusDashboard() {
     isLoading: progressLoading,
     claimGoal,
     claimingGoalIds,
+    claimedTierIds,
+    claimingTierId,
+    claimTierReward,
     leveledUpTier,
   } = useFocusProgress(dateKey);
 
@@ -187,6 +190,9 @@ export function FocusDashboard() {
               progressPct={milestonePct}
               leveledUpTier={leveledUpTier}
               period={snapshot.greeting.period}
+              claimedTierIds={claimedTierIds}
+              claimingTierId={claimingTierId}
+              onClaimReward={claimTierReward}
             />
 
             {/* 6. PAIRED GRID: MAST SIGNAL + WEEKLY PULSE (Compact Intelligence Region) */}

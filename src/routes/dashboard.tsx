@@ -449,7 +449,7 @@ function DashboardLayout() {
         </nav>
 
         {/* Account / usage dock — dark navy card with layered #191970 waves */}
-        <div className="p-2.5 border-t border-border shrink-0">
+        <div className="px-1.5 py-2.5 border-t border-border shrink-0">
           <div
             className="relative rounded-xl border overflow-hidden"
             style={{
@@ -537,9 +537,9 @@ function DashboardLayout() {
             </div>
 
             {/* Identity row */}
-            <div className="relative z-10 flex items-center gap-2.5 px-2.5 py-2.5">
+            <div className="relative z-10 flex items-center gap-2.5 px-2 py-2.5">
               <div
-                className="relative shrink-0 size-8 rounded-full overflow-hidden border flex items-center justify-center text-[10px] font-bold text-slate-200"
+                className="relative shrink-0 size-[42px] rounded-full overflow-hidden border flex items-center justify-center text-xs font-bold text-slate-200"
                 style={{
                   borderColor: "rgba(25, 25, 112, 0.7)",
                   backgroundColor: "rgba(25, 25, 112, 0.32)",
@@ -589,7 +589,7 @@ function DashboardLayout() {
               }}
             >
               <div className="overflow-hidden min-h-0">
-                <div className="px-2.5 pb-2.5 pt-0.5" style={labelStyle}>
+                <div className="px-2 pb-2.5 pt-0.5" style={labelStyle}>
                   <div
                     className="h-1.5 w-full rounded-full overflow-hidden"
                     style={{

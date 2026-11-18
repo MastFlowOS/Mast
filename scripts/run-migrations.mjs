@@ -40,6 +40,7 @@ export const MAST_CATALOG_TABLES = [
   "lead_messages",
   "professions",
   "goal_completions",
+  "milestone_reward_claims",
   "discovery_live_events",
   "discovery_location_stats",
   "request_lifecycle_events",
@@ -64,6 +65,7 @@ export const MAST_CATALOG_SEQUENCES = [
 export const MAST_CATALOG_ROUTINES = [
   "deliver_lead_for_user",
   "award_goal_xp",
+  "claim_milestone_reward",
   "consume_crm_lead_credit",
   "claim_discovery_street",
   "release_discovery_street",

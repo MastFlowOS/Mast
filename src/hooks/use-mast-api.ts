@@ -28,6 +28,8 @@ import {
   getRecentActivity,
   getSettings,
   getXp,
+  getMilestoneRewardClaims,
+  claimMilestoneReward,
   getOpportunityExplanation,
   getLeadTrust,
   getOpportunityInsight,
@@ -88,6 +90,7 @@ export const queryKeys = {
   settings: ["mast", "settings"] as const,
   smtp: ["mast", "smtp"] as const,
   xp: ["mast", "xp"] as const,
+  milestoneRewards: ["mast", "milestone-rewards"] as const,
   lead: (id: number | string | undefined) => ["mast", "lead", String(id)] as const,
   leadActivities: (id: number | string | undefined) => ["mast", "lead", String(id), "activities"] as const,
   leadMessages: (id: number | string | undefined) => ["mast", "lead", String(id), "messages"] as const,
@@ -235,6 +238,29 @@ export function useXp(enabled = true) {
     queryFn: getXp,
     enabled,
     staleTime: 15_000,
+  });
+}
+
+/** Claimed milestone tier rewards for the authenticated user. */
+export function useMilestoneRewards(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.milestoneRewards,
+    queryFn: getMilestoneRewardClaims,
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+/** Claim an unlocked milestone tier's reward via `claim_milestone_reward`. */
+export function useClaimMilestoneReward() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (tierId: string) => claimMilestoneReward(tierId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.milestoneRewards });
+      queryClient.invalidateQueries({ queryKey: queryKeys.account });
+      queryClient.invalidateQueries({ queryKey: queryKeys.me });
+    },
   });
 }
 

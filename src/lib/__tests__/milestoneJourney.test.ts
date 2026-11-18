@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import {
   getTimeOfDayPeriod,
   buildGreeting,
+  getMilestoneTierById,
   MILESTONE_TIERS,
   type FocusContext,
 } from "../focus.js";
@@ -115,4 +118,30 @@ test("de Casteljau curve splitting preserves continuity at the active split poin
   const direct = cubicBezier(seg.p0, seg.c0, seg.c1, seg.p1, t);
   assert.ok(Math.abs(left[3].x - direct.x) < 0.001);
   assert.ok(Math.abs(left[3].y - direct.y) < 0.001);
+});
+
+test("MILESTONE_TIERS rewards scale monotonically and match SQL claim_milestone_reward table", () => {
+  assert.equal(MILESTONE_TIERS.length, 7);
+  for (let i = 1; i < MILESTONE_TIERS.length; i++) {
+    assert.ok(
+      MILESTONE_TIERS[i].bonusCredits > MILESTONE_TIERS[i - 1].bonusCredits,
+      `${MILESTONE_TIERS[i].id} bonusCredits must exceed ${MILESTONE_TIERS[i - 1].id}`,
+    );
+    assert.ok(
+      MILESTONE_TIERS[i].dailyLimitBonus >= MILESTONE_TIERS[i - 1].dailyLimitBonus,
+      `${MILESTONE_TIERS[i].id} dailyLimitBonus must be non-decreasing`,
+    );
+  }
+
+  const sql = fs.readFileSync(
+    path.resolve(process.cwd(), "migrations/051_milestone_tier_rewards.sql"),
+    "utf8",
+  );
+  for (const tier of MILESTONE_TIERS) {
+    assert.equal(getMilestoneTierById(tier.id)?.id, tier.id);
+    const pattern = new RegExp(
+      `WHEN '${tier.id}'\\s+THEN v_xp_req := ${tier.xpRequired};\\s+v_bonus_credits := ${tier.bonusCredits};\\s+v_daily_bonus := ${tier.dailyLimitBonus};`,
+    );
+    assert.match(sql, pattern, `SQL claim_milestone_reward must match ${tier.id}`);
+  }
 });

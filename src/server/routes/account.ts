@@ -19,13 +19,19 @@ accountRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
 
     const { data: profile, error } = await supabaseAdmin
       .from("profiles")
-      .select("full_name, email, subscription_plan, subscription_status, daily_leads_used, monthly_leads_used, pending_plan_change")
+      .select("full_name, email, subscription_plan, subscription_status, daily_leads_used, monthly_leads_used, pending_plan_change, bonus_credits, daily_limit_bonus")
       .eq("id", userId)
       .single();
 
     if (error) throw error;
 
     const plan = getPlan(profile?.subscription_plan);
+    const bonusCredits = Math.max(0, Number(profile?.bonus_credits ?? 0));
+    const dailyLimitBonus = Math.max(0, Number(profile?.daily_limit_bonus ?? 0));
+    const effectiveDailyLimit = plan.dailyLeadLimit + dailyLimitBonus;
+    const effectiveMonthlyLimit = plan.monthlyLeadLimit + bonusCredits;
+    const dailyUsed = profile?.daily_leads_used ?? 0;
+    const monthlyUsed = profile?.monthly_leads_used ?? 0;
 
     res.json({
       user: {
@@ -41,19 +47,21 @@ accountRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
         pendingPlanChange: profile?.pending_plan_change ?? null,
       },
       credits: {
-        limit: plan.creditsLimit,
-        used: profile?.monthly_leads_used ?? 0,
-        remaining: Math.max(0, plan.creditsLimit - (profile?.monthly_leads_used ?? 0)),
+        limit: plan.creditsLimit + bonusCredits,
+        used: monthlyUsed,
+        remaining: Math.max(0, plan.creditsLimit - monthlyUsed) + bonusCredits,
+        bonusCredits,
       },
       dailyUsage: {
-        used: profile?.daily_leads_used ?? 0,
-        limit: plan.dailyLeadLimit,
-        remaining: Math.max(0, plan.dailyLeadLimit - (profile?.daily_leads_used ?? 0)),
+        used: dailyUsed,
+        limit: effectiveDailyLimit,
+        remaining: Math.max(0, effectiveDailyLimit - dailyUsed),
+        bonus: dailyLimitBonus,
       },
       monthlyUsage: {
-        used: profile?.monthly_leads_used ?? 0,
-        limit: plan.monthlyLeadLimit,
-        remaining: Math.max(0, plan.monthlyLeadLimit - (profile?.monthly_leads_used ?? 0)),
+        used: monthlyUsed,
+        limit: effectiveMonthlyLimit,
+        remaining: Math.max(0, plan.monthlyLeadLimit - monthlyUsed) + bonusCredits,
       },
       limits: {
         maxLeadRequest: plan.maxLeadRequest,

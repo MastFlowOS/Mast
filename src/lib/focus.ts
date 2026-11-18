@@ -74,8 +74,16 @@ export type MilestoneTier = {
   id: string;
   name: string;
   xpRequired: number;
-  /** Display label only. No reward is implemented; never present it as unlocked. */
+  /** Short human-readable reward summary. */
   reward: string;
+  /** One-time persistent bonus discovery credits unlocked when claimed. */
+  bonusCredits: number;
+  /** Permanent daily lead cap boost (highest claimed tier applies). */
+  dailyLimitBonus: number;
+  /** Short badge label shown on the tier reward pill. */
+  perkLabel: string;
+  /** Full description of what claiming this tier unlocks. */
+  rewardDetail: string;
 };
 
 export type FocusContext = {
@@ -105,18 +113,85 @@ export type FocusSnapshot = {
 };
 
 // ── Milestone tiers ───────────────────────────────────────────────────────────
-// `reward` strings are labels only: no reward is implemented, so the UI must
-// not present them as unlockable benefits.
+// Server-authoritative equivalents live in migrations/051_milestone_tier_rewards.sql
+// (`claim_milestone_reward`). Keep thresholds and reward amounts in sync.
 
 export const MILESTONE_TIERS: MilestoneTier[] = [
-  { id: "explorer", name: "Explorer", xpRequired: 0, reward: "Unlocked at signup" },
-  { id: "prospector", name: "Prospector", xpRequired: 100, reward: "Bonus discovery insights" },
-  { id: "closer", name: "Closer", xpRequired: 250, reward: "Follow-up priority boost" },
-  { id: "rainmaker", name: "Rainmaker", xpRequired: 500, reward: "Premium discovery day" },
-  { id: "operator", name: "Operator", xpRequired: 800, reward: "AI outreach boost" },
-  { id: "growth_master", name: "Growth Master", xpRequired: 1200, reward: "Bonus leads pack" },
-  { id: "revenue_architect", name: "Revenue Architect", xpRequired: 1800, reward: "Seasonal badge unlock" },
+  {
+    id: "explorer",
+    name: "Explorer",
+    xpRequired: 0,
+    reward: "+15 Welcome Credits",
+    bonusCredits: 15,
+    dailyLimitBonus: 0,
+    perkLabel: "Starter Pack",
+    rewardDetail: "Claim +15 persistent bonus discovery credits to kickstart your first searches.",
+  },
+  {
+    id: "prospector",
+    name: "Prospector",
+    xpRequired: 100,
+    reward: "+50 Credits & +10 Daily Cap",
+    bonusCredits: 50,
+    dailyLimitBonus: 10,
+    perkLabel: "+10 Daily Cap",
+    rewardDetail: "Adds +50 persistent bonus credits and raises your daily discovery cap by +10.",
+  },
+  {
+    id: "closer",
+    name: "Closer",
+    xpRequired: 250,
+    reward: "+100 Credits & +20 Daily Cap",
+    bonusCredits: 100,
+    dailyLimitBonus: 20,
+    perkLabel: "+20 Daily Cap",
+    rewardDetail: "Adds +100 persistent bonus credits and raises your daily discovery cap by +20.",
+  },
+  {
+    id: "rainmaker",
+    name: "Rainmaker",
+    xpRequired: 500,
+    reward: "+250 Credits & +35 Daily Cap",
+    bonusCredits: 250,
+    dailyLimitBonus: 35,
+    perkLabel: "+35 Daily Cap",
+    rewardDetail: "Adds +250 persistent bonus credits and raises your daily discovery cap by +35.",
+  },
+  {
+    id: "operator",
+    name: "Operator",
+    xpRequired: 800,
+    reward: "+400 Credits & +50 Daily Cap",
+    bonusCredits: 400,
+    dailyLimitBonus: 50,
+    perkLabel: "+50 Daily Cap",
+    rewardDetail: "Adds +400 persistent bonus credits and raises your daily discovery cap by +50.",
+  },
+  {
+    id: "growth_master",
+    name: "Growth Master",
+    xpRequired: 1200,
+    reward: "+750 Credits & +75 Daily Cap",
+    bonusCredits: 750,
+    dailyLimitBonus: 75,
+    perkLabel: "+75 Daily Cap",
+    rewardDetail: "Adds +750 persistent bonus credits and raises your daily discovery cap by +75.",
+  },
+  {
+    id: "revenue_architect",
+    name: "Revenue Architect",
+    xpRequired: 1800,
+    reward: "+1,500 Credits & +100 Daily Cap",
+    bonusCredits: 1500,
+    dailyLimitBonus: 100,
+    perkLabel: "+100 Daily Cap",
+    rewardDetail: "Adds +1,500 persistent bonus credits and raises your daily discovery cap by +100.",
+  },
 ];
+
+export function getMilestoneTierById(id: string): MilestoneTier | undefined {
+  return MILESTONE_TIERS.find((t) => t.id === id);
+}
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 

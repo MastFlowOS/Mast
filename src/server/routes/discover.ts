@@ -180,10 +180,15 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
 
     const { data: profile, error: profileError } = await supabaseAdmin
       .from("profiles")
-      .select("settings")
+      .select("settings, bonus_credits, daily_limit_bonus")
       .eq("id", userId)
       .single();
     if (profileError) throw profileError;
+
+    const bonusCredits = Math.max(0, Number(profile?.bonus_credits ?? 0));
+    const dailyLimitBonus = Math.max(0, Number(profile?.daily_limit_bonus ?? 0));
+    const effectiveDailyLimit = plan.dailyLeadLimit + dailyLimitBonus;
+    const effectiveMonthlyRemaining = Math.max(0, plan.monthlyLeadLimit - monthlyUsed) + bonusCredits;
 
     if (body.quantity > plan.maxLeadRequest) {
       return res.status(400).json({
@@ -191,10 +196,10 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
         message: `${plan.id} plan allows at most ${plan.maxLeadRequest} opportunities per request`,
       });
     }
-    if (dailyUsed >= plan.dailyLeadLimit) {
+    if (dailyUsed >= effectiveDailyLimit) {
       return res.status(429).json({ code: "daily_limit_reached", message: "Daily opportunity limit reached" });
     }
-    if (monthlyUsed >= plan.monthlyLeadLimit) {
+    if (effectiveMonthlyRemaining <= 0) {
       return res.status(429).json({ code: "monthly_limit_reached", message: "Monthly credit limit reached" });
     }
 
@@ -283,7 +288,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
     const focusAreaLabel = (profile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined;
     const professionSlug = professionSlugForLabel(focusAreaLabel);
 
-    const quantity = Math.min(body.quantity, plan.dailyLeadLimit - dailyUsed, plan.monthlyLeadLimit - monthlyUsed);
+    const quantity = Math.min(body.quantity, effectiveDailyLimit - dailyUsed, effectiveMonthlyRemaining);
 
     const executionTarget: "cloud" | "desktop" = body.execution_target ?? body.executionTarget ?? "cloud";
 

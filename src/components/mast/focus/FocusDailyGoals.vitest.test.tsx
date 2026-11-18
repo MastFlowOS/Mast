@@ -46,9 +46,12 @@ vi.mock("@/hooks/use-mast-api", async () => {
   const { useQuery } = await import("@tanstack/react-query");
   return {
     ...hooks,
-    queryKeys: { xp: ["mast", "xp"] },
+    queryKeys: { xp: ["mast", "xp"], milestoneRewards: ["mast", "milestone-rewards"] },
     useXp: () =>
       useQuery({ queryKey: ["mast", "xp"], queryFn: async () => server.xp, staleTime: Infinity }),
+    useMilestoneRewards: () =>
+      useQuery({ queryKey: ["mast", "milestone-rewards"], queryFn: async () => [], staleTime: Infinity }),
+    useClaimMilestoneReward: () => ({ mutate: vi.fn(), isPending: false }),
   };
 });
 

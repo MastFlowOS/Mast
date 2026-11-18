@@ -132,11 +132,13 @@ export type Account = {
     limit: number;
     used: number;
     remaining: number;
+    bonusCredits?: number;
   };
   dailyUsage: {
     used: number;
     limit: number;
     remaining: number;
+    bonus?: number;
     resetsAt?: string | null;
   };
   monthlyUsage: {
@@ -1233,9 +1235,11 @@ export async function getMe() {
 
   const resolvedPlan = getDevPlanOverride() || ((activeProfile?.subscription_plan as PlanId) || "free");
   const permissions = buildPermissionsManager(resolvedPlan);
-  const monthlyLimit = permissions.limits.monthlyOpportunities;
+  const bonusCredits = Math.max(0, Number(activeProfile?.bonus_credits ?? 0));
+  const dailyLimitBonus = Math.max(0, Number(activeProfile?.daily_limit_bonus ?? 0));
+  const monthlyLimit = permissions.limits.monthlyOpportunities + bonusCredits;
   const monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
-  const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
+  const monthlyRemaining = Math.max(0, permissions.limits.monthlyOpportunities - monthlyUsed) + bonusCredits;
 
   const user: AuthUser = {
     id: activeSession.user.id,
@@ -1323,14 +1327,17 @@ function buildAccountFromProfile(userId: string, activeProfile: any): Account {
   const permissions = buildPermissionsManager(resolvedPlan);
   const planConfig = getPlan(permissions.plan);
 
-  const dailyLimit = permissions.limits.dailyOpportunities;
-  const monthlyLimit = permissions.limits.monthlyOpportunities;
+  const bonusCredits = Math.max(0, Number(activeProfile?.bonus_credits ?? 0));
+  const dailyLimitBonus = Math.max(0, Number(activeProfile?.daily_limit_bonus ?? 0));
+
+  const dailyLimit = permissions.limits.dailyOpportunities + dailyLimitBonus;
+  const monthlyLimit = permissions.limits.monthlyOpportunities + bonusCredits;
 
   const dailyUsed = activeProfile?.daily_leads_used ?? 0;
   const monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
 
   const dailyRemaining = Math.max(0, dailyLimit - dailyUsed);
-  const monthlyRemaining = Math.max(0, monthlyLimit - monthlyUsed);
+  const monthlyRemaining = Math.max(0, permissions.limits.monthlyOpportunities - monthlyUsed) + bonusCredits;
 
   // Determine allowed channels from permissions
   const allowedChannels: string[] = ["email", "phone"];
@@ -1354,11 +1361,12 @@ function buildAccountFromProfile(userId: string, activeProfile: any): Account {
       billingPeriodEndsAt: activeProfile?.next_monthly_reset || null,
       pendingPlanChange: (activeProfile?.pending_plan_change as PlanId) || null,
     },
-    credits: { limit: monthlyLimit, used: monthlyUsed, remaining: monthlyRemaining },
+    credits: { limit: monthlyLimit, used: monthlyUsed, remaining: monthlyRemaining, bonusCredits },
     dailyUsage: {
       used: dailyUsed,
       limit: dailyLimit,
       remaining: dailyRemaining,
+      bonus: dailyLimitBonus,
       resetsAt: activeProfile?.next_daily_reset || null,
     },
     monthlyUsage: {
@@ -2169,6 +2177,61 @@ export async function getXp(): Promise<number> {
     return 0;
   }
   return (data?.xp as number | null) ?? 0;
+}
+
+// ─── Milestone Tier Rewards (Supabase) ────────────────────────────────────────
+
+export type MilestoneRewardClaim = {
+  tierId: string;
+  bonusCredits: number;
+  dailyLimitBonus: number;
+  claimedAt: string;
+};
+
+export type ClaimMilestoneRewardResult = {
+  tierId: string;
+  awarded: boolean;
+  bonusCredits: number;
+  dailyLimitBonus: number;
+  totalBonusCredits: number;
+  effectiveDailyLimitBonus: number;
+};
+
+export async function getMilestoneRewardClaims(): Promise<MilestoneRewardClaim[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase!
+    .from("milestone_reward_claims")
+    .select("tier_id, bonus_credits, daily_limit_bonus, claimed_at")
+    .eq("user_id", userId)
+    .order("claimed_at", { ascending: true });
+  if (error) {
+    console.warn("[Mast:getMilestoneRewardClaims] failed, returning []:", error.message);
+    return [];
+  }
+  return (data ?? []).map((row: Record<string, unknown>) => ({
+    tierId: String(row.tier_id),
+    bonusCredits: Number(row.bonus_credits ?? 0),
+    dailyLimitBonus: Number(row.daily_limit_bonus ?? 0),
+    claimedAt: String(row.claimed_at ?? ""),
+  }));
+}
+
+export async function claimMilestoneReward(tierId: string): Promise<ClaimMilestoneRewardResult> {
+  await requireUserId();
+  const { data, error } = await supabase!.rpc("claim_milestone_reward", {
+    p_tier_id: tierId,
+  });
+  if (error) throw new ApiError(400, error.message, error);
+  invalidateProfileCache();
+  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | undefined;
+  return {
+    tierId: String(row?.tier_id ?? tierId),
+    awarded: Boolean(row?.awarded),
+    bonusCredits: Number(row?.bonus_credits ?? 0),
+    dailyLimitBonus: Number(row?.daily_limit_bonus ?? 0),
+    totalBonusCredits: Number(row?.total_bonus_credits ?? 0),
+    effectiveDailyLimitBonus: Number(row?.effective_daily_limit_bonus ?? 0),
+  };
 }
 
 // ─── Daily Goals (Supabase) ───────────────────────────────────────────────────

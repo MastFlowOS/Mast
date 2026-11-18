@@ -31,7 +31,7 @@ export class UsageService {
   static async getUsageStatus(userId: string) {
     const { data: profile, error } = await supabase!
       .from("profiles")
-      .select("subscription_plan, daily_leads_used, monthly_leads_used")
+      .select("subscription_plan, daily_leads_used, monthly_leads_used, bonus_credits, daily_limit_bonus")
       .eq("id", userId)
       .single();
 
@@ -42,8 +42,11 @@ export class UsageService {
     const plan = (profile?.subscription_plan || "free") as PlanId;
     const permissions = buildPermissionsManager(plan);
 
-    const dailyLimit = permissions.limits.dailyOpportunities;
-    const monthlyLimit = permissions.limits.monthlyOpportunities;
+    const bonusCredits = Math.max(0, Number((profile as { bonus_credits?: number | null })?.bonus_credits ?? 0));
+    const dailyLimitBonus = Math.max(0, Number((profile as { daily_limit_bonus?: number | null })?.daily_limit_bonus ?? 0));
+
+    const dailyLimit = permissions.limits.dailyOpportunities + dailyLimitBonus;
+    const monthlyLimit = permissions.limits.monthlyOpportunities + bonusCredits;
 
     const dailyUsed = profile?.daily_leads_used ?? 0;
     const monthlyUsed = profile?.monthly_leads_used ?? 0;
@@ -54,7 +57,7 @@ export class UsageService {
       dailyUsed,
       monthlyUsed,
       dailyRemaining: Math.max(0, dailyLimit - dailyUsed),
-      monthlyRemaining: Math.max(0, monthlyLimit - monthlyUsed),
+      monthlyRemaining: Math.max(0, permissions.limits.monthlyOpportunities - monthlyUsed) + bonusCredits,
       permissions,
     };
   }

@@ -11,6 +11,7 @@ export const Route = createFileRoute("/milestone-preview")({
 export function MilestonePreviewPage() {
   const [overridePeriod, setOverridePeriod] = useState<GreetingPeriod | undefined>(undefined);
   const [xp, setXp] = useState<number>(100);
+  const [claimedTierIds, setClaimedTierIds] = useState<string[]>(["explorer"]);
 
   const effectivePeriod = overridePeriod ?? getTimeOfDayPeriod();
 
@@ -90,6 +91,10 @@ export function MilestonePreviewPage() {
           nextName={nextTier?.name ?? null}
           period={effectivePeriod}
           overridePeriod={overridePeriod}
+          claimedTierIds={claimedTierIds}
+          onClaimReward={(tierId) =>
+            setClaimedTierIds((prev) => (prev.includes(tierId) ? prev : [...prev, tierId]))
+          }
         />
       </div>
     </div>

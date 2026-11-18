@@ -12,6 +12,7 @@ import {
   Loader2,
   Check,
   CheckCircle,
+  MessageSquareReply,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,7 +27,7 @@ import {
 import { toast } from "sonner";
 import type { Lead } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
-import { useRecordLeadActivity, useSendLeadEmail } from "@/hooks/use-mast-api";
+import { useRecordLeadActivity, useSendLeadEmail, useLeadActivities } from "@/hooks/use-mast-api";
 import { ApiError, isMissingBackendEndpoint } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 import { normalizeInstagram } from "@/lib/instagram";
@@ -87,6 +88,11 @@ export function CenterWorkspace({
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
   const sendEmail = useSendLeadEmail();
   const recordActivity = useRecordLeadActivity();
+  const { data: activities = [] } = useLeadActivities(lead);
+  const latestReply = activities.find((a) => a.type === "reply_received");
+  const latestReplyMeta = (latestReply?.metadata as Record<string, unknown> | null) || null;
+  const replyIntent = typeof latestReplyMeta?.intent === "string" ? latestReplyMeta.intent : null;
+  const suggestedReply = typeof latestReplyMeta?.suggestedReply === "string" ? latestReplyMeta.suggestedReply : null;
 
   // Close the bottom action menu when switching leads or channels to prevent orphaned menus
   useEffect(() => {
@@ -458,6 +464,61 @@ export function CenterWorkspace({
           </Select>
         </div>
       </div>
+
+      {/* ─── CLIENT REPLY BANNER (when a reply has been observed) ─── */}
+      {latestReply && (
+        <div
+          data-testid="client-reply-banner"
+          className="rounded-xl border border-emerald-500/30 bg-emerald-500/[0.08] px-3.5 py-2.5 space-y-2"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <MessageSquareReply className="size-4 text-emerald-400 shrink-0" />
+              <span className="text-xs font-semibold text-emerald-300">
+                Client replied via {latestReply.channel === "instagram" ? "Instagram" : "Email"}
+              </span>
+              {replyIntent && replyIntent !== "other" && (
+                <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-300">
+                  {replyIntent.replace(/_/g, " ")}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              {suggestedReply && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setBody(suggestedReply);
+                    toast.success("Inserted suggested reply");
+                  }}
+                  className="h-7 text-[11px] border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-200"
+                >
+                  Use Suggested Reply
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setTemplate("follow_up");
+                  void onGenerate();
+                }}
+                disabled={isGenerating}
+                className="h-7 text-[11px] border-border/70 bg-card/60"
+              >
+                <Sparkles className="size-3 mr-1" />
+                Draft AI Reply
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-foreground/90 leading-relaxed line-clamp-3">
+            {latestReply.body || latestReply.content}
+          </p>
+        </div>
+      )}
 
       {/* ─── 3. SUBJECT LINE (EMAIL) ─── */}
       {channel === "email" ? (

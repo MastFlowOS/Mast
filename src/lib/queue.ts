@@ -67,6 +67,7 @@ export const QUEUES = {
    */
   metricsSnapshot: "metrics-snapshot",
   staleScrapeJobSweep: "stale-scrape-job-sweep",
+  inboxPoll: "inbox.poll",
 } as const;
 
 

@@ -54,6 +54,12 @@ import {
   deleteSmtpSettings,
   getOpsStats,
   getOpsHistory,
+  getInboxSettings,
+  saveInboxSettings,
+  testInboxConnection,
+  syncInboxNow,
+  deleteInboxSettings,
+  type InboxSettings,
   type AuthUser,
   type CreateLeadBody,
   type Followup,
@@ -89,6 +95,7 @@ export const queryKeys = {
   analytics: ["mast", "analytics"] as const,
   settings: ["mast", "settings"] as const,
   smtp: ["mast", "smtp"] as const,
+  inbox: ["mast", "inbox"] as const,
   xp: ["mast", "xp"] as const,
   milestoneRewards: ["mast", "milestone-rewards"] as const,
   lead: (id: number | string | undefined) => ["mast", "lead", String(id)] as const,
@@ -858,5 +865,56 @@ export function useOpsHistory(rangeHours = 24, enabled = true) {
     enabled,
     retry: false,
     staleTime: 30_000,
+  });
+}
+
+// ─── Client Reply Observation (IMAP / Inbound / IG Alerts) ───────────────────
+
+export function useInboxSettings(enabled = true) {
+  return useQuery<InboxSettings>({
+    queryKey: queryKeys.inbox,
+    queryFn: getInboxSettings,
+    enabled,
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+export function useSaveInboxSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: saveInboxSettings,
+    onSuccess: (settings) => queryClient.setQueryData(queryKeys.inbox, settings),
+  });
+}
+
+export function useTestInboxConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: testInboxConnection,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
+    },
+  });
+}
+
+export function useSyncInboxNow() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: syncInboxNow,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
+      queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
+    },
+  });
+}
+
+export function useDeleteInboxSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteInboxSettings,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
+    },
   });
 }

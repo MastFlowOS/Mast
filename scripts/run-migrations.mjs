@@ -45,6 +45,8 @@ export const MAST_CATALOG_TABLES = [
   "discovery_location_stats",
   "request_lifecycle_events",
   "user_smtp_credentials",
+  "user_notifications",
+  "user_inbox_connections",
   "discovery_streets_contamination_archive_2026_09",
   "user_discovery_street_state_contamination_archive_2026_09"
 ];

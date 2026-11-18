@@ -6,12 +6,23 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { DynamicIslandHeader } from "@/components/mast/DynamicIslandHeader";
-import { dedupeDailyResetNotifications } from "@/lib/notifications";
-import { useAccount, useFollowups, useLogout, useMe, useEnableWorkspace } from "@/hooks/use-mast-api";
+import { useQueryClient } from "@tanstack/react-query";
+import { DynamicIslandHeader, type HeaderNotificationItem } from "@/components/mast/DynamicIslandHeader";
+import { dedupeDailyResetNotifications, formatNotificationTimestamp } from "@/lib/notifications";
+import { useAccount, useFollowups, useLogout, useMe, useEnableWorkspace, queryKeys } from "@/hooks/use-mast-api";
+import {
+  clearAllServerNotifications,
+  dismissServerNotification,
+  listServerNotifications,
+  markAllServerNotificationsRead,
+  markServerNotificationRead,
+  type UserNotificationRow,
+} from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 import {
   createDynamicIslandEvent,
   dismissDynamicIslandEvent,
+  publishDynamicIslandEvent,
   useDynamicIsland,
   type DynamicIslandEvent,
 } from "@/lib/dynamic-island";
@@ -155,13 +166,162 @@ function DashboardLayout() {
     return () => window.removeEventListener("mast_notifications_update", handleUpdate);
   }, []);
 
-  const unread = notifications.filter((n) => n.unread).length;
+  const queryClient = useQueryClient();
+  const [serverNotifications, setServerNotifications] = useState<HeaderNotificationItem[]>([]);
+
+  function mapServerNotif(row: UserNotificationRow): HeaderNotificationItem {
+    const isIg = row.channel === "instagram";
+    const isEmail = row.channel === "email";
+    return {
+      id: `srv:${row.id}`,
+      icon: isIg ? "Instagram" : isEmail ? "Mail" : "MessageSquareReply",
+      iconColor: isIg ? "text-pink-400" : "text-emerald-400",
+      iconBg: isIg
+        ? "bg-pink-500/12 border-pink-500/25"
+        : "bg-emerald-500/12 border-emerald-500/25",
+      title: row.title,
+      body: row.body,
+      createdAt: row.created_at,
+      time: formatNotificationTimestamp(row.created_at),
+      unread: !row.read_at,
+      actionUrl: row.action_url,
+      leadId: row.lead_id,
+      channel: row.channel,
+      source: "server",
+    };
+  }
+
+  // Initial fetch + Supabase Realtime subscription for server-pushed reply alerts
+  useEffect(() => {
+    const uid = user?.id;
+    if (!uid || !supabase) return;
+
+    let cancelled = false;
+    void listServerNotifications().then((rows) => {
+      if (!cancelled) {
+        setServerNotifications(rows.map(mapServerNotif));
+      }
+    });
+
+    const channel = supabase
+      .channel(`user-notifications-${uid}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "user_notifications",
+          filter: `user_id=eq.${uid}`,
+        },
+        (payload) => {
+          const row = payload.new as UserNotificationRow | undefined;
+          if (!row?.id || row.dismissed_at) return;
+          const mapped = mapServerNotif(row);
+
+          setServerNotifications((prev) => {
+            if (prev.some((n) => n.id === mapped.id)) return prev;
+            return [mapped, ...prev].slice(0, 50);
+          });
+
+          // Live toast + Dynamic Island banner
+          toast.success(row.title, {
+            description: row.body,
+            action: row.action_url
+              ? {
+                  label: "Open",
+                  onClick: () => {
+                    void markServerNotificationRead(row.id);
+                    void navigate({ to: row.action_url as any });
+                  },
+                }
+              : undefined,
+          });
+
+          publishDynamicIslandEvent({
+            id: `reply-${row.id}`,
+            type: "notification",
+            title: row.title,
+            description: row.body,
+            actionLabel: row.action_url ? "View Reply →" : undefined,
+            actionHref: row.action_url || undefined,
+            autoDismissMs: 12000,
+            onAction: row.action_url
+              ? () => {
+                  dismissDynamicIslandEvent(`reply-${row.id}`);
+                  void markServerNotificationRead(row.id);
+                  void navigate({ to: row.action_url as any });
+                }
+              : undefined,
+          });
+
+          if (row.lead_id) {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.lead(row.lead_id) });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.leadActivities(row.lead_id) });
+          }
+          void queryClient.invalidateQueries({ queryKey: ["mast", "leads"] });
+
+          // Optional browser/desktop native notification if permitted
+          if (typeof window !== "undefined" && "Notification" in window && window.Notification.permission === "granted") {
+            try {
+              new window.Notification(row.title, { body: row.body });
+            } catch {
+              // ignore notification permission/constructor errors
+            }
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "user_notifications",
+          filter: `user_id=eq.${uid}`,
+        },
+        (payload) => {
+          const row = payload.new as UserNotificationRow | undefined;
+          if (!row?.id) return;
+          if (row.dismissed_at) {
+            setServerNotifications((prev) => prev.filter((n) => n.id !== `srv:${row.id}`));
+          } else {
+            setServerNotifications((prev) =>
+              prev.map((n) => (n.id === `srv:${row.id}` ? mapServerNotif(row) : n)),
+            );
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      void supabase?.removeChannel(channel);
+    };
+  }, [user?.id]);
+
+  const combinedNotifications = useMemo(() => {
+    const merged = [...serverNotifications, ...notifications];
+    return merged.sort((a, b) => {
+      const aTs = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTs = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTs - aTs;
+    });
+  }, [serverNotifications, notifications]);
+
+  const unread = combinedNotifications.filter((n) => n.unread).length;
   const markRead = () => {
     const updated = notifications.map((n) => ({ ...n, unread: false }));
     setNotifications(updated);
     try { localStorage.setItem("mast_notifications", JSON.stringify(updated)); } catch { /* ignore */ }
+    setServerNotifications((prev) => prev.map((n) => ({ ...n, unread: false })));
+    void markAllServerNotificationsRead();
   };
   const dismiss = (id: number | string) => {
+    if (typeof id === "string" && id.startsWith("srv:")) {
+      const serverId = id.slice(4);
+      setServerNotifications((prev) => prev.filter((n) => n.id !== id));
+      void dismissServerNotification(serverId);
+      return;
+    }
     const updated = notifications.filter((n) => n.id !== id);
     setNotifications(updated);
     try { localStorage.setItem("mast_notifications", JSON.stringify(updated)); } catch { /* ignore */ }
@@ -169,6 +329,20 @@ function DashboardLayout() {
   const clearAll = () => {
     setNotifications([]);
     try { localStorage.setItem("mast_notifications", JSON.stringify([])); } catch { /* ignore */ }
+    setServerNotifications([]);
+    void clearAllServerNotifications();
+  };
+  const handleNotificationClick = (item: HeaderNotificationItem) => {
+    if (typeof item.id === "string" && item.id.startsWith("srv:")) {
+      const serverId = item.id.slice(4);
+      setServerNotifications((prev) =>
+        prev.map((n) => (n.id === item.id ? { ...n, unread: false } : n)),
+      );
+      void markServerNotificationRead(serverId);
+    }
+    if (item.actionUrl) {
+      void navigate({ to: item.actionUrl as any });
+    }
   };
 
   const isWorkspaceReady = !authLoading && !!user && user.onboardingCompleted;
@@ -294,11 +468,12 @@ function DashboardLayout() {
       {/* Dynamic Island Top Header — full width across sidebar + page so MAST stays fixed and no vertical border cuts the navbar */}
       <DynamicIslandHeader
         event={activeEvent}
-        notifications={notifications}
+        notifications={combinedNotifications}
         unreadCount={unread}
         onMarkAllRead={markRead}
         onClearAllNotifications={clearAll}
         onDismissNotification={dismiss}
+        onNotificationClick={handleNotificationClick}
         user={user}
         planName={planName}
         onLogout={handleLogout}

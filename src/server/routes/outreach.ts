@@ -352,6 +352,16 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       })),
     };
 
+    const latestReply = recentActivities.find((a) => a.type === "reply_received");
+    const effectiveContextNotes = [
+      contextNotes,
+      latestReply
+        ? `Client's latest reply (${latestReply.channel || "outreach"}): ${latestReply.content || ""}`
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
     // Server-enforced model tier policy:
     // - Starter: always Fast tier. Never elevated by client request.
     // - Pro and Premium: Pro tier by default, or Fast tier if explicitly chosen.
@@ -366,7 +376,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       template,
       customInstructions,
       senderName: senderName || fullName,
-      contextNotes,
+      contextNotes: effectiveContextNotes || undefined,
       currentDraft: {
         subject: clientSubject || undefined,
         body: existingBody || undefined,

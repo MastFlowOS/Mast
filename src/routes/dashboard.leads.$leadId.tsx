@@ -47,7 +47,15 @@ function LeadWorkspace() {
   const generateDraft = useGenerateOutreachDraft();
   const recordActivity = useRecordLeadActivity();
 
-  const [channel, setChannel] = useState<Channel>("email");
+  const [channel, setChannel] = useState<Channel>(() => {
+    if (typeof window !== "undefined") {
+      const param = new URLSearchParams(window.location.search).get("channel");
+      if (param === "email" || param === "instagram" || param === "phone" || param === "contact_form") {
+        return param;
+      }
+    }
+    return "email";
+  });
   const [template, setTemplate] = useState("initial");
   const [tone, setTone] = useState("friendly");
   const [drafts, setDrafts] = useState<Record<Channel, ComposeDraft>>(emptyDrafts);

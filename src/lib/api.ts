@@ -2466,9 +2466,12 @@ export async function createMessage(body: {
   content: string;
   subject?: string;
   status?: string;
+  direction?: "outbound" | "inbound";
+  externalMessageId?: string | null;
+  metadata?: Record<string, unknown> | null;
 }): Promise<Message> {
   const userId = await requireUserId();
-  const row = {
+  const baseRow = {
     lead_id: body.leadId,
     user_id: userId,
     channel: body.channel,
@@ -2478,7 +2481,18 @@ export async function createMessage(body: {
     status: body.status ?? "draft",
   };
 
-  const { data, error } = await supabase!.from("lead_messages").insert(row).select().single();
+  const extendedRow = {
+    ...baseRow,
+    ...(body.direction ? { direction: body.direction } : {}),
+    ...(body.externalMessageId ? { external_message_id: body.externalMessageId } : {}),
+    ...(body.metadata ? { metadata: body.metadata } : {}),
+  };
+
+  let { data, error } = await supabase!.from("lead_messages").insert(extendedRow).select().single();
+  if (error && (body.direction || body.externalMessageId || body.metadata)) {
+    // Graceful fallback if migration 054 columns aren't deployed yet
+    ({ data, error } = await supabase!.from("lead_messages").insert(baseRow).select().single());
+  }
   if (error) {
     throw new ApiError(500, error.message, error);
   }
@@ -2685,6 +2699,12 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
   // migration — and is null when the body wasn't produced by the
   // deterministic generator.
   const continuityMetadata = getDraftProvenance(leadId, "email");
+  const outboundMessageId =
+    typeof resData.messageId === "string" && resData.messageId.trim() ? resData.messageId.trim() : null;
+  const activityMetadata =
+    continuityMetadata || outboundMessageId
+      ? { ...(continuityMetadata ?? {}), ...(outboundMessageId ? { externalMessageId: outboundMessageId } : {}) }
+      : null;
   try {
     await createLeadActivity(leadId, {
       type: "email_sent",
@@ -2693,7 +2713,7 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
       channel: "email",
       subject: body.subject,
       body: body.body,
-      metadata: continuityMetadata,
+      metadata: activityMetadata,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2711,6 +2731,8 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
       content: body.body,
       subject: body.subject,
       status: "sent",
+      direction: "outbound",
+      externalMessageId: outboundMessageId,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -3032,4 +3054,156 @@ export async function getOpsStats(rangeHours = 24): Promise<OpsStats> {
 /** Fetches historical job metrics for graphs. */
 export async function getOpsHistory(rangeHours = 24, limit = 100): Promise<OpsHistoryEntry[]> {
   return backendFetch<OpsHistoryEntry[]>(`/v1/observability/history?range_hours=${rangeHours}&limit=${limit}`);
+}
+
+// ─── Client Reply Observation (IMAP / Inbound Webhook / Notifications) ────────
+
+export type InboxSettings = {
+  configured: boolean;
+  provider: "imap" | "inbound_only";
+  imapHost: string;
+  imapPort: string;
+  imapUsername: string;
+  imapTls: boolean;
+  hasPassword: boolean;
+  inboundToken: string | null;
+  inboundWebhookPath: string | null;
+  igEmailAlertsEnabled: boolean;
+  enabled: boolean;
+  lastSyncedAt: string | null;
+  lastSyncStatus: "success" | "failed" | null;
+  lastSyncError: string | null;
+  encryptionConfigured: boolean;
+};
+
+export type InboxSyncResult = {
+  success: boolean;
+  fetched: number;
+  matched: number;
+  recorded: number;
+  filtered: number;
+  lastUid: number;
+  uidValidity: number | null;
+};
+
+export type UserNotificationRow = {
+  id: string;
+  user_id: string;
+  lead_id: number | null;
+  type: string;
+  channel: string | null;
+  title: string;
+  body: string;
+  action_url: string | null;
+  metadata: Record<string, unknown> | null;
+  read_at: string | null;
+  dismissed_at: string | null;
+  created_at: string;
+};
+
+export function getBackendBaseUrl(): string | undefined {
+  return getApiBaseUrl();
+}
+
+export async function getInboxSettings(): Promise<InboxSettings> {
+  return backendFetch<InboxSettings>("/v1/inbox/settings");
+}
+
+export async function saveInboxSettings(input: {
+  provider: "imap" | "inbound_only";
+  imapHost?: string;
+  imapPort?: string | number;
+  imapUsername?: string;
+  imapPassword?: string;
+  imapTls?: boolean;
+  igEmailAlertsEnabled?: boolean;
+  enabled?: boolean;
+}): Promise<InboxSettings> {
+  return backendFetch<InboxSettings>("/v1/inbox/settings", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function testInboxConnection(input: {
+  imapHost: string;
+  imapPort: string | number;
+  imapUsername: string;
+  imapPassword?: string;
+  imapTls?: boolean;
+}): Promise<{ success: boolean; message?: string }> {
+  return backendFetch<{ success: boolean; message?: string }>("/v1/inbox/test", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function syncInboxNow(): Promise<InboxSyncResult> {
+  return backendFetch<InboxSyncResult>("/v1/inbox/sync-now", {
+    method: "POST",
+  });
+}
+
+export async function deleteInboxSettings(): Promise<{ success: boolean }> {
+  return backendFetch<{ success: boolean }>("/v1/inbox/settings", {
+    method: "DELETE",
+  });
+}
+
+export async function listServerNotifications(limit = 30): Promise<UserNotificationRow[]> {
+  if (!supabase) return [];
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.id) return [];
+
+  const { data, error } = await supabase
+    .from("user_notifications")
+    .select("id, user_id, lead_id, type, channel, title, body, action_url, metadata, read_at, dismissed_at, created_at")
+    .eq("user_id", session.user.id)
+    .is("dismissed_at", null)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    // Graceful fallback if migration 053 has not been applied yet
+    return [];
+  }
+  return (data ?? []) as UserNotificationRow[];
+}
+
+export async function markServerNotificationRead(id: string): Promise<void> {
+  if (!supabase) return;
+  await supabase
+    .from("user_notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("id", id);
+}
+
+export async function markAllServerNotificationsRead(): Promise<void> {
+  if (!supabase) return;
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.id) return;
+  await supabase
+    .from("user_notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("user_id", session.user.id)
+    .is("read_at", null);
+}
+
+export async function dismissServerNotification(id: string): Promise<void> {
+  if (!supabase) return;
+  await supabase
+    .from("user_notifications")
+    .update({ dismissed_at: new Date().toISOString() })
+    .eq("id", id);
+}
+
+export async function clearAllServerNotifications(): Promise<void> {
+  if (!supabase) return;
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.id) return;
+  await supabase
+    .from("user_notifications")
+    .update({ dismissed_at: new Date().toISOString() })
+    .eq("user_id", session.user.id)
+    .is("dismissed_at", null);
 }

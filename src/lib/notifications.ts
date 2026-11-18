@@ -10,7 +10,8 @@ export interface NotificationPayload {
     | "notifyCreditsReset"
     | "notifyPlanChanges"
     | "notifyBilling"
-    | "notifyAnnouncements";
+    | "notifyAnnouncements"
+    | "notifyOutreachReplies";
 }
 
 export function formatNotificationTimestamp(

@@ -11,6 +11,7 @@ import {
   type BusinessProcessingPayload,
 } from "../jobs/businessProcessingJob.js";
 import { sweepStaleScrapeJobs } from "../jobs/staleScrapeJobSweep.js";
+import { handleInboxPollSweepJob } from "../jobs/inboxPollJob.js";
 import { env } from "../config/env.js";
 import { measureBrowserCapacity, registerWorkerInstance, heartbeatWorkerInstance, initBrowserSlotPool } from "../lib/workerCapacity.js";
 import { initResourceCapacity, initResourceWorkerSlotPool, logStartupResourceTelemetry, initEnrichmentCapacity, splitEnrichmentCapacity } from "../lib/resourceCapacity.js";
@@ -349,6 +350,20 @@ async function main() {
   });
 
   // Durable task rows may outlive their pg-boss jobs after retry exhaustion.
+  // ── Client Reply Observation (IMAP + IG email alerts) ─────────────────
+  try {
+    await boss.schedule(QUEUES.inboxPoll, "*/2 * * * *", {});
+  } catch (err) {
+    console.error("[worker] Optional scheduler failed to schedule inbox.poll (non-fatal):", err);
+  }
+
+  await boss.work(QUEUES.inboxPoll, async () => {
+    try {
+      await handleInboxPollSweepJob();
+    } catch (err) {
+      console.error("[worker] Background inbox.poll failed (non-fatal):", err);
+    }
+  });
   // Re-dispatch only the known transient PID-admission failures; the task row
   // itself is compare-and-set to a dispatch marker before each publish.
   let businessTaskRecoveryRunning = false;

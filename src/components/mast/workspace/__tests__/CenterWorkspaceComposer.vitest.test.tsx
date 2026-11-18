@@ -55,6 +55,7 @@ vi.mock("sonner", () => ({
 vi.mock("@/hooks/use-mast-api", () => ({
   useSendLeadEmail: () => ({ mutateAsync: h.sendEmailMutate, isPending: false }),
   useRecordLeadActivity: () => ({ mutateAsync: h.recordActivityMutate, isPending: false }),
+  useLeadActivities: () => ({ data: [], isLoading: false, isError: false }),
 }));
 
 const mockLead: Lead = {

@@ -1,4 +1,4 @@
-import { Clock, Mail, Instagram, FileText, Phone, Calendar, Sparkles, CheckCircle2, UserPlus, Globe, Zap } from "lucide-react";
+import { Clock, Mail, Instagram, FileText, Phone, Calendar, Sparkles, CheckCircle2, UserPlus, Globe, Zap, MessageSquareReply } from "lucide-react";
 import type { LeadActivity } from "@/lib/api";
 
 type IconConfig = {
@@ -18,6 +18,7 @@ const ACTIVITY_CONFIG: Record<string, IconConfig> = {
   instagram_sent:      { icon: Instagram,    color: "text-pink-400",    bg: "bg-pink-400/10",   border: "border-pink-400/20" },
   contact_form_opened: { icon: Globe,        color: "text-cyan-400",    bg: "bg-cyan-400/10",   border: "border-cyan-400/20" },
   contact_form_sent:   { icon: Globe,        color: "text-cyan-400",    bg: "bg-cyan-400/10",   border: "border-cyan-400/20" },
+  reply_received:      { icon: MessageSquareReply, color: "text-emerald-400", bg: "bg-emerald-400/10", border: "border-emerald-400/20" },
   note_added:          { icon: FileText,     color: "text-amber-400",   bg: "bg-amber-400/10",  border: "border-amber-400/20" },
   call_completed:      { icon: Phone,        color: "text-green-400",   bg: "bg-green-400/10",  border: "border-green-400/20" },
   followup_scheduled:  { icon: Calendar,     color: "text-violet-400",  bg: "bg-violet-400/10", border: "border-violet-400/20" },

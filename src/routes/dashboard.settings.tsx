@@ -47,6 +47,7 @@ import { cn } from "@/lib/utils";
 import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
 import { GLOBAL_SCOPE } from "@/lib/geo/scope";
 import { RegionMark, RegionOption } from "@/components/mast/discover/TargetRegionCard";
+import { ReplyObservationCard } from "@/components/mast/settings/ReplyObservationCard";
 import { AVATAR_OUTPUT_SIZE, clampPan, computeMinScale, computeSourceRect } from "@/lib/avatarCrop";
 
 export const Route = createFileRoute("/dashboard/settings")({
@@ -79,6 +80,7 @@ interface SettingsBaseline {
   notifyAnnouncements: boolean;
   notifyCreditsReset: boolean;
   notifyPlanChanges: boolean;
+  notifyOutreachReplies: boolean;
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -137,6 +139,7 @@ function SettingsPage() {
   const [notifyPlanChanges, setNotifyPlanChanges] = useState(true);
   const [notifyBilling, setNotifyBilling] = useState(true);
   const [notifyAnnouncements, setNotifyAnnouncements] = useState(true);
+  const [notifyOutreachReplies, setNotifyOutreachReplies] = useState(true);
 
   // Sender identity
   const [senderName, setSenderName] = useState("");
@@ -207,6 +210,7 @@ function SettingsPage() {
     const initialNotifyAnnouncements = settings.notifyAnnouncements !== "false";
     const initialNotifyCreditsReset = settings.notifyCreditsReset === "true";
     const initialNotifyPlanChanges = settings.notifyPlanChanges !== "false";
+    const initialNotifyOutreachReplies = settings.notifyOutreachReplies !== "false";
 
     // SMTP comes from the persisted server record. The password is never
     // returned by the server, so the field always starts empty.
@@ -240,6 +244,7 @@ function SettingsPage() {
     setNotifyAnnouncements(initialNotifyAnnouncements);
     setNotifyCreditsReset(initialNotifyCreditsReset);
     setNotifyPlanChanges(initialNotifyPlanChanges);
+    setNotifyOutreachReplies(initialNotifyOutreachReplies);
 
     setSmtpHost(initialSmtpHost);
     setSmtpPort(initialSmtpPort);
@@ -268,6 +273,7 @@ function SettingsPage() {
       notifyAnnouncements: initialNotifyAnnouncements,
       notifyCreditsReset: initialNotifyCreditsReset,
       notifyPlanChanges: initialNotifyPlanChanges,
+      notifyOutreachReplies: initialNotifyOutreachReplies,
     });
     hasInitializedRef.current = true;
   }, [settings, auth?.user, smtpQuery.isLoading, serverSmtp]);
@@ -314,6 +320,7 @@ function SettingsPage() {
     if (notifyAnnouncements !== baseline.notifyAnnouncements) return true;
     if (notifyCreditsReset !== baseline.notifyCreditsReset) return true;
     if (notifyPlanChanges !== baseline.notifyPlanChanges) return true;
+    if (notifyOutreachReplies !== baseline.notifyOutreachReplies) return true;
     if (
       JSON.stringify([...defaultRegions].sort()) !==
       JSON.stringify([...baseline.defaultRegions].sort())
@@ -342,6 +349,7 @@ function SettingsPage() {
     notifyAnnouncements,
     notifyCreditsReset,
     notifyPlanChanges,
+    notifyOutreachReplies,
     defaultRegions,
   ]);
 
@@ -510,6 +518,7 @@ function SettingsPage() {
           notifyPlanChanges: notifyPlanChanges ? "true" : "false",
           notifyBilling: notifyBilling ? "true" : "false",
           notifyAnnouncements: notifyAnnouncements ? "true" : "false",
+          notifyOutreachReplies: notifyOutreachReplies ? "true" : "false",
           smtpSenderName: senderName,
           smtpSenderEmail: effectiveSenderEmail,
         },
@@ -523,6 +532,7 @@ function SettingsPage() {
         notifyPlanChanges: notifyPlanChanges,
         notifyBilling: notifyBilling,
         notifyAnnouncements: notifyAnnouncements,
+        notifyOutreachReplies: notifyOutreachReplies,
       };
       localStorage.setItem("mast_notification_preferences", JSON.stringify(prefs));
 
@@ -551,6 +561,7 @@ function SettingsPage() {
         notifyAnnouncements,
         notifyCreditsReset,
         notifyPlanChanges,
+        notifyOutreachReplies,
       });
 
       toast.success("Settings saved successfully.");
@@ -584,6 +595,7 @@ function SettingsPage() {
     setNotifyAnnouncements(baseline.notifyAnnouncements);
     setNotifyCreditsReset(baseline.notifyCreditsReset);
     setNotifyPlanChanges(baseline.notifyPlanChanges);
+    setNotifyOutreachReplies(baseline.notifyOutreachReplies);
     toast.info("Changes discarded.");
   };
 
@@ -1016,6 +1028,9 @@ function SettingsPage() {
         </SettingsCard>
       </div>
 
+      {/* ── Row 3b: Client Reply Observation (IMAP & Instagram) ───────────── */}
+      <ReplyObservationCard smtpHost={smtpHost} smtpUser={smtpUser} />
+
       {/* ── Row 4: Notifications (Left) + Workspace Info (Right) ────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Notifications Card (Complete original set restored) */}
@@ -1063,11 +1078,9 @@ function SettingsPage() {
             />
             <NotificationRow
               label="Outreach Replies"
-              desc="Real-time alerts when leads reply to your outreach."
-              checked={false}
-              onChange={() => {}}
-              comingSoon
-              disabled
+              desc="Real-time alerts when leads reply via Email or Instagram."
+              checked={notifyOutreachReplies}
+              onChange={setNotifyOutreachReplies}
             />
             <NotificationRow
               label="Weekly Summary"

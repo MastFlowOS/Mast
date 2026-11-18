@@ -14,6 +14,9 @@ import {
   Settings,
   Download,
   Loader2,
+  Mail,
+  Instagram,
+  MessageSquareReply,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MastWordmark } from "@/components/mast/MastWordmark";
@@ -38,6 +41,10 @@ export interface HeaderNotificationItem {
   time: string;
   createdAt?: string | number;
   unread: boolean;
+  actionUrl?: string | null;
+  leadId?: number | null;
+  channel?: string | null;
+  source?: "local" | "server";
 }
 
 export interface DynamicIslandHeaderProps {
@@ -51,6 +58,7 @@ export interface DynamicIslandHeaderProps {
   onMarkAllRead?: () => void;
   onClearAllNotifications?: () => void;
   onDismissNotification?: (id: number | string) => void;
+  onNotificationClick?: (item: HeaderNotificationItem) => void;
   /** User identity for the circular avatar */
   user?: {
     fullName?: string | null;
@@ -75,6 +83,9 @@ const NOTIF_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
   Link2,
   Database,
   AlertCircle,
+  Mail,
+  Instagram,
+  MessageSquareReply,
 };
 
 function resolveNotificationVisual(item: HeaderNotificationItem) {
@@ -440,6 +451,7 @@ export function DynamicIslandHeader({
   onMarkAllRead,
   onClearAllNotifications,
   onDismissNotification,
+  onNotificationClick,
   user,
   planName = "Pro",
   onLogout,
@@ -952,13 +964,36 @@ export function DynamicIslandHeader({
                       n.time,
                     );
                     const isFeaturedUnread = Boolean(n.unread && index === firstUnreadIdx);
+                    const isClickable = Boolean(n.actionUrl || onNotificationClick);
                     return (
                       <div
                         key={n.id}
                         data-testid="dynamic-island-notification-item"
                         data-featured-unread={isFeaturedUnread ? "true" : "false"}
+                        role={isClickable ? "button" : undefined}
+                        tabIndex={isClickable ? 0 : undefined}
+                        onClick={
+                          isClickable
+                            ? () => {
+                                setNotifOpen(false);
+                                onNotificationClick?.(n);
+                              }
+                            : undefined
+                        }
+                        onKeyDown={
+                          isClickable
+                            ? (e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  setNotifOpen(false);
+                                  onNotificationClick?.(n);
+                                }
+                              }
+                            : undefined
+                        }
                         className={cn(
                           "group flex items-center gap-2.5 sm:gap-3 rounded-xl px-2.5 py-2 sm:px-3 sm:py-2.5 transition-colors",
+                          isClickable && "cursor-pointer",
                           isFeaturedUnread
                             ? "bg-[oklch(0.165_0.042_274)] border border-brand/35 hover:bg-[oklch(0.175_0.045_274)]"
                             : n.unread
@@ -1010,7 +1045,10 @@ export function DynamicIslandHeader({
                           {onDismissNotification && (
                             <button
                               type="button"
-                              onClick={() => onDismissNotification(n.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDismissNotification(n.id);
+                              }}
                               aria-label="Dismiss notification"
                               className="w-0 overflow-hidden opacity-0 group-hover:w-4 group-hover:opacity-100 focus:w-4 focus:opacity-100 size-4 grid place-items-center text-muted-foreground/60 hover:text-foreground shrink-0 transition-all cursor-pointer"
                             >

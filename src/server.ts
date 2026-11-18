@@ -13,6 +13,7 @@ import { accountRouter } from "./server/routes/account.js";
 import { discoverRouter } from "./server/routes/discover.js";
 import { intelligenceRouter } from "./server/routes/intelligence.js";
 import { outreachRouter } from "./server/routes/outreach.js";
+import { inboxRouter } from "./server/routes/inbox.js";
 import { observabilityRouter } from "./server/routes/observability.js";
 import { desktopRouter } from "./server/routes/desktop.js";
 import { closePersistentEnrichmentWorkerGraceful, persistentEnrichmentBridge } from "./scraperBridge/pythonBridge.js";
@@ -101,6 +102,7 @@ app.use(
         cleanOrigin === "tauri://localhost" ||
         cleanOrigin === "http://tauri.localhost" ||
         cleanOrigin === "https://tauri.localhost" ||
+        cleanOrigin.startsWith("chrome-extension://") ||
         cleanOrigin.includes("localhost") ||
         cleanOrigin.includes("127.0.0.1")
       ) {
@@ -118,6 +120,7 @@ app.use("/v1/discover", discoverRouter);
 app.use("/v1/desktop", desktopRouter);
 app.use("/v1/intelligence", intelligenceRouter);
 app.use("/v1/outreach", outreachRouter);
+app.use("/v1/inbox", inboxRouter);
 app.use("/v1/observability", observabilityRouter);
 
 

@@ -1,5 +1,6 @@
 import type { GenerationMode, PlanId, PlanConfig } from "./plans";
 import { isDiscoveryModeAllowed, type DiscoveryMode } from "../config/plans.js";
+import { isDesktopApp } from "./desktop";
 import { getDraftProvenance } from "./outreach/draftProvenance";
 import { getPlan, PLANS } from "./plans";
 import { supabase } from "./supabase";
@@ -2661,7 +2662,7 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
   const token = session?.access_token;
   if (!token) throw new ApiError(401, "Not authenticated", {});
 
-  const response = await fetch("/api/send-email", {
+  const response = await fetch(resolveWebApiUrl("/api/send-email"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -2670,7 +2671,7 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
     body: JSON.stringify({ to: lead.email, subject: body.subject, body: body.body })
   });
 
-  const resData = await response.json();
+  const resData = await response.json().catch(() => ({}));
   if (!response.ok || !resData.success) {
     throw new Error(resData.error || "Failed to send email");
   }
@@ -2774,6 +2775,28 @@ export class SmtpApiError extends Error {
   }
 }
 
+const DEFAULT_DESKTOP_WEB_ORIGIN = "https://mast-flow.vercel.app";
+
+/**
+ * Resolves Vercel `/api/*` serverless routes (`/api/smtp-settings`, `/api/test-smtp`,
+ * `/api/send-email`). On web deployments they live on the same origin; inside the Tauri
+ * desktop shell (`tauri.localhost` / `localhost:5173`), relative `/api/*` resolves to the
+ * local frontend asset server instead of Vercel, so target the deployed web origin.
+ */
+function resolveWebApiUrl(
+  path: "/api/smtp-settings" | "/api/test-smtp" | "/api/send-email",
+): string {
+  if (!isDesktopApp()) {
+    return path;
+  }
+  const apiEnv = (typeof import.meta !== "undefined" && import.meta.env)
+    ? import.meta.env
+    : (process.env as Record<string, string | undefined>);
+  const raw = (apiEnv?.VITE_WEB_APP_URL || apiEnv?.VITE_APP_URL || DEFAULT_DESKTOP_WEB_ORIGIN) as string;
+  const baseUrl = raw.trim().replace(/\/+$/, "");
+  return `${baseUrl}${path}`;
+}
+
 async function smtpRequest(
   path: "/api/smtp-settings" | "/api/test-smtp",
   method: "GET" | "PUT" | "DELETE" | "POST",
@@ -2784,11 +2807,12 @@ async function smtpRequest(
   if (!token) throw new SmtpApiError(401, "Not authenticated", "auth_failed");
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  const timeoutMs = path === "/api/test-smtp" ? 20000 : 12000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   let response: Response;
   try {
-    response = await fetch(path, {
+    response = await fetch(resolveWebApiUrl(path), {
       method,
       signal: controller.signal,
       headers: {

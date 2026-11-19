@@ -95,7 +95,7 @@ describe("ReplyObservationCard", () => {
       <ReplyObservationCard smtpHost="smtp.gmail.com" smtpUser="user@gmail.com" />,
     );
 
-    expect(screen.getByText("Not Connected")).toBeTruthy();
+    expect(screen.getByText("Not connected")).toBeTruthy();
     const connectBtn = screen.getByRole("button", { name: /Connect Instagram/i });
     fireEvent.click(connectBtn);
     expect(h.connect).toHaveBeenCalledTimes(1);
@@ -111,7 +111,7 @@ describe("ReplyObservationCard", () => {
     };
 
     rerender(<ReplyObservationCard smtpHost="smtp.gmail.com" smtpUser="user@gmail.com" />);
-    expect(screen.getByText("Connected & Watching")).toBeTruthy();
+    expect(screen.getByText("Connected")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Check Now/i }));
     expect(h.checkNow).toHaveBeenCalledTimes(1);
     const disconnectButtons = screen.getAllByRole("button", { name: /^Disconnect$/i });

@@ -540,4 +540,38 @@ describe("MAST Dynamic Island Header & Priority System", () => {
     );
     expect(screen.queryByTestId("desktop-update-button")).toBeNull();
   });
+
+  it("shows full notification title and body text without truncate or line-clamp when expanded", () => {
+    const longTitle = "Very long client company name replied on Instagram with extra details";
+    const longBody =
+      "They already have someone for the work right now, but asked to follow up next quarter when they launch their second location and overhaul the storefront website.";
+    render(
+      <DynamicIslandHeader
+        event={IDLE_DYNAMIC_ISLAND_EVENT}
+        unreadCount={1}
+        notifications={[
+          {
+            id: "long-1",
+            icon: "Instagram",
+            iconColor: "text-pink-400",
+            iconBg: "bg-pink-500/12 border-pink-500/25",
+            title: longTitle,
+            body: longBody,
+            createdAt: new Date().toISOString(),
+            time: "Just now",
+            unread: true,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("dynamic-island-center"));
+
+    const titleEl = screen.getByText(longTitle);
+    const bodyEl = screen.getByText(longBody);
+    expect(titleEl.className).not.toContain("truncate");
+    expect(titleEl.className).toContain("break-words");
+    expect(bodyEl.className).not.toMatch(/line-clamp|truncate/);
+    expect(bodyEl.className).toContain("break-words");
+  });
 });

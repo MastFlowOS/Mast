@@ -176,45 +176,52 @@ export function ReplyObservationCard({
       : server?.inboundWebhookPath || "";
 
   return (
-    <div className="bg-card/40 border border-border/80 rounded-2xl p-5 sm:p-6 space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <div className="size-9 rounded-xl bg-emerald-500/12 border border-emerald-500/25 text-emerald-400 grid place-items-center shrink-0">
-            <Inbox className="size-4" />
+    <div className="bg-card border border-border/80 rounded-2xl p-6 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div className="flex items-center gap-3.5">
+          <div className="size-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 grid place-items-center shrink-0">
+            <Inbox className="size-5" />
           </div>
           <div>
-            <h2 className="text-base font-bold text-foreground tracking-tight">
-              Client Reply Observation (Email &amp; Instagram)
+            <h2 className="font-bold text-base text-foreground tracking-tight">
+              Reply Observation
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Watch your inbox for email replies 24/7 and connect Instagram once in the MAST Desktop app for live DM notifications.
+              Track client replies from email and Instagram.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {server?.configured ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 text-[11px] font-medium text-emerald-400">
-              <span className="size-1.5 rounded-full bg-emerald-400" />
-              {server.lastSyncStatus === "failed" ? "Sync Error" : "IMAP Active"}
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-muted/60 border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
-              Inbound Ready
-            </span>
-          )}
-        </div>
+        {server?.configured ? (
+          <div
+            className={`flex items-center gap-1.5 text-xs font-medium ${
+              server.lastSyncStatus === "failed" ? "text-destructive" : "text-emerald-400"
+            }`}
+          >
+            <span
+              className={`size-2 rounded-full shrink-0 ${
+                server.lastSyncStatus === "failed" ? "bg-destructive" : "bg-emerald-400"
+              }`}
+            />
+            <span>{server.lastSyncStatus === "failed" ? "Sync failed" : "IMAP Active"}</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <span className="size-2 rounded-full bg-muted-foreground/60 shrink-0" />
+            <span>Not configured</span>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: IMAP Watcher */}
+        {/* Left: IMAP Inbox Sync */}
         <div className="space-y-3.5">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-foreground">IMAP Inbox Sync</h3>
+            <h3 className="text-sm font-semibold text-foreground">IMAP Configuration</h3>
             <button
               type="button"
               onClick={handleAutoFillFromSmtp}
-              className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline cursor-pointer"
+              className="inline-flex items-center gap-1 text-xs font-medium text-blue-400 hover:text-blue-300 transition-colors cursor-pointer"
             >
               <Wand2 className="size-3" />
               Auto-fill from SMTP
@@ -223,40 +230,48 @@ export function ReplyObservationCard({
 
           <div className="grid grid-cols-3 gap-3">
             <div className="col-span-2">
-              <label className="block text-xs font-semibold text-muted-foreground mb-1">IMAP Host</label>
+              <span className="block text-xs font-semibold text-muted-foreground mb-1.5">
+                IMAP Host
+              </span>
               <input
                 value={imapHost}
                 onChange={(e) => setImapHost(e.target.value)}
                 placeholder="imap.gmail.com"
-                className="w-full bg-background border border-border/80 focus:border-blue-500 outline-none px-3 py-2 rounded-xl text-sm"
+                className="w-full bg-background border border-border/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none px-3.5 py-2.5 rounded-xl text-sm transition-colors"
               />
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-muted-foreground mb-1">Port</label>
+            <div className="col-span-1">
+              <span className="block text-xs font-semibold text-muted-foreground mb-1.5">
+                Port
+              </span>
               <input
                 value={imapPort}
                 onChange={(e) => setImapPort(e.target.value)}
                 placeholder="993"
-                className="w-full bg-background border border-border/80 focus:border-blue-500 outline-none px-3 py-2 rounded-xl text-sm"
+                className="w-full bg-background border border-border/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none px-3.5 py-2.5 rounded-xl text-sm transition-colors"
               />
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-muted-foreground mb-1">IMAP Username / Email</label>
+              <span className="block text-xs font-semibold text-muted-foreground mb-1.5">
+                Username
+              </span>
               <input
                 value={imapUsername}
                 onChange={(e) => setImapUsername(e.target.value)}
                 placeholder="you@gmail.com"
-                className="w-full bg-background border border-border/80 focus:border-blue-500 outline-none px-3 py-2 rounded-xl text-sm"
+                className="w-full bg-background border border-border/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none px-3.5 py-2.5 rounded-xl text-sm transition-colors"
               />
             </div>
             <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-semibold text-muted-foreground">App Password / Password</label>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="block text-xs font-semibold text-muted-foreground">
+                  Password
+                </span>
                 {useSmtpPassword && !imapPassword && (
-                  <span className="text-[10px] font-medium text-brand">Using saved SMTP password</span>
+                  <span className="text-[11px] font-medium text-blue-400">From SMTP</span>
                 )}
               </div>
               <div className="relative">
@@ -270,17 +285,17 @@ export function ReplyObservationCard({
                   }}
                   placeholder={
                     useSmtpPassword && !imapPassword
-                      ? "•••••••• Using saved SMTP password"
+                      ? "•••••••• using SMTP password"
                       : server?.hasPassword
-                        ? "•••••••• saved (leave blank to keep)"
-                        : "••••••••"
+                        ? "•••••••• saved"
+                        : "••••••••••••"
                   }
-                  className="w-full bg-background border border-border/80 focus:border-blue-500 outline-none px-3 py-2 pr-9 rounded-xl text-sm"
+                  className="w-full bg-background border border-border/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none px-3.5 py-2.5 pr-10 rounded-xl text-sm transition-colors"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors p-1 cursor-pointer"
                 >
                   {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                 </button>
@@ -288,43 +303,55 @@ export function ReplyObservationCard({
             </div>
           </div>
 
-          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={imapTls}
-              onChange={(e) => setImapTls(e.target.checked)}
-              className="rounded border-border"
-            />
-            Use TLS/SSL (recommended for port 993)
-          </label>
+          <div className="pt-1 flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={imapTls}
+                onClick={() => setImapTls((v) => !v)}
+                className={`relative shrink-0 inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/40 cursor-pointer ${
+                  imapTls ? "bg-blue-600" : "bg-zinc-800"
+                }`}
+              >
+                <span
+                  className={`inline-block size-5 rounded-full bg-white shadow-sm transition-transform duration-200 ease-in-out pointer-events-none ${
+                    imapTls ? "translate-x-5" : "translate-x-0.5"
+                  }`}
+                />
+              </button>
+              <span className="text-sm font-medium text-foreground">Use SSL/TLS</span>
+            </div>
+
+            {server?.lastSyncedAt && (
+              <span className="text-xs text-muted-foreground">
+                Synced {new Date(server.lastSyncedAt).toLocaleTimeString()}
+              </span>
+            )}
+          </div>
 
           {server?.lastSyncStatus === "failed" && server?.lastSyncError && (
-            <p className="text-xs text-rose-400">Last sync error: {server.lastSyncError}</p>
-          )}
-          {server?.lastSyncedAt && (
-            <p className="text-[11px] text-muted-foreground">
-              Last synced: {new Date(server.lastSyncedAt).toLocaleString()}
-            </p>
+            <p className="text-xs text-destructive">Error: {server.lastSyncError}</p>
           )}
 
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <button
-              type="button"
-              onClick={handleTest}
-              disabled={testInbox.isPending}
-              className="px-3 py-1.5 rounded-xl border border-border/80 bg-background hover:bg-muted text-xs font-medium inline-flex items-center gap-1.5 cursor-pointer"
-            >
-              {testInbox.isPending && <Loader2 className="size-3.5 animate-spin" />}
-              Test IMAP
-            </button>
+          <div className="flex flex-wrap items-center gap-2.5 pt-1">
             <button
               type="button"
               onClick={handleSave}
               disabled={saveInbox.isPending}
-              className="px-3.5 py-1.5 rounded-xl bg-brand hover:bg-brand/90 text-brand-foreground text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-lg shadow-blue-600/25 transition-all inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               {saveInbox.isPending && <Loader2 className="size-3.5 animate-spin" />}
-              Save Observation Settings
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={handleTest}
+              disabled={testInbox.isPending}
+              className="px-4 py-2 rounded-xl bg-card border border-border/80 hover:bg-muted text-foreground text-xs font-semibold disabled:opacity-50 transition-colors shadow-sm inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              {testInbox.isPending && <Loader2 className="size-3.5 animate-spin" />}
+              Test Connection
             </button>
             {server?.configured && (
               <>
@@ -332,7 +359,7 @@ export function ReplyObservationCard({
                   type="button"
                   onClick={handleSyncNow}
                   disabled={syncNow.isPending}
-                  className="px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-xs font-medium inline-flex items-center gap-1.5 cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-card border border-border/80 hover:bg-muted text-foreground text-xs font-semibold disabled:opacity-50 transition-colors shadow-sm inline-flex items-center gap-1.5 cursor-pointer"
                 >
                   <RefreshCw className={`size-3.5 ${syncNow.isPending ? "animate-spin" : ""}`} />
                   Sync Now
@@ -341,7 +368,7 @@ export function ReplyObservationCard({
                   type="button"
                   onClick={handleDisconnect}
                   disabled={deleteInbox.isPending}
-                  className="px-2.5 py-1.5 rounded-xl text-xs text-muted-foreground hover:text-rose-400 cursor-pointer"
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-destructive hover:bg-destructive/10 disabled:opacity-50 transition-colors cursor-pointer"
                 >
                   Disconnect
                 </button>
@@ -351,148 +378,140 @@ export function ReplyObservationCard({
 
           {fullWebhookUrl && (
             <details className="pt-1">
-              <summary className="text-[11px] font-medium text-muted-foreground hover:text-foreground cursor-pointer select-none">
-                Optional: Inbound Forwarding / Webhook URL
+              <summary className="text-xs font-medium text-muted-foreground hover:text-foreground cursor-pointer select-none">
+                Inbound Webhook URL
               </summary>
-              <div className="mt-2 space-y-1">
-                <div className="flex items-center gap-2">
-                  <input
-                    readOnly
-                    value={fullWebhookUrl}
-                    className="flex-1 bg-background border border-border/80 px-3 py-1.5 rounded-xl text-xs font-mono text-muted-foreground select-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => copyText("webhook", fullWebhookUrl, "Webhook URL")}
-                    className="p-2 rounded-xl border border-border/80 bg-background hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-                    title="Copy Webhook URL"
-                  >
-                    {copiedKey === "webhook" ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
-                  </button>
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  Use with Resend, Postmark, or Cloudflare Email Worker if you prefer forwarding over IMAP.
-                </p>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  readOnly
+                  value={fullWebhookUrl}
+                  className="flex-1 bg-background border border-border/80 px-3.5 py-2 rounded-xl text-xs font-mono text-muted-foreground select-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => copyText("webhook", fullWebhookUrl, "Webhook URL")}
+                  className="p-2.5 rounded-xl border border-border/80 bg-card hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                  title="Copy Webhook URL"
+                >
+                  {copiedKey === "webhook" ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
+                </button>
               </div>
             </details>
           )}
         </div>
 
-        {/* Right: Built-in Desktop Instagram Reply Watcher */}
-        <div className="space-y-3.5 border-t lg:border-t-0 lg:border-l border-border/60 pt-4 lg:pt-0 lg:pl-6">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Instagram className="size-4 text-pink-400" />
-              <h3 className="text-sm font-semibold text-foreground">
-                Instagram Reply Watcher
-              </h3>
+        {/* Right: Instagram Watcher */}
+        <div className="space-y-3.5 border-t lg:border-t-0 lg:border-l border-border/60 pt-5 lg:pt-0 lg:pl-6 flex flex-col justify-between">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-foreground">Instagram</h3>
+
+              {igWatcher.desktop && (
+                <div
+                  className={`flex items-center gap-1.5 text-xs font-medium ${
+                    igWatcher.status?.state === "watching"
+                      ? "text-emerald-400"
+                      : igWatcher.status?.state === "needs_login"
+                        ? "text-amber-400"
+                        : igWatcher.status?.enabled
+                          ? "text-blue-400"
+                          : "text-muted-foreground"
+                  }`}
+                >
+                  <span
+                    className={`size-2 rounded-full shrink-0 ${
+                      igWatcher.status?.state === "watching"
+                        ? "bg-emerald-400"
+                        : igWatcher.status?.state === "needs_login"
+                          ? "bg-amber-400"
+                          : igWatcher.status?.enabled
+                            ? "bg-blue-400 animate-pulse"
+                            : "bg-muted-foreground/60"
+                    }`}
+                  />
+                  <span>
+                    {igWatcher.status?.state === "watching"
+                      ? "Connected"
+                      : igWatcher.status?.state === "needs_login"
+                        ? "Sign-in required"
+                        : igWatcher.status?.enabled
+                          ? "Connecting..."
+                          : "Not connected"}
+                  </span>
+                </div>
+              )}
             </div>
 
-            {igWatcher.desktop && (
-              <span
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${
-                  igWatcher.status?.state === "watching"
-                    ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400"
-                    : igWatcher.status?.state === "needs_login"
-                      ? "bg-amber-500/10 border-amber-500/25 text-amber-300"
-                      : igWatcher.status?.enabled
-                        ? "bg-blue-500/10 border-blue-500/25 text-blue-300"
-                        : "bg-muted/60 border-border text-muted-foreground"
-                }`}
-              >
-                <span
-                  className={`size-1.5 rounded-full ${
-                    igWatcher.status?.state === "watching"
-                      ? "bg-emerald-400"
-                      : igWatcher.status?.state === "needs_login"
-                        ? "bg-amber-400"
-                        : igWatcher.status?.enabled
-                          ? "bg-blue-400"
-                          : "bg-muted-foreground"
-                  }`}
-                />
-                {igWatcher.status?.state === "watching"
-                  ? "Connected & Watching"
-                  : igWatcher.status?.state === "needs_login"
-                    ? "Sign-in Required"
-                    : igWatcher.status?.enabled
-                      ? "Connecting..."
-                      : "Not Connected"}
-              </span>
-            )}
-          </div>
-
-          {igWatcher.desktop ? (
-            <div className="rounded-xl border border-border/70 bg-background/60 p-4 space-y-3">
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                Sign in to Instagram <strong className="text-foreground">once</strong> inside the MAST Desktop app. No Chrome extension or copy-paste needed—your session stays saved locally and quietly notifies <strong className="text-foreground">both the app and website</strong> whenever a contacted lead replies in DMs.
-              </p>
-
-              {(igWatcher.status?.lastCheckedMs || igWatcher.status?.lastDebug) && (
-                <p className="text-[11px] text-muted-foreground">
-                  {igWatcher.status?.lastCheckedMs
-                    ? `Last checked: ${new Date(igWatcher.status.lastCheckedMs).toLocaleTimeString()}`
-                    : "Watcher active"}
-                  {igWatcher.status?.lastDebug ? ` · ${igWatcher.status.lastDebug}` : ""}
+            {igWatcher.desktop ? (
+              <>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Watches Instagram DMs in the background while MAST Desktop is open.
                 </p>
-              )}
 
-              {igWatcher.status?.lastError && (
-                <p className="text-xs text-rose-400">{igWatcher.status.lastError}</p>
-              )}
+                {igWatcher.status?.lastCheckedMs && (
+                  <p className="text-xs text-muted-foreground">
+                    Last checked {new Date(igWatcher.status.lastCheckedMs).toLocaleTimeString()}
+                  </p>
+                )}
 
-              <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                <button
-                  type="button"
-                  onClick={igWatcher.connect}
-                  disabled={igWatcher.busy}
-                  className="px-3.5 py-1.5 rounded-xl bg-brand hover:bg-brand/90 text-brand-foreground text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-                >
-                  {igWatcher.busy && <Loader2 className="size-3.5 animate-spin" />}
-                  <Instagram className="size-3.5" />
-                  {igWatcher.status?.state === "needs_login"
-                    ? "Reconnect Instagram"
-                    : igWatcher.status?.connected
-                      ? "Open Instagram Window"
-                      : "Connect Instagram"}
-                </button>
+                {igWatcher.status?.lastError && (
+                  <p className="text-xs text-destructive">Error: {igWatcher.status.lastError}</p>
+                )}
 
-                {igWatcher.status?.enabled && (
-                  <>
-                    {igWatcher.status.connected && (
+                <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={igWatcher.connect}
+                    disabled={igWatcher.busy}
+                    className={
+                      igWatcher.status?.connected && igWatcher.status?.state === "watching"
+                        ? "px-4 py-2 rounded-xl bg-card border border-border/80 hover:bg-muted text-foreground text-xs font-semibold disabled:opacity-50 transition-colors shadow-sm inline-flex items-center gap-1.5 cursor-pointer"
+                        : "px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-lg shadow-blue-600/25 transition-all inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                    }
+                  >
+                    {igWatcher.busy && <Loader2 className="size-3.5 animate-spin" />}
+                    <Instagram className="size-3.5" />
+                    {igWatcher.status?.state === "needs_login"
+                      ? "Reconnect Instagram"
+                      : igWatcher.status?.connected
+                        ? "Open Instagram"
+                        : "Connect Instagram"}
+                  </button>
+
+                  {igWatcher.status?.enabled && (
+                    <>
+                      {igWatcher.status.connected && (
+                        <button
+                          type="button"
+                          onClick={igWatcher.checkNow}
+                          disabled={igWatcher.busy}
+                          className="px-4 py-2 rounded-xl bg-card border border-border/80 hover:bg-muted text-foreground text-xs font-semibold disabled:opacity-50 transition-colors shadow-sm inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <RefreshCw className="size-3.5" />
+                          Check Now
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={igWatcher.checkNow}
+                        onClick={igWatcher.disconnect}
                         disabled={igWatcher.busy}
-                        className="px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-xs font-medium inline-flex items-center gap-1.5 cursor-pointer"
+                        className="px-3 py-2 rounded-xl text-xs font-semibold text-destructive hover:bg-destructive/10 disabled:opacity-50 transition-colors cursor-pointer"
                       >
-                        <RefreshCw className="size-3.5" />
-                        Check Now
+                        Disconnect
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={igWatcher.disconnect}
-                      disabled={igWatcher.busy}
-                      className="px-2.5 py-1.5 rounded-xl text-xs text-muted-foreground hover:text-rose-400 cursor-pointer"
-                    >
-                      Disconnect
-                    </button>
-                  </>
-                )}
+                    </>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="flex items-start gap-2.5 text-xs text-muted-foreground leading-relaxed">
+                <Monitor className="size-4 text-blue-400 shrink-0 mt-0.5" />
+                <span>
+                  Connect once inside the MAST Desktop app to sync Instagram DM replies here.
+                </span>
               </div>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-border/70 bg-background/60 p-4 space-y-2.5">
-              <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
-                <Monitor className="size-4 text-brand" />
-                Connect once inside the MAST Desktop app
-              </div>
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                Built-in Instagram reply watching runs natively in the <strong className="text-foreground">MAST Desktop app</strong>—no browser extension, no Developer Mode, and no config copy-paste. Open MAST Desktop → Settings and click <strong className="text-foreground">Connect Instagram</strong> once; whenever the desktop app is open on your PC, replies appear live on both the app and here on the website.
-              </p>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </div>

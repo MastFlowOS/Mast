@@ -438,9 +438,12 @@ function UnifiedIslandSvg({
 
 function getFunnelBodyInset(width: number) {
   if (width >= 540) {
-    return Math.round((width - Math.min(370, width * 0.59)) / 2);
+    return Math.max(
+      Math.round(width * 0.085),
+      Math.round((width - Math.min(540, width * 0.84)) / 2),
+    );
   }
-  return Math.max(Math.round(width * 0.185), Math.round(0.172414 * width) + 6);
+  return Math.max(Math.round(width * 0.11), Math.round(0.075862 * width) + 4);
 }
 
 export function DynamicIslandHeader({
@@ -508,13 +511,10 @@ export function DynamicIslandHeader({
     const ro = new ResizeObserver(updateHeight);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [drawerPhase, notifications.length]);
+  }, [drawerPhase, notifications]);
 
   const bodyInset = getFunnelBodyInset(Math.max(240, Math.round(centerWidth)));
-  const headerInset =
-    centerWidth >= 540
-      ? Math.max(Math.round(bodyInset * 0.82), Math.round(centerWidth * 0.165))
-      : Math.max(54, Math.round(bodyInset * 0.85));
+  const headerInset = bodyInset + 4;
 
   // Smooth RAF morph lifecycle (0 <-> 1) that stretches/retracts the unified SVG
   // downward from the Dynamic Island with zero CSS transform/animation clipping bugs.
@@ -926,10 +926,10 @@ export function DynamicIslandHeader({
                   <Bell className="size-4" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-[13px] font-semibold text-foreground leading-tight truncate">
+                  <p className="text-[13px] font-semibold text-foreground leading-tight break-words">
                     {introTitle}
                   </p>
-                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug truncate">
+                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug break-words">
                     {introSubtitle}
                   </p>
                 </div>
@@ -938,7 +938,7 @@ export function DynamicIslandHeader({
               {/* Contained notification cards */}
               <div
                 className={cn(
-                  "max-h-[304px] flex flex-col gap-2 px-2.5 pb-2",
+                  "max-h-[min(65vh,520px)] flex flex-col gap-2 px-2.5 pb-2",
                   drawerPhase === "open" ? "overflow-y-auto" : "overflow-hidden",
                 )}
                 style={{
@@ -992,7 +992,7 @@ export function DynamicIslandHeader({
                             : undefined
                         }
                         className={cn(
-                          "group flex items-center gap-2.5 sm:gap-3 rounded-xl px-2.5 py-2 sm:px-3 sm:py-2.5 transition-colors",
+                          "group flex items-start gap-2.5 sm:gap-3 rounded-xl px-3 py-2.5 sm:px-3.5 sm:py-3 transition-colors",
                           isClickable && "cursor-pointer",
                           isFeaturedUnread
                             ? "bg-[oklch(0.165_0.042_274)] border border-brand/35 hover:bg-[oklch(0.175_0.045_274)]"
@@ -1003,7 +1003,7 @@ export function DynamicIslandHeader({
                       >
                         <div
                           className={cn(
-                            "size-7 sm:size-8 rounded-lg border grid place-items-center shrink-0",
+                            "size-7 sm:size-8 rounded-lg border grid place-items-center shrink-0 mt-0.5",
                             iconBg,
                           )}
                         >
@@ -1011,49 +1011,52 @@ export function DynamicIslandHeader({
                         </div>
 
                         <div className="flex-1 min-w-0">
-                          <p
-                            className={cn(
-                              "text-[12.5px] font-semibold leading-tight truncate",
-                              n.unread ? "text-foreground" : "text-foreground/85",
-                            )}
-                          >
-                            {n.title}
-                          </p>
-                          <p
-                            className={cn(
-                              "text-[11px] mt-0.5 leading-snug line-clamp-2",
-                              n.unread ? "text-muted-foreground" : "text-muted-foreground/80",
-                            )}
-                          >
-                            {n.body}
-                          </p>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <span
-                            data-testid="notification-item-timestamp"
-                            className="inline-flex items-center rounded-full bg-white/[0.05] border border-white/[0.07] px-2 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums whitespace-nowrap"
-                          >
-                            {formattedTime}
-                          </span>
-                          {n.unread && (
-                            <span
-                              aria-label="Unread notification"
-                              className="size-2 rounded-full bg-brand shrink-0"
-                            />
-                          )}
-                          {onDismissNotification && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onDismissNotification(n.id);
-                              }}
-                              aria-label="Dismiss notification"
-                              className="w-0 overflow-hidden opacity-0 group-hover:w-4 group-hover:opacity-100 focus:w-4 focus:opacity-100 size-4 grid place-items-center text-muted-foreground/60 hover:text-foreground shrink-0 transition-all cursor-pointer"
+                          <div className="flex items-start justify-between gap-2">
+                            <p
+                              className={cn(
+                                "text-[12.5px] font-semibold leading-snug break-words min-w-0 flex-1",
+                                n.unread ? "text-foreground" : "text-foreground/85",
+                              )}
                             >
-                              <X className="size-3.5 shrink-0" />
-                            </button>
+                              {n.title}
+                            </p>
+                            <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
+                              <span
+                                data-testid="notification-item-timestamp"
+                                className="inline-flex items-center rounded-full bg-white/[0.05] border border-white/[0.07] px-2 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums whitespace-nowrap"
+                              >
+                                {formattedTime}
+                              </span>
+                              {n.unread && (
+                                <span
+                                  aria-label="Unread notification"
+                                  className="size-2 rounded-full bg-brand shrink-0"
+                                />
+                              )}
+                              {onDismissNotification && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDismissNotification(n.id);
+                                  }}
+                                  aria-label="Dismiss notification"
+                                  className="w-0 overflow-hidden opacity-0 group-hover:w-4 group-hover:opacity-100 focus:w-4 focus:opacity-100 size-4 grid place-items-center text-muted-foreground/60 hover:text-foreground shrink-0 transition-all cursor-pointer"
+                                >
+                                  <X className="size-3.5 shrink-0" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {n.body && (
+                            <p
+                              className={cn(
+                                "text-[11.5px] mt-1 leading-relaxed break-words whitespace-pre-wrap",
+                                n.unread ? "text-muted-foreground" : "text-muted-foreground/80",
+                              )}
+                            >
+                              {n.body}
+                            </p>
                           )}
                         </div>
                       </div>

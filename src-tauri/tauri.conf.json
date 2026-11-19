@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "MAST",
-  "version": "1.0.25",
+  "version": "1.0.26",
   "identifier": "com.mast.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -24,7 +24,7 @@
     ],
     "security": {
       "dangerousDisableAssetCspModification": ["style-src"],
-      "csp": "default-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.mast-flow.com https://*.railway.app http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self' 'wasm-unsafe-eval'"
+      "csp": "default-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.vercel.app https://mast-flow.com https://*.mast-flow.com https://*.railway.app http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self' 'wasm-unsafe-eval'"
     }
   },
   "bundle": {

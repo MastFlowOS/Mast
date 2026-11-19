@@ -79,4 +79,16 @@ describe("SMTP status is loaded from the backend, not component state", () => {
       ),
     ).toBe(false);
   });
+
+  it("targets the deployed Vercel origin on Desktop (Tauri) instead of relative /api/smtp-settings", async () => {
+    (window as any).__TAURI_INTERNALS__ = { invoke: async () => null };
+    try {
+      const view = mount();
+      await waitFor(() => expect(view.result.current.data?.status).toBe("connected"));
+      expect(fetchMock.mock.calls[0][0]).toBe("https://mast-flow.vercel.app/api/smtp-settings");
+      expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("GET");
+    } finally {
+      delete (window as any).__TAURI_INTERNALS__;
+    }
+  });
 });
